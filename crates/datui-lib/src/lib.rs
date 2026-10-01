@@ -1112,6 +1112,266 @@ mod quality_sample_tests {
         assert!(app.cancelled_analysis_running().is_none());
         assert!(!screen(&mut app).contains("Run waits"));
     }
+
+    /// A report, an error or a stage from a run that is no longer current changes
+    /// nothing on screen and nothing in the cache: the run in flight goes on, and its
+    /// own report is the one installed. The rows the stale run read are still kept,
+    /// keyed by what chose them, since a finished read is not thrown away.
+    #[test]
+    fn a_stale_report_never_replaces_the_current_one() {
+        let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
+            stage: data_quality::QualityStage::ProfilingColumns,
+            reads_source: false,
+            interruptible: false,
+        });
+        let current = app.task_generation;
+        let stale = current.wrapping_sub(1);
+        let on_screen = app.analysis_modal.data_quality_results.clone().unwrap();
+        let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
+        let state = app.data_table_state.as_ref().unwrap();
+        let (dataset_generation, view_generation) =
+            (app.dataset_generation, state.len_generation());
+        let measured = |seed: u64| {
+            let plan = data_quality::DataQualityPlan {
+                dataset_rows: 2,
+                sample_seed: seed,
+                ..data_quality::DataQualityPlan::default()
+            };
+            let (results, rows) = data_quality::compute_data_quality_kept(
+                &polars::prelude::IntoLazy::lazy(df.clone()),
+                None,
+                &plan,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+            let kept = KeptQualitySample {
+                dataset_generation,
+                view_generation,
+                sample: plan.sample(),
+                rows: std::sync::Arc::new(rows.unwrap()),
+                source: crate::quality_export::SourceIdentity::default(),
+            };
+            (plan, results, kept)
+        };
+
+        let (old_plan, old_results, old_rows) = measured(1);
+        app.event(&AppEvent::BackgroundQualityPhase {
+            generation: stale,
+            phase: data_quality::QualityPhase {
+                stage: data_quality::QualityStage::Assembling,
+                reads_source: false,
+                interruptible: false,
+            },
+        });
+        app.event(&AppEvent::BackgroundDataQualityReady {
+            generation: stale,
+            results: old_results,
+            kept: Some(old_rows),
+            plan: Box::new(old_plan.clone()),
+        });
+        app.event(&AppEvent::BackgroundError {
+            generation: stale,
+            message: "the stale run failed".to_string(),
+        });
+        assert_eq!(
+            format!("{:?}", app.analysis_modal.data_quality_results),
+            format!("{:?}", Some(&on_screen)),
+            "the report on screen stays"
+        );
+        assert_eq!(
+            app.analysis_modal
+                .computing
+                .as_ref()
+                .map(|p| p.phase.as_str()),
+            Some("Profiling columns"),
+            "the run in flight goes on"
+        );
+        assert!(app.is_busy() && !app.error_modal.active);
+        assert!(!app.quality_cached(&old_plan), "nothing cached from it");
+        assert!(app.quality_kept_serves(&old_plan), "its rows are kept");
+
+        let (new_plan, new_results, new_rows) = measured(2);
+        app.event(&AppEvent::BackgroundDataQualityReady {
+            generation: current,
+            results: new_results.clone(),
+            kept: Some(new_rows),
+            plan: Box::new(new_plan.clone()),
+        });
+        assert_eq!(
+            format!("{:?}", app.analysis_modal.data_quality_results),
+            format!("{:?}", Some(&new_results))
+        );
+        assert_eq!(
+            app.analysis_modal.data_quality_last_plan.as_ref(),
+            Some(&new_plan)
+        );
+        assert!(app.analysis_modal.computing.is_none() && !app.is_busy());
+        assert!(app.quality_cached(&new_plan));
+        drop(worker);
+        while let Ok(event) = rx.try_recv() {
+            app.event(&event);
+        }
+    }
+
+    /// The progress view holds still while a run goes through its stages: a new
+    /// stage, a spinner frame, the clock and a row count change the words on two
+    /// lines, and no cell outside them moves, at 80x24 and 60x20.
+    #[test]
+    fn stages_and_spinner_frames_do_not_move_the_layout() {
+        use data_quality::QualityStage;
+        let (mut app, _rx, _worker) = quality_run_under_way(data_quality::QualityPhase {
+            stage: QualityStage::Preparing,
+            reads_source: false,
+            interruptible: false,
+        });
+        let frames = [
+            (QualityStage::Preparing, None, 0, 0),
+            (QualityStage::ReadingSample, Some(true), 1, 0),
+            (QualityStage::ReadingSample, Some(true), 2, 9),
+            (QualityStage::CountingSegments, Some(true), 3, 75),
+            (QualityStage::ProfilingColumns, Some(false), 4, 3_700),
+            (QualityStage::CheckingSharedNulls, Some(false), 5, 3_700),
+            (QualityStage::Assembling, Some(false), 6, 3_700),
+        ];
+        for (width, height) in [(80, 24), (60, 20)] {
+            let area = ratatui::layout::Rect::new(0, 0, width, height);
+            let mut drawn = Vec::new();
+            for (stage, reads, frame, seconds) in frames {
+                // The monotonic clock starts at boot: a runner up for less than an
+                // hour cannot hold an instant an hour back, so that frame waits.
+                let Some(started) =
+                    std::time::Instant::now().checked_sub(std::time::Duration::from_secs(seconds))
+                else {
+                    continue;
+                };
+                let watch = crate::sampling::ReadWatch::default();
+                if reads == Some(true) {
+                    watch.saw(1_234_567 * frame as usize);
+                }
+                let progress = app.analysis_modal.computing.as_mut().unwrap();
+                progress.phase = stage.label().to_string();
+                progress.reads_source = reads;
+                progress.read = Some(watch);
+                progress.started = started;
+                app.throbber_frame = frame;
+                let mut buffer = ratatui::buffer::Buffer::empty(area);
+                app.render(area, &mut buffer);
+                let rows = (0..height)
+                    .map(|y| {
+                        (0..width)
+                            .map(|x| buffer[(x, y)].symbol().to_string())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>();
+                let at = rows
+                    .iter()
+                    .enumerate()
+                    .find_map(|(y, row)| row.find(stage.label()).map(|x| (y, x)))
+                    .unwrap_or_else(|| panic!("{} on screen: {rows:#?}", stage.label()));
+                let clock =
+                    crate::render::analysis_view::elapsed(std::time::Duration::from_secs(seconds));
+                assert!(rows[at.0].contains(&clock), "the clock beside the stage");
+                drawn.push((rows, at));
+            }
+            let (first, at) = &drawn[0];
+            for (rows, stage_at) in &drawn[1..] {
+                assert_eq!(stage_at, at, "the stage starts in one place");
+                for (y, (row, before)) in rows.iter().zip(first).enumerate() {
+                    // The stage's line and the one two below it, which says what
+                    // it reads, are the words that change.
+                    if y != at.0 && y != at.0 + 2 && row != before {
+                        // The control bar's spinner turns in its one cell.
+                        let moved = row
+                            .chars()
+                            .zip(before.chars())
+                            .filter(|(now, then)| now != then)
+                            .count();
+                        assert!(
+                            y + 1 == height as usize && moved <= 1,
+                            "row {y} moved at {width}x{height}:\n{before}\n{row}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// No other way in starts a read beside a cancelled run still reading: not the
+    /// rows a finding stages, not `v` on a sample no longer kept, not another tool.
+    /// Each waits, says why, and stays as it was; once the worker exits, each reads.
+    #[test]
+    fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
+        let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
+            stage: data_quality::QualityStage::CountingRows,
+            reads_source: true,
+            interruptible: false,
+        });
+        assert!(key(&mut app, KeyCode::Esc).is_none());
+        assert!(app.cancelled_analysis_running().is_some());
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.analysis_modal.data_quality_page,
+            data_quality::QualityPage::Overview
+        );
+        let refused = |app: &mut App, what: &str| {
+            assert!(!app.is_busy(), "{what} started a read");
+            assert!(app.analysis_modal.computing.is_none(), "{what}");
+            assert_eq!(app.flash_message(), Some(ANALYSIS_READ_WAITS), "{what}");
+            app.flash = None;
+        };
+        let duplicates = || analysis_modal::EvidenceRead {
+            rows: quality_report::EvidenceRows::Duplicates,
+            label: "Data Quality / Duplicate rows".to_string(),
+            sample: None,
+            scope: data_quality::QualityScope::CurrentView,
+            summary: Vec::new(),
+        };
+
+        // A finding's staged read: Enter waits, and the read stays staged.
+        app.analysis_modal.data_quality_evidence_read = Some(duplicates());
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        refused(&mut app, "a finding's rows");
+        assert!(app.analysis_modal.data_quality_evidence_read.is_some());
+        key(&mut app, KeyCode::Esc);
+
+        // The sample's rows, which the cancelled run never kept.
+        assert!(key(&mut app, KeyCode::Char('v')).is_none());
+        refused(&mut app, "v");
+
+        // Another tool.
+        app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+        app.analysis_modal.sidebar_state.select(Some(0));
+        app.analysis_modal.sample_run_for = Some(app.dataset_generation);
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        refused(&mut app, "Describe");
+        // Its Sample form stays open, as filled.
+        app.analysis_modal.sample_run_for = None;
+        app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        assert!(
+            app.analysis_modal.sample_form.is_some(),
+            "the form is the pane"
+        );
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        refused(&mut app, "Describe's Sample form");
+        assert!(app.analysis_modal.sample_form.is_some());
+        app.analysis_modal.sample_run_for = Some(app.dataset_generation);
+        app.analysis_modal.sample_form = None;
+        app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+
+        // The worker exits: each way in reads again.
+        drop(worker);
+        while let Ok(event) = rx.try_recv() {
+            app.event(&event);
+        }
+        assert!(app.cancelled_analysis_running().is_none());
+        assert!(matches!(
+            key(&mut app, KeyCode::Enter),
+            Some(AppEvent::AnalysisChunk)
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -8474,6 +8734,10 @@ const QUALITY_RELEASED_REMEMBERED: usize = 16;
 /// on Setup's line until it has.
 const QUALITY_RUN_WAITS: &str = "Run waits: the cancelled run is still stopping";
 
+/// Why another read of the source did not start: a cancelled analysis has not
+/// exited yet, and a second read beside it is how memory runs out.
+const ANALYSIS_READ_WAITS: &str = "A cancelled run is still finishing; try again shortly";
+
 /// How long a cancelled run that stops within a batch may take before the screen
 /// says it is still going: time for a batch to finish, and no longer.
 const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
@@ -8949,6 +9213,15 @@ impl App {
 
     /// Enter on a staged read: read the rows it named, as it said.
     fn confirm_evidence_read(&mut self) -> Option<AppEvent> {
+        // Beside a cancelled run still reading, the read stays staged for later.
+        let staged = self.analysis_modal.data_quality_evidence_read.as_ref()?;
+        let kept = staged
+            .sample
+            .as_ref()
+            .is_some_and(|sample| self.kept_quality_sample(sample).is_some());
+        if !kept && self.read_waits_for_cancelled() {
+            return None;
+        }
         let read = self.analysis_modal.data_quality_evidence_read.take()?;
         if let Some(sample) = read.sample {
             return self.read_sample_rows(sample, Some((read.rows, read.label)));
@@ -9635,6 +9908,53 @@ impl App {
         })
     }
 
+    /// Every row Data Quality's runs kept for reuse on this dataset, as `d` in Setup
+    /// would release them; `None` when there are none.
+    pub(crate) fn quality_kept_rows(&self) -> Option<widgets::data_quality::KeptRows> {
+        let kept = self
+            .quality_samples
+            .iter()
+            .filter(|kept| kept.dataset_generation == self.dataset_generation)
+            .collect::<Vec<_>>();
+        (!kept.is_empty()).then(|| widgets::data_quality::KeptRows {
+            samples: kept.len(),
+            rows: kept.iter().map(|kept| kept.rows.df().height()).sum(),
+            bytes: kept.iter().map(|kept| kept.rows.estimated_bytes()).sum(),
+        })
+    }
+
+    /// `d` in Setup: let go of every row runs kept, as the memory budget would. A
+    /// run that would have reused them reads its sample again, and Setup's Read says
+    /// so before Run. Reports stay: they are results, and showing one reads nothing.
+    fn release_quality_rows(&mut self) {
+        let Some(kept) = self.quality_kept_rows() else {
+            self.flash_note("No kept rows to release".to_string());
+            return;
+        };
+        for released in std::mem::take(&mut self.quality_samples) {
+            self.quality_released.retain(|(dataset, view, sample)| {
+                !(*dataset == released.dataset_generation
+                    && *view == released.view_generation
+                    && *sample == released.sample)
+            });
+            self.quality_released.insert(
+                0,
+                (
+                    released.dataset_generation,
+                    released.view_generation,
+                    released.sample,
+                ),
+            );
+        }
+        self.quality_released.truncate(QUALITY_RELEASED_REMEMBERED);
+        self.flash_note(format!(
+            "Released {} kept {} ({}); the next run reads again",
+            numfmt::group_chrome(kept.rows),
+            if kept.rows == 1 { "row" } else { "rows" },
+            widgets::info::format_bytes(kept.bytes as u64)
+        ));
+    }
+
     /// Rows a sampled Data Quality run read, when they are the rows `sample` names
     /// now: same dataset, same view, same sample.
     fn kept_quality_sample(
@@ -9745,9 +10065,12 @@ impl App {
         }) else {
             return false;
         };
-        let results = cached.results.clone();
+        let mut results = cached.results.clone();
         if cached.plan != plan {
-            // Kept under the windows it expects now.
+            // Compared as the plan compares, and kept under the windows it expects now.
+            if cached.plan.compares_differently(&plan) {
+                results.compare_segments(&plan);
+            }
             self.cache_quality_result(&results, plan.clone());
         }
         self.analysis_modal.data_quality_results = Some(results);
@@ -9932,20 +10255,24 @@ impl App {
     fn run_sample_form(&mut self) -> Option<AppEvent> {
         let quality =
             self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
-        let form = self.analysis_modal.sample_form.as_mut()?;
-        match form.finish() {
+        let finished = self.analysis_modal.sample_form.as_mut()?.finish();
+        match finished {
             Ok(sample) if quality => {
                 self.analysis_modal.sample_form = None;
                 self.analysis_modal.data_quality_plan.adopt_sample(&sample);
                 self.analysis_modal.data_quality_setup_note = None;
                 None
             }
+            // The form stays open, as filled, while a cancelled run finishes.
+            Ok(_) if self.read_waits_for_cancelled() => None,
             Ok(sample) => {
                 self.analysis_modal.sample_form = None;
                 self.apply_sample(sample)
             }
             Err(error) => {
-                form.error = Some(error);
+                if let Some(form) = self.analysis_modal.sample_form.as_mut() {
+                    form.error = Some(error);
+                }
                 None
             }
         }
@@ -10101,6 +10428,9 @@ impl App {
                 .collect();
             (kept, columns)
         });
+        if kept.is_none() && self.read_waits_for_cancelled() {
+            return None;
+        }
         self.reading_sample = true;
         self.analysis_modal.computing = Some(AnalysisProgress::new(if evidence.is_some() {
             "Reading the matching sampled rows"
@@ -10318,17 +10648,25 @@ impl App {
             modal.set_quality_page(back);
             return None;
         }
-        // Only the expected windows changed: the report on screen holds every count
-        // they are checked against, so it is relabeled, not read again.
+        // Only the expected windows or the comparison changed: the report on screen
+        // holds every count the windows are checked against and every segment the
+        // comparison is worked out from, so it is relabeled, not read again.
         if let (Some(results), Some(last)) = (
             modal.data_quality_results.as_ref(),
             modal.data_quality_last_plan.as_ref(),
         ) && last.same_measurement(&modal.data_quality_plan)
         {
-            let results = results.clone();
+            let mut results = results.clone();
             let plan = modal.data_quality_plan.clone();
+            let page = if last.compares_differently(&plan) {
+                results.compare_segments(&plan);
+                QualityPage::Segments
+            } else {
+                QualityPage::Trends
+            };
+            modal.data_quality_results = Some(results.clone());
             modal.data_quality_last_plan = Some(plan.clone());
-            modal.set_quality_page(QualityPage::Trends);
+            modal.set_quality_page(page);
             self.cache_quality_result(&results, plan);
             return None;
         }
@@ -10369,6 +10707,12 @@ impl App {
     /// them go, and the tool on screen runs again. Data Quality only takes it into
     /// its plan: nothing reads until its Run.
     fn apply_sample(&mut self, sample: sampling::Sample) -> Option<AppEvent> {
+        // A run it would start waits for a cancelled one, with every result kept.
+        if self.analysis_modal.selected_tool != Some(analysis_modal::AnalysisTool::DataQuality)
+            && self.read_waits_for_cancelled()
+        {
+            return None;
+        }
         // A first run on the sample as it stands takes nothing from the other tools.
         if sample != self.analysis_modal.sample {
             self.analysis_modal.describe_results = None;
@@ -10388,9 +10732,22 @@ impl App {
         self.start_analysis_run()
     }
 
+    /// A cancelled analysis is still reading: say so, and start no read beside it.
+    fn read_waits_for_cancelled(&mut self) -> bool {
+        if self.cancelled_analysis_running().is_none() {
+            return false;
+        }
+        self.flash_note(ANALYSIS_READ_WAITS.to_string());
+        true
+    }
+
     /// Run the selected tool again from scratch, as `r` and `a` do.
     fn start_analysis_run(&mut self) -> Option<AppEvent> {
-        let (phase, event) = match self.analysis_modal.selected_tool? {
+        let tool = self.analysis_modal.selected_tool?;
+        if tool != analysis_modal::AnalysisTool::DataQuality && self.read_waits_for_cancelled() {
+            return None;
+        }
+        let (phase, event) = match tool {
             analysis_modal::AnalysisTool::Describe => {
                 self.analysis_modal.describe_results = None;
                 self.analysis_computation = Some(AnalysisComputationState {
@@ -17909,6 +18266,10 @@ impl App {
                             return None;
                         }
                         KeyCode::Enter => return self.run_quality_setup(),
+                        KeyCode::Char('d') => {
+                            self.release_quality_rows();
+                            return None;
+                        }
                         KeyCode::Esc => {
                             self.leave_quality_setup();
                             return None;
@@ -18292,7 +18653,7 @@ impl App {
                 KeyCode::Char('a')
                     if self.analysis_results_are_sampled() && self.cancelled_work_running() =>
                 {
-                    self.flash_note("A cancelled run is still finishing; try again shortly".into());
+                    self.flash_note(ANALYSIS_READ_WAITS.to_string());
                 }
                 KeyCode::Char('a') if self.analysis_results_are_sampled() => {
                     let total = self

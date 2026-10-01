@@ -245,10 +245,13 @@ Setup's **Read** section says what <kbd>Enter</kbd> will read before it reads:
 one sampling pass (which also counts the grain's segments when it streams), a
 count of the grain's column for exact segment totals, rows a run already read,
 or nothing when the report is already on screen or in the session cache.
-Changing roles, text formats, column intent, comparison, expected windows, row
-chunks or a
-coarser window of a counted grain reads nothing; a new seed, size or scope reads
-a new sample.
+After a sampled run, changing roles, text formats, column intent, row chunks or
+a coarser window of a counted grain reads nothing; after any run, so does
+changing the comparison or expected windows. A new seed, size or scope reads a
+new sample.
+The **Read** rule names the rows runs have kept for reuse, such as
+`100,000 rows kept · 12.4 MiB`; <kbd>d</kbd> releases them, and the next run
+that would have used them reads its sample again.
 <kbd>p</kbd> shows the access plan in full. Reading every row asks for
 confirmation first; <kbd>Esc</kbd> there leaves the sample and the report as
 they were.
@@ -257,7 +260,8 @@ While a run reads, the progress names its stage, whether that stage reads the
 source, and the rows seen where the read can count them. <kbd>Esc</kbd>
 cancels: a sampling pass, or a full scan's passes, stop at the next batch. A
 read that cannot stop is shown as finishing, in the header and in Setup, until
-it ends; until then Run waits, and the last report stays.
+it ends; until then Run waits, nothing else reads beside it, and the last
+report stays.
 
 Under the verdict, every report says what it covers:
 

@@ -65,8 +65,8 @@ parses) says so, and <kbd>Enter</kbd> closes it.
 
 | Coverage line | Says |
 |---|---|
-| Checks | The ten checks, and Column intent when any is declared, by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, or a sample where the answer needs every row) |
-| Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run used rows already read |
+| Checks | The ten checks, and Column intent when any is declared, by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, no rows in the scope, or a sample where the answer needs every row). A scope with no rows calls no column clean: its verdict is `No rows to check` |
+| Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, `none: the scope has no rows`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run used rows already read |
 | Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); segments the scope has rows in and the sample drew none of (`3 segments with rows, none sampled`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval`; `key repeats among 10,000 sampled rows only` for a declared key on a sample; `intent on code: not in scope` |
 
 The coverage comes from what the run measured; showing it reads nothing.
@@ -153,11 +153,11 @@ The Read section says what Run will do, before it does it:
 | Read | When |
 |---|---|
 | No read: the report is already here | The setup is the report's, or the session cache holds it |
-| Only Expected changed: no read | The setup differs from the report on screen only in its expected windows; Run checks them against the counts the report holds |
+| Only Compare or Expected changed: no read | The setup differs from the report on screen only in its comparison or expected windows; Run compares the segments the report holds, and checks the windows against its counts, after a full scan too |
 | Uses the rows a run already read | A sampled setup whose sample (scope, method, size, seed), dataset and view match rows a run read this session; any grain, role or format |
 | Seeded runs of the file | A random sample of one Parquet or IPC file: the whole source, or a view with no filter, query or reshape (a sort is fine); a few dozen short reads |
 | One pass that streams every eligible row | Any other random or equal-per-value sample; the pass counts the scope too |
-| Read before; released to free memory | Those rows were read this session and released to the memory budget: Run reads them again |
+| Read before and released since | Those rows were read this session and released, by <kbd>d</kbd> or the memory budget: Run reads them again |
 | Counts every row by the grain's column in that pass | A partition or time-window grain on a streamed sample: exact segment totals from the one pass |
 | Segment totals from a count already read | The same grain was counted before, with these rows |
 | Segment totals summed from the hourly or daily counts | A coarser window of the same column: hours sum into days, weeks and months, days into weeks and months |
@@ -269,8 +269,9 @@ A run that stops at its next batch flashes `Run cancelled`. For a read that
 runs to its end, the header and Setup say
 `Cancellation requested; source read finishing` until the worker exits; a run
 that should have stopped and is still going after a second says
-`Cancellation requested; run stopping`. Either way Run and <kbd>r</kbd> wait
-rather than start a second read beside it. The last report stays, labeled with
+`Cancellation requested; run stopping`. Either way nothing reads beside it: Run
+and <kbd>r</kbd> say why they wait, and so do a finding's rows, <kbd>v</kbd> and the
+other tools, unless the rows were kept. The last report stays, labeled with
 the setup it was measured with, and Setup opens on the setup that was running.
 A sample read before the cancel is kept for the next run.
 
@@ -412,8 +413,8 @@ else in Setup belongs to the report.
 
 | Edit | Reads |
 |---|---|
-| Time roles, text as time on a role, column intent, compare, latency threshold | Nothing: the retained rows are measured again |
-| Expected windows | Nothing: checked against the report on screen |
+| Time roles, text as time on a role, column intent, latency threshold | Nothing: the retained rows are measured again |
+| Compare, expected windows | Nothing: worked out from the report on screen, whether sampled or a full scan |
 | Row chunks | Nothing: each row's position was kept |
 | A coarser window of a grain already counted | Nothing: hours sum into days, weeks and months, and days into weeks and months |
 | Another partition, a finer window, or a window on newly read text | One count of the grain's column, kept with the rows |
@@ -430,6 +431,12 @@ reports that retained rows can remake go first, then the oldest rows; the newest
 rows and the newest report always stay. Setup names rows that were released and
 will be read again. The rows are a snapshot of the session: a file changed on
 disk is not noticed until it is opened again.
+
+The Read rule in Setup says what is kept, as `100,000 rows kept · 12.4 MiB`
+(with the number of samples when there is more than one). <kbd>d</kbd> in Setup
+releases every kept row at once: the report on screen and the session's reports
+stay, and the next run that would have reused the rows reads its sample again,
+which Read says before Run. Opening the dataset again releases them too.
 
 ## Column intent
 

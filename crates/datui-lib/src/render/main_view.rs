@@ -570,12 +570,11 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
             keys.extend([(g.updown_lr, "Change"), ("Space", "Choose")]);
         }
     }
-    keys.extend([
-        (g.updown, "Row"),
-        ("s", "Sample"),
-        ("p", "Access"),
-        ("?", "Help"),
-    ]);
+    keys.extend([(g.updown, "Row"), ("s", "Sample"), ("p", "Access")]);
+    if app.quality_kept_rows().is_some() {
+        keys.push(("d", "Release Rows"));
+    }
+    keys.push(("?", "Help"));
     keys
 }
 

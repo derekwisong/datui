@@ -169,7 +169,7 @@ fn render_body(
             let plan = &app.analysis_modal.data_quality_plan;
             let unchanged = app.analysis_modal.data_quality_results.is_some()
                 && app.analysis_modal.data_quality_last_plan.as_ref() == Some(plan);
-            let expectation_only = !unchanged
+            let relabel_only = !unchanged
                 && app.analysis_modal.data_quality_results.is_some()
                 && app
                     .analysis_modal
@@ -184,10 +184,11 @@ fn render_body(
                 released: app.quality_released(plan),
                 cached: app.quality_cached(plan),
                 unchanged,
-                expectation_only,
+                relabel_only,
                 edited: app.analysis_modal.setup_edited(),
                 note: note.as_deref(),
                 cancelling: app.cancelled_run_shown(),
+                kept: app.quality_kept_rows(),
             };
             let rows_kept = app.quality_rows_kept().is_some();
             let modal = &mut app.analysis_modal;

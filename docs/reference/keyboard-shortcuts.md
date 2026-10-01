@@ -214,6 +214,7 @@ In Data Quality Setup:
 | <kbd>Space</kbd> | Open the row under the cursor: the Sample form, Text as time, the Time roles, Intervals, Column intent or Expected editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
 | <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup |
 | <kbd>p</kbd> | Show the detailed access plan |
+| <kbd>d</kbd> | Release the rows runs kept for reuse, named on the Read rule; the next run that would have used them reads again |
 | <kbd>Enter</kbd> | Run, from any row: the one key in Setup that reads. A full scan asks first; while a cancelled read finishes, Run waits and Setup says why |
 | <kbd>Esc</kbd> | Discard every staged change and go back to the report, or to the tool list before the first run |
 | In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date, time or text column there is nothing to assign, and the row says so |

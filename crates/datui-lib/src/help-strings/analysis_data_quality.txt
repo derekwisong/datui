@@ -21,6 +21,9 @@ Setup:
   s:            The Sample form; its Enter applies
                 to Setup and returns there
   p:            The access plan: what a run reads
+  d:            Release the rows runs kept, named on
+                the Read rule; the next run that
+                would reuse them reads again
   Enter:        Run, from any row. A full read asks
                 first; the report on screen or in the
                 session cache is shown, not read again
@@ -42,7 +45,9 @@ Reuse:
   counted grain use them and read nothing; a new
   partition or a finer window is counted once. A new
   seed, size or scope reads a new sample. Read in
-  Setup says which, before Run.
+  Setup says which, before Run. Kept rows last the
+  session, until memory runs short, d in Setup or
+  opening the dataset again releases them.
 
 Time roles:
   ↑ / ↓:        Choose the role
@@ -162,8 +167,8 @@ While a run reads:
   them. Esc cancels: a streamed read, a full run's
   passes included, stops at its next batch. A read
   that cannot stop is said to be finishing, in the
-  header and in Setup, until it ends, and Run waits
-  for it. The last report stays.
+  header and in Setup, until it ends; Run and every
+  other read wait for it. The last report stays.
 
 Segments:
   Enter:        A segment's columns beside the one it

@@ -45,15 +45,45 @@ pub struct SetupView<'a> {
     pub cached: bool,
     /// The report on screen was measured with exactly this draft.
     pub unchanged: bool,
-    /// The draft differs from the report on screen only in the windows it expects,
-    /// which Run checks against the counts the report holds.
-    pub expectation_only: bool,
+    /// The draft differs from the report on screen only in the windows it expects or
+    /// what its segments are compared with: Run works both out from the report.
+    pub relabel_only: bool,
     /// Setup holds edits Esc would discard.
     pub edited: bool,
     /// Why Enter did not run.
     pub note: Option<&'a str>,
     /// A cancelled run still going, while the screen should say so.
     pub cancelling: Option<Cancelling>,
+    /// The rows runs kept for reuse, which `d` releases.
+    pub kept: Option<KeptRows>,
+}
+
+/// The rows Data Quality's sampled runs kept this session, for later runs to reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeptRows {
+    /// Samples kept: one per scope, method, size and seed a run read.
+    pub samples: usize,
+    pub rows: usize,
+    /// Near enough to budget by: [`crate::data_quality::QualitySample::estimated_bytes`].
+    pub bytes: usize,
+}
+
+impl KeptRows {
+    /// `100,000 rows kept · 12.4 MiB`, or `2 samples, 200,000 rows kept · …`.
+    pub fn label(&self) -> String {
+        let rows = format!(
+            "{} {} kept {} {}",
+            numfmt::group_chrome(self.rows),
+            if self.rows == 1 { "row" } else { "rows" },
+            glyphs::get().middot,
+            crate::widgets::info::format_bytes(self.bytes as u64)
+        );
+        if self.samples > 1 {
+            format!("{} samples, {rows}", numfmt::group_chrome(self.samples))
+        } else {
+            rows
+        }
+    }
 }
 
 /// A cancelled run that has not exited yet.
@@ -371,7 +401,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     ] {
         lines.push(SetupLine::Row(row));
     }
-    lines.push(SetupLine::Rule("Read", None));
+    lines.push(SetupLine::Rule("Read", view.kept.map(|kept| kept.label())));
     let read_start = lines.len();
     for note in read_lines(config) {
         for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
@@ -670,10 +700,20 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         lines.push("The report on screen is this setup's: Run shows it, no read".to_string());
         return lines;
     }
-    if view.expectation_only {
+    if view.relabel_only {
+        let compare = config.measured.compares_differently(plan);
+        let expected = config.measured.expected != plan.expected;
         lines.push(
-            "Only Expected changed: Run checks the report on screen against it, no read"
-                .to_string(),
+            match (compare, expected) {
+                (true, true) => {
+                    "Only Compare and Expected changed: Run updates the report on screen, no read"
+                }
+                (true, false) => {
+                    "Only Compare changed: Run compares the report's segments again, no read"
+                }
+                _ => "Only Expected changed: Run checks the report on screen against it, no read",
+            }
+            .to_string(),
         );
         return lines;
     }
@@ -723,7 +763,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         }),
     }
     if plan.compute == QualityCompute::Sample && !view.reuses_sample && view.released {
-        lines.push("Read before; released to free memory, so read again".to_string());
+        lines.push("Read before and released since, so read again".to_string());
     }
     let exact = scope_rows.is_some_and(|rows| rows <= plan.dataset_rows);
     if plan.compute == QualityCompute::Sample && !exact {
@@ -949,6 +989,8 @@ fn render_overview(
     if report.findings.is_empty() {
         let message = if report.metadata_only {
             "No values were read, so nothing about them is known. Set Values to read in Setup (e) to check them."
+        } else if report.no_rows {
+            "The scope has no rows, so nothing about its values is known. Choose other rows in Setup (e) to check them."
         } else {
             "No columns to check."
         };
@@ -999,7 +1041,7 @@ fn render_overview(
             .render(list, buf);
         return;
     }
-    if report.problems == 0 && report.notes == 0 && !report.metadata_only {
+    if report.problems == 0 && report.notes == 0 && !report.metadata_only && !report.no_rows {
         // Nothing to fix: what was checked is the answer, so it is on the page
         // rather than behind the clean entry.
         let parts = Layout::default()
@@ -1026,7 +1068,7 @@ fn render_verdict(
     let theme = config.theme;
     let (mark, tone) = if report.problems > 0 {
         (g.warning, theme.get("warning"))
-    } else if report.metadata_only {
+    } else if report.metadata_only || report.no_rows {
         (g.middot, theme.get("dimmed"))
     } else {
         (g.check, theme.get("success"))
@@ -1873,7 +1915,13 @@ fn render_columns(
             .get(index)
             .copied()
             .unwrap_or(Severity::Clean);
-        let mark = Cell::from(Line::from(severity_mark(severity, config.theme)));
+        // With no values read, a column with no finding is unknown, not clean.
+        let unknown = severity == Severity::Clean && (report.no_rows || report.metadata_only);
+        let mark = if unknown {
+            Cell::from("")
+        } else {
+            Cell::from(Line::from(severity_mark(severity, config.theme)))
+        };
         let findings = report
             .column_findings
             .get(index)

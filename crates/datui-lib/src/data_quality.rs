@@ -1329,17 +1329,23 @@ impl DataQualityPlan {
         }
     }
 
-    /// Whether `other` measures what this plan measures: they differ, if at all, only
-    /// in the windows they expect, which a report checks against the counts it
-    /// already holds.
+    /// Whether `other` measures what this plan measures: they differ, if at all, in
+    /// the windows they expect, which a report checks against the counts it already
+    /// holds, or in what its segments are compared with, which is worked out from the
+    /// segments it holds ([`DataQualityResults::compare_segments`]).
     pub fn same_measurement(&self, other: &Self) -> bool {
-        Self {
+        let measured = |plan: &Self| Self {
             expected: None,
-            ..self.clone()
-        } == Self {
-            expected: None,
-            ..other.clone()
-        }
+            comparison: QualityComparison::None,
+            baseline_segment: None,
+            ..plan.clone()
+        };
+        measured(self) == measured(other)
+    }
+
+    /// Whether `other` compares segments differently from this plan.
+    pub fn compares_differently(&self, other: &Self) -> bool {
+        self.comparison != other.comparison || self.baseline_segment != other.baseline_segment
     }
 
     /// The windows this plan expects rows in: only on a time-window grain.
@@ -2159,7 +2165,8 @@ pub struct UnsampledSegment {
 
 impl DataQualityResults {
     /// Memory the report holds, near enough to budget by: a profile per column, and
-    /// another per column of every segment, which is what grows.
+    /// another per column of every segment, which is what grows, and the text it
+    /// keeps, whole in spellings and cut short in examples.
     pub fn estimated_bytes(&self) -> usize {
         let profile = |column: &ColumnQualityProfile| {
             std::mem::size_of::<ColumnQualityProfile>()
@@ -2184,6 +2191,18 @@ impl DataQualityResults {
                 std::mem::size_of::<QualityObservation>()
                     + observation.fact.len()
                     + observation.column.len()
+                    + observation.normalized_category.as_ref().map_or(0, String::len)
+                    // A footer finding names every file it applies to.
+                    + observation
+                        .files
+                        .iter()
+                        .map(|file| {
+                            std::mem::size_of::<QualityFileEvidence>()
+                                + file.name.len()
+                                + file.stored_type.as_ref().map_or(0, String::len)
+                                + file.examples.iter().map(String::len).sum::<usize>()
+                        })
+                        .sum::<usize>()
             })
             .sum::<usize>();
         let unsampled = self
@@ -2191,13 +2210,85 @@ impl DataQualityResults {
             .iter()
             .map(|segment| std::mem::size_of::<UnsampledSegment>() + segment.label.len())
             .sum::<usize>();
+        let texts = |values: &[String]| {
+            values
+                .iter()
+                .map(|value| std::mem::size_of::<String>() + value.len())
+                .sum::<usize>()
+        };
+        // Spellings are whole values, as wide as the column's text is.
+        let spellings = self
+            .category_variants
+            .iter()
+            .map(|group| {
+                std::mem::size_of::<CategoryVariantGroup>()
+                    + group.column.len()
+                    + group.normalized.len()
+                    + group
+                        .variants
+                        .iter()
+                        .map(|(variant, _)| std::mem::size_of::<(String, usize)>() + variant.len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+        let examples = self
+            .examples
+            .iter()
+            .map(|found| std::mem::size_of::<FindingExamples>() + texts(&found.values))
+            .sum::<usize>()
+            + self.identity.as_ref().map_or(0, |identity| {
+                identity
+                    .examples
+                    .iter()
+                    .map(|example| std::mem::size_of::<DuplicateExample>() + texts(&example.values))
+                    .sum()
+            });
+        let temporal = self
+            .temporal
+            .iter()
+            .map(|latency| {
+                std::mem::size_of::<TemporalLatencyProfile>()
+                    + latency.segment.len()
+                    + latency.start_column.len()
+                    + latency.end_column.len()
+            })
+            .sum::<usize>();
+        let shared = self
+            .shared_nulls
+            .iter()
+            .map(|shared| std::mem::size_of::<SharedNulls>() + texts(&shared.columns))
+            .sum::<usize>();
+        // Declared intent keeps whole values: the extremes and the commonest misfits.
+        let intent = self.intent.as_ref().map_or(0, |intent| {
+            let counted = |values: &[(String, usize)]| {
+                values
+                    .iter()
+                    .map(|(value, _)| std::mem::size_of::<(String, usize)>() + value.len())
+                    .sum::<usize>()
+            };
+            std::mem::size_of::<crate::quality_intent::IntentResults>()
+                + intent
+                    .columns
+                    .iter()
+                    .map(|check| {
+                        std::mem::size_of::<crate::quality_intent::ColumnCheck>()
+                            + check.lowest.as_ref().map_or(0, String::len)
+                            + check.highest.as_ref().map_or(0, String::len)
+                            + counted(&check.outside_examples)
+                            + counted(&check.unparsed_examples)
+                    })
+                    .sum::<usize>()
+        });
         std::mem::size_of::<Self>()
             + self.columns.iter().map(profile).sum::<usize>()
             + segments
             + unsampled
             + observations
-            + self.temporal.len() * std::mem::size_of::<TemporalLatencyProfile>()
-            + self.category_variants.len() * std::mem::size_of::<CategoryVariantGroup>()
+            + temporal
+            + spellings
+            + examples
+            + shared
+            + intent
     }
 
     pub fn compare_segments(&mut self, plan: &DataQualityPlan) {
@@ -6359,6 +6450,88 @@ mod tests {
         assert!(selected.segments[1].compared_with.is_none());
     }
 
+    /// A comparison worked out from the segments a report holds, as a Compare edit
+    /// does with no read, is the comparison a fresh run with that Compare makes: on a
+    /// full scan and on a sample, against the previous segment, the first, a chosen
+    /// one and one that is not there.
+    #[test]
+    fn a_comparison_from_held_segments_matches_a_fresh_run() {
+        let rows = 2_000usize;
+        // Regions of different sizes and null rates, so both a row count and a rate
+        // move between them.
+        let region = |row: usize| match row % 10 {
+            0..=4 => "a",
+            5..=7 => "b",
+            8 => "c",
+            _ => "d",
+        };
+        let df = df!(
+            "id" => (0..rows as i64).collect::<Vec<_>>(),
+            "region" => (0..rows).map(region).collect::<Vec<_>>(),
+            "amount" => (0..rows)
+                .map(|row| (region(row) != "c" || row % 3 != 0).then_some(row as f64))
+                .collect::<Vec<_>>(),
+            "note" => (0..rows)
+                .map(|row| if region(row) == "d" { "" } else { "ok" })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy();
+        let comparisons = [
+            (QualityComparison::Previous, None),
+            (QualityComparison::Baseline, None),
+            (QualityComparison::Baseline, Some("region=c")),
+            (QualityComparison::Baseline, Some("region=z")),
+        ];
+        for compute in [QualityCompute::Full, QualityCompute::Sample] {
+            let base = DataQualityPlan {
+                compute,
+                dataset_rows: 1_000,
+                sample_seed: 11,
+                grain: QualityGrain::Partition("region".into()),
+                ..DataQualityPlan::default()
+            };
+            let held = compute_data_quality(&df, Some(rows), &base, None, false).unwrap();
+            assert_eq!(held.segments.len(), 4, "{compute:?}");
+            for (comparison, baseline) in comparisons {
+                let plan = DataQualityPlan {
+                    comparison,
+                    baseline_segment: baseline.map(str::to_string),
+                    ..base.clone()
+                };
+                let fresh = compute_data_quality(&df, Some(rows), &plan, None, false).unwrap();
+                let mut derived = held.clone();
+                derived.compare_segments(&plan);
+                let compared = |results: &DataQualityResults| {
+                    results
+                        .segments
+                        .iter()
+                        .map(|segment| {
+                            (
+                                segment.label.clone(),
+                                segment.compared_with.clone(),
+                                segment.largest_change.clone(),
+                                segment.change_size.map(f64::to_bits),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    compared(&derived),
+                    compared(&fresh),
+                    "{compute:?} {comparison:?} {baseline:?}"
+                );
+                assert!(
+                    fresh
+                        .segments
+                        .iter()
+                        .any(|segment| segment.largest_change.is_some()),
+                    "{compute:?} {comparison:?} {baseline:?}: something to compare"
+                );
+            }
+        }
+    }
+
     #[test]
     fn temporal_roles_produce_latency_without_name_inference() {
         let event = Series::new(
@@ -8257,6 +8430,133 @@ mod tests {
             &QualityWatch::default(),
         );
         assert_eq!(results.unwrap().reads, Some(ObservedReads::default()));
+    }
+
+    /// Wide, nearly unique text: a report keeps only bounded pieces of it (examples
+    /// cut short, at most 100 spelling groups), and the memory budget weighs every
+    /// piece it keeps, the spellings' full text included.
+    #[test]
+    fn a_report_on_wide_text_is_weighed_by_the_text_it_holds() {
+        let wide = "x".repeat(2_000);
+        let rows = 600;
+        let names = (0..rows)
+            .map(|row| {
+                let name = format!("Vendor {:04} {wide}", row / 2);
+                if row % 2 == 0 {
+                    name
+                } else {
+                    name.to_uppercase()
+                }
+            })
+            .collect::<Vec<_>>();
+        let df = df!(
+            "id" => (0..rows as i64).collect::<Vec<_>>(),
+            "name" => names,
+            "note" => (0..rows).map(|row| format!("{row} {wide}")).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for compute in [QualityCompute::Sample, QualityCompute::Full] {
+            let plan = DataQualityPlan {
+                compute,
+                dataset_rows: rows,
+                ..DataQualityPlan::default()
+            };
+            let results =
+                compute_data_quality(&df.clone().lazy(), None, &plan, None, false).unwrap();
+            assert_eq!(results.category_variants.len(), 100, "{compute:?}");
+            let spellings = results
+                .category_variants
+                .iter()
+                .map(|group| {
+                    group.column.len()
+                        + group.normalized.len()
+                        + group
+                            .variants
+                            .iter()
+                            .map(|(variant, _)| variant.len())
+                            .sum::<usize>()
+                })
+                .sum::<usize>();
+            assert!(spellings > 100 * 3 * 2_000, "{spellings}");
+            // Each group's finding names its spelling again.
+            let spellings = spellings
+                + results
+                    .observations
+                    .iter()
+                    .filter_map(|observation| observation.normalized_category.as_ref())
+                    .map(String::len)
+                    .sum::<usize>();
+            assert!(
+                results.estimated_bytes() >= spellings,
+                "{compute:?}: {} bytes budgeted for {spellings} of text",
+                results.estimated_bytes()
+            );
+            for value in results.examples.iter().flat_map(|found| &found.values) {
+                assert!(crate::glyphs::display_width(value) <= 26, "{value}");
+            }
+        }
+    }
+
+    /// A grain finer than a report can show: past 1,000,000 keys the count the
+    /// sampling pass takes is dropped rather than grown with the table, the run
+    /// names the remedy, and the rows the pass read are kept, so a coarser grain
+    /// reads nothing. A count pass of its own stops at the same limit.
+    #[test]
+    fn a_count_past_a_million_keys_gives_up_and_keeps_the_rows() {
+        let rows = crate::sampling::MAX_COUNTED_KEYS + 1;
+        let df = df!("id" => (0..rows as i64).collect::<Vec<_>>()).unwrap();
+        let read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&read);
+        let lf = df.lazy().filter(col("id").map(
+            move |column| {
+                counter.fetch_add(column.len(), std::sync::atomic::Ordering::Relaxed);
+                Ok(column.is_not_null().into_column())
+            },
+            |_, field| Ok(Field::new(field.name().clone(), DataType::Boolean)),
+        ));
+        let by_id = DataQualityPlan {
+            dataset_rows: 1_000,
+            grain: QualityGrain::Partition("id".into()),
+            ..DataQualityPlan::default()
+        };
+        let watch = QualityWatch::default();
+        let (results, kept) =
+            compute_data_quality_watched(&lf, None, &by_id, None, false, None, &watch);
+        let error = results.unwrap_err().to_string();
+        assert!(
+            error.contains("More than 1,000,000 segments") && error.contains("coarser grain"),
+            "{error}"
+        );
+        let kept = kept.expect("the rows the pass read are kept");
+        assert_eq!(kept.df.height(), 1_000);
+        assert_eq!(kept.segment_count(&by_id), SegmentCount::TooMany);
+        assert!(
+            kept.estimated_bytes() < 1_000_000,
+            "no map of a million keys kept"
+        );
+
+        read.store(0, std::sync::atomic::Ordering::Relaxed);
+        let dataset = DataQualityPlan {
+            grain: QualityGrain::Dataset,
+            ..by_id.clone()
+        };
+        let (results, _) =
+            compute_data_quality_kept(&lf, None, &dataset, None, false, Some(&kept)).unwrap();
+        assert_eq!(results.evaluated_rows, 1_000);
+        assert_eq!(read.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        // Rows kept without a count, a first-rows sample, count the grain in a pass
+        // of their own, which gives up at the same limit.
+        let head = DataQualityPlan {
+            method: crate::sampling::SampleMethod::FirstRows,
+            ..by_id
+        };
+        let (results, kept) =
+            compute_data_quality_watched(&lf, None, &head, None, false, None, &watch);
+        let error = results.unwrap_err().to_string();
+        assert!(error.contains("More than 1,000,000 segments"), "{error}");
+        let kept = kept.expect("the head is kept");
+        assert_eq!(kept.segment_count(&head), SegmentCount::TooMany);
     }
 }
 

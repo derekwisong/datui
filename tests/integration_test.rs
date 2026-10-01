@@ -10,6 +10,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 mod common;
+#[cfg(feature = "cloud")]
+#[path = "common/fake_s3.rs"]
+mod fake_s3;
+#[cfg(feature = "cloud")]
+#[path = "quality/remote.rs"]
+mod remote_quality;
 
 use common::{drain_events, next_event, pump_open_until_loaded, work_pending};
 
@@ -4283,6 +4289,417 @@ fn expected_windows_on_a_full_scan_run_without_asking() {
         )
         .is_some()
     );
+}
+
+/// `rows` rows written to `tests/sample-data/<name>`, as CSV or Parquet by its
+/// extension: an id, a region, and an amount missing on every `gap`th row (never
+/// with a gap of 0). Opened, with Data Quality's Setup on screen.
+fn open_quality_fixture(
+    name: &str,
+    rows: usize,
+    gap: usize,
+) -> (
+    App,
+    mpsc::Receiver<AppEvent>,
+    mpsc::Sender<AppEvent>,
+    PathBuf,
+) {
+    let path = PathBuf::from("tests/sample-data").join(name);
+    write_quality_fixture(&path, rows, gap);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    open_quality_setup(&mut app);
+    (app, rx, tx, path)
+}
+
+fn write_quality_fixture(path: &Path, rows: usize, gap: usize) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let amounts = (0..rows)
+        .map(|row| (gap == 0 || row % gap != 0).then_some(row as f64 * 1.5))
+        .collect::<Vec<_>>();
+    let mut df = df!(
+        "id" => (0..rows as i64).collect::<Vec<_>>(),
+        "region" => (0..rows).map(|row| ["North", "South"][row % 2]).collect::<Vec<_>>(),
+        "amount" => amounts,
+    )
+    .unwrap();
+    let file = File::create(path).unwrap();
+    if path.extension().is_some_and(|ext| ext == "csv") {
+        CsvWriter::new(file).finish(&mut df).unwrap();
+    } else {
+        ParquetWriter::new(file).finish(&mut df).unwrap();
+    }
+}
+
+/// `a`, Data Quality, Enter: its Setup, which reads nothing.
+fn open_quality_setup(app: &mut App) {
+    press(app, KeyCode::Char('a'));
+    app.analysis_modal.focus = datui::analysis_modal::AnalysisFocus::Sidebar;
+    app.analysis_modal.sidebar_state.select(Some(3));
+    assert!(press(app, KeyCode::Enter).is_none());
+    assert!(!app.is_busy());
+}
+
+fn amount_nulls(app: &App) -> usize {
+    app.analysis_modal
+        .data_quality_results
+        .as_ref()
+        .unwrap()
+        .columns
+        .iter()
+        .find(|column| column.name == "amount")
+        .unwrap()
+        .null_count
+}
+
+/// A rerun that fails leaves the last report on screen, labeled with the setup it
+/// was measured with, and says why it failed; the rows the first run kept still
+/// serve the setup that made them, with no read.
+#[test]
+fn a_failed_rerun_keeps_the_last_report() {
+    let (mut app, rx, _tx, path) = open_quality_fixture("dq_rerun_fails.parquet", 2_000, 10);
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.dataset_rows = 500;
+        plan.sample_seed = 3;
+    }
+    assert_eq!(
+        run_quality_reads(&mut app, &rx),
+        [datui::data_quality::QualityStage::ReadingSample]
+    );
+    let report = format!("{:?}", app.analysis_modal.data_quality_results);
+    let measured = app.analysis_modal.data_quality_last_plan.clone().unwrap();
+
+    // The source goes away, and a new seed needs it.
+    std::fs::remove_file(&path).unwrap();
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.sample_seed = 4;
+    let next = press(&mut app, KeyCode::Enter);
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    let (finished, _) = drain_quality(&mut app, &rx, next);
+    assert_eq!(finished, 0, "the rerun failed");
+    assert!(app.modal_showing(), "and says why");
+    assert!(!app.is_busy() && app.analysis_modal.computing.is_none());
+    assert_eq!(
+        format!("{:?}", app.analysis_modal.data_quality_results),
+        report,
+        "the last report stays"
+    );
+    assert_eq!(app.analysis_modal.quality_result_plan(), &measured);
+    // The error is dismissed onto Setup, where the run started; Esc there is the
+    // report, under the setup it was measured with.
+    press(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.data_quality_page.is_setup());
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.analysis_modal.data_quality_page.is_setup());
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let text = rendered_text(&buffer);
+    assert!(text.contains("sample of 500"), "{text}");
+
+    // The setup the report was measured with is still served from its rows.
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.sample_seed = 3;
+    app.analysis_modal.data_quality_plan.grain =
+        datui::data_quality::QualityGrain::RowChunks(100_000);
+    assert!(run_quality_reads(&mut app, &rx).is_empty(), "no read");
+    assert!(!app.modal_showing());
+}
+
+/// `d` in Setup releases the rows runs kept: Read names them before, the report on
+/// screen stays, and an edit that would have reused them reads its sample again,
+/// as Read says before Run.
+#[test]
+fn kept_rows_are_released_from_setup() {
+    let (mut app, rx, _tx, _path) = open_quality_fixture("dq_release_rows.parquet", 2_000, 10);
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.dataset_rows = 500;
+        plan.sample_seed = 3;
+    }
+    assert_eq!(
+        run_quality_reads(&mut app, &rx),
+        [datui::data_quality::QualityStage::ReadingSample]
+    );
+    let screen = |app: &mut App| {
+        let area = Rect::new(0, 0, 160, 40);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::RowChunks(100);
+    let text = screen(&mut app);
+    assert!(text.contains("500 rows kept"), "{text}");
+    assert!(text.contains("Release Rows"), "{text}");
+    assert!(text.contains("Uses the rows a run already read"), "{text}");
+
+    assert!(press(&mut app, KeyCode::Char('d')).is_none());
+    assert!(!app.is_busy(), "releasing reads nothing");
+    let flash = app.flash_message().unwrap_or_default().to_string();
+    assert!(
+        flash.starts_with("Released 500 kept rows") && flash.ends_with("the next run reads again"),
+        "{flash}"
+    );
+    assert!(
+        app.analysis_modal.data_quality_results.is_some(),
+        "the report stays"
+    );
+    assert!(app.analysis_modal.data_quality_page.is_setup(), "and Setup");
+    let text = screen(&mut app);
+    assert!(!text.contains("rows kept"), "{text}");
+    assert!(!text.contains("Release Rows"), "{text}");
+    assert!(text.contains("Read before and released since"), "{text}");
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.flash_message(), Some("No kept rows to release"));
+
+    assert_eq!(
+        run_quality_reads(&mut app, &rx),
+        [datui::data_quality::QualityStage::ReadingSample],
+        "the sample is read again"
+    );
+    press(&mut app, KeyCode::Char('e'));
+    assert!(screen(&mut app).contains("500 rows kept"), "and kept again");
+}
+
+/// The rows a run read are a snapshot of the session: a file changed on disk is
+/// not noticed until it is opened again, as the reference says. Reopened, the
+/// dataset is new, and Run reads the file as it is now.
+#[test]
+fn a_file_changed_on_disk_is_read_again_once_opened_again() {
+    let (mut app, rx, tx, path) = open_quality_fixture("dq_changed_on_disk.csv", 1_000, 0);
+    assert!(!run_quality_reads(&mut app, &rx).is_empty());
+    assert_eq!(amount_nulls(&app), 0);
+
+    write_quality_fixture(&path, 1_000, 2);
+    // Back to the report: the session's, from its cache.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.analysis_modal.active);
+    open_quality_setup(&mut app);
+    assert!(app.analysis_modal.data_quality_from_cache);
+    assert_eq!(amount_nulls(&app), 0, "the snapshot, not the file");
+
+    // Opened again: a new dataset, and a run that reads it.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    open_quality_setup(&mut app);
+    assert!(!app.analysis_modal.data_quality_from_cache);
+    assert!(app.analysis_modal.data_quality_page.is_setup());
+    assert!(!run_quality_reads(&mut app, &rx).is_empty());
+    assert_eq!(amount_nulls(&app), 500, "the file as it is now");
+}
+
+/// File metadata only reads no value, from Setup to the report: with the file gone
+/// from disk, Setup still lays out and Run still reports what the schema says,
+/// with no stage that reads the source and no row evaluated.
+#[test]
+fn metadata_only_reads_no_values() {
+    let (mut app, rx, _tx, path) = open_quality_fixture("dq_metadata_only.parquet", 1_000, 7);
+    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Metadata;
+    std::fs::remove_file(&path).unwrap();
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    assert!(rendered_text(&buffer).contains("File metadata only: no values read"));
+    assert!(run_quality_reads(&mut app, &rx).is_empty());
+    assert!(!app.modal_showing(), "nothing was read, so nothing failed");
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(
+        results.precision,
+        datui::data_quality::QualityPrecision::Metadata
+    );
+    assert_eq!(results.evaluated_rows, 0);
+    assert_eq!(results.columns.len(), 3);
+}
+
+/// Conflict evidence costs a read only where one was promised. Footers name the
+/// file that stores a column in another type, and the file missing a column, on
+/// every run; the values the conflict hides are read only by a full scan, which
+/// says so in its stages, and are shown beside their file.
+#[test]
+fn conflict_evidence_is_read_only_by_a_full_scan() {
+    use datui::data_quality::{ObservationKind, QualityCompute, QualityStage};
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "day=1",
+        df!("id" => &[1i64, 2], "n" => &[10i64, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "day=2",
+        df!("id" => &[3i64, 4], "n" => &["sixty", "seventy"], "extra" => &["x", "y"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "day=3",
+        df!("id" => &[5i64, 6], "n" => &[50i64, 60], "extra" => &[Some("z"), None]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    pump_until_idle(&mut app, &rx, &tx);
+    open_quality_setup(&mut app);
+    let finding = |app: &App, kind: ObservationKind| {
+        app.analysis_modal
+            .data_quality_results
+            .as_ref()
+            .unwrap()
+            .observations
+            .iter()
+            .find(|observation| observation.kind == kind)
+            .cloned()
+            .unwrap_or_else(|| panic!("a {kind:?} finding"))
+    };
+
+    let reads = run_quality_reads(&mut app, &rx);
+    assert!(
+        !reads.contains(&QualityStage::ReadingConflicts),
+        "{reads:?}"
+    );
+    let conflict = finding(&app, ObservationKind::TypeConflict);
+    assert_eq!(conflict.column, "n");
+    assert_eq!(conflict.files.len(), 1);
+    assert_eq!(conflict.files[0].number, 2);
+    assert!(
+        conflict.files[0].examples.is_empty(),
+        "not read on a sample"
+    );
+    let absent = finding(&app, ObservationKind::Absent);
+    assert_eq!(absent.column, "extra");
+    assert_eq!(absent.files[0].number, 1);
+
+    press(&mut app, KeyCode::Char('e'));
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.compute = QualityCompute::Full;
+    }
+    assert!(
+        press(&mut app, KeyCode::Enter).is_none(),
+        "a full scan asks"
+    );
+    let first = press(&mut app, KeyCode::Enter);
+    let mut reads = Vec::new();
+    let mut next = first;
+    loop {
+        match next.take() {
+            Some(event) => {
+                if let AppEvent::BackgroundQualityPhase { generation, phase } = &event
+                    && *generation == app.task_generation()
+                    && phase.reads_source
+                {
+                    reads.push(phase.stage);
+                }
+                next = app.event(&event);
+            }
+            None => match next_event(&app, &rx) {
+                Some(event) => next = Some(event),
+                None => break,
+            },
+        }
+    }
+    assert!(reads.contains(&QualityStage::ReadingConflicts), "{reads:?}");
+    let conflict = finding(&app, ObservationKind::TypeConflict);
+    assert_eq!(conflict.files[0].examples, ["sixty", "seventy"]);
+}
+
+/// An empty scope is never a clean report. Rows chosen past the table's end are
+/// an error naming them, a second Run included, and no report. A dataset with no
+/// rows at all, sampled or scanned, reports that nothing about its values is known:
+/// no column called clean, no check passed.
+#[test]
+fn an_empty_scope_is_never_a_clean_report() {
+    let (mut app, rx, _tx, _path) = open_quality_fixture("dq_empty_scope.csv", 1_000, 0);
+    app.analysis_modal.data_quality_plan.scope = datui::data_quality::QualityScope::ViewRows {
+        start: 5_000,
+        end: 6_000,
+    };
+    for _ in 0..2 {
+        let first = press(&mut app, KeyCode::Enter);
+        let (finished, _) = drain_quality(&mut app, &rx, first);
+        assert_eq!(finished, 0);
+        assert!(app.modal_showing());
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let text = rendered_text(&buffer);
+        assert!(
+            text.contains("No rows match view rows 5,000-6,000"),
+            "{text}"
+        );
+        assert!(app.analysis_modal.data_quality_results.is_none());
+        press(&mut app, KeyCode::Esc);
+    }
+
+    common::ensure_sample_data();
+    for full in [false, true] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        let path = PathBuf::from("tests/sample-data/empty.parquet");
+        pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        open_quality_setup(&mut app);
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        // A declared key and a required column are no more checked than the rest.
+        plan.intent = datui::quality_intent::DeclaredIntent {
+            key: vec!["id".into()],
+            columns: vec![datui::quality_intent::ColumnIntent {
+                column: "name".into(),
+                required: true,
+                ..Default::default()
+            }],
+        };
+        if full {
+            plan.method = datui::sampling::SampleMethod::EveryRow;
+            plan.compute = datui::data_quality::QualityCompute::Full;
+        }
+        let mut first = press(&mut app, KeyCode::Enter);
+        if app.analysis_modal.data_quality_confirm_run {
+            first = press(&mut app, KeyCode::Enter);
+        }
+        let (finished, _) = drain_quality(&mut app, &rx, first);
+        assert_eq!(finished, 1);
+        let results = app.analysis_modal.data_quality_results.clone().unwrap();
+        assert_eq!(results.evaluated_rows, 0);
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let text = rendered_text(&buffer);
+        assert!(!text.contains("No problems found"), "full {full}: {text}");
+        assert!(!text.contains("clean"), "full {full}: {text}");
+        assert!(text.contains("No rows to check"), "full {full}: {text}");
+        // Columns marks none of them clean either.
+        app.analysis_modal
+            .show_quality_tab(datui::data_quality::QualityPage::Columns);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let lines = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let check = datui::glyphs::get().check;
+        for column in ["id", "name", "value", "date"] {
+            let line = lines
+                .iter()
+                .find(|line| line.split_whitespace().any(|word| word == column))
+                .unwrap_or_else(|| panic!("{column} on Columns: {lines:#?}"));
+            let before = &line[..line.find(&format!(" {column} ")).unwrap()];
+            assert!(!before.contains(check), "full {full}: {line}");
+        }
+        let report = datui::quality_report::build_report(&results);
+        for check in datui::quality_report::checks(&results, &report) {
+            assert!(!check.outcome.ran(), "{} ran on no rows", check.name);
+        }
+    }
 }
 
 #[test]

@@ -504,17 +504,29 @@ mod tests {
             assert_eq!(mode(&path), mode(&plain));
         }
 
-        /// A link is written through, as `File::create` did, not replaced.
+        /// A link is written through, as `File::create` did, not replaced. The
+        /// temporary file sits beside the file, not the link, so the rename
+        /// stays on the file's filesystem.
         #[test]
         fn a_symlink_is_written_through() {
             let dir = tempfile::tempdir().unwrap();
-            let real = dir.path().join("real.csv");
-            let link = dir.path().join("link.csv");
+            let data = dir.path().join("data");
+            let links = dir.path().join("links");
+            fs::create_dir(&data).unwrap();
+            fs::create_dir(&links).unwrap();
+            let real = data.join("real.csv");
+            let link = links.join("link.csv");
             fs::write(&real, b"old").unwrap();
-            std::os::unix::fs::symlink(&real, &link).unwrap();
+            std::os::unix::fs::symlink("../data/real.csv", &link).unwrap();
             let mut out = OutputFile::create(&link, Overwrite::Replace).unwrap();
+            assert_eq!(
+                out.path().parent().unwrap().canonicalize().unwrap(),
+                data.canonicalize().unwrap()
+            );
             out.file().write_all(b"new").unwrap();
             out.commit().unwrap();
+            assert!(leftovers(&data, &["real.csv"]).is_empty());
+            assert!(leftovers(&links, &["link.csv"]).is_empty());
             assert!(
                 fs::symlink_metadata(&link)
                     .unwrap()

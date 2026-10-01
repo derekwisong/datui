@@ -222,6 +222,19 @@ pub fn frame_bottoms(rows: &[String]) -> Vec<usize> {
         .map(|r| r.chars().map(String::from).collect())
         .collect();
     let at = |x: usize, y: usize| grid.get(y).and_then(|r| r.get(x)).map(String::as_str);
+    // Where each corner has a glyph of its own, every one on screen is a box's,
+    // whatever its shape: count them all, and every box opened must close.
+    let corners = [b.top_left, b.top_right, b.bottom_left, b.bottom_right];
+    if (1..4).all(|i| !corners[..i].contains(&corners[i])) {
+        let opened: usize = rows.iter().map(|r| r.matches(b.top_left).count()).sum();
+        let closed: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .flat_map(|(y, r)| std::iter::repeat_n(y, r.matches(b.bottom_left).count()))
+            .collect();
+        assert_eq!(opened, closed.len(), "every frame closes: {rows:#?}");
+        return closed;
+    }
     let mut bottoms = Vec::new();
     for (y, row) in grid.iter().enumerate().skip(1) {
         for x in 0..row.len() {

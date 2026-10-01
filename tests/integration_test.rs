@@ -11768,8 +11768,12 @@ fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
     let first = header(&mut app);
     assert!(first.contains("Count"), "{first:?}");
     assert!(!first.contains("Max"), "not everything fits: {first:?}");
-    // `+N`: in ASCII the tool list's frame corners are `+` too.
+    // `+N`. In ASCII the tool list's frame corners are `+` too, so there the count
+    // is told from them by its digit; in Unicode any `+` is one.
     let counted = |row: &str| {
+        if datui::glyphs::active_is_unicode() {
+            return row.contains('+');
+        }
         row.as_bytes()
             .windows(2)
             .any(|w| w[0] == b'+' && w[1].is_ascii_digit())
@@ -16363,8 +16367,14 @@ fn column_widths_from_the_sidebar() {
     press_and_send(&mut app, &tx, KeyCode::PageDown);
     pump_until_idle(&mut app, &rx, &tx);
     let paged = draw(&mut app, 100, 24);
-    // Cut to the cap: `https://ex…`, or `https://...` in ASCII.
-    assert!(paged.contains("https://"), "{paged}");
+    // Cut to the cap, eleven cells with the ellipsis: `https://ex…`, or
+    // `https://...` in ASCII.
+    let ellipsis = datui::glyphs::get().ellipsis;
+    let cut = format!(
+        "{}{ellipsis}",
+        &"https://ex"[..11 - datui::glyphs::display_width(ellipsis)]
+    );
+    assert!(paged.contains(&cut), "{paged}");
     let start = app.data_table_state.as_ref().unwrap().start_row();
     assert!(start > 0);
 

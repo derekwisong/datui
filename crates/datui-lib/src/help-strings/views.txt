@@ -30,11 +30,11 @@ Save and edit form:
   Esc:              Back to the list, discarding edits
 
   Name is required and starts as the file's name, selected: typing
-  replaces it, arrows edit it. The Matching section
-  holds the optional criteria: exact path, relative path, path pattern and
-  filename pattern (glob-like), and schema match (column names). Schema
-  match starts enabled — it is what carries the view to the next table
-  with these columns.
+  replaces it, arrows edit it. The Matching section holds the optional
+  criteria, filled in the same way: exact path, relative path, path
+  pattern and filename pattern (glob-like), and schema match (column
+  names). Schema match starts enabled — it is what carries the view to
+  the next table with these columns.
 
   Editing changes a view's name, description and matching. Its saved
   settings follow the table only while the view is the one applied, so

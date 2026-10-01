@@ -1010,9 +1010,7 @@ impl QualityWatch {
         let phase = QualityPhase {
             stage,
             reads_source,
-            // Without the streaming engine a read is one in-memory collect, with no
-            // batch boundary for a cancel to stop at.
-            interruptible: interruptible && cfg!(feature = "streaming"),
+            interruptible,
         };
         let mut last = self
             .last
@@ -2712,7 +2710,9 @@ pub fn compute_data_quality_watched(
         total_rows,
         plan,
         source,
-        polars_streaming,
+        // Without the feature `collect_lazy` is one in-memory collect whatever the
+        // setting, with no batch boundary for a cancel to stop at (#498).
+        polars_streaming: polars_streaming && cfg!(feature = "streaming"),
         watch,
     };
     let results = profile_quality(inputs, kept, &mut acquired);
@@ -2828,8 +2828,11 @@ fn profile_quality(
         }
         None => {
             // The first rows are one collect; every other method streams in batches
-            // or reads seeded runs, and stops between them.
-            let interruptible = plan.method != crate::sampling::SampleMethod::FirstRows;
+            // or reads seeded runs, and stops between them. Without the streaming
+            // engine a streamed sample's batches come after its whole read; seeded
+            // runs still stop between runs, sooner than this promises.
+            let interruptible = plan.method != crate::sampling::SampleMethod::FirstRows
+                && cfg!(feature = "streaming");
             watch.stage(QualityStage::ReadingSample, true, interruptible)?;
             read_quality_sample(lf, total_rows, plan, polars_streaming, watch)?
         }
@@ -8496,6 +8499,35 @@ mod tests {
                 "{stages:?}"
             );
         }
+    }
+
+    /// The values a type conflict hides are read a file at a time, so a cancel stops
+    /// between files on either engine and in any build.
+    #[test]
+    fn the_conflict_read_stops_between_files_on_any_engine() {
+        let lf = df!("id" => [1i64, 2, 3]).unwrap().lazy();
+        let source = QualitySourceContext {
+            conflict_scan: Some(QualityConflictScan(Arc::new(|_, _| {
+                Ok(df!("id" => ["1"]).unwrap().lazy())
+            }))),
+            ..QualitySourceContext::default()
+        };
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&stages);
+        let watch = QualityWatch::new(move |phase| seen.lock().unwrap().push(phase));
+        let (results, _) =
+            compute_data_quality_watched(&lf, Some(3), &plan, Some(&source), false, None, &watch);
+        results.unwrap();
+        let stages = stages.lock().unwrap().clone();
+        let conflicts = stages
+            .iter()
+            .find(|phase| phase.stage == QualityStage::ReadingConflicts)
+            .unwrap_or_else(|| panic!("{stages:?}"));
+        assert!(conflicts.interruptible, "{stages:?}");
     }
 
     /// A finished full run counts the rows every pass traversed; a sampled run the

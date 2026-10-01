@@ -274,8 +274,9 @@ There is no percentage: a run has no total to measure against.
 | A full scan's fetch of its local copy | Stops at its next chunk; the partial copy is removed |
 | First rows sample; a full scan's row count when the total is not known | Runs to its end |
 
-A build without the `streaming` feature has no streaming engine: samples and
-a full scan's passes run to their end.
+A build without the `streaming` feature has no streaming engine: a full scan's
+passes and a segment count run to their end, and a sample stops only between
+seeded runs.
 
 A run that stops at its next batch flashes `Run cancelled`. For a read that
 runs to its end, the header and Setup say

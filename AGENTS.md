@@ -134,8 +134,10 @@ App passes it requests and worker answers (`open`, `answered`, `failed`,
 `confirmed`) and carries out the `Step` it returns, starting the next phase's
 job in the same handler, so the generation never reads free between phases.
 Load jobs carry the `LoadId`; an answer for a load that was replaced or put down,
-or for a phase it has left, is dropped with what it carries. `install_dataset`
-hands the counter and download to the dataset and records the recent; going
+or for a phase it has left, is dropped with what it carries. The schema read
+builds the dataset with everything the open found, its download included,
+through `DataTableState::with_open(OpenFacts)`; there are no load-time setters.
+`install_dataset` hands the counter to the dataset and records the recent; going
 home or another open retires the load. Add a phase to `Phase` and `Step`, not a
 flag or a continuation event to App.
 

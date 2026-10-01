@@ -234,10 +234,10 @@ pub struct DataTableState {
     max_buffered_rows: usize, // 0 = no limit
     max_buffered_mb: usize,   // 0 = no limit
     /// True for a scan of an object store, where a buffer fill is a ranged read of
-    /// whole row groups. See `set_remote_source`.
+    /// whole row groups. See `is_remote_source`.
     remote_source: bool,
     /// Where each row group of a remote Parquet object starts, with the total as the
-    /// last entry, from its footer. See `set_row_groups`.
+    /// last entry, from its footer. See `record_row_groups`.
     row_group_offsets: Option<Vec<usize>>,
     /// The files of a remote dataset, when it is many. See `RemoteFiles`.
     remote_files: Option<RemoteFiles>,
@@ -731,6 +731,51 @@ pub struct RemoteFiles {
     pub count: FileCounter,
     /// Where each file's rows start, with the total last. Known once counted.
     pub offsets: Option<Vec<usize>>,
+}
+
+/// What an open learned about a dataset besides its frame and schema: given to the
+/// state once, by [`DataTableState::with_open`], so the count, the row groups, the
+/// files and the notes all describe the same open. Each field's default means the open
+/// did not find it.
+#[derive(Default)]
+pub struct OpenFacts {
+    /// A scan of an object store in place: a buffer is one window of whole row groups.
+    pub remote_source: bool,
+    /// Each file's row groups in scan order, from the footers; one entry for a single
+    /// object. Gives the count. With `remote_files`, one entry per file it lists.
+    pub row_groups: Vec<Vec<usize>>,
+    /// The files of a remote dataset of many, and how to read some of them.
+    pub remote_files: Option<RemoteFiles>,
+    /// Each remote object the dataset reads, as the listing or footer found it.
+    pub remote_objects: Vec<RemoteObject>,
+    /// What the footers said about a many-file dataset's columns.
+    pub dataset: Option<DatasetAtOpen>,
+    /// The pass that reads the rest of the footers, for a dataset opened from a few.
+    pub footers_pending: Option<FootersJoin>,
+    /// Each column's uncompressed bytes per row, from the footers.
+    pub column_bytes: Vec<(String, usize)>,
+    /// The local Parquet hive directory whose footers sum to the count.
+    pub parquet_count_dir: Option<PathBuf>,
+    /// What finding and reading the dataset cost.
+    pub measurements: Arc<crate::measurements::Meter>,
+    /// What the open itself has to say. See [`DataTableState::open_notes`].
+    pub open_notes: Vec<crate::notes::Note>,
+    /// The lake format whose plain files this dataset is. See
+    /// [`DataTableState::not_the_table`].
+    pub not_the_table: Option<&'static str>,
+    /// The downloaded file the frame scans, held for as long as the state lives.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    pub download: Option<crate::download::TempDownload>,
+}
+
+/// The footers' account of a dataset of many files.
+pub struct DatasetAtOpen {
+    pub schema: crate::schema_union::DatasetSchema,
+    /// Each file's row count in scan order; empty unless every one is known, which is
+    /// when the scan numbers its rows.
+    pub file_rows: Vec<usize>,
+    /// Every file's path or URL, in scan order.
+    pub files: Vec<String>,
 }
 
 /// The rows an export writes. See [`DataTableState::export_frame`].
@@ -1575,6 +1620,71 @@ impl DataTableState {
             defer_collect: false,
             needs_recollect: false,
         })
+    }
+
+    /// The state as its open found the dataset: everything in `facts`, given at once.
+    ///
+    /// The one way an open's findings reach a state, taken while it is still the data as
+    /// loaded. Applied in the order they depend on each other: the files before their row
+    /// groups, which set the count. Once on screen, a dataset learns more only through
+    /// [`Self::join_dataset_schema`] and [`Self::count_landed`].
+    pub fn with_open(mut self, facts: OpenFacts) -> Self {
+        let OpenFacts {
+            remote_source,
+            row_groups,
+            remote_files,
+            remote_objects,
+            dataset,
+            footers_pending,
+            column_bytes,
+            parquet_count_dir,
+            measurements,
+            open_notes,
+            not_the_table,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            download,
+        } = facts;
+        debug_assert!(
+            self.is_pristine(),
+            "an open's facts are for the data as loaded"
+        );
+        self.remote_source = remote_source;
+        self.remote_files = remote_files;
+        self.remote_objects = (!remote_objects.is_empty()).then(|| {
+            Arc::new(
+                remote_objects
+                    .into_iter()
+                    .map(|object| (object.url.clone(), object))
+                    .collect(),
+            )
+        });
+        if !row_groups.is_empty() {
+            if self.remote_files.is_some() {
+                self.record_file_row_groups(&row_groups);
+            } else {
+                let flat: Vec<usize> = row_groups.into_iter().flatten().collect();
+                self.record_row_groups(&flat);
+            }
+        }
+        if let Some(DatasetAtOpen {
+            schema,
+            file_rows,
+            files,
+        }) = dataset
+        {
+            self.record_dataset_schema(schema, &file_rows, &files);
+        }
+        self.footers_pending = footers_pending;
+        self.column_bytes = column_bytes;
+        self.parquet_count_dir = parquet_count_dir;
+        self.measurements = measurements;
+        self.open_notes = open_notes;
+        self.not_the_table = not_the_table;
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        {
+            self.download = download;
+        }
+        self
     }
 
     /// Make `lf` the data as loaded: the root of the pipeline (`original_lf` and
@@ -5164,17 +5274,6 @@ impl DataTableState {
         }
     }
 
-    /// Record that the data was loaded from `dir` (a local Parquet hive directory),
-    /// enabling the cheap footer-sum row count while the frame is pristine.
-    pub fn set_parquet_count_dir(&mut self, dir: PathBuf) {
-        self.parquet_count_dir = Some(dir);
-    }
-
-    /// Hand this dataset the meter the route that built it wrote into.
-    pub fn set_measurements(&mut self, meter: Arc<crate::measurements::Meter>) {
-        self.measurements = meter;
-    }
-
     /// What finding and reading this dataset cost.
     pub fn measurements(&self) -> &Arc<crate::measurements::Meter> {
         &self.measurements
@@ -5323,7 +5422,7 @@ impl DataTableState {
         self.buffered_end_row
     }
 
-    /// Mark the scan as reading an object store in place.
+    /// True for a scan of an object store in place.
     ///
     /// Polars fetches a Parquet row group whole for any slice that touches it and keeps
     /// nothing between collects, so the small, proximity-driven refills that suit a
@@ -5331,11 +5430,6 @@ impl DataTableState {
     /// cost a fetch of it every few pages. A remote buffer is planned as a single window
     /// of `max_buffered_rows` around the view instead. Scrolling inside it costs
     /// nothing; leaving it, or a jump, costs one fetch.
-    pub fn set_remote_source(&mut self) {
-        self.remote_source = true;
-    }
-
-    /// True for a scan of an object store. See `set_remote_source`.
     pub fn is_remote_source(&self) -> bool {
         self.remote_source
     }
@@ -5348,7 +5442,7 @@ impl DataTableState {
 
     /// Record the row groups of a remote Parquet object, `rows` in each, so a buffer
     /// fill is planned as whole groups (see `align_to_row_groups`). Also the row count.
-    pub fn set_row_groups(&mut self, rows: &[usize]) {
+    fn record_row_groups(&mut self, rows: &[usize]) {
         let mut offsets = Vec::with_capacity(rows.len() + 1);
         offsets.push(0);
         for n in rows {
@@ -5356,21 +5450,6 @@ impl DataTableState {
         }
         self.set_num_rows(*offsets.last().unwrap_or(&0));
         self.row_group_offsets = Some(offsets);
-    }
-
-    /// Record that the data is a remote dataset of many files. See `RemoteFiles`.
-    pub fn set_remote_files(&mut self, files: RemoteFiles) {
-        self.remote_files = Some(files);
-    }
-
-    /// Record each remote object the dataset reads, as the open found it.
-    pub fn set_remote_objects(&mut self, objects: impl IntoIterator<Item = RemoteObject>) {
-        self.remote_objects = Some(Arc::new(
-            objects
-                .into_iter()
-                .map(|object| (object.url.clone(), object))
-                .collect(),
-        ));
     }
 
     /// Whether a Data Quality run over `scope` reads every row and every byte-bearing
@@ -5439,7 +5518,7 @@ impl DataTableState {
     /// Record what the footers said about the dataset's columns. See `DatasetSchema`.
     /// `file_rows` is each file's row count, in scan order, and empty when they are not
     /// all known — the same condition under which the scan numbers its rows.
-    pub fn set_dataset_schema(
+    fn record_dataset_schema(
         &mut self,
         schema: crate::schema_union::DatasetSchema,
         file_rows: &[usize],
@@ -5502,12 +5581,6 @@ impl DataTableState {
         self.footers_pending = None;
     }
 
-    /// Record that the dataset opened from a sample of its footers and the rest are
-    /// coming. See [`FootersJoin`].
-    pub fn set_footers_pending(&mut self, join: FootersJoin) {
-        self.footers_pending = Some(join);
-    }
-
     /// Every footer's answer, joined to the dataset already on screen.
     ///
     /// The open painted from the first file and the newest; this is what the rest of
@@ -5532,7 +5605,7 @@ impl DataTableState {
     ) -> std::result::Result<(), Box<FootersFound>> {
         if !self.scan_is_the_root() {
             // The columns must wait; what the footers said about the files need not.
-            // `set_file_row_groups` keeps the offsets without touching the count of a
+            // `record_file_row_groups` keeps the offsets without touching the count of a
             // frame that is a query's result rather than the dataset — so letting the
             // query go gets the total back without going and fetching it.
             // Taken, not borrowed: this runs on every event for as long as the view
@@ -5540,7 +5613,7 @@ impl DataTableState {
             // a walk of every file in the dataset for nothing.
             let row_groups = std::mem::take(&mut found.row_groups);
             if !row_groups.is_empty() {
-                self.set_file_row_groups(&row_groups);
+                self.record_file_row_groups(&row_groups);
             }
             // Boxed because what comes back is most of a dataset's worth of schema, and
             // an `Err` that size would be carried by every call that succeeds too.
@@ -5591,7 +5664,7 @@ impl DataTableState {
         // Takes the notes, the drift groups and the row starts with it, and clears
         // `read_as_text` — sound only because the offer to read a column as text is
         // not made until the footers are all in, so there is nothing to clear.
-        self.set_dataset_schema(dataset, file_rows, files);
+        self.record_dataset_schema(dataset, file_rows, files);
         self.footers_pending = None;
         // The rows on screen were read through the old frame. Dropping the buffer has
         // the next collect read them through the new one, at the row the user is still
@@ -5608,7 +5681,7 @@ impl DataTableState {
         // before the rebuild so the count is in place the moment the frame is, rather
         // than for any ordering the lines below depend on.
         if !row_groups.is_empty() {
-            self.set_file_row_groups(&row_groups);
+            self.record_file_row_groups(&row_groups);
         }
         // Rebuilt but not read. This runs on the thread drawing the screen, and
         // `apply_transformations` ends in a `collect` — against a dataset in a bucket
@@ -5636,12 +5709,6 @@ impl DataTableState {
     /// longer exists.
     pub fn scans_a_temp_file(&self) -> bool {
         self.decompress_temp_file.is_some()
-    }
-
-    /// Hold `download` for as long as this state lives: its frame scans that file.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    pub fn hold_download(&mut self, download: Option<crate::download::TempDownload>) {
-        self.download = download;
     }
 
     /// Whether the frame scans a downloaded remote file, removed when datui lets go of
@@ -5729,24 +5796,12 @@ impl DataTableState {
         )
     }
 
-    /// What the open itself has to say, settled before any footer was read.
-    ///
-    /// See [`Self::open_notes`]. Set once, by the route that built the state.
-    pub fn set_open_notes(&mut self, notes: Vec<crate::notes::Note>) {
-        self.open_notes = notes;
-    }
-
     /// The lake format whose plain files this dataset is, if it is one.
     ///
     /// For the chip in the control bar. The note says the same at length; this is what
     /// keeps the row count from reading as the table's.
     pub fn not_the_table(&self) -> Option<&'static str> {
         self.not_the_table
-    }
-
-    /// See [`Self::not_the_table`].
-    pub fn set_not_the_table(&mut self, format: Option<&'static str>) {
-        self.not_the_table = format;
     }
 
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked
@@ -6043,7 +6098,7 @@ impl DataTableState {
 
     /// Record the rows in each row group of each file of a remote dataset: the total,
     /// the row groups a buffer is planned in, and which files hold which rows.
-    pub fn set_file_row_groups(&mut self, groups: &[Vec<usize>]) {
+    fn record_file_row_groups(&mut self, groups: &[Vec<usize>]) {
         let Some(files) = self.remote_files.as_mut() else {
             return;
         };
@@ -6058,7 +6113,7 @@ impl DataTableState {
         files.offsets = Some(offsets);
         let flat: Vec<usize> = groups.iter().flatten().copied().collect();
         if self.is_pristine() {
-            self.set_row_groups(&flat);
+            self.record_row_groups(&flat);
         } else {
             // Kept for when the frame is the scan again (`restore_footer_count`).
             let mut row_offsets = Vec::with_capacity(flat.len() + 1);
@@ -6123,12 +6178,6 @@ impl DataTableState {
             .clone()
             .select(all_columns)
             .slice(start as i64, len as u32))
-    }
-
-    /// Record the footer's average uncompressed width of each column, for the byte
-    /// estimate of a buffer before one has been collected.
-    pub fn set_column_bytes(&mut self, bytes: Vec<(String, usize)>) {
-        self.column_bytes = bytes;
     }
 
     /// Bytes a buffered row takes: measured on the last buffer collected, or until
@@ -7245,7 +7294,7 @@ impl DataTableState {
     /// some, else the total.
     fn take_count(&mut self, rows: usize, file_row_groups: Option<&[Vec<usize>]>) {
         match file_row_groups {
-            Some(groups) => self.set_file_row_groups(groups),
+            Some(groups) => self.record_file_row_groups(groups),
             None => self.set_num_rows(rows),
         }
     }
@@ -10448,8 +10497,12 @@ mod tests {
             .expect("a temp file");
         std::io::Write::write_all(&mut file, b"id\n1\n2\n").unwrap();
         let download = crate::download::TempDownload::keep(file);
-        let mut state = DataTableState::from_csv(download.path(), &Default::default()).unwrap();
-        state.hold_download(Some(download.clone()));
+        let state = DataTableState::from_csv(download.path(), &Default::default())
+            .unwrap()
+            .with_open(OpenFacts {
+                download: Some(download.clone()),
+                ..Default::default()
+            });
         let path = download.path().to_path_buf();
         drop(download);
 
@@ -10783,15 +10836,18 @@ mod tests {
             &crate::OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            footers_pending: Some(Arc::new(|_| None)),
+            ..Default::default()
         });
-        state.set_footers_pending(Arc::new(|_| None));
         assert!(
             state.counts_itself_later(),
             "the pass is bringing a count, so the dataset is not going to fetch one"
@@ -13558,9 +13614,13 @@ mod tests {
         };
         let lf = rows(0, 1).df.lazy();
         for forward in [true, false] {
-            let mut state = DataTableState::new(lf.clone(), None, None, None, None, true).unwrap();
-            state.set_remote_source();
-            state.set_row_groups(&[G; 10]);
+            let mut state = DataTableState::new(lf.clone(), None, None, None, None, true)
+                .unwrap()
+                .with_open(OpenFacts {
+                    remote_source: true,
+                    row_groups: vec![vec![G; 10]],
+                    ..Default::default()
+                });
             state.locked_columns_count = 1;
             state.visible_rows = 40;
             let (first, view) = if forward {
@@ -13751,21 +13811,28 @@ mod tests {
             ],
             SchemaOrigin::AllFooters(3),
         );
-        let mut state = DataTableState::from_schema_and_lazyframe(
+        let state = DataTableState::from_schema_and_lazyframe(
             dataset.schema.clone(),
             scan(&urls, &[]).unwrap(),
             &crate::OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(urls.clone()),
-            scan,
-            count: Arc::new(|| Ok(vec![vec![3], vec![2], vec![2]])),
-            offsets: None,
+        .unwrap()
+        .with_open(OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(urls.clone()),
+                scan,
+                count: Arc::new(|| Ok(vec![vec![3], vec![2], vec![2]])),
+                offsets: None,
+            }),
+            dataset: Some(DatasetAtOpen {
+                schema: dataset,
+                file_rows: vec![3, 2, 2],
+                files: urls.clone(),
+            }),
+            ..Default::default()
         });
-        state.set_dataset_schema(dataset, &[3, 2, 2], &urls);
         assert!(state.drifts(), "the three files do not agree");
 
         let (lf, source) = state.data_quality_source_scan();
@@ -13919,14 +13986,21 @@ mod tests {
             &[],
         )
         .unwrap();
-        let mut state = DataTableState::from_schema_and_lazyframe(
+        let state = DataTableState::from_schema_and_lazyframe(
             dataset.schema.clone(),
             lf,
             &crate::OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_dataset_schema(dataset, &file_rows, &files);
+        .unwrap()
+        .with_open(OpenFacts {
+            dataset: Some(DatasetAtOpen {
+                schema: dataset,
+                file_rows,
+                files,
+            }),
+            ..Default::default()
+        });
         assert!(state.drifts(), "the two files disagree on `n`");
         assert_eq!(
             state.quality_conflict_reads(),
@@ -14025,18 +14099,24 @@ mod tests {
             &crate::OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(urls.clone()),
-            scan,
-            count: Arc::new(|| Ok(vec![vec![3], vec![2]])),
-            offsets: None,
+        .unwrap()
+        .with_open(OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(urls.clone()),
+                scan,
+                count: Arc::new(|| Ok(vec![vec![3], vec![2]])),
+                offsets: None,
+            }),
+            dataset: Some(DatasetAtOpen {
+                schema: dataset,
+                file_rows: vec![3, 2],
+                files: urls.clone(),
+            }),
+            ..Default::default()
         });
         let groups = (state.remote_files_counter().unwrap())().unwrap();
-        state.set_file_row_groups(&groups);
-
-        state.set_dataset_schema(dataset, &[3, 2], &urls);
+        assert!(state.count_landed(state.len_generation(), 5, Some(&groups)));
         assert!(state.drifts(), "the two files disagree on `n`");
 
         assert!(
@@ -14235,17 +14315,20 @@ mod tests {
         };
         let full = scan(&urls, &[]).unwrap();
         asked.lock().unwrap().clear();
-        let mut state =
-            DataTableState::from_lazyframe(full, &crate::OpenOptions::default()).unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(urls),
-            scan,
-            count: Arc::new(|| Ok(vec![vec![50, 50]; 5])),
-            offsets: None,
-        });
+        let mut state = DataTableState::from_lazyframe(full, &crate::OpenOptions::default())
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                remote_files: Some(RemoteFiles {
+                    urls: Arc::new(urls),
+                    scan,
+                    count: Arc::new(|| Ok(vec![vec![50, 50]; 5])),
+                    offsets: None,
+                }),
+                ..Default::default()
+            });
         let groups = (state.remote_files_counter().unwrap())().unwrap();
-        state.set_file_row_groups(&groups);
+        assert!(state.count_landed(state.len_generation(), 500, Some(&groups)));
         assert_eq!(state.num_rows_if_valid(), Some(500));
         assert!(state.remote_files_counter().is_none(), "counted once");
 
@@ -14270,14 +14353,59 @@ mod tests {
         );
     }
 
+    /// What an open finds arrives in one step, in the order it depends on: a many-file
+    /// dataset's row groups land after its files, so they count it and place each page
+    /// in its files; a single object's footer counts it.
+    #[test]
+    fn an_open_s_findings_arrive_together() {
+        let lf = || df!("a" => (0..100i32).collect::<Vec<_>>()).unwrap().lazy();
+        let many = DataTableState::from_lazyframe(lf(), &crate::OpenOptions::default())
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                remote_files: Some(RemoteFiles {
+                    urls: Arc::new(vec!["one".to_string(), "two".to_string()]),
+                    scan: Arc::new(move |_: &[String], _: &[PlSmallStr]| Ok(lf())),
+                    count: Arc::new(|| Err("counted at the open".to_string())),
+                    offsets: None,
+                }),
+                row_groups: vec![vec![30, 30], vec![40]],
+                ..Default::default()
+            });
+        assert_eq!(many.num_rows_if_valid(), Some(100));
+        assert_eq!(
+            many.files_a_page_reads(50, 20),
+            Some(2),
+            "rows 50..70 span both"
+        );
+        assert!(
+            many.remote_files_counter().is_none(),
+            "nothing left to count"
+        );
+
+        let one = DataTableState::from_lazyframe(lf(), &crate::OpenOptions::default())
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![60, 40]],
+                ..Default::default()
+            });
+        assert_eq!(one.num_rows_if_valid(), Some(100));
+        assert!(one.is_remote_source());
+    }
+
     #[test]
     fn a_remote_source_buffers_one_window_and_pages_inside_it_for_free() {
         // Every buffer fill of an object-store scan downloads whole row groups, so the
         // buffer is one window of `max_buffered_rows` rather than a few pages: paging
         // inside it asks for nothing, and a jump asks once.
         let lf = df!("a" => &[0i32]).unwrap().lazy();
-        let mut state = DataTableState::new(lf, None, None, Some(10_000), None, true).unwrap();
-        state.set_remote_source();
+        let mut state = DataTableState::new(lf, None, None, Some(10_000), None, true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                ..Default::default()
+            });
         state.num_rows = 1_000_000;
         state.num_rows_valid = true;
         state.visible_rows = 40;
@@ -14357,9 +14485,13 @@ mod tests {
         const G: usize = 1_000_000;
         const CAP: usize = DEFAULT_MAX_BUFFERED_ROWS;
         let lf = df!("a" => &[0i32]).unwrap().lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
-        state.set_remote_source();
-        state.set_row_groups(&[G; 10]);
+        let mut state = DataTableState::new(lf, None, None, None, None, true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![G; 10]],
+                ..Default::default()
+            });
         assert_eq!(state.num_rows, 10 * G);
         state.visible_rows = 40;
         let rows = |start: usize, end: usize| Fill {
@@ -14424,9 +14556,13 @@ mod tests {
         // and crossing into the next fetches exactly that group.
         const G: usize = 40_000;
         let lf = df!("a" => &[0i32]).unwrap().lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
-        state.set_remote_source();
-        state.set_row_groups(&[G; 25]);
+        let mut state = DataTableState::new(lf, None, None, None, None, true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![G; 25]],
+                ..Default::default()
+            });
         state.visible_rows = 40;
         let rows = |start: usize, end: usize| Fill {
             df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
@@ -14458,13 +14594,17 @@ mod tests {
             .map(|i| Series::new(format!("f{i}").into(), &[0.0f64]).into())
             .collect();
         let lf = DataFrame::new(1, columns).unwrap().lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![1_000_000; 3]],
+                ..Default::default()
+            });
         assert_eq!(
             estimate_bytes_per_row(&state.schema, &state.column_order, &[]),
             8_000
         );
-        state.set_remote_source();
-        state.set_row_groups(&[1_000_000; 3]);
         state.visible_rows = 40;
 
         let request = state.prepare_async_collect(None).expect("first fill");
@@ -14480,20 +14620,25 @@ mod tests {
         );
 
         // The screen is the floor, whatever the budget.
-        let mut tiny = DataTableState::new(
-            df!("a" => &["x".repeat(2_000)]).unwrap().lazy(),
-            None,
-            None,
-            None,
-            Some(1),
-            true,
-        )
-        .unwrap();
-        tiny.set_column_bytes(vec![("a".to_string(), 2_000)]);
-        tiny.visible_rows = 40;
-        assert_eq!(tiny.byte_cap_rows(), 1024 * 1024 / 2_016);
-        tiny.set_column_bytes(vec![("a".to_string(), 1 << 20)]);
-        assert_eq!(tiny.byte_cap_rows(), 40);
+        let tiny = |bytes: usize| {
+            let mut tiny = DataTableState::new(
+                df!("a" => &["x".repeat(2_000)]).unwrap().lazy(),
+                None,
+                None,
+                None,
+                Some(1),
+                true,
+            )
+            .unwrap()
+            .with_open(OpenFacts {
+                column_bytes: vec![("a".to_string(), bytes)],
+                ..Default::default()
+            });
+            tiny.visible_rows = 40;
+            tiny.byte_cap_rows()
+        };
+        assert_eq!(tiny(2_000), 1024 * 1024 / 2_016);
+        assert_eq!(tiny(1 << 20), 40);
     }
 
     #[test]
@@ -14530,9 +14675,14 @@ mod tests {
         let lf = df!("a" => (0..1_000i32).collect::<Vec<i32>>())
             .unwrap()
             .lazy();
-        let mut state = DataTableState::new(lf, None, None, Some(10_000), None, true).unwrap();
-        state.set_remote_source();
-        state.set_row_groups(&[500, 500]);
+        let mut state = DataTableState::new(lf, None, None, Some(10_000), None, true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![500, 500]],
+                parquet_count_dir: Some(PathBuf::from("/hive")),
+                ..Default::default()
+            });
         state.visible_rows = 40;
         state.defer_collect = true;
 
@@ -14568,7 +14718,7 @@ mod tests {
         );
 
         // The local hive footer count is gated the same way.
-        state.set_parquet_count_dir(PathBuf::from("/hive"));
+        assert_eq!(state.parquet_count_dir(), Some(PathBuf::from("/hive")));
         state.sort(vec!["a".to_string()], true);
         assert!(state.parquet_count_dir().is_none());
         state.sort(Vec::new(), true);
@@ -14617,9 +14767,13 @@ mod tests {
         // nor shows the view: installing it would draw rows under the wrong numbers.
         const G: usize = 1_000_000;
         let lf = df!("a" => &[0i32]).unwrap().lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
-        state.set_remote_source();
-        state.set_row_groups(&[G; 10]);
+        let mut state = DataTableState::new(lf, None, None, None, None, true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![G; 10]],
+                ..Default::default()
+            });
         state.visible_rows = 40;
         let rows = |start: usize, end: usize| Fill {
             df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
@@ -14660,9 +14814,13 @@ mod tests {
         // thrown away.
         const G: usize = 1_000_000;
         let lf = df!("a" => &[0i32]).unwrap().lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
-        state.set_remote_source();
-        state.set_row_groups(&[G; 10]);
+        let mut state = DataTableState::new(lf, None, None, None, None, true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![G; 10]],
+                ..Default::default()
+            });
         state.visible_rows = 40;
         assert!(state.scroll_to(G - 60));
         let request = state
@@ -14696,10 +14854,14 @@ mod tests {
         // cut through group 1 that a later refill downloads again.
         const G: usize = 40_000;
         let lf = df!("a" => &["x"]).unwrap().lazy();
-        let mut state = DataTableState::new(lf, None, None, None, Some(64), true).unwrap();
-        state.set_remote_source();
-        state.set_row_groups(&[G; 5]);
-        state.set_column_bytes(vec![("a".to_string(), 1_000)]);
+        let mut state = DataTableState::new(lf, None, None, None, Some(64), true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![G; 5]],
+                column_bytes: vec![("a".to_string(), 1_000)],
+                ..Default::default()
+            });
         state.visible_rows = 40;
         let cap = state.byte_cap_rows();
         assert!(
@@ -14771,9 +14933,13 @@ mod tests {
         // A query makes the frame a predicate over the object, so the row-group window
         // and footer count stand down; clearing it brings both back without a len().
         let lf = df!("a" => (0..100).collect::<Vec<i32>>()).unwrap().lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
-        state.set_remote_source();
-        state.set_row_groups(&[60, 40]);
+        let mut state = DataTableState::new(lf, None, None, None, None, true)
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![60, 40]],
+                ..Default::default()
+            });
         assert!(state.remote_window());
         state.query("select a where a > 50".to_string());
         assert!(!state.remote_window());

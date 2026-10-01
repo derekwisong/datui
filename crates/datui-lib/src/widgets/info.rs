@@ -1679,15 +1679,17 @@ mod tests {
             let rows = || df!("id" => (0..3i64).collect::<Vec<_>>()).unwrap().lazy();
             let mut lf = rows();
             let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
-            let mut state = DataTableState::from_schema_and_lazyframe(
+            DataTableState::from_schema_and_lazyframe(
                 schema,
                 rows(),
                 &crate::OpenOptions::default(),
                 None,
             )
-            .unwrap();
-            state.set_measurements(meter.clone());
-            state
+            .unwrap()
+            .with_open(crate::widgets::datatable::OpenFacts {
+                measurements: meter.clone(),
+                ..Default::default()
+            })
         };
 
         let theme = RenderContext::for_test();

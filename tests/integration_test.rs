@@ -6877,13 +6877,24 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
     );
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+    // The same rows as a staged open leaves them: counted, with a pass still out.
+    let waiting = || {
+        let mut state = datui::widgets::datatable::DataTableState::from_lazyframe(
+            df!("id" => &[0i64, 1, 2]).unwrap().lazy(),
+            &OpenOptions::default(),
+        )
+        .unwrap()
+        .with_open(datui::widgets::datatable::OpenFacts {
+            footers_pending: Some(std::sync::Arc::new(|_| None)),
+            ..Default::default()
+        });
+        assert!(state.count_landed(state.len_generation(), 3, None));
+        state
+    };
     // Said only for a dataset that is itself waiting. The counter is shared with every
     // open, and one abandoned half way through goes on counting: without the dataset's
     // own say-so this bar would count a directory the user walked away from.
-    app.data_table_state
-        .as_mut()
-        .expect("a dataset")
-        .set_footers_pending(std::sync::Arc::new(|_| None));
+    app.data_table_state = Some(waiting());
     app.footer_progress().begin(6541);
     for _ in 0..1203 {
         app.footer_progress().advance();
@@ -6924,10 +6935,7 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
         !other.contains("Reading footers"),
         "a count belonging to a directory the user left is not this dataset's: {other:?}"
     );
-    app.data_table_state
-        .as_mut()
-        .expect("a dataset")
-        .set_footers_pending(std::sync::Arc::new(|_| None));
+    app.data_table_state = Some(waiting());
 
     // And stops saying it the moment they have.
     app.footer_progress().done();

@@ -62,7 +62,8 @@ While busy:
 
 Wide columns:
   A column keeps the width it was first drawn at, so paging and scrolling
-  move nothing. Text, lists, structs and names get at most two fifths of
+  move nothing; a query, sort, filter or drill learns it again from the
+  first page it shows. Text, lists, structs and names get at most two fifths of
   the window (32 cells at 80 columns, 48 at 120); a numbers column widens
   to its widest number yet seen. Set a width in Sort & Filter (s): < and > narrower and
   wider, f fits the rows on screen, w back to automatic.

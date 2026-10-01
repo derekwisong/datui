@@ -495,11 +495,10 @@ pub fn format_any_value<'v>(
     Cow::Owned(out)
 }
 
-/// Display width of a value without building its string, where possible.
+/// Cells a value takes on screen without building its string, where possible.
 ///
-/// Integers take the arithmetic path; everything else falls back to rendering.
-/// Used by the locked-column measurement pass, which previously built and threw
-/// away a `String` for every locked cell.
+/// Integers take the arithmetic path; everything else is rendered and measured in
+/// terminal cells, as the table measures it. For a pass that needs widths only.
 pub fn display_width(fmt: &CellFormatter, value: &AnyValue, scratch: &mut String) -> usize {
     if matches!(value, AnyValue::Null) {
         return 0;
@@ -517,7 +516,7 @@ pub fn display_width(fmt: &CellFormatter, value: &AnyValue, scratch: &mut String
             _ => {}
         }
     }
-    format_any_value(fmt, value, scratch).chars().count()
+    crate::glyphs::cell_width(&format_any_value(fmt, value, scratch))
 }
 
 /// Minimal glob matcher supporting `*` (any run) and `?` (one character).

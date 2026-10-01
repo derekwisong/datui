@@ -19,6 +19,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::symbols::{Marker, line};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
@@ -40,6 +41,10 @@ pub struct Glyphs {
     pub prompt: &'static str,
     /// Vertical rule between panes.
     pub rule: &'static str,
+    /// The frozen-columns separator while the window is too narrow for every frozen
+    /// column: the rest scroll after it until there is room. One column wide, like
+    /// `rule`, and visibly not it.
+    pub rule_broken: &'static str,
     /// Truncation marker.
     pub ellipsis: &'static str,
     /// Between row and column counts: `2.4M × 18`.
@@ -296,6 +301,7 @@ const UNICODE: Glyphs = Glyphs {
     cursor: "▏",
     prompt: "› ",
     rule: "│",
+    rule_broken: "┆",
     ellipsis: "…",
     times: "×",
     collapsed: "▸ ",
@@ -373,6 +379,7 @@ const ASCII: Glyphs = Glyphs {
     cursor: "_",
     prompt: "> ",
     rule: "|",
+    rule_broken: ":",
     ellipsis: "...",
     times: "x",
     collapsed: "+ ",
@@ -484,6 +491,7 @@ macro_rules! with_string_slots {
             cursor,
             prompt,
             rule,
+            rule_broken,
             ellipsis,
             times,
             collapsed,
@@ -683,6 +691,82 @@ pub fn take_columns_end(text: &str, width: usize) -> &str {
     &text[start..]
 }
 
+/// Printable ASCII only: one byte, one cell, one grapheme, so the fast paths
+/// below need no segmentation.
+fn plain_ascii(text: &str) -> bool {
+    text.bytes().all(|b| (0x20..0x7f).contains(&b))
+}
+
+/// The graphemes of `text` as ratatui draws them: its own segmentation, with the
+/// clusters holding a control character dropped as its `Span` drops them.
+fn drawn_graphemes<'a>(span: &'a ratatui::text::Span<'a>) -> impl Iterator<Item = &'a str> {
+    span.styled_graphemes(ratatui::style::Style::default())
+        .map(|g| g.symbol)
+}
+
+/// Cells `text` takes when a table cell draws it, grapheme by grapheme at
+/// ratatui's own widths. Unlike [`display_width`], an emoji sequence joined
+/// into one grapheme counts once, and control characters count nothing,
+/// because ratatui draws nothing for them.
+pub fn cell_width(text: &str) -> usize {
+    use ratatui::buffer::CellWidth;
+    if plain_ascii(text) {
+        return text.len();
+    }
+    let span = ratatui::text::Span::raw(text);
+    drawn_graphemes(&span)
+        .map(|g| usize::from(g.cell_width()))
+        .sum()
+}
+
+/// `text` as it fits in `width` cells: whole when it fits, otherwise cut at a
+/// grapheme boundary and closed with `marker`, so a clipped value never passes
+/// for a whole one. A wide character that would straddle the edge goes, never
+/// half of it. Control characters are dropped, as ratatui would drop them, so
+/// the result is exactly what is drawn. When even `marker` does not fit, as much
+/// of it as fits.
+pub fn fit_cells<'a>(text: &'a str, width: usize, marker: &str) -> Cow<'a, str> {
+    use ratatui::buffer::CellWidth;
+    let marker_width = cell_width(marker);
+    if plain_ascii(text) {
+        if text.len() <= width {
+            return Cow::Borrowed(text);
+        }
+        if width <= marker_width {
+            return Cow::Owned(take_columns(marker, width).to_string());
+        }
+        return Cow::Owned(format!("{}{marker}", &text[..width - marker_width]));
+    }
+    let span = ratatui::text::Span::raw(text);
+    let total: usize = drawn_graphemes(&span)
+        .map(|g| usize::from(g.cell_width()))
+        .sum();
+    if total <= width {
+        let whole = drawn_graphemes(&span).map(str::len).sum::<usize>() == text.len();
+        return if whole {
+            Cow::Borrowed(text)
+        } else {
+            Cow::Owned(drawn_graphemes(&span).collect())
+        };
+    }
+    if width <= marker_width {
+        return Cow::Owned(take_columns(marker, width).to_string());
+    }
+    let budget = width - marker_width;
+    let mut used = 0usize;
+    let mut out = String::with_capacity(budget + marker.len());
+    for g in drawn_graphemes(&span) {
+        let w = usize::from(g.cell_width());
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        out.push_str(g);
+    }
+    out.push_str(marker);
+    Cow::Owned(out)
+}
+
 /// The ASCII twin of one instructional character, `None` for plain ASCII or
 /// a character no help file may use.
 fn ascii_twin(c: char) -> Option<&'static str> {
@@ -700,6 +784,8 @@ fn ascii_twin(c: char) -> Option<&'static str> {
         '∅' => Some("~"),
         '·' => Some("."),
         '≠' => Some("!"),
+        '│' => Some("|"),
+        '┆' => Some(":"),
         _ => None,
     }
 }
@@ -1300,6 +1386,84 @@ mod tests {
                     !c.is_alphanumeric() && !c.is_whitespace(),
                     "{marker:?} would read as part of a filename"
                 );
+            }
+        }
+    }
+
+    /// Cells, not characters and not bytes: wide characters count two, a combining
+    /// mark and a joined emoji sequence count with the character they join, and a
+    /// control character counts nothing, since ratatui draws nothing for it.
+    #[test]
+    fn cell_width_counts_what_is_drawn() {
+        assert_eq!(cell_width("tail"), 4);
+        assert_eq!(cell_width("東京大阪"), 8);
+        assert_eq!(cell_width("e\u{301}e\u{301}"), 2);
+        assert_eq!(cell_width("line1\nline2"), 10);
+        assert_eq!(cell_width("tab\tseparated"), 12);
+        assert_eq!(cell_width("👩\u{200d}👩\u{200d}👧"), 2);
+    }
+
+    /// Whole when it fits, borrowed; otherwise cut at a grapheme and marked, never
+    /// wider than asked, in both marker widths.
+    #[test]
+    fn fit_cells_clips_at_graphemes_and_marks_the_cut() {
+        assert!(matches!(fit_cells("tail", 4, "…"), Cow::Borrowed("tail")));
+        assert_eq!(fit_cells("abcdef", 5, "…"), "abcd…");
+        assert_eq!(fit_cells("abcdef", 5, "..."), "ab...");
+        assert_eq!(fit_cells("abcdef", 2, "..."), "..");
+        assert_eq!(fit_cells("abcdef", 0, "…"), "");
+        assert!(matches!(
+            fit_cells("東京大阪", 8, "…"),
+            Cow::Borrowed("東京大阪")
+        ));
+        assert_eq!(fit_cells("東京大阪", 7, "…"), "東京大…");
+        // 京 would straddle the edge: it goes whole, and its cell stays blank.
+        assert_eq!(fit_cells("東京大阪", 4, "…"), "東…");
+        assert_eq!(fit_cells("東京大阪", 4, "..."), "...");
+        assert_eq!(fit_cells("e\u{301}e\u{301}e\u{301}", 2, "…"), "e\u{301}…");
+        assert_eq!(fit_cells("line1\nline2", 10, "…"), "line1line2");
+        assert_eq!(fit_cells("line1\nline2", 6, "…"), "line1…");
+    }
+
+    /// Whatever the text and the width, the result is a run of the text's own
+    /// graphemes plus the marker, within the width.
+    #[test]
+    fn fit_cells_never_splits_a_grapheme() {
+        let samples = [
+            "plain ascii text",
+            "東京大阪 京都横浜",
+            "e\u{301}a\u{308}o\u{302}u\u{30a}",
+            "👩\u{200d}👩\u{200d}👧 family",
+            "🇯🇵🇺🇸 flags",
+            "mixed 名古屋 e\u{301} 👍🏽 end",
+        ];
+        for marker in ["…", "..."] {
+            for text in samples {
+                let span = ratatui::text::Span::raw(text);
+                let graphemes: Vec<&str> = drawn_graphemes(&span).collect();
+                for width in 0..=cell_width(text) + 1 {
+                    let fitted = fit_cells(text, width, marker);
+                    assert!(
+                        cell_width(&fitted) <= width,
+                        "{text:?} at {width}: {fitted:?} is too wide"
+                    );
+                    if fitted == text {
+                        assert!(cell_width(text) <= width);
+                        continue;
+                    }
+                    let kept = fitted.strip_suffix(marker).unwrap_or("");
+                    let mut rebuilt = String::new();
+                    for g in &graphemes {
+                        if rebuilt.len() >= kept.len() {
+                            break;
+                        }
+                        rebuilt.push_str(g);
+                    }
+                    assert_eq!(
+                        rebuilt, kept,
+                        "{text:?} at {width}: {fitted:?} cuts a grapheme"
+                    );
+                }
             }
         }
     }

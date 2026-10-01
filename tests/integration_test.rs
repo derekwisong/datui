@@ -15642,6 +15642,94 @@ fn showing_a_hidden_column_puts_it_back_in_place() {
     );
 }
 
+/// Frozen columns too wide for the window (#462): the table keeps as many frozen as
+/// fit beside a usable scrolling column and breaks the rule to say so; the freeze
+/// stays set, Sort & Filter still changes it at that size, and a wider window
+/// freezes every column asked for again.
+#[test]
+fn a_freeze_survives_a_narrow_window() {
+    let names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join("frozen_narrow_window.csv");
+    let columns: Vec<Column> = names
+        .iter()
+        .map(|n| {
+            let values: Vec<String> = (0..50).map(|i| format!("{n}-value-{i:03}")).collect();
+            Series::new((*n).into(), values).into()
+        })
+        .collect();
+    let mut df = DataFrame::new_infer_height(columns).unwrap();
+    CsvWriter::new(&mut File::create(&csv_path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let g = datui::glyphs::get();
+    let draw = |app: &mut App, width: u16, height: u16| {
+        app.event(&AppEvent::Resize(width, height));
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        rendered_text(&buf)
+    };
+    let freeze_through = |app: &mut App, name: &str| {
+        press(app, KeyCode::Char('s'));
+        press(app, KeyCode::Tab);
+        press(app, KeyCode::Tab);
+        let sort = &mut app.sort_filter_modal.sort;
+        let row = sort
+            .filtered_columns()
+            .iter()
+            .position(|(_, c)| c.name == name)
+            .unwrap();
+        sort.table_state.select(Some(row));
+        press(app, KeyCode::Char('L'));
+    };
+    let apply = |app: &mut App| {
+        if let Some(next) = press(app, KeyCode::Enter) {
+            let _ = tx.send(next);
+        }
+        pump_until_idle(app, &rx, &tx);
+    };
+
+    draw(&mut app, 60, 20);
+    freeze_through(&mut app, "delta");
+    apply(&mut app);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.locked_columns_count(), 4);
+
+    let narrow = draw(&mut app, 60, 20);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.locked_columns_count(), 4, "the freeze is kept");
+    assert!(state.frozen_shown() < 4, "{narrow}");
+    assert!(narrow.contains(g.rule_broken), "{narrow}");
+
+    // Sort & Filter opens and changes the freeze at this size: L on a frozen
+    // column pulls the boundary back to it.
+    freeze_through(&mut app, "delta");
+    let with_sidebar = draw(&mut app, 60, 20);
+    assert!(app.sort_filter_modal.active);
+    assert!(with_sidebar.contains("Sort & Filter"), "{with_sidebar}");
+    apply(&mut app);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .locked_columns_count(),
+        3
+    );
+
+    let wide = draw(&mut app, 160, 30);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.frozen_shown(), 3, "{wide}");
+    assert!(wide.contains(g.rule), "{wide}");
+    assert!(!wide.contains(g.rule_broken), "{wide}");
+}
+
 /// Sort & Filter (#379): a column hidden after the sidebar reordered the table
 /// comes back after the column it followed there, not where the file has it; and
 /// hiding the last frozen column keeps its lock for when it is shown again.

@@ -73,7 +73,7 @@ later page ends in `…` (ASCII `...`).
 
 | Column | Automatic width |
 |---|---|
-| Text and names | The first page's widest, at most two fifths of the window: 32 cells at 80 columns, 48 at 120 (16 to 64) |
+| Text, lists, structs and names | The first page's widest, at most two fifths of the window: 32 cells at 80 columns, 48 at 120 (16 to 64) |
 | Numbers, dates, times, flags | The widest value seen so far, never cut; it does not narrow again |
 
 A width set with <kbd>&lt;</kbd> <kbd>&gt;</kbd> or <kbd>f</kbd> is kept through

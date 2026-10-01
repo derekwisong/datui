@@ -8280,13 +8280,15 @@ fn visible_slice(df: &DataFrame, offset: usize, len: usize) -> Option<DataFrame>
 }
 
 /// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
-/// (strings, raw bytes, categorical/enum labels) are fine to clip — a partial value still reads
-/// as a clipped string. Numeric, temporal and boolean columns are excluded: a truncated number or
+/// (strings, raw bytes, categorical/enum labels) and nested previews (structs, lists,
+/// arrays) are fine to clip: a partial value still reads as a clipped string, and a
+/// nested value left whole would hold one long value's width on every page after it.
+/// Numeric, temporal and boolean columns are excluded: a truncated number or
 /// timestamp reads as a different (wrong) value, so those are dropped until scrolled into view.
 fn is_truncatable_dtype(dtype: &DataType) -> bool {
     match dtype {
         DataType::String | DataType::Binary => true,
-        other => other.is_categorical() || other.is_enum(),
+        other => other.is_categorical() || other.is_enum() || other.is_nested(),
     }
 }
 
@@ -15043,6 +15045,54 @@ mod tests {
         state.collect();
         draw(DataTable::default(), &mut state, 60, 21);
         assert_eq!(state.shown_width("n"), Some(9));
+    }
+
+    /// A struct is a preview like text: one long value on a later page is clipped
+    /// at the cap, and the columns after it stay on screen on the pages after.
+    #[test]
+    fn a_long_struct_value_does_not_widen_its_column_for_good() {
+        let n = 60usize;
+        let y: Vec<String> = (0..n)
+            .map(|i| {
+                if i == 30 {
+                    "a very long struct value ".repeat(6)
+                } else {
+                    "short".to_string()
+                }
+            })
+            .collect();
+        let s = StructChunked::from_series(
+            "s".into(),
+            n,
+            [
+                Series::new("x".into(), (0..n as i64).collect::<Vec<_>>()),
+                Series::new("y".into(), y),
+            ]
+            .iter(),
+        )
+        .unwrap()
+        .into_series();
+        let df = DataFrame::new_infer_height(vec![
+            Series::new("id".into(), (0..n as i64).collect::<Vec<_>>()).into(),
+            s.into(),
+            Series::new("tail".into(), (0..n as i64).collect::<Vec<_>>()).into(),
+        ])
+        .unwrap();
+        let mut state = state_of(&df, 20);
+        for page in 0..3 {
+            let rows = draw(DataTable::default(), &mut state, 80, 21);
+            assert!(rows[0].contains("tail"), "page {page}: {rows:#?}");
+            assert!(
+                state.shown_width("s").is_some_and(|w| w <= 32),
+                "page {page}: {rows:#?}"
+            );
+            if page == 1 {
+                let long = rows.iter().find(|r| r.contains("{30,")).unwrap();
+                assert!(long.contains(crate::glyphs::get().ellipsis), "{rows:#?}");
+            }
+            state.page_down();
+            state.collect();
+        }
     }
 
     /// Automatic text and headings stop at two fifths of the terminal, marked where

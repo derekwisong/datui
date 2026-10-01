@@ -12,7 +12,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move one row |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Scroll one column |
 | <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | [A page of columns](../user-guide/filtering-sorting.md#move-across-a-wide-table) left or right |
-| <kbd>{</kbd> <kbd>}</kbd> | First and last column |
+| <kbd>{</kbd> <kbd>}</kbd> | First column; last page of columns |
 | <kbd>g</kbd> | Go to a column by name |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> or <kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>Ctrl</kbd>+<kbd>F</kbd> | One page |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |

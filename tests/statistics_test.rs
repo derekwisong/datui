@@ -358,16 +358,23 @@ impl RowSizedCount {
         }
     }
 
-    /// The row-sized allocations `f` makes over `rows` rows.
-    fn during(rows: usize, f: impl FnOnce()) -> usize {
+    /// The row-sized allocations `f` makes over `rows` rows, the fewest of three runs:
+    /// the count is process-wide, and another test in this binary may allocate a
+    /// block that size meanwhile.
+    fn during(rows: usize, mut f: impl FnMut()) -> usize {
         use std::sync::atomic::Ordering::Relaxed;
         static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-        let before = ROW_SIZED.load(Relaxed);
-        ROW_BYTES.store(rows * 8, Relaxed);
-        f();
-        ROW_BYTES.store(0, Relaxed);
-        ROW_SIZED.load(Relaxed) - before
+        (0..3)
+            .map(|_| {
+                let before = ROW_SIZED.load(Relaxed);
+                ROW_BYTES.store(rows * 8, Relaxed);
+                f();
+                ROW_BYTES.store(0, Relaxed);
+                ROW_SIZED.load(Relaxed) - before
+            })
+            .min()
+            .unwrap_or_default()
     }
 }
 
@@ -393,9 +400,9 @@ unsafe impl std::alloc::GlobalAlloc for RowSizedCount {
 static ALLOCATOR: RowSizedCount = RowSizedCount;
 
 /// Every pair of a correlation matrix is one pass over two columns converted once:
-/// a column's floats are allocated once, never once per pair. 24 columns are 276
-/// pairs; a filtered copy of each pair's rows, as the matrix once made, would be
-/// hundreds of allocations the size of a column.
+/// a column's floats are allocated once, never once per pair, and no cast is the
+/// size of a column. 24 columns are 276 pairs; a filtered copy of each pair's rows,
+/// as the matrix once made, would be hundreds of allocations the size of a column.
 #[test]
 fn correlation_allocates_per_column_not_per_pair() -> Result<()> {
     let rows = 200_003;
@@ -423,15 +430,15 @@ fn correlation_allocates_per_column_not_per_pair() -> Result<()> {
     });
     let matrix = matrix.unwrap()?;
     assert_eq!(matrix.columns.len(), 24);
-    assert!(allocated <= 2 * 24, "{allocated} column-sized allocations");
+    assert!(allocated <= 24, "{allocated} column-sized allocations");
 
-    // A pair reads its two columns where they are: the one cast is the integers'.
+    // A pair reads its two columns where they are, cast a piece at a time.
     let mut pair = None;
     let allocated = RowSizedCount::during(rows, || {
         pair = Some(compute_correlation_pair(&df, "c0", "c1"));
     });
     let pair = pair.unwrap()?;
-    assert!(allocated <= 1, "{allocated} column-sized allocations");
+    assert_eq!(allocated, 0, "column-sized allocations");
     assert!((pair.correlation - matrix.correlations[0][1]).abs() < 1e-12);
     Ok(())
 }

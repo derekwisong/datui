@@ -30,6 +30,11 @@ Examples:
 --print shows commands without running them. Ignored/live-cloud tests remain
 opt-in. Existing tests may generate missing fixtures; prepare them once with
 scripts/dev/setup-test-data.sh. See docs/for-developers/tests.md for scope policy.
+
+Heavy runs (unit, integration, preflight, features, full, and anything with
+--release) take a lock shared by every checkout on the machine and run one at a
+time; a run that has to wait says so once. check and cli do not take it, nor
+does --print. Without flock (macOS without util-linux) they run unlocked.
 EOF
 }
 
@@ -39,12 +44,47 @@ if [[ ${1:-} == --print ]]; then
     shift
 fi
 
+# Heavy runs link Polars test executables or build the whole workspace; several at
+# once exhausted the machine's memory (#513), so they wait for one another. The lock
+# is per user and outside the checkout and the target dir, which differ per worktree,
+# and not under TMPDIR, which runs often set for themselves.
+heavy=false
+held=false
+
+lock_if_heavy() {
+    if ! $heavy || $held || $print_only || [[ -n ${DATUI_TEST_LOCK_HELD:-} ]]; then
+        return 0
+    fi
+    held=true
+    if ! command -v flock >/dev/null 2>&1; then
+        printf 'flock not found; running without the heavy-run lock.\n' >&2
+        return 0
+    fi
+    local lock
+    if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
+        lock=$XDG_RUNTIME_DIR/datui-test-heavy.lock
+    else
+        lock=/tmp/datui-test-heavy-$(id -u).lock
+    fi
+    # Held on fd 9 until this script exits, however it exits. Commands run with fd 9
+    # closed (run, run_tests): a daemon one starts, such as sccache's server, would
+    # otherwise hold the lock after the run.
+    exec 9>>"$lock"
+    if ! flock -n 9; then
+        printf 'Waiting for another heavy test run to finish (%s)...\n' "$lock" >&2
+        flock 9
+    fi
+    # A test.sh run from inside this one is part of it, and would wait on it forever.
+    export DATUI_TEST_LOCK_HELD=1
+}
+
 run() {
     if $print_only; then
         printf '%q ' "$@"
         printf '\n'
     else
-        "$@"
+        lock_if_heavy
+        "$@" 9>&-
     fi
 }
 
@@ -57,10 +97,11 @@ run_tests() {
         run "$@"
         return
     fi
+    lock_if_heavy
     local written status=0
     marker=$(mktemp)
     trap 'rm -f "$marker"' EXIT
-    "$@" || status=$?
+    "$@" 9>&- || status=$?
     # -H: worktrees often link tests/sample-data to one shared copy.
     written=$(find -H tests/sample-data -newer "$marker" 2>/dev/null) || true
     if [[ tests/sample-data/people.parquet -nt $marker ]]; then
@@ -82,6 +123,15 @@ if [[ -z $command || $command == --help || $command == -h ]]; then
     exit 0
 fi
 shift
+
+case "$command" in
+    unit | integration | preflight | features | full) heavy=true ;;
+esac
+for arg in "$@"; do
+    if [[ $arg == --release ]]; then
+        heavy=true
+    fi
+done
 
 case "$command" in
     check)

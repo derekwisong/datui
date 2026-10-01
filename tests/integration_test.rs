@@ -16190,9 +16190,7 @@ fn a_freeze_survives_a_narrow_window() {
 fn column_widths_from_the_sidebar() {
     use datui::widgets::column_widths::{WIDTH_STEP, WidthChoice};
     let url = format!("https://example.com/{}", "long-segment/".repeat(15));
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
-    let csv_path = test_data_dir.join("sidebar_column_widths.csv");
+    let csv_path = common::fixture_dir().join("sidebar_column_widths.csv");
     let n = 80usize;
     let mut df = df!(
         "id" => (0..n as i64).collect::<Vec<_>>(),

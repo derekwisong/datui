@@ -8814,6 +8814,13 @@ impl App {
             quality_report::EvidenceRows::Files(files) => files.clone(),
             _ => plan.scope.clone(),
         };
+        // A sample as large as the scope reads every row too, but it was not a full
+        // scan: its rows were kept, and since released.
+        let not_kept = if plan.compute == data_quality::QualityCompute::Full {
+            "a full scan keeps no rows"
+        } else {
+            "the rows read are no longer kept"
+        };
         let (why, reads) = match &rows {
             quality_report::EvidenceRows::Files(data_quality::QualityScope::SourceFiles(files)) => {
                 (
@@ -8835,7 +8842,7 @@ impl App {
                 ),
             ),
             quality_report::EvidenceRows::Duplicates => (
-                "a full scan keeps no rows".to_string(),
+                not_kept.to_string(),
                 format!(
                     "every row of {}, once {} {}",
                     plan.scope.label(),
@@ -8843,10 +8850,12 @@ impl App {
                     widgets::data_quality::scope_read_label(state, &plan)
                 ),
             ),
+            // The table counts what matches, which reads every row; then it reads the
+            // rows it shows.
             _ => (
-                "a full scan keeps no rows".to_string(),
+                not_kept.to_string(),
                 format!(
-                    "{}, as far as the table scrolls {} {}",
+                    "every row of {} to count them, then the rows on screen {} {}",
                     plan.scope.label(),
                     g.middot,
                     widgets::data_quality::scope_read_label(state, &plan)
@@ -10087,7 +10096,7 @@ impl App {
         self.status_message = None;
         // Reading the sample to look at changed nothing on screen; the tool stays.
         if std::mem::take(&mut self.reading_sample) {
-            self.flash_note("Sample view cancelled".to_string());
+            self.flash_note("Row view cancelled".to_string());
             return;
         }
         // Data Quality keeps its last report and goes back to Setup, where the plan

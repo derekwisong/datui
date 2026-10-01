@@ -45,7 +45,7 @@ counted. <kbd>Esc</kbd> returns to the finding.
 | **Duplicate rows** | Every row that has a copy, copies together, most copied first |
 | **Numbers as text**, **Dates as text** | The values that do not parse, which stop a cast |
 | Several columns, such as **Missing values** | The rows missing in any of them. The detail lists each column's count; the rows with any of them are a range, not a sum |
-| **Codes as text** that all parse | Nothing: the detail says every value parses |
+| **Numbers**, **Dates** or **Codes as text** that all parse | Nothing: the detail says every value parses |
 
 The rows come from the ones the run kept, so opening them reads nothing. A full
 scan keeps no rows, and an older sample may have been released: then

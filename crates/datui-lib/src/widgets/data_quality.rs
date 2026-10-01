@@ -1559,8 +1559,10 @@ fn evidence_line(
         format!("Enter shows {what}{together}.")
     } else if sampled {
         format!("The sampled rows are no longer kept: Enter asks before reading {what} again.")
-    } else {
+    } else if config.measured.compute == QualityCompute::Full {
         format!("A full scan keeps no rows: Enter asks before reading {what}.")
+    } else {
+        format!("The rows read are no longer kept: Enter asks before reading {what}.")
     }
 }
 
@@ -3752,6 +3754,16 @@ mod tests {
         assert!(detail(&sampled, true, 80, 24).contains("Enter shows the 1 sampled row."));
         assert!(detail(&sampled, false, 80, 24).contains("no longer kept"));
         assert!(detail(&screen.results, false, 80, 24).contains("A full scan keeps no rows"));
+        // A sample that held every row is exact, but it was no full scan.
+        let whole_sample = DataQualityPlan {
+            compute: QualityCompute::Sample,
+            ..screen.plan.clone()
+        };
+        let mut config = screen.config(QualityPage::Overview);
+        config.measured = &whole_sample;
+        config.observation_detail = true;
+        let text = screen.draw(config, position, 80, 24).join("\n");
+        assert!(text.contains("The rows read are no longer kept"), "{text}");
 
         let read = EvidenceRead {
             rows: EvidenceRows::Matching(polars::prelude::lit(true)),

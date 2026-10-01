@@ -38,7 +38,7 @@ the same rows, so their count is the rows.
 | Finding | Rows it opens | Count shown | Examples in the detail |
 |---|---|---|---|
 | Duplicate rows | Every row equal to another in every column; copies together, most copied first | Rows with a copy | The three most copied rows, with their copies |
-| Numbers as text, Dates as text | Non-null text the reading does not parse | Non-null values less those that parse | Up to three values that do not parse |
+| Numbers, Dates or Codes as text | Non-null text the reading does not parse | Non-null values less those that parse | Up to three values that do not parse |
 | Unparsed times | Text the chosen time format does not read | Unparsed values | Up to three of them |
 | Nearly unique | Every row whose value repeats | Rows beyond one per value; more open | The most repeated value |
 | Missing in files, Type mismatch | Every row of the named files | Rows of those files | The files and the values a conflict hides |
@@ -53,8 +53,8 @@ and <kbd>Enter</kbd> shows a **Read Rows** dialog before anything is read:
 | Row | Says |
 |---|---|
 | Rows | The finding and its columns |
-| Why | A full scan keeps no rows; the sampled rows are no longer kept; or the rows are in the named files |
-| Reads | The sample again from its seed, every row of the scope once (duplicates), the scope as far as the table scrolls, or the named files; with a read size where one can be estimated |
+| Why | A full scan keeps no rows; the rows read are no longer kept; or the rows are in the named files |
+| Reads | The sample again from its seed, every row of the scope once (duplicates), every row of the scope to count the matches and then the rows on screen, or the named files; with a read size where one can be estimated |
 | Shows | How many rows, when one count is all of them |
 | Source | Local or remote, read only |
 

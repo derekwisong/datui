@@ -10,7 +10,10 @@ typing. The bottom bar shows the main actions for the current screen.
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move one row |
-| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Scroll columns |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Scroll one column |
+| <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | [A page of columns](../user-guide/filtering-sorting.md#move-across-a-wide-table) left or right |
+| <kbd>{</kbd> <kbd>}</kbd> | First column; last page of columns |
+| <kbd>g</kbd> | Go to a column by name |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> or <kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>Ctrl</kbd>+<kbd>F</kbd> | One page |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
@@ -41,6 +44,18 @@ typing. The bottom bar shows the main actions for the current screen.
 The three toggles last for the session; the config file sets the state at
 launch. A letter with <kbd>Ctrl</kbd> or <kbd>Alt</kbd> held is not a table
 key, beyond the paging chords above.
+
+## Go to column
+
+<kbd>g</kbd> at the table lists the columns it shows, in its order.
+
+| Key | Action |
+|---|---|
+| type | Narrow the list to the names that contain it |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move |
+| <kbd>Enter</kbd> | Go to the column |
+| <kbd>Backspace</kbd> | Delete a character; <kbd>Ctrl</kbd>+<kbd>W</kbd> a word, <kbd>Ctrl</kbd>+<kbd>U</kbd> all |
+| <kbd>Esc</kbd> | Close without moving |
 
 ## Home screen
 
@@ -346,7 +361,8 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 The bar at the bottom of the screen shows the ones that matter
 most. A spinner in that bar means datui is busy. While it is, at the plain
 table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
-<kbd>l</kbd>), <kbd>?</kbd> and <kbd>F1</kbd> act at once, and
+<kbd>l</kbd>), <kbd>[</kbd> <kbd>]</kbd>, <kbd>{</kbd> <kbd>}</kbd>,
+<kbd>?</kbd> and <kbd>F1</kbd> act at once, and
 <kbd>Ctrl</kbd>+<kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> and
 <kbd>Ctrl</kbd>+<kbd>O</kbd> act from anywhere. Other keys are queued and
 replayed in order once the work is done — except a bare <kbd>Enter</kbd> or

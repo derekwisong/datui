@@ -106,6 +106,30 @@ Back in the main view, <kbd>r</kbd> reverses every direction at once and
 <kbd>R</kbd> resets everything: query, filters, sort, column order, hidden
 columns and widths, frozen columns, pivot/melt, drill-down and the applied view.
 
+## Move across a wide table
+
+| Key | Moves |
+|---|---|
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | One column |
+| <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | A page of columns |
+| <kbd>{</kbd> <kbd>}</kbd> | To the first column, or to the last page |
+| <kbd>g</kbd> | To a column you name: type to narrow the list, <kbd>Enter</kbd> goes |
+
+- <kbd>]</kbd> starts the next page at the first column not shown whole, so
+  a column cut at the edge is read whole there. A column wider than the
+  window still moves one at a time.
+- The last page is full: it ends with the last column.
+- <kbd>[</kbd> right after <kbd>]</kbd> goes back to the page it left;
+  otherwise it ends the page before with the column left of the first one
+  shown.
+- <kbd>g</kbd> leaves a column already whole on screen where it is; another
+  becomes the first after the frozen ones, or lands on the last page.
+- Frozen columns stay put; hidden ones are not listed by <kbd>g</kbd>.
+
+While some columns are off screen, the bottom bar names the ones on it:
+`cols 41-47 of 300` (`cols 41-47/300` on a bar under 100 cells). It counts
+the columns the table shows, frozen first; hidden columns are not counted.
+
 ## Filters tab
 
 ![Filtering Demo](../demos/07-filtering.gif)

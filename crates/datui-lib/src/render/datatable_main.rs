@@ -223,6 +223,10 @@ pub fn render(
         crate::widgets::inspector::render(main_area, buf, &mut app.inspector_modal, state, ctx);
     }
 
+    if app.input_mode == crate::InputMode::GoToColumn {
+        render_go_to_column(data_area, buf, &app.go_to_column, ctx);
+    }
+
     if app.copy_modal.active {
         // A commitment like export: compact and centered. The dialog holds
         // its rows, the spec and the footer; an open Picker earns the room
@@ -281,6 +285,65 @@ pub(crate) fn render_breadcrumb(
             buf,
         );
     }
+}
+
+/// The column picker: a short list over the table, which stays in view behind it so
+/// the jump is seen landing. Its height is capped and the list scrolls inside it.
+/// Sized by every column rather than the ones the filter admits, so typing moves
+/// nothing.
+fn render_go_to_column(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    picker: &crate::widgets::ui::PickerState,
+    ctx: &RenderContext,
+) {
+    use ratatui::text::{Line, Span};
+    let all = picker.items();
+    let widest = all
+        .iter()
+        .map(|item| crate::glyphs::display_width(item))
+        .max()
+        .unwrap_or(0) as u16;
+    let width = (widest + 6).clamp(30, 48).min(area.width);
+    // Frame, filter line, footer, and up to ten names.
+    let height = (all.len().max(1) as u16 + 4).min(14).min(area.height);
+    let items = picker.filtered();
+    if width < 4 || height < 4 {
+        return;
+    }
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 3,
+        width,
+        height,
+    };
+    let footer = HintBar::from_ctx(ctx).hints(&[("Enter", "Go"), ("Esc", "Cancel")]);
+    let inner = crate::widgets::ui::Surface::new("Go to Column")
+        .footer(&footer)
+        .render(popup, buf, ctx);
+    let filter = if picker.filter.is_empty() {
+        Line::from(Span::styled(
+            "type to narrow",
+            Style::default().fg(ctx.dimmed),
+        ))
+    } else {
+        Line::from(Span::raw(picker.filter.clone()))
+    };
+    Paragraph::new(filter).render(Rect { height: 1, ..inner }, buf);
+    let list = Rect {
+        y: inner.y + 1,
+        height: inner.height.saturating_sub(1),
+        ..inner
+    };
+    if items.is_empty() {
+        Paragraph::new(Span::styled(
+            "No column matches",
+            Style::default().fg(ctx.dimmed),
+        ))
+        .render(Rect { height: 1, ..list }, buf);
+        return;
+    }
+    crate::widgets::ui::Picker::from_state(picker, true).render(list, buf, ctx);
 }
 
 #[cfg(test)]

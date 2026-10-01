@@ -52,6 +52,9 @@ pub struct Controls {
     /// the number it changed; `R` takes it away. Rule 6: a view mutated with
     /// nothing on screen saying so is unfinished.
     pub reshaped: Option<&'static str>,
+    /// Which columns the table shows, while some are off screen. Drawn before the
+    /// row count: `cols 41-47 of 300`, or `cols 41-47/300` on a narrow bar.
+    pub columns: Option<crate::widgets::column_paging::OnScreen>,
 }
 
 impl Controls {
@@ -150,6 +153,15 @@ impl Controls {
         self
     }
 
+    /// Say which columns are on screen. See [`Self::columns`].
+    pub fn with_columns(
+        mut self,
+        columns: Option<crate::widgets::column_paging::OnScreen>,
+    ) -> Self {
+        self.columns = columns;
+        self
+    }
+
     pub fn with_not_the_table(mut self, format: Option<&'static str>) -> Self {
         self.not_the_table = format;
         self
@@ -181,6 +193,7 @@ impl Controls {
             reshaped: None,
             row_count_unknown: false,
             not_the_table: None,
+            columns: None,
         }
     }
 }
@@ -220,10 +233,7 @@ impl Widget for &Controls {
         // known total says so ("417,321 of 1.2M"): the count on screen stays exact, the
         // universe abbreviates with the same formatter the home screen uses, and the exact
         // total is one `i` away in the Info panel.
-        let row_count_text = |count: usize| -> String {
-            if let Some(caption) = &self.caption {
-                return caption.clone();
-            }
+        let rows_text = |count: usize| -> String {
             if self.row_count_pending {
                 format!("{} rows", spinner_ch())
             } else if self.row_count_unknown {
@@ -238,6 +248,31 @@ impl Widget for &Controls {
                 format!("{} rows", crate::discover::format_rows(count))
             }
         };
+
+        // The column range leads the count while some columns are off screen; a bar
+        // short of room takes the compact form, so the keys keep theirs.
+        let compact = area.width < 100;
+        let columns_on = self.columns.filter(|_| self.caption.is_none());
+        let with_gap = |label: String| {
+            let gap = if compact { " " } else { "  " };
+            format!("{label}{gap}{}{gap}", crate::glyphs::get().middot)
+        };
+        let columns = columns_on.map(|on| with_gap(on.label(compact)));
+        let row_count_text = |count: usize| -> String {
+            if let Some(caption) = &self.caption {
+                return caption.clone();
+            }
+            let columns = columns.as_deref().unwrap_or("");
+            format!("{columns}{}", rows_text(count))
+        };
+        // The room the range is given is its widest for this table, so paging changes
+        // the numbers and never which chips fit beside them.
+        let columns_room = columns_on
+            .map(|on| {
+                let widest = with_gap(on.widest_label(compact)).chars().count();
+                widest.saturating_sub(columns.as_deref().map_or(0, |c| c.chars().count()))
+            })
+            .unwrap_or(0) as u16;
 
         let throbber_style = if no_bg {
             Style::default().fg(self.throbber_color)
@@ -262,7 +297,7 @@ impl Widget for &Controls {
         // layout used to hardcode twenty-one here and truncate the caption itself.
         let trailing = self
             .row_count
-            .map(|count| (row_count_text(count).chars().count() as u16 + 1).max(20));
+            .map(|count| (row_count_text(count).chars().count() as u16 + 1 + columns_room).max(20));
 
         // The chip that says the row count is not the table's. Immediately left of the
         // count, because the count is what it is about.
@@ -288,7 +323,7 @@ impl Widget for &Controls {
 
         // The keys this bar would offer, custom or default. Worked out above the
         // status mode too: the way-out subset stays on a busy bar.
-        const DEFAULT_CONTROLS: [(&str, &str); 11] = [
+        const DEFAULT_CONTROLS: [(&str, &str); 13] = [
             ("/", "Query"),
             ("i", "Info"),
             ("a", "Analysis"),
@@ -298,6 +333,8 @@ impl Widget for &Controls {
             ("e", "Export"),
             ("y", "Copy"),
             ("^O", "Home"),
+            ("Space", "Inspect"),
+            ("g", "Column"),
             ("?", "Help"),
             ("q", "Quit"),
         ];
@@ -749,6 +786,48 @@ mod tests {
         let out = render_to_string(&with_row_count(1_000).with_total_row_count(Some(1_000)), 80);
         assert!(out.contains("1,000 rows"), "got: {out:?}");
         assert!(!out.contains(" of "), "got: {out:?}");
+    }
+
+    /// While columns are off screen the bar names the ones on it before the rows, in
+    /// the short form on a narrow bar; the way out keeps its chip at 60 columns.
+    #[test]
+    fn the_column_range_leads_the_row_count() {
+        use crate::widgets::column_paging::OnScreen;
+        let on = Some(OnScreen {
+            first: 41,
+            last: 47,
+            total: 300,
+        });
+        let dot = crate::glyphs::get().middot;
+        let wide = render_to_string(&with_row_count(200).with_columns(on), 120);
+        assert!(
+            wide.ends_with(&format!("cols 41-47 of 300  {dot}  200 rows")),
+            "got: {wide:?}"
+        );
+        let narrow = render_to_string(&with_row_count(200).with_columns(on), 60);
+        assert!(
+            narrow.ends_with(&format!("cols 41-47/300 {dot} 200 rows")),
+            "got: {narrow:?}"
+        );
+        assert!(narrow.contains("q  Quit"), "got: {narrow:?}");
+        let none = render_to_string(&with_row_count(200), 80);
+        assert!(!none.contains("cols"), "got: {none:?}");
+
+        // Paging changes the numbers, never which chips fit beside them.
+        for width in [60, 80, 100, 120] {
+            let at = |first, last| {
+                let on = OnScreen {
+                    first,
+                    last,
+                    total: 300,
+                };
+                let bar = render_to_string(&with_row_count(200).with_columns(Some(on)), width);
+                let cut = bar.find("cols").expect("the range is drawn");
+                bar[..cut].trim_end().to_string()
+            };
+            assert_eq!(at(1, 6), at(295, 300), "at {width}");
+            assert_eq!(at(1, 6), at(41, 47), "at {width}");
+        }
     }
 
     /// Pending and unknown keep their say: no "of" beside a spinner or a "?".

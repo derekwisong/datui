@@ -107,6 +107,10 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             {
                 return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
             }
+            // The column picker's footer names its keys.
+            if app.input_mode == crate::InputMode::GoToColumn {
+                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
+            }
             // The inspector's footer names its keys; it has nothing to cancel.
             if app.input_mode == crate::InputMode::Inspect {
                 return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Close")]);

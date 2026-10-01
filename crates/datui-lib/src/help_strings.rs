@@ -24,6 +24,10 @@ pub fn go_to_line() -> &'static str {
     include_help!("go_to_line")
 }
 
+pub fn go_to_column() -> &'static str {
+    include_help!("go_to_column")
+}
+
 pub fn sort_filter() -> &'static str {
     include_help!("sort_filter")
 }

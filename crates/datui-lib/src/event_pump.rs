@@ -599,8 +599,8 @@ impl Pacer {
 }
 
 /// Keys that move the view and are commonly held down. Column scroll (Left/Right/h/l)
-/// is included so a held one collapses when it cannot act live (behind other keys, or
-/// in a modal).
+/// and column paging (`[ ] { }`) are included so a held one collapses when it cannot
+/// act live (behind other keys, or in a modal).
 fn is_navigation(key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -616,6 +616,10 @@ fn is_navigation(key: &KeyEvent) -> bool {
         | KeyCode::Char('k')
         | KeyCode::Char('h')
         | KeyCode::Char('l')
+        | KeyCode::Char('[')
+        | KeyCode::Char(']')
+        | KeyCode::Char('{')
+        | KeyCode::Char('}')
         | KeyCode::Char('G') => true,
         KeyCode::Char('f') | KeyCode::Char('b') | KeyCode::Char('d') | KeyCode::Char('u') => ctrl,
         _ => false,
@@ -1712,6 +1716,101 @@ mod tests {
             vec![KeyCode::Char('k'), KeyCode::Right],
             "the held Rights collapse to one"
         );
+    }
+
+    /// A pump with a CSV of sixty narrow columns loaded and drawn at 100 wide: three
+    /// pages sideways.
+    fn wide_pump() -> (EventPump, tempfile::TempDir) {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("wide.csv");
+        let mut file = std::fs::File::create(&path).expect("create csv");
+        let names: Vec<String> = (0..60).map(|i| format!("c{i:02}")).collect();
+        writeln!(file, "{}", names.join(",")).expect("write csv");
+        for row in 0..5 {
+            let values: Vec<String> = (0..60).map(|i| format!("{}", row * 100 + i)).collect();
+            writeln!(file, "{}", values.join(",")).expect("write csv");
+        }
+        drop(file);
+        let mut pump = pump();
+        pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        settle(&mut pump);
+        rendered(&mut pump.app);
+        (pump, dir)
+    }
+
+    fn first_scrolled(pump: &EventPump) -> usize {
+        pump.app.data_table_state.as_ref().unwrap().termcol_index
+    }
+
+    /// Column paging acts at a busy table at once, as column scroll does; behind a
+    /// held key it waits, a held run of one collapses, and it replays in order.
+    #[test]
+    fn column_paging_acts_live_and_replays_in_order() {
+        let (mut p, _dir) = wide_pump();
+        p.app.busy = true;
+        assert!(p.terminal_key(plain(KeyCode::Char(']'))).unwrap());
+        assert!(held(&p).is_empty(), "] did not queue");
+        rendered(&mut p.app);
+        let page = first_scrolled(&p);
+        assert!(page > 1, "a page moves more than a column: {page}");
+        assert!(p.terminal_key(plain(KeyCode::Char('}'))).unwrap());
+        rendered(&mut p.app);
+        let last_page = first_scrolled(&p);
+        assert!(last_page > page && last_page < 59, "{page} {last_page}");
+        assert!(p.terminal_key(plain(KeyCode::Char('{'))).unwrap());
+        assert_eq!(first_scrolled(&p), 0);
+        let shift_right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
+        assert!(p.terminal_key(shift_right).unwrap());
+        assert_eq!(first_scrolled(&p), page, "Shift+→ pages too");
+        assert!(p.terminal_key(plain(KeyCode::Char('['))).unwrap());
+        assert_eq!(first_scrolled(&p), 0);
+
+        // Behind a held key they wait, and a run of one collapses.
+        p.terminal_key(plain(KeyCode::Char('k'))).unwrap();
+        for _ in 0..5 {
+            p.terminal_key(plain(KeyCode::Char(']'))).unwrap();
+        }
+        p.terminal_key(plain(KeyCode::Char('}'))).unwrap();
+        p.terminal_key(plain(KeyCode::Char('['))).unwrap();
+        assert_eq!(
+            held(&p),
+            vec![
+                KeyCode::Char('k'),
+                KeyCode::Char(']'),
+                KeyCode::Char('}'),
+                KeyCode::Char('['),
+            ]
+        );
+        assert_eq!(first_scrolled(&p), 0, "nothing acted yet");
+        p.app.busy = false;
+        settle(&mut p);
+        assert!(held(&p).is_empty());
+        rendered(&mut p.app);
+        // ] then } reach the last page; [ is the page before it.
+        let before_last = first_scrolled(&p);
+        assert!(
+            before_last > 0 && before_last < last_page,
+            "{before_last} before {last_page}"
+        );
+        // And the column picker, typed while busy, waits with what was typed into it.
+        p.app.busy = true;
+        for key in [
+            KeyCode::Char('g'),
+            KeyCode::Char('c'),
+            KeyCode::Char('0'),
+            KeyCode::Char('5'),
+            KeyCode::Enter,
+        ] {
+            p.terminal_key(plain(key)).unwrap();
+        }
+        assert_eq!(held(&p).len(), 5, "g is not a view key: everything waits");
+        p.app.busy = false;
+        settle(&mut p);
+        rendered(&mut p.app);
+        assert_eq!(first_scrolled(&p), 5, "g c05 Enter shows c05 first");
+        assert_eq!(p.app.input_mode, InputMode::Normal);
     }
 
     /// Item 8: F1 and `?` open help during a long load, at once, with nothing held.

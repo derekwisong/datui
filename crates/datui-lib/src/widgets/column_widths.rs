@@ -35,7 +35,7 @@ pub const MAX_WIDTH: u16 = 240;
 /// Cells one narrower or wider press moves a width.
 pub const WIDTH_STEP: u16 = 4;
 /// Where narrower or wider starts on a column that has not been drawn yet.
-const UNSEEN_WIDTH: u16 = 12;
+pub const UNSEEN_WIDTH: u16 = 12;
 
 impl WidthChoice {
     /// One step narrower, from the width set by hand or else from the width drawn.
@@ -109,6 +109,9 @@ struct Entry {
     choice: WidthChoice,
     /// The width the column was last drawn at.
     shown: Option<u16>,
+    /// Whether `shown` was drawn since automatic widths were last relearned, so it
+    /// is the width the column draws at now rather than in the view before.
+    current: bool,
 }
 
 /// Display widths by column identity: a name and its type. A column whose type
@@ -145,6 +148,7 @@ impl ColumnWidths {
                     settled: false,
                     choice: WidthChoice::Auto,
                     shown: None,
+                    current: false,
                 });
                 entries.len() - 1
             }
@@ -177,6 +181,7 @@ impl ColumnWidths {
             }
         };
         entry.shown = Some(width);
+        entry.current = true;
         width
     }
 
@@ -189,6 +194,14 @@ impl ColumnWidths {
     /// The width the column was last drawn at, if it has been.
     pub fn shown(&self, name: &str, dtype: &DataType) -> Option<u16> {
         self.entry(name, dtype).and_then(|e| e.shown)
+    }
+
+    /// The width the column was last drawn at, if it has been drawn since the
+    /// widths were last relearned: what a sideways page can be planned with.
+    pub fn drawn(&self, name: &str, dtype: &DataType) -> Option<u16> {
+        self.entry(name, dtype)
+            .filter(|e| e.current)
+            .and_then(|e| e.shown)
     }
 
     pub fn set_choice(&mut self, name: &str, dtype: &DataType, choice: WidthChoice) {
@@ -237,6 +250,7 @@ impl ColumnWidths {
             for entry in self.by_name.values_mut().flatten() {
                 entry.learned = 0;
                 entry.settled = false;
+                entry.current = false;
             }
         }
     }
@@ -383,6 +397,23 @@ mod tests {
         // Only once: later rows are paging.
         widths.rows_arrived();
         assert_eq!(widths.width("d", &s, text(5), 32), 20);
+    }
+
+    /// A width drawn before a relearn is not one to plan a page with until the
+    /// column is drawn again; it is still the width the sidebar steps from.
+    #[test]
+    fn a_relearn_makes_drawn_widths_unknown_until_drawn_again() {
+        let mut widths = ColumnWidths::default();
+        let s = DataType::String;
+        assert_eq!(widths.drawn("d", &s), None);
+        assert_eq!(widths.width("d", &s, text(10), 32), 10);
+        assert_eq!(widths.drawn("d", &s), Some(10));
+        widths.relearn();
+        widths.rows_arrived();
+        assert_eq!(widths.drawn("d", &s), None);
+        assert_eq!(widths.shown("d", &s), Some(10));
+        assert_eq!(widths.width("d", &s, text(4), 32), 4);
+        assert_eq!(widths.drawn("d", &s), Some(4));
     }
 
     /// A relearn whose view never showed is dropped.

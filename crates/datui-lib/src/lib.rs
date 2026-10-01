@@ -22900,7 +22900,7 @@ impl App {
                                     copy,
                                 });
                             };
-                            let (lf, _held) =
+                            let (lf, held) =
                                 Self::quality_scope_on_copy(lf, copy_job, &watch, fetch, kept_copy)
                                     .map_err(|error| format!("{error}"))?;
                             let (results, rows) = crate::data_quality::compute_data_quality_watched(
@@ -22912,6 +22912,9 @@ impl App {
                                 kept.as_deref(),
                                 &watch,
                             );
+                            // Let go before the answer goes out: a `d` handled as soon
+                            // as it lands must find the app's handle the last one.
+                            drop(held);
                             let kept = rows.map(|rows| KeptQualitySample {
                                 dataset_generation,
                                 view_generation,

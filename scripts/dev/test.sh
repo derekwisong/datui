@@ -46,17 +46,22 @@ run() {
 
 # Tests read tests/sample-data and write their own files elsewhere: another test
 # process may have these memory-mapped, and rewriting one kills it with SIGBUS
-# (#486). Fail a run that wrote there. Skipped when the run generates the fixtures.
+# (#486). Fail a run that wrote there, unless the generator ran: it rewrites
+# every fixture, people.parquet among them.
 run_tests() {
-    if $print_only || [[ ! -f tests/sample-data/people.parquet ]]; then
+    if $print_only; then
         run "$@"
         return
     fi
-    local marker written status=0
+    local written status=0
     marker=$(mktemp)
+    trap 'rm -f "$marker"' EXIT
     "$@" || status=$?
-    written=$(find tests/sample-data -newer "$marker")
-    rm -f "$marker"
+    # -H: worktrees often link tests/sample-data to one shared copy.
+    written=$(find -H tests/sample-data -newer "$marker" 2>/dev/null) || true
+    if [[ tests/sample-data/people.parquet -nt $marker ]]; then
+        written=
+    fi
     if [[ -n $written ]]; then
         printf 'Tests wrote into tests/sample-data (use common::fixture_dir() or a tempdir):\n%s\n' \
             "$written" >&2

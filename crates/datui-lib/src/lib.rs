@@ -76,6 +76,7 @@ pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
 pub mod intent_modal;
+pub mod local_copy;
 pub mod locality;
 pub mod logging;
 pub mod measurements;

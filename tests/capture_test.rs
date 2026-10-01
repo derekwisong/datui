@@ -2,90 +2,27 @@
 
 mod common;
 
-/// Whether the app is still waiting on background work: `busy` or the row count. What
-/// these tests wait on rather than a quiet spell on the channel, which on a loaded
-/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
-/// for minutes.
-fn work_pending(app: &App) -> bool {
-    app.is_busy() || app.row_count_pending()
-}
+use common::{drain_events, pump_open_until_loaded};
 
 use std::path::PathBuf;
 use std::sync::mpsc;
 
 use datui::{App, AppEvent, OpenOptions};
 
-/// Pumps the load event chain until complete, including background task results.
-fn pump_open_until_loaded(
-    app: &mut App,
-    rx: &mpsc::Receiver<AppEvent>,
-    paths: Vec<PathBuf>,
-    options: OpenOptions,
-) {
-    let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
-    // Only a hang guard; nothing here is timed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        match next.take() {
-            Some(ev) => {
-                if matches!(ev, AppEvent::Crash(_)) {
-                    app.event(&ev);
-                    return;
-                }
-                next = app.event(&ev);
-            }
-            // Done once nothing is chained, queued or still owed.
-            _ => match rx.try_recv() {
-                Ok(ev) => next = Some(ev),
-                Err(_) if !work_pending(app) => return,
-                Err(_) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "background work never reported back"
-                    );
-                    next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
-                }
-            },
-        }
-    }
-}
-
-/// Waits on the channel while the app is busy; the deadline is only a hang guard.
-fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
-                let _ = tx.send(next);
-            }
-        }
-        if !app.is_busy() {
-            return;
-        }
-        assert!(std::time::Instant::now() < deadline, "app never settled");
-        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
-            && let Some(next) = app.event(&ev)
-        {
-            let _ = tx.send(next);
-        }
-    }
-}
-
-fn open_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+fn open_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>) {
     common::ensure_sample_data();
     let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx.clone(), common::test_runtime());
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data").join(name);
     pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
-    pump_until_idle(&mut app, &rx, &tx);
-    (app, rx, tx)
+    (app, rx)
 }
 
 /// A plain open captures every row, under the dataset's own columns and none of
 /// datui's: the frame is the one the user saw, not the one the buffer reads.
 #[test]
 fn capture_returns_the_whole_table_without_internal_columns() {
-    let (app, _rx, _tx) = open_fixture("people.parquet");
+    let (app, _rx) = open_fixture("people.parquet");
     let lf = app
         .capture_view()
         .expect("capture is allowed for a plain local file")
@@ -108,9 +45,9 @@ fn capture_returns_the_whole_table_without_internal_columns() {
 /// back, over all matching rows.
 #[test]
 fn capture_reflects_the_applied_query() {
-    let (mut app, rx, tx) = open_fixture("people.parquet");
+    let (mut app, rx) = open_fixture("people.parquet");
     app.event(&AppEvent::Search("select where age < 30".to_string()));
-    pump_until_idle(&mut app, &rx, &tx);
+    drain_events(&mut app, &rx);
 
     let expected = app
         .data_table_state
@@ -147,7 +84,7 @@ fn capture_is_none_when_no_dataset_is_open() {
 /// drops, so a captured plan over it would scan a deleted path. Refused, clearly.
 #[test]
 fn capture_is_refused_for_a_decompressed_temp_source() {
-    let (app, _rx, _tx) = open_fixture("people.csv.gz");
+    let (app, _rx) = open_fixture("people.csv.gz");
     assert!(
         app.data_table_state.is_some(),
         "the compressed fixture loaded"
@@ -184,13 +121,12 @@ fn capture_drops_the_drift_column_a_drifting_dataset_carries() {
     }
 
     let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx.clone(), common::test_runtime());
+    let mut app = App::new(tx, common::test_runtime());
     let opts = OpenOptions {
         hive: true,
         ..OpenOptions::default()
     };
     pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts);
-    pump_until_idle(&mut app, &rx, &tx);
 
     assert!(
         app.data_table_state.as_ref().unwrap().drifts(),
@@ -211,11 +147,10 @@ fn capture_drops_the_drift_column_a_drifting_dataset_carries() {
 /// Python binding's life: `run` returns, everything is dropped, then Python collects.
 #[test]
 fn capture_outlives_the_app() {
-    let (app, rx, tx) = open_fixture("people.parquet");
+    let (app, rx) = open_fixture("people.parquet");
     let lf = app.capture_view().unwrap().unwrap();
     drop(app);
     drop(rx);
-    drop(tx);
     let df = lf.collect().expect("collects after teardown");
     assert_eq!(df.height(), 1000);
 }

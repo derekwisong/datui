@@ -13,7 +13,7 @@
 //! render the App into a ratatui Buffer, and inspect the symbols that would be
 //! written to the terminal.
 
-use datui::{App, AppEvent, OpenOptions};
+use datui::{App, OpenOptions};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
@@ -22,13 +22,7 @@ use std::sync::mpsc;
 
 mod common;
 
-/// Whether the app is still waiting on background work: `busy` or the row count. What
-/// these tests wait on rather than a quiet spell on the channel, which on a loaded
-/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
-/// for minutes.
-fn work_pending(app: &App) -> bool {
-    app.is_busy() || app.row_count_pending()
-}
+use common::pump_open_until_loaded;
 
 /// Sequences worth trying, and what each would do if it escaped.
 ///
@@ -51,40 +45,6 @@ const PAYLOADS: &[(&str, &str)] = &[
     ("backspace overwrite", "safe\x08\x08\x08\x08evil"),
     ("C1 CSI single byte", "\u{009b}31m"),
 ];
-
-fn pump_open_until_loaded(
-    app: &mut App,
-    rx: &std::sync::mpsc::Receiver<AppEvent>,
-    paths: Vec<PathBuf>,
-    options: OpenOptions,
-) {
-    let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
-    // Only a hang guard; nothing here is timed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        match next.take() {
-            Some(ev) => {
-                if matches!(ev, AppEvent::Crash(_)) {
-                    app.event(&ev);
-                    return;
-                }
-                next = app.event(&ev);
-            }
-            // Done once nothing is chained, queued or still owed.
-            _ => match rx.try_recv() {
-                Ok(ev) => next = Some(ev),
-                Err(_) if !work_pending(app) => return,
-                Err(_) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "background work never reported back"
-                    );
-                    next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
-                }
-            },
-        }
-    }
-}
 
 /// Every symbol the buffer would emit, concatenated.
 fn rendered_text(buf: &Buffer) -> String {

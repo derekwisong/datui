@@ -2165,7 +2165,8 @@ pub struct UnsampledSegment {
 
 impl DataQualityResults {
     /// Memory the report holds, near enough to budget by: a profile per column, and
-    /// another per column of every segment, which is what grows.
+    /// another per column of every segment, which is what grows, and the text it
+    /// keeps, whole in spellings and cut short in examples.
     pub fn estimated_bytes(&self) -> usize {
         let profile = |column: &ColumnQualityProfile| {
             std::mem::size_of::<ColumnQualityProfile>()
@@ -2197,13 +2198,63 @@ impl DataQualityResults {
             .iter()
             .map(|segment| std::mem::size_of::<UnsampledSegment>() + segment.label.len())
             .sum::<usize>();
+        let texts = |values: &[String]| {
+            values
+                .iter()
+                .map(|value| std::mem::size_of::<String>() + value.len())
+                .sum::<usize>()
+        };
+        // Spellings are whole values, as wide as the column's text is.
+        let spellings = self
+            .category_variants
+            .iter()
+            .map(|group| {
+                std::mem::size_of::<CategoryVariantGroup>()
+                    + group.column.len()
+                    + group.normalized.len()
+                    + group
+                        .variants
+                        .iter()
+                        .map(|(variant, _)| std::mem::size_of::<(String, usize)>() + variant.len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+        let examples = self
+            .examples
+            .iter()
+            .map(|found| std::mem::size_of::<FindingExamples>() + texts(&found.values))
+            .sum::<usize>()
+            + self.identity.as_ref().map_or(0, |identity| {
+                identity
+                    .examples
+                    .iter()
+                    .map(|example| std::mem::size_of::<DuplicateExample>() + texts(&example.values))
+                    .sum()
+            });
+        let temporal = self
+            .temporal
+            .iter()
+            .map(|latency| {
+                std::mem::size_of::<TemporalLatencyProfile>()
+                    + latency.segment.len()
+                    + latency.start_column.len()
+                    + latency.end_column.len()
+            })
+            .sum::<usize>();
+        let shared = self
+            .shared_nulls
+            .iter()
+            .map(|shared| std::mem::size_of::<SharedNulls>() + texts(&shared.columns))
+            .sum::<usize>();
         std::mem::size_of::<Self>()
             + self.columns.iter().map(profile).sum::<usize>()
             + segments
             + unsampled
             + observations
-            + self.temporal.len() * std::mem::size_of::<TemporalLatencyProfile>()
-            + self.category_variants.len() * std::mem::size_of::<CategoryVariantGroup>()
+            + temporal
+            + spellings
+            + examples
+            + shared
     }
 
     pub fn compare_segments(&mut self, plan: &DataQualityPlan) {
@@ -8263,6 +8314,63 @@ mod tests {
             &QualityWatch::default(),
         );
         assert_eq!(results.unwrap().reads, Some(ObservedReads::default()));
+    }
+
+    /// Wide, nearly unique text: a report keeps only bounded pieces of it (examples
+    /// cut short, at most 100 spelling groups), and the memory budget weighs every
+    /// piece it keeps, the spellings' full text included.
+    #[test]
+    fn a_report_on_wide_text_is_weighed_by_the_text_it_holds() {
+        let wide = "x".repeat(2_000);
+        let rows = 600;
+        let names = (0..rows)
+            .map(|row| {
+                let name = format!("Vendor {:04} {wide}", row / 2);
+                if row % 2 == 0 {
+                    name
+                } else {
+                    name.to_uppercase()
+                }
+            })
+            .collect::<Vec<_>>();
+        let df = df!(
+            "id" => (0..rows as i64).collect::<Vec<_>>(),
+            "name" => names,
+            "note" => (0..rows).map(|row| format!("{row} {wide}")).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for compute in [QualityCompute::Sample, QualityCompute::Full] {
+            let plan = DataQualityPlan {
+                compute,
+                dataset_rows: rows,
+                ..DataQualityPlan::default()
+            };
+            let results =
+                compute_data_quality(&df.clone().lazy(), None, &plan, None, false).unwrap();
+            assert_eq!(results.category_variants.len(), 100, "{compute:?}");
+            let spellings = results
+                .category_variants
+                .iter()
+                .map(|group| {
+                    group.column.len()
+                        + group.normalized.len()
+                        + group
+                            .variants
+                            .iter()
+                            .map(|(variant, _)| variant.len())
+                            .sum::<usize>()
+                })
+                .sum::<usize>();
+            assert!(spellings > 100 * 3 * 2_000, "{spellings}");
+            assert!(
+                results.estimated_bytes() >= spellings,
+                "{compute:?}: {} bytes budgeted for {spellings} of text",
+                results.estimated_bytes()
+            );
+            for value in results.examples.iter().flat_map(|found| &found.values) {
+                assert!(crate::glyphs::display_width(value) <= 26, "{value}");
+            }
+        }
     }
 }
 

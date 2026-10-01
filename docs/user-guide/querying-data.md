@@ -28,7 +28,8 @@ To open on another mode, set it in the [config](../reference/settings.md#query-v
 default_mode = "q-style"   # "sql" (default), "search" or "q-style"
 ```
 
-A build without SQL has no SQL tab and opens on Search instead.
+A build without the `sql` [feature](../getting-started/installation.md#from-source)
+has no SQL tab and opens on Search instead.
 
 ## Run a query
 

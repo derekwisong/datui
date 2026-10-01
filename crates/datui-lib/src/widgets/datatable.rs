@@ -7970,7 +7970,7 @@ impl DataTableState {
         #[cfg(not(feature = "sql"))]
         {
             self.error = Some(PolarsError::ComputeError(
-                "SQL support not compiled in (build with --features sql)".into(),
+                "SQL is not supported in this build. Rebuild with default features.".into(),
             ));
         }
     }

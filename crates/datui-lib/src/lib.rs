@@ -3051,6 +3051,27 @@ mod template_rollback_tests {
         assert!(app.active_template_id.is_none());
     }
 
+    /// A view saved with SQL, applied in a build without `sql`: it fails and says the
+    /// build is why, and the table keeps what it showed.
+    #[cfg(not(feature = "sql"))]
+    #[test]
+    fn a_sql_view_without_the_sql_feature_says_why() {
+        let (mut app, _rx, _tx, _dir) = long_csv_app();
+        let mut template = pivot_view(&mut app, "sql view");
+        template.settings.pivot = None;
+        template.settings.sql_query = Some("SELECT id FROM df".to_string());
+        let error = match app.apply_template(&template) {
+            Err(error) => error.to_string(),
+            Ok(()) => panic!("a SQL view applied without SQL"),
+        };
+        assert!(
+            error.contains("SQL is not supported in this build"),
+            "{error}"
+        );
+        assert_eq!(columns(&app), ["id", "key", "val"]);
+        assert!(app.active_template_id.is_none());
+    }
+
     /// While a view's pivot or rows are read, the bar says Esc stops it.
     #[test]
     fn the_bar_offers_esc_while_a_view_applies() {

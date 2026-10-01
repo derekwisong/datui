@@ -6,6 +6,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::analysis_modal::{AnalysisFocus, SetupRow};
 use datui::data_quality::{QualityPage, QualityPrecision};
+use datui::quality_export::{REPORT_FORMAT, REPORT_VERSION, ReportFile};
 use datui::{App, AppEvent, OpenOptions};
 use polars::prelude::*;
 use std::fs::File;
@@ -241,4 +242,95 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
         limits.contains(&"key repeats among 1,000 sampled rows only".to_string()),
         "{limits:?}"
     );
+}
+
+/// The report on screen goes to a file with the source deleted: nothing is read.
+/// JSON reads back as the versioned schema; Markdown names the findings; a file that
+/// exists is overwritten only once confirmed, and declining keeps the dialog.
+#[test]
+fn the_report_exports_without_reading_the_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("orders.parquet");
+    write_orders(&path, 3_000);
+    let (mut app, rx) = open_setup(path.clone(), 10_000);
+    app.analysis_modal.data_quality_plan.intent = datui::quality_intent::DeclaredIntent {
+        key: vec!["id".to_string()],
+        columns: vec![datui::quality_intent::ColumnIntent {
+            allowed: vec!["open".to_string(), "closed".to_string()],
+            ..datui::quality_intent::ColumnIntent::new("status")
+        }],
+    };
+    let next = press(&mut app, KeyCode::Enter);
+    assert_eq!(drain(&mut app, &rx, next), 1);
+    assert!(app.analysis_modal.data_quality_results.is_some());
+
+    std::fs::remove_file(&path).unwrap();
+
+    // Not over Setup: the report on screen, not a draft.
+    press(&mut app, KeyCode::Char('x'));
+    let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
+    assert_eq!(form.path.value(), "orders-quality.json");
+    let json = dir.path().join("report.json");
+    form.path.set_value(json.display().to_string());
+    let next = press(&mut app, KeyCode::Enter);
+    assert!(matches!(next, Some(AppEvent::QualityReportExport(..))));
+    assert!(app.analysis_modal.data_quality_export.is_none());
+    drain(&mut app, &rx, next);
+    assert!(
+        app.flash_message()
+            .unwrap()
+            .starts_with("Report written to")
+    );
+    let file: ReportFile = serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    assert_eq!(file.format, REPORT_FORMAT);
+    assert_eq!(file.version, REPORT_VERSION);
+    assert_eq!(file.setup.intent.key, vec!["id"]);
+    assert_eq!(file.run.precision, "exact");
+    assert_eq!(file.run.evaluated_rows, 3_000);
+    let source = file.source.unwrap();
+    assert_eq!(source.location.unwrap(), path.display().to_string());
+    assert!(source.bytes.is_some() && source.modified.is_some());
+    assert!(
+        file.findings
+            .iter()
+            .any(|finding| finding.title == "Not allowed")
+    );
+
+    // Markdown, the extension following the form.
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Right);
+    let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
+    assert_eq!(form.path.value(), "orders-quality.md");
+    form.path
+        .set_value(dir.path().join("report").display().to_string());
+    let next = press(&mut app, KeyCode::Enter);
+    drain(&mut app, &rx, next);
+    let markdown = std::fs::read_to_string(dir.path().join("report.md")).unwrap();
+    assert!(markdown.starts_with("# Data quality report"), "{markdown}");
+    assert!(markdown.contains("**Not allowed** (status)"), "{markdown}");
+    assert!(markdown.contains("| Key | id |"), "{markdown}");
+
+    // Over a file that exists: asked first; No keeps the dialog as typed.
+    press(&mut app, KeyCode::Char('x'));
+    let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
+    form.path.set_value(json.display().to_string());
+    std::fs::write(&json, "earlier").unwrap();
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.confirmation_modal.active);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.confirmation_modal.active);
+    assert!(app.analysis_modal.data_quality_export.is_some());
+    assert_eq!(std::fs::read_to_string(&json).unwrap(), "earlier");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Left);
+    let next = press(&mut app, KeyCode::Enter);
+    assert!(matches!(next, Some(AppEvent::QualityReportExport(..))));
+    drain(&mut app, &rx, next);
+    assert!(
+        std::fs::read_to_string(&json)
+            .unwrap()
+            .contains(REPORT_FORMAT)
+    );
+    assert!(!path.exists(), "the source was never needed");
 }

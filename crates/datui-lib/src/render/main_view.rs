@@ -348,6 +348,14 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             ("Esc", "Cancel"),
         ];
     }
+    if let Some(form) = modal.data_quality_export.as_ref() {
+        let mut keys = vec![("Enter", "Export"), ("Tab", "Next")];
+        if form.on_format {
+            keys.push((g.updown_lr, "Format"));
+        }
+        keys.push(("Esc", "Cancel"));
+        return keys;
+    }
     if modal.data_quality_page == QualityPage::ExpectedWindows {
         let mut keys = vec![("Enter", "Done")];
         if modal
@@ -481,6 +489,9 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         (g.updown_lr, "Page"),
         ("v", "View Rows"),
     ]);
+    if results.is_some() {
+        keys.push(("x", "Export"));
+    }
     keys.extend(own);
     keys.extend([("Tab", "Focus"), ("?", "Help")]);
     keys

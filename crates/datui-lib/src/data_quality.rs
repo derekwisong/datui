@@ -2145,6 +2145,8 @@ pub struct DataQualityResults {
     pub unsampled_segments: Vec<UnsampledSegment>,
     /// What the declared column intent found; `None` when nothing was declared.
     pub intent: Option<Box<crate::quality_intent::IntentResults>>,
+    /// What the rows were read from, as the run that measured them labeled it.
+    pub source: Option<Box<crate::quality_export::SourceIdentity>>,
 }
 
 /// A segment the scope has rows in and a sample drew none of.
@@ -2252,6 +2254,7 @@ impl DataQualityResults {
             examples: Vec::new(),
             unsampled_segments: Vec::new(),
             intent: None,
+            source: None,
         }
     }
 
@@ -2799,6 +2802,7 @@ fn profile_quality(
         examples,
         unsampled_segments,
         intent,
+        source: None,
     };
     Ok(results)
 }
@@ -3075,6 +3079,7 @@ fn compute_full_quality(
         examples: Vec::new(),
         unsampled_segments: Vec::new(),
         intent,
+        source: None,
     })
 }
 

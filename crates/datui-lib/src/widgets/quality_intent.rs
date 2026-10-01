@@ -233,6 +233,7 @@ mod tests {
     use crate::data_quality::{
         DataQualityPlan, DataQualityResults, QualityCompute, QualityMetric, QualityPage,
     };
+    use crate::quality_export::ExportForm;
     use crate::quality_intent::{ColumnIntent, DeclaredIntent};
     use crate::render::context::RenderContext;
     use crate::widgets::data_quality::{SetupView, render};
@@ -264,6 +265,7 @@ mod tests {
     #[derive(Default)]
     struct Over<'a> {
         intent: Option<&'a IntentForm>,
+        export: Option<&'a ExportForm>,
         access: bool,
     }
 
@@ -345,6 +347,7 @@ mod tests {
                 rows_kept: true,
                 evidence_read: None,
                 intent_form: over.intent,
+                export_form: over.export,
             };
             let (width, height) = size;
             let area = Rect::new(0, 0, width, height);
@@ -484,5 +487,42 @@ mod tests {
             text.contains("the key adds one pass over its columns"),
             "{text}"
         );
+    }
+
+    /// The report lists the declared rules' violations as problems, and the export
+    /// dialog fits over it at both sizes.
+    #[test]
+    fn the_report_and_export_dialog_fit_80x24_and_60x20() {
+        let screen = Screen::new(QualityCompute::Full);
+        let mut export = ExportForm::new("orders", &screen.theme);
+        for size in SIZES {
+            let text = screen.draw(QualityPage::Overview, 0, Over::default(), size);
+            for title in ["Repeated key", "Not allowed", "Out of range"] {
+                assert!(text.contains(title), "{title} at {size:?}:\n{text}");
+            }
+            assert_glyph_slots(&text);
+            let over = Over {
+                export: Some(&export),
+                ..Over::default()
+            };
+            let text = screen.draw(QualityPage::Overview, 0, over, size);
+            for expected in [
+                "Export Report",
+                "Path:",
+                "orders-quality.json",
+                "Format:",
+                "JSON",
+            ] {
+                assert!(text.contains(expected), "{expected} at {size:?}:\n{text}");
+            }
+            assert_glyph_slots(&text);
+        }
+        export.error = Some("Type a path to write to".to_string());
+        let over = Over {
+            export: Some(&export),
+            ..Over::default()
+        };
+        let text = screen.draw(QualityPage::Overview, 0, over, (80, 24));
+        assert!(text.contains("Type a path to write to"), "{text}");
     }
 }

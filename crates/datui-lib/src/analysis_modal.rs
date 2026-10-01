@@ -495,6 +495,8 @@ pub struct AnalysisModal {
     pub data_quality_expected_form: Option<ExpectedForm>,
     /// One column's declared intent, being edited over the Column intent list.
     pub data_quality_intent_form: Option<crate::intent_modal::IntentForm>,
+    /// The dialog that writes the report on screen to a file.
+    pub data_quality_export: Option<crate::quality_export::ExportForm>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -563,6 +565,7 @@ impl AnalysisModal {
         self.data_quality_trend_line = 0;
         self.data_quality_expected_form = None;
         self.data_quality_intent_form = None;
+        self.data_quality_export = None;
         self.sample_form = None;
     }
 
@@ -599,6 +602,7 @@ impl AnalysisModal {
         self.data_quality_trend_line = 0;
         self.data_quality_expected_form = None;
         self.data_quality_intent_form = None;
+        self.data_quality_export = None;
     }
 
     /// Returns the cached results for the currently selected tool, if any.
@@ -909,8 +913,18 @@ impl AnalysisModal {
             && !self.data_quality_show_access
             && !self.data_quality_observation_detail
             && self.data_quality_evidence_read.is_none()
+            && self.data_quality_export.is_none()
             && self.data_quality_intent_form.is_none()
             && self.sample_form.is_none()
+    }
+
+    /// Whether the export dialog's path owns typed characters.
+    pub fn export_typing(&self) -> bool {
+        self.active
+            && self
+                .data_quality_export
+                .as_ref()
+                .is_some_and(|form| !form.on_format)
     }
 
     /// Whether a Column intent field owns typed characters, so Ctrl-C and `?` are

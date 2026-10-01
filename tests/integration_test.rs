@@ -1031,6 +1031,7 @@ fn test_stale_background_events_are_ignored() {
             examples: vec![],
             unsampled_segments: vec![],
             intent: None,
+            source: None,
         },
         kept: None,
         plan: Box::default(),

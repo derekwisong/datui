@@ -115,6 +115,8 @@ pub struct DataQualityWidgetConfig<'a> {
     pub ctx: &'a RenderContext,
     /// One column's declared intent, being edited over the Column intent list.
     pub intent_form: Option<&'a crate::intent_modal::IntentForm>,
+    /// The dialog writing the report on screen to a file.
+    pub export_form: Option<&'a crate::quality_export::ExportForm>,
 }
 
 /// The tool list's width: the width every analysis tool gives it, and none on a
@@ -196,6 +198,8 @@ pub fn render(
 
     if let Some(form) = config.intent_form {
         crate::widgets::quality_intent::render_form(form, &config, area, buf);
+    } else if let Some(form) = config.export_form {
+        crate::widgets::quality_export::render(form, &config, area, buf);
     } else if config.show_access {
         render_access_plan(&config, area, buf);
     } else if config.observation_detail {
@@ -4357,6 +4361,7 @@ mod tests {
                 theme: &self.theme,
                 ctx: &self.ctx,
                 intent_form: None,
+                export_form: None,
             }
         }
 
@@ -4949,6 +4954,7 @@ mod interval_tests {
                 theme: &self.theme,
                 ctx: &self.ctx,
                 intent_form: None,
+                export_form: None,
             };
             let (width, height) = size;
             let area = Rect::new(0, 0, width, height);
@@ -5335,6 +5341,7 @@ mod trend_tests {
                 rows_kept: false,
                 evidence_read: None,
                 intent_form: None,
+                export_form: None,
             };
             let area = Rect::new(0, 0, width, height);
             let mut buf = Buffer::empty(area);

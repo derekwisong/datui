@@ -237,7 +237,8 @@ On any report page, press <kbd>x</kbd>. Type a path, choose **JSON** or
 
 The report is written from what is on screen: nothing is read, and the data
 need not still be there. A file that exists is overwritten only after you
-confirm.
+confirm, and only once the whole report is written; see
+[Overwriting](exporting-data.md#overwriting).
 
 ## Check the read size
 

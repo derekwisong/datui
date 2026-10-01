@@ -443,7 +443,8 @@ fn test_chart_export_path_expands_tilde() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    let Some(AppEvent::ChartExport(path, ..)) = out else {
+    let Some(AppEvent::ChartExport(datui::chart_export::ChartExportRequest { path, .. })) = out
+    else {
         panic!("Enter starts the export");
     };
     assert!(
@@ -576,11 +577,22 @@ fn test_chart_prepares_one_selection_at_a_time() {
     );
 }
 
+/// A 400x300 EPS chart export to `path`, where nothing is yet.
+fn eps_request(path: &Path) -> datui::chart_export::ChartExportRequest {
+    datui::chart_export::ChartExportRequest {
+        path: path.to_path_buf(),
+        format: datui::chart_export::ChartExportFormat::Eps,
+        title: String::new(),
+        width: 400,
+        height: 300,
+        overwrite: datui::output_file::Overwrite::Forbid,
+    }
+}
+
 /// An export parked while a *different*, failing selection is in flight is not failed
 /// with that selection's error: it waits for the current selection's data and completes.
 #[test]
 fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
-    use datui::chart_export::ChartExportFormat;
     let (mut app, rx, tx) = open_chart_view("chart_export_after_failure_test.csv");
     // x against x cannot be charted (duplicate column) and takes a moment to fail.
     app.chart_modal.x_column = Some("x".to_string());
@@ -594,13 +606,7 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chart.eps");
     let next = app
-        .event(&AppEvent::ChartExport(
-            path.clone(),
-            ChartExportFormat::Eps,
-            String::new(),
-            400,
-            300,
-        ))
+        .event(&AppEvent::ChartExport(eps_request(&path)))
         .expect("ChartExport defers to DoChartExport");
     app.event(&next);
 
@@ -620,7 +626,6 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
 /// not ready yet the export waits for it rather than collecting on the UI thread.
 #[test]
 fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
-    use datui::chart_export::ChartExportFormat;
     let (mut app, rx, tx) = open_chart_view("chart_export_bg_test.csv");
     app.chart_modal.x_column = Some("x".to_string());
     app.chart_modal.y_columns = vec!["y".to_string()];
@@ -631,13 +636,7 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
     let path = dir.path().join("chart.eps");
     // Asked for while the data is still being prepared.
     let next = app
-        .event(&AppEvent::ChartExport(
-            path.clone(),
-            ChartExportFormat::Eps,
-            String::new(),
-            400,
-            300,
-        ))
+        .event(&AppEvent::ChartExport(eps_request(&path)))
         .expect("ChartExport defers to DoChartExport");
     app.event(&next);
     assert!(
@@ -654,6 +653,55 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
         !app.chart_export_modal.active,
         "the export modal closes on success"
     );
+}
+
+/// A chart export lands whole or not at all, like a data export: PNG and EPS
+/// replace a file only where that was agreed to, and a file that appeared
+/// meanwhile is left alone with the error in the app.
+#[test]
+fn test_chart_export_replaces_only_what_was_agreed() {
+    use datui::chart_export::{ChartExportFormat, ChartExportRequest};
+    use datui::output_file::Overwrite;
+    let (mut app, rx, tx) = open_chart_view("chart_export_overwrite_test.csv");
+    app.chart_modal.x_column = Some("x".to_string());
+    app.chart_modal.y_columns = vec!["y".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    pump_until_idle(&mut app, &rx, &tx);
+    let dir = tempfile::tempdir().unwrap();
+
+    for (name, format) in [
+        ("chart.png", ChartExportFormat::Png),
+        ("chart.eps", ChartExportFormat::Eps),
+    ] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, "theirs").unwrap();
+        let request = ChartExportRequest {
+            format,
+            ..eps_request(&path)
+        };
+        run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request.clone()));
+        assert!(
+            app.error_message().is_some_and(|m| m.contains("appeared")),
+            "{name}: the clash reaches the app"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs", "{name}");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.error_message(), None);
+
+        let replace = ChartExportRequest {
+            overwrite: Overwrite::Replace,
+            ..request
+        };
+        run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(replace));
+        assert_eq!(app.error_message(), None, "{name}");
+        let bytes = std::fs::read(&path).unwrap();
+        let magic: &[u8] = match format {
+            ChartExportFormat::Png => b"\x89PNG",
+            ChartExportFormat::Eps => b"%!PS",
+        };
+        assert!(bytes.starts_with(magic), "{name} was replaced");
+    }
+    assert!(leftovers(dir.path(), &["chart.png", "chart.eps"]).is_empty());
 }
 
 /// Wait for the outcome of a background scan.
@@ -7202,9 +7250,13 @@ fn export_as(
         csv_compression: None,
         json_compression: None,
         ndjson_compression: None,
-        parquet_compression: None,
     };
-    let start = AppEvent::DoExportCollect(path.to_path_buf(), format, options);
+    let start = AppEvent::DoExportCollect(datui::ExportRequest {
+        path: path.to_path_buf(),
+        format,
+        options,
+        overwrite: datui::output_file::Overwrite::Forbid,
+    });
     if let Some(next) = app.event(&start) {
         let _ = tx.send(next);
     }
@@ -7218,6 +7270,170 @@ fn export_as(
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Feed `first` to the app and pump until nothing is left to do.
+fn run_to_idle(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    first: AppEvent,
+) {
+    if let Some(next) = app.event(&first) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(app, rx, tx);
+}
+
+/// Names in `dir` besides `keep`: what an export left behind.
+fn leftovers(dir: &Path, keep: &[&str]) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !keep.contains(&name.as_str()))
+        .collect()
+}
+
+fn csv_request(path: &Path, overwrite: datui::output_file::Overwrite) -> datui::ExportRequest {
+    datui::ExportRequest {
+        path: path.to_path_buf(),
+        format: datui::export_modal::ExportFormat::Csv,
+        options: datui::ExportOptions {
+            source_file: false,
+            csv_delimiter: b',',
+            csv_include_header: true,
+            csv_compression: Some(datui::CompressionFormat::Gzip),
+            json_compression: None,
+            ndjson_compression: None,
+        },
+        overwrite,
+    }
+}
+
+/// Overwrite agreed to in the dialog: the file is replaced whole, keeps its
+/// permission bits, and success is said once it has landed.
+#[test]
+fn test_an_export_replaces_a_file_after_the_overwrite_is_agreed() {
+    let (mut app, rx, tx) = open_query_filter_fixture("export_overwrite_ok.csv");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out.csv");
+    std::fs::write(&target, "old contents").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+    }
+
+    press(&mut app, KeyCode::Char('e'));
+    app.export_modal.selected_format = datui::export_modal::ExportFormat::Csv;
+    app.export_modal
+        .path_input
+        .set_value(target.display().to_string());
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.confirmation_modal.active, "an existing file asks first");
+    press(&mut app, KeyCode::Left);
+    let export = press(&mut app, KeyCode::Enter).expect("Overwrite starts the export");
+    run_to_idle(&mut app, &rx, &tx, export);
+
+    assert_eq!(app.error_message(), None);
+    assert!(
+        app.flash_message()
+            .is_some_and(|m| m.starts_with("Exported to ")),
+        "success is said once the file is in place"
+    );
+    let written = std::fs::read_to_string(&target).unwrap();
+    assert!(written.starts_with("a,c,name\n"), "{written}");
+    assert_eq!(written.lines().count(), 101);
+    assert!(leftovers(dir.path(), &["out.csv"]).is_empty());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "the replaced file's mode carries over");
+    }
+}
+
+/// Nothing was there when Enter was pressed, so nothing was agreed to be
+/// replaced: a file that appears before the export lands is left alone, and
+/// the app says so instead of saying it exported.
+#[test]
+fn test_a_file_that_appears_during_an_export_is_left_alone() {
+    let (mut app, rx, tx) = open_query_filter_fixture("export_appears.csv");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out.csv");
+
+    press(&mut app, KeyCode::Char('e'));
+    app.export_modal
+        .path_input
+        .set_value(target.display().to_string());
+    let export = press(&mut app, KeyCode::Enter).expect("no file there: the export starts");
+    assert!(matches!(
+        &export,
+        AppEvent::Export(request) if request.overwrite == datui::output_file::Overwrite::Forbid
+    ));
+    std::fs::write(&target, "theirs").unwrap();
+    run_to_idle(&mut app, &rx, &tx, export);
+
+    assert!(
+        app.error_message().is_some_and(|m| m.contains("appeared")),
+        "the failure reaches the app: {:?}",
+        app.error_message()
+    );
+    assert!(
+        !app.flash_message()
+            .is_some_and(|m| m.starts_with("Exported to ")),
+        "no success for an export that did not land"
+    );
+    assert!(!app.is_busy());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "theirs");
+    assert!(leftovers(dir.path(), &["out.csv"]).is_empty());
+}
+
+/// A write that fails part way over an agreed overwrite: the error reaches the
+/// app, and the old file's bytes, its mode, and nothing else are left. CSV
+/// cannot write a list column it was not prepared for, which is the failure.
+#[test]
+fn test_a_failed_export_keeps_the_old_file() {
+    let (mut app, rx, tx) = open_query_filter_fixture("export_fails.csv");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out.csv.gz");
+    std::fs::write(&target, "old contents").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o604)).unwrap();
+    }
+    let mut df = df!("a" => [1i64, 2]).unwrap();
+    df.with_column(Column::new(
+        "list".into(),
+        [
+            Series::new("".into(), [1i64]),
+            Series::new("".into(), [2i64]),
+        ],
+    ))
+    .unwrap();
+
+    let collected = AppEvent::BackgroundExportCollected {
+        generation: app.task_generation(),
+        df,
+        request: csv_request(&target, datui::output_file::Overwrite::Replace),
+    };
+    run_to_idle(&mut app, &rx, &tx, collected);
+
+    assert!(app.error_message().is_some(), "the failure reaches the app");
+    assert!(!app.is_busy());
+    assert!(
+        !app.flash_message()
+            .is_some_and(|m| m.starts_with("Exported to "))
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "old contents");
+    assert!(leftovers(dir.path(), &["out.csv.gz"]).is_empty());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o604);
     }
 }
 
@@ -15666,7 +15882,7 @@ fn test_export_format_follows_typed_extension() {
 
     // And the export the Enter key builds carries that format.
     match press(&mut app, KeyCode::Enter) {
-        Some(AppEvent::Export(path, format, _)) => {
+        Some(AppEvent::Export(datui::ExportRequest { path, format, .. })) => {
             assert_eq!(format, ExportFormat::Csv);
             assert_eq!(path, out);
         }
@@ -15710,7 +15926,12 @@ fn test_export_enter_applies_from_any_row() {
     assert!(!app.export_modal.csv_include_header, "Space toggles");
 
     match press(&mut app, KeyCode::Enter) {
-        Some(AppEvent::Export(path, format, options)) => {
+        Some(AppEvent::Export(datui::ExportRequest {
+            path,
+            format,
+            options,
+            ..
+        })) => {
             assert_eq!(format, ExportFormat::Csv);
             assert_eq!(path, out);
             assert!(

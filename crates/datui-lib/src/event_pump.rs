@@ -603,19 +603,19 @@ mod tests {
         let (mut p, dir) = loaded_pump();
         let out = dir.path().join("out.csv");
 
-        p.send(AppEvent::DoExport(
-            out.clone(),
-            crate::ExportFormat::Csv,
-            crate::ExportOptions {
+        p.send(AppEvent::DoExport(crate::ExportRequest {
+            path: out.clone(),
+            format: crate::ExportFormat::Csv,
+            options: crate::ExportOptions {
                 csv_delimiter: b',',
                 csv_include_header: true,
                 source_file: false,
                 csv_compression: None,
                 json_compression: None,
                 ndjson_compression: None,
-                parquet_compression: None,
             },
-        ))
+            overwrite: crate::output_file::Overwrite::Forbid,
+        }))
         .unwrap();
 
         let mut breaks = 0;

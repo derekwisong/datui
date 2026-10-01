@@ -199,6 +199,18 @@ impl ChartExportFormat {
     }
 }
 
+/// One chart export: the file, its form and size, and whether it may replace a
+/// file already there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChartExportRequest {
+    pub path: std::path::PathBuf,
+    pub format: ChartExportFormat,
+    pub title: String,
+    pub width: u32,
+    pub height: u32,
+    pub overwrite: crate::output_file::Overwrite,
+}
+
 /// Write chart to EPS (Encapsulated PostScript). No external dependencies.
 pub fn write_chart_eps(
     path: &Path,

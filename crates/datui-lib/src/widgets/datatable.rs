@@ -10241,8 +10241,8 @@ mod tests {
             "y" => &["a", "b", "c"]
         )
         .unwrap();
-        let dir = std::env::temp_dir();
-        let path = dir.join("datui_test_ipc.arrow");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datui_test_ipc.arrow");
         let file = std::fs::File::create(&path).unwrap();
         let mut writer = BufWriter::new(file);
         IpcWriter::new(&mut writer).finish(&mut df).unwrap();
@@ -10251,7 +10251,6 @@ mod tests {
         assert_eq!(state.schema.len(), 2);
         assert!(state.schema.contains("x"));
         assert!(state.schema.contains("y"));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -10263,8 +10262,8 @@ mod tests {
             "name" => &["alice", "bob", "carol"]
         )
         .unwrap();
-        let dir = std::env::temp_dir();
-        let path = dir.join("datui_test_avro.avro");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datui_test_avro.avro");
         let file = std::fs::File::create(&path).unwrap();
         let mut writer = BufWriter::new(file);
         AvroWriter::new(&mut writer).finish(&mut df).unwrap();
@@ -10273,7 +10272,6 @@ mod tests {
         assert_eq!(state.schema.len(), 2);
         assert!(state.schema.contains("id"));
         assert!(state.schema.contains("name"));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -10293,8 +10291,8 @@ mod tests {
         let name_array = Arc::new(StringArray::from(vec!["a", "b", "c"]));
         let batch = RecordBatch::try_new(schema.clone(), vec![id_array, name_array]).unwrap();
 
-        let dir = std::env::temp_dir();
-        let path = dir.join("datui_test_orc.orc");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datui_test_orc.orc");
         let file = std::fs::File::create(&path).unwrap();
         let writer = BufWriter::new(file);
         let mut orc_writer = ArrowWriterBuilder::new(writer, schema).try_build().unwrap();
@@ -10305,7 +10303,6 @@ mod tests {
         assert_eq!(state.schema.len(), 2);
         assert!(state.schema.contains("id"));
         assert!(state.schema.contains("name"));
-        let _ = std::fs::remove_file(&path);
     }
 
     /// `--delimiter` reaches the in-memory readers of every compression, and the
@@ -10369,8 +10366,8 @@ mod tests {
 
     #[test]
     fn test_from_delimited_tsv_has_header() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("datui_test_tsv_header.tsv");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datui_test_tsv_header.tsv");
         let content = "a\tb\tc\td\n1\t2\t3\t4\n5\t6\t7\t8\n";
         std::fs::write(&path, content).unwrap();
         let opts = OpenOptions {
@@ -10385,13 +10382,12 @@ mod tests {
         assert!(state.schema.contains("c"));
         assert!(state.schema.contains("d"));
         assert_eq!(state.num_rows, 2);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_from_delimited_tsv_no_header() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("datui_test_tsv_no_header.tsv");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datui_test_tsv_no_header.tsv");
         let content = "a\tb\tc\td\n1\t2\t3\t4\n5\t6\t7\t8\n";
         std::fs::write(&path, content).unwrap();
         let opts = OpenOptions {
@@ -10406,13 +10402,12 @@ mod tests {
         assert!(state.schema.contains("column_3"));
         assert!(state.schema.contains("column_4"));
         assert_eq!(state.num_rows, 3);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_from_delimited_psv_no_header() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("datui_test_psv_no_header.psv");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datui_test_psv_no_header.psv");
         let content = "x|y|z\n10|20|30\n40|50|60\n";
         std::fs::write(&path, content).unwrap();
         let opts = OpenOptions {
@@ -10426,7 +10421,6 @@ mod tests {
         assert!(state.schema.contains("column_2"));
         assert!(state.schema.contains("column_3"));
         assert_eq!(state.num_rows, 3);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

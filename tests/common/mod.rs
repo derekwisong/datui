@@ -129,6 +129,34 @@ pub fn test_runtime() -> tokio::runtime::Handle {
     .clone()
 }
 
+/// A scratch directory named at random and kept for the life of the process.
+///
+/// A static is never dropped, so the directories are removed by an exit handler.
+fn scratch_dir_until_exit(prefix: &str) -> PathBuf {
+    static SCRATCH: std::sync::Mutex<Vec<tempfile::TempDir>> = std::sync::Mutex::new(Vec::new());
+    unsafe extern "C" {
+        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+    }
+    extern "C" fn remove_scratch_dirs() {
+        if let Ok(mut held) = SCRATCH.lock() {
+            held.clear();
+        }
+    }
+    static REGISTER: Once = Once::new();
+    // SAFETY: the C runtime's `atexit`, present on every platform std runs on; the
+    // callback only drops the directories held above.
+    REGISTER.call_once(|| unsafe {
+        atexit(remove_scratch_dirs);
+    });
+    let dir = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .expect("a scratch directory for the test process");
+    let path = dir.path().to_path_buf();
+    SCRATCH.lock().unwrap_or_else(|e| e.into_inner()).push(dir);
+    path
+}
+
 /// Point the cache at a scratch directory for the whole test process.
 ///
 /// Opening a dataset records it as recent, and tests open plenty. Without this a
@@ -142,41 +170,29 @@ pub fn test_runtime() -> tokio::runtime::Handle {
 /// removed when the process exits.
 #[allow(dead_code)]
 pub fn isolate_cache() {
-    // Held for the life of the process. A static is never dropped, so they are removed
-    // by an exit handler instead.
-    static SCRATCH: std::sync::Mutex<Vec<tempfile::TempDir>> = std::sync::Mutex::new(Vec::new());
-    unsafe extern "C" {
-        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
-    }
-    extern "C" fn remove_scratch_dirs() {
-        if let Ok(mut held) = SCRATCH.lock() {
-            held.clear();
-        }
-    }
-    let scratch_dir = |prefix: &str| {
-        tempfile::Builder::new()
-            .prefix(prefix)
-            .tempdir()
-            .expect("a scratch directory for the test process")
-    };
-
     static ISOLATE: Once = Once::new();
     ISOLATE.call_once(|| {
-        let dir = scratch_dir("datui-test-cache-");
+        let dir = scratch_dir_until_exit("datui-test-cache-");
         // The config directory holds templates, so a test App saving one without this
         // override writes it into the developer's own template list.
-        let config_dir = scratch_dir("datui-test-config-");
+        let config_dir = scratch_dir_until_exit("datui-test-config-");
         // SAFETY: test-only. Tests run on parallel threads, so this can race another test
         // reading the environment; accepted in tests and never done outside them.
-        unsafe { std::env::set_var("DATUI_CACHE_DIR", dir.path()) };
-        unsafe { std::env::set_var("DATUI_CONFIG_DIR", config_dir.path()) };
-        let mut held = SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
-        held.push(dir);
-        held.push(config_dir);
-        // SAFETY: the C runtime's `atexit`, present on every platform std runs on; the
-        // callback only drops the directories above.
-        unsafe { atexit(remove_scratch_dirs) };
+        unsafe { std::env::set_var("DATUI_CACHE_DIR", &dir) };
+        unsafe { std::env::set_var("DATUI_CONFIG_DIR", &config_dir) };
     });
+}
+
+/// A fresh directory for one test's own fixtures, removed when the process exits.
+///
+/// `tests/sample-data` holds the generated fixtures and is shared by every test
+/// process: worktrees can link one copy, and a full run can overlap a scoped one.
+/// Polars memory-maps what it reads, so rewriting a file there can truncate one that
+/// another process has mapped, which then dies with SIGBUS. Tests read from
+/// `tests/sample-data` and write here.
+#[allow(dead_code)]
+pub fn fixture_dir() -> PathBuf {
+    scratch_dir_until_exit("datui-test-fixture-")
 }
 
 /// The config TOML `layers` describe, lowest precedence first, as an import chain

@@ -1,9 +1,8 @@
 //! The Views surface, end to end: save form, list annotations, apply, delete.
 //!
 //! These live in their own binary because saving a view writes into the
-//! process's config dir, and a saved view's suggested path pattern matches
-//! every fixture in `tests/sample-data` — inside `integration_test.rs` it
-//! would race the tests that assert "no view matches".
+//! process's config dir, which the `integration_test.rs` tests that assert
+//! "no view matches" read.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::template::MatchReason;
@@ -12,7 +11,6 @@ use datui::{App, AppEvent, OpenOptions};
 use polars::prelude::*;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use std::fs::File;
-use std::path::PathBuf;
 use std::sync::mpsc;
 
 mod common;
@@ -27,8 +25,7 @@ fn press(app: &mut App, code: KeyCode) {
 /// another test's list.
 #[test]
 fn the_views_surface_saves_applies_and_deletes() {
-    let test_data_dir = PathBuf::from("tests/sample-data");
-    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("views_surface.csv");
     let mut df = df!(
         "vs_id" => (0..50i64).collect::<Vec<_>>(),

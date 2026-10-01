@@ -107,7 +107,8 @@ checkpoint `roll_back` restores if its rows fail.
 reader in `terminal_input.rs`), worker results and continuations all arrive as
 `AppEvent`s on one mpsc channel; `EventPump::run` sleeps on it until something
 arrives or a deadline passes (spinner, flash), with no polling tick, and
-`App::event` handles each. Anything polled rather than sent must wake the loop
+`App::event` handles each. A key is offered once the results behind it are
+handled, one key per frame. Anything polled rather than sent must wake the loop
 (`AppEvent::Wake`). Anything that touches data runs off the UI thread through
 `spawn_bg`, tagged with `task_generation`; a result whose generation is stale
 is dropped. Each spawn names its `Job`. A worker sends its result and returns

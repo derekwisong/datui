@@ -6275,6 +6275,94 @@ pub mod tests {
         assert!(app.is_busy(), "the open's wait goes on into its next phase");
     }
 
+    /// A job's end leaves the line a job still running shows, even when the two say
+    /// the same: a view's pivot hands "Applying view..." to the read of its rows.
+    #[test]
+    fn a_job_leaves_the_line_another_job_still_shows() {
+        use crate::{Answer, App, AppEvent, Job, Outcome};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let first = app.job_for_tests(Job::QualityReport, Some("Writing the report..."));
+        let second = app.job_for_tests(Job::QualityReport, Some("Writing the report..."));
+        let ticket = first.ticket();
+        first.end(Outcome::answered(Answer::QualityReportWritten(
+            std::path::PathBuf::from("a.json"),
+        )));
+        app.event(&AppEvent::JobEnded(ticket));
+        assert!(app.is_busy(), "the second still holds the keys");
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Writing the report..."),
+            "and its line"
+        );
+        drop(second);
+    }
+
+    /// Going home quiets the read of the first page, and takes its line down with
+    /// the wait: the rows still land, and the bar does not say "Loading buffer..."
+    /// over a table nobody is waiting on.
+    #[test]
+    fn going_home_takes_down_the_line_of_the_rows_it_stops_waiting_on() {
+        use crate::{App, InflightCollect, Job, LoadingState};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.loading_state = LoadingState::Loading {
+            file_path: None,
+            file_size: 0,
+            current_phase: "Loading buffer".to_string(),
+            progress_percent: 70,
+        };
+        let read = app.job_for_tests(
+            Job::Rows(InflightCollect::for_tests(0, 100)),
+            Some(App::LOADING_BUFFER),
+        );
+        assert!(app.is_busy());
+        app.enter_home();
+        assert!(!app.is_busy(), "nobody waits on the rows");
+        assert_eq!(
+            app.status_message, None,
+            "and the bar says nothing about them"
+        );
+        assert!(app.rows_in_flight().is_some(), "though they still land");
+        drop(read);
+    }
+
+    /// A cancelled sample read is a read still going, as a cancelled run is: nothing
+    /// reads beside it until it ends. Work an open replaced is not a cancel, and
+    /// holds nothing up on the next dataset.
+    #[test]
+    fn a_cancelled_read_waits_out_its_worker_and_a_replaced_one_does_not() {
+        use crate::{App, AppEvent, Job};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let sample = app.job_for_tests(Job::SampleRows, Some("Reading the sample..."));
+        app.cancel_analysis();
+        assert!(!app.is_busy());
+        assert!(
+            app.cancelled_analysis_running().is_some(),
+            "the cancelled read is still going"
+        );
+        drop(sample);
+        app.event(&recv(&rx));
+        assert!(app.cancelled_analysis_running().is_none(), "until it ends");
+
+        let run = app.job_for_tests(
+            Job::Analysis(crate::jobs::AnalysisRun::default()),
+            Some("Computing statistics..."),
+        );
+        app.jobs.advance();
+        assert!(
+            app.cancelled_analysis_running().is_none(),
+            "replaced, not cancelled"
+        );
+        drop(run);
+        let _ = app.handle(&recv(&rx));
+        assert!(!matches!(rx.try_recv(), Ok(AppEvent::JobEnded(_))));
+    }
+
     /// A scan from a load the app has moved past is dropped rather than applied: it
     /// asks for no next phase. What makes leaving a slow load safe: the work keeps
     /// running (Polars has no cancellation), so the only thing between an abandoned
@@ -11766,14 +11854,20 @@ impl App {
         self.cancelled_analysis().map(|(since, _)| since)
     }
 
-    /// The newest cancelled analysis still running, and whether it was cancelled during
-    /// a read nothing can stop.
+    /// The newest cancelled analysis or sample read still running, and whether it was
+    /// cancelled during a read nothing can stop.
     fn cancelled_analysis(&self) -> Option<(std::time::Instant, bool)> {
-        let (since, job) = self
-            .jobs
-            .superseded_running(|job| matches!(job, Job::Analysis(_)))?;
-        let runs_out = matches!(job, Job::Analysis(run) if run.runs_out);
+        let (since, job) = self.jobs.cancelled_running(Self::reads_for_analysis)?;
+        let runs_out = match job {
+            Job::Analysis(run) => run.runs_out,
+            _ => true,
+        };
         Some((since, runs_out))
+    }
+
+    /// A read for the Analysis tools: a run, or the sample read to show as a table.
+    fn reads_for_analysis(job: &Job) -> bool {
+        matches!(job, Job::Analysis(_) | Job::SampleRows)
     }
 
     /// A cancelled run still going that the screen should say is: at once when the
@@ -12398,6 +12492,7 @@ impl App {
             .jobs
             .current(|job| matches!(job, Job::SampleRows))
             .is_some();
+        self.jobs.cancel(Self::reads_for_analysis);
         self.jobs.advance();
         // Keys typed while it ran were typed at the run, which is gone: an impatient
         // second Enter replayed now would start it again behind the Esc.
@@ -14661,8 +14756,16 @@ impl App {
         if matches!(self.loading_state, LoadingState::Loading { .. }) {
             self.loading_state = LoadingState::Idle;
             self.busy = false;
-            self.jobs
+            let quieted = self
+                .jobs
                 .quiet(|job| matches!(job, Job::Rows(_) | Job::OpenNamed));
+            if self
+                .status_message
+                .as_ref()
+                .is_some_and(|status| quieted.contains(status))
+            {
+                self.status_message = None;
+            }
         }
         // Keys typed at the frozen screen were meant for the load, not for home:
         // replayed there they could open a dataset nobody asked for.
@@ -24117,7 +24220,7 @@ impl App {
             outcome,
             ..
         } = self.jobs.end(ticket)?;
-        let cancelled_analysis = !current && matches!(job, Job::Analysis(_));
+        let cancelled_analysis = !current && Self::reads_for_analysis(&job);
         let waited = keys.is_some();
         let out = match outcome {
             Outcome::Answered(answer) => self.answered(job, current, waited, *answer),
@@ -24131,7 +24234,11 @@ impl App {
                 self.busy = true;
             } else {
                 self.busy = false;
-                if self.status_message.as_deref() == Some(status.as_str()) {
+                // Unless a job that is still running says the same: the read of a
+                // view's rows that its pivot's answer started.
+                if self.status_message.as_deref() == Some(status.as_str())
+                    && !self.jobs.shows(&status)
+                {
                     self.status_message = None;
                 }
             }

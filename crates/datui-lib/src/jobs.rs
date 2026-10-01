@@ -409,6 +409,9 @@ struct Record {
     /// When it was superseded. Its answer is stale, and it holds neither the
     /// generation nor the keys.
     superseded: Option<Instant>,
+    /// Superseded by the user's cancel, rather than by other work taking its place:
+    /// a read still going that a new one should not start beside.
+    cancelled: bool,
 }
 
 impl Record {
@@ -626,6 +629,7 @@ impl Jobs {
             slot: Some(slot.clone()),
             keys: keys.map(str::to_string),
             superseded: None,
+            cancelled: false,
         });
         Started {
             ticket,
@@ -648,6 +652,7 @@ impl Jobs {
             slot: None,
             keys: keys.map(str::to_string),
             superseded: None,
+            cancelled: false,
         });
     }
 
@@ -724,17 +729,24 @@ impl Jobs {
             .map(|r| &mut r.job)
     }
 
-    /// The newest superseded job `which` picks whose worker has not ended, and when it
-    /// was superseded: a cancelled run still going.
-    pub(crate) fn superseded_running(
+    /// The newest job `which` picks that the user cancelled and whose worker has not
+    /// ended, and when it was cancelled: a run still going.
+    pub(crate) fn cancelled_running(
         &self,
         which: impl Fn(&Job) -> bool,
     ) -> Option<(Instant, &Job)> {
         self.records
             .iter()
-            .filter(|r| r.running() && which(&r.job))
+            .filter(|r| r.running() && r.cancelled && which(&r.job))
             .filter_map(|r| r.superseded.map(|since| (since, &r.job)))
             .max_by_key(|(since, _)| *since)
+    }
+
+    /// Whether a job still holding the keys shows `status` on the control bar.
+    pub(crate) fn shows(&self, status: &str) -> bool {
+        self.records
+            .iter()
+            .any(|r| r.keys.as_deref() == Some(status))
     }
 
     /// Whether advancing the generation now would throw away an answer nothing will
@@ -785,11 +797,14 @@ impl Jobs {
     }
 
     /// Nobody waits on the jobs `which` picks any more, though their answers are still
-    /// wanted: the keys go back to the user.
-    pub(crate) fn quiet(&mut self, which: impl Fn(&Job) -> bool) {
-        for record in self.records.iter_mut().filter(|r| which(&r.job)) {
-            record.keys = None;
-        }
+    /// wanted: the keys go back to the user. Returns the lines they had on the control
+    /// bar.
+    pub(crate) fn quiet(&mut self, which: impl Fn(&Job) -> bool) -> Vec<String> {
+        self.records
+            .iter_mut()
+            .filter(|r| which(&r.job))
+            .filter_map(|r| r.keys.take())
+            .collect()
     }
 
     /// Advance the generation if that strands nothing. Returns whether it did.
@@ -812,6 +827,17 @@ impl Jobs {
                 record.supersede(now);
             }
         }
+    }
+
+    /// Supersede the running jobs `which` picks as the user's cancel: as
+    /// [`Self::supersede`], and [`Self::cancelled_running`] says so while they run on.
+    pub(crate) fn cancel(&mut self, which: impl Fn(&Job) -> bool) -> bool {
+        for record in &mut self.records {
+            if record.current() && which(&record.job) {
+                record.cancelled = true;
+            }
+        }
+        self.supersede(which)
     }
 
     /// Supersede the running jobs `which` picks, and drop the owed ones: their answers
@@ -1019,11 +1045,11 @@ mod tests {
         assert!(jobs.is_current(own_ticket), "the chart export is not");
         assert!(!jobs.would_strand(), "and neither holds the new generation");
         assert!(!jobs.holds_keys(), "nor the keys");
+        assert!(jobs.running_behind(), "though it runs on");
         assert!(
-            jobs.superseded_running(is_analysis).is_some(),
-            "though it runs on"
+            jobs.cancelled_running(is_analysis).is_none(),
+            "superseded, not cancelled by the user"
         );
-        assert!(jobs.running_behind());
 
         stale.end(Outcome::answered(Answer::Probe(held.clone())));
         assert_eq!(ended(&rx), stale_ticket);
@@ -1031,7 +1057,6 @@ mod tests {
         assert!(!stale_end.current, "as stale");
         drop(stale_end);
         assert_eq!(Arc::strong_count(&held), 1, "and what it carried is let go");
-        assert!(jobs.superseded_running(is_analysis).is_none());
         drop(own);
         assert_eq!(ended(&rx), own_ticket);
         assert!(jobs.end(own_ticket).is_some_and(|e| e.current));
@@ -1150,7 +1175,7 @@ mod tests {
 
     /// How long a cancelled job has been going is the record's to say.
     #[test]
-    fn a_superseded_job_says_since_when() {
+    fn a_cancelled_job_says_since_when() {
         let (mut jobs, _rx) = jobs();
         let run = jobs.start(
             Job::Analysis(AnalysisRun {
@@ -1159,9 +1184,10 @@ mod tests {
             }),
             None,
         );
-        jobs.advance();
+        assert!(jobs.cancel(|job| matches!(job, Job::Analysis(_))));
+        assert!(!jobs.is_current(run.ticket()));
         let (since, job) = jobs
-            .superseded_running(|job| matches!(job, Job::Analysis(_)))
+            .cancelled_running(|job| matches!(job, Job::Analysis(_)))
             .expect("still running");
         assert!(matches!(
             job,
@@ -1170,7 +1196,7 @@ mod tests {
         let before = since;
         jobs.backdate_supersessions(std::time::Duration::from_secs(5));
         let (since, _) = jobs
-            .superseded_running(|job| matches!(job, Job::Analysis(_)))
+            .cancelled_running(|job| matches!(job, Job::Analysis(_)))
             .expect("still running");
         assert!(since < before);
         drop(run);

@@ -11,9 +11,10 @@
 //! export and a copy all spell the same bytes the same way.
 //!
 //! Polars' writers also panic on a date or datetime past the calendar's range
-//! (a sentinel like `i64::MIN + 1` microseconds), so dates and datetimes are
-//! given to them as the text they would write, and such a value as its stored
-//! number, as the table shows it.
+//! (a sentinel like `i64::MIN + 1` microseconds), so dates and millisecond and
+//! microsecond datetimes are given to them as the text they would write, and
+//! such a value as its stored number, as the table shows it. A nanosecond
+//! count is always a date and goes to the writers as it is.
 //!
 //! A duration has no CSV form either, and is written as the JSON writer spells
 //! it: ISO 8601 in seconds (`PT3723.004S`, `-PT1.5S`, `P0D`). That is exact to
@@ -45,11 +46,16 @@ pub fn has_binary(dtype: &DataType) -> bool {
     }
 }
 
+/// A date or datetime the writers can panic on. Every nanosecond count is a
+/// date (1677 to 2262), so those go to the writers as they are, at no cost.
 fn is_calendar(dtype: &DataType) -> bool {
-    matches!(dtype, DataType::Date | DataType::Datetime(..))
+    matches!(
+        dtype,
+        DataType::Date | DataType::Datetime(TimeUnit::Milliseconds | TimeUnit::Microseconds, _)
+    )
 }
 
-/// Whether `dtype` is binary, a date or a datetime, or has one inside: what the
+/// Whether `dtype` is binary or [`is_calendar`], or has one inside: what the
 /// JSON writer is given as text.
 fn has_json_text(dtype: &DataType) -> bool {
     match dtype {
@@ -184,7 +190,8 @@ pub fn duration_as_iso(series: &Series) -> PolarsResult<Series> {
 }
 
 /// Whether a column needs to become text before a CSV writer takes it: it is
-/// nested, binary, a duration, a date or a datetime.
+/// nested, binary, a duration, or a date or datetime in ms or us, which the
+/// writer can panic on.
 pub fn needs_text(dtype: &DataType) -> bool {
     is_nested(dtype)
         || is_binary(dtype)
@@ -521,11 +528,12 @@ pub(crate) mod tests {
             .finish(&mut df.clone())
             .unwrap();
         let mut prepared = lazy_for_json(df.clone().lazy()).unwrap().collect().unwrap();
+        // Nanosecond datetimes go to the writer as they are.
         assert!(
             prepared
                 .columns()
                 .iter()
-                .all(|c| c.dtype() == &DataType::String)
+                .all(|c| { (c.dtype() == &DataType::String) != c.name().starts_with("ns") })
         );
         let mut as_text = Vec::new();
         JsonWriter::new(&mut as_text)
@@ -568,10 +576,17 @@ pub(crate) mod tests {
             text("us", last - 1).as_deref(),
             Some("-9223372036854775807 us since 1970-01-01 UTC")
         );
-        // Every nanosecond count is a date the writer takes.
+        // Every nanosecond count is a date: the writer takes the column as it is.
         assert_eq!(
-            text("ns", last).as_deref(),
-            Some("2262-04-11T23:47:16.854775807")
+            cells.column("ns_tz").unwrap().dtype(),
+            df.column("ns_tz").unwrap().dtype()
+        );
+        let mut csv = Vec::new();
+        CsvWriter::new(&mut csv).finish(&mut cells.clone()).unwrap();
+        assert!(
+            String::from_utf8(csv)
+                .unwrap()
+                .contains(",2262-04-11T23:47:16.854775807,")
         );
         let lazy = lazy_as_json(df.clone().lazy()).unwrap().collect().unwrap();
         assert!(cells.equals_missing(&lazy));

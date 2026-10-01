@@ -568,6 +568,71 @@ pub fn copy_text(column: &Column) -> PolarsResult<String> {
     Ok(value_text(&value))
 }
 
+/// At least how many bytes [`copy_text`] writes for `value`, counted only until
+/// the count passes `stop`: a copy can be refused at a cap before it is
+/// formatted, and a million-item list is not walked to learn that it is over.
+/// Text is its length and bytes their base64; a list or struct is counted from
+/// its punctuation and leaves, each at its shortest JSON.
+pub fn copy_len_floor(value: &AnyValue, stop: usize) -> usize {
+    match value {
+        AnyValue::String(s) => s.len(),
+        AnyValue::StringOwned(s) => s.len(),
+        AnyValue::Binary(b) => crate::clipboard::base64_len(b.len()),
+        AnyValue::BinaryOwned(b) => crate::clipboard::base64_len(b.len()),
+        v if is_nested_value(v) => json_len_floor(v, 0, stop),
+        // Any other scalar is a few bytes: its text is its measure.
+        v => value_text(v).len(),
+    }
+}
+
+/// `so_far` plus a floor on the JSON written for `value`, stopping once past `stop`.
+fn json_len_floor(value: &AnyValue, so_far: usize, stop: usize) -> usize {
+    if so_far > stop {
+        return so_far;
+    }
+    // Brackets, and a comma between items.
+    let punctuation = |len: usize| 2 + len.saturating_sub(1);
+    match value {
+        AnyValue::List(s) | AnyValue::Array(s, _) => {
+            let mut n = so_far + punctuation(s.len());
+            for item in s.iter() {
+                if n > stop {
+                    break;
+                }
+                n = json_len_floor(&item, n, stop);
+            }
+            n
+        }
+        AnyValue::Struct(_, _, fields) => {
+            let mut n = so_far + punctuation(fields.len());
+            for (field, item) in fields.iter().zip(value._iter_struct_av()) {
+                if n > stop {
+                    break;
+                }
+                // `"name":` before the value.
+                n = json_len_floor(&item, n + field.name().len() + 3, stop);
+            }
+            n
+        }
+        AnyValue::StructOwned(payload) => {
+            let mut n = so_far + punctuation(payload.1.len());
+            for (field, item) in payload.1.iter().zip(&payload.0) {
+                if n > stop {
+                    break;
+                }
+                n = json_len_floor(item, n + field.name().len() + 3, stop);
+            }
+            n
+        }
+        AnyValue::String(s) => so_far + s.len() + 2,
+        AnyValue::StringOwned(s) => so_far + s.len() + 2,
+        AnyValue::Binary(b) => so_far + crate::clipboard::base64_len(b.len()) + 2,
+        AnyValue::BinaryOwned(b) => so_far + crate::clipboard::base64_len(b.len()) + 2,
+        // A number, a flag or a null is at least a character.
+        _ => so_far + 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -848,6 +913,48 @@ mod tests {
         let many = Series::new("".into(), (0..1_000_000i64).collect::<Vec<_>>());
         let compact = nested_compact(&AnyValue::List(many), 50);
         assert!(compact.cut && compact.text.len() < 60, "{}", compact.text);
+    }
+
+    /// The floor a capped copy is checked against is never more than what the
+    /// copy writes, and it stops counting past its stop.
+    #[test]
+    fn copy_len_floor_is_a_floor_and_stops_early() {
+        let point = StructChunked::from_columns(
+            "p".into(),
+            1,
+            &[
+                Column::new("x".into(), [Some(1i64)]),
+                Column::new("label".into(), [None::<&str>]),
+            ],
+        )
+        .unwrap()
+        .into_column();
+        let columns = [
+            Column::new("s".into(), ["tab\there \"quoted\" été"]),
+            Column::new("b".into(), [b"Hi\x00".as_slice()]),
+            Column::new("f".into(), [1000000.125f64]),
+            Column::new("n".into(), [None::<i64>]),
+            Column::new("l".into(), [list(&[1.5, 2.0])]),
+            Column::new("t".into(), [Series::new("".into(), ["a\"b", "", "日本"])]),
+            Column::new("e".into(), [Series::new_empty("".into(), &DataType::Int64)]),
+            point,
+        ];
+        for column in columns {
+            let value = column.get(0).unwrap();
+            let text = copy_text(&column).unwrap();
+            let floor = copy_len_floor(&value, usize::MAX);
+            assert!(
+                floor <= text.len(),
+                "{}: {floor} over {text:?}",
+                column.name()
+            );
+        }
+        // Text and bytes are exact.
+        assert_eq!(copy_len_floor(&AnyValue::String("abcdef"), 0), 6);
+        assert_eq!(copy_len_floor(&AnyValue::Binary(b"abcd"), 0), 8);
+        // A million items are past a 1 KB stop from the brackets and commas alone.
+        let many = Series::new("".into(), (0..1_000_000i64).collect::<Vec<_>>());
+        assert!(copy_len_floor(&AnyValue::List(many), 1024) > 1024);
     }
 
     #[test]

@@ -29,7 +29,8 @@ The value:
 Copy:
   y copies the whole value, whatever the pane shows: exact numbers, lists
   and structs as JSON, binary as base64, a null as empty. It uses the same
-  clipboard as the copy dialog (y at the table).
+  clipboard as the copy dialog (y at the table). A value over the osc52
+  limit ([clipboard] osc52_limit_kb) is refused before it is formatted.
 
 Fields not in the table's rows:
   Columns hidden in Sort & Filter, and binary columns, are not read with the

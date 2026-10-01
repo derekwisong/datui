@@ -25931,8 +25931,8 @@ impl App {
     }
 
     /// `y` in the inspector: the focused field's whole value, exact, through the
-    /// same clipboard path as the copy dialog. A large one is written off this
-    /// thread.
+    /// same clipboard path as the copy dialog. One over a capped destination's
+    /// limit is refused unformatted; a large one is written off this thread.
     fn copy_inspected_field(&mut self) {
         use copy_modal::thousands;
         let Some(state) = self.data_table_state.as_ref() else {
@@ -25957,6 +25957,26 @@ impl App {
             field.name,
             thousands(row.display_row)
         );
+        // Destination first, as the copy dialog's: a value over the terminal's cap
+        // is refused before it is formatted, here or on a worker.
+        let limit = match self.copy_destination() {
+            Ok(destination) => destination.accepts().base64_limit,
+            Err(e) => {
+                self.error_modal.show(e);
+                return;
+            }
+        };
+        if let Some(limit) = limit {
+            let fits = limit / 4 * 3;
+            let over = column
+                .get(0)
+                .is_ok_and(|value| crate::exact::copy_len_floor(&value, fits) > fits);
+            if over {
+                self.error_modal
+                    .show(clipboard::over_osc52_limit(None, limit));
+                return;
+            }
+        }
         if column.as_materialized_series().estimated_size() <= Self::FIELD_COPY_INLINE_BYTES {
             match crate::exact::copy_text(&column) {
                 Ok(text) => self.finish_copy(clipboard::Payload::text(text), message),

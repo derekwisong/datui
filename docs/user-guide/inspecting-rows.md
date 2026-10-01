@@ -43,7 +43,8 @@ Escaped text tells a line break (`\n`) from a backslash followed by `n`
 
 <kbd>y</kbd> copies the whole value through the same clipboard as the
 [copy dialog](copying.md), whatever the pane shows of it: numbers exact, lists
-and structs as JSON, binary as base64, a null as nothing.
+and structs as JSON, binary as base64, a null as nothing. A value over an
+`osc52` clipboard's `osc52_limit_kb` is refused before it is formatted.
 
 ## Hidden and binary columns
 

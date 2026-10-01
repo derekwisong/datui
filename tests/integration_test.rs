@@ -18473,3 +18473,56 @@ fn test_inspector_copies_a_large_field_in_the_background() {
     assert_eq!(copies.lock().unwrap().last().unwrap().len(), large.len());
     assert!(draw_inspector(&mut app).contains("Copied large of row 1"));
 }
+
+/// A capped clipboard, as the terminal's is: keeps the text of every copy.
+struct CappedCopies(Copies, usize);
+
+impl datui::clipboard::Destination for CappedCopies {
+    fn write(&mut self, payload: datui::clipboard::Payload) -> Result<(), String> {
+        self.0.lock().unwrap().push(payload.text);
+        Ok(())
+    }
+    fn describe(&self) -> &'static str {
+        "terminal"
+    }
+    fn accepts(&self) -> datui::clipboard::Accepts {
+        datui::clipboard::Accepts {
+            html: false,
+            base64_limit: Some(self.1),
+        }
+    }
+}
+
+/// `y` asks the destination first, as the copy dialog does: a field over the
+/// terminal's cap is refused at once, never formatted on a worker, and the last
+/// copy stays. One under the cap still goes.
+#[test]
+fn test_inspector_refuses_a_field_over_the_terminal_cap_before_formatting_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("capped.parquet");
+    let large = "abcdefgh".repeat(256 * 1024);
+    let mut df = df!("id" => [1i64], "large" => [large.as_str()]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    draw_inspector(&mut app);
+    let copies = Copies::default();
+    app.set_clipboard_destination(Box::new(CappedCopies(copies.clone(), 100 * 1024)));
+
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap(), "1");
+
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(!app.is_busy(), "refused before a worker formats it");
+    let message = app.error_message().expect("refused out loud").to_string();
+    assert!(
+        message.contains("over 100 KB of base64") && message.contains("osc52_limit_kb"),
+        "{message}"
+    );
+    assert_eq!(copies.lock().unwrap().len(), 1, "the last copy stays");
+}

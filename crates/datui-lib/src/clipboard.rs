@@ -164,7 +164,7 @@ pub fn osc52_sequence(text: &str, limit: usize) -> Result<String, String> {
 
 /// Why a copy does not go through the terminal. `encoded` is its size in base64,
 /// or none when it stopped being built at the cap.
-fn over_osc52_limit(encoded: Option<usize>, limit: usize) -> String {
+pub(crate) fn over_osc52_limit(encoded: Option<usize>, limit: usize) -> String {
     let size = match encoded {
         Some(bytes) => format_kb(bytes),
         None => format!("over {}", format_kb(limit)),

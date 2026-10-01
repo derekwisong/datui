@@ -25418,9 +25418,9 @@ impl App {
                     // Nothing matches; the picker says so and stays.
                     return;
                 };
-                if let Some(state) = self.data_table_state.as_mut()
-                    && let Some(name) = state.get_column_order().get(index).cloned()
-                {
+                // By name: the order may have changed under the picker since it opened.
+                let name = self.go_to_column.items()[index].clone();
+                if let Some(state) = self.data_table_state.as_mut() {
                     state.reveal_column(&name);
                 }
                 self.input_mode = InputMode::Normal;

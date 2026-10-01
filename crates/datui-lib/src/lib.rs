@@ -5718,10 +5718,10 @@ pub mod tests {
     /// An answer nobody is waiting for is dropped — and the busy state it was holding
     /// goes with it, except where something else has taken that over.
     ///
-    /// `spawn_bg` sets `busy` and this answer is the only thing that comes back, so a
-    /// drop that does not clear it holds every key for the rest of the session. The
-    /// exception is the one the other handlers rely on: a bumped `task_generation` means
-    /// an `Open` or a collect set `busy` itself, and clearing it here takes the throbber
+    /// The look holds the keys and this answer is the only thing that comes back, so a
+    /// drop that does not give them back holds every key for the rest of the session.
+    /// The exception is the one the other handlers rely on: an advanced generation means
+    /// an `Open` or a collect took the wait over, and clearing it here takes the throbber
     /// off a load that is still running.
     #[test]
     fn a_classify_answer_nobody_is_waiting_for_leaves_the_right_busy_behind() {
@@ -8884,7 +8884,10 @@ impl AppEvent {
                 | AppEvent::HomeClassified { done: false, .. }
                 | AppEvent::HomeSearchBatch { .. }
                 | AppEvent::HomeProbeProgress { .. }
-                | AppEvent::JobProgress { .. }
+                | AppEvent::JobProgress {
+                    progress: Progress::QualityPhase(_),
+                    ..
+                }
         )
     }
 }
@@ -23265,7 +23268,7 @@ impl App {
                 // thrown away when the user moves on, which is the whole of the guard
                 // below. Leased, it made everything else wait instead: Ctrl+O out of a
                 // seventeen-second look and open a small CSV, and its buffer collect
-                // parks in `collect_owed` until the abandoned look finally returns.
+                // was owed until the abandoned look finally returned.
                 // Advertising Ctrl+O as the way out of the wait and then holding the
                 // next dataset behind it is the wait again, wearing a different hat.
                 #[cfg(feature = "cloud")]

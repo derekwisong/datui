@@ -5097,7 +5097,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
     };
     app.event(&AppEvent::Filter(vec![filter]));
 
-    // Drain BackgroundLenReady then BackgroundCollectReady.
+    // Drain the count and the page.
     for _ in ticks() {
         let mut buf = Buffer::empty(terminal_area);
         app.render(terminal_area, &mut buf);

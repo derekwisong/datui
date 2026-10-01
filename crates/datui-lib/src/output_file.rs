@@ -7,8 +7,9 @@
 //! leaves no partial file. Dropping an uncommitted `OutputFile`, including in a
 //! panic, removes the temporary file.
 //!
-//! This protects against ordinary failures, not power loss: nothing is synced to
-//! disk before the rename.
+//! The file is synced before the rename, since some write errors (a network
+//! filesystem's quota, a disk's I/O error) are reported only then. The rename
+//! itself is not, so a power cut just after it can still lose the new file.
 //!
 //! Every file datui writes for the user goes through here: data exports, the
 //! Data Quality report and chart images.
@@ -121,9 +122,9 @@ impl OutputFile {
         self.temp.path()
     }
 
-    /// Move the written file into place. The caller has finished every encoder
-    /// and flushed every buffer over [`Self::file`]; an error from those must
-    /// stop it before it gets here.
+    /// Sync the written file and move it into place. The caller has finished
+    /// every encoder and flushed every buffer over [`Self::file`]; an error
+    /// from those must stop it before it gets here.
     ///
     /// A replaced file's permission bits carry over on Unix; a new file gets the
     /// mode a plain create would (0666 less the umask). Ownership, ACLs, extended
@@ -138,6 +139,7 @@ impl OutputFile {
             target,
             overwrite,
         } = self;
+        temp.as_file().sync_all()?;
         match overwrite {
             Overwrite::Replace => {
                 let existing = replaceable(&target, Overwrite::Replace)?;

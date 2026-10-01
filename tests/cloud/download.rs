@@ -132,6 +132,52 @@ fn a_download_lands_whole_and_lives_with_its_dataset() {
     );
 }
 
+/// The dataset on screen holds its file, not just the app: `H` reads the same copy
+/// again, and an open that fails after the app let go leaves the dataset, and the
+/// file it scans lazily, in place.
+#[test]
+fn a_failed_open_keeps_the_file_the_dataset_scans() {
+    let s3 = serve(csv(1_000));
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    open_and_confirm(&mut app, &rx, dir.path());
+    settle(&mut app, &rx);
+    let file = files_in(dir.path()).pop().expect("the download");
+
+    chain(
+        &mut app,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::NONE)),
+    );
+    settle(&mut app, &rx);
+    assert_eq!(app.error_message(), None);
+    assert_eq!(s3.wire.count().gets, 1, "H read the copy on hand");
+    assert_eq!(files_in(dir.path()), std::slice::from_ref(&file));
+
+    let local = tempfile::tempdir().unwrap();
+    let broken = local.path().join("broken.parquet");
+    std::fs::write(&broken, b"not parquet").unwrap();
+    chain(
+        &mut app,
+        AppEvent::Open(vec![broken], OpenOptions::default()),
+    );
+    settle(&mut app, &rx);
+    assert!(app.error_message().is_some(), "the open failed");
+    assert_eq!(app.open_path(), Some(Path::new(URL)));
+    assert!(file.exists(), "the dataset on screen still scans it");
+    let rows = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .visible_lf()
+        .collect()
+        .expect("the lazy scan reads the file");
+    assert_eq!(rows.height(), 1_001, "H read the header as a row");
+    assert!(app.capture_view().is_err(), "a view over a temp file");
+
+    drop(app);
+    assert!(!file.exists());
+}
+
 /// Quitting removes the file of the dataset on screen.
 #[test]
 fn exit_removes_the_download() {

@@ -6,8 +6,8 @@ local or in S3, GCS, Azure and HTTP, from a few rows to a few billion.
       catalog of public datasets
     - SQL, text search, and q-style (select a, b by region where c > 10)
     - Describe, distribution fitting with Q-Q plots, correlation, data quality
-    - Line, scatter, bar, histogram, box, KDE and heatmap charts; export PNG or EPS
-    - Pivot and melt; export CSV, Parquet, JSON, NDJSON, Arrow, Avro; copy; views
+    - Charts: line, scatter, bar, histogram, box, KDE, heatmap; save PNG or EPS
+    - Pivot, melt, copy, views; export CSV, Parquet, JSON, NDJSON, Arrow, Avro
     - Light and dark palettes, every color and default in one config file
 
 Run with no PATH for the home screen. Press ? inside for the keys.

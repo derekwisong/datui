@@ -54,10 +54,11 @@ jobs:
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
+      # CI linux's entry from main, restore only: the same debug test build and env.
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: ci
+          shared-key: tests
           save-if: false
 
       - name: List and open every public dataset with no credentials

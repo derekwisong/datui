@@ -95,8 +95,8 @@ they queue.
 
 The statistics, distribution-detection and pivot/melt tests read sample files
 that are too large to commit. `scripts/dev/setup-test-data.sh` creates `.venv`,
-installs `scripts/requirements.txt` (Polars, NumPy, pyarrow, fastavro,
-openpyxl) and generates them, using [uv](https://github.com/astral-sh/uv) when
+installs `scripts/requirements.txt` (which pins Polars, NumPy, pyarrow, fastavro
+and openpyxl in `scripts/requirements-fixtures.txt`) and generates them, using [uv](https://github.com/astral-sh/uv) when
 it is installed and `python -m venv` otherwise. It is safe to re-run;
 `--force` regenerates from scratch.
 
@@ -112,6 +112,22 @@ To regenerate by hand:
 ```
 
 The fixtures are not regenerated automatically once they exist.
+
+CI's `linux` job caches `tests/sample-data` under a key built from every input
+to the generator:
+
+| Key part | Input |
+|---|---|
+| `scripts/generate_sample_data.py` | The generator; it reads no other file |
+| `scripts/requirements-fixtures.txt` | Every package it imports, and their dependencies, at exact versions |
+| Python version | As `setup-python` resolved it |
+| Runner OS and arch | |
+| `sample-data-v1` | Schema version; bump it in `ci.yml` to discard every entry |
+
+A restored copy is checked against the SHA-256 manifest saved with it, and
+regenerated if anything differs. Only runs on `main` save an entry. If the
+generator starts reading another file or importing another package, add the
+file to the key or the package to `requirements-fixtures.txt`.
 
 Tests only read `tests/sample-data`. Another test process may have its files
 memory-mapped, and rewriting one kills that process with SIGBUS. A test that

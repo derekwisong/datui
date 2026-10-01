@@ -543,9 +543,14 @@ mod tests {
         let plan = plan(&app, 80, 17, None);
         assert!(plan.input >= 3, "{plan:?}");
         let screen = draw_sized(&mut app, 80, plan.total(), None);
+        let side = crate::glyphs::get().border.vertical_left;
         let text: String = screen[3..3 + plan.input as usize]
             .iter()
-            .map(|r| r.trim_matches(|c| c == '│' || c == ' ').to_string() + " ")
+            .map(|r| {
+                r.trim_matches(|c| c == ' ' || side.starts_with(c))
+                    .to_string()
+                    + " "
+            })
             .collect();
         let squeezed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert_eq!(squeezed, GOALS, "{screen:#?}");

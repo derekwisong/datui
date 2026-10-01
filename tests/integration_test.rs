@@ -11765,8 +11765,14 @@ fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
     let first = header(&mut app);
     assert!(first.contains("Count"), "{first:?}");
     assert!(!first.contains("Max"), "not everything fits: {first:?}");
+    // `+N`: in ASCII the tool list's frame corners are `+` too.
+    let counted = |row: &str| {
+        row.as_bytes()
+            .windows(2)
+            .any(|w| w[0] == b'+' && w[1].is_ascii_digit())
+    };
     assert!(
-        first.contains('+'),
+        counted(&first),
         "the hidden statistics are counted: {first:?}"
     );
     let max = app.analysis_modal.describe_columns.max;
@@ -11782,10 +11788,7 @@ fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
         end.contains("Max"),
         "the last statistic is reached: {end:?}"
     );
-    assert!(
-        !end.contains('+'),
-        "and nothing is counted past it: {end:?}"
-    );
+    assert!(!counted(&end), "and nothing is counted past it: {end:?}");
 
     app.event(&key(KeyCode::Left));
     let back = header(&mut app);
@@ -16354,7 +16357,8 @@ fn column_widths_from_the_sidebar() {
     press_and_send(&mut app, &tx, KeyCode::PageDown);
     pump_until_idle(&mut app, &rx, &tx);
     let paged = draw(&mut app, 100, 24);
-    assert!(paged.contains("https://ex"), "{paged}");
+    // Cut to the cap: `https://ex…`, or `https://...` in ASCII.
+    assert!(paged.contains("https://"), "{paged}");
     let start = app.data_table_state.as_ref().unwrap().start_row();
     assert!(start > 0);
 
@@ -16884,15 +16888,13 @@ fn test_sort_filter_sidebar_is_one_surface() {
         .collect();
 
     assert!(rows.iter().any(|r| r.contains("Sort & Filter")));
+    let frames = common::frame_bottoms(&rows);
     assert_eq!(
-        rows.iter().map(|r| r.matches('╭').count()).sum::<usize>(),
+        frames.len(),
         1,
-        "one border on the sidebar and none inside it"
+        "one border on the sidebar and none inside it: {rows:#?}"
     );
-    let bottom = rows
-        .iter()
-        .position(|r| r.contains('╰'))
-        .expect("the frame closes");
+    let bottom = frames[0];
     for (key, label) in [("Enter", "Apply"), ("Esc", "Cancel")] {
         assert!(
             rows[bottom - 1].contains(key) && rows[bottom - 1].contains(label),
@@ -17017,17 +17019,10 @@ fn test_export_modal_is_one_surface() {
         rows.iter().any(|r| r.contains("Export Data")),
         "the dialog is up"
     );
-    // Ratatui draws rounded corners whatever the glyph set, so one top-left
-    // corner on screen means one border on the surface and none inside it.
-    assert_eq!(
-        rows.iter().map(|r| r.matches('╭').count()).sum::<usize>(),
-        1,
-        "exactly one border: {rows:#?}"
-    );
-    let bottom = rows
-        .iter()
-        .position(|r| r.contains('╰'))
-        .expect("the frame closes");
+    // One frame on screen means one border on the surface and none inside it.
+    let frames = common::frame_bottoms(&rows);
+    assert_eq!(frames.len(), 1, "exactly one border: {rows:#?}");
+    let bottom = frames[0];
     for (key, label) in [("Enter", "Export"), ("Esc", "Cancel")] {
         assert!(
             rows[bottom - 1].contains(key) && rows[bottom - 1].contains(label),
@@ -18424,7 +18419,8 @@ fn test_inspector_opens_moves_between_rows_and_fields_and_closes() {
     press_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
     let screen = draw_inspector(&mut app);
     assert!(screen.contains("Row 2"), "{screen}");
-    assert!(screen.lines().any(|l| l.contains("│ -0.0 ")), "{screen}");
+    let side = format!("{} -0.0 ", g.border.vertical_left);
+    assert!(screen.lines().any(|l| l.contains(&side)), "{screen}");
 
     // Home and End reach the ends of the list.
     press_key(&mut app, KeyCode::End, KeyModifiers::NONE);

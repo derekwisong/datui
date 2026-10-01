@@ -7140,8 +7140,13 @@ pub mod tests {
             !bar.contains("Checking") && !bar.contains("Scanning"),
             "and no phase: {bar}"
         );
-        let text = screen(&mut app);
-        assert!(!spinning(&text), "no spinner anywhere: {text}");
+        assert!(!app.something_is_spinning(), "the run loop turns nothing");
+        // The ASCII frames (`|`, `/`, `-`) are also the modal's border, so only the
+        // Unicode ones can be looked for on screen.
+        if crate::glyphs::active_is_unicode() {
+            let text = screen(&mut app);
+            assert!(!spinning(&text), "no spinner anywhere: {text}");
+        }
     }
 
     /// A destination that takes what it is given, uncapped like the native one or

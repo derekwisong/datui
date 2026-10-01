@@ -207,6 +207,36 @@ pub fn layered_config(layers: &[&str]) -> datui::config::AppConfig {
     .expect("test config layers resolve")
 }
 
+/// Each bordered box drawn in `rows` (one string per screen row), as the row of
+/// its bottom-left corner, in the active glyph set.
+///
+/// The ASCII set, which a locale without UTF-8 gets (Windows always), draws every
+/// corner as `+`, so counting the corner glyph finds four per box there. A
+/// bottom-left corner is the one with the left side above it and the bottom edge
+/// after it.
+#[allow(dead_code)]
+pub fn frame_bottoms(rows: &[String]) -> Vec<usize> {
+    let b = datui::glyphs::get().border;
+    let grid: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| r.chars().map(String::from).collect())
+        .collect();
+    let at = |x: usize, y: usize| grid.get(y).and_then(|r| r.get(x)).map(String::as_str);
+    let mut bottoms = Vec::new();
+    for (y, row) in grid.iter().enumerate().skip(1) {
+        for x in 0..row.len() {
+            if at(x, y) == Some(b.bottom_left)
+                && at(x, y - 1) == Some(b.vertical_left)
+                && at(x + 1, y) == Some(b.horizontal_bottom)
+                && (x == 0 || at(x - 1, y) != Some(b.horizontal_bottom))
+            {
+                bottoms.push(y);
+            }
+        }
+    }
+    bottoms
+}
+
 /// Ensures that sample data files are generated before tests run.
 /// This function uses `std::sync::Once` to ensure it only runs once,
 /// even if called from multiple tests.

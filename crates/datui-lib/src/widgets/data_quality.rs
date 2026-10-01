@@ -4638,12 +4638,20 @@ mod tests {
         // Narrow enough that the tool list gives way; the page is the whole width.
         let rows = screen.draw(screen.config(QualityPage::Detail), region, 70, 24);
         let text = rows.join("\n");
-        for corner in ['╭', '╮', '╰', '╯', '│'] {
+        let g = glyphs::get();
+        let b = g.border;
+        for corner in [
+            b.top_left,
+            b.top_right,
+            b.bottom_left,
+            b.bottom_right,
+            b.vertical_left,
+        ] {
             assert!(!text.contains(corner), "no box on the page:\n{text}");
         }
+        let rule = format!("region {}", g.rule_h);
         assert!(
-            rows.iter()
-                .any(|row| row.trim_start().starts_with("region ─")),
+            rows.iter().any(|row| row.trim_start().starts_with(&rule)),
             "the column is named on a rule:\n{text}"
         );
         assert!(
@@ -4744,7 +4752,7 @@ mod tests {
                 }
                 let rows = screen.draw(config, 0, width, height);
                 let text = rows.join("\n");
-                let corners = text.matches('╭').count();
+                let corners = glyphs::frame_corners(&rows).len();
                 // At 80 columns the tool list keeps its own frame beside the page.
                 let expected = if width >= 76 && title != "Analysis Tools" {
                     2
@@ -4752,11 +4760,14 @@ mod tests {
                     1
                 };
                 assert_eq!(corners, expected, "{title} at {width}x{height}:\n{text}");
+                let border = glyphs::get().border;
+                let titled = format!("{}{title}", border.top_left);
                 let frame = rows
                     .iter()
-                    .find(|row| row.contains(&format!("╭{title}")))
+                    .find(|row| row.contains(&titled))
                     .unwrap_or_else(|| panic!("{title} on its frame:\n{text}"));
-                assert!(frame.contains('╮'), "{title}:\n{text}");
+                let after = &frame[frame.find(&titled).unwrap() + titled.len()..];
+                assert!(after.contains(border.top_right), "{title}:\n{text}");
             }
         }
     }
@@ -5265,7 +5276,8 @@ mod interval_tests {
                 );
                 let row = text
                     .lines()
-                    .find(|line| line.contains(glyphs::get().selector))
+                    // Leading: the ASCII selector, `> `, is also in "duration > 1 hour".
+                    .find(|line| line.trim_start().starts_with(glyphs::get().selector))
                     .unwrap_or_else(|| panic!("a selected row at {size:?}:\n{text}"));
                 // In full, or cut with an ellipsis where the width runs out.
                 let label = interval.label();
@@ -5845,8 +5857,10 @@ mod trend_tests {
             let pointer = lines[spark + 1]
                 .find(glyphs::get().pointer)
                 .expect("a pointer");
+            // Up to the tool list's frame, where there is one.
+            let side = format!(" {}", glyphs::get().border.vertical_left);
             let marks =
-                lines[spark][..lines[spark].find(" │").unwrap_or(lines[spark].len())].trim_end();
+                lines[spark][..lines[spark].find(&side).unwrap_or(lines[spark].len())].trim_end();
             assert_eq!(
                 glyphs::display_width(marks) - 1,
                 glyphs::display_width(&lines[spark + 1][..pointer]),

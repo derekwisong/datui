@@ -138,7 +138,9 @@ mod tests {
                         .collect::<String>()
                 }));
             }
-            for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            // What the overlay draws: ASCII twins when the locale is not UTF-8.
+            let drawn = crate::glyphs::asciify_instructions(&text);
+            for line in drawn.lines().filter(|line| !line.trim().is_empty()) {
                 assert!(
                     shown.iter().any(|row| row.contains(line.trim_end())),
                     "folded or cut at 80 columns: {line:?}"

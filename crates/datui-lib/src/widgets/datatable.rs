@@ -16707,7 +16707,10 @@ mod tests {
         state.set_width_choices([("description".to_string(), WidthChoice::Manual(6))]);
         let rows = draw(DataTable::default(), &mut state, 80, 21);
         assert_eq!(state.shown_width("description"), Some(6), "{rows:#?}");
-        let clipped = format!("item {}", crate::glyphs::get().ellipsis);
+        // Six cells, the ellipsis among them: `item …`, or `ite...` in ASCII.
+        let ellipsis = crate::glyphs::get().ellipsis;
+        let kept = 6 - crate::glyphs::display_width(ellipsis);
+        let clipped = format!("{}{ellipsis}", &"item 10"[..kept]);
         assert!(rows.iter().any(|r| r.contains(&clipped)), "{rows:#?}");
 
         state.page_down();

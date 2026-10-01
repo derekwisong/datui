@@ -126,6 +126,24 @@ writes its own data writes it elsewhere:
 unless that run generated the fixtures. The generator rewrites every fixture in
 place, so do not run it while tests are running.
 
+## Cache and config isolation
+
+Tests never read or write the developer's own cache or config. Each test
+process points `DATUI_CACHE_DIR` and `DATUI_CONFIG_DIR` at scratch directories,
+removed when it exits.
+
+| Tests | Isolation |
+|---|---|
+| Unit tests | Automatic: `CacheManager::new` and `ConfigManager::new` call `cache::isolate_cache()` under `cfg(test)` |
+| Integration tests | Take the runtime from `common::test_runtime()`, or call `common::isolate_cache()`, before building an `App`, a `CacheManager` or a `ConfigManager` |
+
+A test binary that reaches either manager without the variables panics with
+`DATUI_CACHE_DIR is not set` or `DATUI_CONFIG_DIR is not set`. Under
+`cargo test` a test that forgot can still pass, because an earlier test in the
+same process set them. `cargo nextest run --workspace` runs each test in its
+own process, so it fails any test that depends on another having run first.
+Run it after adding tests that build an `App` or touch the cache or config.
+
 ## Layout
 
 | Path | Tests |

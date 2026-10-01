@@ -3,15 +3,16 @@
 //! A download or a decompression writes a temporary file that removes itself when its
 //! last holder drops it. Quitting raises the open's stop flag, but the process can end
 //! before a worker sees it, and then nothing removes the file it was writing. So each
-//! writer [claims](Writer::claim) the file it creates, and the claim lives inside the
-//! file's holder: it goes when the file does, after it. Quitting drops the app first,
-//! which removes every file the event thread holds, and then [`ExitSweep`] waits a
-//! short grace for the workers, which stop and remove their own; whatever is still
-//! claimed after that is removed by the sweep. A file created after the sweep is
-//! refused its claim and removed by its writer.
+//! writer [creates](Writer::create) its file through the open, which claims it, and the
+//! claim lives inside the file's holder: it goes when the file does, after it.
+//! Quitting drops the app first, which removes every file the event thread holds, and
+//! then [`ExitSweep`] waits a short grace for the workers, which stop and remove their
+//! own; whatever is still claimed after that is removed by the sweep. A file created
+//! while the sweep runs is waited for too, and one created after it is removed by its
+//! writer.
 //!
-//! A process killed outright (SIGKILL, or SIGTERM and SIGHUP, which datui does not
-//! catch) runs none of this, and a partial file stays in the temp directory.
+//! A process killed outright (SIGKILL) runs none of this, and a partial file stays in
+//! the temp directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +29,16 @@ pub(crate) struct Unfinished(Arc<(Mutex<Files>, Condvar)>);
 #[derive(Debug, Default)]
 struct Files {
     claimed: Vec<PathBuf>,
+    /// Writers creating a file, not yet claimed: the sweep waits for them too, since
+    /// the path is not known until the file exists.
+    creating: usize,
     swept: bool,
+}
+
+impl Files {
+    fn busy(&self) -> bool {
+        !self.claimed.is_empty() || self.creating > 0
+    }
 }
 
 /// What one open hands its writers: its stop flag, and where to claim their files.
@@ -56,20 +66,20 @@ impl Unfinished {
         }
     }
 
-    /// Whether a file is still claimed.
+    /// Whether a file is still claimed or being created.
     #[cfg(test)]
     pub(crate) fn writing(&self) -> bool {
-        !self.lock().claimed.is_empty()
+        self.lock().busy()
     }
 
     /// By `deadline`, remove every file still claimed. Their writers, stopped already,
     /// remove their own as they notice; one still busy at the deadline has its file
-    /// removed under it, and fails to remove it again, harmlessly. A file claimed after
-    /// this is refused.
+    /// removed under it, and fails to remove it again, harmlessly. A file being created
+    /// is waited for like a claimed one; one created after this is refused.
     pub(crate) fn sweep(&self, deadline: Instant) {
         let (_, released) = &*self.0;
         let mut files = self.lock();
-        while !files.claimed.is_empty() {
+        while files.busy() {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
@@ -88,6 +98,10 @@ impl Unfinished {
     fn lock(&self) -> MutexGuard<'_, Files> {
         self.0.0.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    fn released(&self) {
+        self.0.1.notify_all();
+    }
 }
 
 impl Writer {
@@ -96,18 +110,51 @@ impl Writer {
         self.stop.load(Ordering::Relaxed)
     }
 
-    /// Claim `path`, just created. `None` once the open is stopped or the files are
-    /// swept: the caller removes the file and gives up.
-    pub(crate) fn claim(&self, path: &Path) -> Option<Claim> {
-        let mut files = self.files.lock();
-        if files.swept || self.stopped() {
-            return None;
+    /// Create a file with `make` and claim it. `None`, with nothing left on disk, once
+    /// the open is stopped or the files are swept.
+    ///
+    /// One step as far as the sweep is concerned: a sweep that starts while `make` runs
+    /// waits for it, then either removes the file it claimed or finds it already
+    /// removed. Claiming after creating would leave a gap in which a sweep sees nothing
+    /// to wait for and the process ends with the new file on disk.
+    pub(crate) fn create<F: AsRef<Path>, E>(
+        &self,
+        make: impl FnOnce() -> Result<F, E>,
+    ) -> Result<Option<(F, Claim)>, E> {
+        {
+            let mut files = self.files.lock();
+            if files.swept || self.stopped() {
+                return Ok(None);
+            }
+            files.creating += 1;
         }
-        files.claimed.push(path.to_path_buf());
-        Some(Claim {
-            files: self.files.clone(),
-            path: path.to_path_buf(),
-        })
+        let made = make();
+        let mut files = self.files.lock();
+        let claimed = match made {
+            Ok(file) if !files.swept && !self.stopped() => {
+                let path = file.as_ref().to_path_buf();
+                files.claimed.push(path.clone());
+                Ok(Some((
+                    file,
+                    Claim {
+                        files: self.files.clone(),
+                        path,
+                    },
+                )))
+            }
+            Ok(file) => {
+                // Removed before the sweep stops waiting for it, and not under the lock.
+                drop(files);
+                drop(file);
+                files = self.files.lock();
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        };
+        files.creating -= 1;
+        drop(files);
+        self.files.released();
+        claimed
     }
 }
 
@@ -129,7 +176,7 @@ impl Drop for Claim {
             files.claimed.swap_remove(at);
         }
         drop(files);
-        self.files.0.1.notify_all();
+        self.files.released();
     }
 }
 
@@ -137,8 +184,12 @@ impl Drop for Claim {
 mod tests {
     use super::*;
 
-    fn file_in(dir: &Path) -> tempfile::NamedTempFile {
-        tempfile::NamedTempFile::new_in(dir).unwrap()
+    fn file_in(dir: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+        tempfile::NamedTempFile::new_in(dir)
+    }
+
+    fn files_in(dir: &Path) -> usize {
+        std::fs::read_dir(dir).unwrap().count()
     }
 
     /// A writer that stops in time cleans up after itself, and the sweep waits for it
@@ -153,8 +204,10 @@ mod tests {
         let worker = {
             let dir = dir.path().to_path_buf();
             std::thread::spawn(move || {
-                let file = file_in(&dir);
-                let claim = writer.claim(file.path()).expect("not stopped yet");
+                let (file, claim) = writer
+                    .create(|| file_in(&dir))
+                    .unwrap()
+                    .expect("not stopped yet");
                 claimed.send(()).unwrap();
                 while !writer.stopped() {
                     std::thread::sleep(Duration::from_millis(5));
@@ -172,34 +225,86 @@ mod tests {
             began.elapsed() < Duration::from_secs(10),
             "not the whole grace"
         );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert_eq!(files_in(dir.path()), 0);
         assert!(!unfinished.writing());
         worker.join().unwrap();
     }
 
-    /// A file still claimed at the deadline is removed by the sweep.
+    /// A file still claimed at the deadline is removed by the sweep, and its holder
+    /// letting go later is harmless.
     #[test]
     fn a_sweep_removes_what_a_writer_still_holds() {
         let dir = tempfile::tempdir().unwrap();
         let unfinished = Unfinished::default();
         let writer = unfinished.writer(Arc::default());
-        let (_, path) = file_in(dir.path()).keep().unwrap();
-        let claim = writer.claim(&path).expect("not stopped yet");
+        let (file, claim) = writer
+            .create(|| file_in(dir.path()))
+            .unwrap()
+            .expect("not stopped yet");
+        let path = file.path().to_path_buf();
         unfinished.sweep(Instant::now() + Duration::from_millis(20));
         assert!(!path.exists());
         assert!(!unfinished.writing());
+        drop(file);
         drop(claim);
     }
 
-    /// A file created once the open is stopped, or after the sweep, is refused.
+    /// A file being created when the sweep starts is waited for: the sweep does not
+    /// end, and the process with it, while a file it has not heard of is still to
+    /// appear. Here the open is stopped, so the writer removes it itself.
+    #[test]
+    fn a_sweep_waits_for_a_file_being_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let unfinished = Unfinished::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = unfinished.writer(stop.clone());
+        let (creating, wait) = std::sync::mpsc::channel();
+        let (go, gate) = std::sync::mpsc::channel::<()>();
+        let worker = {
+            let dir = dir.path().to_path_buf();
+            std::thread::spawn(move || {
+                writer
+                    .create(|| {
+                        creating.send(()).unwrap();
+                        gate.recv().unwrap();
+                        file_in(&dir)
+                    })
+                    .unwrap()
+                    .is_none()
+            })
+        };
+        wait.recv().unwrap();
+        stop.store(true, Ordering::Relaxed);
+        let sweeper = {
+            let unfinished = unfinished.clone();
+            std::thread::spawn(move || unfinished.sweep(Instant::now() + Duration::from_secs(30)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!sweeper.is_finished(), "the sweep waits for the file");
+        go.send(()).unwrap();
+        sweeper.join().unwrap();
+        assert!(worker.is_finished(), "the writer was done before the sweep");
+        assert!(worker.join().unwrap(), "a stopped open's file is refused");
+        assert_eq!(files_in(dir.path()), 0);
+    }
+
+    /// A stopped or swept open creates nothing.
     #[test]
     fn a_stopped_or_swept_open_refuses_new_files() {
+        let dir = tempfile::tempdir().unwrap();
         let unfinished = Unfinished::default();
-        let stop = Arc::new(AtomicBool::new(true));
-        assert!(unfinished.writer(stop).claim(Path::new("late")).is_none());
+        let made = |writer: &Writer| {
+            writer
+                .create(|| file_in(dir.path()))
+                .unwrap()
+                .map(|(file, _)| file)
+        };
+        let stopped = unfinished.writer(Arc::new(AtomicBool::new(true)));
+        assert!(made(&stopped).is_none());
 
         let writer = unfinished.writer(Arc::default());
         unfinished.sweep(Instant::now());
-        assert!(writer.claim(Path::new("later")).is_none());
+        assert!(made(&writer).is_none());
+        assert_eq!(files_in(dir.path()), 0);
     }
 }

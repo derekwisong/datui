@@ -723,7 +723,7 @@ pub struct RemoteRead {
 /// order, so the claim goes only once the file has. See [`crate::unfinished`].
 struct Decompressed {
     file: NamedTempFile,
-    _claim: Option<Claim>,
+    _claim: Claim,
 }
 
 impl Decompressed {
@@ -3318,15 +3318,14 @@ impl DataTableState {
         temp_dir: &Path,
         writer: &Writer,
     ) -> Result<Decompressed> {
-        let file = NamedTempFile::new_in(temp_dir)?;
         let stopped = || color_eyre::eyre::eyre!("Decompressing was stopped.");
-        let Some(claim) = writer.claim(file.path()) else {
+        let Some((file, claim)) = writer.create(|| NamedTempFile::new_in(temp_dir))? else {
             return Err(stopped());
         };
         // Held from here, so a failure drops the file before the claim.
         let mut temp = Decompressed {
             file,
-            _claim: Some(claim),
+            _claim: claim,
         };
         let out = temp.file.as_file_mut();
         let mut reader: Box<dyn Read> = match compression {

@@ -1370,6 +1370,55 @@ mod tests {
         assert!(!at.exists(), "nothing else held it");
     }
 
+    /// The download handed to the schema read is claimed like any file the open wrote:
+    /// quitting while that read is out removes it, though the worker still holds it.
+    #[cfg(feature = "http")]
+    #[test]
+    fn quitting_mid_schema_read_sweeps_the_download_the_worker_holds() {
+        use std::time::{Duration, Instant};
+        let url = "https://example.com/data.csv";
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = jobs();
+        let mut loader = Loader::default();
+        let Step::Probe(pending) = loader.open(request(url)) else {
+            panic!("the size is asked first");
+        };
+        let id = loader.id().unwrap();
+        let _ = loader.answered(id, LoadAnswer::Sized(pending.with_size(Some(4))), &jobs);
+        let Step::Download { writer, .. } = loader.confirmed() else {
+            panic!("agreed to, it downloads");
+        };
+        let file = crate::download::read_to_temp(
+            Some(dir.path()),
+            Some("csv"),
+            || Ok((std::io::Cursor::new(b"a\n1\n".to_vec()), Some(4))),
+            &writer,
+        )
+        .unwrap();
+        let at = file.path().to_path_buf();
+        let downloaded = LoadAnswer::Downloaded {
+            download: file,
+            options: OpenOptions::default(),
+        };
+        let _ = loader.answered(id, downloaded, &jobs);
+        let Step::ReadSchema {
+            download: Some(held),
+            ..
+        } = loader.answered(id, scanned(url), &jobs)
+        else {
+            panic!("the schema read is handed the download");
+        };
+
+        // Quitting drops the app, and the loader with it; the worker is still reading.
+        let unfinished = loader.unfinished().clone();
+        drop(loader);
+        assert!(at.exists(), "the worker's copy keeps it");
+        unfinished.sweep(Instant::now() + Duration::from_millis(50));
+        assert!(!at.exists(), "the sweep removes it");
+        // The worker ending later finds nothing to remove.
+        drop(held);
+    }
+
     /// Declining the download, a superseding open and a stale download each retire what
     /// the load held: the question's hold, and the file.
     #[cfg(feature = "http")]

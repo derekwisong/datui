@@ -145,8 +145,10 @@ fn fill_temp(
 ) -> std::result::Result<TempDownload, StreamError> {
     use std::io::Write;
 
-    let mut file = TempDownload::create(dir, extension).map_err(StreamError::Write)?;
-    let Some(claim) = writer.claim(file.path()) else {
+    let Some((mut file, claim)) = writer
+        .create(|| TempDownload::create(dir, extension))
+        .map_err(StreamError::Write)?
+    else {
         return Err(StreamError::Cut);
     };
     let unwritable = |e: std::io::Error| eyre!("Could not write the downloaded file: {e}");

@@ -35,30 +35,18 @@ pub struct Settings {
 /// Read the settings: the configuration (unless one was given), the command line over
 /// it, `[cloud] env_files`, the log.
 pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Settings> {
+    let config = match config {
+        Some(config) => config,
+        None => load_config(&input)?,
+    };
     let (input, config) = match input {
         RunInput::Cli(args) => {
-            let mut config = match config {
-                Some(config) => config,
-                // In full: a TOML parse error's later lines show the offending line
-                // and why.
-                None => AppConfig::load(APP_NAME).map_err(|e| {
-                    color_eyre::eyre::eyre!(
-                        "{e}\nFix the configuration and try again, or remove/rename the \
-                         config file to use defaults."
-                    )
-                })?,
-            };
+            let mut config = config;
             apply_args(&mut config, &args);
             let opts = OpenOptions::from_args_and_config(&args, &config);
             (RunInput::Paths(args.paths, opts), config)
         }
-        input => {
-            let config = match config {
-                Some(config) => config,
-                None => AppConfig::load(APP_NAME)?,
-            };
-            (input, config)
-        }
+        input => (input, config),
     };
     let opts = match &input {
         RunInput::Paths(_, o) | RunInput::LazyFrame(_, o) => o.clone(),
@@ -114,6 +102,19 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
         input,
         opts,
         notes,
+    })
+}
+
+/// The configuration file, read. From the command line its error says how to get
+/// past it; a library caller gets the error as it is.
+pub(crate) fn load_config(input: &RunInput) -> Result<AppConfig> {
+    AppConfig::load(APP_NAME).map_err(|e| match input {
+        // In full: a TOML parse error's later lines show the offending line and why.
+        RunInput::Cli(_) => color_eyre::eyre::eyre!(
+            "{e}\nFix the configuration and try again, or remove/rename the config file to \
+             use defaults."
+        ),
+        _ => e,
     })
 }
 

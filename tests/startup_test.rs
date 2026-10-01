@@ -330,6 +330,37 @@ fn a_missing_path_ends_the_run_with_its_name() {
     assert!(out.contains("nope.csv"), "{out}");
 }
 
+/// With no terminal at all, an unusable configuration is still what is reported, not
+/// the missing terminal: there is no screen for the read to hide behind.
+#[test]
+fn an_unusable_config_is_reported_without_a_terminal() {
+    use std::os::unix::process::CommandExt;
+    let dirs = Dirs::new();
+    std::fs::write(dirs.config_file(), "version = \"9.9\"\n").unwrap();
+    let csv = dirs.csv();
+    let root = dirs.root.path();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_datui"));
+    command
+        .arg(&csv)
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("DATUI_CACHE_DIR", root.join("cache/datui"))
+        .env("HOME", root.join("home"))
+        .stdin(Stdio::null());
+    // SAFETY: setsid is async-signal-safe; it leaves the child without a controlling
+    // terminal, so /dev/tty cannot stand in for the missing one.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let out = command.output().expect("the binary runs");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Unsupported config version"), "{stderr}");
+}
+
 /// A configuration the app cannot use ends the run with its error and a failing
 /// status, as before.
 #[test]

@@ -26349,8 +26349,12 @@ fn run_impl(
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => terminal,
         Err(e) => {
-            // No screen to keep up, so nothing to wait behind: a named file that is
-            // not there is the more useful thing to say, as it always came first.
+            // No screen to keep up, so nothing to wait behind: a configuration that
+            // cannot be used, or a named file that is not there, is the more useful
+            // thing to say, as each always came first.
+            if config.is_none() {
+                startup::load_config(&input)?;
+            }
             if let Some(missing) = App::missing_named_path(startup::named_paths(&input)) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,

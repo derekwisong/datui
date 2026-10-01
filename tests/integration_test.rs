@@ -16182,6 +16182,141 @@ fn a_freeze_survives_a_narrow_window() {
     assert!(!wide.contains(g.rule_broken), "{wide}");
 }
 
+/// Columns sidebar width controls (#462): a fit is staged, discarded by Esc,
+/// applied by Enter to the page on screen without moving the view, and kept
+/// through paging and a resize; `>` and `<` step from the width drawn, `w` returns
+/// to automatic, and R puts every column back.
+#[test]
+fn column_widths_from_the_sidebar() {
+    use datui::widgets::column_widths::{WIDTH_STEP, WidthChoice};
+    let url = format!("https://example.com/{}", "long-segment/".repeat(15));
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join("sidebar_column_widths.csv");
+    let n = 80usize;
+    let mut df = df!(
+        "id" => (0..n as i64).collect::<Vec<_>>(),
+        "description" => (0..n)
+            .map(|i| if i == 24 { url.clone() } else { format!("item {i}") })
+            .collect::<Vec<_>>(),
+        "amount" => (0..n).map(|i| i as f64 * 1.5).collect::<Vec<_>>(),
+        "status" => (0..n).map(|i| if i % 2 == 0 { "open" } else { "closed" }).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    CsvWriter::new(&mut File::create(&csv_path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    // As the main loop draws: a frame that changes the rows on screen reads them,
+    // and the next frame shows them.
+    let draw = |app: &mut App, width: u16, height: u16| {
+        app.event(&AppEvent::Resize(width, height));
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let state = app.data_table_state.as_mut().unwrap();
+        if std::mem::take(&mut state.needs_recollect) {
+            app.spawn_async_collect("Loading buffer...");
+            pump_until_idle(app, &rx, &tx);
+            app.render(area, &mut buf);
+        }
+        rendered_text(&buf)
+    };
+    let on_column = |app: &mut App, name: &str| {
+        press(app, KeyCode::Char('s'));
+        press(app, KeyCode::Tab);
+        press(app, KeyCode::Tab);
+        let sort = &mut app.sort_filter_modal.sort;
+        let row = sort
+            .filtered_columns()
+            .iter()
+            .position(|(_, c)| c.name == name)
+            .unwrap();
+        sort.table_state.select(Some(row));
+    };
+    let apply = |app: &mut App| {
+        if let Some(next) = press(app, KeyCode::Enter) {
+            let _ = tx.send(next);
+        }
+        pump_until_idle(app, &rx, &tx);
+    };
+    let choice = |app: &App, name: &str| app.data_table_state.as_ref().unwrap().width_choice(name);
+
+    draw(&mut app, 100, 24);
+    press_and_send(&mut app, &tx, KeyCode::PageDown);
+    pump_until_idle(&mut app, &rx, &tx);
+    let paged = draw(&mut app, 100, 24);
+    assert!(paged.contains("https://ex"), "{paged}");
+    let start = app.data_table_state.as_ref().unwrap().start_row();
+    assert!(start > 0);
+
+    // Staged, shown in the list, and gone with Esc.
+    on_column(&mut app, "description");
+    press(&mut app, KeyCode::Char('f'));
+    assert!(app.sort_filter_modal.sort.has_unapplied_changes);
+    let staged = draw(&mut app, 100, 24);
+    assert!(staged.contains("fit description"), "{staged}");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(choice(&app, "description"), WidthChoice::Auto);
+
+    // Applied: fitted to this page, which stays on screen.
+    on_column(&mut app, "description");
+    press(&mut app, KeyCode::Char('f'));
+    apply(&mut app);
+    let fitted = draw(&mut app, 100, 24);
+    let url_width = u16::try_from(url.len()).unwrap();
+    assert_eq!(choice(&app, "description"), WidthChoice::Manual(url_width));
+    assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), start);
+    assert!(
+        fitted.contains("https://example.com/long-segment/long-segment/"),
+        "{fitted}"
+    );
+
+    // Kept through paging and a resize.
+    press_and_send(&mut app, &tx, KeyCode::PageDown);
+    pump_until_idle(&mut app, &rx, &tx);
+    draw(&mut app, 60, 20);
+    draw(&mut app, 100, 24);
+    assert_eq!(choice(&app, "description"), WidthChoice::Manual(url_width));
+
+    // w is automatic again; wider and narrower step from the width drawn.
+    on_column(&mut app, "description");
+    press(&mut app, KeyCode::Char('w'));
+    apply(&mut app);
+    assert_eq!(choice(&app, "description"), WidthChoice::Auto);
+    draw(&mut app, 100, 24);
+    let shown = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .shown_width("status")
+        .unwrap();
+    on_column(&mut app, "status");
+    press(&mut app, KeyCode::Char('>'));
+    press(&mut app, KeyCode::Char('.'));
+    press(&mut app, KeyCode::Char('<'));
+    apply(&mut app);
+    assert_eq!(
+        choice(&app, "status"),
+        WidthChoice::Manual(shown + WIDTH_STEP)
+    );
+    let wider = draw(&mut app, 100, 24);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().shown_width("status"),
+        Some(shown + WIDTH_STEP),
+        "{wider}"
+    );
+
+    // R resets every column to automatic.
+    press_and_send(&mut app, &tx, KeyCode::Char('R'));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(choice(&app, "status"), WidthChoice::Auto);
+}
+
 /// Sort & Filter (#379): a column hidden after the sidebar reordered the table
 /// comes back after the column it followed there, not where the file has it; and
 /// hiding the last frozen column keeps its lock for when it is shown again.

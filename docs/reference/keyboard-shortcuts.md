@@ -16,6 +16,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
 | <kbd>:</kbd> | Go to a row number: type it, <kbd>Enter</kbd>. <kbd>Esc</kbd> cancels; <kbd>F1</kbd> opens help |
 | <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill into its rows. <kbd>Esc</kbd> comes back |
+| <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
 | <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md) |
 | <kbd>r</kbd> | Reverse the sort; with no sort, reverse the row order |
@@ -290,6 +291,20 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move focus, or the picker cursor; typing narrows a picker (<kbd>j</kbd> <kbd>k</kbd> narrow there, only <kbd>↑</kbd> <kbd>↓</kbd> move) |
 | <kbd>Enter</kbd> | Copy, from anywhere in the form; in a picker, choose |
 | <kbd>Esc</kbd> | Close a picker, then the dialog |
+
+## Row inspector
+
+| Key | Action |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move between fields |
+| <kbd>Home</kbd> <kbd>End</kbd> | First and last field |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Scroll a long value |
+| <kbd>Enter</kbd> | Show more of a long value, or read the row's hidden and binary fields |
+| <kbd>y</kbd> | Copy the focused field's exact value |
+| <kbd>e</kbd> | Show text escaped, or as itself |
+| <kbd>/</kbd> | Find a field: type to narrow, <kbd>Enter</kbd> or <kbd>↓</kbd> keeps the list narrowed, <kbd>Esc</kbd> clears it |
+| <kbd>Esc</kbd> <kbd>Space</kbd> | Close; <kbd>Esc</kbd> clears a find first |
 
 ## Dataset info
 

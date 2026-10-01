@@ -68,6 +68,10 @@ hold the `‹binary›` placeholder, since the screen never reads the bytes. The
 toggle is on for View and Table and off for Row; a Markdown table always keeps
 its header.
 
+To copy one field of the current row, including a hidden or binary one,
+press <kbd>Space</kbd> to [inspect the row](inspecting-rows.md), move to the
+field and press <kbd>y</kbd>.
+
 A large Table copy asks first, counting binary at its base64 size. A binary
 column's size comes from the Parquet footers read to open a local directory of
 Parquet files or a single Parquet object in cloud storage. A copy whose size is

@@ -245,6 +245,42 @@ fn a_failed_download_leaves_no_file() {
     assert!(files_in(dir.path()).is_empty());
 }
 
+/// An object that will not read is named by its URL, never by a temp path: JSON that
+/// is not JSON, which is downloaded first, and a "Parquet" that is CSV, read in place
+/// (#511).
+#[test]
+fn an_object_that_will_not_read_is_named_by_its_url() {
+    for (key, body) in [
+        ("tables/bad.json", b"{not json".to_vec()),
+        ("tables/broken.parquet", csv(10)),
+    ] {
+        let url = format!("s3://lake/{key}");
+        let s3 = FakeS3::serve("lake", BTreeMap::from([(key.to_string(), body)]));
+        let (mut app, rx) = app(&s3);
+        let dir = tempfile::tempdir().unwrap();
+        let options = OpenOptions {
+            temp_dir: Some(dir.path().to_path_buf()),
+            ..OpenOptions::default()
+        };
+        chain(&mut app, AppEvent::Open(vec![PathBuf::from(&url)], options));
+        while let Some(event) = next_event(&app, &rx) {
+            chain(&mut app, event);
+            if app.awaiting_download_confirmation() {
+                chain(
+                    &mut app,
+                    AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                );
+            }
+        }
+        let message = app.error_message().expect("the open failed");
+        assert!(message.contains(&url), "{key}: {message}");
+        assert!(
+            !message.contains(&*dir.path().to_string_lossy()),
+            "{key}: {message}"
+        );
+    }
+}
+
 /// Going home while the store has not answered stops the download and removes its
 /// file, without an error for a load nobody is waiting on; so does quitting.
 #[test]

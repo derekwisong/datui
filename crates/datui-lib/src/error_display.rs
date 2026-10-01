@@ -317,12 +317,38 @@ pub fn error_for_python(report: &color_eyre::eyre::Report) -> (ErrorKindForPytho
 /// `message` with `file`, a temporary copy datui made, called `source`: what the user
 /// opened. A download or a decompressed CSV is read from a temp path the user never
 /// typed, and Polars names the file it was reading.
+///
+/// Only a whole mention is replaced: one that a path character neither precedes nor
+/// follows, so a longer path that merely starts or ends with the temp file's (its
+/// name plus an extension, the same name in another directory) is left as it is. A
+/// full stop that ends a sentence still ends the mention.
 pub fn named_by_source(message: &str, file: &Path, source: &Path) -> String {
     let file = file.to_string_lossy();
     if file.is_empty() {
         return message.to_string();
     }
-    message.replace(file.as_ref(), &source.to_string_lossy())
+    let source = source.to_string_lossy();
+    let in_a_name = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '~');
+    let in_a_path = |c: char| in_a_name(c) || matches!(c, '.' | '/' | '\\');
+    let mut named = String::with_capacity(message.len());
+    let mut copied = 0;
+    for (at, _) in message.match_indices(file.as_ref()) {
+        let end = at + file.len();
+        let mut after = message[end..].chars();
+        let whole = !message[..at].chars().next_back().is_some_and(in_a_path)
+            && match after.next() {
+                None => true,
+                Some('.') => !after.next().is_some_and(in_a_path),
+                Some(c) => !in_a_path(c),
+            };
+        if whole {
+            named.push_str(&message[copied..at]);
+            named.push_str(&source);
+            copied = end;
+        }
+    }
+    named.push_str(&message[copied..]);
+    named
 }
 
 /// Format a color_eyre Report by downcasting to known error types.
@@ -521,6 +547,37 @@ mod tests {
         );
         assert_eq!(named_by_source("no path here", file, url), "no path here");
         assert_eq!(named_by_source("x", Path::new(""), url), "x");
+        assert_eq!(
+            named_by_source("'/home/u/tmp/.tmp9tY5X2.parquet' (os error 2)", file, url),
+            "'http://host/broken.parquet' (os error 2)"
+        );
+    }
+
+    /// A path that only shares the temp file's as its start or its end is another
+    /// file, and is left alone; so is the same name under another directory.
+    #[test]
+    fn a_similar_path_is_not_renamed() {
+        let copy = Path::new("/home/u/tmp/.tmpAb12Cd");
+        let gz = Path::new("/data/rows.csv.gz");
+        for other in [
+            "/home/u/tmp/.tmpAb12Cd.csv",
+            "/home/u/tmp/.tmpAb12Cd2",
+            "/home/u/tmp/.tmpAb12Cd_old",
+            "/home/u/tmp/.tmpAb12Cd/part-0.csv",
+            "/mnt/home/u/tmp/.tmpAb12Cd",
+            "x/home/u/tmp/.tmpAb12Cd",
+        ] {
+            let message = format!("Failed to load {other}: bad");
+            assert_eq!(named_by_source(&message, copy, gz), message, "{other}");
+        }
+        assert_eq!(
+            named_by_source(
+                "/home/u/tmp/.tmpAb12Cd.csv is not /home/u/tmp/.tmpAb12Cd.",
+                copy,
+                gz
+            ),
+            "/home/u/tmp/.tmpAb12Cd.csv is not /data/rows.csv.gz.",
+        );
     }
 
     /// The census directory in `cloud-samples-data`: two headerless CSVs and one with a

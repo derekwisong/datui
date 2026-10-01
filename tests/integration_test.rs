@@ -2786,6 +2786,88 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     assert!(app.analysis_modal.active);
 }
 
+/// A finding's rows over a compressed CSV scan its decompressed copy: capture there
+/// is refused as it is for the table, and the copy goes once a new dataset replaces
+/// both.
+#[test]
+fn evidence_rows_over_a_decompressed_file_hold_it() {
+    use datui::data_quality::{QualityCompute, QualityPrecision};
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write;
+
+    let source = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let gz = source.path().join("missing.csv.gz");
+    let mut encoder = GzEncoder::new(File::create(&gz).unwrap(), Compression::default());
+    writeln!(encoder, "id,v").unwrap();
+    for row in 0..100 {
+        let v = if row % 10 == 3 {
+            String::new()
+        } else {
+            row.to_string()
+        };
+        writeln!(encoder, "{row},{v}").unwrap();
+    }
+    encoder.finish().unwrap();
+    let decompressed = || -> Vec<PathBuf> {
+        std::fs::read_dir(scratch.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect()
+    };
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let options = OpenOptions {
+        temp_dir: Some(scratch.path().to_path_buf()),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![gz], options);
+    pump_until_idle(&mut app, &rx, &tx);
+    let file = decompressed().pop().expect("the decompressed copy");
+
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    app.analysis_modal.data_quality_plan.method = datui::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.data_quality_plan.compute = QualityCompute::Full;
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    let next = press(&mut app, KeyCode::Enter);
+    drain_quality(&mut app, &rx, next);
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(results.precision, QualityPrecision::Exact);
+
+    app.analysis_modal.data_quality_findings.check = Some("Missing values");
+    app.analysis_modal.data_quality_table_state.select(Some(0));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.analysis_modal.data_quality_evidence_read.is_some());
+    let mut next = press(&mut app, KeyCode::Enter);
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.analysis_modal.active, "the rows are on screen");
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 10);
+
+    let Err(error) = app.capture_view() else {
+        panic!("the rows scan a temp file");
+    };
+    assert!(error.to_string().contains("temporary file"), "{error}");
+    assert!(file.exists());
+
+    let other = source.path().join("other.csv");
+    std::fs::write(&other, "a,b\n1,2\n").unwrap();
+    pump_open_until_loaded(&mut app, &rx, vec![other], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1);
+    assert!(
+        decompressed().is_empty(),
+        "the replaced dataset's copy went"
+    );
+}
+
 /// One sample for every tool: chosen once in Describe, it is the rows Data Quality
 /// reads too, and the header says which rows those are. Esc in the form discards.
 #[test]

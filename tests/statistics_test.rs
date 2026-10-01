@@ -1,6 +1,7 @@
 use color_eyre::Result;
+use datui::distribution_fit::Fitted;
 use datui::statistics::{
-    ComputeOptions, compute_correlation_matrix, compute_correlation_pair,
+    ComputeOptions, DistributionType, compute_correlation_matrix, compute_correlation_pair,
     compute_statistics_with_options,
 };
 use polars::prelude::*;
@@ -261,6 +262,48 @@ fn correlation_covers_every_finite_pair() -> Result<()> {
     assert_eq!(pair.sample_size, 25_174);
     assert!(close(pair.correlation, 0.8191197645766106));
     assert!(close(pair.covariance, 2113.523780844375));
+    Ok(())
+}
+
+/// Whole numbers spread over millions are counts to the Poisson and geometric fits,
+/// whose draws once cost time in proportion to the values: 2,000 of them ran for
+/// minutes. They finish, and the uniform they came from is the answer.
+#[test]
+fn distribution_of_a_wide_integer_range_finishes() -> Result<()> {
+    let mut rng = datui::distribution_fit::Rng::new(442);
+    let values: Vec<i64> = (0..2_000)
+        .map(|_| (rng.next_u64() % 2_000_000) as i64)
+        .collect();
+    let lf = df!("x" => values)?.lazy();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(compute_statistics_with_options(
+            &lf,
+            None,
+            0,
+            distribution_options(),
+        ));
+    });
+    // Seconds in a debug build; generous for a loaded CI machine.
+    let results = receiver
+        .recv_timeout(std::time::Duration::from_secs(120))
+        .expect("distribution analysis of 2,000 integers did not finish")?;
+
+    let dist = &results.distribution_analyses[0];
+    assert_eq!(dist.distribution_type, DistributionType::Uniform);
+    let uniform = dist.fit(DistributionType::Uniform).unwrap().test().unwrap();
+    assert!(uniform.p_value >= 0.01, "{uniform:?}");
+    let Fitted::Uniform { low, high } = uniform.fitted else {
+        panic!("{uniform:?}");
+    };
+    assert!(low < 5_000.0 && high > 1_995_000.0, "{low} to {high}");
+    for family in [DistributionType::Poisson, DistributionType::Geometric] {
+        let test = dist.fit(family).unwrap().test().unwrap();
+        assert!(test.p_value < 0.01, "{family:?} holds: {test:?}");
+        let qq = dist.qq(family).unwrap();
+        assert_eq!(qq.len(), 2_000);
+        assert!(qq.windows(2).all(|pair| pair[0] <= pair[1]), "{family:?}");
+    }
     Ok(())
 }
 

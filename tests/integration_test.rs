@@ -16742,6 +16742,7 @@ fn type_text(app: &mut App, text: &str) {
     }
 }
 
+#[cfg(feature = "sql")]
 fn screen_at(app: &mut App, width: u16, height: u16) -> String {
     let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);

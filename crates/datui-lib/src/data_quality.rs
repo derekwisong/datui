@@ -7658,6 +7658,32 @@ mod tests {
         for (label, total) in segment_totals(results) {
             assert_eq!(total, exact[&label], "{label} of {:?}", plan.grain);
         }
+        // Every segment with rows is one the sample drew or one it missed, never
+        // both, and a missed one has its exact rows.
+        for missed in &results.unsampled_segments {
+            assert!(
+                !results
+                    .segments
+                    .iter()
+                    .any(|segment| segment.label == missed.label),
+                "{} of {:?}",
+                missed.label,
+                plan.grain
+            );
+            assert_eq!(Some(missed.total_rows), exact[&missed.label]);
+        }
+        if results
+            .segments
+            .iter()
+            .all(|segment| segment.total_rows.is_some())
+        {
+            assert_eq!(
+                results.segments.len() + results.unsampled_segments.len(),
+                exact.len(),
+                "{:?}",
+                plan.grain
+            );
+        }
     }
 
     /// The rows each edit reads, counted at the table: the "What edits should cost"
@@ -7766,6 +7792,11 @@ mod tests {
         let chunks = with(QualityGrain::RowChunks(500));
         let (results, reads) = run(&chunks, true);
         assert_eq!(reads, 0, "row chunks after a first run read nothing");
+        // Chunks the sample missed are named as the chunks it drew are.
+        let fine = with(QualityGrain::RowChunks(10));
+        let (missed, _) = run(&fine, true);
+        assert!(!missed.unsampled_segments.is_empty());
+        assert_exact(&missed, &df, &fine);
         let (fresh, _) = run(&chunks, false);
         assert_eq!(
             format!("{:?}", results.segments),

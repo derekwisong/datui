@@ -50,6 +50,10 @@ Each target restores the previous coverage corpus before running and minimizes
 it with `cargo fuzz cmin` afterward. Separate cache restore/save steps preserve
 new inputs even when a target crashes.
 
+**Every release** runs `DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh replay`
+over all committed corpora from the tag. Publishing requires this job to pass,
+independently of Nightly. Failed replays upload crashing inputs as build artifacts.
+
 ## The corpus
 
 `fuzz/corpus/` is committed, but it is a *seed* corpus, not the full coverage corpus.
@@ -93,9 +97,9 @@ checking dependency memory errors or running a longer fuzzing session:
 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
 ```
 
-The Nightly workflow runs this configuration; the pull request job does not.
+The Nightly and Release workflows run this configuration; the pull request job does not.
 
-Sanitizer builds use substantial memory. The Nightly job limits parallel
+Sanitizer builds use substantial memory. Nightly and Release limit parallel
 compilation to two jobs; use the same limit if your build is killed:
 
 ```bash

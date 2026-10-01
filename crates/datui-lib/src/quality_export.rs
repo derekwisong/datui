@@ -1036,12 +1036,24 @@ pub fn to_markdown(file: &ReportFile) -> String {
         ("Values", setup.values.clone()),
         (
             "Sample",
-            format!(
-                "{}, {} rows, seed {}",
-                setup.sample.method,
-                crate::numfmt::group_chrome(setup.sample.rows),
-                setup.sample.seed
-            ),
+            // Every row takes no size and no seed, and the first rows no seed.
+            match setup.sample.method.as_str() {
+                "Every row" => setup.sample.method.clone(),
+                "First rows" => format!(
+                    "First rows, {} rows",
+                    crate::numfmt::group_chrome(setup.sample.rows)
+                ),
+                method if method.starts_with("Equal per ") => format!(
+                    "{method}, {} rows per value, seed {}",
+                    crate::numfmt::group_chrome(setup.sample.rows),
+                    setup.sample.seed
+                ),
+                method => format!(
+                    "{method}, {} rows, seed {}",
+                    crate::numfmt::group_chrome(setup.sample.rows),
+                    setup.sample.seed
+                ),
+            },
         ),
         (
             "Text as time",
@@ -1331,6 +1343,19 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected:?} in\n{text}");
         }
+        // Every row takes no size or seed, so the setup names none.
+        let every_row = DataQualityPlan {
+            method: crate::sampling::SampleMethod::EveryRow,
+            ..plan
+        };
+        let text = render(
+            &results,
+            &every_row,
+            ReportFormat::Markdown,
+            "2026-09-30T00:00:00Z",
+        )
+        .unwrap();
+        assert!(text.contains("| Sample | Every row |"), "{text}");
     }
 
     /// Expected windows go into the setup, and the gaps they find into the report:

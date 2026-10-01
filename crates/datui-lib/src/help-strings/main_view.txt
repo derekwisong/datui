@@ -59,12 +59,12 @@ While busy:
   applied, Esc stops it and keeps the table as it was.
 
 Wide columns:
-  A value or name cut short at the edge of its column ends in …, so a cut
-  value never passes for a whole one. Numbers are cut only when nothing else
-  fits; otherwise they wait, whole, for the scroll.
-  Frozen columns (L in Sort & Filter) sit left of a │. A dashed ┆ instead:
-  the window is too narrow for every frozen column beside the others, so the
-  rest scroll after it until there is room. The freeze is kept.
+  A value or name cut short at the edge of its column ends in …. A number is
+  cut only as the first scrolling column with no room for it; otherwise it
+  waits, whole, for the scroll.
+  Frozen columns (L in Sort & Filter) sit left of │. When it shows as ┆, the
+  window is too narrow for them all: the ones that do not fit scroll after
+  it, and are frozen again when there is room.
 
 Empty cells:
   A directory of Parquet files may hold files that disagree, so an empty cell

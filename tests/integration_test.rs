@@ -4617,6 +4617,27 @@ fn an_empty_scope_is_never_a_clean_report() {
         assert!(!text.contains("No problems found"), "full {full}: {text}");
         assert!(!text.contains("clean"), "full {full}: {text}");
         assert!(text.contains("No rows to check"), "full {full}: {text}");
+        // Columns marks none of them clean either.
+        app.analysis_modal
+            .show_quality_tab(datui::data_quality::QualityPage::Columns);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let lines = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let check = datui::glyphs::get().check;
+        for column in ["id", "name", "value", "date"] {
+            let line = lines
+                .iter()
+                .find(|line| line.split_whitespace().any(|word| word == column))
+                .unwrap_or_else(|| panic!("{column} on Columns: {lines:#?}"));
+            let before = &line[..line.find(&format!(" {column} ")).unwrap()];
+            assert!(!before.contains(check), "full {full}: {line}");
+        }
         let report = datui::quality_report::build_report(&results);
         for check in datui::quality_report::checks(&results, &report) {
             assert!(!check.outcome.ran(), "{} ran on no rows", check.name);

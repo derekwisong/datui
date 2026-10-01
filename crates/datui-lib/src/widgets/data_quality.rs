@@ -1885,7 +1885,13 @@ fn render_columns(
             .get(index)
             .copied()
             .unwrap_or(Severity::Clean);
-        let mark = Cell::from(Line::from(severity_mark(severity, config.theme)));
+        // With no values read, a column with no finding is unknown, not clean.
+        let unknown = severity == Severity::Clean && (report.no_rows || report.metadata_only);
+        let mark = if unknown {
+            Cell::from("")
+        } else {
+            Cell::from(Line::from(severity_mark(severity, config.theme)))
+        };
         let findings = report
             .column_findings
             .get(index)

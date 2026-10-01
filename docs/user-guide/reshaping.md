@@ -69,15 +69,14 @@ and set:
 | Variable name | `name` |
 | Value name | `n` |
 
-The name fields start as `variable` and `value`; <kbd>Ctrl</kbd>+<kbd>U</kbd>
-clears one before you type. Apply with <kbd>Enter</kbd>. The result has 414
+The name fields start as `variable` and `value`, selected: typing replaces
+them. Apply with <kbd>Enter</kbd>. The result has 414
 rows with columns `year`, `name` and `n`: the 376 counts, plus a null for each
 of the 38 years Jennifer has none.
 
 Other strategies select columns by regex (**By pattern**), data type
 (**By type**) or an **Explicit list**. The form shows how many columns match
-before it runs. The output names start as `variable` and `value`, selected:
-typing replaces them.
+before it runs.
 
 Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 

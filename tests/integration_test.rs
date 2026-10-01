@@ -19514,6 +19514,11 @@ fn out_of_range_dates_in_a_query_cast_to_their_stored_number() {
                 [some(first), some(&past.replace("since", "after"))],
             ),
             (format!("select x: {c}.strip"), [some(first), some(past)]),
+            // Coalesced with text, Polars casts the date to text itself.
+            (
+                format!("select x: {c} ^ \"none\""),
+                [some(first), some(past)],
+            ),
         ] {
             run_query(&mut app, &rx, &tx, &query);
             assert_eq!(view_text(&app, "x"), expected, "{query}");
@@ -19548,19 +19553,14 @@ fn out_of_range_dates_in_a_query_cast_to_their_stored_number() {
         );
         let keys = view_text(&app, "k");
         assert!(keys.contains(&some(past)), "{c}: {keys:?}");
-        let state = app.data_table_state.as_mut().unwrap();
-        for group in 0..2 {
-            state.drill_down_into_group(group).unwrap();
-            assert_eq!(state.lf().clone().collect().unwrap().height(), 1, "{c}");
-            state.drill_up().unwrap();
-        }
+        assert_drills_to_its_row(&mut app, &keys, past, c);
     }
     draw_wide(&mut app, "query");
 }
 
-/// SQL's casts to text, `||`, `CONCAT` and `STRFTIME` write a date past the calendar
-/// as its stored number, where Polars panicked (#506), and a grouping by that text
-/// drills into its row.
+/// SQL's casts to text, `||`, `CONCAT`, `STRFTIME`, and a `COALESCE`, `CASE` or
+/// `UNION` of a date with text write a date past the calendar as its stored number,
+/// where Polars panicked (#506), and a grouping by that text drills into its row.
 #[cfg(feature = "sql")]
 #[test]
 fn out_of_range_dates_in_sql_cast_to_their_stored_number() {
@@ -19592,25 +19592,63 @@ fn out_of_range_dates_in_sql_cast_to_their_stored_number() {
                 ),
                 [some(first), some(past)],
             ),
+            // Met with text, Polars casts the date to text itself.
+            (
+                format!("SELECT COALESCE({c}, 'none') AS x FROM df"),
+                [some(first), some(past)],
+            ),
+            (
+                format!("SELECT CASE WHEN s = 'b' THEN {c} ELSE s END AS x FROM df"),
+                [some("a"), some(past)],
+            ),
         ] {
             run_sql(&mut app, &rx, &tx, &sql);
             assert_eq!(app.error_message(), None, "{sql}");
             assert_eq!(view_text(&app, "x"), expected, "{sql}");
         }
+        let sql = format!("SELECT {c} AS x FROM df UNION ALL SELECT s FROM df");
+        run_sql(&mut app, &rx, &tx, &sql);
+        assert_eq!(app.error_message(), None, "{sql}");
+        let mut stacked = view_text(&app, "x");
+        stacked.sort();
+        let mut expected = [some(first), some(past), some("a"), some("b")];
+        expected.sort();
+        assert_eq!(stacked, expected, "{sql}");
+
         let sql = format!("SELECT s FROM df WHERE CAST({c} AS VARCHAR) LIKE '%since%'");
         run_sql(&mut app, &rx, &tx, &sql);
         assert_eq!(view_text(&app, "s"), [some("b")], "{sql}");
 
         let sql = format!("SELECT CAST({c} AS VARCHAR) AS k, COUNT(*) AS n FROM df GROUP BY k");
         run_sql(&mut app, &rx, &tx, &sql);
-        assert!(view_text(&app, "k").contains(&some(past)), "{sql}");
-        let state = app.data_table_state.as_mut().unwrap();
-        assert!(state.can_drill_down(), "{sql}");
-        for group in 0..2 {
-            state.drill_down_into_group(group).unwrap();
-            assert_eq!(state.lf().clone().collect().unwrap().height(), 1, "{sql}");
-            state.drill_up().unwrap();
-        }
+        let keys = view_text(&app, "k");
+        assert!(keys.contains(&some(past)), "{sql}");
+        assert!(
+            app.data_table_state.as_ref().unwrap().can_drill_down(),
+            "{sql}"
+        );
+        assert_drills_to_its_row(&mut app, &keys, past, &sql);
     }
     draw_wide(&mut app, "sql");
+}
+
+/// Each group of a grouping keyed on the text of a [`PAST_CALENDAR`] column drills
+/// into the one row holding it: `b` for the date past the calendar, else `a`.
+#[track_caller]
+fn assert_drills_to_its_row(app: &mut App, keys: &[Option<String>], past: &str, case: &str) {
+    for (group, key) in keys.iter().enumerate() {
+        let state = app.data_table_state.as_mut().unwrap();
+        state.drill_down_into_group(group).unwrap();
+        let row = if key.as_deref() == Some(past) {
+            "b"
+        } else {
+            "a"
+        };
+        assert_eq!(
+            view_text(app, "s"),
+            [Some(row.to_string())],
+            "{case}: {key:?}"
+        );
+        app.data_table_state.as_mut().unwrap().drill_up().unwrap();
+    }
 }

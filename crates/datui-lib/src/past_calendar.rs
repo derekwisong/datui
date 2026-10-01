@@ -123,7 +123,9 @@ fn reads_calendar(function: &TemporalFunction) -> bool {
 /// from [`calendar_expr`]. With `schema`, the one `expr` is evaluated against,
 /// only operations on a date or ms/us datetime are replaced and every other plan
 /// stays as Polars built it; without it, each is replaced, and the replacement
-/// casts any other type as Polars would.
+/// casts any other type as Polars would. A date that meets text in a coalesce or
+/// a when/then/otherwise, which Polars casts to text itself, goes through
+/// [`text_expr`] too, but only with `schema`, which says the result is text.
 pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
     let may_leave = |e: &Expr| match (e, schema) {
         (Expr::Literal(_), _) => false,
@@ -132,7 +134,40 @@ pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
             .map_or(true, |f| can_leave_calendar(f.dtype())),
         (_, None) => true,
     };
+    let as_text = |e: Expr| {
+        if may_leave(&e) {
+            text_expr(e, CastOptions::NonStrict)
+        } else {
+            e
+        }
+    };
+    let gives_text = |e: &Expr| {
+        schema.is_some_and(|schema| {
+            e.to_field(schema)
+                .is_ok_and(|f| f.dtype() == &DataType::String)
+        })
+    };
     expr.map_expr(|e| match e {
+        e @ (Expr::Ternary { .. }
+        | Expr::Function {
+            function: FunctionExpr::Coalesce,
+            ..
+        }) if gives_text(&e) => match e {
+            Expr::Ternary {
+                predicate,
+                truthy,
+                falsy,
+            } => Expr::Ternary {
+                predicate,
+                truthy: Arc::new(as_text(Arc::unwrap_or_clone(truthy))),
+                falsy: Arc::new(as_text(Arc::unwrap_or_clone(falsy))),
+            },
+            Expr::Function { input, function } => Expr::Function {
+                input: input.into_iter().map(as_text).collect(),
+                function,
+            },
+            e => e,
+        },
         Expr::Cast {
             expr,
             dtype,
@@ -164,16 +199,7 @@ pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
                     StringFunction::ConcatHorizontal { .. } | StringFunction::ConcatVertical { .. },
                 ),
         } => Expr::Function {
-            input: input
-                .into_iter()
-                .map(|e| {
-                    if may_leave(&e) {
-                        text_expr(e, CastOptions::NonStrict)
-                    } else {
-                        e
-                    }
-                })
-                .collect(),
+            input: input.into_iter().map(as_text).collect(),
             function,
         },
         e => e,
@@ -185,9 +211,11 @@ pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
 fn guards(expr: &Expr) -> bool {
     expr.into_iter().any(|e| match e {
         Expr::Cast { dtype, .. } => dtype.as_literal() == Some(&DataType::String),
+        Expr::Ternary { .. } => true,
         Expr::Function { function, .. } => matches!(
             function,
             FunctionExpr::TemporalExpr(_)
+                | FunctionExpr::Coalesce
                 | FunctionExpr::StringExpr(
                     StringFunction::ConcatHorizontal { .. } | StringFunction::ConcatVertical { .. }
                 )
@@ -216,8 +244,38 @@ fn holds_guards(plan: &DslPlan) -> bool {
             predicates,
             ..
         } => left_on.iter().chain(right_on).chain(predicates).any(guards),
+        // Stacked on text, a date is cast to text by Polars.
+        DslPlan::Union { args, .. } => args.to_supertypes,
         _ => false,
     })
+}
+
+/// `input` of a union whose columns are `union`, with each date the union stacks on
+/// text, which Polars would cast to text itself, through [`text_expr`] first. A
+/// diagonal union matches columns by name, any other by position.
+#[cfg(feature = "sql")]
+fn union_text(input: &mut DslPlan, union: &Schema, diagonal: bool) {
+    let Ok(own) = LazyFrame::from(input.clone()).collect_schema() else {
+        return;
+    };
+    let texts: Vec<Expr> = own
+        .iter()
+        .enumerate()
+        .filter(|(i, (name, dtype))| {
+            let stacked = if diagonal {
+                union.get(name.as_str())
+            } else {
+                union.get_at_index(*i).map(|(_, dtype)| dtype)
+            };
+            can_leave_calendar(dtype) && stacked == Some(&DataType::String)
+        })
+        .map(|(_, (name, _))| text_expr(Expr::Column(name.clone()), CastOptions::NonStrict))
+        .collect();
+    if !texts.is_empty() {
+        *input = LazyFrame::from(input.clone())
+            .with_columns(texts)
+            .logical_plan;
+    }
 }
 
 /// [`guard_expr`] over each expression of `plan`, against the schema of the input
@@ -263,16 +321,30 @@ pub fn guard_plan(plan: &mut DslPlan) {
             guard(predicates, schema.as_deref());
             guard(aggs, schema.as_deref());
         }
-        // Two inputs: their keys are guarded whatever their type.
         DslPlan::Join {
+            input_left,
+            input_right,
             left_on,
             right_on,
             predicates,
             ..
         } => {
-            guard(left_on, None);
-            guard(right_on, None);
+            if left_on.iter().any(guards) {
+                guard(left_on, schema(input_left).as_deref());
+            }
+            if right_on.iter().any(guards) {
+                guard(right_on, schema(input_right).as_deref());
+            }
+            // Predicates read both sides: guarded whatever their type.
             guard(predicates, None);
+        }
+        DslPlan::Union { args, .. } if args.to_supertypes => {
+            let union = schema(plan);
+            if let (Some(union), DslPlan::Union { inputs, args }) = (union, &mut *plan) {
+                for input in inputs {
+                    union_text(input, &union, args.diagonal);
+                }
+            }
         }
         _ => {}
     }
@@ -492,5 +564,83 @@ mod tests {
             guard_expr(col("i").cast(DataType::String), None),
             col("i").cast(DataType::String)
         );
+        // A date met with text in a coalesce or a when/then/otherwise is cast to
+        // text by Polars; known only with the schema.
+        let one = || col("i").eq(lit(1));
+        let kept = [
+            coalesce(&[col("d"), col("t")]),
+            coalesce(&[col("s"), lit("x")]),
+            when(one()).then(col("d")).otherwise(col("t")),
+            when(one()).then(col("ns")).otherwise(col("s")),
+        ];
+        for expr in kept {
+            assert_eq!(guard_expr(expr.clone(), Some(&schema)), expr);
+        }
+        let changed = [
+            coalesce(&[col("t"), lit("x")]),
+            coalesce(&[col("s"), col("d")]),
+            when(one()).then(col("d")).otherwise(col("s")),
+            when(one()).then(lit("x")).otherwise(col("t")),
+        ];
+        for expr in changed {
+            assert_ne!(guard_expr(expr.clone(), Some(&schema)), expr);
+            assert_eq!(guard_expr(expr.clone(), None), expr);
+        }
+    }
+
+    /// Met with text in a coalesce, a when/then/otherwise or a union, a date is
+    /// Polars' own text in range and its stored number past it, where Polars' own
+    /// cast to their common type panicked.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_date_met_with_text_is_its_text() {
+        let frame = |past: bool| {
+            let at = if past { i64::MIN + 1 } else { 1 };
+            df!(
+                "s" => ["a", "b"],
+                "d" => [0, if past { i32::MAX } else { 1 }],
+                "t" => [0, at],
+            )
+            .unwrap()
+            .lazy()
+            .with_columns([
+                col("d").cast(DataType::Date),
+                col("t").cast(DataType::Datetime(TimeUnit::Milliseconds, None)),
+            ])
+        };
+        let mut ctx = polars_sql::SQLContext::new();
+        for sql in [
+            "SELECT COALESCE(t, 'x') AS x FROM df",
+            "SELECT CASE WHEN s = 'b' THEN d ELSE s END AS x FROM df",
+            "SELECT d AS x FROM df UNION ALL SELECT s FROM df",
+            "SELECT s AS x FROM df UNION SELECT t FROM df",
+        ] {
+            for past in [false, true] {
+                ctx.register("df", frame(past));
+                let polars = ctx.execute(sql).unwrap();
+                let mut guarded = polars.clone();
+                guard_plan(&mut guarded.logical_plan);
+                // A UNION's rows come in any order.
+                let values = |lf: LazyFrame| {
+                    let df = lf.collect().unwrap();
+                    let mut values: Vec<Option<String>> = df
+                        .column("x")
+                        .unwrap()
+                        .str()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.map(str::to_string))
+                        .collect();
+                    values.sort();
+                    values
+                };
+                let text = values(guarded);
+                if past {
+                    assert!(text.iter().flatten().any(|s| s.contains("since")), "{sql}");
+                } else {
+                    assert_eq!(text, values(polars), "{sql}");
+                }
+            }
+        }
     }
 }

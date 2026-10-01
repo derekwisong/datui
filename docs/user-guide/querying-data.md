@@ -153,9 +153,9 @@ A date or datetime past the calendar's range, such as a sentinel of
 
 | In a query | A date past the calendar |
 |---|---|
-| `.str`, `.format`, `like`, `.part`, `.slice`, `.replace`, `.strip` | Its stored number, as the table shows it: `-9223372036854775807 us since 1970-01-01 UTC` |
-| SQL `CAST(... AS VARCHAR)`, `\|\|`, `CONCAT`, `STRFTIME` | Its stored number |
-| `.date`, `.time`, `.year`, `.month_start` and the other date parts | Null |
+| `.str`, `.format`, `like`, `.part`, `.slice`, `.replace`, `.strip`, `^` with text | Its stored number, as the table shows it: `-9223372036854775807 us since 1970-01-01 UTC` |
+| SQL `CAST(... AS VARCHAR)`, `\|\|`, `CONCAT`, `STRFTIME`; `COALESCE`, `CASE` or `UNION` with text | Its stored number |
+| `.date`, `.time`, `.year`, `.month_start` and the other date parts; SQL date functions and `INTERVAL` arithmetic | Null |
 
 ## Drill into a GROUP BY
 

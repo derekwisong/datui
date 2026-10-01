@@ -149,7 +149,7 @@ use sort_modal::{SortColumn, SortFocus, order_with_hidden};
 pub use template::{Template, TemplateManager, Templates};
 use widgets::column_widths::WidthChoice;
 use widgets::controls::Controls;
-use widgets::datatable::{DataTableState, DrillRow};
+use widgets::datatable::{DataTableState, DatasetAtOpen, DrillRow, OpenFacts};
 use widgets::debug::DebugState;
 use widgets::template_modal::{FormFocus, TemplateModal, TemplateModalMode, ViewRow};
 use widgets::text_input::{TextInput, TextInputEvent};
@@ -274,8 +274,12 @@ mod export_format_tests {
         let lf = polars::df!("a" => (0..100).collect::<Vec<i32>>())
             .unwrap()
             .lazy();
-        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
-        state.set_remote_source();
+        let mut state = DataTableState::from_lazyframe(lf, &opts())
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                ..Default::default()
+            });
         state.visible_rows = 10;
         state.deferred(|s| {
             s.filter(vec![FilterStatement {
@@ -325,24 +329,28 @@ mod export_format_tests {
             .unwrap()
             .lazy();
         let whole = lf.clone();
-        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
-        state.set_remote_source();
-        state.set_remote_files(crate::widgets::datatable::RemoteFiles {
-            urls: Arc::new(vec!["one".to_string(), "two".to_string()]),
-            scan: Arc::new(
-                move |urls: &[String], _as_text: &[polars::prelude::PlSmallStr]| {
-                    Ok(if urls.len() == 2 {
-                        whole.clone()
-                    } else if urls[0] == "one" {
-                        whole.clone().slice(0, 400)
-                    } else {
-                        whole.clone().slice(400, 600)
-                    })
-                },
-            ),
-            count: Arc::new(|| Ok(vec![vec![400], vec![300, 300]])),
-            offsets: None,
-        });
+        let mut state = DataTableState::from_lazyframe(lf, &opts())
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                remote_files: Some(crate::widgets::datatable::RemoteFiles {
+                    urls: Arc::new(vec!["one".to_string(), "two".to_string()]),
+                    scan: Arc::new(
+                        move |urls: &[String], _as_text: &[polars::prelude::PlSmallStr]| {
+                            Ok(if urls.len() == 2 {
+                                whole.clone()
+                            } else if urls[0] == "one" {
+                                whole.clone().slice(0, 400)
+                            } else {
+                                whole.clone().slice(400, 600)
+                            })
+                        },
+                    ),
+                    count: Arc::new(|| Ok(vec![vec![400], vec![300, 300]])),
+                    offsets: None,
+                }),
+                ..Default::default()
+            });
         state.visible_rows = 10;
         let dataset = state.len_generation();
         app.data_table_state = Some(state);
@@ -703,9 +711,13 @@ mod export_format_tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        let mut state = DataTableState::from_lazyframe(df.lazy(), &opts()).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &opts())
+            .unwrap()
+            .with_open(OpenFacts {
+                parquet_count_dir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            });
         state.visible_rows = 10;
-        state.set_parquet_count_dir(dir.path().to_path_buf());
         state.invalidate_num_rows();
         let dataset = state.len_generation();
         app.data_table_state = Some(state);
@@ -728,9 +740,13 @@ mod export_format_tests {
         let lf = polars::df!("a" => (0..10_000).collect::<Vec<i32>>())
             .unwrap()
             .lazy();
-        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
-        state.set_remote_source();
-        state.set_row_groups(&[10_000]);
+        let mut state = DataTableState::from_lazyframe(lf, &opts())
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: true,
+                row_groups: vec![vec![10_000]],
+                ..Default::default()
+            });
         state.visible_rows = 10;
         assert!(state.deferred(DataTableState::scroll_to_end));
         app.data_table_state = Some(state);
@@ -4716,29 +4732,32 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            footers_pending: Some(Arc::new(move |_| {
+                Some(FootersFound {
+                    dataset: dataset_of(rows()),
+                    lf: rows(),
+                    file_rows: vec![100],
+                    files: vec!["one".to_string()],
+                    row_groups: vec![vec![100]],
+                    remote: Some(crate::widgets::datatable::RemoteRead {
+                        urls: vec!["one".to_string()],
+                        scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                        count: Arc::new(|| Ok(vec![vec![100]])),
+                    }),
+                })
+            })),
+            ..Default::default()
         });
         state.visible_rows = 10;
-        state.set_footers_pending(Arc::new(move |_| {
-            Some(FootersFound {
-                dataset: dataset_of(rows()),
-                lf: rows(),
-                file_rows: vec![100],
-                files: vec!["one".to_string()],
-                row_groups: vec![vec![100]],
-                remote: Some(crate::widgets::datatable::RemoteRead {
-                    urls: vec!["one".to_string()],
-                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
-                }),
-            })
-        }));
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
@@ -4950,29 +4969,32 @@ pub mod tests {
                 &OpenOptions::default(),
                 None,
             )
-            .unwrap();
-            state.set_remote_source();
-            state.set_remote_files(RemoteFiles {
-                urls: Arc::new(vec!["one".to_string()]),
-                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                count: Arc::new(|| Ok(vec![vec![100]])),
-                offsets: None,
+            .unwrap()
+            .with_open(crate::widgets::datatable::OpenFacts {
+                remote_source: true,
+                remote_files: Some(RemoteFiles {
+                    urls: Arc::new(vec!["one".to_string()]),
+                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    offsets: None,
+                }),
+                footers_pending: Some(Arc::new(move |_| {
+                    Some(FootersFound {
+                        dataset: dataset_of(rows()),
+                        lf: rows(),
+                        file_rows: vec![100],
+                        files: vec!["one".to_string()],
+                        row_groups: vec![vec![100]],
+                        remote: Some(crate::widgets::datatable::RemoteRead {
+                            urls: vec!["one".to_string()],
+                            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                            count: Arc::new(|| Ok(vec![vec![100]])),
+                        }),
+                    })
+                })),
+                ..Default::default()
             });
             state.visible_rows = 10;
-            state.set_footers_pending(Arc::new(move |_| {
-                Some(FootersFound {
-                    dataset: dataset_of(rows()),
-                    lf: rows(),
-                    file_rows: vec![100],
-                    files: vec!["one".to_string()],
-                    row_groups: vec![vec![100]],
-                    remote: Some(crate::widgets::datatable::RemoteRead {
-                        urls: vec!["one".to_string()],
-                        scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                        count: Arc::new(|| Ok(vec![vec![100]])),
-                    }),
-                })
-            }));
             state
         };
 
@@ -5038,29 +5060,32 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(narrow())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(narrow())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            footers_pending: Some(Arc::new(move |_| {
+                Some(FootersFound {
+                    dataset: dataset_of(wide()),
+                    lf: wide(),
+                    file_rows: vec![100],
+                    files: vec!["one".to_string()],
+                    row_groups: vec![vec![100]],
+                    remote: Some(crate::widgets::datatable::RemoteRead {
+                        urls: vec!["one".to_string()],
+                        scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
+                        count: Arc::new(|| Ok(vec![vec![100]])),
+                    }),
+                })
+            })),
+            ..Default::default()
         });
         state.visible_rows = 10;
-        state.set_footers_pending(Arc::new(move |_| {
-            Some(FootersFound {
-                dataset: dataset_of(wide()),
-                lf: wide(),
-                file_rows: vec![100],
-                files: vec!["one".to_string()],
-                row_groups: vec![vec![100]],
-                remote: Some(crate::widgets::datatable::RemoteRead {
-                    urls: vec!["one".to_string()],
-                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
-                }),
-            })
-        }));
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
@@ -5116,15 +5141,18 @@ pub mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        let mut state = DataTableState::from_schema_and_lazyframe(
+        let state = DataTableState::from_schema_and_lazyframe(
             schema,
             frame(),
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        // The network was there for the open's two footers and gone for the rest.
-        state.set_footers_pending(Arc::new(|_progress| None));
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            // The network was there for the open's two footers and gone for the rest.
+            footers_pending: Some(Arc::new(|_progress| None)),
+            ..Default::default()
+        });
         app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         let reported = rx
@@ -5171,13 +5199,16 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            footers_pending: Some(Arc::new(|_| None)),
+            ..Default::default()
+        });
         // As a staged open leaves it: the number it holds is as far as the buffer
         // reached, a pass is still out, and no count has been taken.
         // A provisional, not `count_landed`, which would mark it as a count that had been
         // taken — the state this reproduces is a provisional left by a short read.
         state.set_provisional_rows(70);
-        state.set_footers_pending(Arc::new(|_| None));
         assert!(
             state.counts_itself_later(),
             "the fixture is a dataset whose count is still coming"
@@ -5243,27 +5274,30 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            // No row groups: a dataset sampled past the footer limit, or one whose
+            // footer would not parse the second time.
+            footers_pending: Some(Arc::new(move |_| {
+                Some(FootersFound {
+                    dataset: dataset_of(wider()),
+                    lf: wider(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    remote: None,
+                })
+            })),
+            ..Default::default()
         });
         state.visible_rows = 10;
-        // No row groups: a dataset sampled past the footer limit, or one whose footer
-        // would not parse the second time.
-        state.set_footers_pending(Arc::new(move |_| {
-            Some(FootersFound {
-                dataset: dataset_of(wider()),
-                lf: wider(),
-                file_rows: Vec::new(),
-                files: Vec::new(),
-                row_groups: Vec::new(),
-                remote: None,
-            })
-        }));
 
         // Its own runtime, so `test_runtime` does not isolate the config for it.
         crate::text_input_flows::isolate_cache();
@@ -5318,16 +5352,19 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            footers_pending: Some(Arc::new(|_| None)),
+            ..Default::default()
         });
         state.visible_rows = 10;
-        state.set_footers_pending(Arc::new(|_| None));
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
@@ -5401,29 +5438,32 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            footers_pending: Some(Arc::new(move |_| {
+                Some(FootersFound {
+                    dataset: dataset_of(wide()),
+                    lf: wide(),
+                    file_rows: vec![100],
+                    files: vec!["one".to_string()],
+                    row_groups: vec![vec![100]],
+                    remote: Some(crate::widgets::datatable::RemoteRead {
+                        urls: vec!["one".to_string()],
+                        scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
+                        count: Arc::new(|| Ok(vec![vec![100]])),
+                    }),
+                })
+            })),
+            ..Default::default()
         });
         state.visible_rows = 10;
-        state.set_footers_pending(Arc::new(move |_| {
-            Some(FootersFound {
-                dataset: dataset_of(wide()),
-                lf: wide(),
-                file_rows: vec![100],
-                files: vec!["one".to_string()],
-                row_groups: vec![vec![100]],
-                remote: Some(crate::widgets::datatable::RemoteRead {
-                    urls: vec!["one".to_string()],
-                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
-                }),
-            })
-        }));
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
@@ -5522,13 +5562,16 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            ..Default::default()
         });
         state.visible_rows = 10;
 
@@ -5581,13 +5624,16 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(frame())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(frame())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            ..Default::default()
         });
         state.visible_rows = 10;
         // As far as the buffer reached, of a hundred. This is the number the bar prints
@@ -6105,13 +6151,16 @@ pub mod tests {
                 &OpenOptions::default(),
                 None,
             )
-            .unwrap();
-            state.set_remote_source();
-            state.set_remote_files(RemoteFiles {
-                urls: Arc::new(vec!["one".to_string()]),
-                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                count: Arc::new(move || Ok(vec![vec![n as usize]])),
-                offsets: None,
+            .unwrap()
+            .with_open(crate::widgets::datatable::OpenFacts {
+                remote_source: true,
+                remote_files: Some(RemoteFiles {
+                    urls: Arc::new(vec!["one".to_string()]),
+                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                    count: Arc::new(move || Ok(vec![vec![n as usize]])),
+                    offsets: None,
+                }),
+                ..Default::default()
             });
             state.visible_rows = 10;
             state
@@ -7108,15 +7157,18 @@ pub mod tests {
                 &OpenOptions::default(),
                 None,
             )
-            .unwrap();
+            .unwrap()
+            .with_open(crate::widgets::datatable::OpenFacts {
+                column_bytes: footer_width
+                    .map(|width| vec![("blob".to_string(), width)])
+                    .unwrap_or_default(),
+                ..Default::default()
+            });
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
             app.install_for_tests(state, None, &OpenOptions::default(), None);
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
-            if let Some(width) = footer_width {
-                state.set_column_bytes(vec![("blob".to_string(), width)]);
-            }
             app.set_clipboard_destination(Box::new(TestClipboard(Some(limit))));
             app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
             let next = app.perform_copy();
@@ -7199,15 +7251,18 @@ pub mod tests {
                 &OpenOptions::default(),
                 None,
             )
-            .unwrap();
+            .unwrap()
+            .with_open(crate::widgets::datatable::OpenFacts {
+                column_bytes: footer_width
+                    .map(|width| vec![("blob".to_string(), width)])
+                    .unwrap_or_default(),
+                ..Default::default()
+            });
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
             app.install_for_tests(state, None, &OpenOptions::default(), None);
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
-            if let Some(width) = footer_width {
-                state.set_column_bytes(vec![("blob".to_string(), width)]);
-            }
             uncapped_clipboard(&mut app);
             app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
             let next = app.perform_copy();
@@ -7259,6 +7314,7 @@ pub mod tests {
                 &Default::default(),
                 &Default::default(),
             )
+            .map(|(state, facts)| state.with_open(facts))
             .expect("the local footer route");
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
@@ -7342,13 +7398,16 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            ..Default::default()
         });
         state.visible_rows = 10;
 
@@ -7427,10 +7486,13 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            footers_pending: Some(Arc::new(|_| None)),
+            ..Default::default()
+        });
         // As a staged open leaves it: a provisional from a short read, a pass still out.
         state.set_provisional_rows(70);
-        state.set_footers_pending(Arc::new(|_| None));
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
@@ -7498,17 +7560,20 @@ pub mod tests {
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        state.set_remote_source();
-        state.set_remote_files(RemoteFiles {
-            urls: Arc::new(vec!["one".to_string()]),
-            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
-            offsets: None,
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            remote_source: true,
+            remote_files: Some(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            }),
+            footers_pending: Some(Arc::new(|_| None)),
+            ..Default::default()
         });
         state.visible_rows = 10;
         // Still reading, so as the scan it rightly declines to count itself.
-        state.set_footers_pending(Arc::new(|_| None));
         assert!(
             state.counts_itself_later(),
             "the pass is bringing this dataset's count"
@@ -7576,17 +7641,19 @@ pub mod tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
 
         // The first dataset, staged.
-        let mut state = state_of(first());
-        state.set_footers_pending(Arc::new(move |_progress| {
-            Some(crate::widgets::datatable::FootersFound {
-                dataset: dataset_of(its_columns()),
-                lf: its_columns(),
-                file_rows: Vec::new(),
-                files: Vec::new(),
-                row_groups: Vec::new(),
-                remote: None,
-            })
-        }));
+        let state = state_of(first()).with_open(crate::widgets::datatable::OpenFacts {
+            footers_pending: Some(Arc::new(move |_progress| {
+                Some(crate::widgets::datatable::FootersFound {
+                    dataset: dataset_of(its_columns()),
+                    lf: its_columns(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    remote: None,
+                })
+            })),
+            ..Default::default()
+        });
         app.install_for_tests(state, None, &OpenOptions::default(), None);
         let reported = rx
             .recv_timeout(std::time::Duration::from_secs(10))
@@ -8187,24 +8254,27 @@ pub mod tests {
             .build()
             .unwrap();
         let mut app = App::new(tx, runtime.handle().clone());
-        let mut state = DataTableState::from_schema_and_lazyframe(
+        let state = DataTableState::from_schema_and_lazyframe(
             dataset_of(frame()).schema.clone(),
             frame(),
             &OpenOptions::default(),
             None,
         )
-        .unwrap();
-        // What the pass behind the open will find: one column more.
-        state.set_footers_pending(Arc::new(move |_progress| {
-            Some(crate::widgets::datatable::FootersFound {
-                dataset: dataset_of(counted()),
-                lf: counted(),
-                file_rows: Vec::new(),
-                files: Vec::new(),
-                row_groups: Vec::new(),
-                remote: None,
-            })
-        }));
+        .unwrap()
+        .with_open(crate::widgets::datatable::OpenFacts {
+            // What the pass behind the open will find: one column more.
+            footers_pending: Some(Arc::new(move |_progress| {
+                Some(crate::widgets::datatable::FootersFound {
+                    dataset: dataset_of(counted()),
+                    lf: counted(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    remote: None,
+                })
+            })),
+            ..Default::default()
+        });
         // Installed the way an open installs it, rather than dropped into the field:
         // handing the pass over is one line of `install_dataset`, and a test that
         // starts the pass itself would not notice that line going missing.
@@ -16420,6 +16490,8 @@ impl App {
                 file,
                 path,
                 options,
+                #[cfg(any(feature = "http", feature = "cloud"))]
+                download,
             } => {
                 // Only a CSV comes this way; said, so it can have its header turned off.
                 let options = OpenOptions {
@@ -16427,9 +16499,15 @@ impl App {
                     ..options
                 };
                 self.spawn_job(job, Some("Decompressing..."), move |_| {
-                    let state = Self::decompressed_csv_state(&file, &options).map_err(|e| {
-                        crate::error_display::user_message_from_report(&e, Some(path.as_path()))
-                    })?;
+                    let state = Self::decompressed_csv_state(&file, &options)
+                        .map_err(|e| {
+                            crate::error_display::user_message_from_report(&e, Some(path.as_path()))
+                        })?
+                        .with_open(OpenFacts {
+                            #[cfg(any(feature = "http", feature = "cloud"))]
+                            download,
+                            ..Default::default()
+                        });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
                         state: Box::new(state),
                         path: Some(path),
@@ -16491,6 +16569,8 @@ impl App {
                 path,
                 options,
                 progress,
+                #[cfg(any(feature = "http", feature = "cloud"))]
+                download,
             } => {
                 self.debug.schema_load = None;
                 let cloud = self.app_config.cloud.clone();
@@ -16501,7 +16581,7 @@ impl App {
                     remembered: Some(self.cache.clone()),
                 };
                 self.spawn_job(job, Some("Caching schema..."), move |_| {
-                    let (state, debug_label) = Self::build_schema_state(
+                    let (state, facts, debug_label) = Self::build_schema_state(
                         *lf,
                         path.as_deref(),
                         &options,
@@ -16510,6 +16590,12 @@ impl App {
                         &report,
                     )
                     .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    // Everything the open found, given to the dataset as it is built.
+                    let state = state.with_open(OpenFacts {
+                        #[cfg(any(feature = "http", feature = "cloud"))]
+                        download,
+                        ..facts
+                    });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
                         state: Box::new(state),
                         path,
@@ -16654,7 +16740,7 @@ impl App {
         options: &OpenOptions,
         progress: &crate::schema_union::FooterProgress,
         meter: &crate::measurements::Meter,
-    ) -> Option<DataTableState> {
+    ) -> Option<(DataTableState, OpenFacts)> {
         if !options.single_spine_schema {
             return None;
         }
@@ -16702,20 +16788,23 @@ impl App {
             crate::schema_union::lenient_scan(&readable, schema.clone(), None, drift.as_ref(), &[])
                 .ok()?;
         let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, drift.is_some());
-        let mut state =
+        let state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
-        // The footers just read say how wide each column is, as the cloud object's do:
-        // a binary column's width is known nowhere else.
-        state.set_column_bytes(crate::schema_union::column_bytes_per_row(&footers));
-        state.set_dataset_schema(
-            dataset
-                .with_partition_layouts(&p.to_string_lossy(), &paths)
-                .with_skipped(skipped),
-            &file_rows,
-            &paths,
-        );
-        Some(state)
+        let facts = OpenFacts {
+            // The footers just read say how wide each column is, as the cloud object's
+            // do: a binary column's width is known nowhere else.
+            column_bytes: crate::schema_union::column_bytes_per_row(&footers),
+            dataset: Some(DatasetAtOpen {
+                schema: dataset
+                    .with_partition_layouts(&p.to_string_lossy(), &paths)
+                    .with_skipped(skipped),
+                file_rows,
+                files: paths,
+            }),
+            ..Default::default()
+        };
+        Some((state, facts))
     }
 
     /// The same one-file trick against an object store. This is the route that used to
@@ -16727,7 +16816,7 @@ impl App {
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
-    ) -> Option<DataTableState> {
+    ) -> Option<(DataTableState, OpenFacts)> {
         if !options.single_spine_schema {
             return None;
         }
@@ -16759,7 +16848,7 @@ impl App {
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
-    ) -> Option<DataTableState> {
+    ) -> Option<(DataTableState, OpenFacts)> {
         // Every file listed once, and the scan, the schema and the count all work from
         // that list — for a glob as much as for a prefix. datui expands the glob
         // itself: it lists the literal part of the key and matches the rest, so a glob
@@ -16812,7 +16901,7 @@ impl App {
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
-    ) -> Option<DataTableState> {
+    ) -> Option<(DataTableState, OpenFacts)> {
         let CloudTarget { full, key, pattern } = target;
         // Kept before the listing takes ownership of it: this is the prefix that was
         // listed, and the notes measure every file's path against it.
@@ -16910,7 +16999,7 @@ impl App {
         // a smaller one shows rows.
         let readable = crate::schema_union::readable_paths(&urls, &dataset.unreadable);
         // Everything downstream describes the same list or none of it. The counter
-        // returns one entry per object it is given and `set_file_row_groups` wants one
+        // returns one entry per object it is given and `OpenFacts::row_groups` wants one
         // per url, so a counter over the full listing beside a shorter url list is not
         // a wrong count, it is no count at all: the lengths disagree, the answer is
         // dropped without a word, and the dataset spends the rest of the session
@@ -16946,34 +17035,42 @@ impl App {
             })
         };
         let lf = scan(&readable, &[]).ok()?;
-        let mut state =
+        let state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
-        state.set_remote_files(crate::widgets::datatable::RemoteFiles {
-            urls: Arc::new(readable.into_owned()),
-            scan,
-            count,
-            offsets: None,
-        });
-        // The listing's sizes: what a full scan's local copy would fetch, known
-        // before it fetches anything.
-        state.set_remote_objects(files.iter().filter_map(|file| {
-            Some(crate::local_copy::RemoteObject {
-                url: cloud_hive::url_of_key(full, &file.key)?,
-                size: file.size,
-                etag: file.etag.clone(),
-            })
-        }));
-        // The footers just read hold the count too, so the dataset opens counted — but
-        // `cloud_dataset_from_footers` gives row groups only when every file was read
-        // and every footer parsed. A footer sampled past or failed would count as no
-        // rows, which both undercounts the dataset and puts that file's rows out of
-        // reach of a windowed scan; leaving the count to `RemoteFiles::count` means it
-        // is retried instead.
-        if !row_groups.is_empty() {
-            state.set_file_row_groups(&row_groups);
-        }
-        state.set_dataset_schema(dataset.with_skipped(skipped), &file_rows, &urls);
+        let mut facts = OpenFacts {
+            remote_files: Some(crate::widgets::datatable::RemoteFiles {
+                urls: Arc::new(readable.into_owned()),
+                scan,
+                count,
+                offsets: None,
+            }),
+            // The listing's sizes: what a full scan's local copy would fetch, known
+            // before it fetches anything.
+            remote_objects: files
+                .iter()
+                .filter_map(|file| {
+                    Some(crate::local_copy::RemoteObject {
+                        url: cloud_hive::url_of_key(full, &file.key)?,
+                        size: file.size,
+                        etag: file.etag.clone(),
+                    })
+                })
+                .collect(),
+            // The footers just read hold the count too, so the dataset opens counted —
+            // but `cloud_dataset_from_footers` gives row groups only when every file was
+            // read and every footer parsed. A footer sampled past or failed would count
+            // as no rows, which both undercounts the dataset and puts that file's rows
+            // out of reach of a windowed scan; leaving the count to `RemoteFiles::count`
+            // means it is retried instead.
+            row_groups,
+            dataset: Some(DatasetAtOpen {
+                schema: dataset.with_skipped(skipped),
+                file_rows,
+                files: urls,
+            }),
+            ..Default::default()
+        };
         if staged {
             // Everything the pass behind the open needs, held as one closure the way
             // the scan and the counter are: the store and the listing it already has,
@@ -16996,7 +17093,7 @@ impl App {
             // to read in the first place.
             let remembered = report.remembered.clone();
             let fingerprint = fingerprint.clone();
-            state.set_footers_pending(Arc::new(move |progress: &Arc<_>| {
+            facts.footers_pending = Some(Arc::new(move |progress: &Arc<_>| {
                 let read = crate::schema_union::footers_to_read(files.len());
                 let footers = Self::cloud_footers(
                     store.clone(),
@@ -17075,7 +17172,7 @@ impl App {
                 })
             }));
         }
-        Some(state)
+        Some((state, facts))
     }
 
     /// The footers at `read`, fetched on the runtime. `None` if the open was abandoned.
@@ -17398,14 +17495,13 @@ impl App {
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
-    ) -> Result<(DataTableState, String)> {
-        let (mut state, label, meter) =
-            Self::schema_state_by_route(lf, path, options, cloud, runtime, report)?;
-        // The dataset leaves with the meter of the route that actually built it, so it
+    ) -> Result<(DataTableState, OpenFacts, String)> {
+        // The facts carry the meter of the route that actually built the dataset, so it
         // is installed with the dataset and nothing else can reach it. An open that
         // fails never gets here, which is what keeps the dataset still on screen
         // showing its own figures.
-        state.set_measurements(meter);
+        let (state, mut facts, label) =
+            Self::schema_state_by_route(lf, path, options, cloud, runtime, report)?;
         // What the open did, as against what it found. The one place both are known:
         // the scan has reported what it passed over, the caller has said whether this
         // is a lake table's plain files, and the state that will carry the notes is in
@@ -17421,28 +17517,26 @@ impl App {
                     .map(|n| n.to_string())
                     .collect::<Vec<_>>(),
             );
-        state.set_open_notes(crate::notes::from_the_open(
+        facts.open_notes = crate::notes::from_the_open(
             &options.left_out,
             options.read_as_plain_files_of,
             options.files_disagree,
             names_look_like_data,
-        ));
+        );
         // And the half of it that cannot be missed: the row count on screen is a true
         // count of the files and a wrong one of the table.
-        state.set_not_the_table(options.read_as_plain_files_of);
+        facts.not_the_table = options.read_as_plain_files_of;
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
-        if path.is_some_and(source::scans_in_place) {
-            state.set_remote_source();
-        }
+        facts.remote_source = path.is_some_and(source::scans_in_place);
         // The cheap footer-sum row count, for a local Parquet hive directory. Asked
         // here because a stat on a mount that has stopped answering hangs its thread.
         if options.hive
             && let Some(dir) = path.filter(|p| !source::is_remote_url(p) && p.is_dir())
         {
-            state.set_parquet_count_dir(dir.to_path_buf());
+            facts.parquet_count_dir = Some(dir.to_path_buf());
         }
-        Ok((state, label))
+        Ok((state, facts, label))
     }
 
     /// Scan a prefix in an object store with the reader its format calls for.
@@ -17589,7 +17683,7 @@ impl App {
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
-    ) -> Result<DataTableState> {
+    ) -> Result<(DataTableState, OpenFacts)> {
         let (full, cloud_opts, store) = Self::cloud_store_for(path, cloud, runtime)?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full)?;
         if key.is_empty() {
@@ -17608,21 +17702,26 @@ impl App {
             ..Default::default()
         };
         let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args)?;
-        let mut state =
+        let state =
             DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
-        state.set_row_groups(&footer.row_group_rows);
-        if let Some(size) = footer.object_bytes {
-            state.set_remote_objects([crate::local_copy::RemoteObject {
-                url: full.clone(),
-                size,
-                etag: footer.object_etag.clone(),
-            }]);
-        }
         // The commonest cloud open, and the one the dataset index never heard about:
         // the prefix route records what it read, and this one read a footer too.
         Self::record_cloud_object_facts(report.remembered.as_ref(), &full, &footer);
-        state.set_column_bytes(footer.column_bytes_per_row);
-        Ok(state)
+        let facts = OpenFacts {
+            row_groups: vec![footer.row_group_rows],
+            remote_objects: footer
+                .object_bytes
+                .map(|size| crate::local_copy::RemoteObject {
+                    url: full,
+                    size,
+                    etag: footer.object_etag,
+                })
+                .into_iter()
+                .collect(),
+            column_bytes: footer.column_bytes_per_row,
+            ..Default::default()
+        };
+        Ok((state, facts))
     }
 
     /// The schema routes, cheapest first: one local footer, one cloud footer (a hive
@@ -17634,7 +17733,7 @@ impl App {
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
-    ) -> Result<(DataTableState, String, Arc<crate::measurements::Meter>)> {
+    ) -> Result<(DataTableState, OpenFacts, String)> {
         #[cfg(not(feature = "cloud"))]
         let _ = (cloud, runtime);
 
@@ -17659,22 +17758,26 @@ impl App {
         };
 
         let local = attempt(report);
-        if let Some(state) =
+        if let Some((state, facts)) =
             Self::schema_state_from_local_hive(path, options, &local.progress, &local.meter)
         {
-            return Ok((state, "one-file (local)".to_string(), local.meter));
+            let facts = OpenFacts {
+                measurements: local.meter,
+                ..facts
+            };
+            return Ok((state, facts, "one-file (local)".to_string()));
         }
         #[cfg(feature = "cloud")]
         let cloud_hive_attempt = attempt(report);
         #[cfg(feature = "cloud")]
-        if let Some(state) =
+        if let Some((state, facts)) =
             Self::schema_state_from_cloud_hive(path, options, cloud, runtime, &cloud_hive_attempt)
         {
-            return Ok((
-                state,
-                "one-file (cloud)".to_string(),
-                cloud_hive_attempt.meter,
-            ));
+            let facts = OpenFacts {
+                measurements: cloud_hive_attempt.meter,
+                ..facts
+            };
+            return Ok((state, facts, "one-file (cloud)".to_string()));
         }
         #[cfg(feature = "cloud")]
         if let Some(p) = path.filter(|p| {
@@ -17684,7 +17787,13 @@ impl App {
         }) {
             let object = attempt(report);
             match Self::schema_state_from_cloud_object(p, options, cloud, runtime, &object) {
-                Ok(state) => return Ok((state, "footer (cloud)".to_string(), object.meter)),
+                Ok((state, facts)) => {
+                    let facts = OpenFacts {
+                        measurements: object.meter,
+                        ..facts
+                    };
+                    return Ok((state, facts, "footer (cloud)".to_string()));
+                }
                 // Visible in the debug overlay, because the fallback costs a row group
                 // for the count and that should not pass for the intended path.
                 Err(e) => {
@@ -17694,20 +17803,15 @@ impl App {
                     return Self::schema_state_from_full_scan(lf, path, options).map(|state| {
                         (
                             state,
+                            OpenFacts::default(),
                             format!("full scan (cloud footer: {e})"),
-                            Arc::new(crate::measurements::Meter::default()),
                         )
                     });
                 }
             }
         }
-        Self::schema_state_from_full_scan(lf, path, options).map(|state| {
-            (
-                state,
-                "full scan".to_string(),
-                Arc::new(crate::measurements::Meter::default()),
-            )
-        })
+        Self::schema_state_from_full_scan(lf, path, options)
+            .map(|state| (state, OpenFacts::default(), "full scan".to_string()))
     }
 
     /// Build the LazyFrame for `paths`.

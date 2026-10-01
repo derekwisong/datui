@@ -16,9 +16,11 @@
 //! - **Retirement.** Abandoning, replacing or failing a load drops what it holds: its
 //!   stop flag is raised, so a download stops at its next chunk and removes its file and a
 //!   footer pass stops issuing reads; its download is let go; its hold is released.
-//! - **Handover.** The dataset a load installs takes the load's footer counter and its
-//!   download. From then on they are the dataset's: what is left of the load is the read
-//!   of the first rows ([`Phase::FirstRows`]), and abandoning that stops neither.
+//! - **Handover.** The dataset is built holding the load's download, with everything else
+//!   the open found ([`crate::widgets::datatable::OpenFacts`]), and on install takes the
+//!   load's footer counter. From then on they are the dataset's: what is left of the load
+//!   is the read of the first rows ([`Phase::FirstRows`]), and abandoning that stops
+//!   neither.
 //!
 //! The home screen's looks at a path, analyses and charts are not loads, and are not here.
 
@@ -290,6 +292,9 @@ pub(crate) enum Step {
         file: PathBuf,
         path: PathBuf,
         options: OpenOptions,
+        /// The download `file` is, given to the dataset built from it.
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        download: Option<TempDownload>,
     },
     /// Scan `paths`, saying `status` on the control bar; `display` names the dataset when
     /// what is scanned is a download.
@@ -305,6 +310,9 @@ pub(crate) enum Step {
         path: Option<PathBuf>,
         options: OpenOptions,
         progress: Arc<FooterProgress>,
+        /// The download the scan reads, given to the dataset built from it.
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        download: Option<TempDownload>,
     },
     /// Install the dataset, then read its first rows.
     Install(Box<Loaded>),
@@ -601,6 +609,8 @@ impl Loader {
             path: None,
             options,
             progress: load.progress.clone(),
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            download: None,
         }
     }
 
@@ -644,6 +654,8 @@ impl Loader {
                 file: first.clone(),
                 path: first,
                 options,
+                #[cfg(any(feature = "http", feature = "cloud"))]
+                download: None,
             };
         }
         // Opened again, and downloaded already: read the copy on hand.
@@ -687,6 +699,7 @@ impl Loader {
         let load = self.load.as_mut().expect("a download read has a load");
         let file = fetched.file.path().to_path_buf();
         let url = fetched.url.clone();
+        let download = fetched.file.clone();
         load.download = Some(fetched);
         // A compressed CSV has to be decompressed before it can be scanned, as it is
         // when opened from disk; scanning the download directly read `.gz` as a format
@@ -706,6 +719,7 @@ impl Loader {
                 file,
                 path: url,
                 options,
+                download: Some(download),
             };
         }
         load.phase = Phase::Scanning { downloaded: true };
@@ -739,6 +753,8 @@ impl Loader {
                     path,
                     options,
                     progress: load.progress.clone(),
+                    #[cfg(any(feature = "http", feature = "cloud"))]
+                    download: load.download.as_ref().map(|fetched| fetched.file.clone()),
                 }
             }
             (
@@ -751,18 +767,13 @@ impl Loader {
                 Phase::ReadingSchema | Phase::Decompressing,
             ) => {
                 load.phase = Phase::FirstRows;
-                let state = *state;
-                // A downloaded file lives as long as the dataset scanning it, and is
-                // kept to be read again.
+                // The dataset was built holding its download (`Step::ReadSchema`); the
+                // loader keeps it too, to be read again.
                 #[cfg(any(feature = "http", feature = "cloud"))]
-                let state = {
-                    let mut state = state;
-                    if let Some(fetched) = load.download.take() {
-                        state.hold_download(Some(fetched.file.clone()));
-                        self.kept = Some(fetched);
-                    }
-                    state
-                };
+                if let Some(fetched) = load.download.take() {
+                    self.kept = Some(fetched);
+                }
+                let state = *state;
                 let load = self.load.as_ref().expect("installing its load");
                 Step::Install(Box::new(Loaded {
                     state,
@@ -1299,8 +1310,28 @@ mod tests {
         assert_eq!(paths, vec![at.clone()]);
         assert_eq!(display.as_deref(), Some(Path::new(url)), "named by its URL");
         assert_eq!(status, "Scanning...");
-        let _ = loader.answered(id, scanned(url), &jobs);
-        let Step::Install(loaded) = loader.answered(id, schema_read(url), &jobs) else {
+        let Step::ReadSchema {
+            download: Some(download),
+            ..
+        } = loader.answered(id, scanned(url), &jobs)
+        else {
+            panic!("the schema read is handed the download");
+        };
+        assert_eq!(download.path(), at, "the file the scan reads");
+        // As the worker builds it: the dataset holds its file from the start.
+        let state = DataTableState::from_lazyframe(frame(), &OpenOptions::default())
+            .unwrap()
+            .with_open(crate::widgets::datatable::OpenFacts {
+                download: Some(download),
+                ..Default::default()
+            });
+        let read = LoadAnswer::SchemaRead {
+            state: Box::new(state),
+            path: Some(PathBuf::from(url)),
+            options: OpenOptions::default(),
+            debug_label: None,
+        };
+        let Step::Install(loaded) = loader.answered(id, read, &jobs) else {
             panic!("installs");
         };
         assert!(

@@ -1173,8 +1173,7 @@ mod tests {
 
         // The pass behind it reads every footer, and that is the one worth keeping.
         let pending = state
-            .as_ref()
-            .and_then(|s| s.footers_pending())
+            .and_then(|(_, facts)| facts.footers_pending)
             .expect("a staged open leaves a pass behind it");
         let _ = pending(&Arc::new(crate::schema_union::FooterProgress::default()));
 
@@ -1727,6 +1726,13 @@ mod tests {
                 remembered: None,
             },
         )
+        // As `build_schema_state` marks a prefix that is scanned where it lies.
+        .map(|(state, facts)| {
+            state.with_open(crate::widgets::datatable::OpenFacts {
+                remote_source: true,
+                ..facts
+            })
+        })
         .expect("the prefix opens");
 
         assert_eq!(
@@ -1757,9 +1763,7 @@ mod tests {
             .footers_pending()
             .expect("the rest are still to be read");
         let found = join(&progress).expect("the pass reads them");
-        // As `build_schema_state` marks a prefix that is scanned where it lies, and as
-        // a rendered table has a height.
-        state.set_remote_source();
+        // As a rendered table has a height.
         state.visible_rows = 10;
         assert!(
             state.join_dataset_schema(found).is_ok(),
@@ -1883,6 +1887,7 @@ mod tests {
                 remembered: None,
             },
         )
+        .map(|(state, facts)| state.with_open(facts))
         .expect("the prefix opens");
 
         let join = state
@@ -1907,7 +1912,8 @@ mod tests {
             .remote_files_counter()
             .expect("the dataset has not counted itself yet");
         let groups = counter().expect("the readable objects are counted");
-        state.set_file_row_groups(&groups);
+        let total = groups.iter().flatten().sum();
+        assert!(state.count_landed(state.len_generation(), total, Some(&groups)));
         assert_eq!(
             state.num_rows_if_valid(),
             Some(files - 1),
@@ -1963,6 +1969,7 @@ mod tests {
                 remembered: None,
             },
         )
+        .map(|(state, facts)| state.with_open(facts))
         .expect("the prefix opens");
 
         assert_eq!(
@@ -2325,6 +2332,7 @@ mod tests {
                 remembered: None,
             },
         )
+        .map(|(state, facts)| state.with_open(facts))
         .expect("the prefix opens despite the one that will not parse");
 
         // The frame the first paint collects, before any offsets exist and so before the
@@ -2348,7 +2356,8 @@ mod tests {
             .remote_files_counter()
             .expect("the dataset has not counted itself yet, so it offers to");
         let groups = counter().expect("the readable objects are counted");
-        state.set_file_row_groups(&groups);
+        let total = groups.iter().flatten().sum();
+        assert!(state.count_landed(state.len_generation(), total, Some(&groups)));
         assert_eq!(
             state.num_rows_if_valid(),
             Some(2),
@@ -2489,6 +2498,7 @@ mod tests {
                 remembered: None,
             },
         )
+        .map(|(state, facts)| state.with_open(facts))
         .expect("the prefix opens");
 
         let said = |state: &crate::widgets::datatable::DataTableState| {

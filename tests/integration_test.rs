@@ -5017,6 +5017,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
         for _ in ticks() {
             let mut buf = Buffer::empty(terminal_area);
             app.render(terminal_area, &mut buf);
+            app.frame_painted();
             let needs = app
                 .data_table_state
                 .as_mut()
@@ -5113,6 +5114,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
     for _ in ticks() {
         let mut buf = Buffer::empty(terminal_area);
         app.render(terminal_area, &mut buf);
+        app.frame_painted();
         let needs = app
             .data_table_state
             .as_mut()
@@ -5180,6 +5182,7 @@ fn test_hive_dir_loads_and_counts_via_footers() {
     for _ in ticks() {
         let mut buf = Buffer::empty(terminal_area);
         app.render(terminal_area, &mut buf);
+        app.frame_painted();
         let needs = app
             .data_table_state
             .as_mut()
@@ -9487,6 +9490,7 @@ fn pump_home(
     for _ in ticks() {
         buf.reset();
         Widget::render(&mut *app, area, buf);
+        app.frame_painted();
         app.request_what_the_frame_needs();
         if done(app) {
             return;

@@ -119,6 +119,7 @@ pub mod startup;
 pub mod statistics;
 pub mod template;
 pub mod terminal_input;
+mod unfinished;
 pub mod widgets;
 
 pub use cache::CacheManager;
@@ -147,6 +148,7 @@ use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, P
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus, order_with_hidden};
 pub use template::{Template, TemplateManager, Templates};
+pub use unfinished::ExitSweep;
 use widgets::column_widths::WidthChoice;
 use widgets::controls::Controls;
 use widgets::datatable::{DataTableState, DatasetAtOpen, DrillRow, OpenFacts};
@@ -12857,6 +12859,14 @@ impl App {
         self.loading.progress().unwrap_or(&self.footer_progress)
     }
 
+    /// Hold past the app: dropped after it, it removes the temp files the app's opens
+    /// were still writing, giving their workers up to a second to stop first. Without
+    /// it, a quit mid-download or mid-decompression can end the process before the
+    /// worker removes its partial file.
+    pub fn exit_sweep(&self) -> ExitSweep {
+        ExitSweep(self.loading.unfinished().clone())
+    }
+
     /// Whether an open is on its way and its dataset not installed yet: whatever table
     /// `data_table_state` holds meanwhile belongs to the dataset being replaced, so the
     /// main view shows the open's progress instead of it.
@@ -16154,8 +16164,12 @@ impl App {
     /// This is the one input datui cannot scan lazily: the file has to be
     /// decompressed and parsed before anything can be shown, which for a large export
     /// is minutes. It takes no `&self` so it can run on a background thread.
-    fn decompressed_csv_state(path: &Path, options: &OpenOptions) -> Result<DataTableState> {
-        DataTableState::from_csv(path, options)
+    fn decompressed_csv_state(
+        path: &Path,
+        options: &OpenOptions,
+        writer: &crate::unfinished::Writer,
+    ) -> Result<DataTableState> {
+        DataTableState::from_csv_for_open(path, options, writer)
     }
 
     /// Polars' view of one source's S3 settings, for `scan_parquet`.
@@ -16311,7 +16325,7 @@ impl App {
         url: &str,
         temp_dir: Option<&Path>,
         extension: Option<&str>,
-        stop: impl Fn() -> bool,
+        writer: &crate::unfinished::Writer,
     ) -> Result<crate::download::TempDownload> {
         use crate::download::StreamError;
 
@@ -16334,7 +16348,7 @@ impl App {
             // Content-Length it came with is the wire's, not the file's.
             Ok((response.into_body().into_reader(), None))
         };
-        crate::download::read_to_temp(temp_dir, extension, open, stop).map_err(
+        crate::download::read_to_temp(temp_dir, extension, open, writer).map_err(
             |error| match error {
                 StreamError::Open(message) => color_eyre::eyre::eyre!(message),
                 StreamError::Read(e) => {
@@ -16351,14 +16365,15 @@ impl App {
 
     /// Stream one S3, GCS or Azure object to a temporary file, named for the user by
     /// its scheme in any error. A few chunks are in memory at a time; see
-    /// [`crate::download`]. `stop` ends it early, and any failure removes the file.
+    /// [`crate::download`]. `writer`'s open stopping ends it early, and any failure
+    /// removes the file.
     #[cfg(feature = "cloud")]
     fn download_cloud_to_temp(
         url: &str,
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
-        stop: impl Fn() -> bool + Clone + Send + Sync + 'static,
+        writer: &crate::unfinished::Writer,
     ) -> Result<crate::download::TempDownload> {
         use crate::download::StreamError;
         use object_store::ObjectStoreExt;
@@ -16391,7 +16406,7 @@ impl App {
             options.temp_dir.as_deref(),
             ext.as_deref(),
             open,
-            stop,
+            writer,
         )
         .map_err(|error| match error {
             StreamError::Open(e) => color_eyre::eyre::eyre!(
@@ -16442,11 +16457,11 @@ impl App {
                 });
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
-            Step::Download { pending, stop } => {
+            Step::Download { pending, writer } => {
                 // The load's stop flag is raised when it is abandoned or another open
                 // replaces it, and when the app drops: the download stops at the next
-                // chunk, or while the source is silent, and removes its file.
-                let stop = move || stop.load(std::sync::atomic::Ordering::Relaxed);
+                // chunk, or while the source is silent, and removes its file. Quitting
+                // removes it even if the process ends first (`ExitSweep`).
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 let status = match &pending {
@@ -16469,14 +16484,14 @@ impl App {
                                 url,
                                 options.temp_dir.as_deref(),
                                 ext.as_deref(),
-                                stop,
+                                &writer,
                             )
                         }
                         #[cfg(feature = "cloud")]
                         loading::PendingDownload::S3 { .. }
                         | loading::PendingDownload::Gcs { .. }
                         | loading::PendingDownload::Azure { .. } => {
-                            Self::download_cloud_to_temp(url, &cloud, options, &runtime, stop)
+                            Self::download_cloud_to_temp(url, &cloud, options, &runtime, &writer)
                         }
                     }
                     .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
@@ -16490,6 +16505,7 @@ impl App {
                 file,
                 path,
                 options,
+                writer,
                 #[cfg(any(feature = "http", feature = "cloud"))]
                 download,
             } => {
@@ -16499,7 +16515,7 @@ impl App {
                     ..options
                 };
                 self.spawn_job(job, Some("Decompressing..."), move |_| {
-                    let state = Self::decompressed_csv_state(&file, &options)
+                    let state = Self::decompressed_csv_state(&file, &options, &writer)
                         .map_err(|e| {
                             crate::error_display::user_message_from_report(&e, Some(path.as_path()))
                         })?
@@ -26350,6 +26366,9 @@ fn run_impl(
         }
         RunInput::Cli(_) => unreachable!("read_settings resolves the command line"),
     }
+    // Declared before the pump, so it drops after it: the app's own files go with the
+    // app, and this then removes what a worker was still writing.
+    let _sweep = app.exit_sweep();
     let mut pump = EventPump::new(app, tx, rx);
     pump.handle_first(backlog);
     let end = pump.run(|app| {

@@ -11,11 +11,21 @@ use color_eyre::eyre::eyre;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::unfinished::{Claim, Writer};
+
 /// A downloaded file, removed from disk when its last holder drops it: the app keeps
 /// one to read the file again, the dataset scanning it keeps another, and an event
 /// carrying one that is never handled removes it as it drops.
 #[derive(Debug, Clone)]
-pub struct TempDownload(Arc<tempfile::TempPath>);
+pub struct TempDownload(Arc<Held>);
+
+/// The file, then the open's claim on it: dropped in that order, so the claim is let
+/// go only once the file is gone. See [`crate::unfinished`].
+#[derive(Debug)]
+struct Held {
+    path: tempfile::TempPath,
+    _claim: Option<Claim>,
+}
 
 impl TempDownload {
     /// An empty file in `dir` (the system temp directory when `None`) ending in
@@ -35,11 +45,18 @@ impl TempDownload {
 
     /// A finished file from [`Self::create`], closed and held.
     pub fn keep(file: tempfile::NamedTempFile) -> TempDownload {
-        TempDownload(Arc::new(file.into_temp_path()))
+        Self::held(file, None)
+    }
+
+    fn held(file: tempfile::NamedTempFile, claim: Option<Claim>) -> TempDownload {
+        TempDownload(Arc::new(Held {
+            path: file.into_temp_path(),
+            _claim: claim,
+        }))
     }
 
     pub fn path(&self) -> &Path {
-        &self.0
+        &self.0.path
     }
 }
 
@@ -116,19 +133,34 @@ fn receive<B: AsRef<[u8]>>(
 /// A new file in `dir`, as [`TempDownload::create`] names it, filled by `fill`
 /// through the writer it is handed. Any failure, and a stop, removes the partial
 /// file before this returns.
+///
+/// The file is claimed through `writer` from the moment it exists until its last
+/// holder drops it, so quitting removes it even while this thread is still writing
+/// (see [`crate::unfinished`]). A stopped open's file is refused and removed.
 fn fill_temp(
     dir: Option<&Path>,
     extension: Option<&str>,
+    writer: &Writer,
     fill: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<()>) -> std::result::Result<u64, StreamError>,
 ) -> std::result::Result<TempDownload, StreamError> {
     use std::io::Write;
 
     let mut file = TempDownload::create(dir, extension).map_err(StreamError::Write)?;
+    let Some(claim) = writer.claim(file.path()) else {
+        return Err(StreamError::Cut);
+    };
     let unwritable = |e: std::io::Error| eyre!("Could not write the downloaded file: {e}");
-    fill(&mut |chunk| file.write_all(chunk).map_err(unwritable))?;
-    file.flush()
-        .map_err(|e| StreamError::Write(unwritable(e)))?;
-    Ok(TempDownload::keep(file))
+    let filled = fill(&mut |chunk| file.write_all(chunk).map_err(unwritable))
+        .and_then(|_| file.flush().map_err(|e| StreamError::Write(unwritable(e))));
+    match filled {
+        Ok(_) => Ok(TempDownload::held(file, Some(claim))),
+        Err(e) => {
+            // The file before the claim, so a sweep never finds it let go but there.
+            drop(file);
+            drop(claim);
+            Err(e)
+        }
+    }
 }
 
 /// Run `open` on `runtime` and hand each chunk of the stream it answers with to
@@ -211,15 +243,15 @@ async fn until_stopped<F: std::future::Future>(
 }
 
 /// Stream the object `open` answers with into a new file in `dir`, as
-/// [`TempDownload::create`] names it. Any failure, and a stop, removes the partial
-/// file before this returns.
+/// [`TempDownload::create`] names it, until `writer`'s open stops. Any failure, and a
+/// stop, removes the partial file before this returns.
 #[cfg(feature = "cloud")]
-pub fn stream_to_temp<O, S, B, E>(
+pub(crate) fn stream_to_temp<O, S, B, E>(
     runtime: &tokio::runtime::Handle,
     dir: Option<&Path>,
     extension: Option<&str>,
     open: O,
-    stop: impl Fn() -> bool + Clone + Send + Sync + 'static,
+    writer: &Writer,
 ) -> std::result::Result<TempDownload, StreamError>
 where
     O: std::future::Future<Output = Opened<S>> + Send + 'static,
@@ -227,7 +259,11 @@ where
     B: AsRef<[u8]> + Send + 'static,
     E: std::fmt::Display,
 {
-    fill_temp(dir, extension, |write| {
+    let stop = {
+        let writer = writer.clone();
+        move || writer.stopped()
+    };
+    fill_temp(dir, extension, writer, |write| {
         stream_into(runtime, open, stop, write)
     })
 }
@@ -301,16 +337,18 @@ pub fn read_into<R: std::io::Read>(
 }
 
 /// Read what `open` answers with into a new file in `dir`, as
-/// [`TempDownload::create`] names it; see [`read_into`]. Any failure, and a stop,
-/// removes the partial file before this returns.
+/// [`TempDownload::create`] names it, until `writer`'s open stops; see [`read_into`].
+/// Any failure, and a stop, removes the partial file before this returns.
 #[cfg(feature = "http")]
-pub fn read_to_temp<R: std::io::Read>(
+pub(crate) fn read_to_temp<R: std::io::Read>(
     dir: Option<&Path>,
     extension: Option<&str>,
     open: impl FnOnce() -> Opened<R> + Send + 'static,
-    stop: impl Fn() -> bool,
+    writer: &Writer,
 ) -> std::result::Result<TempDownload, StreamError> {
-    fill_temp(dir, extension, |write| read_into(open, stop, write))
+    fill_temp(dir, extension, writer, |write| {
+        read_into(open, || writer.stopped(), write)
+    })
 }
 
 #[cfg(all(test, feature = "cloud"))]
@@ -382,6 +420,11 @@ mod tests {
         || false
     }
 
+    /// A writer whose open is never stopped.
+    fn unstopped() -> Writer {
+        Writer::default()
+    }
+
     fn files_in(dir: &Path) -> usize {
         std::fs::read_dir(dir).unwrap().count()
     }
@@ -399,7 +442,7 @@ mod tests {
             Some(dir.path()),
             Some("csv.gz"),
             opened(stream, Some(whole.len() as u64)),
-            never(),
+            &unstopped(),
         )
         .unwrap();
         assert_eq!(std::fs::read(file.path()).unwrap(), whole);
@@ -411,6 +454,47 @@ mod tests {
         let path = held.path().to_path_buf();
         drop(held);
         assert!(!path.exists(), "the last holder removes it");
+    }
+
+    /// A download is claimed from the moment its file exists until its last holder lets
+    /// it go, so quitting finds it whoever holds it; an open already stopped gets no
+    /// file at all.
+    #[test]
+    fn a_download_is_claimed_for_as_long_as_it_lives() {
+        let rt = runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let unfinished = crate::unfinished::Unfinished::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = unfinished.writer(stop.clone());
+        let stream = futures::stream::iter(vec![Ok::<_, String>(chunk(0, 10))]);
+        let file = stream_to_temp(
+            rt.handle(),
+            Some(dir.path()),
+            None,
+            opened(stream, None),
+            &writer,
+        )
+        .unwrap();
+        let held = file.clone();
+        drop(file);
+        assert!(unfinished.writing(), "a holder keeps the claim");
+        let path = held.path().to_path_buf();
+        drop(held);
+        assert!(!path.exists());
+        assert!(!unfinished.writing(), "the claim goes with the file");
+
+        stop.store(true, Ordering::SeqCst);
+        let stream = futures::stream::iter(vec![Ok::<_, String>(chunk(0, 10))]);
+        let error = stream_to_temp(
+            rt.handle(),
+            Some(dir.path()),
+            None,
+            opened(stream, None),
+            &writer,
+        )
+        .unwrap_err();
+        assert!(matches!(error, StreamError::Cut), "{error:?}");
+        assert_eq!(files_in(dir.path()), 0);
     }
 
     /// A slow writer holds the stream back: the store is never more than the queue
@@ -475,7 +559,7 @@ mod tests {
             Some(dir.path()),
             None,
             opened(stream, None),
-            never(),
+            &unstopped(),
         )
         .unwrap_err();
         assert!(
@@ -488,7 +572,7 @@ mod tests {
             Err::<(futures::stream::Empty<Result<Vec<u8>, String>>, _), _>("403".to_string())
         };
         let error =
-            stream_to_temp(rt.handle(), Some(dir.path()), None, refused, never()).unwrap_err();
+            stream_to_temp(rt.handle(), Some(dir.path()), None, refused, &unstopped()).unwrap_err();
         assert!(
             matches!(&error, StreamError::Open(e) if e == "403"),
             "{error:?}"
@@ -502,7 +586,7 @@ mod tests {
             Some(dir.path()),
             None,
             opened(stream, Some(20)),
-            never(),
+            &unstopped(),
         )
         .unwrap_err();
         assert!(
@@ -582,7 +666,8 @@ mod tests {
                 Ok((futures::stream::empty::<Result<Vec<u8>, String>>(), None))
             }
         };
-        let error = stream_to_temp(rt.handle(), Some(&missing), None, open, never()).unwrap_err();
+        let error =
+            stream_to_temp(rt.handle(), Some(&missing), None, open, &unstopped()).unwrap_err();
         assert!(matches!(error, StreamError::Write(_)));
         assert!(!asked.load(Ordering::SeqCst));
     }
@@ -594,10 +679,7 @@ mod tests {
         let rt = runtime();
         let dir = tempfile::tempdir().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
-        let stopped = {
-            let stop = stop.clone();
-            move || stop.load(Ordering::SeqCst)
-        };
+        let stopped = crate::unfinished::Unfinished::default().writer(stop.clone());
 
         let stream = {
             let stop = stop.clone();
@@ -613,7 +695,7 @@ mod tests {
             Some(dir.path()),
             None,
             opened(stream, None),
-            stopped.clone(),
+            &stopped,
         )
         .unwrap_err();
         assert!(matches!(error, StreamError::Cut), "{error:?}");
@@ -636,7 +718,7 @@ mod tests {
             Some(dir.path()),
             None,
             opened(stream, None),
-            stopped,
+            &stopped,
         )
         .unwrap_err();
         stopper.join().unwrap();
@@ -652,7 +734,6 @@ mod tests {
     fn a_shutdown_mid_transfer_cuts_it_off() {
         let rt = runtime();
         let dir = tempfile::tempdir().unwrap();
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
         let stream = futures::stream::iter(vec![Ok::<_, String>(chunk(0, CHUNK))])
             .chain(futures::stream::pending());
         let handle = rt.handle().clone();
@@ -663,13 +744,16 @@ mod tests {
                 Some(&path),
                 None,
                 opened(stream, None),
-                move || {
-                    let _ = started_tx.send(());
-                    false
-                },
+                &unstopped(),
             )
         });
-        started_rx.recv().unwrap();
+        // Mid-transfer: the first chunk is on disk and the store has gone quiet.
+        while !std::fs::read_dir(dir.path())
+            .unwrap()
+            .any(|f| f.unwrap().metadata().unwrap().len() == CHUNK as u64)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         rt.shutdown_background();
         let error = waiter.join().expect("no panic").unwrap_err();
         assert!(matches!(error, StreamError::Cut), "{error:?}");
@@ -749,7 +833,7 @@ mod read_tests {
             Some(dir.path()),
             Some("csv"),
             move || Ok((reader, Some(len))),
-            || false,
+            &Writer::default(),
         )
         .unwrap();
         assert_eq!(std::fs::read(file.path()).unwrap(), whole);
@@ -760,7 +844,7 @@ mod read_tests {
             Some(dir.path()),
             None,
             move || Ok((reader, Some(len + 1))),
-            || false,
+            &Writer::default(),
         )
         .unwrap_err();
         assert!(matches!(error, StreamError::Short { .. }), "{error:?}");
@@ -787,7 +871,7 @@ mod read_tests {
             Some(dir.path()),
             None,
             || Err::<(Reset, _), _>("Server returned 404 Not Found.".to_string()),
-            || false,
+            &Writer::default(),
         )
         .unwrap_err();
         assert!(
@@ -798,7 +882,7 @@ mod read_tests {
             Some(dir.path()),
             None,
             || Ok((Reset(false), None)),
-            || false,
+            &Writer::default(),
         )
         .unwrap_err();
         assert!(matches!(error, StreamError::Read(_)), "{error:?}");
@@ -855,7 +939,7 @@ mod read_tests {
             Some(dir.path()),
             None,
             move || Ok((reader, None)),
-            move || stop.load(Ordering::SeqCst),
+            &crate::unfinished::Unfinished::default().writer(stop),
         )
         .unwrap_err();
         let stopped_at = stopper.join().unwrap();

@@ -139,7 +139,9 @@ builds the dataset with everything the open found, its download included,
 through `DataTableState::with_open(OpenFacts)`; there are no load-time setters.
 `install_dataset` hands the counter to the dataset and records the recent; going
 home or another open retires the load. Add a phase to `Phase` and `Step`, not a
-flag or a continuation event to App.
+flag or a continuation event to App. A worker that writes a temp file claims it
+through the load's `unfinished::Writer`; the claim lives as long as the file,
+and `ExitSweep`, dropped after the app in `run`, removes what is still claimed.
 
 **Keys typed while busy are queued.** While a job the user waits on runs, an
 errand is between phases, or an open is on its way to its dataset,

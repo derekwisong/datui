@@ -25,6 +25,7 @@ use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSour
 use crate::query::{ParsedQuery, parse_query};
 use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
+use crate::unfinished::{Claim, Writer};
 use crate::widgets::column_paging::{ColumnMove, OnScreen, Room};
 use crate::widgets::column_widths::{ColumnWidths, PageMeasure, WidthChoice};
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
@@ -329,7 +330,7 @@ pub struct DataTableState {
     partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
     /// Shared with any view that scans it, and removed with the last.
-    decompress_temp_file: Option<Arc<NamedTempFile>>,
+    decompress_temp_file: Option<Arc<Decompressed>>,
     /// The downloaded remote file this dataset was opened from, held while it is scanned.
     #[cfg(any(feature = "http", feature = "cloud"))]
     download: Option<crate::download::TempDownload>,
@@ -716,6 +717,19 @@ pub struct RemoteRead {
     pub urls: Vec<String>,
     pub scan: FileScan,
     pub count: FileCounter,
+}
+
+/// A compressed CSV's decompressed copy, then the open's claim on it: dropped in that
+/// order, so the claim goes only once the file has. See [`crate::unfinished`].
+struct Decompressed {
+    file: NamedTempFile,
+    _claim: Option<Claim>,
+}
+
+impl Decompressed {
+    fn path(&self) -> &Path {
+        self.file.path()
+    }
 }
 
 /// A remote dataset of many files, and how to read only some of them.
@@ -3296,14 +3310,25 @@ impl DataTableState {
         self.row_start_index
     }
 
-    /// Decompress a compressed file to a temp file for lazy CSV scan.
+    /// Decompress `path` into a new file in `temp_dir`, claimed through `writer` (see
+    /// [`crate::unfinished`]) and given up, removed, once its open is stopped.
     fn decompress_compressed_csv_to_temp(
         path: &Path,
         compression: CompressionFormat,
         temp_dir: &Path,
-    ) -> Result<NamedTempFile> {
-        let mut temp = NamedTempFile::new_in(temp_dir)?;
-        let out = temp.as_file_mut();
+        writer: &Writer,
+    ) -> Result<Decompressed> {
+        let file = NamedTempFile::new_in(temp_dir)?;
+        let stopped = || color_eyre::eyre::eyre!("Decompressing was stopped.");
+        let Some(claim) = writer.claim(file.path()) else {
+            return Err(stopped());
+        };
+        // Held from here, so a failure drops the file before the claim.
+        let mut temp = Decompressed {
+            file,
+            _claim: Some(claim),
+        };
+        let out = temp.file.as_file_mut();
         let mut reader: Box<dyn Read> = match compression {
             CompressionFormat::Gzip => {
                 let f = File::open(path)?;
@@ -3322,7 +3347,21 @@ impl DataTableState {
                 Box::new(xz2::read::XzDecoder::new(BufReader::new(f)))
             }
         };
-        std::io::copy(&mut reader, out)?;
+        // A chunk at a time, so a stopped open stops writing rather than finishing a
+        // file nobody will read.
+        let mut chunk = vec![0u8; 1 << 20];
+        loop {
+            if writer.stopped() {
+                return Err(stopped());
+            }
+            let read = match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            };
+            std::io::Write::write_all(out, &chunk[..read])?;
+        }
         out.sync_all()?;
         Ok(temp)
     }
@@ -3916,10 +3955,29 @@ impl DataTableState {
         Self::from_delimited(path, b',', options)
     }
 
+    /// As [`Self::from_csv`], for an open: a compressed file is decompressed through
+    /// `writer`, so the open's stop and quitting reach the copy.
+    pub(crate) fn from_csv_for_open(
+        path: &Path,
+        options: &OpenOptions,
+        writer: &Writer,
+    ) -> Result<Self> {
+        Self::read_delimited(path, b',', options, writer)
+    }
+
     /// A delimited text file, split on `delimiter` (its format's separator) unless
     /// `--delimiter` says otherwise. CSV, TSV and PSV are one reader, so every CSV
     /// option means the same thing for all three.
     pub fn from_delimited(path: &Path, delimiter: u8, options: &OpenOptions) -> Result<Self> {
+        Self::read_delimited(path, delimiter, options, &Writer::default())
+    }
+
+    fn read_delimited(
+        path: &Path,
+        delimiter: u8,
+        options: &OpenOptions,
+        writer: &Writer,
+    ) -> Result<Self> {
         // Settled once here: every reader below asks `options.separator_or(b',')`.
         let options = &OpenOptions {
             delimiter: Some(options.separator_or(delimiter)),
@@ -4028,7 +4086,8 @@ impl DataTableState {
             } else {
                 // Decompress to temp file, then lazy scan
                 let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-                let temp = Self::decompress_compressed_csv_to_temp(path, compression, &temp_dir)?;
+                let temp =
+                    Self::decompress_compressed_csv_to_temp(path, compression, &temp_dir, writer)?;
                 let nv_temp = Self::build_null_values_for_csv(options, Some(temp.path()))?;
                 let mut state = Self::from_csv_customize(
                     temp.path(),

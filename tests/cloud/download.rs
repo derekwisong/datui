@@ -191,6 +191,33 @@ fn exit_removes_the_download() {
     assert!(files_in(dir.path()).is_empty());
 }
 
+/// Quitting mid-download removes the partial file before the session ends, as the
+/// process does not wait for the worker to notice the stop. Before `ExitSweep`, the
+/// file outlived the app here and the process could exit with it still on disk (#510).
+#[test]
+fn quitting_mid_download_removes_the_partial_file_before_exit() {
+    let s3 = serve(csv(1_000));
+    s3.slow_gets(5_000);
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    open_and_confirm(&mut app, &rx, dir.path());
+    wait_for_files(dir.path(), 1);
+
+    let began = Instant::now();
+    let sweep = app.exit_sweep();
+    drop(app);
+    drop(sweep);
+    assert!(
+        files_in(dir.path()).is_empty(),
+        "the partial file is gone as the session ends"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(4),
+        "nor did it wait for the store, after {:?}",
+        began.elapsed()
+    );
+}
+
 /// An object gone by the time it is fetched fails the open with the store's reason,
 /// and leaves no file.
 #[test]

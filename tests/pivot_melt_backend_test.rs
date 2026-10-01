@@ -678,12 +678,25 @@ fn test_a_stale_pivot_result_is_dropped() {
         aggregation: PivotAggregation::Last,
         sort_columns: None,
     };
-    let pivoted = polars::prelude::df!("date" => ["2024-01-01"], "A" => [1.0]).unwrap();
-    app.event(&AppEvent::PivotReady {
-        generation: app.task_generation().wrapping_sub(1),
-        spec,
-        pivoted,
-    });
+    // The pivot is read on a worker; before it lands, the file is opened again.
+    app.event(&AppEvent::Pivot(spec));
+    load_file(
+        &mut app,
+        &rx,
+        PathBuf::from("tests/sample-data/pivot_long.parquet"),
+    );
+    drain_events(&mut app, &rx);
+    // And the pivot's answer lands, stale.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while app.background_work_in_flight() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pivot never landed"
+        );
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            app.event(&ev);
+        }
+    }
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
     assert!(state.schema().contains("key"));

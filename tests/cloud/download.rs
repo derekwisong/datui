@@ -5,7 +5,7 @@
 use crate::common::next_event;
 use crate::fake_s3::FakeS3;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::{App, AppConfig, AppEvent, OpenOptions};
+use datui::{App, AppConfig, AppEvent, JobKind, OpenOptions};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -245,7 +245,7 @@ fn an_abandoned_download_stops_and_leaves_no_file() {
         let event = rx
             .recv_timeout(Duration::from_secs(30))
             .expect("the stopped download reports");
-        let failed = matches!(event, AppEvent::BackgroundFailed { .. });
+        let failed = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load);
         chain(&mut app, event);
         if failed {
             break;
@@ -268,9 +268,10 @@ fn a_download_nobody_takes_leaves_no_file() {
     let (mut app, rx) = app(&s3);
     let dir = tempfile::tempdir().unwrap();
     open_and_confirm(&mut app, &rx, dir.path());
+    // The download's answer waits in its job until the app takes it.
     let ready = loop {
         let event = next_event(&app, &rx).expect("the download answers");
-        if matches!(event, AppEvent::BackgroundDownloadReady { .. }) {
+        if matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load) {
             break event;
         }
         chain(&mut app, event);
@@ -314,17 +315,14 @@ fn measure_download_peak_memory() {
     let before = status_kib("VmHWM");
     let began = Instant::now();
     open_and_confirm(&mut app, &rx, dir.path());
-    // Held: the event owns the file.
+    // Held: the answer waits in its job, and owns the file, until the app takes it.
     let _ready = loop {
         let event = next_event(&app, &rx).expect("the download answers");
-        if matches!(event, AppEvent::BackgroundDownloadReady { .. }) {
+        if matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load) {
             break event;
         }
-        assert!(
-            !matches!(event, AppEvent::BackgroundFailed { .. }),
-            "the download failed"
-        );
         chain(&mut app, event);
+        assert_eq!(app.error_message(), None, "the download failed");
     };
     let took = began.elapsed();
     let after = status_kib("VmHWM");

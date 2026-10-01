@@ -19,10 +19,14 @@ fn key(code: KeyCode) -> AppEvent {
 fn drive(app: &mut App, event: AppEvent) {
     let mut next = Some(event);
     while let Some(event) = next {
-        if let AppEvent::Crash(message) | AppEvent::BackgroundFailed { message, .. } = &event {
+        if let AppEvent::Crash(message) = &event {
             panic!("{message}");
         }
         next = app.event(&event);
+        // A job that failed says so on screen.
+        if let Some(message) = app.error_message() {
+            panic!("{message}");
+        }
     }
 }
 

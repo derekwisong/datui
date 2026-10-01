@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::event_pump::EventPump;
-use datui::{App, AppEvent, InputMode, OpenOptions, QueryMode};
+use datui::{App, AppEvent, InputMode, JobKind, OpenOptions, QueryMode};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -78,8 +78,9 @@ fn pump_until(
 
 /// As `pump_open_until_loaded`, but hands back the message a failed open ended with.
 ///
-/// A load that fails reports it as `BackgroundFailed` — the reading happens off the
-/// event thread — and only the paths that never get that far crash outright.
+/// A load that fails ends its job with the reason, which the app shows — the reading
+/// happens off the event thread — and only the paths that never get that far crash
+/// outright.
 fn pump_open_until_error(
     app: &mut App,
     rx: &std::sync::mpsc::Receiver<AppEvent>,
@@ -90,8 +91,12 @@ fn pump_open_until_error(
     loop {
         match next.take() {
             Some(AppEvent::Crash(message)) => return Some(message),
-            Some(AppEvent::BackgroundFailed { message, .. }) => return Some(message),
-            Some(ev) => next = app.event(&ev),
+            Some(ev) => {
+                next = app.event(&ev);
+                if let Some(message) = app.error_message() {
+                    return Some(message.to_string());
+                }
+            }
             None => next = Some(next_event(app, rx)?),
         }
     }
@@ -116,21 +121,13 @@ fn test_drain_events_handles_queued_events_first() {
 fn test_drain_events_waits_for_owed_result() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
-    app.set_loading_phase("test worker", 0);
-    let generation = app.task_generation();
-    let worker = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        tx.send(AppEvent::BackgroundFailed {
-            generation,
-            job: datui::Job::Load,
-            message: "test worker failed".into(),
-            panicked: false,
-        })
+    let missing = common::fixture_dir().join("drain_waits_missing.csv");
+    // The open is handed over at once; its scan answers from a worker.
+    tx.send(AppEvent::Open(vec![missing], OpenOptions::default()))
         .unwrap();
-    });
     drain_events(&mut app, &rx);
-    worker.join().unwrap();
     assert!(!app.is_busy(), "the worker's result was handled");
+    assert!(app.error_message().is_some(), "and the failed open said so");
     assert!(!work_pending(&app));
 }
 
@@ -733,19 +730,20 @@ fn test_open_s3_url_returns_crash_or_loads() {
         "scan should be spawned, not run inline"
     );
 
-    match await_scan_outcome(&rx) {
-        AppEvent::BackgroundFailed { message, .. } => {
-            // "Could not read from S3" without credentials; with them, the store's own
-            // error naming the s3:// URL.
-            assert!(
-                message.to_lowercase().contains("s3"),
-                "error should mention S3: {message}"
-            );
-        }
-        AppEvent::BackgroundLazyFrameReady { .. } => {
-            // With cloud feature and valid credentials/bucket, the scan can succeed.
-        }
-        _ => panic!("expected a scan outcome for an S3 URL"),
+    let ended = await_scan_outcome(&rx);
+    assert!(
+        matches!(ended, AppEvent::JobEnded(t) if t.kind() == JobKind::Load),
+        "expected a scan outcome for an S3 URL"
+    );
+    // With cloud feature and valid credentials/bucket, the scan can succeed.
+    let _ = app.event(&ended);
+    if let Some(message) = app.error_message() {
+        // "Could not read from S3" without credentials; with them, the store's own
+        // error naming the s3:// URL.
+        assert!(
+            message.to_lowercase().contains("s3"),
+            "error should mention S3: {message}"
+        );
     }
 }
 
@@ -843,17 +841,17 @@ fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
         "scan should be spawned, not run inline"
     );
 
-    match await_scan_outcome(&rx) {
-        AppEvent::BackgroundFailed { message, .. } => {
-            assert!(
-                message.contains("GCS")
-                    || message.contains("gs://")
-                    || message.contains("not enabled"),
-                "error should mention GCS or gs:// or not enabled: {message}"
-            );
-        }
-        AppEvent::BackgroundLazyFrameReady { .. } => {}
-        _ => panic!("expected a scan outcome for a gs:// URL"),
+    let ended = await_scan_outcome(&rx);
+    assert!(
+        matches!(ended, AppEvent::JobEnded(t) if t.kind() == JobKind::Load),
+        "expected a scan outcome for a gs:// URL"
+    );
+    let _ = app.event(&ended);
+    if let Some(message) = app.error_message() {
+        assert!(
+            message.contains("GCS") || message.contains("gs://") || message.contains("not enabled"),
+            "error should mention GCS or gs:// or not enabled: {message}"
+        );
     }
 }
 
@@ -999,104 +997,6 @@ fn test_startup_buffer_race_does_not_lose_rows() {
             "iteration {iteration}: display_slice_df is None — buffer not sliced into display"
         );
     }
-}
-
-/// A `Background*Ready` event whose `generation` no longer matches the App's
-/// `task_generation` must NOT mutate visible state. This guards every non-collect
-/// `Background*` handler against the same stale-generation race that the collect
-/// path got in commit e4d65e3.
-#[test]
-fn test_stale_background_events_are_ignored() {
-    use datui::data_quality::{DataQualityResults, QualityPrecision};
-    use datui::statistics::AnalysisResults;
-
-    common::ensure_sample_data();
-    let csv_path = PathBuf::from("tests/sample-data/large_dataset.parquet");
-
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
-
-    // After load, generation is non-zero. Anything tagged generation=0 is stale.
-    let stale_gen: u64 = 0;
-    assert!(
-        app.task_generation() > stale_gen,
-        "expected generation to advance past 0 after load"
-    );
-
-    // Build dummy results we can identify in modal slots.
-    let dummy = AnalysisResults {
-        column_statistics: vec![],
-        total_rows: 999_999,
-        sample_size: None,
-        per_value: None,
-        sample_seed: 0,
-        correlation_matrix: None,
-        distribution_analyses: vec![],
-    };
-
-    // Each variant: send with stale generation, assert nothing landed in the modal.
-    app.analysis_modal.describe_results = None;
-    app.event(&AppEvent::BackgroundDescribeReady {
-        generation: stale_gen,
-        results: dummy.clone(),
-    });
-    assert!(
-        app.analysis_modal.describe_results.is_none(),
-        "stale BackgroundDescribeReady should not write describe_results"
-    );
-
-    app.analysis_modal.distribution_results = None;
-    app.event(&AppEvent::BackgroundDistributionReady {
-        generation: stale_gen,
-        results: dummy.clone(),
-    });
-    assert!(
-        app.analysis_modal.distribution_results.is_none(),
-        "stale BackgroundDistributionReady should not write distribution_results"
-    );
-
-    app.analysis_modal.correlation_results = None;
-    app.event(&AppEvent::BackgroundCorrelationReady {
-        generation: stale_gen,
-        results: dummy,
-    });
-    assert!(
-        app.analysis_modal.correlation_results.is_none(),
-        "stale BackgroundCorrelationReady should not write correlation_results"
-    );
-
-    app.analysis_modal.data_quality_results = None;
-    app.event(&AppEvent::BackgroundDataQualityReady {
-        generation: stale_gen,
-        results: Box::new(DataQualityResults {
-            total_rows: Some(999_999),
-            evaluated_rows: 1,
-            precision: QualityPrecision::Sampled,
-            sample_seed: 1,
-            columns: vec![],
-            observations: vec![],
-            segments: vec![],
-            temporal: vec![],
-            identity: None,
-            category_variants: vec![],
-            shared_nulls: vec![],
-            source_files: None,
-            per_value: None,
-            footers_read: None,
-            reads: None,
-            examples: vec![],
-            unsampled_segments: vec![],
-            intent: None,
-            source: None,
-        }),
-        kept: None,
-        plan: Box::default(),
-    });
-    assert!(
-        app.analysis_modal.data_quality_results.is_none(),
-        "stale BackgroundDataQualityReady should not write data-quality results"
-    );
 }
 
 /// Esc cancels an analysis while it runs, for every tool: it acts at once rather than
@@ -2456,19 +2356,15 @@ fn open_findings_fixture(
     (app, rx, tx, path)
 }
 
-/// Nothing was started: the app is idle and nothing but the run before's lease
-/// coming back is on the channel. The lease is dropped after the run's answer is
-/// sent, so on a loaded machine it can still be on its way.
+/// Nothing was started: the app is idle, holds nothing, and nothing is on the channel.
 #[track_caller]
 fn assert_nothing_started(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
     assert!(!app.is_busy(), "nothing is running");
-    while let Ok(event) = rx.try_recv() {
-        assert!(
-            matches!(event, AppEvent::BackgroundWorkFinished { .. }),
-            "no background work was started"
-        );
-        app.event(&event);
-    }
+    assert!(
+        !app.background_work_in_flight(),
+        "no background work was started"
+    );
+    assert!(rx.try_recv().is_err(), "and nothing has answered");
 }
 
 /// Every character on screen that is not ASCII is a glyph slot, which has an ASCII
@@ -3266,16 +3162,17 @@ fn drain_quality(
     let mut handle = |app: &mut App, event: AppEvent| {
         let mut next = Some(event);
         while let Some(event) = next {
-            match &event {
-                AppEvent::BackgroundDataQualityReady { .. } => finished += 1,
-                AppEvent::BackgroundQualityPhase { generation, .. }
-                    if *generation == app.task_generation() =>
-                {
-                    stages += 1
-                }
-                _ => {}
+            let run = matches!(&event, AppEvent::JobEnded(t) if t.kind() == JobKind::Analysis);
+            if let AppEvent::JobProgress { ticket, .. } = &event
+                && app.job_is_current(*ticket)
+            {
+                stages += 1
             }
             next = app.event(&event);
+            // A run that failed says so; one that finished does not.
+            if run && app.error_message().is_none() {
+                finished += 1;
+            }
         }
     };
     if let Some(event) = first {
@@ -3429,8 +3326,11 @@ fn run_quality_reads(
     let mut handle = |app: &mut App, event: AppEvent| {
         let mut next = Some(event);
         while let Some(event) = next {
-            if let AppEvent::BackgroundQualityPhase { generation, phase } = &event
-                && *generation == app.task_generation()
+            if let AppEvent::JobProgress {
+                ticket,
+                progress: datui::Progress::QualityPhase(phase),
+            } = &event
+                && app.job_is_current(*ticket)
                 && phase.reads_source
             {
                 reads.push(phase.stage);
@@ -4727,8 +4627,11 @@ fn conflict_evidence_is_read_only_by_a_full_scan() {
     loop {
         match next.take() {
             Some(event) => {
-                if let AppEvent::BackgroundQualityPhase { generation, phase } = &event
-                    && *generation == app.task_generation()
+                if let AppEvent::JobProgress {
+                    ticket,
+                    progress: datui::Progress::QualityPhase(phase),
+                } = &event
+                    && app.job_is_current(*ticket)
                     && phase.reads_source
                 {
                     reads.push(phase.stage);
@@ -9811,19 +9714,18 @@ fn text_of(buf: &Buffer) -> String {
 /// leave datui.
 #[test]
 fn test_error_modal_over_home_is_dismissable() {
-    let (tx, _rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     assert_eq!(app.input_mode, InputMode::Home);
 
     // A load chosen here fails.
-    app.set_loading_phase("Scanning input", 10);
-    app.event(&AppEvent::BackgroundFailed {
-        generation: app.task_generation(),
-        job: datui::Job::Load,
-        message: "could not read the file".to_string(),
-        panicked: false,
-    });
+    let missing = common::fixture_dir().join("modal_over_home_missing.csv");
+    assert!(
+        pump_open_until_error(&mut app, &rx, vec![missing], OpenOptions::default()).is_some(),
+        "the open fails"
+    );
+    assert!(app.modal_showing(), "and says so over the home screen");
 
     let out = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -15131,10 +15033,11 @@ fn test_a_missing_named_path_is_found_on_a_worker() {
     );
     let mut found = None;
     while found.is_none() {
-        match next_event(&app, &rx).expect("the worker answers") {
-            AppEvent::NamedPathMissing { path, .. } => found = Some(path),
-            other => {
-                app.event(&other);
+        let mut next = next_event(&app, &rx);
+        while let Some(event) = next.take() {
+            match event {
+                AppEvent::NamedPathMissing(path) => found = Some(path),
+                other => next = app.event(&other),
             }
         }
     }
@@ -15174,7 +15077,7 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
     let mut landed = None;
     for _ in ticks() {
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
-            && matches!(ev, AppEvent::DirectoryLookedAt { .. })
+            && matches!(ev, AppEvent::JobEnded(t) if t.kind() == JobKind::LookAtDirectory)
         {
             landed = Some(app.event(&ev));
             break;
@@ -15704,7 +15607,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
         let event = rx
             .recv_timeout(Duration::from_secs(10))
             .expect("the stopped download reports");
-        let failed = matches!(event, AppEvent::BackgroundFailed { .. });
+        let failed = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::Load);
         let mut next = Some(event);
         while let Some(event) = next {
             next = app.event(&event);

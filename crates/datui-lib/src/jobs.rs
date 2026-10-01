@@ -90,9 +90,9 @@ impl Ticket {
 
 /// A background operation, named where it starts.
 ///
-/// The fields are what tells this operation from a newer one of the same kind where
-/// the generation cannot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The fields are what the app needs of the operation while it runs and when it
+/// ends; the record they sit in is its only marker.
+#[derive(Debug, Clone)]
 pub(crate) enum Job {
     /// A phase of an open before its first rows: the size probe, a download, the scan,
     /// a decompression, the schema.
@@ -102,18 +102,21 @@ pub(crate) enum Job {
     OpenNamed,
     /// The look at a directory named on the command line, before it is opened.
     LookAtDirectory(PathBuf),
-    /// A look at a path chosen on the home screen, by request.
-    Classify(u64),
+    /// A look at a path chosen on the home screen.
+    Classify(Classify),
     /// The table's rows: a page the table waits on, or a load-ahead.
-    Rows,
+    Rows(crate::InflightCollect),
+    /// A page asked for while the generation was held, for the dataset it was asked
+    /// for: no worker yet. It is read once nothing would be stranded.
+    OwedRows { dataset: u64, status: String },
     /// An Analysis tool's computation.
-    Analysis,
+    Analysis(AnalysisRun),
     /// The sample, or the rows behind a finding, read to show as a table.
     SampleRows,
     /// A pivot from the Pivot & Melt form.
     Pivot,
-    /// A view's pivot, read before the view's rows.
-    ViewPivot,
+    /// A view's pivot, read before the view's rows: the view it is for.
+    ViewPivot(Box<crate::template::Template>),
     /// The group row Enter drills into, when the buffer did not hold it.
     DrillRow,
     /// The inspector's fields of one row that the buffer does not hold: row `row` of
@@ -129,13 +132,38 @@ pub(crate) enum Job {
     /// `dataset_generation` it was read for: the generation does not tell one dataset's
     /// read from the next.
     FileFacts { dataset: u64 },
-    /// Writing a chart. `generation` is `chart_export_generation`'s; the path and
-    /// format reopen the form on a failure.
+    /// Writing a chart. The path and format reopen the form on a failure.
     ChartExport {
-        generation: u64,
         path: PathBuf,
         format: crate::chart_export::ChartExportFormat,
     },
+}
+
+/// A look at a path chosen on the home screen. Every key acts on the home screen even
+/// while busy, so a second Enter is reachable, and the newer look supersedes the older:
+/// its answer is the one the user is waiting for.
+#[derive(Debug, Clone)]
+pub(crate) struct Classify {
+    pub(crate) path: PathBuf,
+    /// Where the home screen was pointed when the look was asked for. An answer for
+    /// somewhere the user has browsed away from opens nothing.
+    ///
+    /// The browse rather than `home_generation`: the question is whether the user is
+    /// still where they asked from, and the listing is rebuilt for reasons that are
+    /// nothing to do with them — a probe of some other root answering is enough.
+    /// Gating on that made Enter on a share row do nothing, at random.
+    pub(crate) browsing: Option<PathBuf>,
+    /// A path typed at `~` rather than a row already listed.
+    pub(crate) jump: bool,
+}
+
+/// An Analysis tool's run.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AnalysisRun {
+    /// A Data Quality run's watch: how it is told to stop, and what it has read.
+    pub(crate) watch: Option<crate::data_quality::QualityWatch>,
+    /// Cancelled during a read that cannot stop part way: it runs to its end.
+    pub(crate) runs_out: bool,
 }
 
 impl Job {
@@ -145,11 +173,11 @@ impl Job {
             Job::OpenNamed => JobKind::OpenNamed,
             Job::LookAtDirectory(_) => JobKind::LookAtDirectory,
             Job::Classify(_) => JobKind::Classify,
-            Job::Rows => JobKind::Rows,
-            Job::Analysis => JobKind::Analysis,
+            Job::Rows(_) | Job::OwedRows { .. } => JobKind::Rows,
+            Job::Analysis(_) => JobKind::Analysis,
             Job::SampleRows => JobKind::SampleRows,
             Job::Pivot => JobKind::Pivot,
-            Job::ViewPivot => JobKind::ViewPivot,
+            Job::ViewPivot(_) => JobKind::ViewPivot,
             Job::DrillRow => JobKind::DrillRow,
             Job::InspectRow { .. } => JobKind::InspectRow,
             Job::Export => JobKind::Export,
@@ -172,18 +200,27 @@ impl Job {
     ///   thrown away when the user moves on (Ctrl+O out of a long look must not hold
     ///   the next dataset's rows behind it);
     /// - the Info panel's file facts, judged by the dataset rather than the generation.
+    ///
+    /// A page that is owed has nothing running to strand.
     fn leased(&self) -> bool {
         !matches!(
             self,
-            Job::Rows | Job::OpenNamed | Job::LookAtDirectory(_) | Job::FileFacts { .. }
+            Job::Rows(_)
+                | Job::OwedRows { .. }
+                | Job::OpenNamed
+                | Job::LookAtDirectory(_)
+                | Job::FileFacts { .. }
         )
     }
 
     /// Whether advancing the generation makes this job's answer stale. The Info
-    /// panel's facts belong to a dataset, and a chart export to the chart view, each
-    /// put down by its own owner.
+    /// panel's facts belong to a dataset, a chart export to the chart view, and an
+    /// owed page to the dataset it was owed to, each put down by its own owner.
     fn follows_the_generation(&self) -> bool {
-        !matches!(self, Job::FileFacts { .. } | Job::ChartExport { .. })
+        !matches!(
+            self,
+            Job::FileFacts { .. } | Job::ChartExport { .. } | Job::OwedRows { .. }
+        )
     }
 }
 
@@ -223,19 +260,13 @@ pub(crate) enum Answer {
     /// [`Job::LookAtDirectory`]: what the look found. `holds` is what a cloud
     /// directory's listing found, which picks its reader.
     LookedAt {
-        path: PathBuf,
         kind: crate::discover::EntryKind,
         holds: Option<Box<crate::discover::Holds>>,
         options: Box<OpenOptions>,
     },
     /// [`Job::Classify`]: what the path turned out to be; `None` is a path that is not
     /// there.
-    Kind {
-        request: u64,
-        path: PathBuf,
-        found: Option<crate::discover::EntryKind>,
-        jump: bool,
-    },
+    Kind(Option<crate::discover::EntryKind>),
     /// [`Job::Rows`]: the rows read.
     Rows(crate::widgets::datatable::CollectResult),
     /// [`Job::Rows`]: the read failed. `conversion` is a value that would not
@@ -268,12 +299,8 @@ pub(crate) enum Answer {
     ViewPivoted(DataFrame),
     /// [`Job::DrillRow`]: the group row.
     DrillRow { group_index: usize, row: DataFrame },
-    /// [`Job::InspectRow`]: the fields of row `row` of frame `frame`.
-    FieldsRead {
-        frame: u64,
-        row: usize,
-        values: DataFrame,
-    },
+    /// [`Job::InspectRow`]: the fields read.
+    FieldsRead(DataFrame),
     /// [`Job::Export`]: the file, committed.
     Exported(PathBuf),
     /// [`Job::Copy`]: the view or a field, formatted, and the flash that says what was
@@ -285,16 +312,9 @@ pub(crate) enum Answer {
     /// [`Job::QualityReport`]: the report, written.
     QualityReportWritten(PathBuf),
     /// [`Job::ChartExport`]: the chart, written.
-    ChartExported {
-        generation: u64,
-        path: PathBuf,
-        format: crate::chart_export::ChartExportFormat,
-    },
+    ChartExported,
     /// [`Job::FileFacts`]: what the file is.
-    FileFacts {
-        dataset: u64,
-        facts: crate::widgets::info::FileFacts,
-    },
+    FileFacts(crate::widgets::info::FileFacts),
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),
@@ -355,10 +375,12 @@ pub enum Progress {
 /// A job whose outcome has been taken: what it was, whether its answer is still
 /// wanted, and the outcome.
 pub(crate) struct Ended {
-    pub(crate) ticket: Ticket,
     pub(crate) job: Job,
     /// Not superseded: the answer is the one the app is waiting for.
     pub(crate) current: bool,
+    /// What the control bar said while the user waited on it, if they did and still
+    /// do.
+    pub(crate) keys: Option<String>,
     pub(crate) outcome: Outcome,
 }
 
@@ -368,20 +390,37 @@ pub(crate) type WorkerDies = Box<dyn FnMut(&Job) -> bool + Send>;
 
 type Slot = Arc<Mutex<Option<Outcome>>>;
 
-/// The record of one job.
+/// The record of one job: the only marker the app keeps for it.
 struct Record {
     ticket: Ticket,
     job: Job,
-    /// Where its worker puts the outcome.
-    slot: Slot,
-    /// When it was superseded. Its answer is stale and it holds nothing up.
+    /// Where its worker puts the outcome. `None` for a job that is owed: asked for,
+    /// with no worker yet.
+    slot: Option<Slot>,
+    /// What the control bar says while the user waits on it. Set, keys wait for it.
+    keys: Option<String>,
+    /// When it was superseded. Its answer is stale, and it holds neither the
+    /// generation nor the keys.
     superseded: Option<Instant>,
 }
 
 impl Record {
+    fn running(&self) -> bool {
+        self.slot.is_some()
+    }
+
+    fn current(&self) -> bool {
+        self.running() && self.superseded.is_none()
+    }
+
     /// Whether a bump of the generation would strand its answer.
     fn holds(&self, generation: u64) -> bool {
-        self.superseded.is_none() && self.job.leased() && self.ticket.generation == generation
+        self.current() && self.job.leased() && self.ticket.generation == generation
+    }
+
+    fn supersede(&mut self, now: Instant) {
+        self.superseded = Some(now);
+        self.keys = None;
     }
 }
 
@@ -557,22 +596,28 @@ impl Jobs {
         self.generation
     }
 
-    /// Record `job` as started on the current generation. The caller runs it, or, in
-    /// a test, ends it.
-    pub(crate) fn start(&mut self, job: Job) -> Started {
+    fn ticket(&mut self, job: &Job) -> Ticket {
         self.next_id = self.next_id.wrapping_add(1);
-        let ticket = Ticket {
+        Ticket {
             id: self.next_id,
             generation: self.generation,
             kind: job.kind(),
-        };
+        }
+    }
+
+    /// Record `job` as started on the current generation. With `keys`, the user waits
+    /// on it: keys are held until it ends or is superseded, and the control bar says
+    /// `keys` meanwhile. The caller runs it, or, in a test, ends it.
+    pub(crate) fn start(&mut self, job: Job, keys: Option<&str>) -> Started {
+        let ticket = self.ticket(&job);
         #[cfg(test)]
         let dies = self.worker_dies.as_mut().is_some_and(|dies| dies(&job));
         let slot = Slot::default();
         self.records.push(Record {
             ticket,
             job,
-            slot: slot.clone(),
+            slot: Some(slot.clone()),
+            keys: keys.map(str::to_string),
             superseded: None,
         });
         Started {
@@ -585,23 +630,56 @@ impl Jobs {
         }
     }
 
+    /// Record `job` as owed: asked for, waiting for the generation to be free, with
+    /// the user waiting on it when `keys` is set. Nothing runs until the app takes it
+    /// back with [`Self::take_owed`].
+    pub(crate) fn owe(&mut self, job: Job, keys: Option<&str>) {
+        let ticket = self.ticket(&job);
+        self.records.push(Record {
+            ticket,
+            job,
+            slot: None,
+            keys: keys.map(str::to_string),
+            superseded: None,
+        });
+    }
+
+    /// The owed job `which` picks, if there is one.
+    pub(crate) fn owed(&self, which: impl Fn(&Job) -> bool) -> Option<&Job> {
+        self.records
+            .iter()
+            .find(|r| !r.running() && which(&r.job))
+            .map(|r| &r.job)
+    }
+
+    /// Take back the owed job `which` picks, to run or to put down.
+    pub(crate) fn take_owed(&mut self, which: impl Fn(&Job) -> bool) -> Option<Job> {
+        let at = self
+            .records
+            .iter()
+            .position(|r| !r.running() && which(&r.job))?;
+        Some(self.records.remove(at).job)
+    }
+
     /// Take the outcome of the job `ticket` names, and its record with it. `None` for
     /// a ticket with no record, or one whose outcome is not in yet.
     ///
     /// The record goes here, in the call that hands its answer over, so a job holds
-    /// the generation until the app has its answer and not a moment after.
+    /// the generation and the keys until the app has its answer and not a moment
+    /// after.
     pub(crate) fn end(&mut self, ticket: Ticket) -> Option<Ended> {
         let at = self.records.iter().position(|r| r.ticket == ticket)?;
         let outcome = self.records[at]
             .slot
+            .as_ref()?
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()?;
         let record = self.records.remove(at);
         Some(Ended {
-            ticket,
             job: record.job,
             current: record.superseded.is_none(),
+            keys: record.keys,
             outcome,
         })
     }
@@ -610,7 +688,46 @@ impl Jobs {
     pub(crate) fn is_current(&self, ticket: Ticket) -> bool {
         self.records
             .iter()
-            .any(|r| r.ticket == ticket && r.superseded.is_none())
+            .any(|r| r.ticket == ticket && r.current())
+    }
+
+    /// The newest running job `which` picks whose answer is still wanted.
+    pub(crate) fn current(&self, which: impl Fn(&Job) -> bool) -> Option<(Ticket, &Job)> {
+        self.records
+            .iter()
+            .rev()
+            .find(|r| r.current() && which(&r.job))
+            .map(|r| (r.ticket, &r.job))
+    }
+
+    /// As [`Self::current`], to change what the record says about the job.
+    pub(crate) fn current_mut(&mut self, which: impl Fn(&Job) -> bool) -> Option<&mut Job> {
+        self.records
+            .iter_mut()
+            .rev()
+            .find(|r| r.current() && which(&r.job))
+            .map(|r| &mut r.job)
+    }
+
+    /// What the record of the job `ticket` names says about it, to change it.
+    pub(crate) fn job_mut(&mut self, ticket: Ticket) -> Option<&mut Job> {
+        self.records
+            .iter_mut()
+            .find(|r| r.ticket == ticket)
+            .map(|r| &mut r.job)
+    }
+
+    /// The newest superseded job `which` picks whose worker has not ended, and when it
+    /// was superseded: a cancelled run still going.
+    pub(crate) fn superseded_running(
+        &self,
+        which: impl Fn(&Job) -> bool,
+    ) -> Option<(Instant, &Job)> {
+        self.records
+            .iter()
+            .filter(|r| r.running() && which(&r.job))
+            .filter_map(|r| r.superseded.map(|since| (since, &r.job)))
+            .max_by_key(|(since, _)| *since)
     }
 
     /// Whether advancing the generation now would throw away an answer nothing will
@@ -630,6 +747,44 @@ impl Jobs {
             .is_some_and(|n| *n > 0)
     }
 
+    /// Whether the user is waiting on a job: one running or owed that holds the keys.
+    pub(crate) fn holds_keys(&self) -> bool {
+        self.records.iter().any(|r| r.keys.is_some())
+    }
+
+    /// Whether the user waits on the newest current job `which` picks.
+    pub(crate) fn waited_on(&self, which: impl Fn(&Job) -> bool) -> bool {
+        self.records
+            .iter()
+            .rev()
+            .find(|r| r.current() && which(&r.job))
+            .is_some_and(|r| r.keys.is_some())
+    }
+
+    /// The user waits on the running job `which` picks from now on, with `status` on
+    /// the control bar: a load-ahead a scroll has caught up with. Whether there was
+    /// one.
+    pub(crate) fn wait_on(&mut self, which: impl Fn(&Job) -> bool, status: &str) -> bool {
+        let Some(record) = self
+            .records
+            .iter_mut()
+            .rev()
+            .find(|r| r.current() && which(&r.job))
+        else {
+            return false;
+        };
+        record.keys = Some(status.to_string());
+        true
+    }
+
+    /// Nobody waits on the jobs `which` picks any more, though their answers are still
+    /// wanted: the keys go back to the user.
+    pub(crate) fn quiet(&mut self, which: impl Fn(&Job) -> bool) {
+        for record in self.records.iter_mut().filter(|r| which(&r.job)) {
+            record.keys = None;
+        }
+    }
+
     /// Advance the generation if that strands nothing. Returns whether it did.
     pub(crate) fn try_advance(&mut self) -> bool {
         if self.would_strand() {
@@ -646,10 +801,27 @@ impl Jobs {
         self.generation = self.generation.wrapping_add(1);
         let now = Instant::now();
         for record in &mut self.records {
-            if record.job.follows_the_generation() && record.superseded.is_none() {
-                record.superseded = Some(now);
+            if record.current() && record.job.follows_the_generation() {
+                record.supersede(now);
             }
         }
+    }
+
+    /// Supersede the running jobs `which` picks, and drop the owed ones: their answers
+    /// are stale, and they hold neither the generation nor the keys. Returns whether
+    /// there were any.
+    pub(crate) fn supersede(&mut self, which: impl Fn(&Job) -> bool) -> bool {
+        let now = Instant::now();
+        let before = self.records.len();
+        self.records.retain(|r| r.running() || !which(&r.job));
+        let mut any = self.records.len() != before;
+        for record in &mut self.records {
+            if record.current() && which(&record.job) {
+                record.supersede(now);
+                any = true;
+            }
+        }
+        any
     }
 
     /// Hold the current generation until the hold is dropped.
@@ -669,7 +841,7 @@ impl Jobs {
     /// Whether any leased job is still running, superseded or not, or anything holds a
     /// generation.
     pub(crate) fn in_flight(&self) -> bool {
-        self.records.iter().any(|r| r.job.leased())
+        self.records.iter().any(|r| r.running() && r.job.leased())
             || self
                 .holds
                 .lock()
@@ -678,27 +850,29 @@ impl Jobs {
                 .any(|n| *n > 0)
     }
 
-    /// Whether leased work started on `generation` is still running, superseded or
-    /// not.
-    pub(crate) fn running_on(&self, generation: u64) -> bool {
-        self.records
-            .iter()
-            .any(|r| r.job.leased() && r.ticket.generation == generation)
-            || self.held(generation)
-    }
-
     /// Whether leased work a cancel passed is still running: started on a generation
     /// since left.
     pub(crate) fn running_behind(&self) -> bool {
         self.records
             .iter()
-            .any(|r| r.job.leased() && r.ticket.generation != self.generation)
+            .any(|r| r.running() && r.job.leased() && r.ticket.generation != self.generation)
             || self
                 .holds
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
                 .any(|(generation, n)| *generation != self.generation && *n > 0)
+    }
+
+    /// Move every supersession back by `by`, for tests of how long a cancelled job
+    /// has been going.
+    #[cfg(test)]
+    pub(crate) fn backdate_supersessions(&mut self, by: std::time::Duration) {
+        for record in &mut self.records {
+            if let Some(since) = record.superseded.as_mut() {
+                *since -= by;
+            }
+        }
     }
 }
 
@@ -718,7 +892,7 @@ mod tests {
         F: FnOnce(&Worker) -> Result<R, String> + Send + 'static,
         R: Into<Answered>,
     {
-        let started = jobs.start(job);
+        let started = jobs.start(job, None);
         let ticket = started.ticket();
         started.run(&crate::tests::test_runtime(), work);
         ticket
@@ -800,7 +974,7 @@ mod tests {
     #[test]
     fn a_job_dropped_unrun_ends_failed() {
         let (mut jobs, rx) = jobs();
-        let started = jobs.start(Job::Pivot);
+        let started = jobs.start(Job::Pivot, None);
         let ticket = started.ticket();
         assert!(jobs.would_strand());
         drop(started);
@@ -819,21 +993,27 @@ mod tests {
     fn a_superseded_job_ends_stale_and_lets_go() {
         let (mut jobs, rx) = jobs();
         let held = Arc::new(());
-        let stale = jobs.start(Job::Analysis);
-        let own = jobs.start(Job::ChartExport {
-            generation: 1,
-            path: PathBuf::from("chart.png"),
-            format: crate::chart_export::ChartExportFormat::Png,
-        });
+        let analysis = || Job::Analysis(AnalysisRun::default());
+        let is_analysis = |job: &Job| matches!(job, Job::Analysis(_));
+        let stale = jobs.start(analysis(), Some("Computing statistics..."));
+        let own = jobs.start(
+            Job::ChartExport {
+                path: PathBuf::from("chart.png"),
+                format: crate::chart_export::ChartExportFormat::Png,
+            },
+            None,
+        );
         let (stale_ticket, own_ticket) = (stale.ticket(), own.ticket());
         assert!(jobs.would_strand());
+        assert!(jobs.holds_keys());
 
         jobs.advance();
         assert!(!jobs.is_current(stale_ticket), "the analysis is superseded");
         assert!(jobs.is_current(own_ticket), "the chart export is not");
         assert!(!jobs.would_strand(), "and neither holds the new generation");
+        assert!(!jobs.holds_keys(), "nor the keys");
         assert!(
-            jobs.running_on(stale_ticket.generation()),
+            jobs.superseded_running(is_analysis).is_some(),
             "though it runs on"
         );
         assert!(jobs.running_behind());
@@ -844,19 +1024,158 @@ mod tests {
         assert!(!stale_end.current, "as stale");
         drop(stale_end);
         assert_eq!(Arc::strong_count(&held), 1, "and what it carried is let go");
+        assert!(jobs.superseded_running(is_analysis).is_none());
         drop(own);
         assert_eq!(ended(&rx), own_ticket);
         assert!(jobs.end(own_ticket).is_some_and(|e| e.current));
-        assert!(!jobs.running_on(stale_ticket.generation()));
+        assert!(!jobs.running_behind());
+    }
+
+    /// A cancel supersedes only what it picks: the job's keys and lease go at once,
+    /// its stale outcome still arrives, and the job beside it is untouched.
+    #[test]
+    fn a_cancel_supersedes_only_what_it_picks() {
+        let (mut jobs, rx) = jobs();
+        let look = |path: &str| {
+            Job::Classify(Classify {
+                path: PathBuf::from(path),
+                browsing: None,
+                jump: false,
+            })
+        };
+        let older = jobs.start(look("/a"), Some("Looking..."));
+        let pivot = jobs.start(Job::Pivot, Some("Computing pivot..."));
+        assert!(jobs.supersede(|job| matches!(job, Job::Classify(_))));
+        let newer = jobs.start(look("/b"), Some("Looking..."));
+        assert!(
+            jobs.is_current(pivot.ticket()),
+            "the cancel picked looks only"
+        );
+        assert!(
+            jobs.current(|job| matches!(job, Job::Classify(c) if c.path.ends_with("b")))
+                .is_some(),
+            "the newer look is the one waited on"
+        );
+
+        let ticket = older.ticket();
+        older.end(Outcome::Failed {
+            message: "gone".to_string(),
+            panicked: false,
+        });
+        assert_eq!(ended(&rx), ticket);
+        let ended_older = jobs.end(ticket).expect("its outcome arrives");
+        assert!(!ended_older.current);
+        assert!(ended_older.keys.is_none(), "it holds no keys to give back");
+        assert!(jobs.is_current(newer.ticket()));
+        assert!(jobs.holds_keys());
+        drop((newer, pivot));
+    }
+
+    /// A job the user waits on holds the keys until its answer is handled, and says
+    /// so; a quiet one does not, a scroll can start waiting on it, and a job put back
+    /// to quiet lets the keys go without losing its answer.
+    #[test]
+    fn keys_belong_to_the_job_the_user_waits_on() {
+        let (mut jobs, rx) = jobs();
+        let rows = || Job::Rows(crate::InflightCollect::for_tests(0, 100));
+        let is_rows = |job: &Job| matches!(job, Job::Rows(_));
+        let ahead = jobs.start(rows(), None);
+        assert!(!jobs.holds_keys(), "a load-ahead holds no keys");
+        assert!(jobs.wait_on(is_rows, "Loading buffer..."));
+        assert!(
+            jobs.holds_keys(),
+            "a scroll that caught up with it waits on it"
+        );
+        jobs.quiet(is_rows);
+        assert!(!jobs.holds_keys());
+        assert!(jobs.wait_on(is_rows, "Loading buffer..."));
+
+        let ticket = ahead.ticket();
+        ahead.end(Outcome::Failed {
+            message: "no rows".to_string(),
+            panicked: false,
+        });
+        assert_eq!(ended(&rx), ticket);
+        assert!(jobs.holds_keys(), "until the app has the answer");
+        let ended = jobs.end(ticket).expect("the outcome is in");
+        assert_eq!(ended.keys.as_deref(), Some("Loading buffer..."));
+        assert!(!jobs.holds_keys());
+    }
+
+    /// An owed page holds the keys but not the generation, outlives an advance, and is
+    /// taken back once to run, or dropped by a cancel.
+    #[test]
+    fn an_owed_page_waits_for_the_generation() {
+        let (mut jobs, _rx) = jobs();
+        let hold = jobs.hold();
+        let owed = |job: &Job| matches!(job, Job::OwedRows { .. });
+        jobs.owe(
+            Job::OwedRows {
+                dataset: 3,
+                status: "Loading buffer...".to_string(),
+            },
+            Some("Loading buffer..."),
+        );
+        assert!(jobs.holds_keys(), "the user waits on it");
+        drop(hold);
+        assert!(!jobs.would_strand(), "it holds no generation of its own");
+        assert!(!jobs.in_flight(), "and nothing runs for it");
+        jobs.advance();
+        assert!(
+            matches!(jobs.owed(owed), Some(Job::OwedRows { dataset: 3, .. })),
+            "an advance does not put it down: it belongs to its dataset"
+        );
+        assert!(jobs.take_owed(owed).is_some());
+        assert!(jobs.take_owed(owed).is_none(), "taken once");
+        assert!(!jobs.holds_keys());
+
+        jobs.owe(
+            Job::OwedRows {
+                dataset: 4,
+                status: String::new(),
+            },
+            Some("Loading buffer..."),
+        );
+        assert!(jobs.supersede(owed));
+        assert!(jobs.owed(owed).is_none(), "a cancel drops it");
+        assert!(!jobs.holds_keys());
+    }
+
+    /// How long a cancelled job has been going is the record's to say.
+    #[test]
+    fn a_superseded_job_says_since_when() {
+        let (mut jobs, _rx) = jobs();
+        let run = jobs.start(
+            Job::Analysis(AnalysisRun {
+                watch: None,
+                runs_out: true,
+            }),
+            None,
+        );
+        jobs.advance();
+        let (since, job) = jobs
+            .superseded_running(|job| matches!(job, Job::Analysis(_)))
+            .expect("still running");
+        assert!(matches!(
+            job,
+            Job::Analysis(AnalysisRun { runs_out: true, .. })
+        ));
+        let before = since;
+        jobs.backdate_supersessions(std::time::Duration::from_secs(5));
+        let (since, _) = jobs
+            .superseded_running(|job| matches!(job, Job::Analysis(_)))
+            .expect("still running");
+        assert!(since < before);
+        drop(run);
     }
 
     /// The stale end of a passed job leaves the newer one of its kind alone.
     #[test]
     fn a_stale_end_leaves_the_newer_job_alone() {
         let (mut jobs, rx) = jobs();
-        let older = jobs.start(Job::Pivot);
+        let older = jobs.start(Job::Pivot, None);
         jobs.advance();
-        let newer = jobs.start(Job::Pivot);
+        let newer = jobs.start(Job::Pivot, None);
         let (older_ticket, newer_ticket) = (older.ticket(), newer.ticket());
 
         older.end(Outcome::Failed {
@@ -879,7 +1198,7 @@ mod tests {
     fn an_outcome_nobody_takes_is_dropped_with_the_owner() {
         let (mut jobs, rx) = jobs();
         let held = Arc::new(());
-        let started = jobs.start(Job::Copy);
+        let started = jobs.start(Job::Copy, None);
         started.end(Outcome::answered(Answer::Probe(held.clone())));
         assert!(matches!(rx.try_recv(), Ok(AppEvent::JobEnded(_))));
         assert_eq!(Arc::strong_count(&held), 2, "held by the record");
@@ -916,10 +1235,10 @@ mod tests {
     #[test]
     fn replaceable_jobs_hold_no_lease() {
         let (mut jobs, _rx) = jobs();
-        let rows = jobs.start(Job::Rows);
-        let look = jobs.start(Job::LookAtDirectory(PathBuf::from("/data")));
-        let named = jobs.start(Job::OpenNamed);
-        let facts = jobs.start(Job::FileFacts { dataset: 1 });
+        let rows = jobs.start(Job::Rows(crate::InflightCollect::for_tests(0, 100)), None);
+        let look = jobs.start(Job::LookAtDirectory(PathBuf::from("/data")), None);
+        let named = jobs.start(Job::OpenNamed, None);
+        let facts = jobs.start(Job::FileFacts { dataset: 1 }, None);
         assert!(!jobs.would_strand());
         assert!(jobs.try_advance());
         assert!(!jobs.is_current(rows.ticket()));

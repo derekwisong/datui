@@ -874,7 +874,7 @@ mod tests {
 
         // An errand waiting for the generation to come free. Without one the tail of
         // `App::handle` has nothing to run, and the key below would prove nothing.
-        p.app.collect_owed = Some((p.app.dataset_generation, "Loading buffer...".to_string()));
+        p.app.owe_rows_for_tests("Loading buffer...");
 
         // And the user opens something else, which after one drain is mid-handoff.
         p.send(AppEvent::Open(vec![path], OpenOptions::default()))
@@ -891,7 +891,7 @@ mod tests {
             "the owed collect did not go in on the back of a key handled in the window"
         );
         assert!(
-            p.app.collect_owed.is_some(),
+            p.app.rows_owed(),
             "it is still owed, waiting for the open in front of it"
         );
     }
@@ -1113,11 +1113,10 @@ mod tests {
         let jobs = [
             crate::Job::Load,
             crate::Job::OpenNamed,
-            crate::Job::Rows,
-            crate::Job::Analysis,
+            crate::Job::Rows(crate::InflightCollect::for_tests(0, 3)),
+            crate::Job::Analysis(crate::jobs::AnalysisRun::default()),
             crate::Job::SampleRows,
             crate::Job::Pivot,
-            crate::Job::ViewPivot,
             crate::Job::DrillRow,
             crate::Job::Export,
             crate::Job::Copy,
@@ -1216,7 +1215,7 @@ mod tests {
     fn a_deferred_collect_with_nothing_to_do_takes_the_loading_screen_down() {
         let (mut p, _dir) = loaded_pump();
         // The buffer already holds every row, so the collect will find nothing to do.
-        p.app.collect_owed = Some((p.app.dataset_generation, "Loading buffer...".to_string()));
+        p.app.owe_rows_for_tests("Loading buffer...");
         p.app.loading_state = crate::LoadingState::Loading {
             file_path: None,
             file_size: 0,
@@ -1228,10 +1227,7 @@ mod tests {
         p.send(AppEvent::Update).unwrap();
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
 
-        assert!(
-            p.app.collect_owed.is_none(),
-            "the errand is done either way"
-        );
+        assert!(!p.app.rows_owed(), "the errand is done either way");
         assert!(
             matches!(p.app.loading_state, crate::LoadingState::Idle),
             "and the loading screen is down rather than stuck at 70%"
@@ -1434,9 +1430,10 @@ mod tests {
         type_keys(&mut p, "/x");
         assert_eq!(held(&p).len(), 2);
 
-        let analysis = p
-            .app
-            .job_for_tests(crate::Job::Analysis, Some("Computing statistics..."));
+        let analysis = p.app.job_for_tests(
+            crate::Job::Analysis(crate::jobs::AnalysisRun::default()),
+            Some("Computing statistics..."),
+        );
         analysis.end(crate::Outcome::Failed {
             message: "disk on fire".to_string(),
             panicked: false,
@@ -1923,9 +1920,7 @@ mod tests {
 
         p.app.request_what_the_frame_needs();
         assert!(
-            p.app
-                .collect_inflight
-                .is_some_and(|inflight| !inflight.waited_on),
+            p.app.rows_in_flight().is_some() && !p.app.rows_waited_on(),
             "a load-ahead went out"
         );
         assert!(!p.app.is_busy(), "and nothing waits on it");
@@ -1971,9 +1966,7 @@ mod tests {
         assert!(!p.app.work_a_bump_would_strand());
         p.app.request_what_the_frame_needs();
         assert!(
-            p.app
-                .collect_inflight
-                .is_some_and(|inflight| !inflight.waited_on),
+            p.app.rows_in_flight().is_some() && !p.app.rows_waited_on(),
             "the load-ahead went out once the generation was free"
         );
         settle(&mut p);
@@ -1996,16 +1989,17 @@ mod tests {
         let columns = crate::InflightCollect::columns_of(state);
         // Out, and bringing the next few pages: no thread, so it stays out.
         let generation = p.app.task_generation();
-        p.app.collect_inflight = Some(crate::InflightCollect {
-            began: std::time::Instant::now(),
-            files: None,
-            generation,
-            dataset,
-            columns,
-            start,
-            end: end + 10 * page,
-            waited_on: false,
-        });
+        let _ahead = p.app.job_for_tests(
+            crate::Job::Rows(crate::InflightCollect {
+                began: std::time::Instant::now(),
+                files: None,
+                dataset,
+                columns,
+                start,
+                end: end + 10 * page,
+            }),
+            None,
+        );
 
         // As `run()` takes them: a key, then whatever it set going.
         for _ in 0..30 {
@@ -2018,9 +2012,7 @@ mod tests {
             "no second fetch went out"
         );
         assert!(
-            p.app
-                .collect_inflight
-                .is_some_and(|inflight| inflight.waited_on),
+            p.app.rows_waited_on(),
             "the page that left the buffer waits on the load-ahead"
         );
         assert!(p.app.is_busy());
@@ -2050,21 +2042,24 @@ mod tests {
         let (mut p, _dir) = numbered_pump(200);
         let dataset = table(&p).len_generation();
         let columns = crate::InflightCollect::columns_of(table(&p));
-        p.app.busy = true;
-        p.app.status_message = Some(App::LOADING_BUFFER.to_string());
-        p.app.collect_inflight = Some(crate::InflightCollect {
-            began: std::time::Instant::now(),
-            files: None,
-            generation: p.app.task_generation(),
-            dataset,
-            columns,
-            start: 0,
-            end: 200,
-            waited_on: true,
-        });
+        let _read = p.app.job_for_tests(
+            crate::Job::Rows(crate::InflightCollect {
+                began: std::time::Instant::now(),
+                files: None,
+                dataset,
+                columns,
+                start: 0,
+                end: 200,
+            }),
+            Some(App::LOADING_BUFFER),
+        );
         assert!(!rendered(&mut p.app).contains("Loading buffer"));
 
-        if let Some(inflight) = p.app.collect_inflight.as_mut() {
+        if let Some(crate::Job::Rows(inflight)) = p
+            .app
+            .jobs
+            .current_mut(|job| matches!(job, crate::Job::Rows(_)))
+        {
             inflight.began -= Duration::from_secs(1);
         }
         assert!(rendered(&mut p.app).contains("Loading buffer"));

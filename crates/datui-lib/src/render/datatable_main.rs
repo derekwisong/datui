@@ -68,6 +68,8 @@ pub fn render(
     let sort_area = datatable_layout.sidebar_area.unwrap_or_default();
 
     let evidence_label = app.quality_evidence_label.clone();
+    // Asked before the table is borrowed: the job records are the app's.
+    let facts_reading = app.file_facts_reading();
     match &mut app.data_table_state {
         Some(state) => {
             let mut table_area = data_area;
@@ -141,7 +143,8 @@ pub fn render(
             }
             StatefulWidget::render(dt, table_area, buf, state);
             if app.info_modal.active {
-                let facts = app.file_facts.as_ref().map(|(_, facts)| facts);
+                let facts =
+                    crate::App::facts_shown(&app.file_facts, app.dataset_generation, facts_reading);
                 // A hive dataset is a directory, whatever its format: no footer is coming.
                 let hive = app.opened.as_ref().is_some_and(|(_, options)| options.hive);
                 let info_ctx = InfoContext {

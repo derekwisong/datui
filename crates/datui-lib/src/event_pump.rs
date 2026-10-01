@@ -1869,6 +1869,40 @@ mod tests {
         assert!(held(&p).is_empty());
     }
 
+    /// A Ctrl+O typed while the settings were read is offered after the startup open
+    /// has begun, so it puts that open down: its look lands for nobody, and nothing opens
+    /// behind the home screen.
+    #[test]
+    fn ctrl_o_typed_before_the_app_existed_puts_the_startup_open_down() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nada,36\n").expect("write csv");
+
+        // As `run_impl` sets it up: the open announced, its look on the channel, and
+        // the keys from the settings read handed over first.
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.send(AppEvent::OpenNamed(vec![path], OpenOptions::default()))
+            .unwrap();
+        p.handle_first([AppEvent::Terminal(Event::Key(ctrl('o')))]);
+        settle(&mut p);
+        // The look was put down, not waited on: let its answer land.
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        while p.app.background_work_in_flight() {
+            assert!(std::time::Instant::now() < deadline, "the look never ended");
+            p.wait_and_drain(Duration::from_millis(50)).unwrap();
+        }
+        settle(&mut p);
+
+        assert_eq!(p.app.input_mode, InputMode::Home);
+        assert!(
+            p.app.data_table_state.is_none(),
+            "nothing opened behind home"
+        );
+        assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+    }
+
     /// The loading screen has nothing to type ahead into, so nothing is held
     /// there. Held once, a stray key queued `q` behind it for the whole load.
     #[test]

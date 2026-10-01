@@ -3,6 +3,7 @@ use color_eyre::eyre::Report;
 use polars::polars_compute::rolling::QuantileMethod;
 use polars::prelude::*;
 use std::collections::HashMap;
+use std::ops::Range;
 
 /// Collects a LazyFrame into a DataFrame.
 ///
@@ -2403,6 +2404,30 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
 /// Returns correlations, p-values, and sample sizes for each pair.
 /// Requires at least 2 numeric columns.
 pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
+    let columns = df
+        .schema()
+        .iter()
+        .filter(|(_, dtype)| is_numeric_type(dtype))
+        .count()
+        .max(1);
+    let band = CORRELATION_SCRATCH_BYTES / (columns * std::mem::size_of::<f64>());
+    correlation_matrix_in_bands(df, band.max(MIN_BAND_ROWS))
+}
+
+/// Bytes of converted values a correlation matrix holds at once, beyond the sample
+/// itself and the matrix: one band of the 100,000-row sample is the whole of it up
+/// to 83 columns.
+const CORRELATION_SCRATCH_BYTES: usize = 64 * 1024 * 1024;
+
+/// The fewest rows in a band, so a schema of thousands of columns is not read a few
+/// rows at a time.
+const MIN_BAND_ROWS: usize = 1024;
+
+/// Rows cast to floats at a time, so no cast is the size of a column.
+const CAST_ROWS: usize = 16 * 1024;
+
+/// [`compute_correlation_matrix`] converting `band` rows of every column at a time.
+fn correlation_matrix_in_bands(df: &DataFrame, band: usize) -> Result<CorrelationMatrix> {
     // Get all numeric columns
     let schema = df.schema();
     let numeric_cols: Vec<String> = schema
@@ -2417,58 +2442,69 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
         ));
     }
 
-    let columns = numeric_cols
+    let series = numeric_cols
         .iter()
-        .map(|name| Ok(Centered::new(df.column(name)?.as_materialized_series())))
+        .map(|name| Ok(df.column(name)?.as_materialized_series()))
         .collect::<Result<Vec<_>>>()?;
 
     let n = numeric_cols.len();
+    let rows = df.height();
+    let band = band.clamp(1, rows.max(1));
+
+    // Each column's mean first, then a band of rows of every column at a time, less
+    // those means. Each pair's sums run on from one band to the next in row order:
+    // the same sums as one pass over whole columns, with every column converted once
+    // and no more than a band of them held.
+    let mut shifts = vec![Shift::default(); n];
+    across_threads(
+        series.iter().zip(shifts.iter_mut()).collect(),
+        |(series, shift)| *shift = Shift::new(series),
+    );
+    let mut sums: Vec<Vec<PairSums>> = (0..n)
+        .map(|i| vec![PairSums::default(); n - i - 1])
+        .collect();
+    let mut bands: Vec<Vec<f64>> = (0..n).map(|_| Vec::with_capacity(band)).collect();
+    for start in (0..rows).step_by(band) {
+        let within = start..(start + band).min(rows);
+        across_threads(
+            series.iter().zip(&shifts).zip(bands.iter_mut()).collect(),
+            |((series, shift), values)| shift.fill(series, within.clone(), values),
+        );
+        // Every pair is one pass over two columns; fifty columns are 1,225 pairs, so
+        // the rows of the matrix are shared out across threads, interleaved to even
+        // the load.
+        let (bands, shifts) = (&bands, &shifts);
+        across_threads(sums.iter_mut().enumerate().collect(), |(i, row)| {
+            for (k, sums) in row.iter_mut().enumerate() {
+                let j = i + 1 + k;
+                let both = shifts[i].complete && shifts[j].complete;
+                sums.add_pairs(&bands[i], &bands[j], both);
+            }
+        });
+    }
+
     let mut correlations = vec![vec![1.0; n]; n];
     let mut p_values = vec![vec![0.0; n]; n];
     let mut sample_sizes = vec![vec![0; n]; n];
-
-    // Every pair is one pass over two columns; fifty columns are 1,225 pairs, so the
-    // rows of the matrix are shared out across threads, interleaved to even the load.
-    let threads = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(n - 1);
-    let pairs: Vec<(usize, usize, f64, usize)> = std::thread::scope(|scope| {
-        let columns = &columns;
-        let handles: Vec<_> = (0..threads)
-            .map(|thread| {
-                scope.spawn(move || {
-                    let mut pairs = Vec::new();
-                    for i in (thread..n).step_by(threads) {
-                        for j in (i + 1)..n {
-                            let (correlation, count) = pearson(&columns[i], &columns[j]);
-                            pairs.push((i, j, correlation, count));
-                        }
-                    }
-                    pairs
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|handle| handle.join().unwrap_or_default())
-            .collect()
-    });
-
-    for (i, j, correlation, sample_size) in pairs {
-        sample_sizes[i][j] = sample_size;
-        sample_sizes[j][i] = sample_size;
-        // Fewer than three pairs say nothing.
-        let correlation = if sample_size < 3 {
-            f64::NAN
-        } else {
-            correlation
-        };
-        correlations[i][j] = correlation;
-        correlations[j][i] = correlation;
-        if !correlation.is_nan() {
-            let p_value = compute_correlation_p_value(correlation, sample_size);
-            p_values[i][j] = p_value;
-            p_values[j][i] = p_value;
+    for (i, row) in sums.iter().enumerate() {
+        for (k, sums) in row.iter().enumerate() {
+            let j = i + 1 + k;
+            let sample_size = sums.count;
+            sample_sizes[i][j] = sample_size;
+            sample_sizes[j][i] = sample_size;
+            // Fewer than three pairs say nothing.
+            let correlation = if sample_size < 3 {
+                f64::NAN
+            } else {
+                sums.correlation()
+            };
+            correlations[i][j] = correlation;
+            correlations[j][i] = correlation;
+            if !correlation.is_nan() {
+                let p_value = compute_correlation_p_value(correlation, sample_size);
+                p_values[i][j] = p_value;
+                p_values[j][i] = p_value;
+            }
         }
     }
 
@@ -2480,110 +2516,146 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
     })
 }
 
-/// A numeric column ready to correlate: its finite values less their mean, NaN where
-/// a value is null or not finite. Centering once keeps the one-pass sums below exact
-/// enough, and each pair is then one pass with no copies.
-struct Centered {
-    values: Vec<f64>,
+/// Runs `work` on every item, the items dealt out across threads in turn. A worker's
+/// panic is raised again here rather than leaving its items undone.
+fn across_threads<T: Send>(items: Vec<T>, work: impl Fn(T) + Sync) {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(items.len())
+        .max(1);
+    let mut shares: Vec<Vec<T>> = (0..threads).map(|_| Vec::new()).collect();
+    for (k, item) in items.into_iter().enumerate() {
+        shares[k % threads].push(item);
+    }
+    let work = &work;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = shares
+            .into_iter()
+            .map(|share| scope.spawn(move || share.into_iter().for_each(work)))
+            .collect();
+        for handle in handles {
+            if let Err(panic) = handle.join() {
+                std::panic::resume_unwind(panic);
+            }
+        }
+    });
+}
+
+/// `len` values of `series` from `start`, as floats.
+fn float_piece(series: &Series, start: usize, len: usize) -> Option<Float64Chunked> {
+    let piece = series
+        .slice(start as i64, len)
+        .cast(&DataType::Float64)
+        .ok()?;
+    piece.f64().ok().cloned()
+}
+
+/// The values of `series` in `rows` as floats, None where null, cast [`CAST_ROWS`]
+/// at a time.
+fn for_each_float(series: &Series, rows: Range<usize>, mut f: impl FnMut(Option<f64>)) {
+    for start in rows.clone().step_by(CAST_ROWS) {
+        let len = CAST_ROWS.min(rows.end - start);
+        match float_piece(series, start, len) {
+            Some(floats) => floats.iter().for_each(&mut f),
+            None => (0..len).for_each(|_| f(None)),
+        }
+    }
+}
+
+/// A numeric column's mean over its finite values, taken off each value before it
+/// is correlated: centered, the one-pass sums below stay exact enough.
+#[derive(Clone, Copy, Default)]
+struct Shift {
+    mean: f64,
     /// No value is missing, so every row pairs.
     complete: bool,
 }
 
-impl Centered {
+impl Shift {
     fn new(series: &Series) -> Self {
-        let floats = series.cast(&DataType::Float64).ok();
-        let mut values: Vec<f64> = match floats.as_ref().and_then(|floats| floats.f64().ok()) {
-            Some(floats) => floats
-                .iter()
-                .map(|v| v.filter(|v| v.is_finite()).unwrap_or(f64::NAN))
-                .collect(),
-            None => vec![f64::NAN; series.len()],
-        };
-        let (sum, count) = values
-            .iter()
-            .filter(|v| !v.is_nan())
-            .fold((0.0, 0usize), |(sum, count), v| (sum + v, count + 1));
-        if count > 0 {
-            let mean = sum / count as f64;
-            values.iter_mut().for_each(|v| *v -= mean);
+        let (mut sum, mut count) = (0.0, 0usize);
+        for_each_float(series, 0..series.len(), |v| {
+            if let Some(v) = v.filter(|v| v.is_finite()) {
+                sum += v;
+                count += 1;
+            }
+        });
+        Self {
+            mean: if count > 0 { sum / count as f64 } else { 0.0 },
+            complete: count == series.len(),
         }
-        let complete = count == values.len();
-        Self { values, complete }
+    }
+
+    /// `values` becomes the column's `rows` less the mean, NaN where a value is null
+    /// or not finite.
+    fn fill(&self, series: &Series, rows: Range<usize>, values: &mut Vec<f64>) {
+        values.clear();
+        for_each_float(series, rows, |v| {
+            values.push(
+                v.filter(|v| v.is_finite())
+                    .map_or(f64::NAN, |v| v - self.mean),
+            );
+        });
     }
 }
 
-/// Pearson r over the rows where both columns have a value, and how many rows those
-/// are. NaN when either is one value throughout those rows.
-fn pearson(a: &Centered, b: &Centered) -> (f64, usize) {
-    let (mut x, mut y, mut xx, mut yy, mut xy) = (0.0, 0.0, 0.0, 0.0, 0.0);
-    let mut count = 0usize;
-    let pairs = a.values.iter().zip(&b.values);
-    let both = a.complete && b.complete;
-    for (&v1, &v2) in pairs {
-        if !both && (v1.is_nan() || v2.is_nan()) {
-            continue;
+/// One pass of sums over paired values, each less a shift near its mean. The
+/// spreads about the pairs' own means follow exactly whatever the shift; a shift
+/// near the mean keeps them clear of rounding.
+#[derive(Clone, Copy, Default)]
+struct PairSums {
+    count: usize,
+    x: f64,
+    y: f64,
+    xx: f64,
+    yy: f64,
+    xy: f64,
+}
+
+impl PairSums {
+    fn add(&mut self, v1: f64, v2: f64) {
+        self.count += 1;
+        self.x += v1;
+        self.y += v2;
+        self.xx += v1 * v1;
+        self.yy += v2 * v2;
+        self.xy += v1 * v2;
+    }
+
+    /// Adds the rows where both centered columns have a value: with `both` complete,
+    /// every row.
+    fn add_pairs(&mut self, a: &[f64], b: &[f64], both: bool) {
+        // Summed in a copy, which the loop can keep in registers.
+        let mut sums = *self;
+        for (&v1, &v2) in a.iter().zip(b) {
+            if !both && (v1.is_nan() || v2.is_nan()) {
+                continue;
+            }
+            sums.add(v1, v2);
         }
-        count += 1;
-        x += v1;
-        y += v2;
-        xx += v1 * v1;
-        yy += v2 * v2;
-        xy += v1 * v2;
-    }
-    let n = count as f64;
-    let (sxx, syy, sxy) = (xx - x * x / n, yy - y * y / n, xy - x * y / n);
-    // Measured against the sums of squares: what a column with one value leaves
-    // behind is rounding, not spread.
-    if count < 2 || sxx <= xx * 1e-12 || syy <= yy * 1e-12 {
-        return (f64::NAN, count);
-    }
-    ((sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0), count)
-}
-
-/// The rows where both columns hold a finite value, as two aligned lists: every pair,
-/// so the correlation and the count beside it describe the same rows.
-fn finite_pairs(col1: &Series, col2: &Series) -> (Vec<f64>, Vec<f64>) {
-    let (Ok(floats1), Ok(floats2)) = (col1.cast(&DataType::Float64), col2.cast(&DataType::Float64))
-    else {
-        return (Vec::new(), Vec::new());
-    };
-    let (Ok(floats1), Ok(floats2)) = (floats1.f64(), floats2.f64()) else {
-        return (Vec::new(), Vec::new());
-    };
-    floats1
-        .iter()
-        .zip(floats2.iter())
-        .filter_map(|pair| match pair {
-            (Some(v1), Some(v2)) if v1.is_finite() && v2.is_finite() => Some((v1, v2)),
-            _ => None,
-        })
-        .unzip()
-}
-
-fn compute_pearson_correlation(values1: &[f64], values2: &[f64]) -> f64 {
-    if values1.len() != values2.len() || values1.len() < 2 {
-        return f64::NAN;
+        *self = sums;
     }
 
-    let mean1: f64 = values1.iter().sum::<f64>() / values1.len() as f64;
-    let mean2: f64 = values2.iter().sum::<f64>() / values2.len() as f64;
-
-    let numerator: f64 = values1
-        .iter()
-        .zip(values2.iter())
-        .map(|(v1, v2)| (v1 - mean1) * (v2 - mean2))
-        .sum();
-
-    let var1: f64 = values1.iter().map(|v| (v - mean1).powi(2)).sum();
-    let var2: f64 = values2.iter().map(|v| (v - mean2).powi(2)).sum();
-
-    // A column with one value has no correlation with anything: undefined, not 0,
-    // which reads as a finding.
-    if var1 == 0.0 || var2 == 0.0 {
-        return f64::NAN;
+    /// The sums of squares and of products about the pairs' means.
+    fn spreads(&self) -> (f64, f64, f64) {
+        let n = self.count as f64;
+        (
+            self.xx - self.x * self.x / n,
+            self.yy - self.y * self.y / n,
+            self.xy - self.x * self.y / n,
+        )
     }
 
-    numerator / (var1.sqrt() * var2.sqrt())
+    /// NaN for fewer than two pairs or a column of one value.
+    fn correlation(&self) -> f64 {
+        let (sxx, syy, sxy) = self.spreads();
+        // Measured against the sums of squares: what a column with one value leaves
+        // behind is rounding, not spread.
+        if self.count < 2 || sxx <= self.xx * 1e-12 || syy <= self.yy * 1e-12 {
+            return f64::NAN;
+        }
+        (sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0)
+    }
 }
 
 /// The two-sided p-value of Pearson's r over `n` pairs: Student's t with `n - 2`
@@ -2603,36 +2675,50 @@ fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
 
 /// Computes correlation statistics for a pair of columns.
 ///
-/// Returns Pearson correlation coefficient, p-value, covariance, and sample size.
-/// Requires at least 3 non-null pairs of values.
+/// Returns Pearson correlation coefficient, p-value, covariance, and sample size,
+/// over the rows where both columns hold a finite value. Requires at least 3 such
+/// rows. Two passes over the columns as they are, a rough mean first and then the
+/// sums about it, as the matrix's: no list of the pairs is built.
 pub fn compute_correlation_pair(
     df: &DataFrame,
     col1_name: &str,
     col2_name: &str,
 ) -> Result<CorrelationPair> {
-    let (values1, values2) = finite_pairs(
-        df.column(col1_name)?.as_materialized_series(),
-        df.column(col2_name)?.as_materialized_series(),
-    );
+    let series1 = df.column(col1_name)?.as_materialized_series();
+    let series2 = df.column(col2_name)?.as_materialized_series();
 
-    let sample_size = values1.len();
+    let mut sample_size = 0usize;
+    let (mut sum1, mut sum2) = (0.0, 0.0);
+    let (mut min1, mut max1, mut min2, mut max2) = (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+    for_each_finite_pair(series1, series2, |v1, v2| {
+        sample_size += 1;
+        sum1 += v1;
+        sum2 += v2;
+        (min1, max1) = (min1.min(v1), max1.max(v1));
+        (min2, max2) = (min2.min(v2), max2.max(v2));
+    });
     if sample_size < 3 {
         return Err(color_eyre::eyre::eyre!("Not enough data for correlation"));
     }
+    let n = sample_size as f64;
+    let (shift1, shift2) = (sum1 / n, sum2 / n);
+    let mut sums = PairSums::default();
+    for_each_finite_pair(series1, series2, |v1, v2| {
+        sums.add(v1 - shift1, v2 - shift2)
+    });
+    let (sxx, syy, sxy) = sums.spreads();
 
-    let correlation = compute_pearson_correlation(&values1, &values2);
+    // A column with one value has no correlation with anything: undefined, not 0,
+    // which reads as a finding.
+    let correlation = sums.correlation();
     let p_value = Some(compute_correlation_p_value(correlation, sample_size));
-
-    let stats1 = column_stats(&values1);
-    let stats2 = column_stats(&values2);
-    let covariance = values1
-        .iter()
-        .zip(values2.iter())
-        .map(|(v1, v2)| (v1 - stats1.mean) * (v2 - stats2.mean))
-        .sum::<f64>()
-        / (sample_size - 1) as f64;
-
-    let r_squared = correlation * correlation;
+    // Rounding can leave a constant's sum of squares a hair below zero.
+    let stats = |mean: f64, squares: f64, min: f64, max: f64| ColumnStats {
+        mean,
+        std: (squares.max(0.0) / (n - 1.0)).sqrt(),
+        min,
+        max,
+    };
 
     Ok(CorrelationPair {
         column1: col1_name.to_string(),
@@ -2640,20 +2726,30 @@ pub fn compute_correlation_pair(
         correlation,
         p_value,
         sample_size,
-        covariance,
-        r_squared,
-        stats1,
-        stats2,
+        covariance: sxy / (n - 1.0),
+        r_squared: correlation * correlation,
+        stats1: stats(shift1 + sums.x / n, sxx, min1, max1),
+        stats2: stats(shift2 + sums.y / n, syy, min2, max2),
     })
 }
 
-fn column_stats(values: &[f64]) -> ColumnStats {
-    let (mean, std) = mean_and_std(values);
-    ColumnStats {
-        mean,
-        std,
-        min: values.iter().copied().fold(f64::NAN, f64::min),
-        max: values.iter().copied().fold(f64::NAN, f64::max),
+/// The rows where both columns hold a finite value, in order, cast [`CAST_ROWS`] at
+/// a time.
+fn for_each_finite_pair(a: &Series, b: &Series, mut f: impl FnMut(f64, f64)) {
+    let rows = a.len().min(b.len());
+    for start in (0..rows).step_by(CAST_ROWS) {
+        let len = CAST_ROWS.min(rows - start);
+        let (Some(a), Some(b)) = (float_piece(a, start, len), float_piece(b, start, len)) else {
+            continue;
+        };
+        for pair in a.iter().zip(b.iter()) {
+            if let (Some(v1), Some(v2)) = pair
+                && v1.is_finite()
+                && v2.is_finite()
+            {
+                f(v1, v2);
+            }
+        }
     }
 }
 
@@ -2848,6 +2944,45 @@ mod sampling_tests {
         let rows = analysis_rows(&climbing(dir.path(), 20_000), None, None, 1, false).unwrap();
         assert_eq!(rows.df.height(), 20_000);
         assert_eq!(rows.sample_size, None);
+    }
+
+    #[test]
+    fn a_matrix_in_bands_is_the_matrix_in_one() {
+        // Columns with nulls in different rows, one with none and one of integers,
+        // converted a band of rows at a time as well as all at once: the same matrix,
+        // bit for bit, whether or not the bands divide the rows.
+        let rows = 1_000;
+        let mut columns: Vec<Column> = (0..6)
+            .map(|c| {
+                let v: Vec<Option<f64>> = (0..rows)
+                    .map(|r| {
+                        (c == 0 || (r + c) % (5 + c) != 0)
+                            .then(|| ((r * (c + 1)) as f64 * 0.37).sin() + (r % 13) as f64)
+                    })
+                    .collect();
+                Series::new(format!("c{c}").into(), v).into()
+            })
+            .collect();
+        let integers: Vec<Option<i64>> = (0..rows)
+            .map(|r| (r % 9 != 4).then_some((r * r % 101) as i64))
+            .collect();
+        columns.push(Series::new("i".into(), integers).into());
+        let df = DataFrame::new(rows, columns).unwrap();
+        let whole = compute_correlation_matrix(&df).unwrap();
+        let bits = |m: &CorrelationMatrix| {
+            m.correlations
+                .iter()
+                .flatten()
+                .chain(m.p_values.iter().flatten().flatten())
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert!(whole.correlations[0][6].is_finite());
+        for band in [1, 2, 7, 333, 999, 1_000, 5_000] {
+            let bands = correlation_matrix_in_bands(&df, band).unwrap();
+            assert_eq!(bits(&bands), bits(&whole), "{band} rows at a time");
+            assert_eq!(bands.sample_sizes, whole.sample_sizes);
+        }
     }
 
     #[test]

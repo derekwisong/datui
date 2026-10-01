@@ -25,10 +25,19 @@ pub fn f64_text(v: f64) -> String {
     // Rust's Display and LowerExp are both shortest round-trip; Display alone
     // would write 1e300 as 301 digits.
     if a == 0.0 || (1e-5..1e16).contains(&a) {
-        format!("{v}")
+        whole_reads_as_float(format!("{v}"))
     } else {
         format!("{v:e}")
     }
+}
+
+/// `1.0`, not `1`: a whole float keeps its point, as Polars writes it, so it
+/// does not read as an integer. Parses back the same.
+fn whole_reads_as_float(mut text: String) -> String {
+    if !text.contains('.') {
+        text.push_str(".0");
+    }
+    text
 }
 
 /// [`f64_text`] for an `f32`, shortest at the `f32`'s own precision: widened
@@ -42,7 +51,7 @@ pub fn f32_text(v: f32) -> String {
     }
     let a = v.abs();
     if a == 0.0 || (1e-5..1e16).contains(&a) {
-        format!("{v}")
+        whole_reads_as_float(format!("{v}"))
     } else {
         format!("{v:e}")
     }
@@ -450,24 +459,24 @@ mod tests {
         assert_eq!(f64_text(1000000.125), "1000000.125");
         assert_eq!(f64_text(0.1 + 0.2), "0.30000000000000004");
         assert_eq!(f64_text(1e300), "1e300");
-        assert_eq!(f64_text(1.0), "1");
+        assert_eq!(f64_text(1.0), "1.0");
     }
 
     #[test]
     fn negative_zero_nan_and_the_infinities_are_spelled_out() {
-        assert_eq!(f64_text(-0.0), "-0");
-        assert_eq!(f64_text(0.0), "0");
+        assert_eq!(f64_text(-0.0), "-0.0");
+        assert_eq!(f64_text(0.0), "0.0");
         assert_eq!(f64_text(f64::NAN), "NaN");
         assert_eq!(f64_text(f64::INFINITY), "inf");
         assert_eq!(f64_text(f64::NEG_INFINITY), "-inf");
-        assert_eq!(f32_text(-0.0), "-0");
+        assert_eq!(f32_text(-0.0), "-0.0");
         assert_eq!(f32_text(f32::NAN), "NaN");
     }
 
     #[test]
     fn an_f32_is_shortest_at_its_own_precision() {
         assert_eq!(f32_text(0.1), "0.1");
-        assert_eq!(value_text(&AnyValue::Float32(16777217.0)), "16777216");
+        assert_eq!(value_text(&AnyValue::Float32(16777217.0)), "16777216.0");
         let v = 3.4028235e38f32;
         assert_eq!(f32_text(v).parse::<f32>().unwrap(), v);
     }
@@ -604,9 +613,9 @@ mod tests {
     #[test]
     fn nested_values_lay_out_one_item_per_line_with_exact_scalars() {
         let pretty = nested_pretty(&list(&[1000000.125, -0.0]), usize::MAX);
-        assert_eq!(pretty.text, "[\n  1000000.125,\n  -0\n]");
+        assert_eq!(pretty.text, "[\n  1000000.125,\n  -0.0\n]");
         assert!(!pretty.cut);
-        assert_eq!(value_text(&list(&[1.5, 2.0])), "[1.5, 2]");
+        assert_eq!(value_text(&list(&[1.5, 2.0])), "[1.5, 2.0]");
         assert_eq!(nested_pretty(&list(&[]), 100).text, "[]");
 
         let df = df!("name" => ["a\"b"], "n" => [Some(1i64)]).unwrap();

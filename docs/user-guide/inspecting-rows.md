@@ -9,7 +9,7 @@ preview. The inspector shows what is stored:
 
 | Value | Shown as |
 |---|---|
-| Float | The shortest decimal that reads back to the stored value: `1000000.125`, not the table's `1.0000e6`. `-0`, `NaN`, `inf` and `-inf` as they are |
+| Float | The shortest decimal that reads back to the stored value: `1000000.125`, not the table's `1.0000e6`. `-0.0`, `NaN`, `inf` and `-inf` as they are |
 | Integer | Every digit. When the table groups digits, a line under it says what the table shows |
 | Datetime | Every digit of its unit and the zone's offset: `2024-01-02 04:04:05.000120 +01:00` |
 | Text | Whole, wrapped, a line per line break; its length, line count and any spaces at either end are named on the rule above it |

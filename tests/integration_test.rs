@@ -18205,7 +18205,7 @@ fn test_inspector_opens_moves_between_rows_and_fields_and_closes() {
     press_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
     let screen = draw_inspector(&mut app);
     assert!(screen.contains("Row 2"), "{screen}");
-    assert!(screen.lines().any(|l| l.contains("│ -0 ")), "{screen}");
+    assert!(screen.lines().any(|l| l.contains("│ -0.0 ")), "{screen}");
 
     // Home and End reach the ends of the list.
     press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
@@ -18276,7 +18276,7 @@ fn test_inspector_copies_the_exact_value() {
     press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
-    assert_eq!(copies.lock().unwrap().last().unwrap(), "-0");
+    assert_eq!(copies.lock().unwrap().last().unwrap(), "-0.0");
     let screen = draw_inspector(&mut app);
     assert!(screen.contains("Copied amount of row 2"), "{screen}");
 

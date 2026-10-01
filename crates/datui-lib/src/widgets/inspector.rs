@@ -831,7 +831,7 @@ mod tests {
         let f = field("l", DataType::List(Box::new(DataType::Float64)));
         let list = AnyValue::List(Series::new("".into(), [1.5f64, -0.0]));
         let b = body(&f, &Shown::Value(list), false, 1, 40, None);
-        assert_eq!(texts(&b), ["[", "  1.5,", "  -0", "]"]);
+        assert_eq!(texts(&b), ["[", "  1.5,", "  -0.0", "]"]);
         assert!(b.facts.contains("2 items"), "{}", b.facts);
 
         let f = field("b", DataType::Binary);

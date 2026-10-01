@@ -1450,8 +1450,10 @@ impl DataTableState {
         self.last_melt_spec = None;
     }
 
+    /// Back to the table as opened: the data as loaded, nothing applied, and every
+    /// column's width learned afresh from the first page.
     pub fn reset(&mut self) {
-        self.widths.reset_choices();
+        self.widths = ColumnWidths::default();
         self.return_to_root();
         self.collect();
         if self.num_rows > 0 {

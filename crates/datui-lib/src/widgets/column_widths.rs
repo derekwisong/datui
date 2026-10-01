@@ -122,7 +122,12 @@ impl ColumnWidths {
     }
 
     fn entry_mut(&mut self, name: &str, dtype: &DataType) -> &mut Entry {
-        let entries = self.by_name.entry(name.to_string()).or_default();
+        // Looked up before inserting: drawing calls this per column per frame, and
+        // the name is allocated only the first time.
+        if !self.by_name.contains_key(name) {
+            self.by_name.insert(name.to_string(), Vec::new());
+        }
+        let entries = self.by_name.get_mut(name).expect("inserted above");
         let at = match entries.iter().position(|e| &e.dtype == dtype) {
             Some(at) => at,
             None => {
@@ -202,13 +207,6 @@ impl ColumnWidths {
     /// Fit the column to `page`: its values and type whole, its heading up to `cap`.
     pub fn fit(&mut self, name: &str, dtype: &DataType, page: PageMeasure, cap: u16) {
         self.entry_mut(name, dtype).choice = WidthChoice::Manual(page.fitted(cap));
-    }
-
-    /// Every column back to its automatic width.
-    pub fn reset_choices(&mut self) {
-        for entry in self.by_name.values_mut().flatten() {
-            entry.choice = WidthChoice::Auto;
-        }
     }
 }
 
@@ -320,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn fit_takes_the_page_and_reset_returns_to_automatic() {
+    fn fit_takes_the_page_and_automatic_returns_to_the_learned_width() {
         let mut widths = ColumnWidths::default();
         let s = DataType::String;
         assert_eq!(widths.width("d", &s, text(10), 32), 10);
@@ -330,7 +328,7 @@ mod tests {
         assert!(widths.fits_pending().is_empty());
         assert_eq!(widths.choice("d", &s), WidthChoice::Manual(90));
         assert_eq!(widths.width("d", &s, text(3), 32), 90);
-        widths.reset_choices();
+        widths.set_choice("d", &s, WidthChoice::Auto);
         assert_eq!(widths.width("d", &s, text(3), 32), 10);
     }
 

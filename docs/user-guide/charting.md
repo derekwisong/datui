@@ -150,8 +150,9 @@ the picker alone.
 
 <kbd>e</kbd> in the chart view opens the export dialog. Choose **PNG** or
 **EPS**, type a path, and press <kbd>Enter</kbd>. The extension is added when
-missing, and you are asked before an existing file is overwritten. A bar chart
-exports up to its first 100 bars; the category axis counts the rest.
+missing, and you are asked before an existing file is overwritten; a failed
+export leaves it as it was ([Overwriting](exporting-data.md#overwriting)). A
+bar chart exports up to its first 100 bars; the category axis counts the rest.
 
 ## Colors
 

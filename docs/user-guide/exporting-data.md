@@ -118,6 +118,30 @@ match, so the file's name and its bytes agree.
 Overwrite confirmation defaults to **No**. Declining returns to the form
 with your path intact.
 
+## Overwriting
+
+An export is written to a hidden file beside the destination, named
+`.datui-XXXXXX-<name>`, and moved into place only once every byte, including
+the compressed file's end, is written and synced to disk. The status line says
+`Exported to` only after that move.
+
+| Case | Result |
+|---|---|
+| The export fails | The old file keeps its bytes and permissions; a new export leaves no file. The hidden file is removed |
+| You confirmed the overwrite | The file is replaced whole. On Linux and macOS it keeps its permission bits |
+| A file appears at the path after you pressed <kbd>Enter</kbd> without being asked | It is left alone and the export fails |
+| The file is read-only or you may not write it, or the path is a directory, a pipe or a device | The export fails before anything is written |
+| The directory is not writable | The export fails, even where the file itself is writable: the hidden file is made in the directory |
+| The path is a symbolic link | The file it points to is replaced; the link stays |
+
+The replacement is a new file: the old file's owner, ACLs, extended attributes
+and hard links are not carried over, and on Windows its attributes are the
+defaults. If datui is killed during an export, the hidden file can be left
+behind. A power cut just after the move can leave the old file in place. On
+filesystems with no atomic no-replace rename and no hard links, such as FAT and
+some network mounts, a file created at the path in the instant before the move
+can still be replaced. Chart and Data Quality report exports work the same way.
+
 ## Source file
 
 For a dataset with missing columns or conflicting types, **Source file** adds

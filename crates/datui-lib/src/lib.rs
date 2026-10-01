@@ -67,6 +67,7 @@ pub mod discover;
 pub mod distribution_fit;
 pub mod error_display;
 pub mod event_pump;
+pub mod export;
 pub mod export_modal;
 pub mod filter_modal;
 pub mod fuzzy;
@@ -83,6 +84,7 @@ pub mod measurements;
 pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
+pub mod output_file;
 pub mod pivot_melt_modal;
 pub mod quality_export;
 pub mod quality_intent;
@@ -119,16 +121,18 @@ pub use config::{
 
 use analysis_modal::{AnalysisModal, AnalysisProgress};
 use chart_export::{
-    BoxPlotExportBounds, ChartExportBounds, ChartExportFormat, ChartExportSeries, write_bar_eps,
-    write_bar_png, write_box_plot_eps, write_box_plot_png, write_chart_eps, write_chart_png,
-    write_heatmap_eps, write_heatmap_png,
+    BoxPlotExportBounds, ChartExportBounds, ChartExportFormat, ChartExportRequest,
+    ChartExportSeries, write_bar_eps, write_bar_png, write_box_plot_eps, write_box_plot_png,
+    write_chart_eps, write_chart_png, write_heatmap_eps, write_heatmap_png,
 };
 use chart_export_modal::{ChartExportFocus, ChartExportModal};
 use chart_modal::{ChartColumns, ChartFocus, ChartKind, ChartModal, ChartType};
 pub use error_display::{ErrorKindForPython, error_for_python};
+pub use export::{ExportOptions, ExportRequest};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 use filter_modal::{FilterEditStep, FilterStatement};
 use numfmt::NumberFormatSettings;
+use output_file::Overwrite;
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus, order_with_hidden};
@@ -445,6 +449,21 @@ mod export_format_tests {
             App::export_format_for(Path::new("mislabelled.csv"), &options),
             Some(ExportFormat::Parquet)
         );
+    }
+
+    /// A destination refusal reads as one; an encoder's error of the same kind
+    /// does not borrow its wording.
+    #[test]
+    fn export_errors_name_a_refusal_only_for_a_refusal() {
+        let path = Path::new("out.csv.gz");
+        let refused: std::io::Error = crate::output_file::Refused::NotAFile.into();
+        assert_eq!(
+            App::format_export_error(&refused.into(), path),
+            "Cannot write to out.csv.gz: it is not a regular file."
+        );
+        let encoder = std::io::Error::new(std::io::ErrorKind::InvalidInput, "stream error");
+        let message = App::format_export_error(&encoder.into(), path);
+        assert!(!message.contains("regular file"), "{message}");
     }
 }
 
@@ -1483,6 +1502,17 @@ mod chart_prepare_tests {
         assert!(app.chart_inflight.is_none());
     }
 
+    fn chart_request(path: &str) -> ChartExportRequest {
+        ChartExportRequest {
+            path: PathBuf::from(path),
+            format: ChartExportFormat::Png,
+            title: String::new(),
+            width: 1,
+            height: 1,
+            overwrite: Overwrite::Forbid,
+        }
+    }
+
     /// Leaving the dataset drops the chart state with it: nothing keeps spinning on the
     /// home screen, the worker still running is waited for and its result discarded
     /// (nothing else starts until it lands), and an export parked on data that will
@@ -1493,13 +1523,7 @@ mod chart_prepare_tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         let request = histogram_request("a");
         app.chart_inflight = Some(inflight(&request));
-        app.chart_export_waiting = Some((
-            PathBuf::from("/tmp/x.png"),
-            ChartExportFormat::Png,
-            String::new(),
-            1,
-            1,
-        ));
+        app.chart_export_waiting = Some(chart_request("/tmp/x.png"));
         app.busy = true;
 
         app.abandon_load();
@@ -1528,15 +1552,8 @@ mod chart_prepare_tests {
     fn a_chart_export_deferred_past_the_chart_view_releases_busy() {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        let path = PathBuf::from("/tmp/x.png");
         let next = app
-            .event(&AppEvent::ChartExport(
-                path,
-                ChartExportFormat::Png,
-                String::new(),
-                1,
-                1,
-            ))
+            .event(&AppEvent::ChartExport(chart_request("/tmp/x.png")))
             .expect("ChartExport defers to DoChartExport");
         assert!(app.is_busy());
 
@@ -7324,9 +7341,12 @@ pub enum AppEvent {
         path: PathBuf,
         options: OpenOptions,
     },
-    DoExport(PathBuf, ExportFormat, ExportOptions), // Internal event to perform export after UI shows progress
-    DoExportCollect(PathBuf, ExportFormat, ExportOptions), // Collect data for export; then emit DoExportWrite
-    DoExportWrite(PathBuf, ExportFormat, ExportOptions),   // Write collected DataFrame to file
+    /// Run the export once the UI has drawn its progress.
+    DoExport(ExportRequest),
+    /// Collect the view off-thread; `BackgroundExportCollected` then writes it.
+    DoExportCollect(ExportRequest),
+    /// Write the collected frame and commit it over the destination.
+    DoExportWrite(ExportRequest),
     DoLoadParquetMetadata, // Load Parquet metadata when info panel is opened (deferred from render)
     Exit,
     Crash(String),
@@ -7349,7 +7369,7 @@ pub enum AppEvent {
         pivoted: std::result::Result<DataFrame, String>,
     },
     Melt(MeltSpec),
-    Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
+    Export(ExportRequest),
     /// Collect and format the whole view off-thread for a table-scope copy.
     CopyTable {
         format: crate::clipboard::CopyFormat,
@@ -7363,8 +7383,9 @@ pub enum AppEvent {
         rows: usize,
         format: crate::clipboard::CopyFormat,
     },
-    ChartExport(PathBuf, ChartExportFormat, String, u32, u32), // path, format, title, width, height
-    DoChartExport(PathBuf, ChartExportFormat, String, u32, u32), // Deferred: run chart export
+    ChartExport(ChartExportRequest),
+    /// Deferred: run the chart export once its phase is drawn.
+    DoChartExport(ChartExportRequest),
     Collect,
     Update,
     Reset,
@@ -7483,7 +7504,7 @@ pub enum AppEvent {
     BackgroundChartReady,
     /// Write the Data Quality report on screen to a file, in a form. From the
     /// results in memory: nothing is read.
-    QualityReportExport(PathBuf, crate::quality_export::ReportFormat),
+    QualityReportExport(PathBuf, crate::quality_export::ReportFormat, Overwrite),
     /// Background task completed: the Data Quality report written to disk.
     BackgroundQualityReportWritten {
         generation: u64,
@@ -7501,9 +7522,7 @@ pub enum AppEvent {
     BackgroundExportCollected {
         generation: u64,
         df: DataFrame,
-        path: PathBuf,
-        format: ExportFormat,
-        options: ExportOptions,
+        request: ExportRequest,
     },
     /// Background task completed: file written to disk.
     BackgroundExportWritten {
@@ -7761,19 +7780,6 @@ pub struct ReadReport {
 pub enum RunInput {
     Paths(Vec<PathBuf>, OpenOptions),
     LazyFrame(Box<LazyFrame>, OpenOptions),
-}
-
-#[derive(Debug, Clone)]
-pub struct ExportOptions {
-    pub csv_delimiter: u8,
-    pub csv_include_header: bool,
-    /// Add a column naming the file each row came from, so a cell that is absent
-    /// rather than null can still be told apart once the data has left datui.
-    pub source_file: bool,
-    pub csv_compression: Option<CompressionFormat>,
-    pub json_compression: Option<CompressionFormat>,
-    pub ndjson_compression: Option<CompressionFormat>,
-    pub parquet_compression: Option<CompressionFormat>, // Not used in UI, but kept for API compatibility
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -8506,7 +8512,22 @@ enum ChartExportJob {
 }
 
 impl ChartExportJob {
-    fn write(&self, path: &Path, format: ChartExportFormat, size: (u32, u32)) -> Result<()> {
+    /// Draw the chart into a temporary file and commit it over `path`.
+    fn write(
+        &self,
+        path: &Path,
+        format: ChartExportFormat,
+        size: (u32, u32),
+        overwrite: Overwrite,
+    ) -> Result<()> {
+        let out = output_file::OutputFile::create(path, overwrite)?;
+        self.draw(out.path(), format, size)?;
+        out.commit()?;
+        Ok(())
+    }
+
+    /// The writers open the path themselves: plotters picks PNG from its extension.
+    fn draw(&self, path: &Path, format: ChartExportFormat, size: (u32, u32)) -> Result<()> {
         match (self, format) {
             (
                 Self::Series {
@@ -8996,14 +9017,15 @@ pub struct App {
     pending_chart_result: ChartResultSlot,
     /// A chart export that asked for data still being prepared. `BackgroundChartReady`
     /// picks it up; `busy` stays set until then.
-    chart_export_waiting: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
+    chart_export_waiting: Option<ChartExportRequest>,
     error_modal: ErrorModal,
     flash: Option<Flash>,
     pub confirmation_modal: ConfirmationModal,
-    pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
+    /// An export waiting on the overwrite confirmation.
+    pending_export: Option<ExportRequest>,
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
     export_df: Option<DataFrame>,
-    pending_chart_export: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
+    pending_chart_export: Option<ChartExportRequest>,
     /// A Data Quality report export waiting on the overwrite confirmation.
     pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
     /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation.
@@ -9685,7 +9707,11 @@ impl App {
                         );
                     } else {
                         self.analysis_modal.data_quality_export = None;
-                        return Some(AppEvent::QualityReportExport(path, format));
+                        return Some(AppEvent::QualityReportExport(
+                            path,
+                            format,
+                            Overwrite::Forbid,
+                        ));
                     }
                 }
             },
@@ -11246,6 +11272,13 @@ impl App {
     /// The completion flash on the control bar, if one is showing.
     pub fn flash_message(&self) -> Option<&str> {
         self.flash.as_ref().map(|f| f.message.as_str())
+    }
+
+    /// The error dialog's message, if one is showing.
+    pub fn error_message(&self) -> Option<&str> {
+        self.error_modal
+            .active
+            .then_some(self.error_modal.message.as_str())
     }
 
     /// Drop an expired flash. Returns true when the frame must redraw.
@@ -17048,21 +17081,30 @@ impl App {
                             self.home.status = None;
                             return None;
                         }
+                        // The overwrite was agreed to: each export may now replace the
+                        // file it asked about, and only through that answer.
                         if let Some((path, format)) = self.pending_quality_export.take() {
                             self.confirmation_modal.hide();
                             self.analysis_modal.data_quality_export = None;
-                            return Some(AppEvent::QualityReportExport(path, format));
+                            return Some(AppEvent::QualityReportExport(
+                                path,
+                                format,
+                                Overwrite::Replace,
+                            ));
                         }
-                        // User confirmed overwrite: chart export first, then dataframe export
-                        if let Some((path, format, title, width, height)) =
-                            self.pending_chart_export.take()
-                        {
+                        if let Some(request) = self.pending_chart_export.take() {
                             self.confirmation_modal.hide();
-                            return Some(AppEvent::ChartExport(path, format, title, width, height));
+                            return Some(AppEvent::ChartExport(ChartExportRequest {
+                                overwrite: Overwrite::Replace,
+                                ..request
+                            }));
                         }
-                        if let Some((path, format, options)) = self.pending_export.take() {
+                        if let Some(request) = self.pending_export.take() {
                             self.confirmation_modal.hide();
-                            return Some(AppEvent::Export(path, format, options));
+                            return Some(AppEvent::Export(ExportRequest {
+                                overwrite: Overwrite::Replace,
+                                ..request
+                            }));
                         }
                         if let Some((format, header)) = self.pending_copy.take() {
                             self.confirmation_modal.hide();
@@ -17695,19 +17737,23 @@ impl App {
                             .chars()
                             .next()
                             .unwrap_or(',') as u8;
-                        let options = ExportOptions {
-                            csv_delimiter: delimiter,
-                            csv_include_header: self.export_modal.csv_include_header,
-                            csv_compression: self.export_modal.csv_compression,
-                            json_compression: self.export_modal.json_compression,
-                            ndjson_compression: self.export_modal.ndjson_compression,
-                            parquet_compression: None,
-                            source_file: self.export_modal.source_file,
+                        let request = ExportRequest {
+                            path,
+                            format,
+                            options: ExportOptions {
+                                csv_delimiter: delimiter,
+                                csv_include_header: self.export_modal.csv_include_header,
+                                csv_compression: self.export_modal.csv_compression,
+                                json_compression: self.export_modal.json_compression,
+                                ndjson_compression: self.export_modal.ndjson_compression,
+                                source_file: self.export_modal.source_file,
+                            },
+                            overwrite: Overwrite::Forbid,
                         };
                         // Check if file exists and show confirmation
-                        if path.exists() {
-                            let path_display = path.display().to_string();
-                            self.pending_export = Some((path, format, options));
+                        if request.path.exists() {
+                            let path_display = request.path.display().to_string();
+                            self.pending_export = Some(request);
                             self.confirmation_modal.show_destructive(
                                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
                                 "Overwrite",
@@ -17720,7 +17766,7 @@ impl App {
                             // Start export with progress
                             self.export_modal.close();
                             self.input_mode = InputMode::Normal;
-                            return Some(AppEvent::Export(path, format, options));
+                            return Some(AppEvent::Export(request));
                         }
                     }
                 }
@@ -18131,9 +18177,16 @@ impl App {
                                 path.set_extension(format.extension());
                             }
                             let path_display = path.display().to_string();
-                            if path.exists() {
-                                self.pending_chart_export =
-                                    Some((path, format, title, width, height));
+                            let request = ChartExportRequest {
+                                path,
+                                format,
+                                title,
+                                width,
+                                height,
+                                overwrite: Overwrite::Forbid,
+                            };
+                            if request.path.exists() {
+                                self.pending_chart_export = Some(request);
                                 // Suspended, not closed: declining returns to
                                 // the filled form with the typed path intact.
                                 self.chart_export_modal.suspend();
@@ -18145,9 +18198,7 @@ impl App {
                                 );
                             } else {
                                 self.chart_export_modal.close();
-                                return Some(AppEvent::ChartExport(
-                                    path, format, title, width, height,
-                                ));
+                                return Some(AppEvent::ChartExport(request));
                             }
                         }
                     }
@@ -22032,9 +22083,7 @@ impl App {
             AppEvent::BackgroundExportCollected {
                 generation,
                 df,
-                path,
-                format,
-                options,
+                request,
             } => {
                 if *generation == self.task_generation {
                     // The frame was collected with the scan's row index still on it
@@ -22045,35 +22094,27 @@ impl App {
                     let df = match self
                         .data_table_state
                         .as_ref()
-                        .filter(|state| options.source_file && state.can_name_source_files())
+                        .filter(|state| {
+                            request.options.source_file && state.can_name_source_files()
+                        })
                         .map(|state| state.name_source_files(df.clone()))
                     {
                         Some(Ok(named)) => named,
                         _ => DataTableState::drop_row_index(df.clone()),
                     };
                     self.export_df = Some(df);
-                    let has_compression = match format {
-                        ExportFormat::Csv => options.csv_compression.is_some(),
-                        ExportFormat::Json => options.json_compression.is_some(),
-                        ExportFormat::Ndjson => options.ndjson_compression.is_some(),
-                        ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => false,
-                    };
-                    let phase = if has_compression {
+                    let phase = if request.options.compression(request.format).is_some() {
                         "Writing and compressing file"
                     } else {
                         "Writing file"
                     };
                     self.loading_state = LoadingState::Exporting {
-                        file_path: path.clone(),
+                        file_path: request.path.clone(),
                         current_phase: phase.to_string(),
                         progress_percent: 50,
                     };
                     self.status_message = Some(format!("{}...", phase));
-                    return Some(AppEvent::DoExportWrite(
-                        path.clone(),
-                        *format,
-                        options.clone(),
-                    ));
+                    return Some(AppEvent::DoExportWrite(request.clone()));
                 }
                 // Stale export collect — ignore.
                 None
@@ -22592,17 +22633,16 @@ impl App {
                     None
                 }
             }
-            AppEvent::QualityReportExport(path, format) => {
+            AppEvent::QualityReportExport(path, format, overwrite) => {
                 // The report on screen and the plan it was measured with, cloned into
                 // the writer: the file is built from memory and nothing is read.
                 let results = self.analysis_modal.data_quality_results.clone()?;
                 let plan = self.analysis_modal.quality_result_plan().clone();
-                let (path, format) = (path.clone(), *format);
+                let (path, format, overwrite) = (path.clone(), *format, *overwrite);
                 self.spawn_bg("Writing the report...", move |generation, tx| {
-                    let result = crate::quality_export::write(&path, &results, &plan, format)
-                        .map_err(|error| {
-                            crate::error_display::user_message_from_report(&error, Some(&path))
-                        });
+                    let result =
+                        crate::quality_export::write(&path, &results, &plan, format, overwrite)
+                            .map_err(|error| Self::format_export_error(&error, &path));
                     let _ = tx.send(AppEvent::BackgroundQualityReportWritten {
                         generation,
                         path,
@@ -22626,22 +22666,16 @@ impl App {
                 }
                 None
             }
-            AppEvent::ChartExport(path, format, title, width, height) => {
+            AppEvent::ChartExport(request) => {
                 self.busy = true;
                 self.loading_state = LoadingState::Exporting {
-                    file_path: path.clone(),
+                    file_path: request.path.clone(),
                     current_phase: "Exporting chart".to_string(),
                     progress_percent: 0,
                 };
-                Some(AppEvent::DoChartExport(
-                    path.clone(),
-                    *format,
-                    title.clone(),
-                    *width,
-                    *height,
-                ))
+                Some(AppEvent::DoChartExport(request.clone()))
             }
-            AppEvent::DoChartExport(path, format, title, width, height) => {
+            AppEvent::DoChartExport(request) => {
                 // `ChartExport` arms `busy` and defers here so the phase can be drawn
                 // first. A Ctrl-O in that window has already left the chart view, and
                 // there is nothing to export any more: release the app rather than park
@@ -22652,7 +22686,7 @@ impl App {
                     self.busy = false;
                     return None;
                 }
-                self.start_chart_export(path.clone(), *format, title.clone(), *width, *height);
+                self.start_chart_export(request.clone());
                 None
             }
             AppEvent::BackgroundChartExportWritten {
@@ -22700,69 +22734,60 @@ impl App {
                 // now prepared, fails with the reason if that is the one that failed,
                 // and otherwise waits for the next result (which `ensure_chart_data`
                 // starts once this handler returns).
-                if let Some((path, format, title, width, height)) = self.chart_export_waiting.take()
-                {
-                    self.start_chart_export(path, format, title, width, height);
+                if let Some(request) = self.chart_export_waiting.take() {
+                    self.start_chart_export(request);
                 }
                 None
             }
-            AppEvent::Export(path, format, options) => {
+            AppEvent::Export(request) => {
                 if let Some(_state) = &self.data_table_state {
                     self.busy = true;
                     // Show progress immediately
                     self.loading_state = LoadingState::Exporting {
-                        file_path: path.clone(),
+                        file_path: request.path.clone(),
                         current_phase: "Preparing export".to_string(),
                         progress_percent: 0,
                     };
                     // Return DoExport to allow UI to render progress before blocking
-                    Some(AppEvent::DoExport(path.clone(), *format, options.clone()))
+                    Some(AppEvent::DoExport(request.clone()))
                 } else {
                     None
                 }
             }
-            AppEvent::DoExport(path, format, options) => {
+            AppEvent::DoExport(request) => {
                 if let Some(_state) = &self.data_table_state {
                     // Phase 1: show "Collecting data" so UI can redraw before blocking collect
                     self.loading_state = LoadingState::Exporting {
-                        file_path: path.clone(),
+                        file_path: request.path.clone(),
                         current_phase: "Collecting data".to_string(),
                         progress_percent: 10,
                     };
-                    Some(AppEvent::DoExportCollect(
-                        path.clone(),
-                        *format,
-                        options.clone(),
-                    ))
+                    Some(AppEvent::DoExportCollect(request.clone()))
                 } else {
                     self.busy = false;
                     None
                 }
             }
-            AppEvent::DoExportCollect(path, format, options) => {
+            AppEvent::DoExportCollect(request) => {
                 if let Some(state) = &self.data_table_state {
                     // Naming each row's file needs the scan's row index, which
                     // `visible_lf` drops; the index is replaced by the name below.
-                    let name_files = options.source_file && state.can_name_source_files();
+                    let name_files = request.options.source_file && state.can_name_source_files();
                     let lf = if name_files {
                         state.lf_clone()
                     } else {
                         state.visible_lf()
                     };
                     let streaming = state.polars_streaming;
-                    let path = path.clone();
-                    let format = *format;
-                    let options = options.clone();
+                    let request = request.clone();
                     self.spawn_bg("Collecting data for export...", move |task_gen, tx| {
-                        let lf = format.prepare(lf);
+                        let lf = request.format.prepare(lf);
                         match lf.and_then(|lf| crate::statistics::collect_lazy(lf, streaming)) {
                             Ok(df) => {
                                 let _ = tx.send(AppEvent::BackgroundExportCollected {
                                     generation: task_gen,
                                     df,
-                                    path,
-                                    format,
-                                    options,
+                                    request,
                                 });
                             }
                             Err(e) => {
@@ -22781,20 +22806,18 @@ impl App {
                 }
                 None
             }
-            AppEvent::DoExportWrite(path, format, options) => {
+            AppEvent::DoExportWrite(request) => {
                 match self.export_df.take() {
-                    Some(df) => {
-                        let path = path.clone();
-                        let format = *format;
-                        let options = options.clone();
+                    Some(mut df) => {
+                        let request = request.clone();
                         self.spawn_bg("Writing file...", move |task_gen, tx| {
-                            let mut df = df;
-                            let result =
-                                Self::export_data_from_df(&mut df, &path, format, &options);
+                            // Success is reported only once the file is committed.
+                            let result = crate::export::write(&mut df, &request);
                             let _ = tx.send(AppEvent::BackgroundExportWritten {
                                 generation: task_gen,
-                                path: path.clone(),
-                                result: result.map_err(|e| Self::format_export_error(&e, &path)),
+                                result: result
+                                    .map_err(|e| Self::format_export_error(&e, &request.path)),
+                                path: request.path,
                             });
                         });
                     }
@@ -23164,24 +23187,25 @@ impl App {
 
     /// Write the chart from the prepared data off-thread, or park the export until that
     /// data is ready. `busy` was set by `ChartExport` and stays set until the export ends.
-    fn start_chart_export(
-        &mut self,
-        path: PathBuf,
-        format: ChartExportFormat,
-        title: String,
-        width: u32,
-        height: u32,
-    ) {
-        match self.build_chart_export_job(&title) {
+    fn start_chart_export(&mut self, request: ChartExportRequest) {
+        match self.build_chart_export_job(&request.title) {
             Ok(Some(job)) => {
                 self.chart_export_waiting = None;
                 self.chart_export_generation = self.chart_export_generation.wrapping_add(1);
                 let generation = self.chart_export_generation;
                 self.chart_export_inflight = Some(generation);
                 self.spawn_bg("Exporting chart...", move |_, tx| {
-                    let result = job.write(&path, format, (width, height)).map_err(|e| {
-                        crate::error_display::user_message_from_report(&e, Some(&path))
-                    });
+                    let ChartExportRequest {
+                        path,
+                        format,
+                        width,
+                        height,
+                        overwrite,
+                        ..
+                    } = request;
+                    let result = job
+                        .write(&path, format, (width, height), overwrite)
+                        .map_err(|e| Self::format_export_error(&e, &path));
                     let _ = tx.send(AppEvent::BackgroundChartExportWritten {
                         generation,
                         path,
@@ -23191,10 +23215,10 @@ impl App {
                 });
             }
             // Still being prepared; `BackgroundChartReady` comes back here.
-            Ok(None) => self.chart_export_waiting = Some((path, format, title, width, height)),
+            Ok(None) => self.chart_export_waiting = Some(request),
             Err(e) => {
-                let message = crate::error_display::user_message_from_report(&e, Some(&path));
-                self.finish_chart_export(&path, format, Err(message));
+                let message = Self::format_export_error(&e, &request.path);
+                self.finish_chart_export(&request.path, request.format, Err(message));
             }
         }
     }
@@ -23655,13 +23679,20 @@ impl App {
         Ok(())
     }
 
-    /// Format export error messages to be more user-friendly using type-based handling.
+    /// What the error modal says when writing an export, report or chart fails.
     fn format_export_error(error: &color_eyre::eyre::Report, path: &Path) -> String {
-        use std::io;
+        use std::io::{self, ErrorKind};
 
         for cause in error.chain() {
             if let Some(io_err) = cause.downcast_ref::<io::Error>() {
-                let msg = crate::error_display::user_message_from_io(io_err, None);
+                // Matched by type, not kind: an encoder's own errors share
+                // kinds such as InvalidInput with the destination checks.
+                let msg = match (crate::output_file::Refused::of(io_err), io_err.kind()) {
+                    (Some(refused), _) => format!("{refused}."),
+                    (None, ErrorKind::PermissionDenied) => "permission denied.".to_string(),
+                    (None, ErrorKind::IsADirectory) => "it is a directory.".to_string(),
+                    (None, _) => crate::error_display::user_message_from_io(io_err, None),
+                };
                 return format!("Cannot write to {}: {}", path.display(), msg);
             }
             if let Some(pe) = cause.downcast_ref::<polars::prelude::PolarsError>() {
@@ -23674,7 +23705,6 @@ impl App {
         format!("Export failed: {}", first_line)
     }
 
-    /// Write an already-collected DataFrame to file. Used by two-phase export (DoExportWrite).
     /// Above this estimated size a table copy asks first: most paste targets
     /// choke long before it, and the clipboard holds the whole thing at once.
     const COPY_CONFIRM_BYTES: usize = 10 * 1024 * 1024;
@@ -23816,155 +23846,6 @@ impl App {
     /// without a display server or a terminal in the loop.
     pub fn set_clipboard_destination(&mut self, destination: Box<dyn clipboard::Destination>) {
         self.clipboard = Some(destination);
-    }
-
-    fn export_data_from_df(
-        df: &mut DataFrame,
-        path: &Path,
-        format: ExportFormat,
-        options: &ExportOptions,
-    ) -> Result<()> {
-        use polars::prelude::*;
-        use std::fs::File;
-        use std::io::{BufWriter, Write};
-
-        match format {
-            ExportFormat::Csv => {
-                use polars::prelude::CsvWriter;
-                if let Some(compression) = options.csv_compression {
-                    // Write to compressed file
-                    let file = File::create(path)?;
-                    let writer: Box<dyn Write> = match compression {
-                        CompressionFormat::Gzip => Box::new(flate2::write::GzEncoder::new(
-                            file,
-                            flate2::Compression::default(),
-                        )),
-                        CompressionFormat::Zstd => {
-                            Box::new(zstd::Encoder::new(file, 0)?.auto_finish())
-                        }
-                        CompressionFormat::Bzip2 => Box::new(bzip2::write::BzEncoder::new(
-                            file,
-                            bzip2::Compression::default(),
-                        )),
-                        CompressionFormat::Xz => {
-                            Box::new(xz2::write::XzEncoder::new(
-                                file, 6, // compression level
-                            ))
-                        }
-                    };
-                    CsvWriter::new(writer)
-                        .with_separator(options.csv_delimiter)
-                        .include_header(options.csv_include_header)
-                        .finish(df)?;
-                } else {
-                    // Write uncompressed
-                    let file = File::create(path)?;
-                    CsvWriter::new(file)
-                        .with_separator(options.csv_delimiter)
-                        .include_header(options.csv_include_header)
-                        .finish(df)?;
-                }
-            }
-            ExportFormat::Parquet => {
-                use polars::prelude::ParquetWriter;
-                let file = File::create(path)?;
-                let mut writer = BufWriter::new(file);
-                ParquetWriter::new(&mut writer).finish(df)?;
-            }
-            ExportFormat::Json => {
-                use polars::prelude::JsonWriter;
-                if let Some(compression) = options.json_compression {
-                    // Write to compressed file
-                    let file = File::create(path)?;
-                    let writer: Box<dyn Write> = match compression {
-                        CompressionFormat::Gzip => Box::new(flate2::write::GzEncoder::new(
-                            file,
-                            flate2::Compression::default(),
-                        )),
-                        CompressionFormat::Zstd => {
-                            Box::new(zstd::Encoder::new(file, 0)?.auto_finish())
-                        }
-                        CompressionFormat::Bzip2 => Box::new(bzip2::write::BzEncoder::new(
-                            file,
-                            bzip2::Compression::default(),
-                        )),
-                        CompressionFormat::Xz => {
-                            Box::new(xz2::write::XzEncoder::new(
-                                file, 6, // compression level
-                            ))
-                        }
-                    };
-                    JsonWriter::new(writer)
-                        .with_json_format(JsonFormat::Json)
-                        .finish(df)?;
-                } else {
-                    // Write uncompressed
-                    let file = File::create(path)?;
-                    JsonWriter::new(file)
-                        .with_json_format(JsonFormat::Json)
-                        .finish(df)?;
-                }
-            }
-            ExportFormat::Ndjson => {
-                use polars::prelude::{JsonFormat, JsonWriter};
-                if let Some(compression) = options.ndjson_compression {
-                    // Write to compressed file
-                    let file = File::create(path)?;
-                    let writer: Box<dyn Write> = match compression {
-                        CompressionFormat::Gzip => Box::new(flate2::write::GzEncoder::new(
-                            file,
-                            flate2::Compression::default(),
-                        )),
-                        CompressionFormat::Zstd => {
-                            Box::new(zstd::Encoder::new(file, 0)?.auto_finish())
-                        }
-                        CompressionFormat::Bzip2 => Box::new(bzip2::write::BzEncoder::new(
-                            file,
-                            bzip2::Compression::default(),
-                        )),
-                        CompressionFormat::Xz => {
-                            Box::new(xz2::write::XzEncoder::new(
-                                file, 6, // compression level
-                            ))
-                        }
-                    };
-                    JsonWriter::new(writer)
-                        .with_json_format(JsonFormat::JsonLines)
-                        .finish(df)?;
-                } else {
-                    // Write uncompressed
-                    let file = File::create(path)?;
-                    JsonWriter::new(file)
-                        .with_json_format(JsonFormat::JsonLines)
-                        .finish(df)?;
-                }
-            }
-            ExportFormat::Ipc => {
-                use polars::prelude::IpcWriter;
-                let file = File::create(path)?;
-                let mut writer = BufWriter::new(file);
-                IpcWriter::new(&mut writer).finish(df)?;
-            }
-            ExportFormat::Avro => {
-                let mut writer = BufWriter::new(File::create(path)?);
-                crate::avro_types::write(df, &mut writer)?;
-                writer.flush()?;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[allow(dead_code)] // Used only when not using two-phase export; kept for tests/single-shot use
-    fn export_data(
-        state: &DataTableState,
-        path: &Path,
-        format: ExportFormat,
-        options: &ExportOptions,
-    ) -> Result<()> {
-        let lf = format.prepare(state.visible_lf())?;
-        let mut df = crate::statistics::collect_lazy(lf, state.polars_streaming)?;
-        Self::export_data_from_df(&mut df, path, format, options)
     }
 
     pub fn create_template_from_current_state(

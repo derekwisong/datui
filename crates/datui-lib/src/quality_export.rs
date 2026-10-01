@@ -1179,17 +1179,22 @@ pub fn render(
     }
 }
 
-/// Write the report to `path`. The results are in memory: this writes, and reads
-/// nothing.
+/// Write the report to `path`, replacing a file there only under
+/// [`Overwrite::Replace`](crate::output_file::Overwrite). The results are in
+/// memory: this writes, and reads nothing.
 pub fn write(
     path: &Path,
     results: &DataQualityResults,
     plan: &DataQualityPlan,
     format: ReportFormat,
+    overwrite: crate::output_file::Overwrite,
 ) -> color_eyre::Result<()> {
+    use std::io::Write;
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let text = render(results, plan, format, &now)?;
-    std::fs::write(path, text)?;
+    let mut out = crate::output_file::OutputFile::create(path, overwrite)?;
+    out.file().write_all(text.as_bytes())?;
+    out.commit()?;
     Ok(())
 }
 

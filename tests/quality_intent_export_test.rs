@@ -6,6 +6,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::analysis_modal::{AnalysisFocus, SetupRow};
 use datui::data_quality::{QualityPage, QualityPrecision};
+use datui::output_file::Overwrite;
 use datui::quality_export::{REPORT_FORMAT, REPORT_VERSION, ReportFile};
 use datui::{App, AppEvent, OpenOptions};
 use polars::prelude::*;
@@ -290,7 +291,10 @@ fn the_report_exports_without_reading_the_source() {
     let json = dir.path().join("report.json");
     form.path.set_value(json.display().to_string());
     let next = press(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::QualityReportExport(..))));
+    assert!(matches!(
+        next,
+        Some(AppEvent::QualityReportExport(_, _, Overwrite::Forbid))
+    ));
     assert!(app.analysis_modal.data_quality_export.is_none());
     drain(&mut app, &rx, next);
     assert!(
@@ -342,12 +346,36 @@ fn the_report_exports_without_reading_the_source() {
     press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Left);
     let next = press(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::QualityReportExport(..))));
+    assert!(matches!(
+        next,
+        Some(AppEvent::QualityReportExport(_, _, Overwrite::Replace))
+    ));
     drain(&mut app, &rx, next);
     assert!(
         std::fs::read_to_string(&json)
             .unwrap()
             .contains(REPORT_FORMAT)
+    );
+
+    // Nothing was there at Enter, so nothing may be replaced: a file that
+    // appears before the write is left alone, and the error says so.
+    press(&mut app, KeyCode::Char('x'));
+    let clash = dir.path().join("clash.json");
+    let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
+    form.path.set_value(clash.display().to_string());
+    let next = press(&mut app, KeyCode::Enter);
+    std::fs::write(&clash, "theirs").unwrap();
+    drain(&mut app, &rx, next);
+    assert!(
+        app.error_message().is_some_and(|m| m.contains("appeared")),
+        "{:?}",
+        app.error_message()
+    );
+    assert_eq!(std::fs::read_to_string(&clash).unwrap(), "theirs");
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        3,
+        "report.json, report.md and clash.json; no temporary file"
     );
     assert!(!path.exists(), "the source was never needed");
 }

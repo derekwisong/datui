@@ -292,11 +292,23 @@ pub fn lazy_as_json(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     })
 }
 
-/// [`lazy_as_json`] for frames already in memory: a copy's rows.
+/// [`lazy_as_json`] for frames already in memory: a copy's rows, as the CSV
+/// writer takes them.
 pub fn frame_as_json(df: &DataFrame) -> PolarsResult<DataFrame> {
+    frame_as_text(df, needs_text)
+}
+
+/// [`frame_as_json`] with dates and datetimes kept in their own type: the cells
+/// a Markdown or HTML copy writes through [`crate::exact::value_text`], which
+/// spells one past the calendar as its stored number itself.
+pub fn frame_as_cells(df: &DataFrame) -> PolarsResult<DataFrame> {
+    frame_as_text(df, |dtype| needs_text(dtype) && !is_calendar(dtype))
+}
+
+fn frame_as_text(df: &DataFrame, converts: impl Fn(&DataType) -> bool) -> PolarsResult<DataFrame> {
     let mut out = df.clone();
     for column in df.columns() {
-        if needs_text(column.dtype()) {
+        if converts(column.dtype()) {
             out.with_column(column_as_text(column)?)?;
         }
     }
@@ -436,16 +448,27 @@ pub(crate) mod tests {
     }
 
     /// Dates and datetimes in every unit, with and without a zone, and their
-    /// nulls; `past` adds the ends of the stored range, which no writer takes.
-    fn calendar(past: bool) -> DataFrame {
+    /// nulls, years before 0 and past 9999 among them; `past` adds the ends of
+    /// the stored range, which no writer takes.
+    pub(crate) fn calendar(past: bool) -> DataFrame {
         let mut stamps = vec![
             Some(0i64),
             None,
             Some(-1),
             Some(1_700_000_000_123),
             Some(-62_000_000_000_000),
+            Some(-100_000_000_000_000),
+            Some(300_000_000_000_000),
         ];
-        let mut days = vec![Some(0i32), None, Some(-1), Some(19_724), Some(-800_000)];
+        let mut days = vec![
+            Some(0i32),
+            None,
+            Some(-1),
+            Some(19_724),
+            Some(-800_000),
+            Some(-1_000_000),
+            Some(3_000_000),
+        ];
         if past {
             stamps.extend([Some(i64::MIN + 1), Some(i64::MAX)]);
             days.extend([Some(i32::MIN), Some(i32::MAX)]);

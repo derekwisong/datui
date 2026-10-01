@@ -8813,6 +8813,91 @@ pub(crate) fn partition_dtype(
     }
 }
 
+/// Everything a checkpoint promises to put back, as a test can compare it: the rows
+/// each frame of the pipeline reads (collected here, on the test's thread), the schema,
+/// the query, filters, sort and layout, the reshape, the drill, what the notes say, the
+/// selection, and the count and buffer the view holds.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) struct ViewSnapshot {
+    rows: std::result::Result<DataFrame, String>,
+    base_rows: std::result::Result<DataFrame, String>,
+    reshaped_rows: Option<std::result::Result<DataFrame, String>>,
+    schema: Arc<Schema>,
+    queries: [String; 3],
+    filters: String,
+    sort: (Vec<String>, Vec<bool>, bool),
+    layout: (Vec<String>, usize),
+    reshape: String,
+    grouped: (bool, bool),
+    drill: (Option<usize>, Option<Vec<String>>, Option<Vec<String>>),
+    drift: (bool, Arc<Vec<crate::schema_union::DriftGroup>>),
+    notes: (Vec<crate::notes::Note>, bool, Vec<crate::notes::Note>),
+    selection: (Option<usize>, usize, usize),
+    count: (usize, bool, u64),
+    buffer: (usize, usize, Option<DataFrame>),
+    shown: Option<DataFrame>,
+    error: Option<String>,
+}
+
+#[cfg(test)]
+impl ViewSnapshot {
+    /// Whether the view's rows and count had been read.
+    pub(crate) fn has_rows(&self) -> bool {
+        self.buffer.2.is_some() && self.count.1
+    }
+}
+
+#[cfg(test)]
+impl DataTableState {
+    pub(crate) fn snapshot(&self) -> ViewSnapshot {
+        let rows = |lf: &LazyFrame| lf.clone().collect().map_err(|e| e.to_string());
+        ViewSnapshot {
+            rows: rows(&self.lf),
+            base_rows: rows(&self.base_lf),
+            reshaped_rows: self.reshaped_lf.as_ref().map(rows),
+            schema: self.schema.clone(),
+            queries: [
+                self.active_query.clone(),
+                self.active_sql_query.clone(),
+                self.active_fuzzy_query.clone(),
+            ],
+            filters: format!("{:?}", self.filters),
+            sort: (
+                self.sort_columns.clone(),
+                self.sort_descending.clone(),
+                self.sort_ascending,
+            ),
+            layout: (self.column_order.clone(), self.locked_columns_count),
+            reshape: format!(
+                "{:?} {:?} {:?}",
+                self.last_pivot_spec, self.last_melt_spec, self.reshape_source
+            ),
+            grouped: (self.grouped.is_some(), self.group_source.is_some()),
+            drill: (
+                self.drilled_down_group_index,
+                self.drilled_down_group_key.clone(),
+                self.drilled_down_group_key_columns.clone(),
+            ),
+            drift: (self.drift_column_present, self.drift_groups.clone()),
+            notes: (self.notes.clone(), self.notes_seen, self.view_notes.clone()),
+            selection: (
+                self.table_state.selected(),
+                self.start_row,
+                self.termcol_index,
+            ),
+            count: (self.num_rows, self.num_rows_valid, self.len_generation),
+            buffer: (
+                self.buffered_start_row,
+                self.buffered_end_row,
+                self.buffered_df.clone(),
+            ),
+            shown: self.df.clone(),
+            error: self.error.as_ref().map(|e| e.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

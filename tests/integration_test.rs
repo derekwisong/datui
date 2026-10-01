@@ -6398,6 +6398,58 @@ fn test_reading_a_filtered_column_as_text_says_the_comparison_changed() {
     );
 }
 
+/// Taking the offer from the Info panel rebuilds the scan on the UI thread and reads
+/// its rows in the background, like any other change to the view (#458).
+#[test]
+fn test_reading_a_column_as_text_from_the_panel_reads_in_the_background() {
+    use datui::widgets::info::InfoTab;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[1i64, 10, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64], "n" => &["sixty"]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.info_modal.active_tab, InfoTab::Notes);
+    let state = app.data_table_state.as_ref().unwrap();
+    app.info_modal.notes_selected_index = state
+        .notes()
+        .iter()
+        .position(|note| note.read_as_text.is_some())
+        .expect("the conflict note offers to read n as text");
+    assert!(state.is_num_rows_valid());
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.schema().get("n"), Some(&DataType::String));
+    assert!(
+        !state.is_num_rows_valid(),
+        "the new frame is not counted on this thread"
+    );
+    assert!(app.is_busy(), "its rows are being read");
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows_if_valid(), Some(4));
+    let shown = state.display_df().expect("the rows are read");
+    assert_eq!(shown.column("n").unwrap().dtype(), &DataType::String);
+}
+
 /// Reading a column as text does not undo the widening, so the note about it stays.
 ///
 /// One file wrote `n` as an integer and another as a float, which widen together — so

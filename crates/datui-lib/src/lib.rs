@@ -14947,8 +14947,8 @@ impl App {
         else {
             return;
         };
-        // A failure is left showing on the state.
-        if let Ok(true) = state.read_column_as_text(&column) {
+        // Rebuilt here, read off the UI thread. A failure is left showing on the state.
+        if let Ok(true) = state.deferred(|s| s.read_column_as_text(&column)) {
             // The note that offered this is gone and the list is shorter, so the
             // cursor would otherwise sit past the end. Kept as near to where the
             // user left it as the shorter list allows, rather than thrown to the
@@ -14959,6 +14959,7 @@ impl App {
                 .notes_selected_index
                 .min(notes.saturating_sub(1));
             self.info_modal.notes_scroll_offset = 0;
+            self.spawn_async_collect(Self::LOADING_BUFFER);
         }
     }
 
@@ -20168,7 +20169,8 @@ impl App {
             }
             KeyCode::Char('r') => {
                 if let Some(state) = &mut self.data_table_state {
-                    state.reverse();
+                    state.deferred(DataTableState::reverse);
+                    self.spawn_async_collect("Sorting...");
                 }
                 None
             }
@@ -22476,8 +22478,11 @@ impl App {
             }
             AppEvent::ColumnOrder(order, locked_count) => {
                 if let Some(state) = &mut self.data_table_state {
-                    state.set_column_order(order.clone());
-                    state.set_locked_columns(*locked_count);
+                    state.deferred(|s| {
+                        s.set_column_order(order.clone());
+                        s.set_locked_columns(*locked_count);
+                    });
+                    self.spawn_async_collect(Self::LOADING_BUFFER);
                 }
                 None
             }
@@ -25284,5 +25289,74 @@ mod sort_filter_sync_tests {
         app.data_table_state.as_mut().unwrap().set_locked_columns(2);
         app.sync_sort_filter_modal();
         assert_eq!(locked(&app), [true, true, true]);
+    }
+}
+
+/// A change to the view made from a key or an event is planned on the UI thread and
+/// its rows are read in the background, as every other is (#458).
+#[cfg(test)]
+mod background_read_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn app() -> (
+        App,
+        mpsc::Receiver<AppEvent>,
+        mpsc::Sender<AppEvent>,
+        tempfile::TempDir,
+    ) {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rows.csv");
+        let mut body = String::from("a,b\n");
+        for a in 0..30 {
+            body.push_str(&format!("{a},{}\n", a * 2));
+        }
+        std::fs::write(&path, body).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        crate::chart_prepare_tests::open(&mut app, &rx, &tx, path);
+        (app, rx, tx, dir)
+    }
+
+    #[test]
+    fn r_reverses_in_the_background() {
+        let (mut app, rx, tx, _dir) = app();
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::NONE,
+        )));
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            !state.snapshot().has_rows(),
+            "nothing was read on this thread"
+        );
+        assert!(app.is_busy(), "the rows are being read");
+
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+        let state = app.data_table_state.as_ref().unwrap();
+        let shown = state.display_df().unwrap().column("a").unwrap().get(0);
+        assert_eq!(shown.unwrap(), AnyValue::Int64(29));
+    }
+
+    #[test]
+    fn a_column_order_is_read_in_the_background() {
+        let (mut app, rx, tx, _dir) = app();
+        app.event(&AppEvent::ColumnOrder(
+            vec!["b".to_string(), "a".to_string()],
+            1,
+        ));
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            !state.snapshot().has_rows(),
+            "nothing was read on this thread"
+        );
+        assert!(app.is_busy(), "the rows are being read");
+
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.get_column_order(), ["b", "a"]);
+        assert_eq!(state.locked_columns_count(), 1);
+        assert!(state.snapshot().has_rows());
     }
 }

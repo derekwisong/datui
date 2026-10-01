@@ -164,8 +164,9 @@ can still be replaced. Chart and Data Quality report exports work the same way.
 | CSV without compression, Parquet | Streamed: written in batches as the rows are read; the export never holds the whole view |
 | Compressed CSV, JSON, NDJSON, Arrow IPC, Avro | The whole view is read into memory, then written |
 
-Streaming needs `polars_streaming` on in `[performance]`, the default; with it
-off, every export reads the whole view first. Streaming bounds what the export
+Streaming needs `polars_streaming` on in `[performance]`, the default, and a
+build with the `streaming` feature; without either, every export reads the
+whole view first. Streaming bounds what the export
 holds, not what the view needs: a sort, a `by` or `GROUP BY` query, or a join
 still holds its input in memory before the first row is written. The status
 line counts the bytes written so far.

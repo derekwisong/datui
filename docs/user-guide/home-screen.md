@@ -224,7 +224,9 @@ description, publisher, license and homepage, its path or URL, and `login`: `non
 `Public datasets` is the built-in collection: data its publishers host and keep up
 to date, readable with no login. It comes after everything of your own. HTTP(S)
 files open as tables and object-store roots open for browsing; datui bundles no
-dataset files, and hosted CSV extracts have the coverage shown.
+dataset files, and hosted CSV extracts have the coverage shown. A build without
+the `http` or `cloud` [feature](../getting-started/installation.md#from-source)
+leaves out the rows it cannot open.
 
 | Dataset | Data | License |
 |---|---|---|

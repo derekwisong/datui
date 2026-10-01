@@ -80,10 +80,20 @@ The binary is `target/release/datui`. To build a specific release, check out
 its tag first (`git tag --list`, then `git checkout vX.Y.Z`). To install into
 `~/.cargo/bin` instead, run `cargo install --path . --locked` from the checkout.
 
-Cloud storage support (S3, GCS, HTTP) is on by default. To leave it out:
+Four features are on by default. `--no-default-features` leaves them all out;
+add back the ones you want with `--features`:
 
 ```bash
-cargo build --release --locked --no-default-features
+cargo build --release --locked --no-default-features --features sql,streaming
 ```
+
+| Feature | Without it |
+|---|---|
+| `cloud` | S3, GCS and Azure URLs fail to open; no cloud sources on the home screen |
+| `http` | HTTP(S) URLs fail to open |
+| `sql` | The query prompt has no SQL tab; a view saved with SQL fails to apply |
+| `streaming` | No Polars streaming engine: an export reads the whole view first, and a Data Quality read runs to its end on <kbd>Esc</kbd> |
+
+Public datasets lists only what the build can open.
 
 [latest-release]: https://github.com/derekwisong/datui/releases/latest

@@ -1066,6 +1066,30 @@ mod probe_slot_tests {
             "a thread still stuck on a dead mount must keep costing a slot"
         );
     }
+
+    /// Without `cloud`, a bucket browsed into says the build cannot list it, rather
+    /// than reading as a place that did not answer.
+    #[cfg(not(feature = "cloud"))]
+    #[test]
+    fn without_cloud_a_bucket_says_it_cannot_be_listed() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let bucket = PathBuf::from("s3://bucket/prefix/");
+        app.home.browsing = Some(bucket.clone());
+        app.home.network_check = |_| true;
+        app.spawn_home_probes();
+        assert!(app.home_probes_inflight.contains(&bucket));
+        while !app.home_probes_inflight.is_empty() {
+            let event = rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the probe answers");
+            app.event(&event);
+        }
+        assert_eq!(
+            app.home.probe_errors.get(&bucket).map(String::as_str),
+            Some("cloud support not in this build")
+        );
+    }
 }
 
 /// #455: a home-screen worker that panics still answers, so what marks it in flight
@@ -3024,6 +3048,27 @@ mod template_rollback_tests {
         assert!(state.get_active_sql_query().is_empty());
         assert!(state.last_pivot_spec().is_none());
         assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
+        assert!(app.active_template_id.is_none());
+    }
+
+    /// A view saved with SQL, applied in a build without `sql`: it fails and says the
+    /// build is why, and the table keeps what it showed.
+    #[cfg(not(feature = "sql"))]
+    #[test]
+    fn a_sql_view_without_the_sql_feature_says_why() {
+        let (mut app, _rx, _tx, _dir) = long_csv_app();
+        let mut template = pivot_view(&mut app, "sql view");
+        template.settings.pivot = None;
+        template.settings.sql_query = Some("SELECT id FROM df".to_string());
+        let error = match app.apply_template(&template) {
+            Err(error) => error.to_string(),
+            Ok(()) => panic!("a SQL view applied without SQL"),
+        };
+        assert!(
+            error.contains("SQL is not supported in this build"),
+            "{error}"
+        );
+        assert_eq!(columns(&app), ["id", "key", "val"]);
         assert!(app.active_template_id.is_none());
     }
 
@@ -5182,6 +5227,8 @@ pub mod tests {
             })
         }));
 
+        // Its own runtime, so `test_runtime` does not isolate the config for it.
+        crate::text_input_flows::isolate_cache();
         let (tx, rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -7878,6 +7925,8 @@ pub mod tests {
             }
         };
 
+        // Its own runtime, so `test_runtime` does not isolate the config for it.
+        crate::text_input_flows::isolate_cache();
         let (tx, rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -7923,6 +7972,9 @@ pub mod tests {
         // clears `load_active`. One keystroke there and back must not strand the
         // dataset on two footers for the rest of the session.
         app.abandon_load();
+        // The re-read runs off this thread and would count too, as soon as it runs. It
+        // dies before it reads, so what is counted below is this thread's alone.
+        app.worker_dies = crate::tests::worker_dies_once(|job| *job == crate::Job::Rows);
         let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation });
         // Read again, not asked to be read again. The join drops the buffer, so a
         // request that goes on to be ignored — as a step of the open's chain is, once
@@ -14361,6 +14413,14 @@ impl App {
                                 });
                             }
                         }
+                        return;
+                    }
+                    // Nothing to list a bucket with, and `read_dir` on its URL would
+                    // only call it unavailable.
+                    #[cfg(not(feature = "cloud"))]
+                    if source::is_remote_url(&root) {
+                        let message = "cloud support not in this build".to_string();
+                        let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
                         return;
                     }
                     let mut cut_short = false;

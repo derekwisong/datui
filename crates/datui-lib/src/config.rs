@@ -2937,10 +2937,9 @@ impl ConfigLayer {
             Err(e) => return Err(eyre!("Failed to read config file at {named}: {e}")),
         };
         let mut layer = Self::parse(&content).map_err(|e| {
-            let reason = e.to_string();
             eyre!(
                 "Failed to parse config file at {named}: {}",
-                reason.trim_end()
+                parse_reason(&e)
             )
         })?;
         for (key, flag) in removed_file_loading_keys(&layer.table) {
@@ -2980,6 +2979,26 @@ impl ConfigLayer {
     /// value. `upper`'s imports are not carried over.
     pub fn merge(&mut self, upper: ConfigLayer) {
         merge_tables(&mut self.table, upper.table, "");
+    }
+}
+
+/// A TOML error with its reason and place on the first line, then the excerpt of the
+/// file under it. TOML puts the reason last, but some callers, such as the Python
+/// binding, show only the first line.
+fn parse_reason(error: &color_eyre::eyre::Report) -> String {
+    let Some(toml_error) = error.downcast_ref::<toml::de::Error>() else {
+        return error.to_string();
+    };
+    let message = toml_error.message().trim_end();
+    let full = toml_error.to_string();
+    let body = full.trim_end().strip_suffix(message).unwrap_or(&full);
+    match body.split_once('\n') {
+        Some((head, excerpt)) if head.starts_with("TOML parse error at ") => format!(
+            "{message} ({})\n{}",
+            head.trim_start_matches("TOML parse error at "),
+            excerpt.trim_end()
+        ),
+        _ => message.to_string(),
     }
 }
 

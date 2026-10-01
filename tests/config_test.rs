@@ -1477,7 +1477,11 @@ fn test_unparseable_root_config_is_an_error_naming_it() {
 
     assert!(msg.contains("Failed to parse config file"), "{msg}");
     assert!(msg.contains(&root.display().to_string()), "{msg}");
-    assert!(msg.contains("line 3"), "says where: {msg}");
+    // The Python binding shows only the first line, so the reason and place lead.
+    let first = msg.lines().next().unwrap_or_default();
+    assert!(first.contains("line 3"), "says where: {msg}");
+    assert!(first.contains("expected usize"), "says why: {msg}");
+    assert!(msg.contains("^^^^^"), "points at it: {msg}");
 
     let not_toml = write_config(&temp_dir, "other.toml", "this is not toml =\n");
     let msg = AppConfig::load_from_file(&not_toml)

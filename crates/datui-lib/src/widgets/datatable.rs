@@ -1127,7 +1127,7 @@ fn asks_of_subquery_values(e: &Expr, names: &[PlSmallStr]) -> bool {
 
 /// Calls `f` on each plan `plan` reads from.
 #[cfg(feature = "sql")]
-fn for_each_input(
+pub(crate) fn for_each_input(
     plan: &mut polars::lazy::dsl::DslPlan,
     f: &mut dyn FnMut(&mut polars::lazy::dsl::DslPlan),
 ) {
@@ -8529,6 +8529,10 @@ impl DataTableState {
             ctx.register("df", root.clone());
             match ctx.execute(trimmed) {
                 Ok(mut result_lf) => {
+                    // First, so the schema and the group source read the plan that
+                    // runs. It changes expressions in place and only adds a projection
+                    // over a union's inputs: the nodes stable_order orders and the
+                    // filter count_subquery_values_once rewrites keep their shape.
                     crate::past_calendar::guard_plan(&mut result_lf.logical_plan);
                     let schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
@@ -12555,6 +12559,54 @@ mod tests {
             df.column("value").unwrap().dtype(),
             DataType::Datetime(..)
         ));
+    }
+
+    /// SQL's three plan rewrites compose: in a join filtered by an `IN` subquery, a
+    /// date past the calendar met with text is its stored number (#506), the join
+    /// keeps one row order (#508), and the subquery's values are read once (#509).
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_sql_join_with_an_in_subquery_and_a_date_past_the_calendar() {
+        use polars::lazy::dsl::DslPlan;
+        for c in PAST_CALENDAR {
+            let [first, past] = past_calendar_text(c);
+            let sql = format!(
+                "SELECT a.id, COALESCE(a.{c}, b.s) AS x FROM df a JOIN df b ON a.id = b.id \
+                 WHERE a.id IN (SELECT t.id FROM df t WHERE t.s <> 'z')"
+            );
+            let mut state =
+                DataTableState::new(past_calendar_lf(), None, None, None, None, true).unwrap();
+            state.sql_query(sql.clone());
+            assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+            let plan = &state.lf.logical_plan;
+            assert!(!plan.into_iter().any(asks_per_row), "{sql}");
+            let joins: Vec<_> = plan
+                .into_iter()
+                .filter_map(|node| match node {
+                    DslPlan::Join { options, .. } => Some(options.args.maintain_order),
+                    _ => None,
+                })
+                .collect();
+            assert!(!joins.is_empty(), "{sql}");
+            assert!(
+                joins.iter().all(|order| *order != MaintainOrderJoin::None),
+                "{sql}"
+            );
+            for streaming in [false, cfg!(feature = "streaming")] {
+                let df = collect_lazy(state.lf.clone(), streaming).unwrap();
+                let ids: Vec<Option<i32>> =
+                    df.column("id").unwrap().i32().unwrap().iter().collect();
+                assert_eq!(ids, [Some(1), Some(2)], "{sql}, streaming {streaming}");
+                let x: Vec<Option<&str>> = df.column("x").unwrap().str().unwrap().iter().collect();
+                assert_eq!(
+                    x,
+                    [Some(first.as_str()), Some(past.as_str())],
+                    "{sql}, streaming {streaming}"
+                );
+                let page = collect_lazy(state.lf.clone().slice(1, 1), streaming).unwrap();
+                assert!(page.equals_missing(&df.slice(1, 1)), "{sql}");
+            }
+        }
     }
 
     /// A q-style query forgets the melt it replaces; rolled back, the melt is

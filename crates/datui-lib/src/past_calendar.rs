@@ -348,59 +348,15 @@ pub fn guard_plan(plan: &mut DslPlan) {
         }
         _ => {}
     }
-    // A shared input is copied only when it changes.
-    let into = |input: &mut Arc<DslPlan>| {
-        if holds_guards(input) {
-            guard_plan(Arc::make_mut(input));
-        }
-    };
-    let each = |inputs: &mut [DslPlan]| inputs.iter_mut().for_each(guard_plan);
-    match plan {
+    if let DslPlan::IR { dsl, .. } = plan {
         // A plan asked for its schema is wrapped as IR, which would run as converted:
         // guard the plan it came from, and leave the IR behind.
-        DslPlan::IR { dsl, .. } => {
-            let mut inner = Arc::unwrap_or_clone(dsl.clone());
-            guard_plan(&mut inner);
-            *plan = inner;
-        }
-        DslPlan::Sort { input, .. }
-        | DslPlan::Select { input, .. }
-        | DslPlan::GroupBy { input, .. }
-        | DslPlan::Filter { input, .. }
-        | DslPlan::Distinct { input, .. }
-        | DslPlan::Slice { input, .. }
-        | DslPlan::HStack { input, .. }
-        | DslPlan::MatchToSchema { input, .. }
-        | DslPlan::MapFunction { input, .. }
-        | DslPlan::Sink { input, .. }
-        | DslPlan::Cache { input, .. }
-        | DslPlan::Pivot { input, .. } => into(input),
-        DslPlan::Union { inputs, .. }
-        | DslPlan::HConcat { inputs, .. }
-        | DslPlan::SinkMultiple { inputs } => each(inputs),
-        DslPlan::PipeWithSchema { input, .. } => {
-            let mut inputs = input.to_vec();
-            each(&mut inputs);
-            *input = inputs.into();
-        }
-        DslPlan::Join {
-            input_left,
-            input_right,
-            ..
-        } => {
-            into(input_left);
-            into(input_right);
-        }
-        DslPlan::Gather { input, idxs, .. } => {
-            into(input);
-            into(idxs);
-        }
-        DslPlan::ExtContext { input, contexts } => {
-            into(input);
-            each(contexts);
-        }
-        _ => {}
+        let mut inner = Arc::unwrap_or_clone(dsl.clone());
+        guard_plan(&mut inner);
+        *plan = inner;
+        return;
     }
+    crate::widgets::datatable::for_each_input(plan, &mut guard_plan);
 }
 
 #[cfg(test)]

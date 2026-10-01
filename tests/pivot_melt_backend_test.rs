@@ -81,7 +81,7 @@ fn test_pivot_via_events() {
     drain_events(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert_eq!(names, vec!["date", "A", "B", "C"]);
     assert_eq!(df.height(), 31);
@@ -161,7 +161,7 @@ fn test_pivot_long_string_via_events() {
     drain_events(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert!(names.contains(&"X"));
     assert!(names.contains(&"Y"));
@@ -177,7 +177,7 @@ fn test_melt_via_events() {
     load_file(&mut app, &rx, path);
 
     assert!(app.data_table_state.is_some());
-    let cols = app.data_table_state.as_ref().unwrap().schema.iter_names();
+    let cols = app.data_table_state.as_ref().unwrap().schema().iter_names();
     let all: Vec<String> = cols.map(|s| s.to_string()).collect();
     let index = vec!["id".to_string(), "date".to_string()];
     let value_columns: Vec<String> = all
@@ -198,7 +198,7 @@ fn test_melt_via_events() {
     }
 
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert!(names.contains(&"variable"));
     assert!(names.contains(&"value"));
@@ -216,7 +216,7 @@ fn test_melt_wide_many_via_events() {
     load_file(&mut app, &rx, path);
 
     assert!(app.data_table_state.is_some());
-    let cols = app.data_table_state.as_ref().unwrap().schema.iter_names();
+    let cols = app.data_table_state.as_ref().unwrap().schema().iter_names();
     let all: Vec<String> = cols.map(|s| s.to_string()).collect();
     let index = vec!["id".to_string(), "date".to_string()];
     let value_columns: Vec<String> = all
@@ -237,7 +237,7 @@ fn test_melt_wide_many_via_events() {
     }
 
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert!(df.column("var").is_ok());
     assert!(df.column("val").is_ok());
     assert!(df.height() > 0);
@@ -255,7 +255,7 @@ fn test_pivot_on_current_view_after_filter() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -273,7 +273,7 @@ fn test_pivot_on_current_view_after_filter() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -300,7 +300,7 @@ fn test_pivot_on_current_view_after_filter() {
     drain_events(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert!(
         df.height() <= filtered_count,
         "pivoted rows should be <= filtered count (current-view invariant)"
@@ -340,7 +340,7 @@ fn test_esc_cancels_pivot_melt_without_change() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -358,7 +358,7 @@ fn test_esc_cancels_pivot_melt_without_change() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -393,7 +393,7 @@ fn test_pivot_via_modal_apply() {
     assert!(!app.pivot_melt_modal.active);
     assert_eq!(app.input_mode, InputMode::Normal);
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert!(names.contains(&"id"));
     assert!(names.contains(&"date"));
@@ -432,7 +432,7 @@ fn test_melt_via_modal_apply() {
     assert!(!app.pivot_melt_modal.active);
     assert_eq!(app.input_mode, InputMode::Normal);
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert!(names.contains(&"variable"));
     assert!(names.contains(&"value"));
@@ -489,7 +489,7 @@ fn test_pivot_via_keys_only() {
 
     assert!(!app.pivot_melt_modal.active);
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert!(names.contains(&"A") && names.contains(&"B") && names.contains(&"C"));
 }
@@ -584,7 +584,7 @@ fn test_template_save_and_apply_pivot() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .schema
+        .schema()
         .iter_names()
         .map(|s| s.to_string())
         .collect();
@@ -598,7 +598,7 @@ fn test_template_save_and_apply_pivot() {
     assert!(app.is_busy());
     drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert!(names.contains(&"id"));
     assert!(names.contains(&"date"));
@@ -639,7 +639,7 @@ fn test_pivot_reads_in_the_background() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
     assert!(
-        state.schema.contains("key"),
+        state.schema().contains("key"),
         "the table is as it was until the read lands"
     );
     assert!(
@@ -652,7 +652,7 @@ fn test_pivot_reads_in_the_background() {
     assert_eq!(app.input_mode, InputMode::Normal);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_some());
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert_eq!(names, vec!["date", "A", "B", "C"]);
     assert_eq!(df.height(), 31);
@@ -686,7 +686,7 @@ fn test_a_stale_pivot_result_is_dropped() {
     });
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
-    assert!(state.schema.contains("key"));
+    assert!(state.schema().contains("key"));
 }
 
 /// Esc while the pivot is read stops waiting for it, at once rather than behind the
@@ -743,7 +743,7 @@ fn test_esc_stops_a_pivot_being_read() {
     }
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
-    assert!(state.schema.contains("key"));
+    assert!(state.schema().contains("key"));
     assert!(app.pivot_melt_modal.active);
 
     send_key(&mut app, KeyCode::Esc);

@@ -184,6 +184,7 @@ mod export_format_tests {
         let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
         state.visible_rows = 10;
         let dataset = state.len_generation();
+        let columns = InflightCollect::columns_of(&state);
         app.data_table_state = Some(state);
         let generation = app.task_generation;
         app.collect_inflight = Some(InflightCollect {
@@ -191,6 +192,7 @@ mod export_format_tests {
             files: None,
             generation,
             dataset,
+            columns,
             start: 0,
             end: 50,
             waited_on: true,
@@ -263,13 +265,14 @@ mod export_format_tests {
         let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
         state.set_remote_source();
         state.visible_rows = 10;
-        state.defer_collect = true;
-        state.filter(vec![FilterStatement {
-            column: "a".to_string(),
-            operator: FilterOperator::Lt,
-            value: "50".to_string(),
-            logical_op: LogicalOperator::And,
-        }]);
+        state.deferred(|s| {
+            s.filter(vec![FilterStatement {
+                column: "a".to_string(),
+                operator: FilterOperator::Lt,
+                value: "50".to_string(),
+                logical_op: LogicalOperator::And,
+            }])
+        });
         assert!(!state.is_num_rows_valid());
         let dataset = state.len_generation();
         app.data_table_state = Some(state);
@@ -337,7 +340,7 @@ mod export_format_tests {
         assert!(!app.busy);
         assert_eq!(app.end_after_count, Some(dataset));
         assert_eq!(app.len_count_inflight, Some(dataset));
-        assert_eq!(app.data_table_state.as_ref().unwrap().start_row, 0);
+        assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
 
         let counted = rx
             .recv_timeout(std::time::Duration::from_secs(20))
@@ -377,8 +380,7 @@ mod export_format_tests {
         state.set_remote_source();
         state.set_row_groups(&[10_000]);
         state.visible_rows = 10;
-        state.defer_collect = true;
-        assert!(state.scroll_to_end());
+        assert!(state.deferred(DataTableState::scroll_to_end));
         app.data_table_state = Some(state);
 
         app.event(&AppEvent::Filter(vec![FilterStatement {
@@ -394,7 +396,7 @@ mod export_format_tests {
         }
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.num_rows_if_valid(), Some(100));
-        assert_eq!(state.start_row, 0);
+        assert_eq!(state.start_row(), 0);
         assert!(
             state.buffered_start() == 0 && state.buffered_end() >= 10,
             "the first page is on hand: {}..{}",
@@ -2017,7 +2019,7 @@ mod chart_prepare_tests {
             !a.is_busy()
                 && a.data_table_state
                     .as_ref()
-                    .is_some_and(|s| s.schema.get("delay").is_some())
+                    .is_some_and(|s| s.schema().get("delay").is_some())
         });
 
         key(&mut app, KeyCode::Char('c'));
@@ -2276,7 +2278,7 @@ mod template_rollback_tests {
 
     fn columns(app: &App) -> Vec<String> {
         let state = app.data_table_state.as_ref().unwrap();
-        state.schema.iter_names().map(|s| s.to_string()).collect()
+        state.schema().iter_names().map(|s| s.to_string()).collect()
     }
 
     /// The bottom line of a rendered App.
@@ -2425,7 +2427,7 @@ mod template_rollback_tests {
         assert!(app.error_modal.active, "the failure is said");
         assert_eq!(columns(&app), ["id", "key", "val"]);
         let state = app.data_table_state.as_ref().unwrap();
-        assert!(state.active_sql_query.is_empty());
+        assert!(state.get_active_sql_query().is_empty());
         assert!(state.last_pivot_spec().is_none());
         assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
         assert!(app.active_template_id.is_none());
@@ -2655,7 +2657,7 @@ mod template_rollback_tests {
         }]));
         crate::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
         let state = app.data_table_state.as_ref().unwrap();
-        assert_eq!(state.num_rows, 8);
+        assert_eq!(state.num_rows(), 8);
         state.display_df().cloned()
     }
 
@@ -2696,7 +2698,7 @@ mod template_rollback_tests {
         assert_eq!(columns(app), ["id", "key", "val"]);
         assert_eq!(state.display_df(), shown);
         assert!(state.is_num_rows_valid());
-        assert_eq!(state.num_rows, 8);
+        assert_eq!(state.num_rows(), 8);
         assert_eq!(state.get_sort_columns(), ["val"]);
         assert_eq!(state.get_sort_descending(), [true]);
         assert_eq!(state.get_filters().len(), 1);
@@ -2806,7 +2808,7 @@ mod template_rollback_tests {
             state.drifts(),
             "the rollback puts back what the restored frame carries"
         );
-        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
         assert_eq!(
             names,
             ["date", "id", "extra"],
@@ -2898,7 +2900,7 @@ mod template_rollback_tests {
             "the rollback puts the sort back"
         );
         assert_eq!(
-            state.lf.clone().collect().unwrap().height(),
+            state.lf().clone().collect().unwrap().height(),
             3,
             "and the frame still leaves the two rows out"
         );
@@ -2982,7 +2984,7 @@ mod template_rollback_tests {
 
         state.sort(vec!["n".to_string()], true);
         assert_eq!(
-            state.lf.clone().collect().unwrap().height(),
+            state.lf().clone().collect().unwrap().height(),
             3,
             "the sort leaves the two rows of the text file out"
         );
@@ -2999,7 +3001,7 @@ mod template_rollback_tests {
 
         state.drill_up().unwrap();
         assert_eq!(
-            state.lf.clone().collect().unwrap().height(),
+            state.lf().clone().collect().unwrap().height(),
             3,
             "the frame that comes back still leaves the two out"
         );
@@ -3090,7 +3092,7 @@ mod template_rollback_tests {
             "nor does the column order it failed on"
         );
         assert_eq!(
-            state.lf.clone().collect().unwrap().height(),
+            state.lf().clone().collect().unwrap().height(),
             5,
             "the user's frame is whole"
         );
@@ -3108,7 +3110,7 @@ mod template_rollback_tests {
             !state.notes_unseen(),
             "and a rollback is not news, so the accent stays where the user left it"
         );
-        assert!(state.error.is_none(), "with no error left over");
+        assert!(state.error().is_none(), "with no error left over");
     }
 
     /// A template whose SQL drops a column that the same template's sort names. The
@@ -3156,17 +3158,17 @@ mod template_rollback_tests {
             "the sort it failed on does not survive"
         );
         assert!(
-            state.active_sql_query.is_empty(),
+            state.get_active_sql_query().is_empty(),
             "nor does the query that dropped the column"
         );
-        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
         assert_eq!(names, ["id", "keep", "dropped"], "the user's frame is back");
         assert_eq!(
-            state.lf.clone().collect().unwrap().height(),
+            state.lf().clone().collect().unwrap().height(),
             3,
             "with its rows, rather than the blank table the failure used to leave"
         );
-        assert!(state.error.is_none(), "and the rollback clears the error");
+        assert!(state.error().is_none(), "and the rollback clears the error");
     }
 
     #[cfg(feature = "sql")]
@@ -3220,15 +3222,15 @@ mod template_rollback_tests {
 
         assert!(app.error_modal.active, "the failure is said");
         let state = app.data_table_state.as_ref().unwrap();
-        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
         assert_eq!(
             names,
             ["id", "name"],
             "the frame is the one before the view"
         );
-        assert!(state.active_sql_query.is_empty());
+        assert!(state.get_active_sql_query().is_empty());
         assert!(state.is_num_rows_valid());
-        assert_eq!(state.num_rows, 40);
+        assert_eq!(state.num_rows(), 40);
         assert_ne!(
             app.active_template_id.as_deref(),
             Some(template.id.as_str()),
@@ -3270,7 +3272,7 @@ mod template_rollback_tests {
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.len_generation(), counting, "the view is back");
         assert!(state.is_num_rows_valid(), "with its count");
-        assert_eq!(state.num_rows, 40);
+        assert_eq!(state.num_rows(), 40);
         assert_ne!(app.len_count_inflight, Some(counting), "not left counting");
     }
 
@@ -3287,7 +3289,7 @@ mod template_rollback_tests {
         open(&mut app, &rx, &tx, path);
         let state = app.data_table_state.as_mut().unwrap();
         state.sql_query("SELECT dept, COUNT(*) AS n FROM df GROUP BY dept".to_string());
-        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.error().is_none(), "{:?}", state.error());
 
         let mut template = app
             .create_template_from_current_state(
@@ -3310,8 +3312,216 @@ mod template_rollback_tests {
 
         let state = app.data_table_state.as_mut().unwrap();
         state.drill_down_into_group(0).unwrap();
-        assert_eq!(state.drilled_down_group_key, Some(vec!["eng".to_string()]));
-        assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
+        assert_eq!(
+            state.drilled_group_key().map(|(_, values)| values.to_vec()),
+            Some(vec!["eng".to_string()])
+        );
+        assert_eq!(state.lf().clone().collect().unwrap().height(), 3);
+    }
+
+    /// A view of `long.csv` that does nothing yet.
+    fn blank_view(app: &mut App, name: &str) -> Template {
+        let mut template = pivot_view(app, name);
+        template.settings = template::TemplateSettings {
+            query: None,
+            sql_query: None,
+            fuzzy_query: None,
+            filters: Vec::new(),
+            sort_columns: Vec::new(),
+            sort_descending: Vec::new(),
+            sort_ascending: true,
+            column_order: Vec::new(),
+            locked_columns_count: 0,
+            pivot: None,
+            melt: None,
+            reshape_source: None,
+        };
+        template
+    }
+
+    /// Handle events until the app is idle, as if every worker reading for the view —
+    /// its pivot or its first rows — panicked.
+    fn pump_with_dying_workers(
+        app: &mut App,
+        rx: &mpsc::Receiver<AppEvent>,
+        tx: &mpsc::Sender<AppEvent>,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while app.is_busy() {
+            assert!(std::time::Instant::now() < deadline, "the view never ended");
+            let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) else {
+                continue;
+            };
+            let event = match event {
+                AppEvent::BackgroundCollectReady { generation }
+                | AppEvent::ViewPivotReady { generation, .. } => AppEvent::BackgroundError {
+                    generation,
+                    message: "worker died".to_string(),
+                },
+                event => event,
+            };
+            if let Some(next) = app.event(&event) {
+                let _ = tx.send(next);
+            }
+        }
+    }
+
+    /// #458: a view that fails after any one of its steps — while it is planned, once
+    /// its pivot is read, or when its rows are — puts back all of the view it was
+    /// applied over: the rows each stage of the pipeline reads, the schema, query,
+    /// filters, sort, layout, reshape, notes and selection, and the count and buffer,
+    /// which stay valid for it, so nothing is read again.
+    #[test]
+    fn a_view_failing_after_any_step_puts_the_view_back() {
+        use crate::filter_modal::{FilterOperator, LogicalOperator};
+        let filter = |column: &str| FilterStatement {
+            column: column.to_string(),
+            operator: FilterOperator::Gt,
+            value: "0".to_string(),
+            logical_op: LogicalOperator::And,
+        };
+        let melt = |value: &str| MeltSpec {
+            index: vec!["id".to_string()],
+            value_columns: vec![value.to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        };
+        let pivot = || PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: pivot_melt_modal::PivotAggregation::First,
+            sort_columns: None,
+        };
+        enum Fails {
+            /// While planning: `apply_template` says so and nothing is read.
+            Planning,
+            /// In the background, once the pivot is in or the rows are read.
+            Reading,
+            /// Every step plans; the worker reading the pivot or the rows dies.
+            WorkerDies,
+        }
+        type Steps = Box<dyn Fn(&mut template::TemplateSettings)>;
+        let cases: Vec<(&str, Fails, Steps)> = vec![
+            (
+                "the query",
+                Fails::Planning,
+                Box::new(|s| s.query = Some("select nope".to_string())),
+            ),
+            (
+                "a filter after the query",
+                Fails::Planning,
+                Box::new(move |s| {
+                    s.query = Some("select id, val".to_string());
+                    s.filters = vec![filter("key")];
+                }),
+            ),
+            (
+                "a sort after the filter",
+                Fails::Planning,
+                Box::new(move |s| {
+                    s.query = Some("select id, val".to_string());
+                    s.filters = vec![filter("val")];
+                    s.sort_columns = vec!["key".to_string()];
+                }),
+            ),
+            (
+                "the query a melt runs over",
+                Fails::Planning,
+                Box::new(move |s| {
+                    s.melt = Some(melt("val"));
+                    s.reshape_source = Some(pivot_melt_modal::ReshapeSource {
+                        query: Some("select nope".to_string()),
+                        ..Default::default()
+                    });
+                }),
+            ),
+            (
+                "the melt",
+                Fails::Planning,
+                Box::new(move |s| s.melt = Some(melt("nope"))),
+            ),
+            (
+                "a filter after the melt",
+                Fails::Planning,
+                Box::new(move |s| {
+                    s.melt = Some(melt("val"));
+                    s.filters = vec![filter("key")];
+                }),
+            ),
+            (
+                "the layout after the sort",
+                Fails::Planning,
+                Box::new(|s| {
+                    s.sort_columns = vec!["val".to_string()];
+                    s.column_order = vec!["no_such_column".to_string()];
+                }),
+            ),
+            (
+                "a sort after the pivot is read",
+                Fails::Reading,
+                Box::new(move |s| {
+                    s.pivot = Some(pivot());
+                    s.sort_columns = vec!["val".to_string()];
+                }),
+            ),
+            (
+                "reading the pivot",
+                Fails::WorkerDies,
+                Box::new(move |s| s.pivot = Some(pivot())),
+            ),
+            (
+                "reading the rows after a query, filter and sort",
+                Fails::WorkerDies,
+                Box::new(move |s| {
+                    s.query = Some("select id, val where val > 5".to_string());
+                    s.filters = vec![filter("id")];
+                    s.sort_columns = vec!["id".to_string()];
+                }),
+            ),
+        ];
+        for (step, fails, steps) in cases {
+            let (mut app, rx, tx, _dir) = long_csv_app();
+            // The view it is applied over: a query, a sort and a filter, a selection.
+            app.event(&AppEvent::Search(
+                "select id, key, val where val >= 0".to_string(),
+            ));
+            crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
+                !crate::tests::work_pending(a)
+            });
+            sorted_and_filtered(&mut app, &rx, &tx);
+            let state = app.data_table_state.as_mut().unwrap();
+            state.table_state.select(Some(2));
+            let before = state.snapshot();
+            assert!(before.has_rows(), "{step}: the view's rows are on hand");
+
+            let mut template = blank_view(&mut app, step);
+            steps(&mut template.settings);
+            let applied = app.apply_template(&template);
+            match fails {
+                Fails::Planning => assert!(applied.is_err(), "{step}: fails as it plans"),
+                Fails::Reading => {
+                    assert!(applied.is_ok(), "{step}: plans: {applied:?}");
+                    crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+                    assert!(app.error_modal.active, "{step}: the failure is said");
+                }
+                Fails::WorkerDies => {
+                    assert!(applied.is_ok(), "{step}: plans: {applied:?}");
+                    pump_with_dying_workers(&mut app, &rx, &tx);
+                    assert!(app.error_modal.active, "{step}: the failure is said");
+                }
+            }
+
+            assert!(app.query_running.is_none(), "{step}");
+            assert!(app.view_pivot.is_none(), "{step}");
+            assert!(!app.is_busy(), "{step}: nothing is left to read");
+            assert!(
+                app.active_template_id.is_none(),
+                "{step}: not marked applied"
+            );
+            let state = app.data_table_state.as_ref().unwrap();
+            assert_eq!(state.snapshot(), before, "{step}: the view is put back");
+        }
     }
 }
 
@@ -3346,7 +3556,7 @@ mod view_matching_tests {
         app.data_table_state.as_mut().unwrap().sql_query(
             "SELECT DATE AS day, DATA_VALUE / 10.0 AS high_c FROM df WHERE ID = 'USW1'".to_string(),
         );
-        assert!(app.data_table_state.as_ref().unwrap().error.is_none());
+        assert!(app.data_table_state.as_ref().unwrap().error().is_none());
 
         app.open_save_view_form();
         assert_eq!(
@@ -3400,9 +3610,9 @@ mod view_matching_tests {
             KeyModifiers::NONE,
         )));
         let state = app.data_table_state.as_ref().unwrap();
-        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.error().is_none(), "{:?}", state.error());
         assert!(app.active_template_id.is_some(), "the view is applied");
-        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
         assert_eq!(names, ["day", "high_c"]);
     }
 }
@@ -3920,7 +4130,7 @@ pub mod tests {
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.num_rows_if_valid(), Some(100), "counted by the pass");
         assert!(
-            state.start_row > 0,
+            state.start_row() > 0,
             "and the end is where the view went, rather than the key being swallowed"
         );
         assert_ne!(
@@ -4003,7 +4213,7 @@ pub mod tests {
             // A page on screen, then the count dropped: what a staged open looks like
             // while its footers are still being read. With a buffer in hand the scroll
             // keys do their real work, so this asks whether that work counts.
-            state.set_num_rows(100);
+            assert!(state.count_landed(state.len_generation(), 100, None));
             state.collect();
             state.scroll_right();
             state.invalidate_num_rows();
@@ -4128,7 +4338,7 @@ pub mod tests {
             "and does not take the key with them"
         );
         assert_eq!(
-            app.data_table_state.as_ref().unwrap().start_row,
+            app.data_table_state.as_ref().unwrap().start_row(),
             0,
             "the directory they opened is where they left it, at the top"
         );
@@ -4312,9 +4522,9 @@ pub mod tests {
         .unwrap();
         // As a staged open leaves it: the number it holds is as far as the buffer
         // reached, a pass is still out, and no count has been taken.
-        // The field, not `set_num_rows`, which would mark it as a count that had been
+        // A provisional, not `count_landed`, which would mark it as a count that had been
         // taken — the state this reproduces is a provisional left by a short read.
-        state.num_rows = 70;
+        state.set_provisional_rows(70);
         state.set_footers_pending(Arc::new(|_| None));
         assert!(
             state.counts_itself_later(),
@@ -4475,9 +4685,7 @@ pub mod tests {
         // Sorted — which is one of the things the staging exists to let you do while
         // the footers read — and then End.
         let state = app.data_table_state.as_mut().unwrap();
-        state.defer_collect = true;
-        state.sort(vec!["id".to_string()], false);
-        state.defer_collect = false;
+        state.deferred(|s| s.sort(vec!["id".to_string()], false));
         assert!(
             state.scan_is_the_root(),
             "a sort is rebuilt over whatever the root becomes, so the join lands under it"
@@ -4573,9 +4781,7 @@ pub mod tests {
 
         // A question of the dataset, whose answer has a count of its own.
         let state = app.data_table_state.as_mut().unwrap();
-        state.defer_collect = true;
-        state.query("select doubled: id * 2".to_string());
-        state.defer_collect = false;
+        state.deferred(|s| s.query("select doubled: id * 2".to_string()));
         let orphaned = app.data_table_state.as_ref().unwrap().len_generation();
 
         // End, which takes that count rather than waiting for the pass.
@@ -4602,9 +4808,7 @@ pub mod tests {
 
         // The user leaves the query, and the join goes in underneath the count.
         let state = app.data_table_state.as_mut().unwrap();
-        state.defer_collect = true;
-        state.query(String::new());
-        state.defer_collect = false;
+        state.deferred(|s| s.query(String::new()));
         let _ = app.handle(&AppEvent::Update);
         let joined = app.data_table_state.as_ref().unwrap().len_generation();
         assert_ne!(
@@ -4613,7 +4817,7 @@ pub mod tests {
         );
 
         // And the count comes back, answering a frame that is gone.
-        let before = app.data_table_state.as_ref().unwrap().start_row;
+        let before = app.data_table_state.as_ref().unwrap().start_row();
         let next = app.event(&AppEvent::BackgroundLenReady {
             len_generation: orphaned,
             num_rows: 100,
@@ -4635,7 +4839,7 @@ pub mod tests {
             follow = app.event(&event);
         }
         assert_eq!(
-            app.data_table_state.as_ref().unwrap().start_row,
+            app.data_table_state.as_ref().unwrap().start_row(),
             before,
             "and the view stays where it is rather than moving on a stale answer"
         );
@@ -4740,7 +4944,7 @@ pub mod tests {
         // As far as the buffer reached, of a hundred. This is the number the bar prints
         // when nothing tells it the count failed, and printing it is the harm: a
         // confident partial where a "?" belongs.
-        state.num_rows = 40;
+        state.set_provisional_rows(40);
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
@@ -5159,9 +5363,7 @@ pub mod tests {
 
         // A question of the dataset takes a fresh generation out from under the count.
         let state = app.data_table_state.as_mut().unwrap();
-        state.defer_collect = true;
-        state.query("select doubled: id * 2".to_string());
-        state.defer_collect = false;
+        state.deferred(|s| s.query("select doubled: id * 2".to_string()));
         assert_ne!(
             app.data_table_state.as_ref().unwrap().len_generation(),
             waiting,
@@ -5310,7 +5512,7 @@ pub mod tests {
             follow = app.event(&event);
         }
         assert_eq!(
-            app.data_table_state.as_ref().unwrap().start_row,
+            app.data_table_state.as_ref().unwrap().start_row(),
             0,
             "the directory they are looking at stays where they left it, at the top"
         );
@@ -5755,7 +5957,7 @@ pub mod tests {
             app.load_active = true;
             app.apply_schema_ready(state, None, &OpenOptions::default(), None);
             let state = app.data_table_state.as_mut().unwrap();
-            state.set_num_rows(3);
+            assert!(state.count_landed(state.len_generation(), 3, None));
             if let Some(width) = footer_width {
                 state.set_column_widths(vec![("blob".to_string(), width)]);
             }
@@ -5814,7 +6016,8 @@ pub mod tests {
             let mut app = App::new(tx, crate::tests::test_runtime());
             app.load_active = true;
             app.apply_schema_ready(state, None, &options, None);
-            app.data_table_state.as_mut().unwrap().set_num_rows(3);
+            let state = app.data_table_state.as_mut().unwrap();
+            assert!(state.count_landed(state.len_generation(), 3, None));
             app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
             let next = app.perform_copy();
             (app, next)
@@ -5981,7 +6184,7 @@ pub mod tests {
         )
         .unwrap();
         // As a staged open leaves it: a provisional from a short read, a pass still out.
-        state.num_rows = 70;
+        state.set_provisional_rows(70);
         state.set_footers_pending(Arc::new(|_| None));
 
         let (tx, _rx) = std::sync::mpsc::channel();
@@ -6074,9 +6277,7 @@ pub mod tests {
 
         // And then the user asks a question of it, whose answer has a count of its own.
         let state = app.data_table_state.as_mut().unwrap();
-        state.defer_collect = true;
-        state.query("select doubled: id * 2".to_string());
-        state.defer_collect = false;
+        state.deferred(|s| s.query("select doubled: id * 2".to_string()));
         assert!(
             !state.counts_itself_later(),
             "which is not the count the pass is bringing, and nothing else will take it"
@@ -6642,7 +6843,11 @@ pub mod tests {
         // The user asks a question of the two columns that are there.
         let table = app.data_table_state.as_mut().unwrap();
         table.query("select doubled: v * 2".to_string());
-        assert!(table.error.is_none(), "the query runs: {:?}", table.error);
+        assert!(
+            table.error().is_none(),
+            "the query runs: {:?}",
+            table.error()
+        );
         let asked = table.get_column_order().to_vec();
 
         // And the rest of the footers land underneath it.
@@ -6667,9 +6872,9 @@ pub mod tests {
             "the query's own columns are still what is on screen"
         );
         assert!(
-            table.error.is_none(),
+            table.error().is_none(),
             "and it has not been broken out from under: {:?}",
-            table.error
+            table.error()
         );
         assert!(
             app.footers_held.is_some(),
@@ -7817,10 +8022,9 @@ struct QueryRun {
     rollback: crate::widgets::datatable::ViewRollback,
     /// The App's count markers as they were, for the frame the rollback restores.
     /// A count of that frame still running when the query began lands while the
-    /// query's frame is installed, so its answer is kept here to go back with it.
+    /// query's frame is installed; its answer goes into `rollback`.
     len_count_inflight: Option<u64>,
     len_count_failed: Option<u64>,
-    len_counted: Option<(usize, Option<Vec<Vec<usize>>>)>,
     /// Rows `df` holds, when known, so a failure can say "of N".
     rows: Option<usize>,
 }
@@ -8608,6 +8812,9 @@ struct InflightCollect {
     files: Option<usize>,
     generation: u64,
     dataset: u64,
+    /// The columns it reads ([`Self::columns_of`]). A new column order is the same
+    /// frame read through another projection, so these rows do not serve it.
+    columns: u64,
     start: usize,
     end: usize,
     /// Whether anything waits on it. A load-ahead starts with nobody waiting: it sets no
@@ -8617,10 +8824,18 @@ struct InflightCollect {
 }
 
 impl InflightCollect {
+    /// The columns a read of `state` projects, as a hash: kept `Copy`.
+    fn columns_of(state: &DataTableState) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        state.get_column_order().hash(&mut hasher);
+        hasher.finish()
+    }
+
     fn covers(&self, generation: u64, state: &DataTableState) -> bool {
         // The view ends at the data when there is less than a screen of it.
         let bound = state.num_rows_if_valid().unwrap_or(usize::MAX);
-        let view_end = (state.start_row + state.visible_rows).min(bound);
+        let view_end = (state.start_row() + state.visible_rows).min(bound);
         // A row group being stitched on to the buffer covers the view with it.
         let (mut start, mut end) = (self.start, self.end);
         let (held_start, held_end) = (state.buffered_start(), state.buffered_end());
@@ -8630,7 +8845,8 @@ impl InflightCollect {
         }
         self.generation == generation
             && self.dataset == state.len_generation()
-            && start <= state.start_row
+            && self.columns == Self::columns_of(state)
+            && start <= state.start_row()
             && view_end <= end
     }
 }
@@ -9478,8 +9694,8 @@ impl App {
         };
         let plan = &self.analysis_modal.data_quality_plan;
         let scope = &plan.scope;
-        let schema = &state.schema;
-        let mut partitions = state.partition_columns.clone().unwrap_or_default();
+        let schema = state.schema();
+        let mut partitions = state.partition_columns().unwrap_or_default().to_vec();
         // A directory whose files agree opens as one scan and names no partition
         // columns; its directory names still do.
         if partitions.is_empty()
@@ -10603,7 +10819,7 @@ impl App {
         }
         let lf = match scope {
             data_quality::QualityScope::FirstRows(_)
-            | data_quality::QualityScope::ViewRows { .. } => state.lf.clone(),
+            | data_quality::QualityScope::ViewRows { .. } => state.lf().clone(),
             _ => state.analysis_lf(),
         };
         (
@@ -10682,7 +10898,7 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        let mut partition_columns = state.partition_columns.clone().unwrap_or_default();
+        let mut partition_columns = state.partition_columns().unwrap_or_default().to_vec();
         let mut partition_values = Vec::new();
         // A directory whose files agree opens as one scan and names no partition
         // columns; its directory names still do. One branch of the tree is walked for
@@ -10692,7 +10908,7 @@ impl App {
             if partition_columns.is_empty() {
                 partition_columns = DataTableState::discover_hive_partition_columns(dir)
                     .into_iter()
-                    .filter(|column| state.schema.get(column).is_some())
+                    .filter(|column| state.schema().get(column).is_some())
                     .collect();
             }
             if let Some(first) = partition_columns.first() {
@@ -10717,7 +10933,7 @@ impl App {
         // integers. Never floats.
         let mut value_columns = partition_columns.clone();
         for kind in 0..3 {
-            for (name, dtype) in state.schema.iter() {
+            for (name, dtype) in state.schema().iter() {
                 let rank = match dtype {
                     DataType::String | DataType::Categorical(..) | DataType::Boolean => 0,
                     DataType::Date => 1,
@@ -10808,7 +11024,7 @@ impl App {
         // from memory rather than drawn again from the files.
         let kept = self.kept_quality_sample(&sample).map(|kept| {
             let columns: Vec<_> = state
-                .schema
+                .schema()
                 .iter_names()
                 .filter(|name| kept.df().column(name.as_str()).is_ok())
                 .map(|name| polars::prelude::col(name.clone()))
@@ -11249,9 +11465,7 @@ impl App {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
         };
-        state.defer_collect = true;
-        let drilled = state.drill_down_with_row(group_index, row);
-        state.defer_collect = false;
+        let drilled = state.deferred(|s| s.drill_down_with_row(group_index, row));
         match drilled {
             Ok(()) => {
                 self.sync_sort_filter_modal();
@@ -12135,6 +12349,7 @@ impl App {
             ),
             generation: self.task_generation,
             dataset: state.len_generation(),
+            columns: InflightCollect::columns_of(state),
             start: request.buffer_start,
             end: request.buffer_end,
             waited_on: status.is_some(),
@@ -12333,7 +12548,7 @@ impl App {
         }
         let state = self.data_table_state.as_mut()?;
         let (already_there, settle): (bool, fn(&mut DataTableState) -> bool) = match jump {
-            AppEvent::DoScrollHome => (state.start_row == 0, DataTableState::scroll_to_start),
+            AppEvent::DoScrollHome => (state.start_row() == 0, DataTableState::scroll_to_start),
             _ => (state.at_end(), DataTableState::scroll_to_end),
         };
         if already_there {
@@ -14952,21 +15167,19 @@ impl App {
         else {
             return;
         };
-        match state.read_column_as_text(&column) {
-            Ok(true) => {
-                // The note that offered this is gone and the list is shorter, so the
-                // cursor would otherwise sit past the end. Kept as near to where the
-                // user left it as the shorter list allows, rather than thrown to the
-                // top: one or two notes went, not all of them.
-                let notes = state.notes().len();
-                self.info_modal.notes_selected_index = self
-                    .info_modal
-                    .notes_selected_index
-                    .min(notes.saturating_sub(1));
-                self.info_modal.notes_scroll_offset = 0;
-            }
-            Ok(false) => {}
-            Err(error) => state.error = Some(error),
+        // Rebuilt here, read off the UI thread. A failure is left showing on the state.
+        if let Ok(true) = state.deferred(|s| s.read_column_as_text(&column)) {
+            // The note that offered this is gone and the list is shorter, so the
+            // cursor would otherwise sit past the end. Kept as near to where the
+            // user left it as the shorter list allows, rather than thrown to the
+            // top: one or two notes went, not all of them.
+            let notes = state.notes().len();
+            self.info_modal.notes_selected_index = self
+                .info_modal
+                .notes_selected_index
+                .min(notes.saturating_sub(1));
+            self.info_modal.notes_scroll_offset = 0;
+            self.spawn_async_collect(Self::LOADING_BUFFER);
         }
     }
 
@@ -15810,7 +16023,7 @@ impl App {
             && options.has_header != Some(false)
             && !crate::schema_union::names_are_names(
                 &state
-                    .schema
+                    .schema()
                     .iter_names()
                     .map(|n| n.to_string())
                     .collect::<Vec<_>>(),
@@ -16610,9 +16823,9 @@ impl App {
             effective_format,
             Some(FileFormat::Json) | Some(FileFormat::Jsonl)
         ) {
-            return DataTableState::apply_parse_dates_to_json_lazyframe(lf.lf, options);
+            return DataTableState::apply_parse_dates_to_json_lazyframe(lf.into_lf(), options);
         }
-        Ok(lf.lf)
+        Ok(lf.into_lf())
     }
 
     /// Whether the plain help overlay is on screen.
@@ -18067,7 +18280,7 @@ impl App {
             let total_rows = self
                 .data_table_state
                 .as_ref()
-                .map(|s| s.schema.len())
+                .map(|s| s.schema().len())
                 .unwrap_or(0);
             let visible = self.info_modal.schema_visible_height;
 
@@ -19208,7 +19421,7 @@ impl App {
                                     match self.analysis_modal.selected_tool {
                                         Some(analysis_modal::AnalysisTool::Describe) => {
                                             if let Some(state) = &self.data_table_state {
-                                                let max_rows = state.schema.len();
+                                                let max_rows = state.schema().len();
                                                 self.analysis_modal.next_row(max_rows);
                                             }
                                         }
@@ -19328,7 +19541,7 @@ impl App {
                     match self.analysis_modal.selected_tool {
                         Some(analysis_modal::AnalysisTool::Describe) => {
                             if let Some(state) = &self.data_table_state {
-                                let max_rows = state.schema.len();
+                                let max_rows = state.schema().len();
                                 let page_size = 10;
                                 self.analysis_modal.page_down(max_rows, page_size);
                             }
@@ -19410,7 +19623,7 @@ impl App {
                             match self.analysis_modal.selected_tool {
                                 Some(analysis_modal::AnalysisTool::Describe) => {
                                     if let Some(state) = &self.data_table_state {
-                                        let max_rows = state.schema.len();
+                                        let max_rows = state.schema().len();
                                         if max_rows > 0 {
                                             self.analysis_modal
                                                 .table_state
@@ -19741,7 +19954,7 @@ impl App {
                         {
                             let row_index = display_line.saturating_sub(state.row_start_index());
                             let would_collect = state.scroll_would_trigger_collect(
-                                row_index as i64 - state.start_row as i64,
+                                row_index as i64 - state.start_row() as i64,
                             );
                             if would_collect {
                                 self.busy = true;
@@ -19853,9 +20066,7 @@ impl App {
                 // First check if we're in drill-down mode
                 let drilled_up = if let Some(ref mut state) = self.data_table_state {
                     if state.is_drilled_down() {
-                        state.defer_collect = true;
-                        let _ = state.drill_up();
-                        state.defer_collect = false;
+                        let _ = state.deferred(|s| s.drill_up());
                         true
                     } else {
                         false
@@ -20051,7 +20262,7 @@ impl App {
                 let drill = state
                     .table_state
                     .selected()
-                    .map(|selected| state.start_row + selected)
+                    .map(|selected| state.start_row() + selected)
                     .and_then(|index| Some((index, state.drill_row(index)?)));
                 match drill {
                     None if state.is_drilled_down() => {
@@ -20062,7 +20273,7 @@ impl App {
                         self.drill_into(group_index, &row)
                     }
                     Some((group_index, DrillRow::Read(lf))) => {
-                        let streaming = state.polars_streaming;
+                        let streaming = state.polars_streaming();
                         self.spawn_bg(Self::READING_GROUP, move |task_gen, tx| {
                             let row = crate::statistics::collect_lazy(*lf, streaming)
                                 .map_err(|e| crate::error_display::user_message_from_polars(&e));
@@ -20110,7 +20321,7 @@ impl App {
                 self.sql_completion = None;
                 self.sql_columns.clear();
                 if let Some(state) = &mut self.data_table_state {
-                    self.query_input.set_value(state.active_query.clone());
+                    self.query_input.set_value(state.get_active_query());
                     self.sql_input.set_value(state.get_active_sql_query());
                     self.fuzzy_input.set_value(state.get_active_fuzzy_query());
                     // The restored query arrives selected: typing states a new
@@ -20178,7 +20389,8 @@ impl App {
             }
             KeyCode::Char('r') => {
                 if let Some(state) = &mut self.data_table_state {
-                    state.reverse();
+                    state.deferred(DataTableState::reverse);
+                    self.spawn_async_collect("Sorting...");
                 }
                 None
             }
@@ -20203,13 +20415,13 @@ impl App {
                     && self.input_mode == InputMode::Normal
                 {
                     let numeric_columns: Vec<String> = state
-                        .schema
+                        .schema()
                         .iter()
                         .filter(|(_, dtype)| dtype.is_numeric())
                         .map(|(name, _)| name.to_string())
                         .collect();
                     let datetime_columns: Vec<String> = state
-                        .schema
+                        .schema()
                         .iter()
                         .filter(|(_, dtype)| {
                             matches!(
@@ -20220,7 +20432,7 @@ impl App {
                         .map(|(name, _)| name.to_string())
                         .collect();
                     let category_columns: Vec<String> = state
-                        .schema
+                        .schema()
                         .iter()
                         .filter(|(_, dtype)| chart_data::is_category_dtype(dtype))
                         .map(|(name, _)| name.to_string())
@@ -20244,9 +20456,9 @@ impl App {
                     && self.input_mode == InputMode::Normal
                 {
                     self.pivot_melt_modal.available_columns =
-                        state.schema.iter_names().map(|s| s.to_string()).collect();
+                        state.schema().iter_names().map(|s| s.to_string()).collect();
                     self.pivot_melt_modal.column_dtypes = state
-                        .schema
+                        .schema()
                         .iter()
                         .map(|(n, d)| (n.to_string(), d.clone()))
                         .collect();
@@ -20268,12 +20480,12 @@ impl App {
                         self.export_modal.nested_columns = state
                             .get_column_order()
                             .iter()
-                            .filter_map(|name| state.schema.get(name))
+                            .filter_map(|name| state.schema().get(name))
                             .any(crate::nested_json::is_nested);
                         self.export_modal.avro_renames =
                             state.get_column_order().iter().any(|name| {
                                 state
-                                    .schema
+                                    .schema()
                                     .get(name)
                                     .is_some_and(|dtype| crate::avro_types::renames(name, dtype))
                             });
@@ -20434,7 +20646,7 @@ impl App {
         // Unsorted: the rows a chart draws do not depend on the table's order, a line
         // is drawn in X order anyway, and a sort would make a sampled read read it all.
         let lf = state.analysis_lf();
-        let schema = state.schema.clone();
+        let schema = state.schema().clone();
         let dataset = Some(state.len_generation());
         let sampling = chart_data::ChartSampling {
             limit: self.chart_modal.row_limit,
@@ -21472,7 +21684,7 @@ impl App {
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
                     let (source, known_total) = self.sample_source(state);
-                    let streaming = state.polars_streaming;
+                    let streaming = state.polars_streaming();
                     let sample = self.analysis_modal.sample.clone();
                     let seed = sample.seed;
                     self.spawn_bg("Computing correlation matrix...", move |task_gen, tx| {
@@ -21553,7 +21765,7 @@ impl App {
                         });
                         (lf, source, rows)
                     };
-                    let streaming = state.polars_streaming;
+                    let streaming = state.polars_streaming();
                     let view_generation = state.len_generation();
                     let dataset_generation = self.dataset_generation;
                     let kept_entry = self.kept_quality_entry(&plan.sample());
@@ -21725,23 +21937,24 @@ impl App {
                 if self.len_count_failed == Some(*len_generation) {
                     self.len_count_failed = None;
                 }
-                if let Some(run) = self.query_running.as_mut()
-                    && run.len_count_inflight == Some(*len_generation)
-                {
-                    run.len_count_inflight = None;
-                    run.len_counted = Some((*num_rows, file_row_groups.clone()));
+                // A count of the view a running query replaced goes back with it.
+                if let Some(run) = self.query_running.as_mut() {
+                    run.rollback.count_landed(
+                        *len_generation,
+                        *num_rows,
+                        file_row_groups.as_deref(),
+                    );
+                    if run.len_count_inflight == Some(*len_generation) {
+                        run.len_count_inflight = None;
+                    }
                 }
                 // Apply the exact total only if the data hasn't changed since the count
                 // was spawned. This runs independently of the buffer paint (which has
                 // usually already rendered), so it just corrects the scrollbar/total —
                 // no busy state, no re-collect.
                 if let Some(state) = self.data_table_state.as_mut()
-                    && state.len_generation() == *len_generation
+                    && state.count_landed(*len_generation, *num_rows, file_row_groups.as_deref())
                 {
-                    match file_row_groups {
-                        Some(groups) => state.set_file_row_groups(groups),
-                        None => state.set_num_rows(*num_rows),
-                    }
                     // End was pressed before there was an end to go to.
                     if self.end_after_count == Some(*len_generation) {
                         self.end_after_count = None;
@@ -22465,27 +22678,21 @@ impl App {
             }
             AppEvent::Filter(statements) => {
                 if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    state.filter(statements.clone());
-                    state.defer_collect = false;
+                    state.deferred(|s| s.filter(statements.clone()));
                 }
                 self.spawn_async_collect("Filtering...");
                 None
             }
             AppEvent::Sort(columns, descending) => {
                 if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    state.sort_by(columns.clone(), descending.clone());
-                    state.defer_collect = false;
+                    state.deferred(|s| s.sort_by(columns.clone(), descending.clone()));
                 }
                 self.spawn_async_collect("Sorting...");
                 None
             }
             AppEvent::Reset => {
                 if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    state.reset();
-                    state.defer_collect = false;
+                    state.deferred(|s| s.reset());
                 }
                 self.spawn_async_collect(Self::LOADING_BUFFER);
                 // Clear active template when resetting
@@ -22494,8 +22701,11 @@ impl App {
             }
             AppEvent::ColumnOrder(order, locked_count) => {
                 if let Some(state) = &mut self.data_table_state {
-                    state.set_column_order(order.clone());
-                    state.set_locked_columns(*locked_count);
+                    state.deferred(|s| {
+                        s.set_column_order(order.clone());
+                        s.set_locked_columns(*locked_count);
+                    });
+                    self.spawn_async_collect(Self::LOADING_BUFFER);
                 }
                 None
             }
@@ -22515,22 +22725,16 @@ impl App {
                     Ok(pivoted) => self.data_table_state.as_mut().map(|state| {
                         // Nothing changed while the pivot was read, so the steps before
                         // it plan as they did; this time the pivot is in hand.
-                        let rollback = state.rollback_point();
-                        state.error = None;
-                        state.defer_collect = true;
-                        let replayed = Self::replay_view(
-                            state,
-                            &pending.template.settings,
-                            Some(pivoted.clone()),
-                        );
-                        state.defer_collect = false;
-                        match replayed {
-                            Ok(_) => Ok(rollback),
-                            Err(e) => {
-                                state.roll_back(rollback);
-                                Err(e.to_string())
-                            }
-                        }
+                        state
+                            .try_transition(|s| {
+                                Self::replay_view(
+                                    s,
+                                    &pending.template.settings,
+                                    Some(pivoted.clone()),
+                                )
+                            })
+                            .map(|(_, rollback)| rollback)
+                            .map_err(|e| e.to_string())
                     }),
                     Err(message) => Some(Err(message.clone())),
                 };
@@ -22582,10 +22786,8 @@ impl App {
                 }
                 let installed = match pivoted {
                     Ok(pivoted) => self.data_table_state.as_mut().map(|state| {
-                        state.defer_collect = true;
-                        let installed = state.install_pivot(spec, pivoted.clone());
-                        state.defer_collect = false;
-                        installed
+                        state
+                            .deferred(|s| s.install_pivot(spec, pivoted.clone()))
                             .map_err(|e| crate::error_display::user_message_from_report(&e, None))
                     }),
                     Err(message) => Some(Err(message.clone())),
@@ -22611,9 +22813,7 @@ impl App {
             AppEvent::Melt(spec) => {
                 self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
-                    state.defer_collect = true;
-                    let result = state.melt(spec);
-                    state.defer_collect = false;
+                    let result = state.deferred(|s| s.melt(spec));
                     match result {
                         Ok(()) => {
                             self.pivot_melt_modal.close();
@@ -22778,7 +22978,7 @@ impl App {
                     } else {
                         state.visible_lf()
                     };
-                    let streaming = state.polars_streaming;
+                    let streaming = state.polars_streaming();
                     let request = request.clone();
                     self.spawn_bg("Collecting data for export...", move |task_gen, tx| {
                         let lf = request.format.prepare(lf);
@@ -22831,7 +23031,7 @@ impl App {
             AppEvent::CopyTable { format, header } => {
                 if let Some(state) = &self.data_table_state {
                     let lf = state.visible_lf();
-                    let streaming = state.polars_streaming;
+                    let streaming = state.polars_streaming();
                     let (format, header) = (*format, *header);
                     self.spawn_bg("Collecting data for copy...", move |task_gen, tx| {
                         let ready = crate::statistics::collect_lazy(lf, streaming)
@@ -22893,13 +23093,13 @@ impl App {
 
     /// What `column` holds, for an export's axis ticks.
     fn axis_numbers(&self, column: &str) -> chart_data::AxisNumbers {
-        let schema = self.data_table_state.as_ref().map(|s| s.schema.as_ref());
+        let schema = self.data_table_state.as_ref().map(|s| s.schema().as_ref());
         chart_data::AxisNumbers::column(&self.number_format, schema, column)
     }
 
     /// What `columns` hold on one axis.
     fn axes_numbers(&self, columns: &[String]) -> chart_data::AxisNumbers {
-        let schema = self.data_table_state.as_ref().map(|s| s.schema.as_ref());
+        let schema = self.data_table_state.as_ref().map(|s| s.schema().as_ref());
         chart_data::AxisNumbers::columns(&self.number_format, schema, columns)
     }
 
@@ -23259,7 +23459,7 @@ impl App {
         let filters = state.view_filters().to_vec();
         let sort_columns = state.view_sort_columns().to_vec();
         let sort_descending = state.view_sort_descending().to_vec();
-        let headers: Vec<String> = state.schema.iter_names().map(|s| s.to_string()).collect();
+        let headers: Vec<String> = state.schema().iter_names().map(|s| s.to_string()).collect();
         let order = state.headers();
         let locked = state.locked_columns_count();
 
@@ -23355,7 +23555,7 @@ impl App {
     fn info_tabs_on_offer(&self) -> (bool, bool) {
         let state = self.data_table_state.as_ref();
         let has_partitions = state
-            .and_then(|s| s.partition_columns.as_ref())
+            .and_then(|s| s.partition_columns())
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         let has_notes = state.is_some_and(|s| s.has_notes());
@@ -23371,21 +23571,12 @@ impl App {
         let Some(state) = self.data_table_state.as_mut() else {
             return Ok(());
         };
-        let rollback = state.rollback_point();
-        state.error = None;
-        state.defer_collect = true;
-        let replayed = Self::replay_view(state, &template.settings, None);
-        state.defer_collect = false;
-        match replayed {
-            Err(e) => {
-                state.roll_back(rollback);
-                Err(e)
-            }
-            Ok(Replayed::Planned) => {
+        match state.try_transition(|s| Self::replay_view(s, &template.settings, None))? {
+            (Replayed::Planned, rollback) => {
                 self.view_planned(template, rollback);
                 Ok(())
             }
-            Ok(Replayed::Pivot(job)) => {
+            (Replayed::Pivot(job), rollback) => {
                 // The table stays as it is while the pivot is read.
                 state.roll_back(rollback);
                 // Past any load-ahead for the view on screen, whose rows must not land
@@ -23436,7 +23627,6 @@ impl App {
             rollback,
             len_count_inflight: self.len_count_inflight,
             len_count_failed: self.len_count_failed,
-            len_counted: None,
             rows: None,
         });
         if self.spawn_async_collect(Self::APPLYING_VIEW) {
@@ -23534,11 +23724,6 @@ impl App {
     fn roll_back_query_run(&mut self, run: QueryRun) -> RunOrigin {
         if let Some(state) = self.data_table_state.as_mut() {
             state.roll_back(run.rollback);
-            match run.len_counted {
-                Some((_, Some(groups))) => state.set_file_row_groups(&groups),
-                Some((rows, None)) => state.set_num_rows(rows),
-                None => {}
-            }
         }
         self.len_count_inflight = run.len_count_inflight;
         self.len_count_failed = run.len_count_failed;
@@ -23643,12 +23828,12 @@ impl App {
         } else if let Some(query) = stated(dsl) {
             state.query(query);
         }
-        if state.error.is_none()
+        if state.error().is_none()
             && let Some(fuzzy) = stated(fuzzy)
         {
             state.fuzzy_search(fuzzy);
         }
-        match state.error.clone() {
+        match state.error().cloned() {
             Some(error) => Err(color_eyre::eyre::eyre!(
                 "{}",
                 crate::error_display::user_message_from_polars(&error)
@@ -23666,13 +23851,13 @@ impl App {
     ) -> Result<()> {
         if !filters.is_empty() {
             state.filter(filters.to_vec());
-            if let Some(error) = state.error.clone() {
+            if let Some(error) = state.error().cloned() {
                 return Err(color_eyre::eyre::eyre!("{}", error));
             }
         }
         if !sort_columns.is_empty() {
             state.sort_by(sort_columns.to_vec(), descending);
-            if let Some(error) = state.error.clone() {
+            if let Some(error) = state.error().cloned() {
                 return Err(color_eyre::eyre::eyre!("{}", error));
             }
         }
@@ -23925,7 +24110,7 @@ impl App {
     fn set_query_mode(&mut self, mode: QueryMode) {
         self.query_mode = mode.resolve();
         if let Some(state) = &mut self.data_table_state {
-            state.error = None;
+            state.dismiss_error();
         }
         self.query_run_error = None;
         self.sync_query_focus();
@@ -23988,7 +24173,7 @@ impl App {
             return Some(error.clone());
         }
         let state = self.data_table_state.as_ref()?;
-        let error = state.error.as_ref()?;
+        let error = state.error()?;
         Some(if self.query_mode == QueryMode::Sql {
             crate::error_display::sql_error_message(error, state.sql_table_rows())
         } else {
@@ -24012,14 +24197,13 @@ impl App {
         };
         let rollback = state.rollback_point();
         let rows = state.sql_table_rows();
-        state.defer_collect = true;
-        match mode {
-            QueryMode::Sql => state.sql_query(text.to_string()),
-            QueryMode::QStyle => state.query(text.to_string()),
-            QueryMode::Search => state.fuzzy_search(text.to_string()),
-        }
-        state.defer_collect = false;
-        if state.error.is_some() {
+        // A query that cannot be planned changes nothing and leaves its error showing.
+        state.deferred(|s| match mode {
+            QueryMode::Sql => s.sql_query(text.to_string()),
+            QueryMode::QStyle => s.query(text.to_string()),
+            QueryMode::Search => s.fuzzy_search(text.to_string()),
+        });
+        if state.error().is_some() {
             return;
         }
         self.query_running = Some(QueryRun {
@@ -24028,7 +24212,6 @@ impl App {
             rollback,
             len_count_inflight: self.len_count_inflight,
             len_count_failed: self.len_count_failed,
-            len_counted: None,
             rows,
         });
         if !self.spawn_async_collect(status) {
@@ -24086,7 +24269,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.input_type = None;
         if let Some(state) = &mut self.data_table_state {
-            state.error = None;
+            state.dismiss_error();
             state.suppress_error_display = false;
         }
     }
@@ -24103,7 +24286,7 @@ impl App {
             && !state.is_drilled_down()
             && state.is_num_rows_valid()
             && !self.row_count_pending())
-        .then_some(state.num_rows)
+        .then_some(state.num_rows())
     }
 
     fn get_help_info(&self) -> (String, String) {
@@ -24195,7 +24378,7 @@ impl Widget for &mut App {
             );
         }
 
-        let row_count = self.data_table_state.as_ref().map(|s| s.num_rows);
+        let row_count = self.data_table_state.as_ref().map(|s| s.num_rows());
         // The spinner follows the glyph set, so it cannot disagree with the rest of
         // the chrome about whether the terminal is doing UTF-8.
         let use_unicode_throbber = crate::glyphs::active_is_unicode();
@@ -25329,5 +25512,96 @@ mod sort_filter_sync_tests {
         app.data_table_state.as_mut().unwrap().set_locked_columns(2);
         app.sync_sort_filter_modal();
         assert_eq!(locked(&app), [true, true, true]);
+    }
+}
+
+/// A change to the view made from a key or an event is planned on the UI thread and
+/// its rows are read in the background, as every other is (#458).
+#[cfg(test)]
+mod background_read_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn app() -> (
+        App,
+        mpsc::Receiver<AppEvent>,
+        mpsc::Sender<AppEvent>,
+        tempfile::TempDir,
+    ) {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rows.csv");
+        let mut body = String::from("a,b\n");
+        for a in 0..30 {
+            body.push_str(&format!("{a},{}\n", a * 2));
+        }
+        std::fs::write(&path, body).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        crate::chart_prepare_tests::open(&mut app, &rx, &tx, path);
+        (app, rx, tx, dir)
+    }
+
+    #[test]
+    fn r_reverses_in_the_background() {
+        let (mut app, rx, tx, _dir) = app();
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::NONE,
+        )));
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            !state.snapshot().has_rows(),
+            "nothing was read on this thread"
+        );
+        assert!(app.is_busy(), "the rows are being read");
+
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+        let state = app.data_table_state.as_ref().unwrap();
+        let shown = state.display_df().unwrap().column("a").unwrap().get(0);
+        assert_eq!(shown.unwrap(), AnyValue::Int64(29));
+    }
+
+    #[test]
+    fn a_column_order_is_read_in_the_background() {
+        let (mut app, rx, tx, _dir) = app();
+        app.event(&AppEvent::ColumnOrder(
+            vec!["b".to_string(), "a".to_string()],
+            1,
+        ));
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            !state.snapshot().has_rows(),
+            "nothing was read on this thread"
+        );
+        assert!(app.is_busy(), "the rows are being read");
+
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.get_column_order(), ["b", "a"]);
+        assert_eq!(state.locked_columns_count(), 1);
+        assert!(state.snapshot().has_rows());
+    }
+
+    /// A read still out was planned with the columns as they were. A new order does
+    /// not wait on it, or a column it brings back never arrives.
+    #[test]
+    fn a_column_order_does_not_wait_on_a_read_of_other_columns() {
+        let (mut app, rx, tx, _dir) = app();
+        app.event(&AppEvent::ColumnOrder(vec!["a".to_string()], 0));
+        app.event(&AppEvent::ColumnOrder(
+            vec!["b".to_string(), "a".to_string()],
+            0,
+        ));
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+        let state = app.data_table_state.as_ref().unwrap();
+        let shown: Vec<String> = state
+            .display_df()
+            .expect("the rows are read")
+            .get_column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        assert_eq!(shown, ["b", "a"]);
     }
 }

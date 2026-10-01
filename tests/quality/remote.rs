@@ -142,7 +142,7 @@ fn open_remote_with(
         )),
     );
     assert_eq!(
-        app.data_table_state.as_ref().map(|state| state.num_rows),
+        app.data_table_state.as_ref().map(|state| state.num_rows()),
         Some(FILES * ROWS)
     );
     press(&mut app, KeyCode::Char('a'));
@@ -765,7 +765,7 @@ fn a_hive_dataset_is_copied_with_its_partitions() {
     assert!(
         app.data_table_state
             .as_ref()
-            .is_some_and(|state| state.schema.contains("day")),
+            .is_some_and(|state| state.schema().contains("day")),
         "the partition column"
     );
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, full_scan);
@@ -815,7 +815,7 @@ fn one_remote_object_is_copied_once() {
         )),
     );
     assert_eq!(
-        app.data_table_state.as_ref().map(|state| state.num_rows),
+        app.data_table_state.as_ref().map(|state| state.num_rows()),
         Some(ROWS)
     );
     press(&mut app, KeyCode::Char('a'));

@@ -1935,7 +1935,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
         !app.is_busy()
             && app.data_table_state.as_ref().is_some_and(|s| {
                 s.num_rows_if_valid()
-                    .is_some_and(|n| n > 900_000 && s.start_row + s.visible_rows >= n)
+                    .is_some_and(|n| n > 900_000 && s.start_row() + s.visible_rows >= n)
             })
     });
     let text = screen_text(&mut app, 160, 30);
@@ -2027,7 +2027,7 @@ fn bitcoin_transactions_open_count_and_reach_any_row() {
         !app.is_busy()
             && app.data_table_state.as_ref().is_some_and(|s| {
                 s.num_rows_if_valid()
-                    .is_some_and(|n| n > 1_000_000_000 && s.start_row + s.visible_rows >= n)
+                    .is_some_and(|n| n > 1_000_000_000 && s.start_row() + s.visible_rows >= n)
             })
     });
     println!("at the end after {:?}", started.elapsed());
@@ -2035,7 +2035,7 @@ fn bitcoin_transactions_open_count_and_reach_any_row() {
 
     let middle = {
         let state = app.data_table_state.as_mut().unwrap();
-        let middle = state.num_rows / 2;
+        let middle = state.num_rows() / 2;
         state.scroll_to(middle);
         middle
     };
@@ -2043,8 +2043,8 @@ fn bitcoin_transactions_open_count_and_reach_any_row() {
     pump_until(&mut app, &rx, 2, |_| false);
     assert!(pump_until(&mut app, &rx, 180, |app| !app.is_busy()));
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.start_row, middle);
-    assert!(state.error.is_none(), "{:?}", state.error);
+    assert_eq!(state.start_row(), middle);
+    assert!(state.error().is_none(), "{:?}", state.error());
     println!("{}", screen_text(&mut app, 200, 12));
 }
 

@@ -31,7 +31,7 @@ fn open_excel(name: &str, options: OpenOptions) -> DataFrame {
         .data_table_state
         .as_ref()
         .unwrap_or_else(|| panic!("{} did not load", name));
-    datatable.lf.clone().collect().expect("collect")
+    datatable.lf().clone().collect().expect("collect")
 }
 
 #[test]

@@ -502,11 +502,11 @@ impl<'a> DataTableInfo<'a> {
     }
 
     fn render_schema_summary(&self, area: Rect, buf: &mut Buffer) -> u16 {
-        let ncols = self.state.schema.len();
+        let ncols = self.state.schema().len();
         let mut lines = vec![];
         // `num_rows_if_valid`, not `num_rows`: see `rows_and_columns`.
         lines.push(rows_and_columns(self.state.num_rows_if_valid(), ncols));
-        let by_type = columns_by_type(self.state.schema.as_ref());
+        let by_type = columns_by_type(self.state.schema().as_ref());
         if !by_type.is_empty() {
             lines.push(by_type);
         }
@@ -548,7 +548,7 @@ impl<'a> DataTableInfo<'a> {
         let compression = self
             .ctx
             .parquet_metadata
-            .map(|m| parquet_column_compression(m.as_ref(), self.state.schema.as_ref()));
+            .map(|m| parquet_column_compression(m.as_ref(), self.state.schema().as_ref()));
         let has_comp = compression.as_ref().is_some_and(|c| !c.is_empty());
         let mut header_cells = vec!["Column", "Type"];
         if has_files {
@@ -559,7 +559,7 @@ impl<'a> DataTableInfo<'a> {
         }
         let header = Row::new(header_cells).bold();
 
-        let total_rows = self.state.schema.len();
+        let total_rows = self.state.schema().len();
         // Focus is the accent on the section rule, and the rail on the row.
         let body_focused = self.modal.focus == InfoFocus::Body;
         let title = format!("Schema: {src}");
@@ -587,7 +587,7 @@ impl<'a> DataTableInfo<'a> {
         let offset = self.modal.schema_scroll_offset;
         let take = data_height.min(total_rows.saturating_sub(offset));
         let mut rows = vec![];
-        for (idx, (name, dtype)) in self.state.schema.iter().enumerate() {
+        for (idx, (name, dtype)) in self.state.schema().iter().enumerate() {
             if idx < offset {
                 continue;
             }
@@ -1121,7 +1121,7 @@ impl<'a> DataTableInfo<'a> {
         let y = area.y;
         let w = area.width;
 
-        let Some(partition_columns) = self.state.partition_columns.as_ref() else {
+        let Some(partition_columns) = self.state.partition_columns() else {
             Paragraph::new("No partition metadata.").render(
                 Rect {
                     y,
@@ -1261,8 +1261,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let ctx = self.theme;
         let has_partitions = self
             .state
-            .partition_columns
-            .as_ref()
+            .partition_columns()
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         let has_notes = self.state.has_notes();
@@ -1383,7 +1382,7 @@ mod tests {
         .unwrap();
         // As a staged open leaves it: a provisional from however far the buffer reached,
         // with no count taken.
-        state.num_rows = 70;
+        state.set_provisional_rows(70);
 
         let theme = RenderContext::for_test();
         let painted = |state: &DataTableState| {
@@ -1421,7 +1420,7 @@ mod tests {
             "and the buffer's height is not shown in its place: {uncounted}"
         );
 
-        state.set_num_rows(70);
+        assert!(state.count_landed(state.len_generation(), 70, None));
         let counted = painted(&state);
         assert!(
             counted.contains("Rows (total): 70"),

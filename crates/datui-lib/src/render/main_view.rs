@@ -123,7 +123,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             let query_active = app
                 .data_table_state
                 .as_ref()
-                .map(|s| !s.active_query.trim().is_empty())
+                .map(|s| !s.get_active_query().trim().is_empty())
                 .unwrap_or(false);
             let dimmed = app.show_help
                 || app.input_mode == crate::InputMode::SortFilter

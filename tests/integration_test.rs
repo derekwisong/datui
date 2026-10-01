@@ -174,7 +174,7 @@ fn test_full_workflow() {
 
     assert!(app.data_table_state.is_some());
     let datatable = app.data_table_state.as_ref().unwrap();
-    assert_eq!(datatable.num_rows, 100);
+    assert_eq!(datatable.num_rows(), 100);
 
     // 2. Filter the data (s = Sort & Filter, switch to Filter tab, configure, Apply)
     let key_event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
@@ -203,7 +203,7 @@ fn test_full_workflow() {
     assert!(!app.sort_filter_modal.active);
 
     let datatable = app.data_table_state.as_ref().unwrap();
-    assert_eq!(datatable.lf.clone().collect().unwrap().shape().0, 33);
+    assert_eq!(datatable.lf().clone().collect().unwrap().shape().0, 33);
 
     // 3. Sort the data (s = Sort & Filter, Sort tab, configure, Apply)
     let key_event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
@@ -241,7 +241,7 @@ fn test_full_workflow() {
     assert!(!app.sort_filter_modal.active);
 
     let datatable = app.data_table_state.as_ref().unwrap();
-    let df = datatable.lf.clone().collect().unwrap();
+    let df = datatable.lf().clone().collect().unwrap();
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(97));
 }
 
@@ -870,7 +870,7 @@ fn test_csv_null_values_global() {
 
     assert!(app.data_table_state.is_some());
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let y = df.column("y").unwrap();
     assert_eq!(
         y.null_count(),
@@ -897,7 +897,7 @@ fn test_csv_null_values_per_column() {
 
     assert!(app.data_table_state.is_some());
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let a = df.column("a").unwrap();
     let b = df.column("b").unwrap();
     assert_eq!(a.null_count(), 1, "only 'empty' in column a should be null");
@@ -983,11 +983,11 @@ fn test_startup_buffer_race_does_not_lose_rows() {
         // The buffer must cover at least the visible window.
         let buffered_rows = state.buffered_end().saturating_sub(state.buffered_start());
         assert!(
-            buffered_rows >= state.visible_rows || buffered_rows >= state.num_rows,
+            buffered_rows >= state.visible_rows || buffered_rows >= state.num_rows(),
             "iteration {iteration}: buffer too small: {buffered_rows} buffered but \
              {visible} visible, {total} total rows",
             visible = state.visible_rows,
-            total = state.num_rows,
+            total = state.num_rows(),
         );
 
         // display_slice_df must be Some (not None = no data to show).
@@ -1522,7 +1522,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .schema
+        .schema()
         .iter_names()
         .next()
         .unwrap()
@@ -1582,9 +1582,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
 
     app.analysis_modal.close();
     let state = app.data_table_state.as_mut().unwrap();
-    state.defer_collect = true;
-    state.reverse();
-    state.defer_collect = false;
+    state.deferred(|s| s.reverse());
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
@@ -2252,7 +2250,7 @@ fn data_quality_reads_as_a_report() {
     assert!(!app.analysis_modal.active);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.num_rows, 4);
+    assert_eq!(state.num_rows(), 4);
 }
 
 /// A finding with more evidence than the screen holds scrolls inside its popup,
@@ -2405,7 +2403,8 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     assert!(!app.analysis_modal.active);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
-        state.num_rows, expected,
+        state.num_rows(),
+        expected,
         "exactly the rows the finding counted"
     );
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -2413,7 +2412,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
         KeyModifiers::NONE,
     )));
     assert!(app.analysis_modal.active, "Esc goes back to the report");
-    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 5_000);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 5_000);
 }
 
 /// A table with whole rows copied (but for their bytes), text that parses but for a
@@ -2643,7 +2642,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     pump_until_idle(&mut app, &rx, &tx);
     assert!(!app.analysis_modal.active);
     assert_eq!(
-        app.data_table_state.as_ref().unwrap().num_rows,
+        app.data_table_state.as_ref().unwrap().num_rows(),
         identity.rows_involved
     );
     press(&mut app, KeyCode::Esc);
@@ -2677,7 +2676,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.num_rows, failures);
+    assert_eq!(state.num_rows(), failures);
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
 
@@ -2778,7 +2777,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
     assert!(!app.analysis_modal.active);
-    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 900);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 900);
     press(&mut app, KeyCode::Esc);
     assert!(app.analysis_modal.active);
 }
@@ -2876,7 +2875,7 @@ fn one_sample_serves_every_analysis_tool() {
     run(&mut app, next);
     pump_until_idle(&mut app, &rx, &tx);
     assert!(!app.analysis_modal.active, "the sample replaces the tool");
-    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 100);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 100);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen = rendered_text(&buffer);
@@ -2886,7 +2885,7 @@ fn one_sample_serves_every_analysis_tool() {
     );
     key(&mut app, KeyCode::Esc);
     assert!(app.analysis_modal.active);
-    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 1_000);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1_000);
     assert!(app.analysis_modal.describe_results.is_some());
 
     // Data Quality starts from the same rows without being told again, but opens
@@ -4063,7 +4062,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
     pump_until_idle(&mut app, &rx, &tx);
     // With the file gone, only the kept sample could have answered.
     assert!(!app.analysis_modal.active);
-    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, count);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), count);
     press(&mut app, KeyCode::Esc);
     assert!(app.analysis_modal.active, "Esc goes back to the detail");
     assert_eq!(
@@ -5039,7 +5038,7 @@ fn test_scroll_past_end_does_not_hang_busy() {
     };
     settle(&mut app, &rx, &tx);
 
-    let total = app.data_table_state.as_ref().unwrap().num_rows;
+    let total = app.data_table_state.as_ref().unwrap().num_rows();
     assert!(total > 0, "test data should have rows");
 
     // Jump to end via End key, then hammer PageDown a bunch — same sequence that
@@ -5139,7 +5138,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
     );
     let state = app.data_table_state.as_ref().unwrap();
     // value < 200 → ids 0..100 → 100 rows
-    assert_eq!(state.num_rows, 100, "filtered row count should be 100");
+    assert_eq!(state.num_rows(), 100, "filtered row count should be 100");
     assert!(
         state.display_slice_df().is_some(),
         "display buffer should be populated after async len + collect"
@@ -5207,7 +5206,11 @@ fn test_hive_dir_loads_and_counts_via_footers() {
 
     assert!(counted, "exact total should resolve to the footer sum (50)");
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.num_rows, 50, "hive dir total should equal footer sum");
+    assert_eq!(
+        state.num_rows(),
+        50,
+        "hive dir total should equal footer sum"
+    );
     assert!(
         state.display_slice_df().is_some(),
         "first buffer should be populated"
@@ -5372,7 +5375,7 @@ fn test_absent_cells_still_read_as_absent_after_a_sort() {
     let state = app.data_table_state.as_mut().unwrap();
     state.sort(vec!["id".to_string()], false);
     state.collect();
-    assert!(state.error.is_none(), "the sort itself must succeed");
+    assert!(state.error().is_none(), "the sort itself must succeed");
 
     let text = painted(&mut app, &rx, &tx, area);
     assert!(
@@ -5544,7 +5547,7 @@ fn test_absent_null_and_conflicting_cells_still_differ_after_a_filter() {
         datui::filter_modal::FilterOperator::GtEq,
         "2",
     )]);
-    assert!(state.error.is_none(), "the filter itself must succeed");
+    assert!(state.error().is_none(), "the filter itself must succeed");
     // And a filter actually happened: without this the test passes when the predicate
     // is dropped on the floor, because an unfiltered screen carries all three glyphs
     // too. The criterion is about surviving a predicate, so there has to be one.
@@ -5659,7 +5662,7 @@ fn test_each_row_takes_its_glyph_from_the_file_it_came_from() {
     // Scrolled, and to a row inside the middle file rather than onto a boundary: the
     // window starts where the view does, so the groups have to shift with it.
     let state = app.data_table_state.as_mut().unwrap();
-    state.start_row = 4;
+    state.scroll_to(4);
     state.collect();
     assert_eq!(
         state.display_drift(6),
@@ -5698,10 +5701,10 @@ fn test_a_sort_leaves_out_the_rows_its_column_is_not_read_from() {
 
     let state = app.data_table_state.as_mut().unwrap();
     state.sort(vec!["n".to_string()], true);
-    assert!(state.error.is_none(), "the sort itself must succeed");
+    assert!(state.error().is_none(), "the sort itself must succeed");
 
     let ids: Vec<i64> = state
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -5772,10 +5775,10 @@ fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
     or_id_3.logical_op = LogicalOperator::Or;
     let state = app.data_table_state.as_mut().unwrap();
     state.filter(vec![filter_stmt("n", FilterOperator::Eq, "0"), or_id_3]);
-    assert!(state.error.is_none(), "the filter itself must succeed");
+    assert!(state.error().is_none(), "the filter itself must succeed");
 
     let ids: Vec<i64> = state
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -6008,14 +6011,14 @@ fn test_a_table_formats_own_parquet_is_not_part_of_the_table() {
 
     let app = open_local_dataset(dir.path());
     let state = app.data_table_state.as_ref().unwrap();
-    let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+    let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
     assert_eq!(
         names,
         ["date", "id"],
         "the checkpoint's own columns are not the table's"
     );
     let ids: Vec<i64> = state
-        .lf
+        .lf()
         .clone()
         .collect()
         .expect("the table reads")
@@ -6395,6 +6398,58 @@ fn test_reading_a_filtered_column_as_text_says_the_comparison_changed() {
     );
 }
 
+/// Taking the offer from the Info panel rebuilds the scan on the UI thread and reads
+/// its rows in the background, like any other change to the view (#458).
+#[test]
+fn test_reading_a_column_as_text_from_the_panel_reads_in_the_background() {
+    use datui::widgets::info::InfoTab;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[1i64, 10, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64], "n" => &["sixty"]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.info_modal.active_tab, InfoTab::Notes);
+    let state = app.data_table_state.as_ref().unwrap();
+    app.info_modal.notes_selected_index = state
+        .notes()
+        .iter()
+        .position(|note| note.read_as_text.is_some())
+        .expect("the conflict note offers to read n as text");
+    assert!(state.is_num_rows_valid());
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.schema().get("n"), Some(&DataType::String));
+    assert!(
+        !state.is_num_rows_valid(),
+        "the new frame is not counted on this thread"
+    );
+    assert!(app.is_busy(), "its rows are being read");
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows_if_valid(), Some(4));
+    let shown = state.display_df().expect("the rows are read");
+    assert_eq!(shown.column("n").unwrap().dtype(), &DataType::String);
+}
+
 /// Reading a column as text does not undo the widening, so the note about it stays.
 ///
 /// One file wrote `n` as an integer and another as a float, which widen together — so
@@ -6440,7 +6495,7 @@ fn test_reading_as_text_keeps_the_note_about_a_widened_type() {
 
     let state = app.data_table_state.as_ref().unwrap();
     let text: Vec<String> = state
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -7041,10 +7096,10 @@ fn test_the_rows_left_out_are_the_conflicting_files_own_wherever_they_sit() {
 
     let state = app.data_table_state.as_mut().unwrap();
     state.sort(vec!["n".to_string()], true);
-    assert!(state.error.is_none(), "the sort itself must succeed");
+    assert!(state.error().is_none(), "the sort itself must succeed");
 
     let mut ids: Vec<i64> = state
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -7171,7 +7226,7 @@ fn test_the_hidden_drift_column_is_never_part_of_the_data() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.drifts(), "this dataset does drift");
 
-    let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+    let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
     assert_eq!(
         names,
         ["date", "id", "extra"],
@@ -7663,7 +7718,7 @@ fn test_avro_export_writes_arrays_and_categoricals() {
             .unwrap();
     }
     let (mut app, rx, tx) = open_local_dataset_with_channel(&src);
-    let schema = app.data_table_state.as_ref().unwrap().schema.clone();
+    let schema = app.data_table_state.as_ref().unwrap().schema().clone();
     assert!(
         matches!(schema.get("pair"), Some(DataType::Array(..)))
             && matches!(schema.get("tag"), Some(DataType::Categorical(..))),
@@ -7941,9 +7996,13 @@ fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
             2 => state.sql_query("select * from df".to_string()),
             _ => state.reset(),
         }
-        assert!(state.error.is_none(), "{what}: {:?}", state.error);
+        assert!(state.error().is_none(), "{what}: {:?}", state.error());
         state.collect();
-        assert!(state.error.is_none(), "{what} collect: {:?}", state.error);
+        assert!(
+            state.error().is_none(),
+            "{what} collect: {:?}",
+            state.error()
+        );
 
         let order: Vec<&str> = state
             .get_column_order()
@@ -7951,7 +8010,7 @@ fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
             .map(|s| s.as_str())
             .collect();
         assert_eq!(order, expected, "column order after {what}");
-        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
         assert_eq!(names, expected, "schema after {what}");
     }
 }
@@ -7983,7 +8042,7 @@ fn test_a_reset_brings_back_the_absent_cells() {
     let state = app.data_table_state.as_mut().unwrap();
     state.sql_query("select * from df".to_string());
     state.collect();
-    assert!(state.error.is_none(), "the query: {:?}", state.error);
+    assert!(state.error().is_none(), "the query: {:?}", state.error());
     assert!(
         !state.drifts(),
         "a query's rows stand for no file, so nulls are plain nulls"
@@ -7992,7 +8051,7 @@ fn test_a_reset_brings_back_the_absent_cells() {
     let state = app.data_table_state.as_mut().unwrap();
     state.reset();
     state.collect();
-    assert!(state.error.is_none(), "the reset: {:?}", state.error);
+    assert!(state.error().is_none(), "the reset: {:?}", state.error());
     assert!(state.drifts(), "and the reset puts the files back");
     assert!(
         painted(&mut app, &rx, &tx, area).contains(g.absent),
@@ -8025,12 +8084,12 @@ fn test_counting_a_union_of_scans_does_not_panic() {
     let mut app = open_local_dataset(dir.path());
     let state = app.data_table_state.as_mut().unwrap();
     state.fuzzy_search("a".to_string());
-    assert!(state.error.is_none(), "fuzzy search: {:?}", state.error);
+    assert!(state.error().is_none(), "fuzzy search: {:?}", state.error());
     state.collect();
     assert!(
-        state.error.is_none(),
+        state.error().is_none(),
         "collect after the search: {:?}",
-        state.error
+        state.error()
     );
 }
 
@@ -8121,7 +8180,7 @@ fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
 
     state.sql_query("select id from df".to_string());
     state.collect();
-    assert!(state.error.is_none(), "the query: {:?}", state.error);
+    assert!(state.error().is_none(), "the query: {:?}", state.error());
     assert!(
         state.notes().is_empty(),
         "a note about `extra` would describe a column the frame no longer has"
@@ -8129,7 +8188,7 @@ fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
 
     state.reset();
     state.collect();
-    assert!(state.error.is_none(), "the reset: {:?}", state.error);
+    assert!(state.error().is_none(), "the reset: {:?}", state.error());
     assert_eq!(state.notes().len(), 1, "and the reset brings them back");
 }
 
@@ -8604,7 +8663,7 @@ fn test_a_column_only_one_local_file_has_is_shown() {
 
     let app = open_local_dataset(dir.path());
     let state = app.data_table_state.as_ref().unwrap();
-    let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+    let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
     assert_eq!(
         names,
         ["date", "id", "oops"],
@@ -8630,7 +8689,7 @@ fn test_local_files_of_different_integer_widths_open_as_the_wider_one() {
     let app = open_local_dataset(dir.path());
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
-        state.schema.get("n"),
+        state.schema().get("n"),
         Some(&polars::prelude::DataType::Int64)
     );
 }
@@ -8648,7 +8707,7 @@ fn test_one_unreadable_local_file_does_not_stop_the_open() {
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let screen = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
     let state = app.data_table_state.as_ref().unwrap();
-    let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+    let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
     assert_eq!(names, ["date", "id"]);
     let dataset = state.dataset_schema().expect("read from the footers");
     assert_eq!(dataset.unreadable, [1], "named, and left out of the scan");
@@ -8664,7 +8723,7 @@ fn test_one_unreadable_local_file_does_not_stop_the_open() {
     // is a check on the directory's own names.
     let state = app.data_table_state.as_ref().unwrap();
     let ids = state
-        .lf
+        .lf()
         .clone()
         .collect()
         .expect("the two readable files are readable")
@@ -9910,13 +9969,13 @@ fn open_query_filter_fixture_with(
     let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
     pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 100);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 100);
     (app, rx, tx)
 }
 
 fn current_rows(app: &App) -> usize {
     let state = app.data_table_state.as_ref().unwrap();
-    state.lf.clone().collect().unwrap().height()
+    state.lf().clone().collect().unwrap().height()
 }
 
 fn filter_stmt(
@@ -9987,7 +10046,7 @@ fn test_q_style_distinct_like_mod_and_xbar() {
 
     app.event(&AppEvent::Search("select distinct c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(app.data_table_state.as_ref().unwrap().error.is_none());
+    assert!(app.data_table_state.as_ref().unwrap().error().is_none());
     assert_eq!(current_rows(&app), 3);
 
     // alpha_0 .. alpha_8, then 0 = (a mod 4) keeps 0, 4 and 8.
@@ -10002,7 +10061,7 @@ fn test_q_style_distinct_like_mod_and_xbar() {
     ));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(df.height(), 10);
     assert_eq!(df.column("b").unwrap().get(9).unwrap(), AnyValue::Int64(90));
     assert_eq!(
@@ -10035,7 +10094,7 @@ fn test_sidebar_filter_and_sort_keep_fuzzy_query() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap();
@@ -10155,7 +10214,7 @@ fn test_skip_tail_rows_survives_a_sidebar_sort() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap();
@@ -10184,7 +10243,7 @@ fn test_parse_strings_survives_a_sidebar_filter() {
     {
         let state = app.data_table_state.as_ref().unwrap();
         assert!(
-            state.schema.get("amount").unwrap().is_integer(),
+            state.schema().get("amount").unwrap().is_integer(),
             "parse_strings should have made amount numeric"
         );
     }
@@ -10196,7 +10255,7 @@ fn test_parse_strings_survives_a_sidebar_filter() {
     )]));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(state.error().is_none(), "{:?}", state.error());
     // amount = 3 * id > 150 for id 51..100
     assert_eq!(current_rows(&app), 49);
 }
@@ -10215,7 +10274,7 @@ fn first_micros(app: &App, name: &str) -> i64 {
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap();
@@ -10231,7 +10290,7 @@ fn first_micros(app: &App, name: &str) -> i64 {
 
 fn assert_iso_timestamps_typed(app: &App) {
     let utc = DataType::Datetime(TimeUnit::Microseconds, Some(TimeZone::UTC));
-    let schema = &app.data_table_state.as_ref().unwrap().schema;
+    let schema = &app.data_table_state.as_ref().unwrap().schema();
     for name in ["z", "frac", "offset", "space", "minutes"] {
         assert_eq!(schema.get(name), Some(&utc), "{name}");
     }
@@ -10268,7 +10327,7 @@ fn test_iso_timestamps_stay_text_without_parse_dates() {
         ..OpenOptions::default()
     };
     let (app, _rx, _tx) = open_csv_with("iso_timestamps_as_text.csv", ISO_TIMESTAMPS_CSV, options);
-    let schema = &app.data_table_state.as_ref().unwrap().schema;
+    let schema = &app.data_table_state.as_ref().unwrap().schema();
     assert_eq!(schema.get("z"), Some(&DataType::String));
     assert_eq!(schema.get("id"), Some(&DataType::Int64));
 }
@@ -10286,7 +10345,7 @@ fn test_iso_timestamps_in_ndjson_load_as_utc_datetime() {
     }
     let (app, _rx, _tx) = open_csv_with("iso_timestamps.jsonl", &jsonl, OpenOptions::default());
     assert_iso_timestamps_typed(&app);
-    let schema = &app.data_table_state.as_ref().unwrap().schema;
+    let schema = &app.data_table_state.as_ref().unwrap().schema();
     assert_eq!(schema.get("zip"), Some(&DataType::String));
 }
 
@@ -10303,8 +10362,8 @@ fn test_datetimes_of_mixed_precision_stay_text() {
     };
     let (app, _rx, _tx) = open_csv_with("datetimes_mixed_precision.csv", csv, options);
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.schema.get("t"), Some(&DataType::String));
-    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(state.schema().get("t"), Some(&DataType::String));
+    let df = state.lf().clone().collect().unwrap();
     let t = df.column("t").unwrap().str().unwrap();
     assert_eq!(t.get(1), Some("2024-01-02 11:30:15"));
 }
@@ -10329,15 +10388,21 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
     }));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 10);
-    assert!(app.data_table_state.as_ref().unwrap().schema.contains("k1"));
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .schema()
+            .contains("k1")
+    );
 
     app.event(&AppEvent::SqlSearch(
         "SELECT id, k2 FROM df WHERE k1 > 4".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{:?}", state.error);
-    let df = state.lf.clone().collect().unwrap();
+    assert!(state.error().is_none(), "{:?}", state.error());
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(df.height(), 5, "ids 5..9");
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
     assert_eq!(names, vec!["id", "k2"]);
@@ -10370,7 +10435,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     )]));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(state.error().is_none(), "{:?}", state.error());
     assert!(
         state.is_drilled_down(),
         "the filter must not undo the drill-down"
@@ -10381,7 +10446,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(df.height(), 10);
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(27));
 
@@ -10408,7 +10473,7 @@ fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
         app.data_table_state
             .as_ref()
             .unwrap()
-            .schema
+            .schema()
             .iter_names()
             .map(|s| s.to_string())
             .collect::<Vec<_>>(),
@@ -10418,16 +10483,16 @@ fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
     app.event(&AppEvent::FuzzySearch("alpha".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(state.error().is_none(), "{:?}", state.error());
     assert_eq!(current_rows(&app), 50);
-    assert!(state.schema.contains("name") && state.schema.contains("c"));
+    assert!(state.schema().contains("name") && state.schema().contains("c"));
     assert_eq!(state.headers(), vec!["a", "c", "name"]);
 
     app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{:?}", state.error);
-    let df = state.lf.clone().collect().unwrap();
+    assert!(state.error().is_none(), "{:?}", state.error());
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(df.height(), 50);
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(98));
 }
@@ -10451,7 +10516,13 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
         sort_columns: None,
     }));
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(app.data_table_state.as_ref().unwrap().schema.contains("k1"));
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .schema()
+            .contains("k1")
+    );
 
     app.event(&AppEvent::Search("select id, key".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
@@ -10467,8 +10538,8 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
     app.event(&AppEvent::SqlSearch("SELECT * FROM df".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{:?}", state.error);
-    let names: Vec<String> = state.schema.iter_names().map(|s| s.to_string()).collect();
+    assert!(state.error().is_none(), "{:?}", state.error());
+    let names: Vec<String> = state.schema().iter_names().map(|s| s.to_string()).collect();
     assert_eq!(names, vec!["id", "key", "val"], "the unpivoted columns");
     assert_eq!(current_rows(&app), 20);
 }
@@ -10699,7 +10770,10 @@ fn test_enter_drills_from_an_aggregated_result() {
     painted(&mut app, &rx, &tx, area);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
-    assert_eq!(state.drilled_down_group_key, Some(vec!["1".to_string()]));
+    assert_eq!(
+        state.drilled_group_key().map(|(_, values)| values.to_vec()),
+        Some(vec!["1".to_string()])
+    );
     assert_eq!(
         state.headers(),
         ["c", "a", "name"],
@@ -10733,7 +10807,7 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
     let state = app.data_table_state.as_mut().unwrap();
     state.drill_down_into_group(2).unwrap();
     assert_eq!(state.headers(), ["k", "v"]);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(df.column("k").unwrap().null_count(), 3);
     assert_eq!(df.column("v").unwrap().i64().unwrap().sum(), Some(12));
     state.drill_up().unwrap();
@@ -10745,10 +10819,12 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
     let state = app.data_table_state.as_mut().unwrap();
     state.drill_down_into_group(1).unwrap();
     assert_eq!(
-        state.drilled_down_group_key_columns,
+        state
+            .drilled_group_key()
+            .map(|(columns, _)| columns.to_vec()),
         Some(vec!["big".to_string()])
     );
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let v: Vec<i64> = df
         .column("v")
         .unwrap()
@@ -10789,7 +10865,7 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
     let mut app = App::new(tx.clone(), common::test_runtime());
     pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);
-    let schema = app.data_table_state.as_ref().unwrap().schema.clone();
+    let schema = app.data_table_state.as_ref().unwrap().schema().clone();
     assert!(matches!(schema.get("s"), Some(DataType::Categorical(..))));
     assert!(matches!(
         schema.get("t"),
@@ -10800,9 +10876,9 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
         app.event(&AppEvent::Search(format!("select n: count v by {key}")));
         pump_until_idle(&mut app, &rx, &tx);
         let state = app.data_table_state.as_mut().unwrap();
-        assert!(state.error.is_none(), "{key}: {:?}", state.error);
+        assert!(state.error().is_none(), "{key}: {:?}", state.error());
         let counts: Vec<u32> = state
-            .lf
+            .lf()
             .clone()
             .collect()
             .unwrap()
@@ -10814,7 +10890,7 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
             .collect();
         for (group, counted) in counts.into_iter().enumerate() {
             state.drill_down_into_group(group).unwrap();
-            let rows = state.lf.clone().collect().unwrap().height();
+            let rows = state.lf().clone().collect().unwrap().height();
             assert_eq!(rows as u32, counted, "by {key}, group {group}");
             state.drill_up().unwrap();
         }
@@ -10841,7 +10917,10 @@ fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
         state.is_drilled_down(),
         "drilled before any event is pumped"
     );
-    assert_eq!(state.drilled_down_group_key, Some(vec!["1".to_string()]));
+    assert_eq!(
+        state.drilled_group_key().map(|(_, values)| values.to_vec()),
+        Some(vec!["1".to_string()])
+    );
     pump_until_idle(&mut app, &rx, &tx);
     press_and_send(&mut app, &tx, KeyCode::Esc);
     pump_until_idle(&mut app, &rx, &tx);
@@ -10859,7 +10938,10 @@ fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
     painted(&mut app, &rx, &tx, area);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
-    assert_eq!(state.drilled_down_group_key, Some(vec!["1".to_string()]));
+    assert_eq!(
+        state.drilled_group_key().map(|(_, values)| values.to_vec()),
+        Some(vec!["1".to_string()])
+    );
     assert!(on_screen(&app, "c").iter().all(|c| c == "1"));
 }
 
@@ -10880,7 +10962,10 @@ fn test_drill_from_a_sorted_aggregate_takes_the_row_on_screen() {
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.drilled_down_group_key, Some(vec!["2".to_string()]));
+    assert_eq!(
+        state.drilled_group_key().map(|(_, values)| values.to_vec()),
+        Some(vec!["2".to_string()])
+    );
     assert!(on_screen(&app, "c").iter().all(|c| c == "2"));
 }
 
@@ -10923,10 +11008,12 @@ fn test_drill_from_lists_keeps_a_null_key_and_names_only_keys() {
     // Nulls sort last.
     state.drill_down_into_group(2).unwrap();
     assert_eq!(
-        state.drilled_down_group_key_columns,
+        state
+            .drilled_group_key()
+            .map(|(columns, _)| columns.to_vec()),
         Some(vec!["k".to_string()])
     );
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(df.height(), 2);
     assert_eq!(df.column("k").unwrap().null_count(), 2);
     assert_eq!(df.column("k").unwrap().dtype(), &DataType::String);
@@ -10992,7 +11079,7 @@ fn run_sql(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEv
     app.event(&AppEvent::SqlSearch(sql.to_string()));
     pump_until_idle(app, rx, tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+    assert!(state.error().is_none(), "{sql}: {:?}", state.error());
 }
 
 /// The acceptance case: Enter on a department of a SQL `GROUP BY` shows that
@@ -11026,9 +11113,12 @@ fn test_sql_group_by_drills_into_rows_after_where() {
     painted(&mut app, &rx, &tx, area);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.is_drilled_down());
-    assert_eq!(state.drilled_down_group_key, Some(vec![depts[1].clone()]));
+    assert_eq!(
+        state.drilled_group_key().map(|(_, values)| values.to_vec()),
+        Some(vec![depts[1].clone()])
+    );
     assert_eq!(state.headers(), ["dept", "id", "salary", "ts"]);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let salaries = df.column("salary").unwrap().i64().unwrap();
     assert!(salaries.into_no_null_iter().all(|s| s > 100_000));
     let expected = (0..40i64)
@@ -11074,7 +11164,7 @@ fn test_sql_group_by_drills_by_null_computed_and_aliased_keys() {
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.can_drill_down(), "{sql}");
         let counts: Vec<u32> = state
-            .lf
+            .lf()
             .clone()
             .collect()
             .unwrap()
@@ -11087,7 +11177,7 @@ fn test_sql_group_by_drills_by_null_computed_and_aliased_keys() {
         assert!(!counts.is_empty(), "{sql}");
         for (group, counted) in counts.into_iter().enumerate() {
             state.drill_down_into_group(group).unwrap();
-            let rows = state.lf.clone().collect().unwrap();
+            let rows = state.lf().clone().collect().unwrap();
             assert_eq!(rows.height() as u32, counted, "{sql}, group {group}");
             assert!(
                 rows.get_column_names()
@@ -11114,10 +11204,12 @@ fn test_sql_group_by_null_and_computed_key_rows() {
     let state = app.data_table_state.as_mut().unwrap();
     state.drill_down_into_group(3).unwrap();
     assert_eq!(
-        state.drilled_down_group_key_columns,
+        state
+            .drilled_group_key()
+            .map(|(columns, _)| columns.to_vec()),
         Some(vec!["dept".to_string()])
     );
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(df.height(), 10);
     assert_eq!(df.column("dept").unwrap().null_count(), 10);
     state.drill_up().unwrap();
@@ -11131,9 +11223,12 @@ fn test_sql_group_by_null_and_computed_key_rows() {
     );
     let state = app.data_table_state.as_mut().unwrap();
     state.drill_down_into_group(3).unwrap();
-    assert_eq!(state.drilled_down_group_key, Some(vec!["3".to_string()]));
+    assert_eq!(
+        state.drilled_group_key().map(|(_, values)| values.to_vec()),
+        Some(vec!["3".to_string()])
+    );
     assert_eq!(state.headers(), ["id", "dept", "salary", "ts"]);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let ids: Vec<i64> = df
         .column("id")
         .unwrap()
@@ -11160,7 +11255,7 @@ fn test_sql_group_by_with_lists_drills_into_source_rows() {
     assert!(state.is_grouped(), "a list column");
     state.drill_down_into_group(0).unwrap();
     assert_eq!(state.headers(), ["dept", "id", "salary", "ts"]);
-    assert_eq!(state.lf.clone().collect().unwrap().height(), 10);
+    assert_eq!(state.lf().clone().collect().unwrap().height(), 10);
 }
 
 /// A statement whose rows cannot be traced back reliably does not drill: Enter says
@@ -11225,7 +11320,7 @@ fn test_sql_group_by_without_order_by_is_sorted_by_its_keys() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap();
@@ -11255,13 +11350,18 @@ fn test_sql_group_by_without_order_by_is_sorted_by_its_keys() {
         current_rows(&app),
         4,
         "the order as written: {:?}",
-        app.data_table_state.as_ref().unwrap().lf.clone().collect()
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
     );
     let first = app
         .data_table_state
         .as_ref()
         .unwrap()
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap()
@@ -11297,7 +11397,10 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
     let state = app.data_table_state.as_mut().unwrap();
     assert_eq!(state.get_active_sql_query(), grouped);
     state.drill_down_into_group(0).unwrap();
-    assert_eq!(state.drilled_down_group_key, Some(vec!["eng".to_string()]));
+    assert_eq!(
+        state.drilled_group_key().map(|(_, values)| values.to_vec()),
+        Some(vec!["eng".to_string()])
+    );
     assert_eq!(current_rows(&app), 10);
 }
 
@@ -11322,7 +11425,7 @@ fn test_sql_inside_a_drill_down_stays_in_the_group() {
     ));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(state.error().is_none(), "{:?}", state.error());
     assert_eq!(
         current_rows(&app),
         10,
@@ -13130,7 +13233,7 @@ fn test_a_directory_opened_as_one_dataset_is_read_as_what_it_holds() {
         .data_table_state
         .as_ref()
         .expect("a directory of CSVs should open as one table of CSVs");
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(
         df.height(),
         3,
@@ -13196,7 +13299,7 @@ fn test_a_directory_of_csvs_beside_an_unrelated_directory_still_reads_as_csvs() 
         .data_table_state
         .as_ref()
         .expect("a directory of CSVs should open as one table of CSVs");
-    assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
+    assert_eq!(state.lf().clone().collect().unwrap().height(), 3);
 }
 
 /// A hive dataset of something other than Parquet says which files it holds.
@@ -13260,7 +13363,7 @@ fn test_a_nested_hive_of_parquet_still_opens() {
         .data_table_state
         .as_ref()
         .expect("a nested hive of Parquet is a dataset");
-    assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
+    assert_eq!(state.lf().clone().collect().unwrap().height(), 3);
 }
 
 /// Two doors, on a directory datui does not recognize as anything.
@@ -14014,7 +14117,7 @@ fn test_the_command_line_reads_a_directory_the_way_enter_does() {
     };
     pump_open_until_loaded(&mut loaded, &rx, paths, options);
     assert_eq!(
-        loaded.data_table_state.as_ref().map(|s| s.num_rows),
+        loaded.data_table_state.as_ref().map(|s| s.num_rows()),
         Some(2),
         "one row from each file, read as one table"
     );
@@ -14092,7 +14195,7 @@ fn test_a_mixed_directory_reads_as_the_commonest_format_and_says_what_it_left_ou
         .data_table_state
         .as_ref()
         .expect("the directory opens rather than being refused over the stray");
-    assert_eq!(state.num_rows, 3, "one row from each CSV");
+    assert_eq!(state.num_rows(), 3, "one row from each CSV");
 
     let notes = state.notes();
     let said = notes
@@ -14207,7 +14310,7 @@ fn test_a_directory_of_files_written_without_extensions_still_opens() {
         },
     );
     assert_eq!(
-        app.data_table_state.as_ref().map(|s| s.num_rows),
+        app.data_table_state.as_ref().map(|s| s.num_rows()),
         Some(2),
         "one row from each part"
     );
@@ -14908,7 +15011,7 @@ fn open_and_collect(paths: Vec<PathBuf>, options: OpenOptions) -> (App, DataFram
         .data_table_state
         .as_ref()
         .expect("the file opened")
-        .lf
+        .lf()
         .clone()
         .collect()
         .unwrap();
@@ -15067,7 +15170,7 @@ fn column_names(app: &App) -> Vec<String> {
     app.data_table_state
         .as_ref()
         .expect("a dataset")
-        .schema
+        .schema()
         .iter_names()
         .map(|n| n.to_string())
         .collect()
@@ -15605,7 +15708,7 @@ fn test_sort_filter_per_column_directions_reach_the_table() {
         ["a".to_string(), "c".to_string()]
     );
     assert_eq!(state.view_sort_descending(), [true, false]);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     let first = df.column("a").unwrap().get(0).unwrap();
     assert_eq!(first, AnyValue::Int64(99), "a runs descending");
 
@@ -15631,7 +15734,7 @@ fn test_sort_filter_per_column_directions_reach_the_table() {
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.view_sort_descending(), [false, true]);
-    let df = state.lf.clone().collect().unwrap();
+    let df = state.lf().clone().collect().unwrap();
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(0));
 }
 
@@ -16417,11 +16520,11 @@ fn a_query_that_fails_when_collected_is_not_installed() {
     pump_until_idle(&mut app, &rx, &tx);
     let names = |app: &App| -> Vec<String> {
         let state = app.data_table_state.as_ref().unwrap();
-        state.schema.iter_names().map(|n| n.to_string()).collect()
+        state.schema().iter_names().map(|n| n.to_string()).collect()
     };
     assert_eq!(names(&app), ["id", "ds", "v"]);
     assert_eq!(
-        app.data_table_state.as_ref().unwrap().schema.get("ds"),
+        app.data_table_state.as_ref().unwrap().schema().get("ds"),
         Some(&DataType::Date),
         "the repro needs ds read as a date"
     );
@@ -16447,7 +16550,7 @@ fn a_query_that_fails_when_collected_is_not_installed() {
         state.is_num_rows_valid(),
         "the row count is not left unknown"
     );
-    assert_eq!(state.num_rows, 30);
+    assert_eq!(state.num_rows(), 30);
 
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     let screen = screen_at(&mut app, 80, 24);
@@ -16463,7 +16566,7 @@ fn a_query_that_fails_when_collected_is_not_installed() {
     );
     assert!(!app.modal_showing(), "the sort does not fail");
     let state = app.data_table_state.as_ref().unwrap();
-    let sorted = state.lf.clone().collect().unwrap();
+    let sorted = state.lf().clone().collect().unwrap();
     assert_eq!(sorted.height(), 30);
     assert_eq!(
         sorted.column("v").unwrap().i64().unwrap().get(0),
@@ -16486,7 +16589,7 @@ fn a_query_sent_without_the_prompt_that_fails_leaves_the_view() {
     );
     assert!(app.modal_showing(), "no prompt to put it in: a dialog");
     let state = app.data_table_state.as_ref().unwrap();
-    let names: Vec<String> = state.schema.iter_names().map(|n| n.to_string()).collect();
+    let names: Vec<String> = state.schema().iter_names().map(|n| n.to_string()).collect();
     assert_eq!(names, ["a", "c", "name"]);
     assert!(state.get_active_sql_query().is_empty());
     assert_eq!(current_rows(&app), 100);
@@ -16887,7 +16990,7 @@ fn view_and_steps_on_the_next_file(
             app.event(step);
             pump_until_idle(app, rx, tx);
             let state = app.data_table_state.as_ref().unwrap();
-            assert!(state.error.is_none(), "{:?}", state.error);
+            assert!(state.error().is_none(), "{:?}", state.error());
         }
     };
     let shown = |app: &App| {
@@ -16924,7 +17027,7 @@ fn view_and_steps_on_the_next_file(
     app.event(&key(KeyCode::Char('V')));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(state.error().is_none(), "{:?}", state.error());
     (template, shown(&app), expected)
 }
 
@@ -17046,7 +17149,7 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
         app.event(step);
         pump_until_idle(&mut app, &rx, &tx);
         let state = app.data_table_state.as_ref().unwrap();
-        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.error().is_none(), "{:?}", state.error());
     }
     let template = app
         .create_template_from_current_state(

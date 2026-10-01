@@ -34,7 +34,7 @@ pub fn render(
     let schema = app
         .data_table_state
         .as_ref()
-        .map(|state| state.schema.as_ref());
+        .map(|state| state.schema().as_ref());
     let column = |name: &str| chart_data::AxisNumbers::column(&ctx.number_format, schema, name);
     let columns =
         |names: &[String]| chart_data::AxisNumbers::columns(&ctx.number_format, schema, names);

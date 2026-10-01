@@ -2811,6 +2811,10 @@ fn gaps_summary(plan: &DataQualityPlan, gaps: &Gaps) -> String {
             counted_unit(*windows, unit),
             numfmt::group_chrome(crate::quality_trends::MAX_EXPECTED_WINDOWS)
         ),
+        // From typed past the last window found, with Before blank.
+        Gaps::Checked(check) if check.expected == 0 => {
+            format!("Expected {cadence}: no window in range")
+        }
         Gaps::Checked(check) if check.gaps() == 0 => format!(
             "Expected {cadence}: all {} have rows",
             counted_unit(check.expected, unit)
@@ -3253,12 +3257,15 @@ fn render_gaps(
         .render(area, buf);
         return;
     };
-    let Gaps::Checked(check) = &gaps else {
-        Paragraph::new(gaps_summary(plan, &gaps))
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(theme.get("text_primary")))
-            .render(area, buf);
-        return;
+    let check = match &gaps {
+        Gaps::Checked(check) if check.expected > 0 => check,
+        _ => {
+            Paragraph::new(gaps_summary(plan, &gaps))
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(theme.get("text_primary")))
+                .render(area, buf);
+            return;
+        }
     };
     let unit = trend_unit(&plan.grain);
     let every = check.every.as_str();
@@ -5556,5 +5563,24 @@ mod trend_tests {
             text.contains("Expected every day, 7 days: 6 empty"),
             "{text}"
         );
+    }
+
+    /// From past the last window found, Before blank: no window is in range, and
+    /// Trends says that rather than that every window has rows.
+    #[test]
+    fn a_range_with_no_window_says_so() {
+        let mut screen = Screen::sampled();
+        screen.plan.expected = Some(ExpectedWindows {
+            weekdays: false,
+            from: Some("2025-01-01".to_string()),
+            before: None,
+        });
+        for page in [QualityPage::Trends, QualityPage::Gaps] {
+            let text = screen.draw(page, 0, 0, (80, 24));
+            assert!(
+                text.contains("Expected every day: no window in range"),
+                "{page:?}:\n{text}"
+            );
+        }
     }
 }

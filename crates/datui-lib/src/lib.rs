@@ -10078,12 +10078,16 @@ impl App {
             self.analysis_modal.data_quality_setup_note = Some(problem);
             return None;
         }
-        if self
-            .analysis_modal
-            .data_quality_plan
-            .requires_confirmation()
-            && !self.analysis_modal.data_quality_confirm_run
-        {
+        // A report already here, on screen or cached, reads nothing: nothing to confirm.
+        let plan = &self.analysis_modal.data_quality_plan;
+        let here = (self.analysis_modal.data_quality_results.is_some()
+            && self
+                .analysis_modal
+                .data_quality_last_plan
+                .as_ref()
+                .is_some_and(|last| last.same_measurement(plan)))
+            || self.quality_cached(plan);
+        if plan.requires_confirmation() && !here && !self.analysis_modal.data_quality_confirm_run {
             // The prompt is answered with Enter, which only the main pane hears.
             self.analysis_modal.data_quality_confirm_run = true;
             self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;

@@ -4256,6 +4256,56 @@ fn trends_and_gaps_are_inspected_without_a_read() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
 }
 
+/// A full scan asks before it reads. Expected windows are checked against the
+/// report on screen, which reads nothing, so Run does not ask.
+#[test]
+fn expected_windows_on_a_full_scan_run_without_asking() {
+    use datui::data_quality::{ExpectedWindows, QualityCompute, QualityGrain, QualityPage};
+
+    let (mut app, rx, _tx) = open_weekday_feed("dq_expected_full.csv");
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    show_sample_form(&mut app);
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.compute = QualityCompute::Full;
+        plan.grain = QualityGrain::TimeWindows {
+            column: "day".into(),
+            every: "1d".into(),
+        };
+    }
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(
+        app.analysis_modal.data_quality_confirm_run,
+        "a full scan asks"
+    );
+    let next = press(&mut app, KeyCode::Enter);
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    let (finished, _) = drain_quality(&mut app, &rx, next);
+    assert_eq!(finished, 1);
+
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.expected = Some(ExpectedWindows {
+        weekdays: true,
+        ..ExpectedWindows::default()
+    });
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(
+        !app.analysis_modal.data_quality_confirm_run,
+        "nothing to confirm"
+    );
+    assert!(!app.is_busy() && app.analysis_modal.computing.is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+    assert!(
+        datui::quality_trends::expected_gaps(
+            app.analysis_modal.quality_result_plan(),
+            app.analysis_modal.data_quality_results.as_ref().unwrap(),
+        )
+        .is_some()
+    );
+}
+
 #[test]
 fn test_data_quality_scope_editor_runs_selected_view_rows() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};

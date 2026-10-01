@@ -1239,6 +1239,13 @@ mod quality_sample_tests {
             let area = ratatui::layout::Rect::new(0, 0, width, height);
             let mut drawn = Vec::new();
             for (stage, reads, frame, seconds) in frames {
+                // The monotonic clock starts at boot: a runner up for less than an
+                // hour cannot hold an instant an hour back, so that frame waits.
+                let Some(started) =
+                    std::time::Instant::now().checked_sub(std::time::Duration::from_secs(seconds))
+                else {
+                    continue;
+                };
                 let watch = crate::sampling::ReadWatch::default();
                 if reads == Some(true) {
                     watch.saw(1_234_567 * frame as usize);
@@ -1247,8 +1254,7 @@ mod quality_sample_tests {
                 progress.phase = stage.label().to_string();
                 progress.reads_source = reads;
                 progress.read = Some(watch);
-                progress.started =
-                    std::time::Instant::now() - std::time::Duration::from_secs(seconds);
+                progress.started = started;
                 app.throbber_frame = frame;
                 let mut buffer = ratatui::buffer::Buffer::empty(area);
                 app.render(area, &mut buffer);
@@ -1273,8 +1279,8 @@ mod quality_sample_tests {
             for (rows, stage_at) in &drawn[1..] {
                 assert_eq!(stage_at, at, "the stage starts in one place");
                 for (y, (row, before)) in rows.iter().zip(first).enumerate() {
-                    // The stage's line and the one under it, which says what it
-                    // reads, are the words that change.
+                    // The stage's line and the one two below it, which says what
+                    // it reads, are the words that change.
                     if y != at.0 && y != at.0 + 2 && row != before {
                         // The control bar's spinner turns in its one cell.
                         let moved = row

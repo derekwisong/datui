@@ -106,6 +106,7 @@ place, so do not run it while tests are running.
 | `tests/template_test.rs` | Templates and their scoring |
 | `tests/home_test.rs`, `tests/search_test.rs`, `tests/locality_test.rs` | Home screen, recursive search, filesystem detection |
 | `tests/config_test.rs`, `tests/config_integration_test.rs`, `tests/theme_application_test.rs` | Configuration and themes |
+| `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |
 | `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
 | `tests/common/` | Shared helpers |
 
@@ -133,3 +134,22 @@ can keep running after the app stops waiting on it. Tests about those
 their own condition, as `integration_test.rs` does with `pump_until` and
 `ticks()`. Library unit tests use `crate::tests::work_pending`, which also
 covers the buffer collect.
+
+## Startup timing
+
+```bash
+cargo build --release
+scripts/dev/first_frame_probe.py before=/path/to/old/datui after=target/release/datui --runs 20
+```
+
+| Column | Meaning |
+|---|---|
+| first frame | Spawn to the first output that draws a screen |
+| first rows | Spawn to the first output holding the fixture's first row |
+| idle CPU, wakeups/s, bytes | All threads, over a window after the rows are drawn |
+
+It runs each binary in a 120×30 pseudo-terminal with isolated config and cache,
+on 1,000-row CSV and Parquet fixtures, and prints p50/p95 as a Markdown table.
+`--silent` never answers the keyboard-protocol query and `--reply-delay MS`
+answers it late; a build that never asks is unaffected. Linux only. The
+numbers depend on the machine: they belong in a PR description, not in a test.

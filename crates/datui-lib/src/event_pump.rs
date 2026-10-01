@@ -1,18 +1,21 @@
-//! The main loop's event handling, minus the terminal.
+//! The main loop, minus the terminal.
 //!
-//! `run()` reads the terminal and draws frames; everything between, including what
-//! happens to a key typed while the app is busy, lives here so it can be driven
-//! without a terminal. Keys typed while busy are held, in order, and replayed one per
+//! `run()` sets the terminal up and hands [`EventPump::run`] a way to draw a frame;
+//! keys reach the pump through the same channel as worker results
+//! ([`crate::terminal_input`]), so the loop sleeps until either arrives or a deadline
+//! passes ([`Pacer`]). Everything between, including what happens to a key typed
+//! while the app is busy, lives here so it can be driven without a terminal. Keys
+//! typed while busy are held, in order, and replayed one per
 //! loop iteration once the app is idle, each through the same path a fresh key takes.
 //! Any follow-up event a replayed key produces is drained before the next held key is
 //! offered, so a queued Enter finishes its search before the key typed after it acts.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use color_eyre::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{App, AppEvent, GenerationLease};
 
@@ -34,12 +37,17 @@ enum Act {
 /// What a pass over the channel found.
 #[derive(Debug)]
 pub enum Drained {
-    /// Keep going; `updated` says whether anything was handled and a frame is due.
+    /// Keep going; `updated` says whether anything was handled and a frame is due,
+    /// and `progress_only` that everything handled was a report from work still
+    /// running ([`AppEvent::is_progress`]), whose frame may wait for the next.
     Continue {
         updated: bool,
+        progress_only: bool,
     },
     Exit,
     Crash(String),
+    /// A path named at startup is not there.
+    NotFound(std::path::PathBuf),
 }
 
 /// The screen the held keys were typed at. A change means they were meant for
@@ -68,11 +76,25 @@ pub struct EventPump {
     /// `BackgroundWorkFinished`, which is exactly what made the generation look free in
     /// the middle of an errand.
     ///
-    /// The lease covers the gap the break leaves. A frame is drawn and the terminal is
-    /// polled before the continuation runs, so a key can be handled in between, and that
-    /// key must not find the generation free either.
+    /// The lease covers the gap the break leaves. A frame is drawn before the
+    /// continuation runs, and a key replayed then must not find the generation free.
     next_up: VecDeque<(AppEvent, GenerationLease)>,
+    /// Events that arrived before there was an app to take them — keys typed while
+    /// `run` read the settings — handled first, in the order they came.
+    backlog: VecDeque<AppEvent>,
+    /// Keys read from the terminal and not yet offered to the app, oldest first. Each
+    /// waits for what has arrived on the channel behind it, as it did when the loop
+    /// read the terminal itself: taken in channel order, a held-down `j` put the
+    /// load-ahead's answer behind every repeat, scrolled off the buffer and folded the
+    /// rest into one press.
+    typed: VecDeque<KeyEvent>,
+    /// Events handled since a key was last offered. Bounded by [`RESULTS_PER_KEY`], so
+    /// a worker reporting faster than it is handled cannot starve the keyboard.
+    since_key: usize,
 }
+
+/// The most channel events handled while a typed key waits; then the key is offered.
+const RESULTS_PER_KEY: usize = 64;
 
 impl EventPump {
     pub fn new(app: App, tx: Sender<AppEvent>, rx: Receiver<AppEvent>) -> Self {
@@ -84,7 +106,15 @@ impl EventPump {
             held: VecDeque::new(),
             held_for,
             next_up: VecDeque::new(),
+            backlog: VecDeque::new(),
+            typed: VecDeque::new(),
+            since_key: 0,
         }
+    }
+
+    /// Handle `events` before anything on the channel: they arrived first.
+    pub fn handle_first(&mut self, events: impl IntoIterator<Item = AppEvent>) {
+        self.backlog.extend(events);
     }
 
     pub fn send(&self, event: AppEvent) -> Result<()> {
@@ -175,12 +205,19 @@ impl EventPump {
         Ok(true)
     }
 
-    /// The next event to handle: a continuation first, then the channel.
+    /// The next event to handle: a continuation first, then the backlog, then the
+    /// channel. `Empty` once a typed key has waited long enough, so it is offered.
     fn take_next(&mut self) -> Result<(AppEvent, Option<GenerationLease>), TryRecvError> {
-        match self.next_up.pop_front() {
-            Some((event, lease)) => Ok((event, Some(lease))),
-            None => self.rx.try_recv().map(|event| (event, None)),
+        if let Some((event, lease)) = self.next_up.pop_front() {
+            return Ok((event, Some(lease)));
         }
+        if let Some(event) = self.backlog.pop_front() {
+            return Ok((event, None));
+        }
+        if !self.typed.is_empty() && self.since_key >= RESULTS_PER_KEY {
+            return Err(TryRecvError::Empty);
+        }
+        self.rx.try_recv().map(|event| (event, None))
     }
 
     /// Handle everything waiting on the channel.
@@ -190,12 +227,13 @@ impl EventPump {
     }
 
     /// Wait up to `timeout` for the next event, then handle it and everything behind
-    /// it. For drivers without a terminal to wait on: a background result is the only
-    /// thing that can end a busy state.
+    /// it. The run loop's only wait: keys, worker results and continuations all arrive
+    /// here, so whichever comes first ends it. `Duration::MAX` waits as long as it
+    /// takes.
     pub fn wait_and_drain(&mut self, timeout: Duration) -> Result<Drained> {
         // A continuation is already here; waiting on the channel would sit on it for the
         // whole timeout while the errand it belongs to is halfway through.
-        if !self.next_up.is_empty() {
+        if !self.next_up.is_empty() || !self.backlog.is_empty() || !self.typed.is_empty() {
             let first = self.take_next();
             return self.drain_from(first);
         }
@@ -215,12 +253,34 @@ impl EventPump {
         mut next: Result<(AppEvent, Option<GenerationLease>), TryRecvError>,
     ) -> Result<Drained> {
         let mut updated = false;
+        let mut progress_only = true;
         loop {
             match next {
                 Ok((AppEvent::Exit, _)) => return Ok(Drained::Exit),
                 Ok((AppEvent::Crash(msg), _)) => return Ok(Drained::Crash(msg)),
+                // A path named at startup is not there: the session ends as it always
+                // has, with the file named — unless the user has moved on meanwhile.
+                Ok((AppEvent::NamedPathMissing { generation, path }, _))
+                    if generation == self.app.task_generation =>
+                {
+                    return Ok(Drained::NotFound(path));
+                }
+                // Offered once what arrived behind it is handled ([`Self::typed`]).
+                Ok((AppEvent::Terminal(Event::Key(key)), _)) => {
+                    if self.typed.is_empty() {
+                        self.since_key = 0;
+                    }
+                    self.typed.push_back(key);
+                }
+                Ok((AppEvent::Terminal(Event::Resize(cols, rows)), _)) => {
+                    next = Ok((AppEvent::Resize(cols, rows), None));
+                    continue;
+                }
+                Ok((AppEvent::Terminal(_), _)) => {}
                 Ok((event, continuation)) => {
                     updated = true;
+                    progress_only &= event.is_progress();
+                    self.since_key += 1;
                     let follow_up = match self.app.handle(&event) {
                         Ok(follow_up) => follow_up,
                         Err(deferred) => {
@@ -243,12 +303,93 @@ impl EventPump {
                         break;
                     }
                 }
-                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Empty) => {
+                    let Some(key) = self.typed.pop_front() else {
+                        break;
+                    };
+                    self.since_key = 0;
+                    // One key per frame, as when the loop read the terminal itself: a
+                    // key that acted is drawn before the next is offered, and a
+                    // continuation it queued gets its frame first.
+                    if self.terminal_key(key)? {
+                        updated = true;
+                        progress_only = false;
+                        break;
+                    }
+                }
                 Err(TryRecvError::Disconnected) => return Ok(Drained::Exit),
             }
             next = self.take_next();
         }
-        Ok(Drained::Continue { updated })
+        Ok(Drained::Continue {
+            updated,
+            progress_only: updated && progress_only,
+        })
+    }
+
+    /// The run loop, given a way to draw a frame: draw the first one, then replay one
+    /// held key, handle what has arrived, sleep until something arrives or a deadline
+    /// passes, and redraw, until the app exits.
+    ///
+    /// Keys ([`AppEvent::Terminal`]), worker results and the app's own news all come
+    /// through the one channel, so whichever is first ends the sleep; nothing waits out
+    /// a poll interval. Whatever was handled is drawn before the loop sleeps, and a
+    /// continuation queued by it runs right after that frame.
+    pub fn run(&mut self, mut draw: impl FnMut(&mut App) -> Result<()>) -> Result<Ended> {
+        let mut pacer = Pacer::default();
+        draw(&mut self.app)?;
+        self.app.frame_painted();
+        pacer.drew(Instant::now());
+        loop {
+            let mut pass = Pass::default();
+            // A replayed key may have queued a follow-up (a Search, an Export); it is
+            // handled in this drain, before anything typed since can overtake it.
+            pass.updated = self.replay_one()?;
+            pass.progress_only = !pass.updated;
+            if let Some(end) = pass.add(self.drain()?) {
+                return Ok(end);
+            }
+            if !pass.updated {
+                let now = Instant::now();
+                pacer.spinning(self.app.something_is_spinning(), now);
+                let timeout = pacer.timeout(self.app.next_deadline(), now);
+                if let Some(end) = pass.add(self.wait_and_drain(timeout)?) {
+                    return Ok(end);
+                }
+            }
+            let app = &mut self.app;
+            let now = Instant::now();
+            let mut redraw = pacer.handled(pass.updated, pass.progress_only, now);
+            // The throbber turns while busy, and while a background row count or
+            // anything else with a spinner of its own is still out.
+            pacer.spinning(app.something_is_spinning(), now);
+            if pacer.turn_spinner(now) {
+                app.throbber_frame = app.throbber_frame.wrapping_add(1);
+                redraw = true;
+            }
+            redraw |= app.tick_flash();
+            redraw |= app.flash_background_panic();
+            redraw |= app.flash_polars_warning();
+
+            app.request_what_the_frame_needs();
+
+            if redraw {
+                draw(app)?;
+                // A count waiting for the rows to be on screen starts now.
+                app.frame_painted();
+                pacer.drew(now);
+                // The frame sets the visible row count; a change asks for a collect.
+                if let Some(state) = &mut app.data_table_state
+                    && state.needs_recollect
+                {
+                    state.needs_recollect = false;
+                    app.spawn_async_collect(App::LOADING_BUFFER);
+                }
+                // And it marks the rows it drew without knowing them. Asked now, not
+                // on the next pass: with nothing else arriving there may not be one.
+                app.request_what_the_frame_needs();
+            }
+        }
     }
 
     /// Hold a continuation, and the generation, until it is dispatched.
@@ -335,6 +476,123 @@ impl EventPump {
     }
 }
 
+/// How the run loop ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ended {
+    Quit,
+    Crash(String),
+    /// A path named at startup is not there.
+    NotFound(std::path::PathBuf),
+}
+
+/// What one turn of the run loop handled.
+#[derive(Default)]
+struct Pass {
+    updated: bool,
+    progress_only: bool,
+}
+
+impl Pass {
+    /// Fold one channel drain in; or say how the loop ends.
+    fn add(&mut self, drained: Drained) -> Option<Ended> {
+        match drained {
+            Drained::Continue {
+                updated,
+                progress_only,
+            } => {
+                if updated {
+                    self.progress_only = progress_only && (self.progress_only || !self.updated);
+                    self.updated = true;
+                }
+                None
+            }
+            Drained::Exit => Some(Ended::Quit),
+            Drained::Crash(msg) => Some(Ended::Crash(msg)),
+            Drained::NotFound(path) => Some(Ended::NotFound(path)),
+        }
+    }
+}
+
+/// How often a spinner turns: about 30 frames a second, plenty for a throbber.
+pub const SPINNER_FRAME: Duration = Duration::from_millis(33);
+
+/// The least time between two frames drawn for progress reports alone. A worker
+/// reporting a thousand times a second is drawn thirty times; a key or a result is
+/// drawn at once.
+pub const PROGRESS_FRAME: Duration = Duration::from_millis(33);
+
+/// When the run loop draws, and how long it may sleep.
+///
+/// The loop sleeps until something arrives or a deadline passes, never on a fixed
+/// tick: idle, it does not wake at all. The deadlines are the spinner's next frame
+/// while one is on screen, a progress frame owed, and whatever the app says will
+/// change on its own (a flash expiring).
+#[derive(Debug, Default)]
+pub struct Pacer {
+    last_draw: Option<Instant>,
+    /// A frame for progress reports, held back until [`PROGRESS_FRAME`] has passed.
+    owed: bool,
+    /// The spinner's next frame, while one is on screen.
+    spin_due: Option<Instant>,
+}
+
+impl Pacer {
+    /// Say whether a spinner is on screen. One that starts turns a frame later.
+    pub fn spinning(&mut self, on: bool, now: Instant) {
+        if on {
+            self.spin_due.get_or_insert(now + SPINNER_FRAME);
+        } else {
+            self.spin_due = None;
+        }
+    }
+
+    /// Whether the spinner's next frame is due; moves the deadline on when it is.
+    pub fn turn_spinner(&mut self, now: Instant) -> bool {
+        match self.spin_due {
+            Some(due) if now >= due => {
+                self.spin_due = Some(now + SPINNER_FRAME);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What a pass handled, and whether to draw for it now. A pass of progress
+    /// reports alone, close behind the last frame, is owed a frame instead.
+    pub fn handled(&mut self, updated: bool, progress_only: bool, now: Instant) -> bool {
+        let progress_due = self
+            .last_draw
+            .is_none_or(|last| now >= last + PROGRESS_FRAME);
+        if updated && !progress_only {
+            return true;
+        }
+        if updated {
+            self.owed = true;
+        }
+        self.owed && progress_due
+    }
+
+    /// A frame was drawn.
+    pub fn drew(&mut self, now: Instant) {
+        self.last_draw = Some(now);
+        self.owed = false;
+    }
+
+    /// How long the loop may sleep: until the earliest deadline, or for as long as
+    /// it takes when there is none.
+    pub fn timeout(&self, app_deadline: Option<Instant>, now: Instant) -> Duration {
+        let owed = self
+            .owed
+            .then(|| self.last_draw.map(|last| last + PROGRESS_FRAME))
+            .flatten();
+        [self.spin_due, owed, app_deadline]
+            .into_iter()
+            .flatten()
+            .min()
+            .map_or(Duration::MAX, |at| at.saturating_duration_since(now))
+    }
+}
+
 /// Keys that move the view and are commonly held down. Column scroll (Left/Right/h/l)
 /// is included so a held one collapses when it cannot act live (behind other keys, or
 /// in a modal).
@@ -418,7 +676,7 @@ mod tests {
             }
             .unwrap();
             let updated = match &drained {
-                Drained::Continue { updated } => *updated,
+                Drained::Continue { updated, .. } => *updated,
                 _ => return drained,
             };
             if replayed || updated || crate::tests::work_pending(&pump.app) {
@@ -616,7 +874,7 @@ mod tests {
                 p.drain().unwrap()
             };
             match drained {
-                Drained::Continue { updated } => {
+                Drained::Continue { updated, .. } => {
                     // Mid-errand, at the moment the loop would draw and poll.
                     if !p.next_up.is_empty() {
                         breaks += 1;
@@ -1725,5 +1983,241 @@ mod tests {
             inflight.began -= Duration::from_secs(1);
         }
         assert!(rendered(&mut p.app).contains("Loading buffer"));
+    }
+
+    fn terminal(key: KeyEvent) -> AppEvent {
+        AppEvent::Terminal(Event::Key(key))
+    }
+
+    /// A flash that outlives any test: the loop's sleep is bounded by it, so a loop that
+    /// only woke at deadlines would end the test with the flash gone instead of hanging.
+    fn long_flash(app: &mut App) {
+        app.flash = Some(crate::Flash {
+            message: "guard".to_string(),
+            expires: Instant::now() + Duration::from_secs(120),
+        });
+    }
+
+    /// Idle, the loop sleeps without a deadline; a spinner wakes it each frame.
+    #[test]
+    fn the_pacer_sleeps_until_a_deadline_and_has_none_when_idle() {
+        let start = Instant::now();
+        let mut pacer = Pacer::default();
+        pacer.drew(start);
+        assert_eq!(pacer.timeout(None, start), Duration::MAX, "idle: no tick");
+
+        pacer.spinning(true, start);
+        assert_eq!(pacer.timeout(None, start), SPINNER_FRAME);
+        assert!(!pacer.turn_spinner(start + SPINNER_FRAME / 2), "not yet");
+        assert!(pacer.turn_spinner(start + SPINNER_FRAME), "a frame on time");
+        assert!(!pacer.turn_spinner(start + SPINNER_FRAME), "once per frame");
+
+        pacer.spinning(false, start);
+        let flash = start + Duration::from_secs(2);
+        assert_eq!(pacer.timeout(Some(flash), start), Duration::from_secs(2));
+    }
+
+    /// Progress reports close behind a frame wait for the next one; anything else, and
+    /// progress once a frame's time has passed, is drawn at once.
+    #[test]
+    fn progress_reports_share_a_frame_and_nothing_else_waits() {
+        let start = Instant::now();
+        let mut pacer = Pacer::default();
+        pacer.drew(start);
+        let soon = start + PROGRESS_FRAME / 3;
+        assert!(
+            pacer.handled(true, false, soon),
+            "a result is drawn at once"
+        );
+        assert!(!pacer.handled(true, true, soon), "progress waits");
+        assert_eq!(
+            pacer.timeout(None, soon),
+            PROGRESS_FRAME - PROGRESS_FRAME / 3,
+            "until the owed frame"
+        );
+        assert!(
+            !pacer.handled(false, false, soon),
+            "nothing new, still owed"
+        );
+        assert!(
+            pacer.handled(false, false, start + PROGRESS_FRAME),
+            "then drawn"
+        );
+        pacer.drew(start + PROGRESS_FRAME);
+        assert!(!pacer.handled(false, false, start + 2 * PROGRESS_FRAME));
+        assert!(
+            pacer.handled(true, true, start + 3 * PROGRESS_FRAME),
+            "progress long after a frame is drawn at once"
+        );
+    }
+
+    /// Keys come through the channel now. They are classified on the way in exactly as
+    /// before: typed at a busy table they are held in order, and Ctrl-Q still jumps the
+    /// queue and quits.
+    #[test]
+    fn terminal_keys_on_the_channel_are_held_in_order_and_ctrl_q_jumps_them() {
+        let mut p = pump();
+        p.app.busy = true;
+        for c in ['/', 'a', 'b'] {
+            p.send(terminal(plain(KeyCode::Char(c)))).unwrap();
+        }
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+        assert_eq!(
+            held(&p),
+            vec![KeyCode::Char('/'), KeyCode::Char('a'), KeyCode::Char('b')]
+        );
+        p.send(terminal(ctrl('q'))).unwrap();
+        // The key acts at once; the exit it asks for is its continuation, the very next
+        // thing handled.
+        assert!(matches!(
+            p.drain().unwrap(),
+            Drained::Continue { updated: true, .. }
+        ));
+        assert!(matches!(p.drain().unwrap(), Drained::Exit));
+    }
+
+    /// A worker's answer that lands behind keys typed ahead is handled before the next
+    /// of them, as when the loop read the terminal itself. Taken in channel order, a
+    /// held-down key put the load-ahead's answer behind every repeat.
+    #[test]
+    fn an_answer_is_not_held_behind_keys_typed_ahead() {
+        let mut p = pump();
+        p.app.home.listing_in_flight = true;
+        for _ in 0..3 {
+            p.send(terminal(plain(KeyCode::Down))).unwrap();
+        }
+        p.send(AppEvent::HomeListingFailed).unwrap();
+        let keys = p.app.debug.num_key_events;
+        assert!(matches!(
+            p.drain().unwrap(),
+            Drained::Continue { updated: true, .. }
+        ));
+        assert!(!p.app.home.listing_in_flight, "the answer is in");
+        assert_eq!(
+            p.app.debug.num_key_events,
+            keys + 1,
+            "and one key, one frame"
+        );
+        p.drain().unwrap();
+        p.drain().unwrap();
+        assert_eq!(p.app.debug.num_key_events, keys + 3, "the rest, in turn");
+    }
+
+    /// A worker that reports faster than the loop handles it still lets a typed key
+    /// through.
+    #[test]
+    fn a_stream_of_reports_does_not_starve_a_typed_key() {
+        let mut p = pump();
+        p.send(terminal(plain(KeyCode::Down))).unwrap();
+        for _ in 0..RESULTS_PER_KEY * 4 {
+            p.send(AppEvent::Wake).unwrap();
+        }
+        let keys = p.app.debug.num_key_events;
+        p.drain().unwrap();
+        assert_eq!(p.app.debug.num_key_events, keys + 1);
+    }
+
+    /// A resize read from the terminal reaches the app as the resize event it always
+    /// was.
+    #[test]
+    fn a_resize_from_the_terminal_reaches_the_app() {
+        let mut p = pump();
+        p.send(AppEvent::Terminal(Event::Resize(90, 30))).unwrap();
+        let events = p.app.debug.num_events;
+        assert!(matches!(
+            p.drain().unwrap(),
+            Drained::Continue { updated: true, .. }
+        ));
+        assert_eq!(p.app.debug.num_events, events + 1, "handled once");
+    }
+
+    /// The loop sleeps until something arrives: a worker's answer wakes it at once,
+    /// with no deadline to wait out. The guard flash would end the sleep after two
+    /// minutes and clear itself; it is still there, so the event did it.
+    #[test]
+    fn a_worker_answer_wakes_the_sleeping_loop() {
+        let mut p = pump();
+        long_flash(&mut p.app);
+        let tx = p.tx.clone();
+        let mut frames = 0;
+        let end = p
+            .run(|_app| {
+                frames += 1;
+                if frames == 1 {
+                    // After the first frame the loop goes to sleep; the answer lands
+                    // while it does.
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(20));
+                        let _ = tx.send(AppEvent::Exit);
+                    });
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(end, Ended::Quit);
+        assert!(p.app.flash.is_some(), "woken by the event, not a deadline");
+    }
+
+    /// A frame that draws rows nothing has measured asks for them before the loop
+    /// sleeps. Asked on the next pass instead, they would wait for a key: with the
+    /// listing in and nothing turning, there is no next pass.
+    #[test]
+    fn rows_a_frame_draws_unmeasured_are_asked_for_before_the_loop_sleeps() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nada,36\n").unwrap();
+        let mut p = pump();
+        long_flash(&mut p.app);
+        p.app.enter_home();
+        p.app.home_jump_into(dir.path().to_path_buf());
+        let tx = p.tx.clone();
+        let mut asked = false;
+        let end = p
+            .run(|app| {
+                rendered(app);
+                if !asked && app.home.enriched.contains_key(&path) {
+                    asked = true;
+                    let _ = tx.send(AppEvent::Exit);
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(end, Ended::Quit);
+        assert!(p.app.home.enriched.contains_key(&path), "measured");
+        assert!(p.app.flash.is_some(), "without waiting for a deadline");
+    }
+
+    /// Each loading phase gets its frame, then the next phase runs: the open goes from
+    /// the spinner to rows through the loop itself, every phase drawn in order.
+    #[test]
+    fn an_open_draws_each_phase_and_then_the_rows() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nada,36\ngrace,45\n").unwrap();
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.app.busy = true;
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        let tx = p.tx.clone();
+        let mut screens: Vec<String> = Vec::new();
+        let end = p
+            .run(|app| {
+                let screen = rendered(app);
+                if screen.contains("grace") && !screens.last().is_some_and(|s| s == &screen) {
+                    let _ = tx.send(AppEvent::Exit);
+                }
+                screens.push(screen);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(end, Ended::Quit);
+        let first_with = |needle: &str| screens.iter().position(|s| s.contains(needle));
+        let scanning = first_with("Scanning input").expect("the first phase is drawn");
+        let rows = first_with("grace").expect("the rows are drawn");
+        assert!(scanning < rows, "the phase is drawn before the rows");
     }
 }

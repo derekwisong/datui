@@ -14119,8 +14119,7 @@ fn test_the_command_line_reads_a_directory_the_way_enter_does() {
     };
     let named_with =
         |app: &mut App, rx: &mpsc::Receiver<AppEvent>, dir: &Path, options: OpenOptions| {
-            let mut next =
-                app.open_the_path_named_on_the_command_line(vec![dir.to_path_buf()], options);
+            let mut next = Some(AppEvent::OpenNamed(vec![dir.to_path_buf()], options));
             // Follow the chain to whatever it settles on: the look goes to a worker and
             // answers here, and what it answers with is the decision. Settling on the
             // home screen is an outcome, not a timeout — a helper that could only tell
@@ -14234,24 +14233,19 @@ fn test_the_command_line_reads_a_directory_the_way_enter_does() {
     );
 
     // A file is untouched, and not even looked at: it goes straight to the open.
-    let (mut e, _rx_e) = app();
     assert!(matches!(
-        e.open_the_path_named_on_the_command_line(
-            vec![one.join("a.parquet")],
-            OpenOptions::default()
-        ),
-        Some(AppEvent::Open(..))
+        App::route_named_paths(vec![one.join("a.parquet")], OpenOptions::default()),
+        AppEvent::Open(..)
     ));
     // `--hive` is an answer already given, so it is not second-guessed either.
-    let (mut f, _rx_f) = app();
     let forced = OpenOptions {
         hive: true,
         ..OpenOptions::default()
     };
     assert!(
         matches!(
-            f.open_the_path_named_on_the_command_line(vec![several.clone()], forced),
-            Some(AppEvent::Open(..))
+            App::route_named_paths(vec![several.clone()], forced),
+            AppEvent::Open(..)
         ),
         "--hive still means read this as one, whatever the directory looks like"
     );
@@ -14846,14 +14840,16 @@ fn test_widening_a_column_is_never_silent() {
     assert_eq!(state.headers(), vec!["id", "amount"]);
 }
 
-/// Naming a directory on the command line draws a frame before it reads anything.
+/// Naming a path on the command line draws a frame before anything asks the filesystem
+/// about it.
 ///
 /// Looking at a directory reads footers, or the front of a spread of its files, and for a
 /// directory of large Parquet that is seconds — 4.6 of them on a real one, and seventeen
 /// on one with a deep subtree. It used to happen in `run()` before the first
 /// `terminal.draw`, so the whole of it was a blank terminal: no name, no spinner, and
-/// no key that worked. The look is an event now, carried out on a worker after the
-/// first frame.
+/// no key that worked. So did the `exists` and `is_dir` that decide whether there is
+/// anything to look at, and a local-looking path can be a mount that does not answer.
+/// All of it is a worker's now, after the first frame.
 #[test]
 fn test_looking_at_a_directory_happens_after_the_first_frame() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -14861,34 +14857,71 @@ fn test_looking_at_a_directory_happens_after_the_first_frame() {
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("a.csv"), "a,b\n1,2\n").unwrap();
 
-    let (tx, _rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let event = app
-        .open_the_path_named_on_the_command_line(vec![directory.clone()], OpenOptions::default())
-        .expect("a directory is something to act on");
-
-    // The call hands back work to do rather than having done it. Nothing has been
-    // decided yet: no home screen, no load.
-    match &event {
-        AppEvent::LookThenOpenDirectory(dir, _) => assert_eq!(dir, &directory),
-        _ => panic!("the directory is looked at on a worker, not on the way to the first frame"),
-    }
+    let follow_up = app.event(&AppEvent::OpenNamed(
+        vec![directory.clone()],
+        OpenOptions::default(),
+    ));
+    // Handling it decided nothing: no home screen, no load, and a spinner while a
+    // worker asks the filesystem.
+    assert!(follow_up.is_none(), "the question goes to a worker");
+    assert!(app.is_busy(), "and the screen says something is happening");
     assert!(
         app.home.browsing.is_none() && app.data_table_state.is_none(),
-        "and the look has not run yet, so nothing has been opened or browsed into"
+        "nothing has been opened or browsed into"
     );
 
-    // A file is not looked at at all — there is nothing to find out — so it keeps
-    // going straight to the open and pays for no frame.
-    let (tx, _rx) = mpsc::channel();
-    let mut on_a_file = App::new(tx, common::test_runtime());
+    // The worker's answer is that a directory was named, which is looked at next.
+    let mut next = None;
+    while next.is_none() {
+        let event = next_event(&app, &rx).expect("the worker answers");
+        next = app.event(&event);
+    }
+    match next {
+        Some(AppEvent::LookThenOpenDirectory(dir, _)) => assert_eq!(dir, directory),
+        _ => panic!("a named directory is looked at before it is opened"),
+    }
+
+    // A file is not looked at at all — there is nothing to find out — so it goes
+    // straight to the open.
     assert!(matches!(
-        on_a_file.open_the_path_named_on_the_command_line(
-            vec![directory.join("a.csv")],
-            OpenOptions::default()
-        ),
-        Some(AppEvent::Open(..))
+        App::route_named_paths(vec![directory.join("a.csv")], OpenOptions::default()),
+        AppEvent::Open(..)
     ));
+}
+
+/// A path named at startup that is not there ends the session, as it always has; the
+/// check is a worker's, behind the first frame.
+#[test]
+fn test_a_missing_named_path_is_found_on_a_worker() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let missing = tmp.path().join("nope.csv");
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    assert!(
+        app.event(&AppEvent::OpenNamed(
+            vec![missing.clone()],
+            OpenOptions::default()
+        ))
+        .is_none()
+    );
+    let mut found = None;
+    while found.is_none() {
+        match next_event(&app, &rx).expect("the worker answers") {
+            AppEvent::NamedPathMissing { path, .. } => found = Some(path),
+            other => {
+                app.event(&other);
+            }
+        }
+    }
+    assert_eq!(found, Some(missing));
+    // A URL or a glob is the open's to judge.
+    assert_eq!(
+        App::missing_named_path(&[PathBuf::from("https://example.com/x.csv")]),
+        None
+    );
+    assert_eq!(App::missing_named_path(&[tmp.path().join("*.csv")]), None);
 }
 
 /// Going home while a directory is being looked at is not undone when the look lands.
@@ -14907,9 +14940,7 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
 
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let event = app
-        .open_the_path_named_on_the_command_line(vec![directory.clone()], OpenOptions::default())
-        .expect("a directory is looked at");
+    let event = App::route_named_paths(vec![directory.clone()], OpenOptions::default());
     app.event(&event);
 
     // Ctrl+O while the look is out: the user is at the home screen now.
@@ -14961,7 +14992,7 @@ fn test_a_setting_that_agrees_with_the_rule_changes_nothing() {
     let settle = |options: OpenOptions| {
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(tx, common::test_runtime());
-        let mut next = app.open_the_path_named_on_the_command_line(vec![apart.clone()], options);
+        let mut next = Some(AppEvent::OpenNamed(vec![apart.clone()], options));
         loop {
             if app.home.browsing.is_some() {
                 return None;
@@ -15046,7 +15077,7 @@ fn test_a_csv_setting_does_not_decide_a_directory_of_parquet() {
     ] {
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(tx, common::test_runtime());
-        let mut next = app.open_the_path_named_on_the_command_line(vec![apart.clone()], options);
+        let mut next = Some(AppEvent::OpenNamed(vec![apart.clone()], options));
         loop {
             if app.home.browsing.is_some() {
                 break;
@@ -15081,13 +15112,13 @@ fn test_a_directory_with_no_data_is_not_forced_open() {
 
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    let mut next = app.open_the_path_named_on_the_command_line(
+    let mut next = Some(AppEvent::OpenNamed(
         vec![src.clone()],
         OpenOptions {
             has_header: Some(false),
             ..OpenOptions::default()
         },
-    );
+    ));
     loop {
         if app.home.browsing.is_some() {
             break;

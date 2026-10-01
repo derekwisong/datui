@@ -309,29 +309,6 @@ fn test_config_analysis_sample_rows() {
 }
 
 #[test]
-fn test_config_event_poll_interval() {
-    let mut config = AppConfig::default();
-    config.performance.event_poll_interval_ms = 100;
-
-    assert_eq!(config.performance.event_poll_interval_ms, 100);
-
-    // Verify validation allows reasonable values
-    assert!(config.validate().is_ok());
-}
-
-#[test]
-fn test_config_performance_validation() {
-    let mut config = AppConfig::default();
-
-    config.performance.event_poll_interval_ms = 0;
-    assert!(config.validate().is_err());
-
-    // Valid values should pass
-    config.performance.event_poll_interval_ms = 25;
-    assert!(config.validate().is_ok());
-}
-
-#[test]
 fn test_parse_strings_default_and_no_parse_strings() {
     let config = AppConfig::default();
 

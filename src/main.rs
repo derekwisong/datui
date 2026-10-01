@@ -1,7 +1,7 @@
 use clap::Parser;
 use color_eyre::Result;
-use datui::{APP_NAME, Args, OpenOptions, RunInput, error_display};
-use datui::{AppConfig, ConfigManager, TemplateManager};
+use datui::{APP_NAME, Args, RunInput, error_display};
+use datui::{ConfigManager, TemplateManager};
 
 fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
     if args.generate_config {
@@ -105,46 +105,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut config = match AppConfig::load(APP_NAME) {
-        Ok(c) => c,
-        Err(e) => {
-            // In full: a TOML parse error's later lines show the offending line and why.
-            eprintln!("Error: {e}");
-            eprintln!(
-                "Fix the configuration and try again, or remove/rename the config file to use defaults."
-            );
-            std::process::exit(1);
-        }
-    };
-
-    if let Some(cc) = args.column_colors {
-        config.display.column_colors = cc;
-    }
-
-    if let Some(nf) = args.number_format.as_deref() {
-        config.display.number_format = config.display.number_format.with_grouping_override(nf);
-    }
-
-    if let Some(ar) = args.align_numeric_right {
-        config.display.align_numeric_right = ar;
-    }
-
-    if let Some(rows) = args.sample_rows {
-        config.performance.analysis_sample_rows = rows;
-    }
-
-    if let Some(ps) = args.polars_streaming {
-        config.performance.polars_streaming = ps;
-    }
-
-    if let Some(path) = &args.log_file {
-        config.debug.log_file = Some(path.to_string_lossy().into_owned());
-    }
-
-    let opts = OpenOptions::from_args_and_config(&args, &config);
-    let input = RunInput::Paths(args.paths.clone(), opts);
-
-    if let Err(e) = datui::run(input, Some(config)) {
+    // The configuration is read, and these flags applied over it, behind the first
+    // frame: a config on a slow mount must not hold up the screen.
+    if let Err(e) = datui::run(RunInput::Cli(Box::new(args)), None) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }

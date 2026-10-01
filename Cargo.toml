@@ -55,6 +55,10 @@ flate2 = "1.0"
 # Reading an Avro file's schema back. Also `datui-lib`'s.
 serde_json = "1.0"
 
+# A pseudo-terminal for tests/startup_test.rs. Also `datui-lib`'s.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 # Packaging: deb, rpm, AUR.
 [package.metadata.deb]
 maintainer = "Derek Wisong"

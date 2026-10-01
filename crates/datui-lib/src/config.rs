@@ -1859,7 +1859,6 @@ pub struct PerformanceConfig {
     /// Distribution, Correlation, Data Quality) reads from a table with more, spread
     /// across all of it. 0 starts at every row.
     pub analysis_sample_rows: usize,
-    pub event_poll_interval_ms: u64,
     /// When true (default), use Polars streaming engine for LazyFrame collect when the streaming feature is enabled (lower memory, batch processing).
     pub polars_streaming: bool,
     /// The most a Data Quality full scan of a remote dataset may copy into the cache
@@ -1873,10 +1872,6 @@ const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
     (
         "analysis_sample_rows",
         "The analysis sample's starting size (default 100000): the rows every analysis tool\nreads from a larger table, spread across the whole of it. A smaller table is read whole.\n0 starts at every row. The Sample form (s) changes it, and the method, per session.",
-    ),
-    (
-        "event_poll_interval_ms",
-        "Event polling interval in milliseconds\nLower values = more responsive but higher CPU usage",
     ),
     (
         "polars_streaming",
@@ -2618,7 +2613,6 @@ impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
             analysis_sample_rows: DEFAULT_ANALYSIS_SAMPLE_ROWS,
-            event_poll_interval_ms: 25,
             polars_streaming: true,
             quality_local_copy_mb: DEFAULT_QUALITY_LOCAL_COPY_MB,
         }
@@ -3273,12 +3267,6 @@ impl AppConfig {
                 "Unsupported config version: {}. Expected 0.2.x",
                 self.version
             ));
-        }
-
-        // Validate performance settings
-
-        if self.performance.event_poll_interval_ms == 0 {
-            return Err(eyre!("event_poll_interval_ms must be greater than 0"));
         }
 
         if let Some(n) = self.chart.row_limit

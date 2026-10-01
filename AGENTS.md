@@ -103,14 +103,18 @@ run steps with `deferred` (nothing collects; the App then calls
 `spawn_async_collect`), and plan a view's steps with `try_transition`, whose
 checkpoint `roll_back` restores if its rows fail.
 
-**One event loop, background work by generation.** `run()` reads terminal
-events, sends `AppEvent`s over an mpsc channel, and `App::event` handles them.
-Anything that touches data runs off the UI thread through `spawn_bg`, tagged
-with `task_generation`; a result whose generation is stale is dropped. Each
-spawn names its `Job`. A worker sends its result and returns `Ok`, or returns
-`Err` with the message for the user; `spawn_bg` reports that, or a panic, as
-one `BackgroundFailed`, and `background_failed` clears only what that job
-set. Home-screen workers, keyed by place rather than generation, run inside an
+**One event loop, background work by generation.** Keys (read by the one
+reader in `terminal_input.rs`), worker results and continuations all arrive as
+`AppEvent`s on one mpsc channel; `EventPump::run` sleeps on it until something
+arrives or a deadline passes (spinner, flash), with no polling tick, and
+`App::event` handles each. A key is offered once the results behind it are
+handled, one key per frame. Anything polled rather than sent must wake the loop
+(`AppEvent::Wake`). Anything that touches data runs off the UI thread through
+`spawn_bg`, tagged with `task_generation`; a result whose generation is stale
+is dropped. Each spawn names its `Job`. A worker sends its result and returns
+`Ok`, or returns `Err` with the message for the user; `spawn_bg` reports that,
+or a panic, as one `BackgroundFailed`, and `background_failed` clears only what
+that job set. Home-screen workers, keyed by place rather than generation, run inside an
 `OwedAnswer` that sends their in-flight marker an answer if they panic. Async
 cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never
 collect inside a render function.

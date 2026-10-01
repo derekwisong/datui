@@ -71,6 +71,37 @@ jobs:
       - name: Run clippy
         run: ./scripts/code/check_clippy.sh
 
+  # Every other job builds the default features, so code that only compiles or lints
+  # cleanly with them goes unnoticed (#481). Clippy with --all-targets covers the tests
+  # too. Its own job and cache key: a second polars feature set would double the check
+  # job's cache, and run in parallel it adds nothing to the wait. Each feature alone is
+  # the Nightly workflow's job.
+  no-default-features:
+    name: No default features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: no-default-features
+
+      - name: Run clippy without default features
+        run: ./scripts/dev/test.sh features none
+
   # Replay the committed fuzz corpus. This does not look for new bugs — that is the
   # Nightly workflow's job — it re-runs every input already known to be interesting and
   # fails if one of them starts crashing again. Deterministic and quick, so it can gate
@@ -417,7 +448,7 @@ jobs:
   ci-passed:
     name: CI passed
     runs-on: ubuntu-latest
-    needs: [check, fuzz, msrv, linux, windows, macos]
+    needs: [check, no-default-features, fuzz, msrv, linux, windows, macos]
     if: always()
     steps:
       - name: Check that every job passed or was skipped

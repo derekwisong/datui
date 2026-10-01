@@ -25,16 +25,22 @@ the executables Cargo builds.
 | `./scripts/dev/test.sh integration statistics_test` | Statistics integration executable |
 | `./scripts/dev/test.sh cli` | CLI library tests |
 | `./scripts/dev/test.sh preflight` | Formatting (workspace and fuzz targets) and workspace clippy with all targets |
+| `./scripts/dev/test.sh features` | Clippy on `datui` and `datui-lib`, all targets, with no default features and then each feature alone |
+| `./scripts/dev/test.sh features none sql` | Only the listed combinations; `none` is no features |
 | `./scripts/dev/test.sh full` | Full workspace tests, including doctests; ignored tests remain opt-in |
 | `./scripts/dev/test.sh --print full` | Print the command without running it |
 
 The script works from any directory and returns the underlying command's exit
-status. It keeps the current feature set, does not install dependencies or
-prepare fixtures ahead of tests, and leaves ignored tests opt-in. Existing
-tests can still generate missing fixtures through their fallback helper.
-Clippy checks all targets, but does
+status. Apart from `features`, it keeps the current feature set. It does not
+install dependencies or prepare fixtures ahead of tests, and leaves ignored
+tests opt-in. Existing tests can still generate missing fixtures through their
+fallback helper. Clippy checks all targets, but does
 not execute tests or link their executables. The existing pre-commit hooks
 still run formatting and clippy.
+
+Run `features` after gating code or tests on a feature. Each combination is a
+separate Polars build, so the first run is slow. CI runs `features none` on
+every pull request; the Nightly workflow runs all of them.
 
 During an edit, run the changed behavior's regression and related tests. Before
 submission, broaden to related targets and run formatting/clippy for Rust

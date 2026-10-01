@@ -16126,6 +16126,8 @@ fn test_form_field_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
         datui::widgets::template_modal::FormFocus::Name
     );
     let suggested = app.template_modal.name_input.value().to_string();
+    // The suggested name is selected; End keeps it so typing extends it.
+    press(&mut app, KeyCode::End);
     for c in " by a".chars() {
         press(&mut app, KeyCode::Char(c));
     }

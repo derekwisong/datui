@@ -15900,7 +15900,7 @@ impl App {
             );
             sql_query.or(fuzzy_query).or(query)
         });
-        self.template_modal.name_input.set_value(
+        self.template_modal.name_input.suggest(
             self.template_manager
                 .suggest_name(self.path.as_deref(), query.as_deref()),
         );
@@ -15911,9 +15911,9 @@ impl App {
             let absolute_path = template::exact_location(path);
             self.template_modal
                 .exact_path_input
-                .set_value(absolute_path.to_string_lossy());
+                .suggest(absolute_path.to_string_lossy());
             if let Some(relative) = template::relative_location(path) {
-                self.template_modal.relative_path_input.set_value(relative);
+                self.template_modal.relative_path_input.suggest(relative);
             }
 
             // Suggest a path pattern from the absolute path: the parent of a
@@ -15930,7 +15930,7 @@ impl App {
                 } else {
                     std::path::MAIN_SEPARATOR
                 };
-                self.template_modal.path_pattern_input.set_value(format!(
+                self.template_modal.path_pattern_input.suggest(format!(
                     "{}{separator}*.{}",
                     parent_str.trim_end_matches(separator),
                     ext.to_string_lossy()
@@ -15947,9 +15947,7 @@ impl App {
                     Ok(re) => re.replace_all(filename_str, "*").to_string(),
                     Err(_) => filename_str.to_string(),
                 };
-                self.template_modal
-                    .filename_pattern_input
-                    .set_value(pattern);
+                self.template_modal.filename_pattern_input.suggest(pattern);
             }
         }
 

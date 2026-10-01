@@ -14,8 +14,8 @@ Central Park's daily highs, in NOAA's public weather data, for 2024 and then
    <kbd>Enter</kbd> on `ELEMENT=TMAX`. Typing narrows each list.
 2. Run the [station query](remote-data.md#examples-on-public-data): 366 rows.
 3. Press <kbd>v</kbd>, then <kbd>s</kbd>. The name starts as the directory's,
-   `ELEMENT=TMAX`: press <kbd>Ctrl</kbd>+<kbd>U</kbd> to clear it, type
-   `Central Park highs` and press <kbd>Enter</kbd> to save.
+   `ELEMENT=TMAX`: type `Central Park highs` over it and press
+   <kbd>Enter</kbd> to save.
 4. Open `YEAR=2023/ELEMENT=TMAX/` the same way. Press <kbd>v</kbd>: the view is
    listed with Match `same columns`. Press <kbd>Enter</kbd>.
 
@@ -60,7 +60,8 @@ file, the same columns, or a pattern.
 
 ## Saving
 
-The save form starts with the filename as its name. Add a description if
+The save form starts with the filename as its name, selected: typing
+replaces it, and an arrow key keeps it for editing. Add a description if
 needed, then expand **Matching** with <kbd>Space</kbd> to choose which files
 should match the view:
 

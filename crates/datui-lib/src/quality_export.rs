@@ -1191,7 +1191,7 @@ impl ExportForm {
     /// The dialog on `stem`'s report as JSON in the current directory.
     pub fn new(stem: &str, theme: &crate::config::Theme) -> Self {
         let mut path = crate::widgets::text_input::TextInput::new().with_theme(theme);
-        path.set_value(format!("{stem}-quality.{}", ReportFormat::Json.extension()));
+        path.suggest(format!("{stem}-quality.{}", ReportFormat::Json.extension()));
         path.set_focused(true);
         Self {
             path,
@@ -1211,7 +1211,12 @@ impl ExportForm {
         let old = format!(".{}", self.format.extension());
         let value = self.path.value().to_string();
         if let Some(stem) = value.strip_suffix(&old) {
-            self.path.set_value(format!("{stem}.{}", next.extension()));
+            let renamed = format!("{stem}.{}", next.extension());
+            if self.path.is_suggested() {
+                self.path.suggest(renamed);
+            } else {
+                self.path.set_value(renamed);
+            }
         }
         self.format = next;
         self.error = None;
@@ -1448,6 +1453,8 @@ mod tests {
         form.cycle_format();
         assert_eq!(form.format, ReportFormat::Markdown);
         assert_eq!(form.path.value(), "orders-quality.md");
+        // Still the form's own suggestion, so typing replaces it.
+        assert!(form.path.is_suggested());
         form.path.set_value("report");
         assert_eq!(
             form.target().unwrap(),

@@ -111,7 +111,7 @@ read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..202
 | Method | **Random** (default), **Equal per value**, **First rows**, **Every row** |
 | Per value of | For Equal per value: the column to split by; partition columns come first |
 | Sample size | 1,000 to 1,000,000 rows, or rows per value for Equal per value; the default is `[performance] analysis_sample_rows` |
-| Random seed | For Random and Equal per value: any whole number, typed; the same seed reads the same rows, so `0` or `1` is a sample anyone can repeat. <kbd>r</kbd> draws a new one |
+| Random seed | For Random and Equal per value: any whole number, typed over the one shown; the same seed reads the same rows, so `0` or `1` is a sample anyone can repeat. <kbd>r</kbd> draws a new one |
 
 Each kind of rows brings its own settings, with what it needs to know:
 

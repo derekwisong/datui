@@ -422,16 +422,61 @@ fn the_view_name_field_takes_text() {
         .sort_by(vec!["age".to_string()], vec![false]);
     h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
-    // Creating from a loaded file pre-fills a suggested name; clear it first.
+    // Creating from a loaded file suggests a name; typing replaces it.
     let suggested = h.app.template_modal.name_input.value().to_string();
     assert!(!suggested.is_empty(), "a name should be suggested");
-    for _ in 0..suggested.chars().count() {
-        h.press(KeyCode::Backspace);
-    }
     h.type_str("by age");
 
     assert_eq!(h.app.template_modal.name_input.value(), "by age");
     assert_eq!(drawn(&h.app.template_modal.name_input, 20), "by age");
+
+    // Opened again, → keeps the suggestion and typing extends it.
+    h.press(KeyCode::Esc);
+    h.press(KeyCode::Char('s'));
+    assert_eq!(h.app.template_modal.name_input.value(), suggested);
+    h.press(KeyCode::Right);
+    h.type_str(" v2");
+    assert_eq!(
+        h.app.template_modal.name_input.value(),
+        format!("{suggested} v2")
+    );
+}
+
+#[test]
+fn the_melt_name_fields_replace_their_defaults_when_typed_over() {
+    use crate::pivot_melt_modal::PivotMeltFocus;
+    let mut h = Harness::with_data();
+    let to_variable_row = |h: &mut Harness| {
+        h.press(KeyCode::Char('p'));
+        h.press(KeyCode::Right);
+        while h.app.pivot_melt_modal.focus != PivotMeltFocus::MeltVariable {
+            h.press(KeyCode::Tab);
+        }
+    };
+
+    to_variable_row(&mut h);
+    assert_eq!(
+        h.app.pivot_melt_modal.melt_variable_input.value(),
+        "variable"
+    );
+    h.type_str("field");
+    h.press(KeyCode::Tab);
+    h.type_str("reading");
+    assert_eq!(h.app.pivot_melt_modal.melt_variable_input.value(), "field");
+    assert_eq!(h.app.pivot_melt_modal.melt_value_input.value(), "reading");
+
+    // Opened again, → keeps the default and typing extends it; Tab past a
+    // default leaves it as it was.
+    h.press(KeyCode::Esc);
+    to_variable_row(&mut h);
+    h.press(KeyCode::Right);
+    h.type_str("_name");
+    h.press(KeyCode::Tab);
+    assert_eq!(
+        h.app.pivot_melt_modal.melt_variable_input.value(),
+        "variable_name"
+    );
+    assert_eq!(h.app.pivot_melt_modal.melt_value_input.value(), "value");
 }
 
 #[test]

@@ -484,6 +484,139 @@ fn shift_arrow_selects_and_typing_replaces_the_selection() {
     assert_eq!(input.value(), "x");
 }
 
+/// A focused field holding a suggestion, as a form leaves it when it opens.
+fn suggesting(value: &str) -> TextInput {
+    let mut input = TextInput::new();
+    input.suggest(value);
+    input.set_focused(true);
+    input
+}
+
+#[test]
+fn typing_over_a_suggestion_replaces_it() {
+    let mut input = suggesting("variable");
+    type_str(&mut input, "station");
+    assert_eq!(input.value(), "station");
+    assert!(!input.is_suggested());
+}
+
+#[test]
+fn moving_the_cursor_keeps_a_suggestion_and_edits_it() {
+    for (code, modifiers, expected) in [
+        (KeyCode::Right, KeyModifiers::NONE, "value_x"),
+        (KeyCode::End, KeyModifiers::NONE, "value_x"),
+        (KeyCode::Home, KeyModifiers::NONE, "_xvalue"),
+        (KeyCode::Left, KeyModifiers::NONE, "valu_xe"),
+        (KeyCode::Char('e'), KeyModifiers::CONTROL, "value_x"),
+        (KeyCode::Char('a'), KeyModifiers::CONTROL, "_xvalue"),
+        (KeyCode::Char('b'), KeyModifiers::ALT, "_xvalue"),
+        (KeyCode::Char('f'), KeyModifiers::ALT, "value_x"),
+        (KeyCode::Left, KeyModifiers::CONTROL, "_xvalue"),
+    ] {
+        let mut input = suggesting("value");
+        press_with(&mut input, code, modifiers);
+        type_str(&mut input, "_x");
+        assert_eq!(input.value(), expected, "{code:?} {modifiers:?}");
+    }
+}
+
+#[test]
+fn deletes_and_kills_clear_a_suggestion() {
+    for (code, modifiers) in [
+        (KeyCode::Backspace, KeyModifiers::NONE),
+        (KeyCode::Delete, KeyModifiers::NONE),
+        (KeyCode::Char('u'), KeyModifiers::CONTROL),
+        (KeyCode::Char('k'), KeyModifiers::CONTROL),
+        (KeyCode::Char('w'), KeyModifiers::CONTROL),
+        (KeyCode::Char('d'), KeyModifiers::ALT),
+        (KeyCode::Backspace, KeyModifiers::ALT),
+        (KeyCode::Char('x'), KeyModifiers::CONTROL),
+    ] {
+        let mut input = suggesting("two words");
+        press_with(&mut input, code, modifiers);
+        assert_eq!(input.value(), "", "{code:?} {modifiers:?}");
+        type_str(&mut input, "z");
+        assert_eq!(input.value(), "z", "{code:?} {modifiers:?}");
+    }
+}
+
+#[test]
+fn a_key_the_field_ignores_leaves_a_suggestion_standing() {
+    for (code, modifiers) in [
+        (KeyCode::F(5), KeyModifiers::NONE),
+        (KeyCode::Char('g'), KeyModifiers::CONTROL),
+        (KeyCode::End, KeyModifiers::SHIFT),
+    ] {
+        let mut input = suggesting("value");
+        press_with(&mut input, code, modifiers);
+        assert!(input.is_suggested(), "{code:?} {modifiers:?}");
+        type_str(&mut input, "z");
+        assert_eq!(input.value(), "z", "{code:?} {modifiers:?}");
+    }
+}
+
+#[test]
+fn enter_submits_a_suggestion_as_it_stands() {
+    let mut input = suggesting("value");
+    assert_eq!(press(&mut input, KeyCode::Enter), TextInputEvent::Submit);
+    assert_eq!(input.value(), "value");
+    // Settled: what follows edits the value in place.
+    type_str(&mut input, "s");
+    assert_eq!(input.value(), "values");
+}
+
+#[test]
+fn a_suggestion_is_selected_only_while_the_field_has_focus() {
+    let theme = test_theme();
+    let mut input = TextInput::new().with_theme(&theme);
+    input.suggest("ab");
+    let rect = Rect::new(0, 0, 4, 1);
+    // Whether the first character is drawn selected. The theme's selection is a
+    // tint or reversed video, depending on what the test's terminal supports.
+    let selection = theme.text_selection_style();
+    let selected = |input: &TextInput| {
+        let mut buf = Buffer::empty(rect);
+        input.render(rect, &mut buf);
+        let style = buf[(0, 0)].style();
+        selection.bg.is_none_or(|bg| style.bg == Some(bg))
+            && style.add_modifier.contains(selection.add_modifier)
+    };
+    assert!(!selected(&input), "unfocused: not selected");
+    input.set_focused(true);
+    assert!(selected(&input), "focus arriving selects it");
+    // Leaving (Tab away) drops the selection and keeps the value; coming back
+    // to an untouched suggestion selects it again.
+    input.set_focused(false);
+    assert!(!selected(&input));
+    assert_eq!(input.value(), "ab");
+    input.set_focused(true);
+    type_str(&mut input, "c");
+    assert_eq!(input.value(), "c");
+}
+
+#[test]
+fn a_value_set_or_typed_is_never_a_suggestion() {
+    let mut input = TextInput::new();
+    input.set_value("saved");
+    input.set_focused(true);
+    type_str(&mut input, "!");
+    assert_eq!(input.value(), "saved!");
+
+    let mut input = suggesting("x");
+    input.set_value("reopened");
+    assert!(!input.is_suggested());
+    type_str(&mut input, "!");
+    assert_eq!(input.value(), "reopened!");
+}
+
+#[test]
+fn undo_brings_a_replaced_suggestion_back() {
+    let mut input = suggesting("value");
+    type_str(&mut input, "z");
+    press_with(&mut input, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(input.value(), "value");
+}
+
 #[test]
 fn the_default_input_can_be_taken_and_rebuilt() {
     // `std::mem::take` on a field is how the chart modal re-themes its inputs.

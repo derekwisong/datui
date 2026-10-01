@@ -4087,6 +4087,19 @@ impl Theme {
         }
     }
 
+    /// Style of selected text in a field: the highlight tint, or reversed video
+    /// where the tint could match the terminal's own background. A 16-color
+    /// terminal turns the default tints into black or white and `NO_COLOR` into
+    /// none, and a field has no rail to show the selection instead.
+    pub fn text_selection_style(&self) -> ratatui::style::Style {
+        match self.get_optional("table_selected") {
+            Some(Color::Reset | Color::Black | Color::White) => {
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED)
+            }
+            _ => self.highlight_style(),
+        }
+    }
+
     /// Text color for the solid cursor block: the `cursor_text` slot, or black or
     /// white by the cursor color's luminance when the slot says "default". Lives
     /// here so widgets never pick colors themselves.
@@ -4255,5 +4268,35 @@ mod tests {
         );
         assert!(removed_file_loading_keys("[display]\nskip_rows = 2\n").is_empty());
         assert!(removed_file_loading_keys("not toml [").is_empty());
+    }
+
+    #[test]
+    fn a_field_selection_stays_visible_when_the_tint_degrades() {
+        use ratatui::style::{Modifier, Style};
+        let theme_with = |tint: Option<Color>| Theme {
+            colors: tint
+                .map(|c| HashMap::from([("table_selected".to_string(), c)]))
+                .unwrap_or_default(),
+        };
+        let reversed = Style::default().add_modifier(Modifier::REVERSED);
+        // The default tints on a 16-color terminal, and NO_COLOR.
+        for tint in [Color::Black, Color::White, Color::Reset] {
+            assert_eq!(
+                theme_with(Some(tint)).text_selection_style(),
+                reversed,
+                "{tint:?}"
+            );
+        }
+        assert_eq!(theme_with(None).text_selection_style(), reversed);
+        for tint in [
+            Color::Rgb(0x28, 0x34, 0x57),
+            Color::Indexed(237),
+            Color::Blue,
+        ] {
+            assert_eq!(
+                theme_with(Some(tint)).text_selection_style(),
+                Style::default().bg(tint)
+            );
+        }
     }
 }

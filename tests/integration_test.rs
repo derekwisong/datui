@@ -16336,6 +16336,119 @@ fn column_widths_from_the_sidebar() {
     assert_eq!(choice(&app, "status"), WidthChoice::Auto);
 }
 
+/// Learned widths and a change of view (#491): a query that keeps a column's name
+/// and type but not its values learns the column's width again from its first
+/// page, not from the old rows still drawn while it reads; a width set by hand
+/// stays; paging and a sort sent again unchanged learn nothing; a new sort and a
+/// new filter learn again from the first rows they show.
+#[test]
+fn a_change_of_view_relearns_widths() {
+    use datui::filter_modal::FilterOperator;
+    use datui::widgets::column_widths::WidthChoice;
+    let csv_path = common::fixture_dir().join("relearn_widths.csv");
+    let n = 80usize;
+    let long = |i: usize| format!("a much longer description {i}");
+    let mut df = df!(
+        "id" => (0..n as i64).collect::<Vec<_>>(),
+        "status" => (0..n).map(|i| if i % 2 == 0 { "open" } else { "closed" }).collect::<Vec<_>>(),
+        "description" => (0..n)
+            .map(|i| if i < 40 { format!("short note {i}") } else { long(i) })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    CsvWriter::new(&mut File::create(&csv_path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let area = Rect::new(0, 0, 100, 24);
+    let draw = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let state = app.data_table_state.as_mut().unwrap();
+        if std::mem::take(&mut state.needs_recollect) {
+            app.spawn_async_collect("Loading buffer...");
+            pump_until_idle(app, &rx, &tx);
+            app.render(area, &mut buf);
+        }
+        rendered_text(&buf)
+    };
+    let shown = |app: &App, name: &str| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .shown_width(name)
+            .unwrap()
+    };
+    let short_width = u16::try_from("short note 39".len()).unwrap();
+    let long_width = u16::try_from(long(79).len()).unwrap();
+
+    app.event(&AppEvent::Resize(area.width, area.height));
+    draw(&mut app);
+    assert_eq!(shown(&app, "status"), 6);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .set_width_choices([("id".to_string(), WidthChoice::Manual(10))]);
+
+    // Same name, same type, other values. The frame drawn while the query reads
+    // still holds the old values; they teach the new view nothing.
+    app.event(&AppEvent::Search(
+        "select id, status: description".to_string(),
+    ));
+    draw(&mut app);
+    pump_until_idle(&mut app, &rx, &tx);
+    let queried = draw(&mut app);
+    assert_eq!(shown(&app, "status"), short_width, "{queried}");
+    assert!(queried.contains("short note 12"), "{queried}");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.width_choice("id"), WidthChoice::Manual(10));
+    assert_eq!(shown(&app, "id"), 10);
+
+    // Paging to the long values keeps the width: they are clipped.
+    for _ in 0..10 {
+        if app.data_table_state.as_ref().unwrap().start_row() >= 40 {
+            break;
+        }
+        press_and_send(&mut app, &tx, KeyCode::PageDown);
+        pump_until_idle(&mut app, &rx, &tx);
+        draw(&mut app);
+    }
+    let start = app.data_table_state.as_ref().unwrap().start_row();
+    assert!(start >= 40);
+    let paged = draw(&mut app);
+    assert_eq!(shown(&app, "status"), short_width, "{paged}");
+
+    // The sidebar sends the sort again on every apply; unchanged, it is not a
+    // change of view.
+    app.event(&AppEvent::Sort(Vec::new(), Vec::new()));
+    pump_until_idle(&mut app, &rx, &tx);
+    let resent = draw(&mut app);
+    assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), start);
+    assert_eq!(shown(&app, "status"), short_width, "{resent}");
+
+    // A new sort keeps the row number; descending, the long values are there now,
+    // and the width is learned from them.
+    app.event(&AppEvent::Sort(vec!["status".to_string()], vec![true]));
+    pump_until_idle(&mut app, &rx, &tx);
+    let sorted = draw(&mut app);
+    assert_eq!(shown(&app, "status"), long_width, "{sorted}");
+
+    // A new filter, viewed from the top, holds only the short ones.
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "status",
+        FilterOperator::Contains,
+        "short",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    let filtered = draw(&mut app);
+    assert_eq!(shown(&app, "status"), short_width, "{filtered}");
+    assert_eq!(shown(&app, "id"), 10);
+}
+
 /// `table_cell_padding` names its densities: `"compact"` puts one cell between
 /// columns, `"comfortable"` (the default) two, and a number that many.
 #[test]

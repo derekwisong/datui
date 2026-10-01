@@ -7,6 +7,10 @@
 //! marker. A number, date or flag can't be clipped without reading as another value,
 //! so its width only grows, to the widest value seen. Widths set by hand in the
 //! Columns sidebar outrank both.
+//!
+//! A deliberate change to what the view shows (a query, reshape, drill, sort or
+//! filter) learns every automatic width again, from the first rows the new view
+//! reads. Paging and scrolling never do.
 
 use polars::prelude::DataType;
 use std::collections::HashMap;
@@ -114,6 +118,10 @@ struct Entry {
 #[derive(Debug, Clone, Default)]
 pub struct ColumnWidths {
     by_name: HashMap<String, Vec<Entry>>,
+    /// Automatic widths are to be learned again from the next rows read. Waits for
+    /// them: until they arrive the old rows are still drawn, and they would teach
+    /// the new view their widths.
+    relearn: bool,
 }
 
 impl ColumnWidths {
@@ -207,6 +215,30 @@ impl ColumnWidths {
     /// Fit the column to `page`: its values and type whole, its heading up to `cap`.
     pub fn fit(&mut self, name: &str, dtype: &DataType, page: PageMeasure, cap: u16) {
         self.entry_mut(name, dtype).choice = WidthChoice::Manual(page.fitted(cap));
+    }
+
+    /// The view changed: learn every automatic width again from the next rows read
+    /// (see [`Self::rows_arrived`]). Widths set by hand are kept.
+    pub fn relearn(&mut self) {
+        self.relearn = true;
+    }
+
+    /// The change asked to relearn never showed (it failed and the view was put
+    /// back), so the widths learned for the view on screen stand.
+    pub fn keep_learned(&mut self) {
+        self.relearn = false;
+    }
+
+    /// Rows read for the view are about to replace the ones on screen. After
+    /// [`Self::relearn`], every automatic width starts again from them: text from
+    /// its first page with a value, and the rest from nothing, so they may narrow.
+    pub fn rows_arrived(&mut self) {
+        if std::mem::take(&mut self.relearn) {
+            for entry in self.by_name.values_mut().flatten() {
+                entry.learned = 0;
+                entry.settled = false;
+            }
+        }
     }
 }
 
@@ -330,6 +362,39 @@ mod tests {
         assert_eq!(widths.width("d", &s, text(3), 32), 90);
         widths.set_choice("d", &s, WidthChoice::Auto);
         assert_eq!(widths.width("d", &s, text(3), 32), 10);
+    }
+
+    /// A relearn waits for the new view's rows: the old ones drawn meanwhile teach
+    /// nothing that lasts. Then text and numbers start again, and manual widths stay.
+    #[test]
+    fn a_relearn_starts_again_from_the_next_rows() {
+        let mut widths = ColumnWidths::default();
+        let (s, i) = (DataType::String, DataType::Int64);
+        assert_eq!(widths.width("d", &s, text(10), 32), 10);
+        assert_eq!(widths.width("n", &i, number(9), 32), 9);
+        widths.set_choice("m", &s, WidthChoice::Manual(7));
+        widths.relearn();
+        assert_eq!(widths.width("d", &s, text(20), 32), 10);
+        widths.rows_arrived();
+        assert_eq!(widths.width("d", &s, text(20), 32), 20);
+        assert_eq!(widths.width("d", &s, text(30), 32), 20);
+        assert_eq!(widths.width("n", &i, number(3), 32), 4);
+        assert_eq!(widths.width("m", &s, text(30), 32), 7);
+        // Only once: later rows are paging.
+        widths.rows_arrived();
+        assert_eq!(widths.width("d", &s, text(5), 32), 20);
+    }
+
+    /// A relearn whose view never showed is dropped.
+    #[test]
+    fn a_relearn_kept_back_changes_nothing() {
+        let mut widths = ColumnWidths::default();
+        let s = DataType::String;
+        assert_eq!(widths.width("d", &s, text(10), 32), 10);
+        widths.relearn();
+        widths.keep_learned();
+        widths.rows_arrived();
+        assert_eq!(widths.width("d", &s, text(20), 32), 10);
     }
 
     #[test]

@@ -1397,6 +1397,8 @@ impl DataTableState {
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
         self.observed_bytes_per_row = None;
+        // A column may keep its name and type and hold other values now.
+        self.widths.relearn();
         self.base_lf = lf.clone();
         self.lf = lf;
         self.unsorted_lf = None;
@@ -6177,7 +6179,9 @@ impl DataTableState {
     /// Let go of the buffer being replaced and the display frames cut from it. A
     /// synchronous load does so before its cut, so the cut's copy is not made while
     /// the old rows are still held; a stitch has already taken the rows it keeps.
+    /// The view's rows come next, so a relearn asked for takes effect.
     fn release_display_buffer(&mut self) {
+        self.widths.rows_arrived();
         self.buffered_df = None;
         self.locked_df = None;
         self.df = None;
@@ -6759,6 +6763,7 @@ impl DataTableState {
             self.return_to_root();
             return;
         }
+        self.widths.keep_learned();
         self.drawn_start = saved.drawn_start;
         self.lf = saved.lf;
         self.unsorted_lf = saved.unsorted_lf;
@@ -7510,6 +7515,7 @@ impl DataTableState {
         // view wherever the view fits inside it.
         self.drop_buffer();
         self.observed_bytes_per_row = None;
+        self.widths.relearn();
         self.lf = view.lf;
         self.unsorted_lf = None;
         self.base_lf = view.base_lf;
@@ -7738,6 +7744,11 @@ impl DataTableState {
         if let Some(first) = descending.first() {
             self.sort_ascending = !first;
         }
+        // Other rows come first. The sidebar sends the sort again on any apply, so
+        // only a sort that changed counts.
+        if columns != self.sort_columns || descending != self.sort_descending {
+            self.widths.relearn();
+        }
         self.sort_columns = columns;
         self.sort_descending = descending;
         self.buffered_start_row = 0;
@@ -7753,6 +7764,7 @@ impl DataTableState {
             self.unsorted_lf = Some(self.lf.clone());
         }
         self.sort_ascending = !self.sort_ascending;
+        self.widths.relearn();
         // Reversing a sorted view flips every column's direction, so `r` twice is
         // always the identity whatever mix of directions was applied.
         for direction in &mut self.sort_descending {
@@ -7778,6 +7790,10 @@ impl DataTableState {
     }
 
     pub fn filter(&mut self, filters: Vec<FilterStatement>) {
+        // The sidebar sends the filters again on any apply; only a change is new rows.
+        if filters != self.filters {
+            self.widths.relearn();
+        }
         self.filters = filters;
         // A new result set, viewed from the top: a position deep in the old one would
         // plan a slice past a smaller result, which reads nothing.

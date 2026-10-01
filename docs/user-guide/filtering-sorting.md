@@ -74,7 +74,11 @@ later page ends in `…` (ASCII `...`).
 | Column | Automatic width |
 |---|---|
 | Text, lists, structs and names | The first page's widest, at most two fifths of the window: 32 cells at 80 columns, 48 at 120 (16 to 64) |
-| Numbers, dates, times, flags | The widest value seen so far, never cut; it does not narrow again |
+| Numbers, dates, times, flags | The widest value seen so far, never cut; paging does not narrow it |
+
+A query, a pivot or melt, drilling down or back up, a new sort, <kbd>r</kbd>
+and a new filter change the rows, so automatic widths are learned again from
+the first page they show.
 
 A width set with <kbd>&lt;</kbd> <kbd>&gt;</kbd> or <kbd>f</kbd> is kept through
 paging, resizing and reordering until <kbd>w</kbd>, <kbd>C</kbd> or

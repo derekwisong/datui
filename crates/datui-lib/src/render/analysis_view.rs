@@ -188,6 +188,7 @@ fn render_body(
                 edited: app.analysis_modal.setup_edited(),
                 note: note.as_deref(),
                 cancelling: app.cancelled_run_shown(),
+                kept: app.quality_kept_rows(),
             };
             let rows_kept = app.quality_rows_kept().is_some();
             let modal = &mut app.analysis_modal;

@@ -157,7 +157,7 @@ The Read section says what Run will do, before it does it:
 | Uses the rows a run already read | A sampled setup whose sample (scope, method, size, seed), dataset and view match rows a run read this session; any grain, role or format |
 | Seeded runs of the file | A random sample of one Parquet or IPC file: the whole source, or a view with no filter, query or reshape (a sort is fine); a few dozen short reads |
 | One pass that streams every eligible row | Any other random or equal-per-value sample; the pass counts the scope too |
-| Read before; released to free memory | Those rows were read this session and released to the memory budget: Run reads them again |
+| Read before and released since | Those rows were read this session and released, by <kbd>d</kbd> or the memory budget: Run reads them again |
 | Counts every row by the grain's column in that pass | A partition or time-window grain on a streamed sample: exact segment totals from the one pass |
 | Segment totals from a count already read | The same grain was counted before, with these rows |
 | Segment totals summed from the hourly or daily counts | A coarser window of the same column: hours sum into days, weeks and months, days into weeks and months |
@@ -431,6 +431,12 @@ reports that retained rows can remake go first, then the oldest rows; the newest
 rows and the newest report always stay. Setup names rows that were released and
 will be read again. The rows are a snapshot of the session: a file changed on
 disk is not noticed until it is opened again.
+
+The Read rule in Setup says what is kept, as `100,000 rows kept · 12.4 MiB`
+(with the number of samples when there is more than one). <kbd>d</kbd> in Setup
+releases every kept row at once: the report on screen and the session's reports
+stay, and the next run that would have reused the rows reads its sample again,
+which Read says before Run. Opening the dataset again releases them too.
 
 ## Column intent
 

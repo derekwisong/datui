@@ -249,6 +249,9 @@ After a sampled run, changing roles, text formats, column intent, row chunks or
 a coarser window of a counted grain reads nothing; after any run, so does
 changing the comparison or expected windows. A new seed, size or scope reads a
 new sample.
+The **Read** rule names the rows runs have kept for reuse, such as
+`100,000 rows kept · 12.4 MiB`; <kbd>d</kbd> releases them, and the next run
+that would have used them reads its sample again.
 <kbd>p</kbd> shows the access plan in full. Reading every row asks for
 confirmation first; <kbd>Esc</kbd> there leaves the sample and the report as
 they were.

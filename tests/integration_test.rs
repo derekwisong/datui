@@ -4409,6 +4409,63 @@ fn a_failed_rerun_keeps_the_last_report() {
     assert!(!app.modal_showing());
 }
 
+/// `d` in Setup releases the rows runs kept: Read names them before, the report on
+/// screen stays, and an edit that would have reused them reads its sample again,
+/// as Read says before Run.
+#[test]
+fn kept_rows_are_released_from_setup() {
+    let (mut app, rx, _tx, _path) = open_quality_fixture("dq_release_rows.parquet", 2_000, 10);
+    {
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        plan.dataset_rows = 500;
+        plan.sample_seed = 3;
+    }
+    assert_eq!(
+        run_quality_reads(&mut app, &rx),
+        [datui::data_quality::QualityStage::ReadingSample]
+    );
+    let screen = |app: &mut App| {
+        let area = Rect::new(0, 0, 160, 40);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::RowChunks(100);
+    let text = screen(&mut app);
+    assert!(text.contains("500 rows kept"), "{text}");
+    assert!(text.contains("Release Rows"), "{text}");
+    assert!(text.contains("Uses the rows a run already read"), "{text}");
+
+    assert!(press(&mut app, KeyCode::Char('d')).is_none());
+    assert!(!app.is_busy(), "releasing reads nothing");
+    let flash = app.flash_message().unwrap_or_default().to_string();
+    assert!(
+        flash.starts_with("Released 500 kept rows") && flash.ends_with("the next run reads again"),
+        "{flash}"
+    );
+    assert!(
+        app.analysis_modal.data_quality_results.is_some(),
+        "the report stays"
+    );
+    assert!(app.analysis_modal.data_quality_page.is_setup(), "and Setup");
+    let text = screen(&mut app);
+    assert!(!text.contains("rows kept"), "{text}");
+    assert!(!text.contains("Release Rows"), "{text}");
+    assert!(text.contains("Read before and released since"), "{text}");
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.flash_message(), Some("No kept rows to release"));
+
+    assert_eq!(
+        run_quality_reads(&mut app, &rx),
+        [datui::data_quality::QualityStage::ReadingSample],
+        "the sample is read again"
+    );
+    press(&mut app, KeyCode::Char('e'));
+    assert!(screen(&mut app).contains("500 rows kept"), "and kept again");
+}
+
 /// The rows a run read are a snapshot of the session: a file changed on disk is
 /// not noticed until it is opened again, as the reference says. Reopened, the
 /// dataset is new, and Run reads the file as it is now.

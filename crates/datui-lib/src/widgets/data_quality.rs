@@ -54,6 +54,36 @@ pub struct SetupView<'a> {
     pub note: Option<&'a str>,
     /// A cancelled run still going, while the screen should say so.
     pub cancelling: Option<Cancelling>,
+    /// The rows runs kept for reuse, which `d` releases.
+    pub kept: Option<KeptRows>,
+}
+
+/// The rows Data Quality's sampled runs kept this session, for later runs to reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeptRows {
+    /// Samples kept: one per scope, method, size and seed a run read.
+    pub samples: usize,
+    pub rows: usize,
+    /// Near enough to budget by: [`crate::data_quality::QualitySample::estimated_bytes`].
+    pub bytes: usize,
+}
+
+impl KeptRows {
+    /// `100,000 rows kept · 12.4 MiB`, or `2 samples, 200,000 rows kept · …`.
+    pub fn label(&self) -> String {
+        let rows = format!(
+            "{} {} kept {} {}",
+            numfmt::group_chrome(self.rows),
+            if self.rows == 1 { "row" } else { "rows" },
+            glyphs::get().middot,
+            crate::widgets::info::format_bytes(self.bytes as u64)
+        );
+        if self.samples > 1 {
+            format!("{} samples, {rows}", numfmt::group_chrome(self.samples))
+        } else {
+            rows
+        }
+    }
 }
 
 /// A cancelled run that has not exited yet.
@@ -371,7 +401,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     ] {
         lines.push(SetupLine::Row(row));
     }
-    lines.push(SetupLine::Rule("Read", None));
+    lines.push(SetupLine::Rule("Read", view.kept.map(|kept| kept.label())));
     let read_start = lines.len();
     for note in read_lines(config) {
         for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
@@ -733,7 +763,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         }),
     }
     if plan.compute == QualityCompute::Sample && !view.reuses_sample && view.released {
-        lines.push("Read before; released to free memory, so read again".to_string());
+        lines.push("Read before and released since, so read again".to_string());
     }
     let exact = scope_rows.is_some_and(|rows| rows <= plan.dataset_rows);
     if plan.compute == QualityCompute::Sample && !exact {

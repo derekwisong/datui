@@ -9908,6 +9908,53 @@ impl App {
         })
     }
 
+    /// Every row Data Quality's runs kept for reuse on this dataset, as `d` in Setup
+    /// would release them; `None` when there are none.
+    pub(crate) fn quality_kept_rows(&self) -> Option<widgets::data_quality::KeptRows> {
+        let kept = self
+            .quality_samples
+            .iter()
+            .filter(|kept| kept.dataset_generation == self.dataset_generation)
+            .collect::<Vec<_>>();
+        (!kept.is_empty()).then(|| widgets::data_quality::KeptRows {
+            samples: kept.len(),
+            rows: kept.iter().map(|kept| kept.rows.df().height()).sum(),
+            bytes: kept.iter().map(|kept| kept.rows.estimated_bytes()).sum(),
+        })
+    }
+
+    /// `d` in Setup: let go of every row runs kept, as the memory budget would. A
+    /// run that would have reused them reads its sample again, and Setup's Read says
+    /// so before Run. Reports stay: they are results, and showing one reads nothing.
+    fn release_quality_rows(&mut self) {
+        let Some(kept) = self.quality_kept_rows() else {
+            self.flash_note("No kept rows to release".to_string());
+            return;
+        };
+        for released in std::mem::take(&mut self.quality_samples) {
+            self.quality_released.retain(|(dataset, view, sample)| {
+                !(*dataset == released.dataset_generation
+                    && *view == released.view_generation
+                    && *sample == released.sample)
+            });
+            self.quality_released.insert(
+                0,
+                (
+                    released.dataset_generation,
+                    released.view_generation,
+                    released.sample,
+                ),
+            );
+        }
+        self.quality_released.truncate(QUALITY_RELEASED_REMEMBERED);
+        self.flash_note(format!(
+            "Released {} kept {} ({}); the next run reads again",
+            numfmt::group_chrome(kept.rows),
+            if kept.rows == 1 { "row" } else { "rows" },
+            widgets::info::format_bytes(kept.bytes as u64)
+        ));
+    }
+
     /// Rows a sampled Data Quality run read, when they are the rows `sample` names
     /// now: same dataset, same view, same sample.
     fn kept_quality_sample(
@@ -18219,6 +18266,10 @@ impl App {
                             return None;
                         }
                         KeyCode::Enter => return self.run_quality_setup(),
+                        KeyCode::Char('d') => {
+                            self.release_quality_rows();
+                            return None;
+                        }
                         KeyCode::Esc => {
                             self.leave_quality_setup();
                             return None;

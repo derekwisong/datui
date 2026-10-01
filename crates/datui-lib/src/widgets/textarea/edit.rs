@@ -185,8 +185,12 @@ impl TextArea {
     }
 
     /// Delete from the cursor to the end of the line, yanking it. At the end of
-    /// a line this joins the line below, matching readline's `kill-line`.
+    /// a line this joins the line below, matching readline's `kill-line`. A
+    /// selection is killed instead, as the word kills do.
     pub fn delete_line_by_end(&mut self) -> bool {
+        if let Some((start, end)) = self.selection() {
+            return self.yank_and_replace(start, end);
+        }
         let (row, col) = self.cursor;
         let len = self.line_len(row);
         if col < len {
@@ -199,8 +203,12 @@ impl TextArea {
     }
 
     /// Delete from the start of the line to the cursor, yanking it. At the
-    /// start of a line this joins onto the line above.
+    /// start of a line this joins onto the line above. A selection is killed
+    /// instead.
     pub fn delete_line_by_head(&mut self) -> bool {
+        if let Some((start, end)) = self.selection() {
+            return self.yank_and_replace(start, end);
+        }
         let (row, col) = self.cursor;
         if col > 0 {
             return self.yank_and_replace((row, 0), self.cursor);

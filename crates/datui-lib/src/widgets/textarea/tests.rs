@@ -192,6 +192,25 @@ fn kill_to_head_of_line_then_join() {
 }
 
 #[test]
+fn every_kill_takes_the_selection_when_there_is_one() {
+    type Kill = fn(&mut TextArea) -> bool;
+    let kills: [(&str, Kill); 4] = [
+        ("line end", TextArea::delete_line_by_end),
+        ("line head", TextArea::delete_line_by_head),
+        ("prev word", TextArea::delete_prev_word),
+        ("next word", TextArea::delete_next_word),
+    ];
+    for (name, kill) in kills {
+        let mut area = TextArea::from_text("alpha beta gamma");
+        area.set_cursor(0, 6);
+        area.move_cursor_selecting(CursorMove::WordForward);
+        assert!(kill(&mut area), "{name}");
+        assert_eq!(area.text(), "alpha gamma", "{name}");
+        assert_eq!(area.yanked_text(), "beta ", "{name}");
+    }
+}
+
+#[test]
 fn word_deletion_removes_whole_words() {
     let mut area = TextArea::from_text("alpha beta");
     assert!(area.delete_prev_word());

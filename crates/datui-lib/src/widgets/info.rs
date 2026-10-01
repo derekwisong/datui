@@ -421,9 +421,12 @@ impl FileFacts {
 /// has the dataset.
 pub struct InfoContext<'a> {
     pub format: Option<ExportFormat>,
-    /// `None` when there is no file on this machine to ask: a remote source, or a
-    /// dataset opened from several paths.
+    /// `None` when there is no one file on this machine to ask: a remote source, a
+    /// glob, or a dataset opened from several paths.
     pub facts: Option<&'a FileFacts>,
+    /// The facts are one Parquet file's, so its footer's rows and Compression column
+    /// keep their room while it is read: nothing moves when it lands.
+    pub parquet_file: bool,
 }
 
 impl<'a> InfoContext<'a> {
@@ -442,6 +445,11 @@ impl<'a> InfoContext<'a> {
             FileFacts::Read { parquet, .. } => parquet.as_ref(),
             FileFacts::Reading | FileFacts::Failed(_) => None,
         }
+    }
+
+    /// Whether the worker has yet to answer.
+    fn reading(&self) -> bool {
+        matches!(self.facts, Some(FileFacts::Reading))
     }
 }
 
@@ -598,7 +606,9 @@ impl<'a> DataTableInfo<'a> {
             .ctx
             .parquet_metadata()
             .map(|m| parquet_column_compression(m.as_ref(), self.state.schema().as_ref()));
-        let has_comp = compression.as_ref().is_some_and(|c| !c.is_empty());
+        // Kept for a Parquet file whose footer is still out, so the columns do not
+        // re-proportion when it lands.
+        let has_comp = self.ctx.parquet_file || compression.as_ref().is_some_and(|c| !c.is_empty());
         let mut header_cells = vec!["Column", "Type"];
         if has_files {
             header_cells.push("Files");
@@ -660,13 +670,14 @@ impl<'a> DataTableInfo<'a> {
                 cells.push(files_str);
             }
             if has_comp {
-                let comp_str = compression
-                    .as_ref()
-                    .and_then(|c| c.get(name_str))
-                    .map(|(codec, ratio)| {
+                let comp_str = match compression.as_ref().map(|c| c.get(name_str)) {
+                    Some(Some((codec, ratio))) => {
                         format!("{} {:.1}{}", codec, ratio, crate::glyphs::get().times)
-                    })
-                    .unwrap_or_else(|| crate::glyphs::get().dash.to_string());
+                    }
+                    // Blank until the footer lands, rather than a dash that says it did.
+                    None if self.ctx.reading() => String::new(),
+                    _ => crate::glyphs::get().dash.to_string(),
+                };
                 cells.push(comp_str);
             }
             rows.push(Row::new(cells));
@@ -759,6 +770,15 @@ impl<'a> DataTableInfo<'a> {
         if y >= area.y + h {
             return;
         }
+        let size_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([label_constraint, value_constraint])
+            .split(Rect {
+                y,
+                width: w,
+                height: 1,
+                ..area
+            });
         // Drawn from what the worker left; reading the file here would hang the frame
         // on a mount that has stopped answering.
         let file_size = match self.ctx.facts {
@@ -773,15 +793,6 @@ impl<'a> DataTableInfo<'a> {
                 Span::styled(why.as_str(), Style::default().fg(self.theme.error))
             }
         };
-        let size_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([label_constraint, value_constraint])
-            .split(Rect {
-                y,
-                width: w,
-                height: 1,
-                ..area
-            });
         Paragraph::new("File size:").render(size_chunks[0], buf);
         Paragraph::new(Line::from(file_size)).render(size_chunks[1], buf);
         y += 1;
@@ -881,66 +892,49 @@ impl<'a> DataTableInfo<'a> {
         }
         y += 1;
 
-        if let Some(meta) = self.ctx.parquet_metadata() {
-            let (comp, uncomp) = parquet_overall_sizes(meta.as_ref());
-            if comp > 0 && uncomp > 0 && y < area.y + h {
-                let ratio = uncomp as f64 / comp as f64;
-                let value = format!(
-                    "{:.1}{} (uncomp. {})",
-                    ratio,
-                    crate::glyphs::get().times,
-                    format_bytes(uncomp)
-                );
-                label_value_row(
-                    "Parquet comp.:",
-                    &value,
-                    Rect {
-                        y,
-                        width: w,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                    LABEL_WIDTH,
-                );
-                y += 1;
-            }
-            if y < area.y + h {
-                label_value_row(
+        // Always four rows, laid out before the footer lands, so Measurements below
+        // stays put; a value the footer does not have is a dash.
+        let meta = self.ctx.parquet_metadata();
+        if meta.is_some() || self.ctx.parquet_file {
+            let dash = crate::glyphs::get().dash;
+            let value = |known: Option<String>| match known {
+                Some(v) => v,
+                None if self.ctx.reading() => String::new(),
+                None => dash.to_string(),
+            };
+            let comp = meta.and_then(|meta| {
+                let (comp, uncomp) = parquet_overall_sizes(meta.as_ref());
+                (comp > 0 && uncomp > 0).then(|| {
+                    format!(
+                        "{:.1}{} (uncomp. {})",
+                        uncomp as f64 / comp as f64,
+                        crate::glyphs::get().times,
+                        format_bytes(uncomp)
+                    )
+                })
+            });
+            let rows = [
+                ("Parquet comp.:", value(comp)),
+                (
                     "Row groups:",
-                    &meta.row_groups.len().to_string(),
-                    Rect {
-                        y,
-                        width: w,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                    LABEL_WIDTH,
-                );
-                y += 1;
-            }
-            if y < area.y + h {
-                label_value_row(
+                    value(meta.map(|m| m.row_groups.len().to_string())),
+                ),
+                (
                     "Parquet version:",
-                    &meta.version.to_string(),
-                    Rect {
-                        y,
-                        width: w,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                    LABEL_WIDTH,
-                );
-                y += 1;
-            }
-            if let Some(ref cb) = meta.created_by
-                && y < area.y + h
-            {
-                label_value_row(
+                    value(meta.map(|m| m.version.to_string())),
+                ),
+                (
                     "Created by:",
-                    cb,
+                    value(meta.and_then(|m| m.created_by.clone())),
+                ),
+            ];
+            for (label, value) in rows {
+                if y >= area.y + h {
+                    break;
+                }
+                label_value_row(
+                    label,
+                    &value,
                     Rect {
                         y,
                         width: w,
@@ -1498,6 +1492,7 @@ mod tests {
                 InfoContext {
                     format: None,
                     facts: None,
+                    parquet_file: false,
                 },
                 &mut modal,
                 &theme,
@@ -1565,6 +1560,7 @@ mod tests {
             InfoContext {
                 format: None,
                 facts: None,
+                parquet_file: false,
             },
             &mut modal,
             &theme,
@@ -1660,6 +1656,7 @@ mod tests {
                 InfoContext {
                     format: None,
                     facts: None,
+                    parquet_file: false,
                 },
                 &mut modal,
                 &theme,
@@ -1834,6 +1831,7 @@ mod tests {
                 InfoContext {
                     format: None,
                     facts: None,
+                    parquet_file: false,
                 },
                 &mut modal,
                 &theme,

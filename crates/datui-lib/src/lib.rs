@@ -26817,7 +26817,7 @@ mod background_read_tests {
 mod file_facts_tests {
     use super::*;
     use crate::widgets::datatable::DataTableState;
-    use polars::prelude::IntoLazy;
+    use polars::prelude::{IntoLazy, ParquetWriter};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 
@@ -27131,6 +27131,50 @@ mod file_facts_tests {
         let line = file_size_line(&text);
         assert!(line.contains(crate::glyphs::get().dash), "{line}");
         assert_eq!(gate.calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// The footer's rows and the Compression column have their room before the footer
+    /// lands, so nothing on either tab moves when it does.
+    #[test]
+    fn nothing_moves_when_the_footer_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("facts.parquet");
+        let mut df = polars::df!("a" => [1i64, 2, 3]).unwrap();
+        ParquetWriter::new(std::fs::File::create(&file).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        let (mut app, rx, tx) = app();
+        let gate = gated(&mut app);
+        install(&mut app, &file.to_string_lossy());
+
+        let row_of = |text: &str, label: &str| {
+            text.lines()
+                .position(|line| line.contains(label))
+                .unwrap_or_else(|| panic!("no {label} row:\n{text}"))
+        };
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        let schema = screen(&mut app);
+        // The Compression column is up before there is anything to put in it.
+        let header = schema.lines().nth(row_of(&schema, "Compression")).unwrap();
+        let header = header.to_string();
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        let waiting = screen(&mut app);
+        let groups = row_of(&waiting, "Row groups:");
+
+        gate.answer.send(FileFacts::read(&file, true)).unwrap();
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+        let landed = screen(&mut app);
+        assert_eq!(row_of(&landed, "Row groups:"), groups, "{landed}");
+        assert!(
+            landed.lines().nth(groups).unwrap().contains('1'),
+            "{landed}"
+        );
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        let schema = screen(&mut app);
+        assert_eq!(
+            schema.lines().nth(row_of(&schema, "Compression")).unwrap(),
+            header
+        );
     }
 
     /// Installing a hive dataset takes what the open's worker found and looks at

@@ -3040,6 +3040,14 @@ impl DataTableState {
             .with_columns(trim_sample_exprs)
             .with_columns(blank_to_null_exprs)
             .collect()?;
+        log::debug!(
+            target: "datui",
+            "string inference sample: {} rows x {} columns for {} targets, {} bytes",
+            sample_df.height(),
+            sample_df.width(),
+            target_cols.len(),
+            sample_df.estimated_size()
+        );
         let mut exprs = Vec::with_capacity(target_cols.len());
         for col_name in &target_cols {
             let name = PlSmallStr::from(col_name.as_str());

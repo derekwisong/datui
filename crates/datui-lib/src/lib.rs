@@ -9347,6 +9347,33 @@ impl LenCount {
 
     /// Count the rows. Blocks; `Err` when the count could not be taken.
     fn run(&self) -> Result<Counted, ()> {
+        let kind = if self.reads_footers() {
+            "footers"
+        } else {
+            "scan"
+        };
+        let began = std::time::Instant::now();
+        log::debug!(target: "datui", "row count {} ({kind}): started", self.len_generation);
+        let counted = self.count();
+        match &counted {
+            Ok(counted) => log::debug!(
+                target: "datui",
+                "row count {} ({kind}): {} rows in {:.1?}",
+                self.len_generation,
+                counted.rows,
+                began.elapsed()
+            ),
+            Err(()) => log::debug!(
+                target: "datui",
+                "row count {} ({kind}): failed after {:.1?}",
+                self.len_generation,
+                began.elapsed()
+            ),
+        }
+        counted
+    }
+
+    fn count(&self) -> Result<Counted, ()> {
         // A dataset's footers, many at once. Should one not read, the scan counts itself.
         if let Some(count) = &self.files
             && let Ok(groups) = count()
@@ -22565,9 +22592,15 @@ impl App {
                     if let Some(inflight) = self.collect_inflight.take()
                         && let Some(state) = self.data_table_state.as_ref()
                     {
-                        state
-                            .measurements()
-                            .read_page(inflight.began.elapsed(), inflight.files);
+                        let took = inflight.began.elapsed();
+                        log::debug!(
+                            target: "datui",
+                            "rows {}..{} of {}: read in {took:.1?}",
+                            inflight.start,
+                            inflight.end,
+                            inflight.dataset
+                        );
+                        state.measurements().read_page(took, inflight.files);
                     }
                     let taken = self
                         .pending_collect_result

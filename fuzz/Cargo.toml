@@ -40,6 +40,13 @@ debug = true
 debug-assertions = true
 overflow-checks = true
 
+# The targets' bodies. tests/fuzz_corpus_test.rs in the main workspace includes the
+# same files to replay the corpus without an instrumented build.
+[lib]
+path = "src/lib.rs"
+test = false
+doc = false
+
 [[bin]]
 name = "parse_query"
 path = "fuzz_targets/parse_query.rs"

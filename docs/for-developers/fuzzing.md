@@ -14,9 +14,29 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher, checked for hangs and for its wildcard-free fast path agreeing with equality. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and color strings that get sliced by byte offset after a byte-length check. |
 
+## Layout
+
+| Path | What |
+| --- | --- |
+| `fuzz/src/<target>.rs` | The target's body: `run`, its input type and every check |
+| `fuzz/fuzz_targets/<target>.rs` | libfuzzer-sys decodes the input and calls `run` |
+| `tests/fuzz_corpus_test.rs` | Replays `fuzz/corpus/<target>/` through the same `run`, as an ordinary test |
+
+The test decodes each input as libfuzzer-sys does (`Arbitrary::arbitrary_take_rest`
+over `Unstructured`), runs the empty input as libFuzzer does, and fails on a panic. Its
+decoding matches the fuzzer's only while `Cargo.lock` and `fuzz/Cargo.lock` resolve the
+same `arbitrary`; the test checks that too. Put new checks in `run`. A new target needs
+a line in the test, which fails until its corpus is replayed.
+
 ## Running
 
-Install the tool once:
+Replay every committed corpus input, without building the fuzzers:
+
+```bash
+./scripts/dev/test.sh integration fuzz_corpus_test
+```
+
+To fuzz, install the tool once:
 
 ```bash
 cargo install cargo-fuzz --locked
@@ -32,9 +52,9 @@ Then, from the repository root:
 ./scripts/code/fuzz.sh run parse_query -- -max_total_time=60
 ```
 
-`replay` is the quick one. It loads every committed corpus input, runs each once, and
-generates no new test inputs. Use it to check known cases after editing a parser
-or matcher.
+`replay` loads every committed corpus input into the instrumented binaries, runs each
+once, and generates no new test inputs. It checks the same inputs as the test above,
+after a much longer build.
 
 ## What CI does
 
@@ -62,7 +82,7 @@ The three targets that take text are seeded with inputs a person can read: `pars
 from the parser's own unit tests and the query examples throughout `docs/`,
 `sql_group_plan` from the planner's unit tests, `config_parse` from the TOML blocks in
 `docs/`. Anything named `regression-*` is an
-input that once crashed a target, kept so the replay job notices if it ever crashes
+input that once crashed a target, kept so the replay test notices if it ever crashes
 again.
 
 The other three take structured input that `arbitrary` decodes from raw bytes, so a
@@ -85,7 +105,7 @@ passing that file instead of a corpus directory:
 ./scripts/code/fuzz.sh run parse_query fuzz/artifacts/parse_query/crash-<hash>
 ```
 
-Fix the bug, then copy the input into `fuzz/corpus/<target>/` so the replay job keeps it
+Fix the bug, then copy the input into `fuzz/corpus/<target>/` so the replay test keeps it
 fixed. A minimal reproducer usually deserves a unit test next to the code as well.
 
 ## Sanitizer

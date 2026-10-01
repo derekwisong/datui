@@ -28,8 +28,14 @@ The Nightly workflow caches each target's corpus between runs, so a night's fuzz
 starts where the last one finished rather than from these seeds. `cmin` runs before it is
 stored, to stop it growing without bound.
 
-`replay` is what CI runs on every pull request. It is deterministic and finishes in
-seconds, and it fails if a previously fixed crash comes back.
+Each target's body lives in `src/<target>.rs`; `fuzz_targets/<target>.rs` only decodes
+the input and calls it. The main workspace's `tests/fuzz_corpus_test.rs` replays every
+committed corpus through the same bodies as an ordinary test, without this build, so a
+previously fixed crash fails the test suite if it comes back:
+
+```sh
+scripts/dev/test.sh integration fuzz_corpus_test
+```
 
 ## Targets
 
@@ -60,7 +66,7 @@ libFuzzer writes the offending input to `fuzz/artifacts/<target>/`. Reproduce it
 scripts/code/fuzz.sh run parse_query fuzz/artifacts/parse_query/crash-<hash>
 ```
 
-Fix the bug, then add the input to `corpus/<target>/` so the replay job keeps it fixed.
+Fix the bug, then add the input to `corpus/<target>/` so the replay test keeps it fixed.
 A minimal reproducer usually deserves a unit test next to the code as well.
 
 ## Sanitizer

@@ -51,7 +51,8 @@ changes. Run the full suite for cross-cutting App/event-loop, LazyFrame,
 loading/schema, shared configuration, dependency/feature, and harness/layout
 changes. For isolated changes, CI supplies full-workspace coverage; report
 which checks were local. Documentation-only changes do not require Rust tests.
-Replay the fuzz corpus for parser or matcher changes. Do not rerun an unchanged
+Replay the fuzz corpus for parser or matcher changes
+(`./scripts/dev/test.sh integration fuzz_corpus_test`). Do not rerun an unchanged
 broad check merely because another small scoped check finished.
 
 Select multiple affected targets explicitly when needed:
@@ -173,6 +174,7 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | `tests/home_test.rs`, `tests/search_test.rs`, `tests/locality_test.rs` | Home screen, recursive search, filesystem detection |
 | `tests/config_test.rs`, `tests/config_integration_test.rs`, `tests/theme_application_test.rs` | Configuration and themes |
 | `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |
+| `tests/fuzz_corpus_test.rs` | Every committed fuzz corpus input through its target's body in `fuzz/src/`; see [Fuzzing](fuzzing.md) |
 | `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
 | `tests/common/` | Shared helpers |
 

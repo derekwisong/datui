@@ -47,7 +47,7 @@ is actually applied.
 ![Sorting Demo](../demos/06-sorting.gif)
 
 One row per column, with its lock, its place and direction in the sort
-(`1▲`, `2▼`), and a `⊘` when it is hidden. Each sorted column's header in the
+(`1▲`, `2▼`), a width set by hand, and a `⊘` when it is hidden. Each sorted column's header in the
 table carries its own direction mark (▲/▼), so the sort and <kbd>r</kbd>
 reversing it are visible at a glance. Type in the find field to narrow the
 list, then:
@@ -61,6 +61,32 @@ list, then:
 | <kbd>+</kbd> <kbd>-</kbd> | Move this column left or right in the table |
 | <kbd>L</kbd> | Freeze this column and every column above it on the left |
 | <kbd>v</kbd> | Hide or show this column (it keeps its place in the list, dimmed) |
+| <kbd>&lt;</kbd> <kbd>&gt;</kbd> (<kbd>,</kbd> <kbd>.</kbd>) | Make this column 4 cells narrower or wider |
+| <kbd>f</kbd> | Fit this column to the rows on screen; the list shows `fit` until you apply |
+| <kbd>w</kbd> | Back to the automatic width |
+
+### Column widths
+
+Each column keeps the width it was first drawn at, so paging, scrolling,
+reordering, hiding and opening a sidebar move nothing. A longer value on a
+later page ends in `…` (ASCII `...`).
+
+| Column | Automatic width |
+|---|---|
+| Text and names | The first page's widest, at most two fifths of the window: 32 cells at 80 columns, 48 at 120 (16 to 64) |
+| Numbers, dates, times, flags | The widest value seen so far, never cut; it does not narrow again |
+
+A width set with <kbd>&lt;</kbd> <kbd>&gt;</kbd> or <kbd>f</kbd> is kept through
+paging, resizing and reordering until <kbd>w</kbd>, <kbd>C</kbd> or
+<kbd>R</kbd>. Text gets exactly that width; a number column is never narrower
+than its numbers. Applying only width changes leaves the table on the page
+you were on.
+
+The space between columns is the `table_cell_padding` setting:
+`"comfortable"` (2 cells, the default), `"compact"` (1) or a number. See the
+[settings reference](../reference/settings.md#display).
+
+### Frozen columns
 
 Frozen columns stay at the left edge, left of a `│`, while the rest scroll.
 When the window is too narrow for all of them beside a usable scrolling
@@ -73,8 +99,8 @@ Every column carries its own direction, so `calories` can run descending while
 `restaurant` runs ascending. Nulls go last in either direction.
 
 Back in the main view, <kbd>r</kbd> reverses every direction at once and
-<kbd>R</kbd> resets everything: query, filters, sort, column order and hidden
-columns, frozen columns, pivot/melt, drill-down and the applied view.
+<kbd>R</kbd> resets everything: query, filters, sort, column order, hidden
+columns and widths, frozen columns, pivot/melt, drill-down and the applied view.
 
 ## Filters tab
 

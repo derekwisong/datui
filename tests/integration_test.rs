@@ -4456,6 +4456,78 @@ fn metadata_only_reads_no_values() {
     assert_eq!(results.columns.len(), 3);
 }
 
+/// An empty scope is never a clean report. Rows chosen past the table's end are
+/// an error naming them, a second Run included, and no report. A dataset with no
+/// rows at all, sampled or scanned, reports that nothing about its values is known:
+/// no column called clean, no check passed.
+#[test]
+fn an_empty_scope_is_never_a_clean_report() {
+    let (mut app, rx, _tx, _path) = open_quality_fixture("dq_empty_scope.csv", 1_000, 0);
+    app.analysis_modal.data_quality_plan.scope = datui::data_quality::QualityScope::ViewRows {
+        start: 5_000,
+        end: 6_000,
+    };
+    for _ in 0..2 {
+        let first = press(&mut app, KeyCode::Enter);
+        let (finished, _) = drain_quality(&mut app, &rx, first);
+        assert_eq!(finished, 0);
+        assert!(app.modal_showing());
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let text = rendered_text(&buffer);
+        assert!(
+            text.contains("No rows match view rows 5,000-6,000"),
+            "{text}"
+        );
+        assert!(app.analysis_modal.data_quality_results.is_none());
+        press(&mut app, KeyCode::Esc);
+    }
+
+    common::ensure_sample_data();
+    for full in [false, true] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        let path = PathBuf::from("tests/sample-data/empty.parquet");
+        pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        open_quality_setup(&mut app);
+        let plan = &mut app.analysis_modal.data_quality_plan;
+        // A declared key and a required column are no more checked than the rest.
+        plan.intent = datui::quality_intent::DeclaredIntent {
+            key: vec!["id".into()],
+            columns: vec![datui::quality_intent::ColumnIntent {
+                column: "name".into(),
+                required: true,
+                ..Default::default()
+            }],
+        };
+        if full {
+            plan.method = datui::sampling::SampleMethod::EveryRow;
+            plan.compute = datui::data_quality::QualityCompute::Full;
+        }
+        let mut first = press(&mut app, KeyCode::Enter);
+        if app.analysis_modal.data_quality_confirm_run {
+            first = press(&mut app, KeyCode::Enter);
+        }
+        let (finished, _) = drain_quality(&mut app, &rx, first);
+        assert_eq!(finished, 1);
+        let results = app.analysis_modal.data_quality_results.clone().unwrap();
+        assert_eq!(results.evaluated_rows, 0);
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let text = rendered_text(&buffer);
+        assert!(!text.contains("No problems found"), "full {full}: {text}");
+        assert!(!text.contains("clean"), "full {full}: {text}");
+        assert!(text.contains("No rows to check"), "full {full}: {text}");
+        let report = datui::quality_report::build_report(&results);
+        for check in datui::quality_report::checks(&results, &report) {
+            assert!(!check.outcome.ran(), "{} ran on no rows", check.name);
+        }
+    }
+}
+
 #[test]
 fn test_data_quality_scope_editor_runs_selected_view_rows() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};

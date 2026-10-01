@@ -410,6 +410,9 @@ pub struct QualityReport {
     pub column_findings: Vec<Vec<&'static str>>,
     /// No values were read, so the absence of a finding means nothing.
     pub metadata_only: bool,
+    /// Values were to be read and the scope had none: no check had anything to look
+    /// at, so nothing is clean either.
+    pub no_rows: bool,
 }
 
 pub fn build_report(results: &DataQualityResults) -> QualityReport {
@@ -483,6 +486,7 @@ pub fn build_report(results: &DataQualityResults) -> QualityReport {
         .count();
     let notes = findings.len() - problems;
     let metadata_only = results.precision == QualityPrecision::Metadata;
+    let no_rows = !metadata_only && results.evaluated_rows == 0;
     let clean = results
         .columns
         .iter()
@@ -490,8 +494,8 @@ pub fn build_report(results: &DataQualityResults) -> QualityReport {
         .filter(|(_, severity)| **severity == Severity::Clean)
         .map(|(profile, _)| profile.name.clone())
         .collect::<Vec<_>>();
-    let clean_columns = clean.len();
-    if !clean.is_empty() && !metadata_only {
+    let clean_columns = if no_rows { 0 } else { clean.len() };
+    if !clean.is_empty() && !metadata_only && !no_rows {
         findings.push(Finding {
             severity: Severity::Clean,
             kind: None,
@@ -521,6 +525,7 @@ pub fn build_report(results: &DataQualityResults) -> QualityReport {
         column_status: status,
         column_findings: titles,
         metadata_only,
+        no_rows,
     }
 }
 
@@ -899,6 +904,9 @@ pub struct Check {
 /// How many checks the collapsed list shows before "more".
 pub const CHECKS_SHOWN: usize = 6;
 
+/// Why a value check could not run on a scope with no rows.
+const NO_ROWS: &str = "no rows to check";
+
 /// Every check, most important first.
 pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check> {
     use polars::prelude::DataType;
@@ -931,6 +939,9 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
         if !values_read {
             return Outcome::Unavailable("values not read");
         }
+        if report.no_rows {
+            return Outcome::Unavailable(NO_ROWS);
+        }
         found(report, titles)
     };
     let files = results.source_files.filter(|files| *files > 1);
@@ -956,10 +967,12 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             name: INTENT_CHECK,
             looks_for: "values against the key and rules declared",
             applies_to: reach(intent.declared.len(), "declared"),
-            outcome: if intent.measured {
-                found(report, &INTENT_TITLES)
-            } else {
+            outcome: if !intent.measured {
                 Outcome::Unavailable("values not read")
+            } else if report.no_rows {
+                Outcome::Unavailable(NO_ROWS)
+            } else {
+                found(report, &INTENT_TITLES)
             },
             basis: intent.precision,
         });
@@ -994,6 +1007,7 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             applies_to: "whole rows".to_string(),
             outcome: match results.identity.as_ref() {
                 _ if !values_read => Outcome::Unavailable("values not read"),
+                _ if report.no_rows => Outcome::Unavailable(NO_ROWS),
                 Some(identity) if identity.extra_rows > 0 => Outcome::Found {
                     tier: Severity::Problem,
                     detail: format!("{} extra rows", numfmt::group_chrome(identity.extra_rows)),
@@ -1220,6 +1234,7 @@ pub fn coverage(
         .rows
         .push(match (results.precision, results.total_rows) {
             (QualityPrecision::Metadata, _) => "none read, file metadata only".to_string(),
+            _ if evaluated == 0 => "none: the scope has no rows".to_string(),
             (QualityPrecision::Exact, _) => format!("all {} read, exact", count(evaluated)),
             (_, Some(total)) => format!(
                 "{} of {} sampled ({})",
@@ -1850,6 +1865,17 @@ pub fn verdict(report: &QualityReport) -> String {
             1 => "1 problem in file metadata; values not read".to_string(),
             count => format!(
                 "{} problems in file metadata; values not read",
+                numfmt::group_chrome(count)
+            ),
+        };
+    }
+    // No rows is no evidence: nothing passed, and nothing is clean.
+    if report.no_rows {
+        return match report.problems {
+            0 => "No rows to check: nothing is known about the values".to_string(),
+            1 => "1 problem in file metadata; no rows to check".to_string(),
+            count => format!(
+                "{} problems in file metadata; no rows to check",
                 numfmt::group_chrome(count)
             ),
         };

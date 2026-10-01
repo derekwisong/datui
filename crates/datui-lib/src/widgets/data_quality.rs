@@ -959,6 +959,8 @@ fn render_overview(
     if report.findings.is_empty() {
         let message = if report.metadata_only {
             "No values were read, so nothing about them is known. Set Values to read in Setup (e) to check them."
+        } else if report.no_rows {
+            "The scope has no rows, so nothing about its values is known. Choose other rows in Setup (e) to check them."
         } else {
             "No columns to check."
         };
@@ -1009,7 +1011,7 @@ fn render_overview(
             .render(list, buf);
         return;
     }
-    if report.problems == 0 && report.notes == 0 && !report.metadata_only {
+    if report.problems == 0 && report.notes == 0 && !report.metadata_only && !report.no_rows {
         // Nothing to fix: what was checked is the answer, so it is on the page
         // rather than behind the clean entry.
         let parts = Layout::default()
@@ -1036,7 +1038,7 @@ fn render_verdict(
     let theme = config.theme;
     let (mark, tone) = if report.problems > 0 {
         (g.warning, theme.get("warning"))
-    } else if report.metadata_only {
+    } else if report.metadata_only || report.no_rows {
         (g.middot, theme.get("dimmed"))
     } else {
         (g.check, theme.get("success"))

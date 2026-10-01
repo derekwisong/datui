@@ -8901,6 +8901,11 @@ type FileFactsReader =
 /// behind the result that worker just sent — so the handler that consumes the result has
 /// already run by the time the lease is retired. A worker that panics unwinds through
 /// the same `Drop`, so a permanent "something is waiting" cannot be stranded that way.
+/// The other side of that order: for an event, a job that has answered still holds the
+/// generation, with `busy` already down. Released first, the count would dip to zero
+/// between two phases of one errand, which is #221 again. So whatever a held lease
+/// turns away is asked again after the release, as `collect_owed` is, rather than
+/// marked done (#490).
 /// Retiring the lease is not finishing the operation: it says the generation is free,
 /// and nothing about the operation's own state. That is `BackgroundFailed`'s, which a
 /// panic sends first.
@@ -13108,11 +13113,16 @@ impl App {
     /// is bringing the rows asked for, or supersedes it by the generation, as any newer
     /// collect does. Never when a bump would strand other work.
     fn load_ahead(&mut self) {
+        // The lease is asked before the position is marked asked. A job's lease comes
+        // back an event behind its answer, so a frame drawn in between finds the
+        // generation held and the app idle; marked, the position would be spent on that
+        // refusal and never asked again.
         if self.busy
             || self.collect_owed.is_some()
             || self
                 .collect_inflight
                 .is_some_and(|inflight| inflight.generation == self.task_generation)
+            || self.work_a_bump_would_strand()
         {
             return;
         }
@@ -13127,9 +13137,6 @@ impl App {
             return;
         }
         self.loaded_ahead_from = Some(position);
-        if self.work_a_bump_would_strand() {
-            return;
-        }
         self.spawn_collect(None);
     }
 

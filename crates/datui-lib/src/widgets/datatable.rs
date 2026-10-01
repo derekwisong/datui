@@ -973,10 +973,18 @@ fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
 /// and skip others, a `LIMIT` keep different groups on each read, and a sort's ties
 /// arrive in a different order each time. Every sort keeps tied rows in the order
 /// they come, as [`sort_options`] does (Polars SQL sorts unstably and offers no
-/// option), and every grouping, distinct, union and join keeps its input's order.
-/// Only the parts of the plan holding such a node are rewritten.
+/// option), and every grouping, distinct, union and join keeps its input's order,
+/// except a grouping sorted by all its keys (see [`sorts_by_group_keys`]). Only the
+/// parts of the plan holding such a node are rewritten.
 #[cfg(feature = "sql")]
 fn stable_order(plan: &mut polars::lazy::dsl::DslPlan) {
+    order_stably(plan, false);
+}
+
+/// [`stable_order`], where `groups_sorted` says a sort above `plan` orders the rows
+/// of the grouping it reads through `plan`.
+#[cfg(feature = "sql")]
+fn order_stably(plan: &mut polars::lazy::dsl::DslPlan, groups_sorted: bool) {
     use polars::lazy::dsl::DslPlan;
     let unordered = |node: &DslPlan| match node {
         DslPlan::Sort { sort_options, .. } => !sort_options.maintain_order,
@@ -989,9 +997,15 @@ fn stable_order(plan: &mut polars::lazy::dsl::DslPlan) {
     if !plan.into_iter().any(unordered) {
         return;
     }
+    // Passed down the path sorts_by_group_keys walked to the grouping, and no other.
+    let inputs_sorted = match plan {
+        DslPlan::Sort { .. } => sorts_by_group_keys(plan),
+        DslPlan::Select { .. } | DslPlan::IR { .. } => groups_sorted,
+        _ => false,
+    };
     match plan {
         DslPlan::Sort { sort_options, .. } => sort_options.maintain_order = true,
-        DslPlan::GroupBy { maintain_order, .. } => *maintain_order = true,
+        DslPlan::GroupBy { maintain_order, .. } if !groups_sorted => *maintain_order = true,
         DslPlan::Distinct { options, .. } => options.maintain_order = true,
         DslPlan::Union { args, .. } => args.maintain_order = true,
         DslPlan::Join { options, .. } => {
@@ -1003,11 +1017,87 @@ fn stable_order(plan: &mut polars::lazy::dsl::DslPlan) {
         // A plan asked for its schema is wrapped as IR, which would run as converted:
         // rewrite the plan it came from, and leave the IR behind.
         let mut inner = Arc::unwrap_or_clone(dsl.clone());
-        stable_order(&mut inner);
+        order_stably(&mut inner, inputs_sorted);
         *plan = inner;
         return;
     }
-    for_each_input(plan, &mut stable_order);
+    for_each_input(plan, &mut |input| order_stably(input, inputs_sorted));
+}
+
+/// Whether `sort` sorts the rows of a grouping by every one of its keys, so the
+/// order the groups arrive in never shows and keeping it is wasted time (#523).
+/// Keys are unique per group, so such a sort has no ties, wherever it puts NULLs: a
+/// NULL key is one group, and NaN and -0.0 group as the sort compares them. The
+/// groups must reach the sort through projections that only pass or rename
+/// columns: a filter or a computed column could depend on the order they arrive
+/// in, as `ROW_NUMBER() OVER ()` does. A key counts only as a plain column of the
+/// sort, which is what polars-sql makes of an alias, an ordinal or a key's own
+/// name. It evaluates any other expression against the grouped columns, which
+/// already hold the keys: `ORDER BY x % 4 * 2` over `GROUP BY x % 4 * 2` sorts by
+/// the key's `% 4 * 2`, and ties keys that differ.
+#[cfg(feature = "sql")]
+fn sorts_by_group_keys(sort: &polars::lazy::dsl::DslPlan) -> bool {
+    use polars::lazy::dsl::DslPlan;
+    let DslPlan::Sort {
+        input, by_column, ..
+    } = sort
+    else {
+        return false;
+    };
+    // The sort's columns, under the names they have at each node on the way down.
+    let mut names: Vec<PlSmallStr> = by_column
+        .iter()
+        .filter_map(|e| match e {
+            Expr::Column(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut node: &DslPlan = input;
+    loop {
+        match node {
+            DslPlan::Select { input, expr, .. } => {
+                // (output name, input name) of each column.
+                let Some(renames) = expr
+                    .iter()
+                    .map(|e| match e {
+                        Expr::Column(c) => Some((c, c)),
+                        Expr::Alias(inner, alias) => match &**inner {
+                            Expr::Column(c) => Some((alias, c)),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return false;
+                };
+                names = names
+                    .iter()
+                    .filter_map(|name| {
+                        renames
+                            .iter()
+                            .find(|(out, _)| *out == name)
+                            .map(|(_, source)| (*source).clone())
+                    })
+                    .collect();
+                node = input;
+            }
+            DslPlan::IR { dsl, .. } => node = dsl,
+            DslPlan::GroupBy {
+                keys,
+                options,
+                apply: None,
+                ..
+            } if **options == GroupbyOptions::default() => {
+                return keys.iter().all(|key| {
+                    let meta = key.clone().meta();
+                    !meta.has_multiple_outputs()
+                        && meta.output_name().is_ok_and(|key| names.contains(&key))
+                });
+            }
+            _ => return false,
+        }
+    }
 }
 
 /// `plan` with an `IN (SELECT …)` subquery's values counted once instead of once per
@@ -12315,6 +12405,105 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    /// A SQL grouping whose ORDER BY covers every key, by alias, ordinal or name,
+    /// leaves its groups' order to the sort (#523), and still reads the same rows page
+    /// by page, in the order polars-sql's own plan gives, with either engine. A sort
+    /// that leaves any key out, sorts by an expression of one, or reads the groups
+    /// through a LIMIT or a computed column keeps the groups' order.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_sql_grouping_sorted_by_its_keys_leaves_the_order_to_the_sort() {
+        use polars::lazy::dsl::DslPlan;
+        let df = df!(
+            "k" => (0..5000i64).map(|i| i % 3).collect::<Vec<_>>(),
+            "v" => (0..5000i64).collect::<Vec<_>>(),
+            "w" => (0..5000i64).map(|i| (i % 11 != 0).then_some(i % 700)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let groups_ordered = |plan: &DslPlan| -> Vec<bool> {
+            plan.into_iter()
+                .filter_map(|node| match node {
+                    DslPlan::GroupBy { maintain_order, .. } => Some(*maintain_order),
+                    _ => None,
+                })
+                .collect()
+        };
+        for (sql, ordered) in [
+            (
+                "SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g ORDER BY g",
+                false,
+            ),
+            (
+                "SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY v % 1000 ORDER BY 1 DESC LIMIT 300",
+                false,
+            ),
+            (
+                "SELECT k AS kk, v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY k, g ORDER BY n, g, kk",
+                false,
+            ),
+            (
+                "SELECT k AS d, COUNT(*) AS n FROM df GROUP BY k ORDER BY k DESC",
+                false,
+            ),
+            (
+                "SELECT w, MIN(v) AS v FROM df GROUP BY w HAVING COUNT(*) > 1 ORDER BY ALL",
+                false,
+            ),
+            (
+                "SELECT w, COUNT(*) AS n FROM df GROUP BY w ORDER BY w DESC NULLS FIRST",
+                false,
+            ),
+            (
+                "SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g ORDER BY n",
+                true,
+            ),
+            (
+                "SELECT k, v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY k, g ORDER BY g",
+                true,
+            ),
+            (
+                "SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY v % 1000 ORDER BY v % 1000",
+                true,
+            ),
+            (
+                "SELECT * FROM (SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g LIMIT 300) ORDER BY g",
+                true,
+            ),
+            (
+                "SELECT g, ROW_NUMBER() OVER () AS r FROM (SELECT v % 1000 AS g FROM df GROUP BY g) ORDER BY g",
+                true,
+            ),
+        ] {
+            let mut state =
+                DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
+            state.sql_query(sql.to_string());
+            assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+            assert_eq!(groups_ordered(&state.lf.logical_plan), [ordered], "{sql}");
+            let mut ctx = polars_sql::SQLContext::new();
+            ctx.register("df", df.clone().lazy());
+            let raw = ctx.execute(sql).unwrap();
+            for streaming in [false, cfg!(feature = "streaming")] {
+                let read = |lf: LazyFrame| collect_lazy(lf, streaming).unwrap();
+                let full = read(state.lf.clone());
+                if !ordered {
+                    // No ties, so polars-sql's unstable sort gives the one order too.
+                    assert!(
+                        full.equals_missing(&read(raw.clone())),
+                        "{sql}, streaming {streaming}"
+                    );
+                }
+                let middle = full.height() as i64 / 2;
+                for offset in [0, 100, middle] {
+                    let page = read(state.lf.clone().slice(offset, 200));
+                    assert!(
+                        page.equals_missing(&full.slice(offset, 200)),
+                        "{sql}, streaming {streaming}, offset {offset}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

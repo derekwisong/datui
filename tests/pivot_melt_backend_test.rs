@@ -13,13 +13,7 @@ use std::sync::mpsc;
 
 mod common;
 
-/// Whether the app is still waiting on background work: `busy` or the row count. What
-/// these tests wait on rather than a quiet spell on the channel, which on a loaded
-/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
-/// for minutes.
-fn work_pending(app: &App) -> bool {
-    app.is_busy() || app.row_count_pending()
-}
+use common::{drain_events, pump_open_until_loaded};
 
 fn ensure_sample_data() {
     common::ensure_sample_data();
@@ -31,69 +25,11 @@ fn load_file_with(
     path: PathBuf,
     opts: OpenOptions,
 ) {
-    let mut next: Option<AppEvent> = Some(AppEvent::Open(vec![path], opts));
-    loop {
-        match next.take() {
-            Some(ev) => {
-                if matches!(ev, AppEvent::Crash(_)) {
-                    app.event(&ev);
-                    return;
-                }
-                next = app.event(&ev);
-            }
-            _ => match next_event(app, rx) {
-                Some(ev) => next = Some(ev),
-                None => return,
-            },
-        }
-    }
-}
-
-/// The next event on the channel: one already there, or one background work still
-/// owes. `None` once nothing is there and nothing is owed.
-fn next_event(app: &App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> Option<AppEvent> {
-    // Only a hang guard; nothing here is timed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        if let Ok(event) = rx.try_recv() {
-            return Some(event);
-        }
-        if !work_pending(app) {
-            return None;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "background work never reported back"
-        );
-        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            return Some(event);
-        }
-    }
-}
-
-/// Handle events until no background work is left.
-fn settle(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
-    while let Some(event) = next_event(app, rx) {
-        let mut next = app.event(&event);
-        while let Some(event) = next.take() {
-            next = app.event(&event);
-        }
-    }
+    pump_open_until_loaded(app, rx, vec![path], opts);
 }
 
 fn load_file(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, path: PathBuf) {
     load_file_with(app, rx, path, OpenOptions::default());
-}
-
-/// Handle events until no background work is owed. A pivot reads its data in the
-/// background.
-fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
-    while let Some(ev) = next_event(app, rx) {
-        let mut next = app.event(&ev);
-        while let Some(n) = next.take() {
-            next = app.event(&n);
-        }
-    }
 }
 
 /// TUI-like collect sequence before pivot: DoLoadBuffer → Collect → set visible_rows → collect.
@@ -142,7 +78,7 @@ fn test_pivot_via_events() {
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
@@ -180,11 +116,7 @@ fn test_pivot_date_index_render_simulation() {
         next = app.event(&ev);
     }
     // Drain async collect events from background buffer load.
-    while let Some(ev) = next_event(&app, &rx) {
-        if let Some(n) = app.event(&ev) {
-            app.event(&n);
-        }
-    }
+    drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();
     let sliced_df = state
         .display_slice_df()
@@ -226,7 +158,7 @@ fn test_pivot_long_string_via_events() {
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
@@ -365,7 +297,7 @@ fn test_pivot_on_current_view_after_filter() {
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
@@ -456,7 +388,7 @@ fn test_pivot_via_modal_apply() {
     while let Some(n) = next.take() {
         next = app.event(&n);
     }
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     assert!(!app.pivot_melt_modal.active);
     assert_eq!(app.input_mode, InputMode::Normal);
@@ -553,7 +485,7 @@ fn test_pivot_via_keys_only() {
     while let Some(n) = next.take() {
         next = app.event(&n);
     }
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     assert!(!app.pivot_melt_modal.active);
     let state = app.data_table_state.as_ref().unwrap();
@@ -629,7 +561,7 @@ fn test_template_save_and_apply_pivot() {
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     let match_criteria = MatchCriteria {
         exact_path: Some(path.clone()),
@@ -664,7 +596,7 @@ fn test_template_save_and_apply_pivot() {
     send_key(&mut app, KeyCode::Char('V'));
     // The pivot is read in the background.
     assert!(app.is_busy());
-    settle(&mut app, &rx);
+    drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
@@ -690,7 +622,7 @@ fn test_pivot_reads_in_the_background() {
         &rx,
         PathBuf::from("tests/sample-data/pivot_long.parquet"),
     );
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
     send_key(&mut app, KeyCode::Char('p'));
     assert!(app.pivot_melt_modal.active);
 
@@ -715,7 +647,7 @@ fn test_pivot_reads_in_the_background() {
         "the modal waits for the result"
     );
 
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
     assert!(!app.pivot_melt_modal.active);
     assert_eq!(app.input_mode, InputMode::Normal);
     let state = app.data_table_state.as_ref().unwrap();
@@ -737,7 +669,7 @@ fn test_a_stale_pivot_result_is_dropped() {
         &rx,
         PathBuf::from("tests/sample-data/pivot_long.parquet"),
     );
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     let spec = PivotSpec {
         index: vec!["date".to_string()],
@@ -770,7 +702,7 @@ fn test_esc_stops_a_pivot_being_read() {
         &rx,
         PathBuf::from("tests/sample-data/pivot_long.parquet"),
     );
-    pump_until_idle(&mut app, &rx);
+    drain_events(&mut app, &rx);
     send_key(&mut app, KeyCode::Char('p'));
 
     let spec = PivotSpec {

@@ -52,9 +52,14 @@ The hooks also check trailing whitespace and unexpectedly large files.
 ```bash
 cargo fmt
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace           # see Tests for the fixtures it needs
+./scripts/dev/test.sh integration TARGET FILTER  # select the changed behavior's tests
 ./scripts/code/fuzz.sh replay    # if you touched a parser or matcher
 ```
+
+Use the [test selection policy](tests.md#select-the-checks) to broaden related
+tests. Run `./scripts/dev/test.sh full` for cross-cutting changes, shared test
+infrastructure or test reorganization. Isolated changes can use scoped local
+tests with the full workspace covered by CI; state the checks run in the PR.
 
 Keep commits and pull request text terse. If you add a feature, update the
 in-app help strings in `crates/datui-lib/src/help-strings/` and the relevant

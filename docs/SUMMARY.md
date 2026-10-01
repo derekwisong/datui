@@ -56,6 +56,7 @@
 - [Development overview](for-developers.md)
 - [Set up and contribute](for-developers/contributing.md)
 - [Run tests](for-developers/tests.md)
+- [Reduce test iteration time](for-developers/test-organization-review.md)
 - [Build documentation](for-developers/documentation.md)
 - [Record demos](for-developers/demos.md)
 - [Add configuration options](for-developers/adding-configuration-options.md)

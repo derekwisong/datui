@@ -17,72 +17,10 @@ use std::sync::mpsc;
 
 mod common;
 
-/// Whether the app is still waiting on background work: `busy` or the row count. What
-/// these tests wait on rather than a quiet spell on the channel, which on a loaded
-/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
-/// for minutes.
-fn work_pending(app: &App) -> bool {
-    app.is_busy() || app.row_count_pending()
-}
+use common::{drain_events, pump_open_until_loaded};
 
 fn press(app: &mut App, code: KeyCode) {
     app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
-}
-
-fn pump_open_until_loaded(
-    app: &mut App,
-    rx: &std::sync::mpsc::Receiver<AppEvent>,
-    paths: Vec<PathBuf>,
-    options: OpenOptions,
-) {
-    let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
-    // Only a hang guard; nothing here is timed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        match next.take() {
-            Some(ev) => {
-                next = app.event(&ev);
-            }
-            // Done once nothing is chained, queued or still owed.
-            _ => match rx.try_recv() {
-                Ok(ev) => next = Some(ev),
-                Err(_) if !work_pending(app) => return,
-                Err(_) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "background work never reported back"
-                    );
-                    next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
-                }
-            },
-        }
-    }
-}
-
-/// Handle events until no background work is left.
-fn settle(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
-    // Only a hang guard; nothing here is timed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        let event = match rx.try_recv() {
-            Ok(event) => event,
-            Err(_) if !work_pending(app) => return,
-            Err(_) => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "background work never reported back"
-                );
-                match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                    Ok(event) => event,
-                    Err(_) => continue,
-                }
-            }
-        };
-        let mut next = app.event(&event);
-        while let Some(event) = next.take() {
-            next = app.event(&event);
-        }
-    }
 }
 
 /// One sequential walk through the surface, so the views it saves never race
@@ -200,7 +138,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     // the background.
     press(&mut app, KeyCode::Enter);
     assert!(!app.template_modal.active, "apply closes the list");
-    settle(&mut app, &rx);
+    drain_events(&mut app, &rx);
 
     // Applied, the view follows the table: adjust the sort and re-save
     // through edit, and the view carries the new state.

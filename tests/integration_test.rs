@@ -11,13 +11,7 @@ use std::sync::mpsc;
 
 mod common;
 
-/// Whether the app is still waiting on background work: `busy` or the row count. What
-/// these tests wait on rather than a quiet spell on the channel, which on a loaded
-/// machine says nothing. Abandoned work is not waited on; a cancelled analysis can run
-/// for minutes.
-fn work_pending(app: &App) -> bool {
-    app.is_busy() || app.row_count_pending()
-}
+use common::{drain_events, next_event, pump_open_until_loaded, work_pending};
 
 /// Enter on a tool in the Analysis sidebar. A tool with no result yet shows its
 /// Sample form in the pane rather than running; the next Enter runs it.
@@ -28,42 +22,6 @@ fn show_sample_form(app: &mut App) {
     )));
 }
 
-/// Handle events, and the events they chain to, until the app waits on no background
-/// work and the channel is empty.
-///
-/// Waits on the work, not on a quiet gap: a run that took longer than the gap on a
-/// slow runner left the previous run's result in place for the asserts after it.
-fn drain_events(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
-    while let Some(event) = next_event(app, rx) {
-        let mut next = Some(event);
-        while let Some(event) = next {
-            next = app.event(&event);
-        }
-    }
-}
-
-/// The next event on the channel: one already there, or one background work still
-/// owes. `None` once nothing is there and nothing is owed.
-fn next_event(app: &App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> Option<AppEvent> {
-    // Only a hang guard; nothing here is timed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    loop {
-        if let Ok(event) = rx.try_recv() {
-            return Some(event);
-        }
-        if !work_pending(app) {
-            return None;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "background work never reported back"
-        );
-        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            return Some(event);
-        }
-    }
-}
-
 /// Ticks for a loop that polls the way `run()` does until what it waits for is true.
 /// Bounded by a hang guard rather than a count: on a loaded machine a count of ticks
 /// runs out before the work does. The guard fails the test instead of ending the loop,
@@ -71,7 +29,7 @@ fn next_event(app: &App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> Option<App
 #[track_caller]
 fn ticks() -> impl Iterator<Item = usize> {
     let caller = std::panic::Location::caller();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let deadline = std::time::Instant::now() + common::HANG_GUARD;
     (0..).inspect(move |_| {
         assert!(
             std::time::Instant::now() < deadline,
@@ -107,32 +65,6 @@ fn pump_until(
     }
 }
 
-/// Pumps the load event chain until complete, including background task results from the channel.
-fn pump_open_until_loaded(
-    app: &mut App,
-    rx: &std::sync::mpsc::Receiver<AppEvent>,
-    paths: Vec<PathBuf>,
-    options: OpenOptions,
-) {
-    let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
-    loop {
-        match next.take() {
-            Some(ev) => {
-                if matches!(ev, AppEvent::Crash(_)) {
-                    app.event(&ev);
-                    return;
-                }
-                next = app.event(&ev);
-            }
-            // Nothing chained: the load is done once nothing more is owed.
-            _ => match next_event(app, rx) {
-                Some(ev) => next = Some(ev),
-                None => return,
-            },
-        }
-    }
-}
-
 /// As `pump_open_until_loaded`, but hands back the message a failed open ended with.
 ///
 /// A load that fails reports it as `BackgroundError` — the reading happens off the
@@ -152,6 +84,51 @@ fn pump_open_until_error(
             None => next = Some(next_event(app, rx)?),
         }
     }
+}
+
+/// The harness handles what is already queued before it calls the app settled.
+#[test]
+fn test_drain_events_handles_queued_events_first() {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    tx.send(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('o'),
+        KeyModifiers::CONTROL,
+    )))
+    .unwrap();
+    drain_events(&mut app, &rx);
+    assert_eq!(app.input_mode, InputMode::Home);
+}
+
+/// A quiet channel is not completion: the harness waits for the result work owes.
+#[test]
+fn test_drain_events_waits_for_owed_result() {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    app.set_loading_phase("test worker", 0);
+    let generation = app.task_generation();
+    let worker = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        tx.send(AppEvent::BackgroundError {
+            generation,
+            message: "test worker failed".into(),
+        })
+        .unwrap();
+    });
+    drain_events(&mut app, &rx);
+    worker.join().unwrap();
+    assert!(!app.is_busy(), "the worker's result was handled");
+    assert!(!work_pending(&app));
+}
+
+/// A wait that runs out fails the test rather than falling through to the asserts.
+#[test]
+#[should_panic(expected = "background work never reported back")]
+fn test_wait_past_its_guard_fails() {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_loading_phase("nothing will answer", 0);
+    common::next_event_within(&app, &rx, std::time::Duration::from_millis(1));
 }
 
 #[test]
@@ -8814,10 +8791,11 @@ fn pump_home(
         if done(app) {
             return;
         }
-        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(500))
-            && let Some(next) = app.event(&ev)
-        {
-            app.event(&next);
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            let mut next = Some(ev);
+            while let Some(ev) = next {
+                next = app.event(&ev);
+            }
         }
     }
 }

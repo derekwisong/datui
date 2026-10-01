@@ -1,9 +1,110 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
+
+use datui::{App, AppEvent, OpenOptions};
 
 #[allow(dead_code)]
 static INIT: Once = Once::new();
+
+/// How long a wait goes before it fails the test. Only a hang guard; nothing is timed.
+#[allow(dead_code)]
+pub const HANG_GUARD: Duration = Duration::from_secs(300);
+
+/// Whether the app still owes a result: `busy`, the row count, or a footer pass still
+/// reading the dataset's schema. What a test waits on rather than a quiet spell on the
+/// channel, which on a loaded machine says nothing. Abandoned work is not waited on; a
+/// cancelled analysis can run for minutes.
+#[allow(dead_code)]
+pub fn work_pending(app: &App) -> bool {
+    app.is_busy() || app.row_count_pending() || footers_pending(app)
+}
+
+fn footers_pending(app: &App) -> bool {
+    app.data_table_state
+        .as_ref()
+        .is_some_and(|state| state.footers_pending().is_some())
+}
+
+/// The next event: one already on the channel, or one background work still owes.
+/// `None` once nothing is there and nothing is owed.
+#[allow(dead_code)]
+#[track_caller]
+pub fn next_event(app: &App, rx: &Receiver<AppEvent>) -> Option<AppEvent> {
+    next_event_within(app, rx, HANG_GUARD)
+}
+
+/// [`next_event`] with its own guard. Fails the test, naming the wait and what was
+/// still owed, rather than returning: a wait that ended early would fall through to
+/// asserts on the previous state.
+#[allow(dead_code)]
+#[track_caller]
+pub fn next_event_within(app: &App, rx: &Receiver<AppEvent>, guard: Duration) -> Option<AppEvent> {
+    let caller = std::panic::Location::caller();
+    let deadline = Instant::now() + guard;
+    loop {
+        if let Ok(event) = rx.try_recv() {
+            return Some(event);
+        }
+        if !work_pending(app) {
+            return None;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "background work never reported back to the wait at {caller} within {guard:?}: \
+             busy={}, row_count_pending={}, footers_pending={}, input_mode={:?}, generation={}",
+            app.is_busy(),
+            app.row_count_pending(),
+            footers_pending(app),
+            app.input_mode,
+            app.task_generation(),
+        );
+        if let Ok(event) = rx.recv_timeout(Duration::from_millis(50)) {
+            return Some(event);
+        }
+    }
+}
+
+/// Handle events, and every event they chain to, until nothing is queued and no
+/// background work is owed.
+#[allow(dead_code)]
+#[track_caller]
+pub fn drain_events(app: &mut App, rx: &Receiver<AppEvent>) {
+    while let Some(event) = next_event(app, rx) {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
+        }
+    }
+}
+
+/// Open `paths` and handle the load chain, background results included, until the
+/// table, its row count and its footers are in. A crash is handled and ends the wait.
+#[allow(dead_code)]
+#[track_caller]
+pub fn pump_open_until_loaded(
+    app: &mut App,
+    rx: &Receiver<AppEvent>,
+    paths: Vec<PathBuf>,
+    options: OpenOptions,
+) {
+    let mut next = Some(AppEvent::Open(paths, options));
+    loop {
+        match next.take() {
+            Some(event @ AppEvent::Crash(_)) => {
+                app.event(&event);
+                return;
+            }
+            Some(event) => next = app.event(&event),
+            None => match next_event(app, rx) {
+                Some(event) => next = Some(event),
+                None => return,
+            },
+        }
+    }
+}
 
 /// Returns a tokio runtime handle for use in tests.
 #[allow(dead_code)]

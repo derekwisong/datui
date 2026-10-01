@@ -1901,6 +1901,40 @@ mod tests {
         assert!(p.app.task_generation - generation <= 1);
     }
 
+    /// A frame drawn while a job's lease is out does not spend the position. The lease
+    /// comes back an event behind the answer that cleared `busy` (#490), so the frame
+    /// between them finds the app idle and the generation held; the load-ahead it
+    /// turns away goes out once the lease is back.
+    #[test]
+    fn a_load_ahead_turned_away_by_a_lease_goes_out_once_it_is_back() {
+        let (mut p, _dir) = numbered_pump(2000);
+        page_to_the_edge(&mut p);
+        let end = table(&p).buffered_end();
+
+        // A job that has answered and not yet let go.
+        let lease = p.app.lease_for_tests();
+        let generation = p.app.task_generation;
+        assert!(!p.app.is_busy());
+        p.app.request_what_the_frame_needs();
+        assert_eq!(
+            p.app.task_generation, generation,
+            "nothing went out past it"
+        );
+
+        drop(lease);
+        p.drain().unwrap();
+        assert!(!p.app.work_a_bump_would_strand());
+        p.app.request_what_the_frame_needs();
+        assert!(
+            p.app
+                .collect_inflight
+                .is_some_and(|inflight| !inflight.waited_on),
+            "the load-ahead went out once the generation was free"
+        );
+        settle(&mut p);
+        assert!(table(&p).buffered_end() > end, "and the buffer grew");
+    }
+
     /// PageDown held while a load-ahead is out waits on it rather than fetching the same
     /// rows again, and the repeats become one press: one fetch, nothing piled up.
     #[test]

@@ -2403,6 +2403,12 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
 /// Returns correlations, p-values, and sample sizes for each pair.
 /// Requires at least 2 numeric columns.
 pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
+    correlation_matrix_within(df, CORRELATION_SCRATCH_BYTES)
+}
+
+/// [`compute_correlation_matrix`] holding at most `scratch_bytes` of converted
+/// columns at once, or two columns when one is larger.
+fn correlation_matrix_within(df: &DataFrame, scratch_bytes: usize) -> Result<CorrelationMatrix> {
     // Get all numeric columns
     let schema = df.schema();
     let numeric_cols: Vec<String> = schema
@@ -2417,9 +2423,9 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
         ));
     }
 
-    let columns = numeric_cols
+    let series = numeric_cols
         .iter()
-        .map(|name| Ok(Centered::new(df.column(name)?.as_materialized_series())))
+        .map(|name| Ok(df.column(name)?.as_materialized_series()))
         .collect::<Result<Vec<_>>>()?;
 
     let n = numeric_cols.len();
@@ -2427,32 +2433,27 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
     let mut p_values = vec![vec![0.0; n]; n];
     let mut sample_sizes = vec![vec![0; n]; n];
 
-    // Every pair is one pass over two columns; fifty columns are 1,225 pairs, so the
-    // rows of the matrix are shared out across threads, interleaved to even the load.
-    let threads = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(n - 1);
-    let pairs: Vec<(usize, usize, f64, usize)> = std::thread::scope(|scope| {
-        let columns = &columns;
-        let handles: Vec<_> = (0..threads)
-            .map(|thread| {
-                scope.spawn(move || {
-                    let mut pairs = Vec::new();
-                    for i in (thread..n).step_by(threads) {
-                        for j in (i + 1)..n {
-                            let (correlation, count) = pearson(&columns[i], &columns[j]);
-                            pairs.push((i, j, correlation, count));
-                        }
-                    }
-                    pairs
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|handle| handle.join().unwrap_or_default())
-            .collect()
-    });
+    // A table narrow enough is converted once and held whole. A wider one is
+    // converted a block at a time: a wide block held while the rest of the columns
+    // pass by it in narrow ones, so every pair meets once. Some columns are
+    // converted again rather than every column's floats held beside the sample.
+    let column_bytes = df.height().max(1) * std::mem::size_of::<f64>();
+    let fit = (scratch_bytes / column_bytes).max(2);
+    let (wide, narrow) = if fit >= n {
+        (n, n)
+    } else {
+        let wide = fit * 3 / 4;
+        (wide, fit - wide)
+    };
+    let mut pairs = Vec::with_capacity(n * (n - 1) / 2);
+    for first in (0..n).step_by(wide) {
+        let left = convert(&series[first..(first + wide).min(n)]);
+        pairs.extend(correlate(&left, first, None));
+        for second in ((first + wide)..n).step_by(narrow) {
+            let right = convert(&series[second..(second + narrow).min(n)]);
+            pairs.extend(correlate(&left, first, Some((&right, second))));
+        }
+    }
 
     for (i, j, correlation, sample_size) in pairs {
         sample_sizes[i][j] = sample_size;
@@ -2477,6 +2478,74 @@ pub fn compute_correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix> {
         correlations,
         p_values: Some(p_values),
         sample_sizes,
+    })
+}
+
+/// Bytes of converted columns a correlation matrix holds at once, beyond the sample
+/// itself and the matrix. The 100,000-row sample fits 83 columns.
+const CORRELATION_SCRATCH_BYTES: usize = 64 * 1024 * 1024;
+
+/// The columns ready to correlate, converted across threads.
+fn convert(series: &[&Series]) -> Vec<Centered> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(series.len())
+        .max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = series
+            .chunks(series.len().div_ceil(threads).max(1))
+            .map(|chunk| {
+                scope.spawn(move || chunk.iter().map(|s| Centered::new(s)).collect::<Vec<_>>())
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
+}
+
+/// Pearson r and its count for every pair of `left` with itself, or of `left` with
+/// the block `right`, numbered from `left_at` and the right block's first column.
+/// Every pair is one pass over two columns; fifty columns are 1,225 pairs, so the
+/// rows of the block's matrix are shared out across threads, interleaved to even
+/// the load.
+fn correlate(
+    left: &[Centered],
+    left_at: usize,
+    right: Option<(&[Centered], usize)>,
+) -> Vec<(usize, usize, f64, usize)> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(left.len())
+        .max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|thread| {
+                scope.spawn(move || {
+                    let mut pairs = Vec::new();
+                    for i in (thread..left.len()).step_by(threads) {
+                        let (others, at, from) = match right {
+                            Some((right, right_at)) => (right, right_at, 0),
+                            None => (left, left_at, i + 1),
+                        };
+                        for (j, other) in others.iter().enumerate().skip(from) {
+                            let (correlation, count) = pearson(&left[i], other);
+                            pairs.push((left_at + i, at + j, correlation, count));
+                        }
+                    }
+                    pairs
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
     })
 }
 
@@ -2515,75 +2584,61 @@ impl Centered {
 /// Pearson r over the rows where both columns have a value, and how many rows those
 /// are. NaN when either is one value throughout those rows.
 fn pearson(a: &Centered, b: &Centered) -> (f64, usize) {
-    let (mut x, mut y, mut xx, mut yy, mut xy) = (0.0, 0.0, 0.0, 0.0, 0.0);
-    let mut count = 0usize;
+    let mut sums = PairSums::default();
     let pairs = a.values.iter().zip(&b.values);
     let both = a.complete && b.complete;
     for (&v1, &v2) in pairs {
         if !both && (v1.is_nan() || v2.is_nan()) {
             continue;
         }
-        count += 1;
-        x += v1;
-        y += v2;
-        xx += v1 * v1;
-        yy += v2 * v2;
-        xy += v1 * v2;
+        sums.add(v1, v2);
     }
-    let n = count as f64;
-    let (sxx, syy, sxy) = (xx - x * x / n, yy - y * y / n, xy - x * y / n);
-    // Measured against the sums of squares: what a column with one value leaves
-    // behind is rounding, not spread.
-    if count < 2 || sxx <= xx * 1e-12 || syy <= yy * 1e-12 {
-        return (f64::NAN, count);
-    }
-    ((sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0), count)
+    (sums.correlation(), sums.count)
 }
 
-/// The rows where both columns hold a finite value, as two aligned lists: every pair,
-/// so the correlation and the count beside it describe the same rows.
-fn finite_pairs(col1: &Series, col2: &Series) -> (Vec<f64>, Vec<f64>) {
-    let (Ok(floats1), Ok(floats2)) = (col1.cast(&DataType::Float64), col2.cast(&DataType::Float64))
-    else {
-        return (Vec::new(), Vec::new());
-    };
-    let (Ok(floats1), Ok(floats2)) = (floats1.f64(), floats2.f64()) else {
-        return (Vec::new(), Vec::new());
-    };
-    floats1
-        .iter()
-        .zip(floats2.iter())
-        .filter_map(|pair| match pair {
-            (Some(v1), Some(v2)) if v1.is_finite() && v2.is_finite() => Some((v1, v2)),
-            _ => None,
-        })
-        .unzip()
+/// One pass of sums over paired values, each less a shift near its mean. The
+/// spreads about the pairs' own means follow exactly whatever the shift; a shift
+/// near the mean keeps them clear of rounding.
+#[derive(Default)]
+struct PairSums {
+    count: usize,
+    x: f64,
+    y: f64,
+    xx: f64,
+    yy: f64,
+    xy: f64,
 }
 
-fn compute_pearson_correlation(values1: &[f64], values2: &[f64]) -> f64 {
-    if values1.len() != values2.len() || values1.len() < 2 {
-        return f64::NAN;
+impl PairSums {
+    fn add(&mut self, v1: f64, v2: f64) {
+        self.count += 1;
+        self.x += v1;
+        self.y += v2;
+        self.xx += v1 * v1;
+        self.yy += v2 * v2;
+        self.xy += v1 * v2;
     }
 
-    let mean1: f64 = values1.iter().sum::<f64>() / values1.len() as f64;
-    let mean2: f64 = values2.iter().sum::<f64>() / values2.len() as f64;
-
-    let numerator: f64 = values1
-        .iter()
-        .zip(values2.iter())
-        .map(|(v1, v2)| (v1 - mean1) * (v2 - mean2))
-        .sum();
-
-    let var1: f64 = values1.iter().map(|v| (v - mean1).powi(2)).sum();
-    let var2: f64 = values2.iter().map(|v| (v - mean2).powi(2)).sum();
-
-    // A column with one value has no correlation with anything: undefined, not 0,
-    // which reads as a finding.
-    if var1 == 0.0 || var2 == 0.0 {
-        return f64::NAN;
+    /// The sums of squares and of products about the pairs' means.
+    fn spreads(&self) -> (f64, f64, f64) {
+        let n = self.count as f64;
+        (
+            self.xx - self.x * self.x / n,
+            self.yy - self.y * self.y / n,
+            self.xy - self.x * self.y / n,
+        )
     }
 
-    numerator / (var1.sqrt() * var2.sqrt())
+    /// NaN for fewer than two pairs or a column of one value.
+    fn correlation(&self) -> f64 {
+        let (sxx, syy, sxy) = self.spreads();
+        // Measured against the sums of squares: what a column with one value leaves
+        // behind is rounding, not spread.
+        if self.count < 2 || sxx <= self.xx * 1e-12 || syy <= self.yy * 1e-12 {
+            return f64::NAN;
+        }
+        (sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0)
+    }
 }
 
 /// The two-sided p-value of Pearson's r over `n` pairs: Student's t with `n - 2`
@@ -2603,36 +2658,66 @@ fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
 
 /// Computes correlation statistics for a pair of columns.
 ///
-/// Returns Pearson correlation coefficient, p-value, covariance, and sample size.
-/// Requires at least 3 non-null pairs of values.
+/// Returns Pearson correlation coefficient, p-value, covariance, and sample size,
+/// over the rows where both columns hold a finite value. Requires at least 3 such
+/// rows. Two passes over the columns as they are, a rough mean first and then the
+/// sums about it, as the matrix's: no list of the pairs is built.
 pub fn compute_correlation_pair(
     df: &DataFrame,
     col1_name: &str,
     col2_name: &str,
 ) -> Result<CorrelationPair> {
-    let (values1, values2) = finite_pairs(
-        df.column(col1_name)?.as_materialized_series(),
-        df.column(col2_name)?.as_materialized_series(),
-    );
+    let floats = |name: &str| -> Result<Option<Float64Chunked>> {
+        let series = df.column(name)?.as_materialized_series();
+        Ok(series
+            .cast(&DataType::Float64)
+            .ok()
+            .and_then(|floats| floats.f64().ok().cloned()))
+    };
+    let (Some(floats1), Some(floats2)) = (floats(col1_name)?, floats(col2_name)?) else {
+        return Err(color_eyre::eyre::eyre!("Not enough data for correlation"));
+    };
+    let pairs = || {
+        floats1
+            .iter()
+            .zip(floats2.iter())
+            .filter_map(|pair| match pair {
+                (Some(v1), Some(v2)) if v1.is_finite() && v2.is_finite() => Some((v1, v2)),
+                _ => None,
+            })
+    };
 
-    let sample_size = values1.len();
+    let mut sample_size = 0usize;
+    let (mut sum1, mut sum2) = (0.0, 0.0);
+    let (mut min1, mut max1, mut min2, mut max2) = (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+    for (v1, v2) in pairs() {
+        sample_size += 1;
+        sum1 += v1;
+        sum2 += v2;
+        (min1, max1) = (min1.min(v1), max1.max(v1));
+        (min2, max2) = (min2.min(v2), max2.max(v2));
+    }
     if sample_size < 3 {
         return Err(color_eyre::eyre::eyre!("Not enough data for correlation"));
     }
+    let n = sample_size as f64;
+    let (shift1, shift2) = (sum1 / n, sum2 / n);
+    let mut sums = PairSums::default();
+    for (v1, v2) in pairs() {
+        sums.add(v1 - shift1, v2 - shift2);
+    }
+    let (sxx, syy, sxy) = sums.spreads();
 
-    let correlation = compute_pearson_correlation(&values1, &values2);
+    // A column with one value has no correlation with anything: undefined, not 0,
+    // which reads as a finding.
+    let correlation = sums.correlation();
     let p_value = Some(compute_correlation_p_value(correlation, sample_size));
-
-    let stats1 = column_stats(&values1);
-    let stats2 = column_stats(&values2);
-    let covariance = values1
-        .iter()
-        .zip(values2.iter())
-        .map(|(v1, v2)| (v1 - stats1.mean) * (v2 - stats2.mean))
-        .sum::<f64>()
-        / (sample_size - 1) as f64;
-
-    let r_squared = correlation * correlation;
+    let stats = |mean: f64, squares: f64, min: f64, max: f64| ColumnStats {
+        mean,
+        std: (squares / (n - 1.0)).sqrt(),
+        min,
+        max,
+    };
 
     Ok(CorrelationPair {
         column1: col1_name.to_string(),
@@ -2640,21 +2725,11 @@ pub fn compute_correlation_pair(
         correlation,
         p_value,
         sample_size,
-        covariance,
-        r_squared,
-        stats1,
-        stats2,
+        covariance: sxy / (n - 1.0),
+        r_squared: correlation * correlation,
+        stats1: stats(shift1 + sums.x / n, sxx, min1, max1),
+        stats2: stats(shift2 + sums.y / n, syy, min2, max2),
     })
-}
-
-fn column_stats(values: &[f64]) -> ColumnStats {
-    let (mean, std) = mean_and_std(values);
-    ColumnStats {
-        mean,
-        std,
-        min: values.iter().copied().fold(f64::NAN, f64::min),
-        max: values.iter().copied().fold(f64::NAN, f64::max),
-    }
 }
 
 #[cfg(test)]
@@ -2848,6 +2923,40 @@ mod sampling_tests {
         let rows = analysis_rows(&climbing(dir.path(), 20_000), None, None, 1, false).unwrap();
         assert_eq!(rows.df.height(), 20_000);
         assert_eq!(rows.sample_size, None);
+    }
+
+    #[test]
+    fn a_matrix_in_blocks_is_the_matrix_in_one() {
+        // Seven columns with nulls in different rows, converted a few at a time as
+        // well as all at once: the same matrix, bit for bit.
+        let rows = 1_000;
+        let columns: Vec<Column> = (0..7)
+            .map(|c| {
+                let v: Vec<Option<f64>> = (0..rows)
+                    .map(|r| {
+                        ((r + c) % (5 + c) != 0)
+                            .then(|| ((r * (c + 1)) as f64 * 0.37).sin() + (r % 13) as f64)
+                    })
+                    .collect();
+                Series::new(format!("c{c}").into(), v).into()
+            })
+            .collect();
+        let df = DataFrame::new(rows, columns).unwrap();
+        let whole = compute_correlation_matrix(&df).unwrap();
+        let column = rows * std::mem::size_of::<f64>();
+        for fit in [1, 2, 3, 4, 6] {
+            let blocks = correlation_matrix_within(&df, fit * column).unwrap();
+            let bits = |m: &CorrelationMatrix| {
+                m.correlations
+                    .iter()
+                    .flatten()
+                    .chain(m.p_values.iter().flatten().flatten())
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(bits(&blocks), bits(&whole), "{fit} columns at once");
+            assert_eq!(blocks.sample_sizes, whole.sample_sizes);
+        }
     }
 
     #[test]

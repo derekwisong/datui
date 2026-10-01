@@ -341,3 +341,222 @@ fn quantiles_leave_nan_out() -> Result<()> {
     assert!(close(dist.outliers.percentage, 10.0 / 6_000.0 * 100.0));
     Ok(())
 }
+
+/// Counts the allocations as large as a column of `ROW_BYTES` floats, up to twice
+/// that (a list grown by doubling), while `ROW_BYTES` is set.
+struct RowSizedCount;
+
+static ROW_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static ROW_SIZED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl RowSizedCount {
+    fn note(size: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let row = ROW_BYTES.load(Relaxed);
+        if row > 0 && (row..=2 * row + 64).contains(&size) {
+            ROW_SIZED.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// The row-sized allocations `f` makes over `rows` rows.
+    fn during(rows: usize, f: impl FnOnce()) -> usize {
+        use std::sync::atomic::Ordering::Relaxed;
+        static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let before = ROW_SIZED.load(Relaxed);
+        ROW_BYTES.store(rows * 8, Relaxed);
+        f();
+        ROW_BYTES.store(0, Relaxed);
+        ROW_SIZED.load(Relaxed) - before
+    }
+}
+
+unsafe impl std::alloc::GlobalAlloc for RowSizedCount {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        Self::note(layout.size());
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        Self::note(layout.size());
+        unsafe { std::alloc::System.alloc_zeroed(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new: usize) -> *mut u8 {
+        Self::note(new);
+        unsafe { std::alloc::System.realloc(ptr, layout, new) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: RowSizedCount = RowSizedCount;
+
+/// Every pair of a correlation matrix is one pass over two columns converted once:
+/// a column's floats are allocated once, never once per pair. 24 columns are 276
+/// pairs; a filtered copy of each pair's rows, as the matrix once made, would be
+/// hundreds of allocations the size of a column.
+#[test]
+fn correlation_allocates_per_column_not_per_pair() -> Result<()> {
+    let rows = 200_003;
+    let columns: Vec<Column> = (0..24)
+        .map(|c| {
+            let name = format!("c{c}");
+            if c % 2 == 0 {
+                let v: Vec<Option<i64>> = (0..rows)
+                    .map(|r| ((r + c) % 37 != 0).then_some(((r * (c + 3)) % 1009) as i64))
+                    .collect();
+                Series::new(name.into(), v).into()
+            } else {
+                let v: Vec<Option<f64>> = (0..rows)
+                    .map(|r| ((r * 7 + c) % 41 != 0).then_some(((r as f64) * 0.37).sin()))
+                    .collect();
+                Series::new(name.into(), v).into()
+            }
+        })
+        .collect();
+    let df = DataFrame::new(rows, columns)?;
+
+    let mut matrix = None;
+    let allocated = RowSizedCount::during(rows, || {
+        matrix = Some(compute_correlation_matrix(&df));
+    });
+    let matrix = matrix.unwrap()?;
+    assert_eq!(matrix.columns.len(), 24);
+    assert!(allocated <= 2 * 24, "{allocated} column-sized allocations");
+
+    // A pair reads its two columns where they are: the one cast is the integers'.
+    let mut pair = None;
+    let allocated = RowSizedCount::during(rows, || {
+        pair = Some(compute_correlation_pair(&df, "c0", "c1"));
+    });
+    let pair = pair.unwrap()?;
+    assert!(allocated <= 1, "{allocated} column-sized allocations");
+    assert!((pair.correlation - matrix.correlations[0][1]).abs() < 1e-12);
+    Ok(())
+}
+
+/// Pearson r over the rows where both values are finite, filtered first: the
+/// corrected two-pass sums (Chan, Golub and LeVeque), deviations from the means
+/// less what rounding left in their sums. A plain two-pass is not a reference over
+/// a large offset: a mean on the offset's coarse grid adds n·d² to each sum of
+/// squares.
+fn reference_pearson(a: &[Option<f64>], b: &[Option<f64>]) -> (f64, usize) {
+    let pairs: Vec<(f64, f64)> = a
+        .iter()
+        .zip(b)
+        .filter_map(|p| match p {
+            (Some(x), Some(y)) if x.is_finite() && y.is_finite() => Some((*x, *y)),
+            _ => None,
+        })
+        .collect();
+    let n = pairs.len();
+    if n < 3 {
+        return (f64::NAN, n);
+    }
+    let count = n as f64;
+    let mx = pairs.iter().map(|p| p.0).sum::<f64>() / count;
+    let my = pairs.iter().map(|p| p.1).sum::<f64>() / count;
+    let (mut dx, mut dy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for (x, y) in &pairs {
+        let (u, v) = (x - mx, y - my);
+        dx += u;
+        dy += v;
+        sxx += u * u;
+        syy += v * v;
+        sxy += u * v;
+    }
+    let (sxx, syy, sxy) = (
+        sxx - dx * dx / count,
+        syy - dy * dy / count,
+        sxy - dx * dy / count,
+    );
+    if sxx <= 0.0 || syy <= 0.0 {
+        return (f64::NAN, n);
+    }
+    (sxy / (sxx * syy).sqrt(), n)
+}
+
+/// The matrix agrees with the reference over every pair of a frame of mixed
+/// numeric types: nulls in different rows of each column, NaN and infinities, a
+/// column of one value, one with two values, and a large offset with a small
+/// spread. Each pair's count is its own, a pair of fewer than three rows or with
+/// a constant is undefined, and the pair statistics read the same.
+#[test]
+fn correlation_agrees_with_the_reference_on_every_pair() -> Result<()> {
+    let n = 600usize;
+    let wave = |i: usize, k: f64| ((i as f64) * k).sin();
+    let df = df!(
+        "i8" => (0..n).map(|i| (i % 7 != 0).then_some((i % 100) as i8 - 50)).collect::<Vec<_>>(),
+        "u32" => (0..n).map(|i| (i % 11 != 3).then_some((i * 13 % 1000) as u32)).collect::<Vec<_>>(),
+        "i32" => (0..n).map(|i| (i * i % 977) as i32).collect::<Vec<_>>(),
+        "u64" => (0..n).map(|i| 1_000_000_000_000_000u64 + (i as u64 * 7919 % 1000)).collect::<Vec<_>>(),
+        "f32" => (0..n).map(|i| if i % 13 == 0 { f32::NAN } else { wave(i, 0.7) as f32 }).collect::<Vec<_>>(),
+        "offset" => (0..n).map(|i| match i % 19 {
+            0 => Some(f64::INFINITY),
+            5 => None,
+            _ => Some(1e9 + wave(i, 0.31) * 1e-3 + (i % 5) as f64 * 1e-4),
+        }).collect::<Vec<_>>(),
+        "trend" => (0..n).map(|i| (i % 23 != 4).then_some(i as f64 * 0.5 + wave(i, 1.3))).collect::<Vec<_>>(),
+        "negative_inf" => (0..n).map(|i| if i % 17 == 0 { f64::NEG_INFINITY } else { -wave(i, 0.31) }).collect::<Vec<_>>(),
+        "constant" => vec![42.0f64; n],
+        "two_values" => (0..n).map(|i| (i == 10 || i == 20).then_some(i as f64)).collect::<Vec<_>>(),
+    )?;
+
+    let matrix = compute_correlation_matrix(&df)?;
+    let floats: Vec<Vec<Option<f64>>> = matrix
+        .columns
+        .iter()
+        .map(|name| {
+            df.column(name)
+                .unwrap()
+                .cast(&DataType::Float64)
+                .unwrap()
+                .f64()
+                .unwrap()
+                .iter()
+                .collect()
+        })
+        .collect();
+    assert_eq!(matrix.columns.len(), 10, "every numeric type is correlated");
+    let mut checked = 0;
+    for i in 0..floats.len() {
+        for j in (i + 1)..floats.len() {
+            let (name_i, name_j) = (&matrix.columns[i], &matrix.columns[j]);
+            let (expected, count) = reference_pearson(&floats[i], &floats[j]);
+            let r = matrix.correlations[i][j];
+            assert_eq!(matrix.sample_sizes[i][j], count, "{name_i} {name_j}");
+            assert_eq!(r.to_bits(), matrix.correlations[j][i].to_bits());
+            if expected.is_nan() {
+                assert!(r.is_nan(), "{name_i} {name_j}: {r}");
+                continue;
+            }
+            assert!(
+                (r - expected).abs() <= 1e-9,
+                "{name_i} {name_j}: {r} against {expected}"
+            );
+            let pair = compute_correlation_pair(&df, name_i, name_j)?;
+            assert_eq!(pair.sample_size, count);
+            assert!(
+                (pair.correlation - expected).abs() <= 1e-12,
+                "{name_i} {name_j}: {} against {expected}, matrix {r}",
+                pair.correlation
+            );
+            let (p, pair_p) = (
+                matrix.p_values.as_ref().unwrap()[i][j],
+                pair.p_value.unwrap(),
+            );
+            assert!(
+                (p - pair_p).abs() <= 1e-9 * pair_p.max(1e-300) || (p - pair_p).abs() < 1e-12,
+                "{name_i} {name_j}: p {p} against {pair_p}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 20, "{checked} pairs with a correlation");
+    let index = |name: &str| matrix.columns.iter().position(|c| c == name).unwrap();
+    assert!(matrix.correlations[index("constant")][index("trend")].is_nan());
+    assert_eq!(matrix.sample_sizes[index("two_values")][index("trend")], 2);
+    assert!(matrix.correlations[index("two_values")][index("trend")].is_nan());
+    Ok(())
+}

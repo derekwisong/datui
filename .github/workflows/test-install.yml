@@ -14,6 +14,7 @@ jobs:
   install-macos-oneline-homebrew:
     name: macOS ${{ matrix.arch }} (one-line + Homebrew)
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -47,6 +48,7 @@ jobs:
   install-ubuntu-oneline:
     name: Debian-based Linux
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: One-line install
         run: |
@@ -58,6 +60,7 @@ jobs:
   install-fedora-oneline:
     name: RPM-based Linux
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     container:
       # Deliberately a floating tag. This workflow exists to prove the
       # documented install path still works on today's distro image; a
@@ -75,6 +78,7 @@ jobs:
   install-arch-oneline:
     name: Arch Linux
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     container:
       # Deliberately a floating tag. This workflow exists to prove the
       # documented install path still works on today's distro image; a
@@ -94,6 +98,7 @@ jobs:
   install-arch-aur:
     name: Arch Linux (AUR datui-bin)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container:
       # Deliberately a floating tag. This workflow exists to prove the
       # documented install path still works on today's distro image; a

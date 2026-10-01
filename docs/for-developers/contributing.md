@@ -66,6 +66,13 @@ in-app help strings in `crates/datui-lib/src/help-strings/` and the relevant
 page in `docs/`. If you add a config option, follow
 [Adding Configuration Options](adding-configuration-options.md).
 
+## Workflow timeouts
+
+Every job sets `timeout-minutes`, and every apt step its own 5-minute limit, so a
+hang fails fast instead of holding a required check. Size a job's limit at 1.5×
+its slowest recent run or more (`gh run list --workflow FILE --limit 50`, then
+`gh run view RUN_ID --json jobs`).
+
 ## Reporting
 
 Bugs and feature requests go to the

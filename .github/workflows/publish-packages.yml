@@ -52,6 +52,7 @@ permissions:
 jobs:
   resolve-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       tag_name: ${{ steps.export_tag.outputs.tag_name }}
     steps:
@@ -83,6 +84,7 @@ jobs:
   publish-crates-io:
     needs: resolve-release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout at release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,11 +98,13 @@ jobs:
         with:
           toolchain: stable
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
           # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
           # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
           # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
           # indexes did not fetch, it fails there, for the right reason.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
@@ -126,6 +130,7 @@ jobs:
   publish-homebrew:
     needs: resolve-release
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Download macOS tarballs
         env:
@@ -178,6 +183,7 @@ jobs:
   publish-pypi:
     needs: resolve-release
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Download wheel assets
         env:
@@ -197,6 +203,7 @@ jobs:
   publish-aur:
     needs: resolve-release
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Download PKGBUILD from release
         env:
@@ -262,6 +269,7 @@ jobs:
   publish-winget:
     needs: resolve-release
     runs-on: windows-latest
+    timeout-minutes: 5
     # winget-releaser fetches release assets via GitHub API; no local download needed
     steps:
       # Preflight. winget-releaser runs `komac sync-fork` to fast-forward our
@@ -380,13 +388,16 @@ jobs:
   publish-apt:
     needs: resolve-release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Install APT tools
+        timeout-minutes: 5
         run: |
           # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
           # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
           # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
           # indexes did not fetch, it fails there, for the right reason.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y dpkg-dev apt-utils gpg
 

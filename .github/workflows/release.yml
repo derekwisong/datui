@@ -18,6 +18,7 @@ env:
 jobs:
   check-ci-passed:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require successful CI for this commit
         env:
@@ -36,6 +37,7 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -64,11 +66,13 @@ jobs:
           toolchain: stable
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
           # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
           # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
           # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
           # indexes did not fetch, it fails there, for the right reason.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
 
@@ -253,6 +257,8 @@ jobs:
     # datui_<ver>-1_arm64.deb, datui-<ver>-1.aarch64.rpm and
     # datui-<ver>-aarch64.tar.gz.
     runs-on: ubuntu-24.04-arm
+    # No runs in the sample; allow more than the measured x86_64 release budget.
+    timeout-minutes: 90
     needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -271,8 +277,10 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
           # See the linux job for why `apt-get update` is allowed to fail here.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
@@ -342,6 +350,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 100
     needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -414,6 +423,7 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    timeout-minutes: 90
     needs: [check-ci-passed]
     strategy:
       fail-fast: false
@@ -501,6 +511,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [linux, linux-arm64, windows, macos]
     environment:
       name: github-pages

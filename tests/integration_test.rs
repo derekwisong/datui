@@ -9182,11 +9182,17 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
         "first dataset should be displayable before we abandon anything"
     );
 
-    // Start a second load and leave before it can install.
-    tx.send(AppEvent::Open(vec![abandoned], OpenOptions::default()))
-        .unwrap();
-    drain_like_main_loop(&mut app, &tx, &rx);
+    // Start a second load and leave before it can install. Handled here, not sent: a
+    // drain of the channel could take the scan's and the schema's answers too, and a
+    // fast machine installed the second dataset before Ctrl+O (#522).
+    assert!(
+        app.event(&AppEvent::Open(vec![abandoned], OpenOptions::default()))
+            .is_none(),
+        "the scan goes to a worker"
+    );
+    assert!(app.is_busy(), "the second open is on its way");
     app.event(&ctrl_o());
+    assert_eq!(app.input_mode, InputMode::Home);
 
     // Until the abandoned load has reported everything it was going to.
     for _tick in ticks() {
@@ -9777,19 +9783,23 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
     for c in second.to_str().unwrap().chars() {
         app.event(&key(KeyCode::Char(c)));
     }
-    if let Some(next) = app.event(&key(KeyCode::Enter)) {
-        tx.send(next).unwrap();
+    // Handled here, not sent, and the first frame drawn before the channel is read: a
+    // drain could take every answer of the load, and the first frame would then show
+    // it finished.
+    let mut next = app.event(&key(KeyCode::Enter));
+    while let Some(event) = next {
+        next = app.event(&event);
     }
     assert_eq!(
         app.input_mode,
         InputMode::Normal,
         "opening from home should leave the home screen"
     );
+    assert_ne!(app.open_path(), Some(second.as_path()), "still loading");
 
     // Every frame from here until the second dataset is installed.
     let mut frames = 0usize;
     for _tick in ticks() {
-        drain_like_main_loop(&mut app, &tx, &rx);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
         frames += 1;
@@ -9817,6 +9827,7 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
         if app.open_path() == Some(second.as_path()) && !app.is_busy() && !needs {
             break;
         }
+        drain_like_main_loop(&mut app, &tx, &rx);
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert_eq!(
@@ -9824,10 +9835,7 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
         Some(second.as_path()),
         "the second dataset should have loaded"
     );
-    assert!(
-        frames > 1,
-        "the load finished in one frame; nothing was tested"
-    );
+    assert!(frames > 1, "a frame drawn while loading, and one after");
 }
 
 /// A file datui cannot read is hidden until Ctrl+A shows it, and says why on Enter.

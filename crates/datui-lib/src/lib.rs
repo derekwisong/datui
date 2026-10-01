@@ -3548,6 +3548,7 @@ pub mod tests {
                 row_group_rows: vec![3, 4],
                 column_bytes_per_row: Vec::new(),
                 object_bytes: None,
+                object_etag: None,
             };
             crate::App::record_cloud_object_facts(Some(&cache), "s3://bucket/x.parquet", &footer);
             let known = cache.load_dataset_facts();
@@ -8742,7 +8743,7 @@ enum QualityCopyJob {
     Kept(Arc<crate::local_copy::LocalCopy>),
     /// A copy of `objects` fetched under `root` first.
     Fetch {
-        objects: Vec<(String, u64)>,
+        objects: Vec<crate::local_copy::RemoteObject>,
         root: PathBuf,
     },
 }
@@ -10185,7 +10186,10 @@ impl App {
         lf: LazyFrame,
         job: QualityCopyJob,
         watch: &data_quality::QualityWatch,
-        fetch: impl FnOnce(&[(String, u64)], &Path) -> Result<crate::local_copy::LocalCopy>,
+        fetch: impl FnOnce(
+            &[crate::local_copy::RemoteObject],
+            &Path,
+        ) -> Result<crate::local_copy::LocalCopy>,
         kept: impl FnOnce(Arc<crate::local_copy::LocalCopy>),
     ) -> Result<(LazyFrame, Option<Arc<crate::local_copy::LocalCopy>>)> {
         let (copy, fetched) = match job {
@@ -10226,7 +10230,7 @@ impl App {
     /// arrives; a cancel stops it at the next chunk and the partial copy is removed.
     #[cfg(feature = "cloud")]
     fn fetch_quality_copy(
-        objects: &[(String, u64)],
+        objects: &[crate::local_copy::RemoteObject],
         root: &Path,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
@@ -10235,10 +10239,12 @@ impl App {
         use futures::StreamExt;
         use object_store::ObjectStoreExt;
 
-        crate::local_copy::LocalCopy::fetch(root, objects, stop, |url, write| {
+        crate::local_copy::LocalCopy::fetch(root, objects, stop, |object, write| {
+            let url = object.url.as_str();
             let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
             let (_, key) = Self::cloud_bucket_and_key(url)?;
             let path = crate::cloud_browse::object_path(&key);
+            let listed = object.etag.clone();
             // A few chunks in flight: the store keeps reading while the last is
             // written, and dropping the receiver ends the request.
             let (tx, mut rx) = tokio::sync::mpsc::channel(4);
@@ -10250,6 +10256,15 @@ impl App {
                         return;
                     }
                 };
+                // Rewritten since it opened, perhaps at the same size: the copy would
+                // not be the dataset on screen.
+                if let (Some(listed), Some(fetched)) = (&listed, &got.meta.e_tag)
+                    && !crate::local_copy::same_etag(listed, fetched)
+                {
+                    let changed = "it changed since it opened. Open the dataset again";
+                    let _ = tx.send(Err(changed.to_string())).await;
+                    return;
+                }
                 let mut stream = got.into_stream();
                 while let Some(chunk) = stream.next().await {
                     let failed = chunk.is_err();
@@ -10290,14 +10305,16 @@ impl App {
 
     /// The copy this dataset's objects were fetched into this session, while kept.
     fn quality_copy_kept(&self) -> Option<&Arc<crate::local_copy::LocalCopy>> {
-        let objects = self.data_table_state.as_ref()?.remote_objects()?;
+        let state = self.data_table_state.as_ref()?;
         self.quality_copies
             .iter()
             .find(|kept| {
                 kept.dataset_generation == self.dataset_generation
-                    && kept
-                        .copy
-                        .covers(objects.iter().map(|(url, _)| url.as_str()))
+                    && state.each_remote_object().is_some_and(|mut objects| {
+                        objects.all(|object| {
+                            object.is_some_and(|object| kept.copy.covers(&object.url))
+                        })
+                    })
             })
             .map(|kept| &kept.copy)
     }
@@ -10344,10 +10361,9 @@ impl App {
         if limit == 0 {
             return CopyPlan::Passes(NoCopy::Off);
         }
-        let Some(objects) = state.remote_objects() else {
+        let Some((bytes, objects)) = state.remote_objects_size() else {
             return CopyPlan::Passes(NoCopy::SizeUnknown);
         };
-        let bytes = objects.iter().map(|(_, size)| size).sum::<u64>();
         if bytes > limit {
             return CopyPlan::Passes(NoCopy::TooLarge { bytes, limit });
         }
@@ -10355,10 +10371,7 @@ impl App {
         if free.is_none_or(|free| bytes > free) {
             return CopyPlan::Passes(NoCopy::NoRoom { bytes, free });
         }
-        CopyPlan::Fetch {
-            bytes,
-            objects: objects.len(),
-        }
+        CopyPlan::Fetch { bytes, objects }
     }
 
     /// Whether this dataset's copy was released this session, so Run fetches again.
@@ -15232,12 +15245,13 @@ impl App {
         });
         // The listing's sizes: what a full scan's local copy would fetch, known
         // before it fetches anything.
-        state.set_remote_object_bytes(
-            files
-                .iter()
-                .filter_map(|file| Some((cloud_hive::url_of_key(full, &file.key)?, file.size)))
-                .collect(),
-        );
+        state.set_remote_objects(files.iter().filter_map(|file| {
+            Some(crate::local_copy::RemoteObject {
+                url: cloud_hive::url_of_key(full, &file.key)?,
+                size: file.size,
+                etag: file.etag.clone(),
+            })
+        }));
         // The footers just read hold the count too, so the dataset opens counted — but
         // `cloud_dataset_from_footers` gives row groups only when every file was read
         // and every footer parsed. A footer sampled past or failed would count as no
@@ -15879,7 +15893,11 @@ impl App {
             DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
         state.set_row_groups(&footer.row_group_rows);
         if let Some(size) = footer.object_bytes {
-            state.set_remote_object_bytes([(full.clone(), size)].into_iter().collect());
+            state.set_remote_objects([crate::local_copy::RemoteObject {
+                url: full.clone(),
+                size,
+                etag: footer.object_etag.clone(),
+            }]);
         }
         // The commonest cloud open, and the one the dataset index never heard about:
         // the prefix route records what it read, and this one read a footer too.
@@ -21493,7 +21511,7 @@ impl App {
                         };
                         // Held to the end of the run: the copy stays on disk while its
                         // passes read it, released or not.
-                        let fetch = |objects: &[(String, u64)], root: &Path| {
+                        let fetch = |objects: &[crate::local_copy::RemoteObject], root: &Path| {
                             #[cfg(feature = "cloud")]
                             {
                                 Self::fetch_quality_copy(

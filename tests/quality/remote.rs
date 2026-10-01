@@ -717,6 +717,31 @@ fn a_failed_fetch_leaves_no_copy() {
     assert_eq!(app.quality_copy_bytes(), 0);
 }
 
+/// An object rewritten at the same size after the open answers with another ETag
+/// than the listing's: the fetch fails rather than copy a dataset not on screen,
+/// and nothing is left.
+#[test]
+fn an_object_rewritten_since_open_fails_the_fetch() {
+    let s3 = FakeS3::serve("lake", remote_events());
+    let cache = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
+    let key = "events/part-1.parquet";
+    let mut rewritten = remote_events().remove(key).unwrap();
+    let middle = rewritten.len() / 2;
+    rewritten[middle] ^= 0xff;
+    s3.put(key, rewritten);
+    full_scan(&mut app.analysis_modal.data_quality_plan);
+    let reads = run_staged(&mut app, &rx);
+    assert_eq!(reads, [QualityStage::CopyingSource]);
+    until_the_worker_exits(&mut app, &rx);
+    assert!(app.modal_showing(), "the failure is shown");
+    let text = screen(&mut app);
+    assert!(text.contains("part-1.parquet: it changed"), "{text}");
+    assert!(app.analysis_modal.data_quality_results.is_none());
+    assert!(copies(cache.path()).is_empty());
+    assert_eq!(app.quality_copy_bytes(), 0);
+}
+
 /// One object opened from a bucket is copied too, its size from the footer read
 /// that opened it: one GET for the copy, then every pass reads it.
 #[test]

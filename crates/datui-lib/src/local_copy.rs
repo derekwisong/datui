@@ -27,6 +27,15 @@ const HELD: &str = ".held";
 /// window between creating its directory and taking its lock.
 const UNHELD_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// One remote object a copy fetches, as the open found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteObject {
+    pub url: String,
+    pub size: u64,
+    /// The store's tag for the version listed, where it gave one.
+    pub etag: Option<String>,
+}
+
 /// Objects copied from a remote dataset, each at the path its URL maps to. Removed
 /// from disk when the last holder drops it: the app's retained copies and any run
 /// reading it.
@@ -53,31 +62,30 @@ impl LocalCopy {
         self.dir.path()
     }
 
-    /// Whether this copy holds every one of `urls`.
-    pub fn covers<'a>(&self, mut urls: impl Iterator<Item = &'a str>) -> bool {
-        urls.all(|url| self.paths.contains_key(url))
+    /// Whether this copy holds the object at `url`.
+    pub fn covers(&self, url: &str) -> bool {
+        self.paths.contains_key(url)
     }
 
-    /// Copy `objects` (URL and listed size) under `root`, one at a time. `get` streams
-    /// one object's bytes into the writer it is given, in order; the writer refuses
-    /// once `stop` is set, so a cancel ends the fetch within a chunk. On any failure
-    /// or cancel the partial copy is removed before this returns.
+    /// Copy `objects` under `root`, one at a time. `get` streams one object's bytes
+    /// into the writer it is given, in order; the writer refuses once `stop` is set,
+    /// so a cancel ends the fetch within a chunk. On any failure or cancel the partial
+    /// copy is removed before this returns.
     ///
     /// An object whose bytes differ in length from its listing changed since the
     /// dataset opened: the copy would not be the dataset on screen, so it fails.
     pub fn fetch(
         root: &Path,
-        objects: &[(String, u64)],
+        objects: &[RemoteObject],
         stop: &ReadWatch,
-        mut get: impl FnMut(&str, &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()>,
+        mut get: impl FnMut(&RemoteObject, &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()>,
     ) -> Result<LocalCopy> {
-        std::fs::create_dir_all(root)
-            .map_err(|e| eyre!("Could not create {}: {e}", root.display()))?;
+        std::fs::create_dir_all(root).map_err(unwritable)?;
         sweep(root);
         let dir = tempfile::Builder::new()
             .prefix("copy-")
             .tempdir_in(root)
-            .map_err(|e| eyre!("Could not create a local copy in {}: {e}", root.display()))?;
+            .map_err(unwritable)?;
         let held = hold(dir.path())?;
         let mut copy = LocalCopy {
             dir,
@@ -85,33 +93,33 @@ impl LocalCopy {
             paths: HashMap::with_capacity(objects.len()),
             bytes: 0,
         };
-        for (url, size) in objects {
+        for object in objects {
             stop.check()?;
-            let path = copy.dir.path().join(relative_path(url));
+            let path = copy.dir.path().join(relative_path(&object.url));
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| eyre!("Could not write the local copy: {e}"))?;
+                std::fs::create_dir_all(parent).map_err(unwritable)?;
             }
-            let mut file = std::fs::File::create(&path)
-                .map_err(|e| eyre!("Could not write the local copy: {e}"))?;
+            // Never over an object already copied: on a disk that ignores case, two
+            // keys can name one file.
+            let mut file = std::fs::File::create_new(&path).map_err(unwritable)?;
             let mut written = 0u64;
-            get(url, &mut |chunk: &[u8]| {
+            get(object, &mut |chunk: &[u8]| {
                 stop.check()?;
-                file.write_all(chunk)
-                    .map_err(|e| eyre!("Could not write the local copy: {e}"))?;
+                file.write_all(chunk).map_err(unwritable)?;
                 written += chunk.len() as u64;
                 Ok(())
             })?;
-            file.flush()
-                .map_err(|e| eyre!("Could not write the local copy: {e}"))?;
-            if written != *size {
+            file.flush().map_err(unwritable)?;
+            if written != object.size {
                 return Err(eyre!(
-                    "{url} is {written} bytes, not the {size} listed when it opened: \
-                     it changed. Open the dataset again"
+                    "{} is {written} bytes, not the {} listed when it opened: \
+                     it changed. Open the dataset again",
+                    object.url,
+                    object.size
                 ));
             }
             copy.bytes += written;
-            copy.paths.insert(url.clone(), path);
+            copy.paths.insert(object.url.clone(), path);
         }
         Ok(copy)
     }
@@ -128,18 +136,37 @@ impl LocalCopy {
     }
 }
 
+/// A local write that failed, and the way around it.
+fn unwritable(error: std::io::Error) -> color_eyre::Report {
+    eyre!(
+        "Could not write the local copy: {error}. \
+         quality_local_copy_mb = 0 reads the source instead"
+    )
+}
+
+/// Whether the tag a fetch was answered with is the one listed: stores quote it in
+/// one answer and not the other, and mark a weak one.
+pub fn same_etag(listed: &str, fetched: &str) -> bool {
+    let bare = |tag: &str| {
+        tag.trim()
+            .trim_start_matches("W/")
+            .trim_matches('"')
+            .to_string()
+    };
+    bare(listed) == bare(fetched)
+}
+
 /// Lock `dir` as held by this session.
 fn hold(dir: &Path) -> Result<std::fs::File> {
     use fs2::FileExt;
-    let file = std::fs::File::create(dir.join(HELD))
-        .map_err(|e| eyre!("Could not create a local copy: {e}"))?;
-    file.try_lock_exclusive()
-        .map_err(|e| eyre!("Could not create a local copy: {e}"))?;
+    let file = std::fs::File::create(dir.join(HELD)).map_err(unwritable)?;
+    file.try_lock_exclusive().map_err(unwritable)?;
     Ok(file)
 }
 
 /// Remove copies under `root` no session holds: left by a datui that did not exit
-/// cleanly. A copy another running datui holds is locked and stays.
+/// cleanly, or quit while a run read one. A copy another running datui holds is
+/// locked and stays.
 pub fn sweep(root: &Path) {
     use fs2::FileExt;
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -184,6 +211,7 @@ pub fn free_space(dir: &Path) -> Option<u64> {
 
 /// Where `url` lands inside a copy: its bucket and key as directories, so a hive
 /// path keeps its `key=value` parts and Polars reads the same partition columns.
+/// No part climbs out of the copy.
 fn relative_path(url: &str) -> PathBuf {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     rest.split('/')
@@ -319,7 +347,7 @@ mod tests {
 
     /// Two Parquet files under `dir`, rows 0..10 and 10..20, in a `part=` directory
     /// each so the copy has to keep hive paths working.
-    fn files(dir: &Path) -> Vec<(String, u64)> {
+    fn files(dir: &Path) -> Vec<RemoteObject> {
         (0..2)
             .map(|part| {
                 let mut df =
@@ -330,7 +358,11 @@ mod tests {
                     .finish(&mut df)
                     .unwrap();
                 let size = std::fs::metadata(&path).unwrap().len();
-                (format!("s3://lake/events/part={part}/data.parquet"), size)
+                RemoteObject {
+                    url: format!("s3://lake/events/part={part}/data.parquet"),
+                    size,
+                    etag: None,
+                }
             })
             .collect()
     }
@@ -364,8 +396,8 @@ mod tests {
             root.path(),
             &objects,
             &ReadWatch::default(),
-            |url, write| {
-                for chunk in bytes_of(source.path(), url).chunks(7) {
+            |object, write| {
+                for chunk in bytes_of(source.path(), &object.url).chunks(7) {
                     write(chunk)?;
                 }
                 Ok(())
@@ -375,12 +407,12 @@ mod tests {
         assert_eq!(copy.objects(), 2);
         assert_eq!(
             copy.bytes(),
-            objects.iter().map(|(_, size)| size).sum::<u64>()
+            objects.iter().map(|object| object.size).sum::<u64>()
         );
 
         let urls = objects
             .iter()
-            .map(|(url, _)| url.clone())
+            .map(|object| object.url.clone())
             .collect::<Vec<_>>();
         let remote = remote_scan(&urls)
             .filter(col("id").gt(lit(3)))
@@ -413,12 +445,12 @@ mod tests {
             root.path(),
             &objects[..1],
             &ReadWatch::default(),
-            |url, write| write(&bytes_of(source.path(), url)),
+            |object, write| write(&bytes_of(source.path(), &object.url)),
         )
         .unwrap();
         let urls = objects
             .iter()
-            .map(|(url, _)| url.clone())
+            .map(|object| object.url.clone())
             .collect::<Vec<_>>();
         assert!(copy.redirect(&remote_scan(&urls)).is_none());
     }
@@ -432,8 +464,8 @@ mod tests {
         let entries = || std::fs::read_dir(root.path()).unwrap().count();
 
         let stop = ReadWatch::default();
-        let stopped = LocalCopy::fetch(root.path(), &objects, &stop, |url, write| {
-            let bytes = bytes_of(source.path(), url);
+        let stopped = LocalCopy::fetch(root.path(), &objects, &stop, |object, write| {
+            let bytes = bytes_of(source.path(), &object.url);
             write(&bytes[..10])?;
             stop.stop();
             write(&bytes[10..])
@@ -445,11 +477,11 @@ mod tests {
             root.path(),
             &objects,
             &ReadWatch::default(),
-            |url, write| {
-                if url.contains("part=1") {
+            |object, write| {
+                if object.url.contains("part=1") {
                     return Err(eyre!("404"));
                 }
-                write(&bytes_of(source.path(), url))
+                write(&bytes_of(source.path(), &object.url))
             },
         );
         assert!(failed.is_err());
@@ -459,7 +491,7 @@ mod tests {
             root.path(),
             &objects,
             &ReadWatch::default(),
-            |url, write| write(&bytes_of(source.path(), url)[1..]),
+            |object, write| write(&bytes_of(source.path(), &object.url)[1..]),
         );
         assert!(short.unwrap_err().to_string().contains("changed"));
         assert_eq!(entries(), 0);
@@ -477,7 +509,7 @@ mod tests {
                 root.path(),
                 &objects,
                 &ReadWatch::default(),
-                |url, write| write(&bytes_of(source.path(), url)),
+                |object, write| write(&bytes_of(source.path(), &object.url)),
             )
             .unwrap()
         };
@@ -494,6 +526,29 @@ mod tests {
         assert!(!dir.exists(), "dropped, the copy is removed");
     }
 
+    /// Two keys that land on one file, as on a disk that ignores case, fail the
+    /// fetch rather than one overwriting the other.
+    #[test]
+    fn two_objects_never_share_a_file() {
+        let source = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut objects = files(source.path());
+        objects[1].url = objects[0].url.replace("s3://lake/", "s3://lake//");
+        let error = LocalCopy::fetch(
+            root.path(),
+            &objects,
+            &ReadWatch::default(),
+            // Asked only for the first: the second has nowhere to go.
+            |object, write| write(&bytes_of(source.path(), &object.url)),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("quality_local_copy_mb = 0"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
     #[test]
     fn urls_map_to_their_bucket_and_key() {
         assert_eq!(
@@ -504,5 +559,16 @@ mod tests {
             relative_path("gs://b/../x.parquet"),
             PathBuf::from("b/_/x.parquet")
         );
+        assert_eq!(
+            relative_path("s3:///../../etc/passwd"),
+            PathBuf::from("_/_/etc/passwd")
+        );
+    }
+
+    #[test]
+    fn etags_compare_unquoted() {
+        assert!(same_etag("\"abc\"", "abc"));
+        assert!(same_etag("W/\"abc\"", "\"abc\""));
+        assert!(!same_etag("\"abc\"", "\"abd\""));
     }
 }

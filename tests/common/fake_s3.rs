@@ -118,6 +118,16 @@ impl FakeS3 {
         self.objects.write().expect("objects").remove(key);
     }
 
+    /// Write `bytes` at `key`, as a new version with its own tag.
+    #[allow(dead_code)]
+    pub fn put(&self, key: &str, bytes: Vec<u8>) {
+        let tag = etag(&bytes);
+        self.objects
+            .write()
+            .expect("objects")
+            .insert(key.to_string(), (bytes, tag));
+    }
+
     /// Every GET waits `ms` before it answers.
     #[allow(dead_code)]
     pub fn slow_gets(&self, ms: u64) {

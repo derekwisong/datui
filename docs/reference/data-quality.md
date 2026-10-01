@@ -472,8 +472,9 @@ read where it is.
 | Kept | For later full scans of the dataset: any edit, a new role or grain included, reads the copy and nothing from the source |
 | Released | By <kbd>d</kbd> in Setup (the Read rule names it, as `local copy · 16.5 MiB`), by opening the dataset again or another one, and when datui exits. A run still reading the copy keeps it until the run ends |
 | Cancel or failure | The fetch stops at its next chunk, and the objects copied so far are removed |
-| Left behind | A copy whose datui did not exit cleanly is removed by the next copy any datui makes |
-| An object changed since it opened | A size that differs from the listing fails the run: open the dataset again |
+| Left behind | A copy left by a datui that did not exit cleanly, or quit while a run read it, is removed by the next copy any datui makes |
+| An object changed since it opened | A size or ETag that differs from the listing's fails the run: open the dataset again |
+| A local write fails | A full disk, or two keys that name one file on a disk that ignores case, fails the run; `quality_local_copy_mb = 0` reads the source instead |
 | Still read from the source | The values a type conflict hides, read per file as before |
 
 The copy is a session snapshot, like kept rows: an object rewritten in the

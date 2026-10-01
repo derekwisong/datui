@@ -40,6 +40,8 @@ pub struct ParquetFooter {
     pub column_bytes_per_row: Vec<(String, usize)>,
     /// The object's size, where the read asked for it.
     pub object_bytes: Option<u64>,
+    /// The store's tag for the object read, where it gave one.
+    pub object_etag: Option<String>,
 }
 
 /// Read the Parquet footer at the end of `tail_bytes`. The slice must be the tail of the
@@ -69,6 +71,7 @@ fn footer_from_parquet_tail(tail_bytes: &[u8]) -> Result<ParquetFooter> {
         row_group_rows,
         column_bytes_per_row,
         object_bytes: None,
+        object_etag: None,
     })
 }
 
@@ -116,6 +119,7 @@ async fn read_parquet_footer(
         .ok_or_else(|| color_eyre::eyre::eyre!("Empty range response"))?;
     footer_from_parquet_tail(&tail).map(|footer| ParquetFooter {
         object_bytes: Some(size),
+        object_etag: meta.e_tag,
         ..footer
     })
 }

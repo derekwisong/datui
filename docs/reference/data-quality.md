@@ -486,7 +486,7 @@ that exists is overwritten only once confirmed, and declining keeps the dialog.
 | Format | Holds |
 |---|---|
 | JSON | Every measurement below, versioned |
-| Markdown | The source, rows measured, the verdict, coverage, each finding with its headline and evidence, the checks, the intervals and the setup |
+| Markdown | The source, rows measured, the verdict, coverage, each finding with its headline and evidence, the checks, the intervals, the gaps and the setup |
 
 The JSON is one object. `format` is always `datui-data-quality-report`, and
 `version` is `1`. A field may be added within a version; one removed, renamed or
@@ -498,7 +498,7 @@ changed in meaning is a new version.
 | `datui_version` | The datui that wrote it |
 | `exported_at` | When the file was written, RFC 3339 in UTC; not when the data was read |
 | `source` | `location` (the URL as opened, or the local path made absolute), `remote`, `format`, `files` and up to 100 `file_names` for a dataset of several files, `bytes` and `modified` (RFC 3339, UTC) of a local file as the run that read the rows began (a report remade from rows a run kept keeps that run's), and `view`: the query, SQL, search, filters and reshape a view scope measured. No content hash: that would be a read. `null` for a report no run labeled |
-| `setup` | `scope`, `values` (`sample`, `full` or `metadata`), `sample` (`method`, `rows`, `seed`), `grain`, `comparison`, `baseline_segment`, `time_formats` (`column`, `kind`, `format`), `time_roles` (`role`, `column`), `intervals`, `window_by`, `latency_threshold_seconds`, and `intent` (`key`, and per column `column`, `required`, `allowed`, `min`, `max`, `read_as`) |
+| `setup` | `scope`, `values` (`sample`, `full` or `metadata`), `sample` (`method`, `rows`, `seed`), `grain`, `comparison`, `baseline_segment`, `time_formats` (`column`, `kind`, `format`), `time_roles` (`role`, `column`), `intervals`, `window_by`, `latency_threshold_seconds`, `intent` (`key`, and per column `column`, `required`, `allowed`, `min`, `max`, `read_as`), and `expected` (`weekdays`, `from`, `before`, as typed), `null` when no windows are stated |
 | `run` | `precision` (`exact`, `sampled` or `metadata`), `total_rows`, `evaluated_rows`, `per_value`, `source_files`, `footers_read`, and `reads` (`source_reads`, `counted`, `rows_traversed`) when the run's reads were watched |
 | `verdict` | The headline, as on screen |
 | `coverage` | `exact`, `sampled`, `metadata`, `skipped`, `unavailable` (`reason`, `checks`), `rows`, `limits` |
@@ -509,6 +509,7 @@ changed in meaning is a new version.
 | `segments` | Per segment: `label`, `total_rows`, `evaluated_rows`, `null_cells`, `null_rate`, `compared_with`, `largest_change` |
 | `intervals` | Per interval and segment: `interval`, `segment`, `start_column`, `end_column`, `rows`, `both_ends`, `missing_start`, `missing_end`, `unparsed_start`, `unparsed_end`, `negative`, `zero`, `p50_seconds` to `p99_seconds`, `max_seconds`, `threshold_seconds`, `over_threshold` |
 | `intent` | `null` when nothing is declared; otherwise `measured`, `precision`, `evaluated_rows`, `key` (`columns`, `missing`, `groups`, `extra_rows`, `rows_involved`), per column `column`, `dtype`, `values`, `missing`, `unparsed`, `outside`, `compared`, `below`, `above`, `lowest`, `highest`, and `absent` |
+| `gaps` | `null` when no windows are stated; otherwise `status` (`checked`, `no_values`, `no_windows`, `too_many`), `column`, `every`, `cadence`, `windows_in_range` (for `too_many`), and when checked `from` and `before` (UTC), `expected`, `weekend`, `with_rows`, `empty`, `not_sampled`, `out_of_scope`, `counted`, `runs` (`kind`, `first`, `last`, `span`, `windows`, `rows`) and `more_runs` |
 
 A number not measured is `null`, never `0`. With the setup, the source and the
 seed, the same datui draws the same sample and measures the same numbers from

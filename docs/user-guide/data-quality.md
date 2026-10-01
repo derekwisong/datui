@@ -221,7 +221,7 @@ On any report page, press <kbd>x</kbd>. Type a path, choose **JSON** or
 | Format | Holds |
 |---|---|
 | JSON | Every measurement, the setup it was measured with, the source and the reads, versioned for tools ([schema](../reference/data-quality.md#exported-report)) |
-| Markdown | The verdict, coverage, findings with their evidence, the checks and the setup |
+| Markdown | The verdict, coverage, findings with their evidence, the checks, the gaps and the setup |
 
 The report is written from what is on screen: nothing is read, and the data
 need not still be there. A file that exists is overwritten only after you

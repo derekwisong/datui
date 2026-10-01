@@ -133,6 +133,8 @@ pub struct ReportFile {
     pub segments: Vec<SegmentJson>,
     pub intervals: Vec<IntervalJson>,
     pub intent: Option<IntentJson>,
+    /// The expected windows checked for gaps; `None` when none are stated.
+    pub gaps: Option<GapsJson>,
 }
 
 /// The setup the report was measured with: every setting a run takes.
@@ -156,6 +158,136 @@ pub struct SetupJson {
     pub window_by: String,
     pub latency_threshold_seconds: Option<i64>,
     pub intent: DeclaredJson,
+    /// The windows rows are expected in, on a time-window grain; `None` unstated.
+    pub expected: Option<ExpectedJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedJson {
+    /// Only Monday to Friday's hours or days are expected.
+    pub weekdays: bool,
+    /// The first expected time and the time expected windows end before, as typed;
+    /// `None` takes the first or last window the run found.
+    pub from: Option<String>,
+    pub before: Option<String>,
+}
+
+/// The expected windows checked against the segments the run counted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GapsJson {
+    /// `checked`; `no_values` (file metadata only), `no_windows` (no range stated
+    /// and no window found) or `too_many` (more windows than are checked).
+    pub status: String,
+    /// The grain's column and window width: `1h`, `1d`, `1w`, `1mo`.
+    pub column: String,
+    pub every: String,
+    /// `every hour`, `weekdays`, ...
+    pub cadence: String,
+    /// Windows in the stated range, for `too_many`.
+    pub windows_in_range: Option<usize>,
+    /// The first expected window's start and where the last ends, UTC.
+    pub from: Option<String>,
+    pub before: Option<String>,
+    /// Windows expected in the range, and weekend windows left out of it.
+    pub expected: Option<usize>,
+    pub weekend: Option<usize>,
+    pub with_rows: Option<usize>,
+    pub empty: Option<usize>,
+    pub not_sampled: Option<usize>,
+    pub out_of_scope: Option<usize>,
+    /// Whether a window with no rows found is known to be empty.
+    pub counted: Option<bool>,
+    /// Consecutive gap windows of one kind, in order.
+    pub runs: Vec<GapRunJson>,
+    /// Runs past the listed ones, counted and not listed.
+    pub more_runs: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GapRunJson {
+    /// `empty`, `not_sampled` or `out_of_scope`.
+    pub kind: String,
+    /// Where its first and last windows start, UTC.
+    pub first: String,
+    pub last: String,
+    /// The windows it covers, in calendar terms: `2024-01-06 to 2024-01-07`.
+    pub span: String,
+    pub windows: usize,
+    /// Rows the scope holds in it, for windows the sample missed, when counted.
+    pub rows: Option<usize>,
+}
+
+fn utc(time: chrono::NaiveDateTime) -> String {
+    time.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+fn gaps_json(plan: &DataQualityPlan, results: &DataQualityResults) -> Option<GapsJson> {
+    use crate::quality_trends::{GapKind, Gaps};
+    let gaps = crate::quality_trends::expected_gaps(plan, results)?;
+    let crate::data_quality::QualityGrain::TimeWindows { column, every } = &plan.grain else {
+        return None;
+    };
+    let kind = |kind: GapKind| match kind {
+        GapKind::Empty => "empty",
+        GapKind::Unsampled => "not_sampled",
+        GapKind::OutOfScope => "out_of_scope",
+    };
+    let mut json = GapsJson {
+        status: String::new(),
+        column: column.clone(),
+        every: every.clone(),
+        cadence: plan
+            .expected_windows()
+            .map(|expected| expected.cadence_label(every))
+            .unwrap_or_default(),
+        windows_in_range: None,
+        from: None,
+        before: None,
+        expected: None,
+        weekend: None,
+        with_rows: None,
+        empty: None,
+        not_sampled: None,
+        out_of_scope: None,
+        counted: None,
+        runs: Vec::new(),
+        more_runs: 0,
+    };
+    json.status = match gaps {
+        Gaps::NoValues => "no_values",
+        Gaps::NoWindows => "no_windows",
+        Gaps::TooMany { windows } => {
+            json.windows_in_range = Some(windows);
+            "too_many"
+        }
+        Gaps::Checked(check) => {
+            json.from = Some(utc(check.from));
+            json.before = Some(utc(check.before));
+            json.expected = Some(check.expected);
+            json.weekend = Some(check.weekend);
+            json.with_rows = Some(check.with_rows);
+            json.empty = Some(check.empty);
+            json.not_sampled = Some(check.unsampled);
+            json.out_of_scope = Some(check.out_of_scope);
+            json.counted = Some(check.counted);
+            json.more_runs = check.more_runs;
+            json.runs = check
+                .runs
+                .iter()
+                .map(|run| GapRunJson {
+                    kind: kind(run.kind).to_string(),
+                    first: utc(run.first),
+                    last: utc(run.last),
+                    span: crate::quality_trends::calendar_span(run.first, run.last, every),
+                    windows: run.windows,
+                    rows: run.rows,
+                })
+                .collect();
+            "checked"
+        }
+    }
+    .to_string();
+    Some(json)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,6 +579,11 @@ fn setup_json(plan: &DataQualityPlan) -> SetupJson {
             .collect(),
         window_by: plan.interval_clock.label().to_string(),
         latency_threshold_seconds: plan.latency_threshold_seconds,
+        expected: plan.expected_windows().map(|expected| ExpectedJson {
+            weekdays: expected.weekdays,
+            from: expected.from.clone(),
+            before: expected.before.clone(),
+        }),
         intent: DeclaredJson {
             key: plan.intent.key.clone(),
             columns: plan
@@ -603,6 +740,7 @@ pub fn report_file(
                 over_threshold: interval.above_threshold_count,
             })
             .collect(),
+        gaps: gaps_json(plan, results),
         intent: results.intent.as_ref().map(|intent| IntentJson {
             measured: intent.measured,
             precision: precision_label(intent.precision),
@@ -825,6 +963,61 @@ pub fn to_markdown(file: &ReportFile) -> String {
         line(String::new());
     }
 
+    if let Some(gaps) = &file.gaps {
+        line("## Gaps".to_string());
+        line(String::new());
+        let expected = format!("Expected {} by {}", gaps.cadence, gaps.column);
+        match gaps.status.as_str() {
+            "no_values" => line(format!("{expected}: file metadata only counts no windows")),
+            "no_windows" => line(format!("{expected}: no window found and no range stated")),
+            "too_many" => line(format!(
+                "{expected}: {} windows in range, more than are checked",
+                crate::numfmt::group_chrome(gaps.windows_in_range.unwrap_or(0))
+            )),
+            _ => {
+                let count = |value: Option<usize>| crate::numfmt::group_chrome(value.unwrap_or(0));
+                let mut facts = vec![
+                    format!("{} with rows", count(gaps.with_rows)),
+                    format!("{} empty", count(gaps.empty)),
+                    format!("{} not sampled", count(gaps.not_sampled)),
+                    format!("{} out of scope", count(gaps.out_of_scope)),
+                ];
+                if gaps.weekend.unwrap_or(0) > 0 {
+                    facts.push(format!(
+                        "{} weekend windows not expected",
+                        count(gaps.weekend)
+                    ));
+                }
+                line(format!(
+                    "{expected}, {} to before {}: {} windows; {}",
+                    gaps.from.as_deref().unwrap_or(""),
+                    gaps.before.as_deref().unwrap_or(""),
+                    count(gaps.expected),
+                    facts.join(", ")
+                ));
+                if !gaps.runs.is_empty() {
+                    line(String::new());
+                    line("| Windows | Gap | Count | Rows |".to_string());
+                    line("|---|---|---|---|".to_string());
+                    for run in &gaps.runs {
+                        line(format!(
+                            "| {} | {} | {} | {} |",
+                            cell(&run.span),
+                            run.kind.replace('_', " "),
+                            run.windows,
+                            run.rows.map_or("-".to_string(), |rows| rows.to_string())
+                        ));
+                    }
+                    if gaps.more_runs > 0 {
+                        line(String::new());
+                        line(format!("{} more runs not listed", gaps.more_runs));
+                    }
+                }
+            }
+        }
+        line(String::new());
+    }
+
     line("## Setup".to_string());
     line(String::new());
     line("| Setting | Value |".to_string());
@@ -888,6 +1081,25 @@ pub fn to_markdown(file: &ReportFile) -> String {
                 .map_or_else(none, |seconds| format!("{seconds} s")),
         ),
         ("Window by", setup.window_by.clone()),
+        (
+            "Expected",
+            setup.expected.as_ref().map_or_else(none, |expected| {
+                let windows = crate::data_quality::ExpectedWindows {
+                    weekdays: expected.weekdays,
+                    from: expected.from.clone(),
+                    before: expected.before.clone(),
+                };
+                let every = match file.gaps.as_ref() {
+                    Some(gaps) => gaps.every.as_str(),
+                    None => "",
+                };
+                format!(
+                    "{}, {}",
+                    windows.cadence_label(every),
+                    windows.range_label()
+                )
+            }),
+        ),
         (
             "Key",
             if setup.intent.key.is_empty() {
@@ -1119,6 +1331,87 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected:?} in\n{text}");
         }
+    }
+
+    /// Expected windows go into the setup, and the gaps they find into the report:
+    /// counts by kind and each run, in JSON and in the Markdown.
+    #[test]
+    fn gaps_are_exported_with_their_windows() {
+        // 2024-01-01 to 2024-01-10, with no rows on the 4th and 5th.
+        let days = [0, 1, 2, 5, 6, 7, 8, 9];
+        let base = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+        let day = days
+            .iter()
+            .map(|offset| (base - epoch).num_days() as i32 + offset)
+            .collect::<Vec<_>>();
+        let lf = df!("day" => day, "value" => [1i64, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap()
+            .lazy()
+            .with_column(col("day").cast(DataType::Date));
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            grain: crate::data_quality::QualityGrain::TimeWindows {
+                column: "day".to_string(),
+                every: "1d".to_string(),
+            },
+            expected: Some(crate::data_quality::ExpectedWindows {
+                weekdays: false,
+                from: Some("2024-01-01".to_string()),
+                before: Some("2024-01-12".to_string()),
+            }),
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&lf, None, &plan, None, false).unwrap();
+        let file = report_file(&results, &plan, "2026-09-30T00:00:00Z");
+        let text = to_json(&file).unwrap();
+        assert_eq!(serde_json::from_str::<ReportFile>(&text).unwrap(), file);
+        let expected = file.setup.expected.as_ref().unwrap();
+        assert_eq!(expected.from.as_deref(), Some("2024-01-01"));
+        let gaps = file.gaps.as_ref().unwrap();
+        assert_eq!(gaps.status, "checked");
+        assert_eq!((gaps.column.as_str(), gaps.every.as_str()), ("day", "1d"));
+        assert_eq!(gaps.from.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(gaps.before.as_deref(), Some("2024-01-12T00:00:00Z"));
+        assert_eq!(
+            (gaps.expected, gaps.with_rows, gaps.empty, gaps.not_sampled),
+            (Some(11), Some(8), Some(3), Some(0))
+        );
+        assert_eq!(gaps.counted, Some(true));
+        let runs = gaps
+            .runs
+            .iter()
+            .map(|run| (run.kind.as_str(), run.span.as_str(), run.windows))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            runs,
+            [
+                ("empty", "2024-01-04 to 2024-01-05", 2),
+                ("empty", "2024-01-11", 1)
+            ]
+        );
+
+        let markdown = to_markdown(&file);
+        for expected in [
+            "## Gaps",
+            "Expected every day by day, 2024-01-01T00:00:00Z to before 2024-01-12T00:00:00Z: 11 windows; 8 with rows, 3 empty, 0 not sampled, 0 out of scope",
+            "| 2024-01-04 to 2024-01-05 | empty | 2 | - |",
+            "| Expected | every day, 2024-01-01 to before 2024-01-12 |",
+        ] {
+            assert!(
+                markdown.contains(expected),
+                "missing {expected:?} in\n{markdown}"
+            );
+        }
+
+        // No windows stated: no gaps, and the setup says none.
+        let unstated = DataQualityPlan {
+            expected: None,
+            ..plan
+        };
+        let file = report_file(&results, &unstated, "2026-09-30T00:00:00Z");
+        assert!(file.gaps.is_none() && file.setup.expected.is_none());
+        assert!(!to_markdown(&file).contains("## Gaps"));
     }
 
     #[test]

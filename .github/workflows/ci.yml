@@ -33,6 +33,8 @@ env:
 # build. Workspace crates are left out of the cache (no cache-workspace-crates):
 # they change on every pull request. No sccache: most of what datui compiles is a
 # crate type it cannot cache, and its entries took budget for a handful of hits.
+# No setup-python pip cache either: it saves whenever its key misses, pull requests
+# included, and restoring it took longer than pip downloading the wheels.
 
 jobs:
   check:
@@ -352,12 +354,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-fixtures.txt
-            scripts/requirements-wheel.txt
-            python/pyproject.toml
 
       # The CLI and the extension build into one target/. The key hashes the root
       # Cargo.lock only, so a change to crates/datui-pyo3/Cargo.lock alone rebuilds
@@ -415,12 +411,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-wheel.txt
-            scripts/requirements-wheel-windows.txt
-            python/pyproject.toml
 
       # Nightly's windows-tests and macos-tests keep this entry warm from main; keep
       # their env and key in step with these jobs.
@@ -493,12 +483,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-wheel.txt
-            scripts/requirements-wheel-windows.txt
-            python/pyproject.toml
 
       # Nightly's windows-tests and macos-tests keep this entry warm from main; keep
       # their env and key in step with these jobs.

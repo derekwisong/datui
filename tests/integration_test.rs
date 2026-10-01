@@ -9286,9 +9286,12 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
     let (tx, rx) = mpsc::channel();
     let app = App::new(tx.clone(), common::test_runtime());
     let mut pump = EventPump::new(app, tx, rx);
-    pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
-        .unwrap();
-    pump.drain().unwrap();
+    // The open and what it sets going, but not the worker's answer: drained from the
+    // channel, a fast read could have the table up before the keys below are typed.
+    let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
+    while let Some(event) = next {
+        next = pump.app.event(&event);
+    }
     assert!(pump.app.is_busy(), "a load in flight should be busy");
     for code in [KeyCode::Char('j'), KeyCode::Enter] {
         pump.terminal_key(KeyEvent::new(code, KeyModifiers::NONE))

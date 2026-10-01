@@ -1663,9 +1663,8 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     // Chart widget reserves space for Y-axis labels internally, using remaining width for plot
     // Less the axis line itself, which the plot starts after.
     let available_width = area.width.saturating_sub(total_y_axis_space + 1);
-    let bar_gap = 1u16;
-    let group_gap = 1u16;
-    let gap_width = bar_gap + group_gap;
+    // One blank column between neighboring bars.
+    let gap_width = 1u16;
 
     // Target bar width: aim for 6-8 pixels per bar for good density
     // Calculate optimal number of bins to fill available width
@@ -1798,54 +1797,22 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         })
         .collect();
 
-    // Create data bars - use BarChart for actual bars
-    let mut data_bars = Vec::new();
-
-    for (&data_count, _) in data_bin_counts.iter().zip(bin_centers.iter()) {
-        // Calculate normalized bar height (0-100 scale for BarChart)
-        let data_height = if global_max > 0.0 {
-            ((data_count as f64 / global_max) * 100.0) as u64
-        } else {
-            0
-        };
-
-        // No bar labels - Chart widget overlay provides x-axis labels
-        // This prevents duplicate labels overlapping with Chart's x-axis labels
-        // No value or label: the axes say what a bar's height and place mean.
-        let data_bar = Bar::default()
-            .value(data_height)
-            .text_value(String::new())
-            .style(Style::default().fg(theme.get("primary_chart_series_color")));
-
-        data_bars.push(data_bar);
-    }
-
-    // Calculate dynamic bar width to use available space
-    // num_bins is dynamic, so recalculate bar_width to fill the space optimally
-    // Ensure bars extend all the way to the right edge by using all available width
-    let total_gaps = (num_bins - 1) as u16 * gap_width;
-    let total_bar_space = available_width.saturating_sub(total_gaps);
-
-    // Calculate bar width to fill available space - ensure minimum width of 1 pixel
-    // Use floor to ensure we don't exceed available space, but recalculate to use full width
-    let calculated_bar_width = (total_bar_space as f64 / num_bins as f64).floor() as u16;
-    let bar_width = calculated_bar_width.max(1);
-
-    // Recalculate to ensure we're using full width - adjust if there's leftover space
-    // This ensures bars extend all the way to the right edge without gaps
-    let total_used_width = (bar_width * num_bins as u16) + total_gaps;
-    let remaining_space = available_width.saturating_sub(total_used_width);
-
-    // If there's leftover space, distribute it to bars to fill the width completely
-    // At large widths, ensure all space is utilized by distributing evenly
-    let final_bar_width = if remaining_space > 0 && num_bins > 0 {
-        // Distribute all remaining space across bars
-        // Calculate exact extra width per bar to fill completely
-        let extra_per_bar = remaining_space / num_bins as u16;
-        bar_width + extra_per_bar
-    } else {
-        bar_width
-    };
+    // Each bin's bar on the 0-100 scale the curve and the count labels use. No value
+    // or label: the axes say what a bar's height and place mean.
+    let data_bars: Vec<Bar> = data_bin_counts
+        .iter()
+        .map(|&data_count| {
+            let data_height = if global_max > 0.0 {
+                ((data_count as f64 / global_max) * 100.0) as u64
+            } else {
+                0
+            };
+            Bar::default()
+                .value(data_height)
+                .text_value(String::new())
+                .style(Style::default().fg(theme.get("primary_chart_series_color")))
+        })
+        .collect();
 
     // The labels are padded to the width shared with the Q-Q plot, so both plots
     // start in the same column. The bars stand on a 0-100 scale; their labels read
@@ -1868,16 +1835,40 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     // drew the last one past the axis, onto whatever sits beside the chart.
     let bar_plot_area = axes.frame(chart_area).graph;
 
-    let barchart = BarChart::default()
-        .block(Block::default()) // No borders in sub-area - borders handled separately
-        .data(BarGroup::default().bars(&data_bars))
-        // The same 0-100 scale the curve and the labels use; left to itself the chart
-        // scales to its tallest bar and the curve no longer measures against the bars.
-        .max(100)
-        .bar_set(g.plot.column_set())
-        .bar_width(final_bar_width)
-        .bar_gap(bar_gap)
-        .group_gap(group_gap);
+    // Bin `i` takes the plot columns its values map to, as the labels and the curve
+    // map them, and its bar fills them less a gap before the next bar. Bars of one
+    // shared width stopped short of the right end by up to a bar, leaving each bar
+    // left of the values it counts.
+    let plot_width = bar_plot_area.width as usize;
+    let bin_edge = |i: usize| ((2 * i * plot_width + num_bins) / (2 * num_bins)) as u16;
+    let bar_charts: Vec<(Rect, BarChart)> = data_bars
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, bar)| {
+            let (start, end) = (bin_edge(i), bin_edge(i + 1));
+            let span = end - start;
+            let width = if i + 1 < num_bins && span > gap_width {
+                span - gap_width
+            } else {
+                span
+            };
+            let rect = Rect {
+                x: bar_plot_area.x + start,
+                width,
+                ..bar_plot_area
+            };
+            let chart = BarChart::default()
+                .data(BarGroup::default().bars(&[bar]))
+                // The same 0-100 scale the curve and the labels use; left to itself the
+                // chart scales to its tallest bar and the curve no longer measures
+                // against the bars.
+                .max(100)
+                .bar_set(g.plot.column_set())
+                .bar_width(width)
+                .bar_gap(0);
+            (width > 0).then_some((rect, chart))
+        })
+        .collect();
 
     // The fit's expected counts, drawn behind the bars; sampled densely enough that
     // braille renders it as a line.
@@ -1929,7 +1920,9 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     // labels and curve, except where the curve crosses a bar. Drawn straight over the
     // bars, each braille cell of the curve replaced a block and cut a notch in the bar;
     // drawn under them, the bar chart's blank cells erased the curve and the axis title.
-    barchart.render(bar_plot_area, buf);
+    for (rect, chart) in bar_charts {
+        chart.render(rect, buf);
+    }
     let mut overlay = Buffer::empty(area);
     block.render(area, &mut overlay);
     axes.render(theory_chart, chart_area, &mut overlay, g);
@@ -2407,6 +2400,86 @@ mod tests {
                         "a notch in the bar at column {x}"
                     );
                 }
+            }
+        }
+    }
+
+    /// The bars span the plot, first column to last, each bin's bar over the columns
+    /// its values map to: bars of one width stopped up to a bar short of the right
+    /// end, every bar left of the values the labels give.
+    #[test]
+    fn histogram_bars_span_the_plot() {
+        let g = crate::glyphs::unicode();
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let numbers = NumberFormatSettings::default();
+        // Spread evenly over the axis, linear or logarithmic, so every bin has a bar.
+        let linear: Vec<f64> = (0..500).map(|i| 23.0 + 318.1 * i as f64 / 499.0).collect();
+        let log: Vec<f64> = (0..500)
+            .map(|i| 10f64.powf(4.0 * i as f64 / 499.0))
+            .collect();
+        for (scale, values, range) in [
+            (HistogramScale::Linear, linear, (23.0, 341.1)),
+            (HistogramScale::Log, log, (1.0, 10_000.0)),
+        ] {
+            let dist = analysis(100.0, 80.0, values);
+            for width in [60u16, 80, 120] {
+                // Wider than the plot, to catch a bar drawn past it.
+                let mut buf = Buffer::empty(Rect::new(0, 0, width + 10, 20));
+                render_distribution_histogram(
+                    DistributionPlotConfig {
+                        dist: &dist,
+                        dist_type: DistributionType::Normal,
+                        area: Rect::new(0, 0, width, 20),
+                        shared_y_axis_label_width: 5,
+                        theme: &theme,
+                        unified_x_range: Some(range),
+                        histogram_scale: scale,
+                        glyphs: g,
+                        values: &AxisNumbers::measure(&numbers, &dist.column_name),
+                        counts: &AxisNumbers::count(&numbers),
+                    },
+                    &mut buf,
+                );
+                let text = rendered_text(&buf);
+                let what = format!("{scale:?} at {width}:\n{text}");
+                let axis_row = (0..20)
+                    .rfind(|y| (0..width).any(|x| buf[(x, *y)].symbol() == g.plot.axis.bottom_left))
+                    .expect(&what);
+                let corner = (0..width)
+                    .find(|x| buf[(*x, axis_row)].symbol() == g.plot.axis.bottom_left)
+                    .unwrap();
+                let (left, right) = (corner + 1, width - 1);
+                assert_eq!(
+                    buf[(right, axis_row)].symbol(),
+                    g.plot.axis.horizontal,
+                    "{what}"
+                );
+                let is_bar = |x: u16| {
+                    (0..axis_row).any(|y| g.plot.column_eighths.contains(&buf[(x, y)].symbol()))
+                };
+                let bars: Vec<u16> = (0..width + 10).filter(|x| is_bar(*x)).collect();
+                assert_eq!(
+                    bars.first(),
+                    Some(&left),
+                    "the first bar starts the plot\n{what}"
+                );
+                assert_eq!(
+                    bars.last(),
+                    Some(&right),
+                    "the last bar ends the plot\n{what}"
+                );
+                // Each bar and the gap after it, or the last bar alone, take an even share
+                // of the plot.
+                let mut starts = vec![left];
+                starts.extend(bars.windows(2).filter(|w| w[1] > w[0] + 1).map(|w| w[1]));
+                let shares: Vec<u16> = starts
+                    .windows(2)
+                    .map(|w| w[1] - w[0])
+                    .chain([right + 1 - starts[starts.len() - 1]])
+                    .collect();
+                let (least, most) = (shares.iter().min().unwrap(), shares.iter().max().unwrap());
+                assert!(most - least <= 1, "{shares:?}\n{what}");
             }
         }
     }

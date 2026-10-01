@@ -11363,7 +11363,8 @@ mod tests {
     /// A SQL ORDER BY keeps tied rows in order, as the sidebar's sort does: the page
     /// read at the top (a top-k to Polars) and the next page agree on the rows they
     /// share, through a LIMIT and a subquery, and over a grouping, a join, a union or
-    /// a DISTINCT, whose rows would otherwise come in any order (#495).
+    /// a DISTINCT, whose rows would otherwise come in any order (#495). With either
+    /// engine.
     #[cfg(feature = "sql")]
     #[test]
     fn a_sql_order_by_with_ties_reads_the_same_rows_page_by_page() {
@@ -11395,19 +11396,26 @@ mod tests {
                 )
             });
             assert!(!unstable, "{sql}");
-            let top = state.lf.clone().slice(0, 200).collect().unwrap();
-            let next = state.lf.clone().slice(100, 200).collect().unwrap();
-            assert!(top.slice(100, 100).equals(&next.slice(0, 100)), "{sql}");
-            let one = state.lf.clone().slice(1500, 1).collect().unwrap();
-            let around = state.lf.clone().slice(1400, 200).collect().unwrap();
-            assert!(around.slice(100, 1).equals(&one), "{sql}");
-            // Ties keep the order they were read in.
-            let v = top.column("v").unwrap().i64().unwrap();
-            assert!(
-                v.into_no_null_iter().is_sorted(),
-                "{sql}: {:?}",
-                v.head(Some(10))
-            );
+            // The app pages with the streaming engine by default, which runs the top
+            // page's top-k its own way.
+            for streaming in [false, cfg!(feature = "streaming")] {
+                let page = |offset, len| {
+                    collect_lazy(state.lf.clone().slice(offset, len), streaming).unwrap()
+                };
+                let top = page(0, 200);
+                let next = page(100, 200);
+                assert!(top.slice(100, 100).equals(&next.slice(0, 100)), "{sql}");
+                let one = page(1500, 1);
+                let around = page(1400, 200);
+                assert!(around.slice(100, 1).equals(&one), "{sql}");
+                // Ties keep the order they were read in.
+                let v = top.column("v").unwrap().i64().unwrap();
+                assert!(
+                    v.into_no_null_iter().is_sorted(),
+                    "{sql}, streaming {streaming}: {:?}",
+                    v.head(Some(10))
+                );
+            }
         }
     }
 

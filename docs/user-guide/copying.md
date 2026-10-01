@@ -60,7 +60,8 @@ A TSV or CSV copy to the `native` clipboard also carries an HTML table flavor,
 so a paste into a spreadsheet or an email keeps its columns while a paste into
 a terminal stays plain text. Values are raw, like an export: display formatting
 is not applied and a null is an empty field. List and struct cells are JSON in every format,
-as in a [CSV export](exporting-data.md#lists-and-structs). A binary column is
+as in a [CSV export](exporting-data.md#lists-and-structs), and a duration is
+[ISO 8601](exporting-data.md#durations) text such as `PT3723.004S`. A binary column is
 [base64](exporting-data.md#binary) in a Table copy; Cell, Row and View copies
 hold the `‹binary›` placeholder, since the screen never reads the bytes. The **Header**
 toggle is on for View and Table and off for Row; a Markdown table always keeps

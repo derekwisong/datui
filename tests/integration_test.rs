@@ -7843,6 +7843,124 @@ fn test_json_export_writes_binary_as_base64() {
     );
 }
 
+/// A duration view exports to CSV by either engine and copies in every scope,
+/// as ISO 8601 throughout; CSV cannot write the type itself (#482).
+#[test]
+fn test_durations_export_and_copy_as_iso_8601() {
+    use datui::clipboard::{Destination, Payload};
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<Payload>>>);
+    impl Destination for Capture {
+        fn write(&mut self, payload: Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+        fn describe(&self) -> &'static str {
+            "test"
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let values = Series::new("".into(), [Some(3_723_004i64), None, Some(-1_500)]);
+    let mut df = df!("id" => [1i64, 2, 3]).unwrap();
+    for (name, unit) in [
+        ("ms", TimeUnit::Milliseconds),
+        ("us", TimeUnit::Microseconds),
+        ("ns", TimeUnit::Nanoseconds),
+    ] {
+        df.with_column(
+            values
+                .cast(&DataType::Duration(unit))
+                .unwrap()
+                .with_name(name.into())
+                .into_column(),
+        )
+        .unwrap();
+    }
+    let path = dir.path().join("durations.parquet");
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let rows = [
+        "id,ms,us,ns",
+        "1,PT3723.004S,PT3.723004S,PT0.003723004S",
+        "2,,,",
+        "3,-PT1.5S,-PT0.0015S,-PT0.0000015S",
+    ];
+
+    let open = |streaming: bool| {
+        let mut config = datui::AppConfig::default();
+        config.performance.polars_streaming = streaming;
+        let (tx, rx) = mpsc::channel();
+        let theme = datui::Theme::from_config(&config.theme).unwrap();
+        let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        (app, rx, tx)
+    };
+    for streaming in [true, false] {
+        let (mut app, rx, tx) = open(streaming);
+        let out = dir.path().join(format!("streaming-{streaming}.csv"));
+        let csv = export_csv(&mut app, &rx, &tx, &out, false);
+        assert_eq!(
+            csv.lines().collect::<Vec<_>>(),
+            rows,
+            "streaming={streaming}"
+        );
+    }
+
+    let (mut app, rx, tx) = open(true);
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let copies: Arc<Mutex<Vec<Payload>>> = Arc::new(Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(Capture(copies.clone())));
+    let tsv: Vec<String> = rows.iter().map(|r| r.replace(',', "\t")).collect();
+    let last = |copies: &Arc<Mutex<Vec<Payload>>>| copies.lock().unwrap().last().unwrap().clone();
+
+    // Row, the default scope, header off.
+    press(&mut app, KeyCode::Char('y'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(last(&copies).text, tsv[1]);
+
+    // View, with its header and the HTML flavor.
+    press(&mut app, KeyCode::Char('y'));
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    let view = last(&copies);
+    assert_eq!(view.text, tsv.join("\n"));
+    let html = view.html.expect("tsv carries html");
+    assert!(html.contains("<td>-PT0.0015S</td>"), "{html}");
+
+    // Table, collected off-thread.
+    press(&mut app, KeyCode::Char('y'));
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('t'));
+    press(&mut app, KeyCode::Enter);
+    let mut next = press(&mut app, KeyCode::Enter);
+    while let Some(ev) = next {
+        next = app.event(&ev);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(last(&copies).text, tsv.join("\n"));
+
+    // One cell: `ns` of the first row.
+    press(&mut app, KeyCode::Char('y'));
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('c'));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('n'));
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(last(&copies).text, "PT0.003723004S");
+}
+
 /// Avro has no fixed-size array or categorical type: the export writes them as
 /// a list and as strings, inside a list too, and a view read from two files
 /// (two chunks) still makes one readable file.

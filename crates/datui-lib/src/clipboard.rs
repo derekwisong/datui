@@ -818,6 +818,49 @@ mod tests {
         }
     }
 
+    /// Every copy format, whole and bounded, takes durations as the ISO 8601 a
+    /// CSV export writes: TSV, CSV, Markdown and the HTML flavor.
+    #[test]
+    fn durations_copy_as_a_csv_export_writes_them() {
+        use crate::nested_json::tests::{duration_text, durations};
+        let df = durations();
+        let row = |i: usize, separator: &str| {
+            duration_text()
+                .iter()
+                .map(|(_, text)| text[i].unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join(separator)
+        };
+        for format in CopyFormat::ALL {
+            let payload = tabular_payload(&df, format, true, true).unwrap();
+            let (bounded, rows) =
+                bounded_table_text(df.clone().lazy(), format, true, 1 << 20).unwrap();
+            assert_eq!(bounded, payload.text, "{format:?}");
+            assert_eq!(rows, df.height());
+            let lines: Vec<&str> = payload.text.lines().collect();
+            match format {
+                CopyFormat::Tsv | CopyFormat::Csv => {
+                    let separator = if format == CopyFormat::Tsv { "\t" } else { "," };
+                    assert_eq!(lines[0], ["ms", "us", "ns"].join(separator));
+                    for (i, line) in lines[1..].iter().enumerate() {
+                        assert_eq!(*line, row(i, separator), "{format:?} row {i}");
+                    }
+                    let html = payload.html.expect("html beside tsv and csv");
+                    assert!(html.contains("<td>-PT1.5S</td>"), "{html}");
+                    assert!(html.contains("<tr><td></td><td></td><td></td></tr>"));
+                }
+                CopyFormat::Markdown => {
+                    assert_eq!(lines.len(), 2 + df.height());
+                    for (i, line) in lines[2..].iter().enumerate() {
+                        let cells: Vec<&str> =
+                            line.trim_matches('|').split('|').map(str::trim).collect();
+                        assert_eq!(cells.join(","), row(i, ","), "row {i}");
+                    }
+                }
+            }
+        }
+    }
+
     /// A failed read says what the collected copy would: Polars' words, tidied.
     #[test]
     fn a_bounded_table_copy_fails_in_the_words_a_whole_one_does() {

@@ -9,11 +9,17 @@
 //! Binary has no JSON or CSV form, and Polars' JSON writer panics on it, so it
 //! is written as standard base64 text wherever it sits: a CSV, JSON or NDJSON
 //! export and a copy all spell the same bytes the same way.
+//!
+//! A duration has no CSV form either, and is written as the JSON writer spells
+//! it: ISO 8601 in seconds (`PT3723.004S`, `-PT1.5S`, `P0D`). That is exact to
+//! the nanosecond in every unit, and reads the same alone in a CSV cell or a
+//! copy, inside a list, and in a JSON export.
 
 use base64::Engine as _;
 use polars::prelude::*;
 
-/// Whether a column holds values a delimited writer cannot write.
+/// Whether a column is a list, array or struct, which a delimited writer
+/// takes only as JSON text.
 pub fn is_nested(dtype: &DataType) -> bool {
     matches!(
         dtype,
@@ -107,6 +113,71 @@ pub fn lazy_binary_as_base64(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     })
 }
 
+/// `value` `unit`s as ISO 8601 text, the way Polars' JSON writer spells a
+/// duration (chrono's `TimeDelta` display): whole seconds and the fraction's
+/// significant digits, `P0D` for zero, a leading `-` when negative. Computed
+/// here rather than through chrono, whose range ends short of `i64::MIN` ms.
+pub fn duration_iso(value: i64, unit: TimeUnit, out: &mut String) {
+    use std::fmt::Write as _;
+    let nanos_per_unit: i128 = match unit {
+        TimeUnit::Nanoseconds => 1,
+        TimeUnit::Microseconds => 1_000,
+        TimeUnit::Milliseconds => 1_000_000,
+    };
+    let total = i128::from(value) * nanos_per_unit;
+    if total == 0 {
+        out.push_str("P0D");
+        return;
+    }
+    if total < 0 {
+        out.push('-');
+    }
+    let abs = total.unsigned_abs();
+    let (secs, nanos) = (abs / 1_000_000_000, abs % 1_000_000_000);
+    let _ = write!(out, "PT{secs}");
+    if nanos > 0 {
+        let (mut fraction, mut digits) = (nanos, 9);
+        while fraction % 10 == 0 {
+            fraction /= 10;
+            digits -= 1;
+        }
+        let _ = write!(out, ".{fraction:0digits$}");
+    }
+    out.push('S');
+}
+
+/// A duration column as a String column of [`duration_iso`] text, with its nulls.
+pub fn duration_as_iso(series: &Series) -> PolarsResult<Series> {
+    let DataType::Duration(unit) = series.dtype() else {
+        polars_bail!(InvalidOperation: "expected a duration, got {}", series.dtype());
+    };
+    let unit = *unit;
+    Ok(series
+        .to_physical_repr()
+        .i64()?
+        .apply_into_string_amortized(|value, out| duration_iso(value, unit, out))
+        .with_name(series.name().clone())
+        .into_series())
+}
+
+/// Whether a column needs to become text before a CSV writer takes it: it is
+/// nested, binary or a duration.
+pub fn needs_text(dtype: &DataType) -> bool {
+    is_nested(dtype) || is_binary(dtype) || matches!(dtype, DataType::Duration(_))
+}
+
+/// One column that [`needs_text`] as the String column a CSV cell or a copy
+/// holds: JSON, base64 or ISO 8601 by its type.
+fn column_as_text(column: &Column) -> PolarsResult<Column> {
+    match column.dtype() {
+        DataType::Duration(_) => duration_as_iso(column.as_materialized_series()).map(Column::from),
+        dtype if is_binary(dtype) => {
+            binary_as_base64(column.as_materialized_series()).map(Column::from)
+        }
+        _ => column_as_json(column),
+    }
+}
+
 /// One nested column as a String column of JSON, null where the value is null.
 pub fn column_as_json(column: &Column) -> PolarsResult<Column> {
     let series = binary_as_base64(column.as_materialized_series())?;
@@ -120,18 +191,17 @@ pub fn column_as_json(column: &Column) -> PolarsResult<Column> {
     Ok(StringChunked::from_chunk_iter(series.name().clone(), chunks).into_column())
 }
 
-/// `lf` with every nested column replaced by its JSON text, and every binary
-/// column by its base64 text, in place and under its own name. Planned, not
-/// run: the text is built as the rows are collected.
-pub fn lazy_as_json(lf: LazyFrame) -> PolarsResult<LazyFrame> {
-    let mut lf = lazy_binary_as_base64(lf)?;
+/// `lf` with every column a CSV writer cannot take ([`needs_text`]) replaced
+/// by its text, in place and under its own name: what a CSV export writes.
+/// Planned, not run: the text is built as the rows are collected.
+pub fn lazy_as_json(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     let schema = lf.collect_schema()?;
     let exprs: Vec<Expr> = schema
         .iter()
-        .filter(|(_, dtype)| is_nested(dtype))
+        .filter(|(_, dtype)| needs_text(dtype))
         .map(|(name, _)| {
             col(name.clone()).map(
-                |c| column_as_json(&c),
+                |c| column_as_text(&c),
                 |_, field| Ok(Field::new(field.name().clone(), DataType::String)),
             )
         })
@@ -143,23 +213,148 @@ pub fn lazy_as_json(lf: LazyFrame) -> PolarsResult<LazyFrame> {
     })
 }
 
-/// `df` with every nested column replaced by its JSON text, and every binary
-/// column by its base64 text, for frames already in memory (a copy's rows).
+/// [`lazy_as_json`] for frames already in memory: a copy's rows.
 pub fn frame_as_json(df: &DataFrame) -> PolarsResult<DataFrame> {
     let mut out = df.clone();
     for column in df.columns() {
-        if is_nested(column.dtype()) {
-            out.with_column(column_as_json(column)?)?;
-        } else if is_binary(column.dtype()) {
-            out.with_column(binary_as_base64(column.as_materialized_series())?.into_column())?;
+        if needs_text(column.dtype()) {
+            out.with_column(column_as_text(column)?)?;
         }
     }
     Ok(out)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The raw values behind [`durations`], one row each.
+    const DURATION_VALUES: [Option<i64>; 8] = [
+        Some(3_723_004),
+        None,
+        Some(-1_500),
+        Some(0),
+        Some(1),
+        Some(-1),
+        Some(i64::MAX),
+        Some(-i64::MAX),
+    ];
+
+    /// A duration column per unit over the same raw values, with a null, zero,
+    /// negatives and the ends of the range.
+    pub(crate) fn durations() -> DataFrame {
+        let values = Series::new("".into(), DURATION_VALUES);
+        let columns = [
+            ("ms", TimeUnit::Milliseconds),
+            ("us", TimeUnit::Microseconds),
+            ("ns", TimeUnit::Nanoseconds),
+        ]
+        .map(|(name, unit)| {
+            values
+                .cast(&DataType::Duration(unit))
+                .unwrap()
+                .with_name(name.into())
+                .into_column()
+        });
+        DataFrame::new_infer_height(columns.to_vec()).unwrap()
+    }
+
+    /// [`durations`] as text, by column; a null is None.
+    pub(crate) fn duration_text() -> [(&'static str, [Option<&'static str>; 8]); 3] {
+        [
+            (
+                "ms",
+                [
+                    Some("PT3723.004S"),
+                    None,
+                    Some("-PT1.5S"),
+                    Some("P0D"),
+                    Some("PT0.001S"),
+                    Some("-PT0.001S"),
+                    Some("PT9223372036854775.807S"),
+                    Some("-PT9223372036854775.807S"),
+                ],
+            ),
+            (
+                "us",
+                [
+                    Some("PT3.723004S"),
+                    None,
+                    Some("-PT0.0015S"),
+                    Some("P0D"),
+                    Some("PT0.000001S"),
+                    Some("-PT0.000001S"),
+                    Some("PT9223372036854.775807S"),
+                    Some("-PT9223372036854.775807S"),
+                ],
+            ),
+            (
+                "ns",
+                [
+                    Some("PT0.003723004S"),
+                    None,
+                    Some("-PT0.0000015S"),
+                    Some("P0D"),
+                    Some("PT0.000000001S"),
+                    Some("-PT0.000000001S"),
+                    Some("PT9223372036.854775807S"),
+                    Some("-PT9223372036.854775807S"),
+                ],
+            ),
+        ]
+    }
+
+    /// A duration is ISO 8601 text in every unit, with its nulls, the same
+    /// text in memory and planned, and the same text an NDJSON export writes.
+    #[test]
+    fn durations_are_iso_8601_as_the_json_writer_spells_them() {
+        let df = durations();
+        let cells = frame_as_json(&df).unwrap();
+        for (name, expected) in duration_text() {
+            let text = cells.column(name).unwrap().str().unwrap();
+            assert_eq!(text.iter().collect::<Vec<_>>(), expected, "{name}");
+        }
+        let lazy = lazy_as_json(df.clone().lazy()).unwrap().collect().unwrap();
+        assert!(cells.equals_missing(&lazy), "{cells}\n{lazy}");
+
+        let mut ndjson = Vec::new();
+        JsonWriter::new(&mut ndjson)
+            .with_json_format(JsonFormat::JsonLines)
+            .finish(&mut df.clone())
+            .unwrap();
+        let json = |name: &str, i: usize| {
+            cells
+                .column(name)
+                .unwrap()
+                .str()
+                .unwrap()
+                .get(i)
+                .map_or("null".to_string(), |s| format!("\"{s}\""))
+        };
+        let rebuilt: String = (0..cells.height())
+            .map(|i| {
+                format!(
+                    "{{\"ms\":{},\"us\":{},\"ns\":{}}}\n",
+                    json("ms", i),
+                    json("us", i),
+                    json("ns", i)
+                )
+            })
+            .collect();
+        assert_eq!(rebuilt, String::from_utf8(ndjson).unwrap());
+    }
+
+    /// Past the end of chrono's range, where the JSON writer gives up, the
+    /// text is still exact.
+    #[test]
+    fn the_longest_negative_duration_is_exact() {
+        let mut text = String::new();
+        duration_iso(i64::MIN, TimeUnit::Milliseconds, &mut text);
+        assert_eq!(text, "-PT9223372036854775.808S");
+        text.clear();
+        duration_iso(i64::MIN, TimeUnit::Nanoseconds, &mut text);
+        assert_eq!(text, "-PT9223372036.854775808S");
+    }
 
     fn nested() -> DataFrame {
         let ids = Series::new("ids".into(), [1i64, 2, 3]);

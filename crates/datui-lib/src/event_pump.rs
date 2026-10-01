@@ -658,7 +658,16 @@ mod tests {
     /// Waits on the work rather than on a quiet spell: a result slower than the spell
     /// on a loaded machine is not a result that never comes, and a row count left
     /// running lands in the middle of whatever the test does next.
+    ///
+    /// A job's lease is work still to report. It comes back an event behind the answer
+    /// that cleared `busy`, from the worker's thread, so an idle app with a quiet
+    /// channel can still be holding the generation (#490). The download confirmation's
+    /// lease is not waited on: that one waits on the user.
     fn settle(pump: &mut EventPump) -> Drained {
+        fn owed(app: &App) -> bool {
+            crate::tests::work_pending(app)
+                || (app.work_a_bump_would_strand() && !app.awaiting_download_confirmation())
+        }
         // Only a hang guard; nothing here is timed.
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
         loop {
@@ -669,7 +678,7 @@ mod tests {
             let replayed = pump.replay_one().unwrap();
             // As `run()` paints after every update.
             pump.app.frame_painted();
-            let drained = if crate::tests::work_pending(&pump.app) && !replayed {
+            let drained = if owed(&pump.app) && !replayed {
                 pump.wait_and_drain(Duration::from_millis(50))
             } else {
                 pump.drain()
@@ -679,7 +688,7 @@ mod tests {
                 Drained::Continue { updated, .. } => *updated,
                 _ => return drained,
             };
-            if replayed || updated || crate::tests::work_pending(&pump.app) {
+            if replayed || updated || owed(&pump.app) {
                 continue;
             }
             if pump.held_keys().next().is_none() {
@@ -899,18 +908,14 @@ mod tests {
         );
         assert!(out.exists(), "and the file was written, which is the point");
 
-        // A lease is released through the channel, so the last one can still be in
-        // flight when the loop above runs out of work to do — `busy` is cleared by the
-        // handler that consumed the result, one event ahead of the release behind it.
-        // Waits on the release itself; the deadline is only a hang guard.
-        let deadline = std::time::Instant::now() + Duration::from_secs(300);
-        while p.app.work_a_bump_would_strand() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the generation was never freed once the export was done"
-            );
-            let _ = p.wait_and_drain(Duration::from_millis(50));
-        }
+        // The last lease can still be on its way when the loop above runs out of work:
+        // `busy` is cleared by the handler that consumed the result, one event ahead of
+        // the release behind it. `settle` waits on the release itself.
+        settle(&mut p);
+        assert!(
+            !p.app.work_a_bump_would_strand(),
+            "the generation is free once the export is done"
+        );
     }
 
     fn csv_export(path: &std::path::Path) -> crate::ExportRequest {

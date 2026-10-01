@@ -1417,6 +1417,7 @@ mod tests {
             state.visible_rows,
         );
         let dataset = state.len_generation();
+        let columns = crate::InflightCollect::columns_of(state);
         // Out, and bringing the next few pages: no thread, so it stays out.
         let generation = p.app.task_generation;
         p.app.collect_inflight = Some(crate::InflightCollect {
@@ -1424,6 +1425,7 @@ mod tests {
             files: None,
             generation,
             dataset,
+            columns,
             start,
             end: end + 10 * page,
             waited_on: false,
@@ -1470,6 +1472,7 @@ mod tests {
     fn the_bar_says_loading_only_once_a_fetch_takes_a_while() {
         let (mut p, _dir) = numbered_pump(200);
         let dataset = table(&p).len_generation();
+        let columns = crate::InflightCollect::columns_of(table(&p));
         p.app.busy = true;
         p.app.status_message = Some(App::LOADING_BUFFER.to_string());
         p.app.collect_inflight = Some(crate::InflightCollect {
@@ -1477,6 +1480,7 @@ mod tests {
             files: None,
             generation: p.app.task_generation,
             dataset,
+            columns,
             start: 0,
             end: 200,
             waited_on: true,

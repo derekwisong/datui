@@ -184,6 +184,7 @@ mod export_format_tests {
         let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
         state.visible_rows = 10;
         let dataset = state.len_generation();
+        let columns = InflightCollect::columns_of(&state);
         app.data_table_state = Some(state);
         let generation = app.task_generation;
         app.collect_inflight = Some(InflightCollect {
@@ -191,6 +192,7 @@ mod export_format_tests {
             files: None,
             generation,
             dataset,
+            columns,
             start: 0,
             end: 50,
             waited_on: true,
@@ -8810,6 +8812,9 @@ struct InflightCollect {
     files: Option<usize>,
     generation: u64,
     dataset: u64,
+    /// The columns it reads ([`Self::columns_of`]). A new column order is the same
+    /// frame read through another projection, so these rows do not serve it.
+    columns: u64,
     start: usize,
     end: usize,
     /// Whether anything waits on it. A load-ahead starts with nobody waiting: it sets no
@@ -8819,6 +8824,14 @@ struct InflightCollect {
 }
 
 impl InflightCollect {
+    /// The columns a read of `state` projects, as a hash: kept `Copy`.
+    fn columns_of(state: &DataTableState) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        state.get_column_order().hash(&mut hasher);
+        hasher.finish()
+    }
+
     fn covers(&self, generation: u64, state: &DataTableState) -> bool {
         // The view ends at the data when there is less than a screen of it.
         let bound = state.num_rows_if_valid().unwrap_or(usize::MAX);
@@ -8832,6 +8845,7 @@ impl InflightCollect {
         }
         self.generation == generation
             && self.dataset == state.len_generation()
+            && self.columns == Self::columns_of(state)
             && start <= state.start_row()
             && view_end <= end
     }
@@ -12335,6 +12349,7 @@ impl App {
             ),
             generation: self.task_generation,
             dataset: state.len_generation(),
+            columns: InflightCollect::columns_of(state),
             start: request.buffer_start,
             end: request.buffer_end,
             waited_on: status.is_some(),
@@ -25563,5 +25578,27 @@ mod background_read_tests {
         assert_eq!(state.get_column_order(), ["b", "a"]);
         assert_eq!(state.locked_columns_count(), 1);
         assert!(state.snapshot().has_rows());
+    }
+
+    /// A read still out was planned with the columns as they were. A new order does
+    /// not wait on it, or a column it brings back never arrives.
+    #[test]
+    fn a_column_order_does_not_wait_on_a_read_of_other_columns() {
+        let (mut app, rx, tx, _dir) = app();
+        app.event(&AppEvent::ColumnOrder(vec!["a".to_string()], 0));
+        app.event(&AppEvent::ColumnOrder(
+            vec!["b".to_string(), "a".to_string()],
+            0,
+        ));
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
+        let state = app.data_table_state.as_ref().unwrap();
+        let shown: Vec<String> = state
+            .display_df()
+            .expect("the rows are read")
+            .get_column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        assert_eq!(shown, ["b", "a"]);
     }
 }

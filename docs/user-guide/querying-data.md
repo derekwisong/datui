@@ -82,6 +82,9 @@ not the full SQL standard. A statement reads one table, `df`:
 Sidebar filters and sort are not part of `df`, and neither is the previous
 statement's result: each statement starts from `df` again.
 
+Rows that an `ORDER BY` ranks equal keep the order they come in, so paging
+through the result never repeats a row or skips one.
+
 ## Write SQL
 
 | Key | In the SQL input |
@@ -174,9 +177,6 @@ Where a statement does not drill, <kbd>Enter</kbd> says there is nothing to
 drill into. A result that drills has the keys that lead it frozen, as a q-style
 `by` does. Without `ORDER BY` or `LIMIT` it comes back sorted by its keys,
 since Polars returns groups in no fixed order.
-
-Rows an `ORDER BY` ranks equal keep one order, so paging through the result
-never repeats a row or skips one.
 
 ## Search
 

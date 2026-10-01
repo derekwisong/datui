@@ -65,6 +65,8 @@ pub mod copy_modal;
 pub mod data_quality;
 pub mod discover;
 pub mod distribution_fit;
+#[cfg(any(feature = "http", feature = "cloud"))]
+pub mod download;
 pub mod error_display;
 pub mod event_pump;
 pub mod export;
@@ -8119,18 +8121,18 @@ pub enum AppEvent {
     DoLoadScanPaths(Vec<PathBuf>, OpenOptions),
     /// Build LazyFrame for CSV with --parse-strings (phase already set to "Scanning string columns" so UI shows it).
     DoLoadCsvWithParseStrings(Vec<PathBuf>, OpenOptions),
-    /// Perform HTTP download (next loop so "Downloading" can render first). Then emit DoLoadFromHttpTemp.
+    /// Perform HTTP download (next loop so "Downloading" can render first). Then emit DoLoadDownload.
     #[cfg(feature = "http")]
     DoDownloadHttp(String, OpenOptions),
-    /// Perform S3 download to temp (next loop so "Downloading" can render first). Then emit DoLoadFromHttpTemp.
+    /// Perform S3 download to temp (next loop so "Downloading" can render first). Then emit DoLoadDownload.
     #[cfg(feature = "cloud")]
     DoDownloadS3ToTemp(String, OpenOptions),
-    /// Perform GCS download to temp (next loop so "Downloading" can render first). Then emit DoLoadFromHttpTemp.
+    /// Perform GCS download to temp (next loop so "Downloading" can render first). Then emit DoLoadDownload.
     #[cfg(feature = "cloud")]
     DoDownloadGcsToTemp(String, OpenOptions),
-    /// HTTP, S3, or GCS download finished; temp path is ready. Scan it and continue load.
+    /// An HTTP, S3, GCS or Azure download is on disk. Scan it and continue the load.
     #[cfg(any(feature = "http", feature = "cloud"))]
-    DoLoadFromHttpTemp(PathBuf, OpenOptions),
+    DoLoadDownload(crate::download::TempDownload, OpenOptions),
     /// A home listing built off-thread is ready.
     HomeListingReady {
         generation: u64,
@@ -8451,11 +8453,12 @@ pub enum AppEvent {
         generation: u64,
         pending: Box<PendingDownload>,
     },
-    /// Background task completed: remote file downloaded to temp path.
+    /// Background task completed: remote file downloaded to a temp file. The event
+    /// holds the file, so one dropped unhandled (stale, or never delivered) removes it.
     #[cfg(any(feature = "http", feature = "cloud"))]
     BackgroundDownloadReady {
         generation: u64,
-        temp_path: PathBuf,
+        download: crate::download::TempDownload,
         options: OpenOptions,
     },
     /// A background operation did not finish: its worker returned an error or panicked.
@@ -10188,7 +10191,7 @@ pub struct App {
     /// does: what `H` opens again with its header turned the other way.
     opening: Option<Vec<PathBuf>>,
     opened: Option<(Vec<PathBuf>, OpenOptions)>,
-    /// The URL `http_temp_path` was downloaded from. Opening it again reads that copy
+    /// The URL `download` was downloaded from. Opening it again reads that copy
     /// rather than downloading it again, which is how `H` re-reads a downloaded file.
     #[cfg(any(feature = "http", feature = "cloud"))]
     downloaded_from: Option<PathBuf>,
@@ -10283,12 +10286,11 @@ pub struct App {
     status_message: Option<String>,
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
-    /// Temp file path for HTTP-downloaded data; removed when user opens different data or exits.
-    // Gated to match the events that write it, below. A cloud object is downloaded to
-    // a temp file exactly as an HTTP URL is, so a build with `cloud` but not `http`
-    // still needs somewhere to record the file and still has to delete it.
+    /// The last remote file downloaded, kept to be read again until different data is
+    /// opened. The dataset scanning it holds the file too, so it is removed once both
+    /// have let go: opening something else, then that dataset being replaced, or exit.
     #[cfg(any(feature = "http", feature = "cloud"))]
-    http_temp_path: Option<PathBuf>,
+    download: Option<crate::download::TempDownload>,
 }
 
 impl App {
@@ -11449,7 +11451,7 @@ impl App {
         runtime: &tokio::runtime::Handle,
         stop: &crate::sampling::ReadWatch,
     ) -> Result<crate::local_copy::LocalCopy> {
-        use futures::StreamExt;
+        use crate::download::StreamError;
         use object_store::ObjectStoreExt;
 
         crate::local_copy::LocalCopy::fetch(root, objects, stop, |object, write| {
@@ -11458,40 +11460,30 @@ impl App {
             let (_, key) = Self::cloud_bucket_and_key(url)?;
             let path = crate::cloud_browse::object_path(&key);
             let listed = object.etag.clone();
-            // A few chunks in flight: the store keeps reading while the last is
-            // written, and dropping the receiver ends the request.
-            let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-            runtime.spawn(async move {
-                let got = match store.get(&path).await {
-                    Ok(got) => got,
-                    Err(error) => {
-                        let _ = tx.send(Err(error.to_string())).await;
-                        return;
-                    }
-                };
+            let open = async move {
+                let got = store.get(&path).await.map_err(|e| e.to_string())?;
                 // Rewritten since it opened, perhaps at the same size: the copy would
                 // not be the dataset on screen.
                 if let (Some(listed), Some(fetched)) = (&listed, &got.meta.e_tag)
                     && !crate::local_copy::same_etag(listed, fetched)
                 {
-                    let changed = "it changed since it opened. Open the dataset again";
-                    let _ = tx.send(Err(changed.to_string())).await;
-                    return;
+                    return Err("it changed since it opened. Open the dataset again".to_string());
                 }
-                let mut stream = got.into_stream();
-                while let Some(chunk) = stream.next().await {
-                    let failed = chunk.is_err();
-                    if tx.send(chunk.map_err(|e| e.to_string())).await.is_err() || failed {
-                        return;
+                Ok((got.into_stream(), None))
+            };
+            let watch = stop.clone();
+            crate::download::stream_into(runtime, open, move || watch.stopped(), write)
+                .map(drop)
+                .map_err(|error| match error {
+                    StreamError::Write(report) => report,
+                    StreamError::Open(e) | StreamError::Read(e) => {
+                        color_eyre::eyre::eyre!("Could not copy {url}: {e}")
                     }
-                }
-            });
-            while let Some(chunk) = rx.blocking_recv() {
-                let chunk =
-                    chunk.map_err(|e| color_eyre::eyre::eyre!("Could not copy {url}: {e}"))?;
-                write(&chunk)?;
-            }
-            Ok(())
+                    StreamError::Short { expected, got } => color_eyre::eyre::eyre!(
+                        "Could not copy {url}: it ended after {got} of {expected} bytes"
+                    ),
+                    StreamError::Cut => color_eyre::eyre::eyre!(crate::sampling::CANCELLED),
+                })
         })
     }
 
@@ -13061,6 +13053,15 @@ impl App {
         self.collect_inflight = None;
         self.file_facts = None;
         self.export_df = None;
+        // A downloaded file lives as long as the dataset scanning it.
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        let state = {
+            let mut state = state;
+            if path.is_some() && path == self.downloaded_from {
+                state.hold_download(self.download.clone());
+            }
+            state
+        };
         self.data_table_state = Some(state);
         // A count still waiting for the last dataset's rows to paint is not owed now.
         self.retire_a_count_the_rows_answered();
@@ -13864,7 +13865,7 @@ impl App {
             analysis_computation: None,
             app_config,
             #[cfg(any(feature = "http", feature = "cloud"))]
-            http_temp_path: None,
+            download: None,
         }
     }
 
@@ -15975,51 +15976,64 @@ impl App {
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
 
+    /// Download `url` to a temporary file. `stop` ends it early, while the server is
+    /// sending or while it is silent, and any failure removes the file; see
+    /// [`crate::download::read_to_temp`].
     #[cfg(feature = "http")]
     fn download_http_to_temp(
         url: &str,
         temp_dir: Option<&Path>,
         extension: Option<&str>,
-    ) -> Result<PathBuf> {
-        let dir = temp_dir
-            .map(Path::to_path_buf)
-            .unwrap_or_else(std::env::temp_dir);
-        let suffix = extension
-            .map(|e| format!(".{e}"))
-            .unwrap_or_else(|| ".tmp".to_string());
-        let mut temp = tempfile::Builder::new()
-            .suffix(&suffix)
-            .tempfile_in(&dir)
-            .map_err(|_| color_eyre::eyre::eyre!("Could not create a temporary file."))?;
-        let agent = Self::http_agent(std::time::Duration::from_secs(300));
-        let mut response = agent.get(url).call().map_err(|e| {
-            color_eyre::eyre::eyre!("Download failed. Check the URL and your connection: {}", e)
-        })?;
-        let status = response.status();
-        if status.is_client_error() || status.is_server_error() {
-            return Err(color_eyre::eyre::eyre!(
-                "Server returned {} {}. Check the URL.",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown")
-            ));
-        }
-        std::io::copy(&mut response.body_mut().as_reader(), &mut temp)
-            .map_err(|_| color_eyre::eyre::eyre!("Download failed while saving the file."))?;
-        let (_file, path) = temp
-            .keep()
-            .map_err(|_| color_eyre::eyre::eyre!("Could not save the downloaded file."))?;
-        Ok(path)
+        stop: impl Fn() -> bool,
+    ) -> Result<crate::download::TempDownload> {
+        use crate::download::StreamError;
+
+        let url = url.to_string();
+        let open = move || {
+            let agent = Self::http_agent(std::time::Duration::from_secs(300));
+            let response = agent
+                .get(&url)
+                .call()
+                .map_err(|e| format!("Download failed. Check the URL and your connection: {e}"))?;
+            let status = response.status();
+            if status.is_client_error() || status.is_server_error() {
+                return Err(format!(
+                    "Server returned {} {}. Check the URL.",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("Unknown")
+                ));
+            }
+            // No length: ureq hands back a compressed answer decompressed, and the
+            // Content-Length it came with is the wire's, not the file's.
+            Ok((response.into_body().into_reader(), None))
+        };
+        crate::download::read_to_temp(temp_dir, extension, open, stop).map_err(
+            |error| match error {
+                StreamError::Open(message) => color_eyre::eyre::eyre!(message),
+                StreamError::Read(e) => {
+                    color_eyre::eyre::eyre!("Download failed partway. Check your connection: {e}")
+                }
+                StreamError::Short { expected, got } => color_eyre::eyre::eyre!(
+                    "Download failed partway: it ended after {got} of {expected} bytes."
+                ),
+                StreamError::Write(report) => report,
+                StreamError::Cut => color_eyre::eyre::eyre!("Download was cancelled."),
+            },
+        )
     }
 
-    /// Download one S3 or GCS object to a temporary file, named for the user by its
-    /// scheme in any error.
+    /// Stream one S3, GCS or Azure object to a temporary file, named for the user by
+    /// its scheme in any error. A few chunks are in memory at a time; see
+    /// [`crate::download`]. `stop` ends it early, and any failure removes the file.
     #[cfg(feature = "cloud")]
     fn download_cloud_to_temp(
         url: &str,
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
-    ) -> Result<PathBuf> {
+        stop: impl Fn() -> bool + Clone + Send + Sync + 'static,
+    ) -> Result<crate::download::TempDownload> {
+        use crate::download::StreamError;
         use object_store::ObjectStoreExt;
 
         let (label, example) = match source::input_source(Path::new(url)) {
@@ -16040,35 +16054,31 @@ impl App {
         let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
 
         let path = crate::cloud_browse::object_path(&key);
-        let bytes = wait_on_runtime(runtime, async move {
-            let get_result = store.get(&path).await.map_err(|e| {
-                color_eyre::eyre::eyre!(
-                    "Could not read from {label}. Check credentials and URL: {}",
-                    e
-                )
-            })?;
-            get_result
-                .bytes()
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("Could not read {label} object body: {}", e))
+        let open = async move {
+            let got = store.get(&path).await.map_err(|e| e.to_string())?;
+            let len = got.range.end - got.range.start;
+            Ok((got.into_stream(), Some(len)))
+        };
+        crate::download::stream_to_temp(
+            runtime,
+            options.temp_dir.as_deref(),
+            ext.as_deref(),
+            open,
+            stop,
+        )
+        .map_err(|error| match error {
+            StreamError::Open(e) => color_eyre::eyre::eyre!(
+                "Could not read from {label}. Check credentials and URL: {e}"
+            ),
+            StreamError::Read(e) => {
+                color_eyre::eyre::eyre!("Could not read {label} object body: {e}")
+            }
+            StreamError::Short { expected, got } => color_eyre::eyre::eyre!(
+                "Could not read {label} object body: it ended after {got} of {expected} bytes"
+            ),
+            StreamError::Write(report) => report,
+            StreamError::Cut => color_eyre::eyre::eyre!("{label} download was cancelled."),
         })
-        .ok_or_else(|| color_eyre::eyre::eyre!("{label} download was cancelled."))??;
-
-        let dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-        let suffix = ext
-            .as_ref()
-            .map(|e| format!(".{e}"))
-            .unwrap_or_else(|| ".tmp".to_string());
-        let mut temp = tempfile::Builder::new()
-            .suffix(&suffix)
-            .tempfile_in(&dir)
-            .map_err(|_| color_eyre::eyre::eyre!("Could not create a temporary file."))?;
-        std::io::copy(&mut std::io::Cursor::new(bytes.as_ref()), &mut temp)
-            .map_err(|_| color_eyre::eyre::eyre!("Could not write downloaded file."))?;
-        let (_file, path_buf) = temp
-            .keep()
-            .map_err(|_| color_eyre::eyre::eyre!("Could not save the downloaded file."))?;
-        Ok(path_buf)
     }
 
     /// Build LazyFrame from paths for phased loading (non-compressed only). Caller must not use for compressed CSV.
@@ -21771,15 +21781,14 @@ impl App {
                 if &expanded != paths {
                     return Some(AppEvent::Open(expanded, options.clone()));
                 }
-                // The last download goes, unless this is opening it again.
+                // The last download is let go, unless this is opening it again. The
+                // dataset on screen still holds it until this open replaces it.
                 #[cfg(any(feature = "http", feature = "cloud"))]
-                if let Some(p) = self.http_temp_path.take() {
-                    if paths.len() == 1 && self.downloaded_from.as_ref() == Some(&paths[0]) {
-                        self.http_temp_path = Some(p);
-                    } else {
-                        let _ = std::fs::remove_file(&p);
-                        self.downloaded_from = None;
-                    }
+                if self.download.is_some()
+                    && !(paths.len() == 1 && self.downloaded_from.as_ref() == Some(&paths[0]))
+                {
+                    self.download = None;
+                    self.downloaded_from = None;
                 }
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
@@ -21949,9 +21958,9 @@ impl App {
                     #[cfg(any(feature = "http", feature = "cloud"))]
                     if paths.len() == 1
                         && self.downloaded_from.as_ref() == Some(&paths[0])
-                        && let Some(temp) = self.http_temp_path.clone().filter(|t| t.exists())
+                        && let Some(download) = self.download.clone().filter(|d| d.path().exists())
                     {
-                        return Some(AppEvent::DoLoadFromHttpTemp(temp, options.clone()));
+                        return Some(AppEvent::DoLoadDownload(download, options.clone()));
                     }
                     // The size probe is a network round trip, so it runs off the event
                     // thread and the confirmation modal is raised when it answers.
@@ -22338,17 +22347,21 @@ impl App {
                 }
                 let url = url.clone();
                 let options = options.clone();
+                // Stopped as a cloud download is; see `DoDownloadS3ToTemp`.
+                let cancelled = self.footer_progress.cancel_flag();
+                let stop = move || cancelled.load(std::sync::atomic::Ordering::Relaxed);
                 self.spawn_bg(Job::Load, "Downloading...", move |task_gen, tx| {
                     let ext = source::download_suffix(url.as_str());
-                    let temp_path = Self::download_http_to_temp(
+                    let download = Self::download_http_to_temp(
                         url.as_str(),
                         options.temp_dir.as_deref(),
                         ext.as_deref(),
+                        stop,
                     )
                     .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
                     let _ = tx.send(AppEvent::BackgroundDownloadReady {
                         generation: task_gen,
-                        temp_path,
+                        download,
                         options,
                     });
                     Ok(())
@@ -22370,14 +22383,20 @@ impl App {
                     source::InputSource::Azure(_) => "Downloading from Azure...",
                     _ => "Downloading from S3...",
                 };
+                // The load's counter is cancelled when the load is abandoned or another
+                // open replaces it, and when the app drops: the download stops at the
+                // next chunk, or while the store is silent, and removes its file.
+                let cancelled = self.footer_progress.cancel_flag();
+                let stop = move || cancelled.load(std::sync::atomic::Ordering::Relaxed);
                 self.spawn_bg(Job::Load, status, move |task_gen, tx| {
-                    let temp_path =
-                        Self::download_cloud_to_temp(&url, &cloud_config, &options, &rt).map_err(
-                            |e| crate::error_display::user_message_from_report(&e, None),
-                        )?;
+                    let download =
+                        Self::download_cloud_to_temp(&url, &cloud_config, &options, &rt, stop)
+                            .map_err(|e| {
+                                crate::error_display::user_message_from_report(&e, None)
+                            })?;
                     let _ = tx.send(AppEvent::BackgroundDownloadReady {
                         generation: task_gen,
-                        temp_path,
+                        download,
                         options,
                     });
                     Ok(())
@@ -22405,18 +22424,14 @@ impl App {
             #[cfg(any(feature = "http", feature = "cloud"))]
             AppEvent::BackgroundDownloadReady {
                 generation,
-                temp_path,
+                download,
                 options,
             } => {
-                // `http_temp_path` below is the only thing that ever records this file
-                // for cleanup, so a download we are not going to use has to remove it
-                // here or it sits in the temp directory for good — and an abandoned
-                // one can be gigabytes.
+                // A download nobody is going to use goes with the event that carried it.
                 if *generation != self.task_generation || !self.load_active {
-                    let _ = std::fs::remove_file(temp_path);
                     return None;
                 }
-                self.http_temp_path = Some(temp_path.clone());
+                self.download = Some(download.clone());
                 // The URL the load was opened as, which is what opening it again names.
                 if let LoadingState::Loading { file_path, .. } = &self.loading_state {
                     self.downloaded_from = file_path.clone();
@@ -22435,20 +22450,16 @@ impl App {
                     };
                 }
                 self.status_message = Some("Scanning...".to_string());
-                Some(AppEvent::DoLoadFromHttpTemp(
-                    temp_path.clone(),
-                    options.clone(),
-                ))
+                Some(AppEvent::DoLoadDownload(download.clone(), options.clone()))
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
-            AppEvent::DoLoadFromHttpTemp(temp_path, options) => {
-                // Ahead of the `http_temp_path` assignment: an abandoned download is
-                // ours to clean up, and nothing else records this file for removal.
+            AppEvent::DoLoadDownload(download, options) => {
+                // Abandoned: unless the app still keeps it, the file goes with the event.
                 if !self.load_active {
-                    let _ = std::fs::remove_file(temp_path);
                     return None;
                 }
-                self.http_temp_path = Some(temp_path.clone());
+                self.download = Some(download.clone());
+                let temp_path = download.path().to_path_buf();
                 // The URL the user typed, not the temp file it landed in.
                 let display_path = match &self.loading_state {
                     LoadingState::Loading { file_path, .. } => file_path.clone(),
@@ -22472,7 +22483,7 @@ impl App {
                 // a format and refused it.
                 let compressed_csv = options
                     .compression
-                    .or_else(|| CompressionFormat::from_extension(temp_path))
+                    .or_else(|| CompressionFormat::from_extension(&temp_path))
                     .is_some()
                     && (options.format == Some(FileFormat::Csv)
                         || temp_path
@@ -22889,7 +22900,7 @@ impl App {
                                     copy,
                                 });
                             };
-                            let (lf, _held) =
+                            let (lf, held) =
                                 Self::quality_scope_on_copy(lf, copy_job, &watch, fetch, kept_copy)
                                     .map_err(|error| format!("{error}"))?;
                             let (results, rows) = crate::data_quality::compute_data_quality_watched(
@@ -22901,6 +22912,9 @@ impl App {
                                 kept.as_deref(),
                                 &watch,
                             );
+                            // Let go before the answer goes out: a `d` handled as soon
+                            // as it lands must find the app's handle the last one.
+                            drop(held);
                             let kept = rows.map(|rows| KeptQualitySample {
                                 dataset_generation,
                                 view_generation,
@@ -25812,14 +25826,14 @@ impl App {
     ///
     /// Refused when the frame would scan a temporary file, because those are removed
     /// on exit and a plan over deleted paths fails later and worse: a remote download
-    /// (`http_temp_path`) or a decompressed archive. The in-TUI export (`e`) writes
+    /// or a decompressed archive. The in-TUI export (`e`) writes
     /// real rows and is the way out for those datasets.
     pub fn capture_view(&self) -> Result<Option<LazyFrame>> {
         let Some(state) = &self.data_table_state else {
             return Ok(None);
         };
         #[cfg(any(feature = "http", feature = "cloud"))]
-        if self.http_temp_path.is_some() {
+        if state.scans_a_download() {
             return Err(color_eyre::eyre::eyre!(
                 "cannot return this view: the data was downloaded to a temporary file \
                  that is removed when datui exits. Export it from inside datui (press \
@@ -25839,22 +25853,12 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        // Opening a remote file downloads it to a temp file so Polars can scan
-        // it lazily. Opening a *different* file removes the previous one, which
-        // is what `AppEvent::Open` does, but quitting removed nothing: the last
-        // dataset someone viewed stayed in the temp directory until something
-        // else cleared it. The file is mode 0600, so this is disk hygiene
-        // rather than exposure, but the contents are the user's data and they
-        // did not ask for a copy to be left behind.
-        //
-        // Drop rather than the end of `run`, because it is the one place that
-        // covers every exit: a normal quit, an error return, an unwind from a
-        // panic, and the Python binding calling `run` again in the same
-        // process.
-        #[cfg(any(feature = "http", feature = "cloud"))]
-        if let Some(path) = self.http_temp_path.take() {
-            let _ = std::fs::remove_file(path);
-        }
+        // A download still running stops at its next chunk and removes its partial
+        // file. A finished one is removed as the fields holding it drop. Drop rather
+        // than the end of `run`, because it covers every exit: a normal quit, an
+        // error return, an unwind from a panic, and the Python binding calling `run`
+        // again in the same process.
+        self.footer_progress.cancel();
     }
 }
 

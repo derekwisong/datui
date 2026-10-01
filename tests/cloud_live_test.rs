@@ -231,8 +231,8 @@ fn pump_until(
                 datui::AppEvent::BackgroundFailed { message, .. } => {
                     eprintln!("background error: {message}")
                 }
-                datui::AppEvent::BackgroundDownloadReady { temp_path, .. } => {
-                    eprintln!("download ready: {temp_path:?}")
+                datui::AppEvent::BackgroundDownloadReady { download, .. } => {
+                    eprintln!("download ready: {:?}", download.path())
                 }
                 datui::AppEvent::BackgroundLazyFrameReady { path, .. } => {
                     eprintln!("lazyframe ready: {path:?}")

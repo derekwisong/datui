@@ -313,6 +313,9 @@ pub struct DataTableState {
     partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
     decompress_temp_file: Option<NamedTempFile>,
+    /// The downloaded remote file this dataset was opened from, held while it is scanned.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    download: Option<crate::download::TempDownload>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
@@ -896,6 +899,8 @@ impl DataTableState {
             reshape_source: None,
             partition_columns: None,
             decompress_temp_file: None,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            download: None,
             polars_streaming,
             defer_collect: false,
             needs_recollect: false,
@@ -1018,6 +1023,8 @@ impl DataTableState {
             reshape_source: None,
             partition_columns,
             decompress_temp_file: None,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            download: None,
             polars_streaming: options.polars_streaming,
             defer_collect: false,
             needs_recollect: false,
@@ -4221,6 +4228,11 @@ impl DataTableState {
         }
         view.visible_rows = self.visible_rows;
         view.remote_source = self.remote_source;
+        // It scans the same file, and a view captured from it must be refused too.
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        {
+            view.download = self.download.clone();
+        }
         Ok(view)
     }
 
@@ -5059,6 +5071,19 @@ impl DataTableState {
     /// when the state drops, and the plan would scan a path that no longer exists.
     pub fn scans_a_temp_file(&self) -> bool {
         self.decompress_temp_file.is_some()
+    }
+
+    /// Hold `download` for as long as this state lives: its frame scans that file.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    pub fn hold_download(&mut self, download: Option<crate::download::TempDownload>) {
+        self.download = download;
+    }
+
+    /// Whether the frame scans a downloaded remote file, removed when datui lets go of
+    /// it; see [`Self::scans_a_temp_file`].
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    pub fn scans_a_download(&self) -> bool {
+        self.download.is_some()
     }
 
     /// `lf` without the hidden drift column. A non-strict drop, so it is a no-op on a
@@ -9392,6 +9417,32 @@ mod tests {
             json.column("word").unwrap().str().unwrap().get(1),
             Some(" b")
         );
+    }
+
+    /// Data Quality's evidence rows read the downloaded file the dataset scans, so
+    /// they hold it too: a view captured there is refused like the dataset's own.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    #[test]
+    fn evidence_rows_hold_the_download_they_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = crate::download::TempDownload::create(Some(dir.path()), Some("csv"))
+            .expect("a temp file");
+        std::io::Write::write_all(&mut file, b"id\n1\n2\n").unwrap();
+        let download = crate::download::TempDownload::keep(file);
+        let mut state = DataTableState::from_csv(download.path(), &Default::default()).unwrap();
+        state.hold_download(Some(download.clone()));
+        let path = download.path().to_path_buf();
+        drop(download);
+
+        let view = state
+            .quality_evidence_view(&crate::data_quality::QualityScope::WholeSource, lit(true))
+            .unwrap();
+        assert!(view.scans_a_download());
+        drop(state);
+        assert!(path.exists(), "the view still scans it");
+        assert_eq!(collect_lazy(view.lf.clone(), false).unwrap().height(), 2);
+        drop(view);
+        assert!(!path.exists());
     }
 
     /// Scrolling sideways must not count the rows.

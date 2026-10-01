@@ -127,8 +127,9 @@ emit an `AppEvent` when applied. Add a new one by copying an existing pair
 (`*_modal.rs` state, `widgets/*.rs` or `render/*.rs` drawing).
 
 **Config** is TOML, three layers: defaults in `Default` impls, imported files,
-`~/.config/datui/config.toml`, then CLI flags. Every option lives in seven
-places; follow `docs/for-developers/adding-configuration-options.md`. Cloud
+`~/.config/datui/config.toml`, then CLI flags. Each file is a partial
+`ConfigLayer` merged by presence. Every option lives in six places; follow
+`docs/for-developers/adding-configuration-options.md`. Cloud
 settings merge config < environment < CLI in one place (`effective_cloud`);
 blank values count as unset.
 

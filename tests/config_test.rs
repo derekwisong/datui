@@ -1,10 +1,22 @@
 use datui::config::{
-    AppConfig, ConfigManager, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT, NumberFormatConfig,
+    AppConfig, ConfigLayer, ConfigManager, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT,
+    NumberFormatConfig,
 };
 use datui::numfmt::{Grouping, NumberFormatSettings};
 use polars::prelude::DataType;
 use std::fs;
 use tempfile::TempDir;
+
+/// The config TOML `layers` describe, lowest precedence first, as an import chain
+/// would stack them.
+fn layered(layers: &[&str]) -> AppConfig {
+    AppConfig::from_layers(
+        layers
+            .iter()
+            .map(|text| ConfigLayer::parse(text).expect("layer parses")),
+    )
+    .expect("layers resolve")
+}
 
 // Helper to create a temporary config directory for testing
 fn setup_test_config_dir() -> (TempDir, ConfigManager) {
@@ -164,27 +176,26 @@ row_start_index = 0
 
 #[test]
 fn test_merge_configs() {
-    let mut base = AppConfig::default();
-    let mut override_config = AppConfig::default();
+    let base = layered(&[r#"
+[display]
+row_numbers = true
+pages_lookahead = 5
 
-    // Modify override config
-    override_config.display.row_numbers = true;
-    override_config.display.pages_lookahead = 5;
-    override_config.performance.analysis_sample_rows = 50000;
-    override_config.theme.colors.keybind_hints = "blue".to_string();
+[performance]
+analysis_sample_rows = 50000
 
-    // Merge
-    base.merge(override_config);
+[theme.colors]
+keybind_hints = "blue"
+"#]);
 
-    // Check that values were merged
     assert!(base.display.row_numbers);
     assert_eq!(base.display.pages_lookahead, 5);
     assert_eq!(base.performance.analysis_sample_rows, 50000);
     assert_eq!(base.theme.colors.keybind_hints, "blue");
 
-    // Check that unmodified values remain default
-    assert_eq!(base.display.pages_lookback, 3); // Still default
-    assert_eq!(base.query.history_limit, 1000); // Still default
+    // Unwritten keys take the defaults.
+    assert_eq!(base.display.pages_lookback, 3);
+    assert_eq!(base.query.history_limit, 1000);
 }
 
 #[test]
@@ -297,9 +308,6 @@ distribution_skewed = "yellow"
 distribution_other = "white"
 outlier_marker = "red"
 
-[ui.controls]
-row_count_width = 25
-
 [query]
 history_limit = 500
 enable_history = true
@@ -324,7 +332,6 @@ show_transformations = true
     assert!(config.display.row_numbers);
     assert_eq!(config.performance.analysis_sample_rows, 50000);
     assert_eq!(config.theme.colors.keybind_hints, "blue");
-    assert_eq!(config.ui.controls.row_count_width, 25);
     assert_eq!(config.query.history_limit, 500);
     assert!(config.templates.auto_apply);
 
@@ -334,27 +341,34 @@ show_transformations = true
 
 #[test]
 fn test_merge_option_fields() {
-    use datui::config::FileLoadingConfig;
-
-    let mut base = FileLoadingConfig::default();
-    assert_eq!(base.infer_schema_length, None);
-    assert_eq!(base.ignore_errors, None);
-
-    let override_config = FileLoadingConfig {
-        infer_schema_length: Some(5000),
-        ignore_errors: Some(true),
-        ..Default::default()
-    };
-
-    base.merge(override_config);
-
-    assert_eq!(base.infer_schema_length, Some(5000));
-    assert_eq!(base.ignore_errors, Some(true));
+    let config = layered(&[
+        "[file_loading]\ninfer_schema_length = 5000\nignore_errors = true\nnull_values = [\"NA\"]\n",
+        "[file_loading]\nignore_errors = false\nnull_values = []\n",
+    ]);
+    assert_eq!(
+        config.file_loading.infer_schema_length,
+        Some(5000),
+        "unwritten keeps"
+    );
+    assert_eq!(
+        config.file_loading.ignore_errors,
+        Some(false),
+        "written wins"
+    );
+    assert_eq!(
+        config.file_loading.null_values,
+        Some(Vec::new()),
+        "an explicit empty list replaces the import's"
+    );
+    assert_eq!(
+        config.file_loading.parse_dates, None,
+        "never written stays unset"
+    );
 }
 
 #[test]
 fn test_query_default_mode() {
-    use datui::config::{QueryConfig, QueryMode};
+    use datui::config::QueryMode;
 
     // Omitted: SQL.
     let config: AppConfig = toml::from_str("[query]\nhistory_limit = 10\n").unwrap();
@@ -371,15 +385,20 @@ fn test_query_default_mode() {
     }
     assert!(toml::from_str::<AppConfig>("[query]\ndefault_mode = \"fuzzy\"\n").is_err());
 
-    // A file that picks q-style wins, and a later one that says nothing keeps it.
-    let mut base = QueryConfig::default();
-    base.merge(QueryConfig {
-        default_mode: QueryMode::QStyle,
-        ..QueryConfig::default()
-    });
-    assert_eq!(base.default_mode, QueryMode::QStyle);
-    base.merge(QueryConfig::default());
-    assert_eq!(base.default_mode, QueryMode::QStyle);
+    // A file that picks q-style wins, a later one that says nothing keeps it, and one
+    // that names the default puts it back.
+    let picked = "[query]\ndefault_mode = \"q-style\"\n";
+    let silent = "[query]\nhistory_limit = 10\n";
+    assert_eq!(
+        layered(&[picked, silent]).query.default_mode,
+        QueryMode::QStyle
+    );
+    assert_eq!(
+        layered(&[picked, "[query]\ndefault_mode = \"sql\"\n"])
+            .query
+            .default_mode,
+        QueryMode::Sql
+    );
 
     // The generated config documents it.
     let (_temp_dir, config_manager) = setup_test_config_dir();
@@ -398,75 +417,195 @@ fn test_log_file_parses_defaults_and_merges() {
     let set: AppConfig = toml::from_str("[debug]\nlog_file = \"~/datui.log\"\n").unwrap();
     assert_eq!(set.debug.log_file.as_deref(), Some("~/datui.log"));
 
-    let mut base = DebugConfig {
-        log_file: Some("/first.log".into()),
-        ..DebugConfig::default()
-    };
-    base.merge(DebugConfig::default());
-    assert_eq!(base.log_file.as_deref(), Some("/first.log"), "unset keeps");
-    base.merge(DebugConfig {
-        log_file: Some("/second.log".into()),
-        ..DebugConfig::default()
-    });
-    assert_eq!(base.log_file.as_deref(), Some("/second.log"), "set wins");
-}
-
-#[test]
-fn test_turning_the_notes_accent_off_survives_a_merge() {
-    use datui::config::DisplayConfig;
-
-    // The accent is on by default, so a file that turns it off must win.
-    let mut base = DisplayConfig::default();
-    assert!(base.notes_accent, "on unless asked otherwise");
-    base.merge(DisplayConfig {
-        notes_accent: false,
-        ..DisplayConfig::default()
-    });
-    assert!(!base.notes_accent, "a config that says false is honored");
-
-    // And a later file that says nothing does not turn it back on.
-    base.merge(DisplayConfig::default());
-    assert!(
-        !base.notes_accent,
-        "silence is not a request to re-enable it"
+    let first = "[debug]\nlog_file = \"/first.log\"\n";
+    let kept = layered(&[first, "[debug]\nenabled = true\n"]);
+    assert_eq!(
+        kept.debug.log_file.as_deref(),
+        Some("/first.log"),
+        "unset keeps"
+    );
+    let replaced = layered(&[first, "[debug]\nlog_file = \"/second.log\"\n"]);
+    assert_eq!(
+        replaced.debug.log_file.as_deref(),
+        Some("/second.log"),
+        "set wins"
     );
 }
 
 #[test]
-fn test_merge_does_not_override_with_defaults() {
+fn test_notes_accent_follows_the_last_file_that_sets_it() {
     use datui::config::DisplayConfig;
 
-    let mut base = DisplayConfig {
-        unicode: Default::default(),
-        pages_lookahead: 5,
-        pages_lookback: 5,
-        max_buffered_rows: 100_000,
-        max_buffered_mb: 512,
-        row_numbers: true,
-        row_start_index: 0,
-        table_cell_padding: 1,
-        column_colors: true,
-        dtype_row: true,
-        notes_accent: true,
-        sidebar_width: None,
-        align_numeric_right: false,
-        number_format: NumberFormatConfig::Preset("thousands".to_string()),
-    };
+    assert!(
+        DisplayConfig::default().notes_accent,
+        "on unless asked otherwise"
+    );
+    let off = "[display]\nnotes_accent = false\n";
+    let on = "[display]\nnotes_accent = true\n";
+    let silent = "[display]\nrow_numbers = true\n";
 
-    let override_config = DisplayConfig::default();
+    assert!(!layered(&[off]).display.notes_accent, "false is honored");
+    assert!(
+        !layered(&[off, silent]).display.notes_accent,
+        "silence is not a request to re-enable it"
+    );
+    assert!(
+        layered(&[off, on]).display.notes_accent,
+        "an explicit true undoes an imported false"
+    );
+    assert!(!layered(&[on, off]).display.notes_accent);
+}
 
-    base.merge(override_config);
+#[test]
+fn test_explicit_defaults_override_and_omitted_keys_keep() {
+    use datui::config::QueryMode;
+    use datui::glyphs::UnicodeMode;
 
-    // Base values should remain unchanged because override had defaults
-    assert_eq!(base.pages_lookahead, 5);
-    assert_eq!(base.pages_lookback, 5);
-    assert!(base.row_numbers);
-    assert_eq!(base.row_start_index, 0);
-    // Non-default number formatting must survive a merge of defaults too.
-    assert!(!base.align_numeric_right);
+    // An import that moves every kind of setting off its default.
+    let import = r#"
+[display]
+unicode = "never"
+pages_lookahead = 5
+row_numbers = true
+align_numeric_right = false
+sidebar_width = 50
+number_format = "thousands"
+
+[performance]
+polars_streaming = false
+event_poll_interval_ms = 50
+
+[query]
+default_mode = "search"
+enable_history = false
+
+[templates]
+auto_apply = true
+
+[clipboard]
+backend = "osc52"
+
+[data]
+directories = ["/mnt/data"]
+use_desktop_recents = false
+builtin_catalog = false
+
+[data.search]
+skip = ["only-this"]
+cross_filesystems = true
+"#;
+
+    // A file that says nothing keeps every one of them.
+    let kept = layered(&[import, "version = \"0.2\"\n"]);
+    assert_eq!(kept.display.unicode, UnicodeMode::Never);
+    assert_eq!(kept.display.pages_lookahead, 5);
+    assert!(kept.display.row_numbers);
+    assert!(!kept.display.align_numeric_right);
+    assert_eq!(kept.display.sidebar_width, Some(50));
     assert_eq!(
-        base.number_format,
+        kept.display.number_format,
         NumberFormatConfig::Preset("thousands".to_string())
+    );
+    assert!(!kept.performance.polars_streaming);
+    assert_eq!(kept.performance.event_poll_interval_ms, 50);
+    assert_eq!(kept.query.default_mode, QueryMode::Search);
+    assert!(!kept.query.enable_history);
+    assert!(kept.templates.auto_apply);
+    assert_eq!(kept.clipboard.backend, "osc52");
+    assert_eq!(kept.data.directories, ["/mnt/data"]);
+    assert!(!kept.data.use_desktop_recents);
+    assert!(!kept.data.builtin_catalog);
+    assert_eq!(kept.data.search.skip, ["only-this"]);
+    assert!(kept.data.search.cross_filesystems);
+
+    // A file that writes each default puts it back, whatever the import said.
+    let defaults = AppConfig::default();
+    let restored = layered(&[
+        import,
+        r#"
+[display]
+unicode = "auto"
+pages_lookahead = 3
+row_numbers = false
+align_numeric_right = true
+number_format = "none"
+
+[performance]
+polars_streaming = true
+event_poll_interval_ms = 25
+
+[query]
+default_mode = "sql"
+enable_history = true
+
+[templates]
+auto_apply = false
+
+[clipboard]
+backend = "auto"
+
+[data]
+directories = []
+use_desktop_recents = true
+builtin_catalog = true
+
+[data.search]
+skip = ["node_modules", "target", "build", "dist", "vendor", "site-packages", "__pycache__", "venv", "env"]
+cross_filesystems = false
+"#,
+    ]);
+    assert_eq!(restored.display.unicode, UnicodeMode::Auto);
+    assert_eq!(restored.display.pages_lookahead, 3);
+    assert!(!restored.display.row_numbers);
+    assert!(restored.display.align_numeric_right);
+    assert_eq!(
+        restored.display.number_format,
+        defaults.display.number_format
+    );
+    assert_eq!(
+        restored.display.sidebar_width,
+        Some(50),
+        "TOML cannot unset a key, so an import's optional value stays"
+    );
+    assert!(restored.performance.polars_streaming);
+    assert_eq!(restored.performance.event_poll_interval_ms, 25);
+    assert_eq!(restored.query.default_mode, QueryMode::Sql);
+    assert!(restored.query.enable_history);
+    assert!(!restored.templates.auto_apply);
+    assert_eq!(restored.clipboard.backend, "auto");
+    assert!(
+        restored.data.directories.is_empty(),
+        "an empty list is a value"
+    );
+    assert!(restored.data.use_desktop_recents);
+    assert!(restored.data.builtin_catalog);
+    assert_eq!(restored.data.search.skip, defaults.data.search.skip);
+    assert!(!restored.data.search.cross_filesystems);
+    assert_eq!(restored.collections().len(), 1, "the catalog is back");
+}
+
+#[test]
+fn test_lists_that_add_up_across_files() {
+    let config = layered(&[
+        "[data]\nhide_sources = [\"public\"]\n[cloud]\nhide = [\"a\"]\nenv_files = [\".env\"]\n",
+        "[data]\nhide_sources = [\"mine\", \"public\"]\n[cloud]\nhide = []\nenv_files = [\"cloud.env\"]\n",
+    ]);
+    assert_eq!(config.data.hide_sources, ["public", "mine"]);
+    assert_eq!(config.cloud.hide, ["a"], "an empty list adds nothing");
+    assert_eq!(config.cloud.env_files, [".env", "cloud.env"]);
+}
+
+#[test]
+fn test_a_blank_cloud_setting_does_not_erase_an_import() {
+    let config = layered(&[
+        "[cloud]\ns3_region = \"eu-west-1\"\ns3_endpoint_url = \" http://minio:9000 \"\n",
+        "[cloud]\ns3_region = \"  \"\n",
+    ]);
+    assert_eq!(config.cloud.s3_region.as_deref(), Some("eu-west-1"));
+    assert_eq!(
+        config.cloud.s3_endpoint_url.as_deref(),
+        Some("http://minio:9000"),
+        "trimmed, as the environment's are"
     );
 }
 
@@ -474,20 +613,21 @@ fn test_merge_does_not_override_with_defaults() {
 fn test_color_config_merge() {
     use datui::config::ColorConfig;
 
-    let mut base = ColorConfig::default();
-    let override_config = ColorConfig {
-        keybind_hints: "blue".to_string(),
-        error: "bright_red".to_string(),
-        ..Default::default()
-    };
+    let config = layered(&[
+        "[theme.colors]\nkeybind_hints = \"blue\"\nerror = \"bright_red\"\n",
+        "[theme.colors]\nerror = \"#f7768e\"\n",
+    ]);
 
-    base.merge(override_config);
-
-    assert_eq!(base.keybind_hints, "blue");
-    assert_eq!(base.error, "bright_red");
-    // Other colors should remain default
-    assert_eq!(base.keybind_labels, ColorConfig::default().keybind_labels);
-    assert_eq!(base.success, ColorConfig::default().success);
+    assert_eq!(config.theme.colors.keybind_hints, "blue");
+    assert_eq!(
+        config.theme.colors.error,
+        ColorConfig::default().error,
+        "a color written as its default value overrides the import"
+    );
+    assert_eq!(
+        config.theme.colors.keybind_labels,
+        ColorConfig::default().keybind_labels
+    );
 }
 
 #[test]
@@ -848,37 +988,44 @@ number_format = "nonsense"
 
 #[test]
 fn test_number_format_merge_overrides_default() {
-    let mut base = AppConfig::default();
-    let toml_str = r#"
+    let config = layered(&[r#"
 version = "0.2"
 
 [display]
 number_format = "indian"
 align_numeric_right = false
-"#;
-    let user: AppConfig = toml::from_str(toml_str).unwrap();
-    base.merge(user);
+"#]);
 
     assert_eq!(
-        base.display.number_format,
+        config.display.number_format,
         NumberFormatConfig::Preset("indian".to_string())
     );
-    assert!(!base.display.align_numeric_right);
+    assert!(!config.display.align_numeric_right);
 }
 
 #[test]
 fn test_number_format_merge_keeps_existing_when_user_omits() {
-    let mut base = AppConfig::default();
-    base.display.number_format = NumberFormatConfig::Preset("european".to_string());
-
     // A user config that says nothing about number_format must not reset it.
-    let user: AppConfig = toml::from_str("version = \"0.2\"\n").unwrap();
-    base.merge(user);
-
+    let config = layered(&[
+        "[display]\nnumber_format = \"european\"\n",
+        "version = \"0.2\"\n",
+    ]);
     assert_eq!(
-        base.display.number_format,
+        config.display.number_format,
         NumberFormatConfig::Preset("european".to_string())
     );
+
+    // Its table form merges key by key, like any other table.
+    let config = layered(&[
+        "[display.number_format]\ngrouping = \"thousands\"\nexclude_columns = [\"year\"]\n",
+        "[display.number_format]\nfloat_precision = 2\n",
+    ]);
+    let NumberFormatConfig::Custom(table) = &config.display.number_format else {
+        panic!("still a table: {:?}", config.display.number_format);
+    };
+    assert_eq!(table.grouping.as_deref(), Some("thousands"));
+    assert_eq!(table.float_precision, Some(2));
+    assert_eq!(table.exclude_columns, ["year"]);
 }
 
 #[test]
@@ -1275,6 +1422,108 @@ fn test_load_from_missing_config_file_yields_defaults() {
 }
 
 #[test]
+fn test_a_config_with_the_removed_ui_section_still_loads() {
+    // `[ui.controls]` was never read, and is gone; a config that has it must not break.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "[ui.controls]\nrow_count_width = 25\ncustom_controls = [[\"q\", \"Quit\"]]\n\n[display]\nrow_numbers = true\n",
+    );
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+    assert!(config.display.row_numbers);
+}
+
+#[test]
+fn test_own_default_value_beats_an_import() {
+    // The reason layers are partial: a value equal to the built-in default is still
+    // something the user wrote, and it must undo the import.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "theme.toml",
+        "[display]\nnotes_accent = false\nrow_numbers = true\n\n[theme.colors]\nerror = \"#ff5345\"\n",
+    );
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"theme.toml\"]\n\n[display]\nnotes_accent = true\n\n[theme.colors]\nerror = \"#f7768e\"\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert!(
+        config.display.notes_accent,
+        "explicit true undoes the import"
+    );
+    assert!(config.display.row_numbers, "unwritten keys keep the import");
+    assert_eq!(config.theme.colors.error, "#f7768e");
+}
+
+#[test]
+fn test_unparseable_root_config_is_an_error_naming_it() {
+    // It used to fall back to defaults, discarding every setting in the file without
+    // a word.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "[display]\nrow_numbers = true\nrow_start_index = \"one\"\n",
+    );
+
+    let msg = AppConfig::load_from_file(&root)
+        .expect_err("a broken root config must be reported")
+        .to_string();
+
+    assert!(msg.contains("Failed to parse config file"), "{msg}");
+    assert!(msg.contains(&root.display().to_string()), "{msg}");
+    // The Python binding shows only the first line, so the reason and place lead.
+    let first = msg.lines().next().unwrap_or_default();
+    assert!(first.contains("line 3"), "says where: {msg}");
+    assert!(first.contains("expected usize"), "says why: {msg}");
+    assert!(msg.contains("^^^^^"), "points at it: {msg}");
+
+    let not_toml = write_config(&temp_dir, "other.toml", "this is not toml =\n");
+    let msg = AppConfig::load_from_file(&not_toml)
+        .expect_err("not TOML")
+        .to_string();
+    assert!(msg.contains(&not_toml.display().to_string()), "{msg}");
+}
+
+#[test]
+fn test_unreadable_root_config_is_an_error_naming_it() {
+    // A directory where the file should be cannot be read on any platform.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = temp_dir.path().join("config.toml");
+    fs::create_dir(&root).expect("create dir");
+
+    let msg = AppConfig::load_from_file(&root)
+        .expect_err("an unreadable root config must be reported")
+        .to_string();
+
+    assert!(msg.contains("Failed to read config file"), "{msg}");
+    assert!(msg.contains(&root.display().to_string()), "{msg}");
+}
+
+#[test]
+fn test_a_bad_type_in_an_import_names_the_import() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "theme.toml",
+        "[display]\nrow_numbers = \"yes\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let msg = AppConfig::load_from_file(&root)
+        .expect_err("a wrong type must be reported")
+        .to_string();
+
+    assert!(msg.contains("theme.toml"), "{msg}");
+    assert!(msg.contains("imported by"), "{msg}");
+}
+
+#[test]
 fn test_generated_config_documents_import() {
     // The generated config is the discovery surface for this feature.
     let (_temp_dir, config_manager) = setup_test_config_dir();
@@ -1373,6 +1622,27 @@ fn test_explicit_colors_override_light_mode() {
 }
 
 #[test]
+fn test_a_color_written_as_its_dark_value_holds_in_light_mode() {
+    // Under the light palette, a slot set to the dark palette's value is still a
+    // choice the user made.
+    let config = layered(&[
+        "[theme]\nmode = \"light\"\n",
+        &format!(
+            "[theme.colors]\ntable_header_bg = \"{}\"\n",
+            ColorConfig::dark().table_header_bg
+        ),
+    ]);
+    assert_eq!(
+        config.theme.colors.table_header_bg,
+        ColorConfig::dark().table_header_bg
+    );
+    assert_eq!(
+        config.theme.colors.controls_bg,
+        ColorConfig::light().controls_bg
+    );
+}
+
+#[test]
 fn test_mode_can_come_from_an_import() {
     // A theme file can declare the polarity it was built for.
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -1399,6 +1669,46 @@ fn test_own_mode_beats_imported_mode() {
 
     assert_eq!(config.theme.mode, Some(ThemeMode::Dark));
     assert_eq!(config.theme.colors, ColorConfig::dark());
+}
+
+#[test]
+fn test_an_explicit_auto_mode_beats_an_imported_one() {
+    let config = layered(&["[theme]\nmode = \"light\"\n", "[theme]\nmode = \"auto\"\n"]);
+    let resolved = ThemeMode::Auto.resolve();
+    assert_eq!(config.theme.mode, Some(resolved));
+    assert_eq!(config.theme.colors, ColorConfig::for_mode(resolved));
+}
+
+#[test]
+fn test_cloud_settings_run_file_then_environment_then_command_line() {
+    use datui::config::{CloudConfig, CloudDiscover};
+    let mut cloud = layered(&[
+        "[cloud]\ns3_region = \"import-region\"\ns3_endpoint_url = \"http://import:9000\"\n",
+        "[cloud]\ns3_region = \"file-region\"\ndiscover = [\"s3\"]\n",
+    ])
+    .cloud;
+    assert_eq!(cloud.s3_region.as_deref(), Some("file-region"));
+
+    let env = |key: &str| match key {
+        "AWS_REGION" => Some("env-region".to_string()),
+        "AWS_ENDPOINT_URL" => Some("  ".to_string()),
+        _ => None,
+    };
+    cloud.overlay(CloudConfig::from_env(&env));
+    assert_eq!(cloud.s3_region.as_deref(), Some("env-region"));
+    assert_eq!(
+        cloud.s3_endpoint_url.as_deref(),
+        Some("http://import:9000"),
+        "a blank variable says nothing"
+    );
+
+    cloud.overlay(CloudConfig {
+        s3_region: Some("flag-region".to_string()),
+        discover: Some(CloudDiscover::None),
+        ..CloudConfig::default()
+    });
+    assert_eq!(cloud.s3_region.as_deref(), Some("flag-region"));
+    assert_eq!(cloud.discover, Some(CloudDiscover::None));
 }
 
 #[test]
@@ -1765,6 +2075,69 @@ fn test_the_generated_default_config_is_valid_toml() {
     assert!(generated.contains("[[sources]]\nname = \"public\""));
     assert!(parsed.cloud.connections.is_empty());
     assert_eq!(parsed.sources, [datui::config::builtin_catalog()]);
+}
+
+#[test]
+fn test_the_generated_config_shows_every_documented_setting() {
+    // Settings unset by default are not serialized, so the generator adds them; one it
+    // missed would silently vanish from the file people learn the options from. Each
+    // example must also be a value the setting accepts.
+    let (_temp_dir, manager) = setup_test_config_dir();
+    let generated = manager.generate_default_config();
+
+    let mut section = String::new();
+    let mut settings: Vec<(String, String)> = Vec::new();
+    for line in generated.lines() {
+        let Some(line) = line.strip_prefix("# ") else {
+            continue;
+        };
+        if line.starts_with('[') && line.ends_with(']') && !line.starts_with("[[") {
+            section = line.trim_matches(['[', ']']).to_string();
+        } else if let Some((key, value)) = line.split_once(" = ")
+            && !key.contains(' ')
+            && !value.ends_with('[')
+            // Prose that happens to hold " = " is not a TOML value.
+            && toml::from_str::<toml::Table>(&format!("v = {value}")).is_ok()
+        {
+            let path = if section.is_empty() {
+                key.to_string()
+            } else {
+                format!("{section}.{key}")
+            };
+            settings.push((path, value.to_string()));
+        }
+    }
+    let shown = |path: &str| settings.iter().any(|(key, _)| key == path);
+    assert!(
+        !generated.contains(" = null"),
+        "TOML has no null; uncommenting one fails to parse"
+    );
+
+    for path in [
+        "file_loading.parse_dates",
+        "file_loading.null_values",
+        "file_loading.temp_dir",
+        "file_loading.ignore_errors",
+        "display.sidebar_width",
+        "theme.mode",
+        "debug.log_file",
+        "cloud.discover",
+        "cloud.env_files",
+        "chart.row_limit",
+        "query.default_mode",
+    ] {
+        assert!(shown(path), "{path} is missing from the generated config");
+    }
+
+    for (path, value) in &settings {
+        let text = match path.rsplit_once('.') {
+            Some((table, key)) => format!("[{table}]\n{key} = {value}\n"),
+            None => format!("{path} = {value}\n"),
+        };
+        let layer = ConfigLayer::parse(&text)
+            .unwrap_or_else(|e| panic!("{path} = {value} is not a valid setting: {e}"));
+        AppConfig::from_layers([layer]).expect("resolves");
+    }
 }
 
 #[test]
@@ -2265,13 +2638,10 @@ fn collections_accept_web_files_but_not_web_directories_or_archives() {
 
 #[test]
 fn a_later_layer_replaces_a_source_by_name() {
-    let mut base = cloud_config(
+    let base = layered(&[
         "[cloud]\nhide = [\"a\"]\n[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"one\"\n",
-    );
-    let over = cloud_config(
         "[cloud]\nhide = [\"a\", \"b\"]\n[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"two\"\n[[cloud.connections]]\nname = \"new\"\nkind = \"gcs\"\n",
-    );
-    base.merge(over);
+    ]);
     let names: Vec<&str> = base
         .cloud
         .connections
@@ -2284,14 +2654,20 @@ fn a_later_layer_replaces_a_source_by_name() {
 }
 
 #[test]
+fn two_connections_of_one_name_in_one_file_are_refused() {
+    let config = layered(&[
+        "[[cloud.connections]]\nname = \"lab\"\nkind = \"s3\"\n[[cloud.connections]]\nname = \"lab\"\nkind = \"gcs\"\n",
+    ]);
+    let error = config.validate().expect_err("refused").to_string();
+    assert!(error.contains("\"lab\" is used twice"), "{error}");
+}
+
+#[test]
 fn a_later_layer_replaces_a_collection_whole() {
-    let mut base = cloud_config(
+    let base = layered(&[
         "[[sources]]\nname = \"team\"\n[[sources.datasets]]\nname = \"Old\"\nurl = \"s3://old/\"\n[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"/data/mine.csv\"\n",
-    );
-    let over = cloud_config(
         "[[sources]]\nname = \"team\"\nlabel = \"Team\"\n[[sources.datasets]]\nname = \"New\"\nurl = \"gs://new/\"\ndescription = \"Replacement\"\n[[sources]]\nname = \"extra\"\n[[sources.datasets]]\nname = \"Extra\"\npath = \"/data/extra.csv\"\n",
-    );
-    base.merge(over);
+    ]);
     let names: Vec<&str> = base.sources.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(
         names,
@@ -2326,10 +2702,8 @@ fn the_builtin_catalog_is_replaced_dropped_or_hidden() {
     );
 
     // A collection named `public` replaces the whole catalog, where it is defined.
-    let mut replaced = AppConfig::default();
-    replaced.merge(cloud_config(
-        "[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"A\"\npath = \"/a.csv\"\n[[sources]]\nname = \"public\"\nlabel = \"Curated\"\n[[sources.datasets]]\nname = \"Weather\"\nurl = \"s3://weather/\"\nauth = \"anonymous\"\n",
-    ));
+    let replacing = "[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"A\"\npath = \"/a.csv\"\n[[sources]]\nname = \"public\"\nlabel = \"Curated\"\n[[sources.datasets]]\nname = \"Weather\"\nurl = \"s3://weather/\"\nauth = \"anonymous\"\n";
+    let replaced = layered(&[replacing]);
     replaced.validate().unwrap();
     assert_eq!(
         names(&replaced, true),
@@ -2356,17 +2730,20 @@ fn the_builtin_catalog_is_replaced_dropped_or_hidden() {
     );
 
     // Dropping the built-in leaves a configured `public` alone; hiding hides it.
-    let mut dropped = replaced.clone();
-    dropped.merge(cloud_config("[data]\nbuiltin_catalog = false\n"));
+    let drop = "[data]\nbuiltin_catalog = false\n";
+    let dropped = layered(&[replacing, drop]);
     assert_eq!(names(&dropped, true).len(), 2);
-    let mut off = AppConfig::default();
-    off.merge(cloud_config("[data]\nbuiltin_catalog = false\n"));
+    let off = layered(&[drop]);
     assert!(off.collections().is_empty());
     assert!(off.cloud.dataset_access.is_empty());
+    let back = layered(&[drop, "[data]\nbuiltin_catalog = true\n"]);
+    assert_eq!(back.collections().len(), 1, "a later file turns it back on");
 
-    let mut hidden = replaced.clone();
-    hidden.merge(cloud_config("[data]\nhide_sources = [\"public\"]\n"));
-    hidden.merge(cloud_config("[data]\nhide_sources = [\"mine\"]\n"));
+    let hidden = layered(&[
+        replacing,
+        "[data]\nhide_sources = [\"public\"]\n",
+        "[data]\nhide_sources = [\"mine\"]\n",
+    ]);
     assert_eq!(hidden.data.hide_sources, ["public", "mine"], "hides add up");
     assert!(names(&hidden, true).is_empty());
     assert_eq!(names(&hidden, false).len(), 2, "hidden, not gone");
@@ -2546,22 +2923,17 @@ fn cloud_discover_takes_a_switch_a_word_or_a_list_of_kinds() {
 #[test]
 fn cloud_discover_and_list_on_start_merge_only_when_set() {
     use datui::config::CloudDiscover;
-    let mut base = AppConfig::default();
-    base.cloud.discover = Some(CloudDiscover::Kinds(vec!["s3".to_string()]));
-    base.cloud.list_on_start = Some(true);
-    base.merge(AppConfig::default());
+    let set = "[cloud]\ndiscover = [\"s3\"]\nlist_on_start = true\n";
+    let base = layered(&[set, "version = \"0.2\"\n"]);
     assert_eq!(
         base.cloud.discover,
         Some(CloudDiscover::Kinds(vec!["s3".to_string()]))
     );
     assert_eq!(base.cloud.list_on_start, Some(true));
 
-    let mut other = AppConfig::default();
-    other.cloud.discover = Some(CloudDiscover::None);
-    other.cloud.list_on_start = Some(false);
-    base.merge(other);
-    assert_eq!(base.cloud.discover, Some(CloudDiscover::None));
-    assert_eq!(base.cloud.list_on_start, Some(false));
+    let changed = layered(&[set, "[cloud]\ndiscover = false\nlist_on_start = false\n"]);
+    assert_eq!(changed.cloud.discover, Some(CloudDiscover::None));
+    assert_eq!(changed.cloud.list_on_start, Some(false));
 }
 
 #[test]
@@ -2624,18 +2996,10 @@ spinner = ["◐", "◓", "◑", "◒"]
 
     // Layered like the theme: an import sets two slots, the user's own file
     // overrides one of them and the other survives.
-    let mut base = AppConfig::default();
-    base.merge(config);
-    let user: AppConfig = toml::from_str(
-        r#"
-version = "0.2"
-
-[glyphs]
-in_object_store = "≋"
-"#,
-    )
-    .expect("parses");
-    base.merge(user);
+    let base = layered(&[
+        "[glyphs]\nin_object_store = \"☁\"\nspinner = [\"◐\", \"◓\", \"◑\", \"◒\"]\n",
+        "[glyphs]\nin_object_store = \"≋\"\n",
+    ]);
     assert_eq!(
         base.glyphs.overrides.get("in_object_store"),
         Some(&datui::glyphs::SlotOverride::One("≋".to_string()))
@@ -2671,12 +3035,12 @@ fn cursor_text_defaults_merges_and_validates() {
     assert_eq!(config.theme.colors.cursor_text, "default");
     config.validate().expect("default cursor_text validates");
 
-    let mut base = ColorConfig::default();
-    base.merge(ColorConfig {
-        cursor_text: "#1a1b26".to_string(),
-        ..Default::default()
-    });
-    assert_eq!(base.cursor_text, "#1a1b26");
+    let set = layered(&["[theme.colors]\ncursor_text = \"#1a1b26\"\n"]);
+    assert_eq!(set.theme.colors.cursor_text, "#1a1b26");
+    assert_eq!(
+        set.theme.colors.cursor_focused,
+        ColorConfig::default().cursor_focused
+    );
 
     let mut bad = AppConfig::default();
     bad.theme.colors.cursor_text = "not-a-color".to_string();
@@ -2714,10 +3078,7 @@ fn clipboard_config_defaults_merge_and_validate() {
     assert_eq!(config.clipboard.osc52_limit_kb, 100);
     config.validate().expect("defaults validate");
 
-    let parsed: AppConfig =
-        toml::from_str("[clipboard]\nbackend = \"osc52\"\nosc52_limit_kb = 512").expect("parses");
-    let mut base = AppConfig::default();
-    base.merge(parsed);
+    let base = layered(&["[clipboard]\nbackend = \"osc52\"\nosc52_limit_kb = 512"]);
     assert_eq!(base.clipboard.backend, "osc52");
     assert_eq!(base.clipboard.osc52_limit_kb, 512);
     base.validate().expect("a named backend validates");
@@ -2742,17 +3103,24 @@ fn test_quality_local_copy_mb() {
     let off: AppConfig = toml::from_str("[performance]\nquality_local_copy_mb = 0\n").unwrap();
     assert_eq!(off.performance.quality_local_copy_mb, 0);
 
-    let mut base = AppConfig::default();
-    let mut layer = AppConfig::default();
-    layer.performance.quality_local_copy_mb = 512;
-    base.merge(layer);
-    assert_eq!(base.performance.quality_local_copy_mb, 512);
-    base.merge(off);
-    assert_eq!(base.performance.quality_local_copy_mb, 0);
-    base.merge(AppConfig::default());
+    let set = "[performance]\nquality_local_copy_mb = 512\n";
+    let never = "[performance]\nquality_local_copy_mb = 0\n";
+    let silent = "[performance]\npolars_streaming = true\n";
+    assert_eq!(layered(&[set]).performance.quality_local_copy_mb, 512);
+    assert_eq!(layered(&[set, never]).performance.quality_local_copy_mb, 0);
     assert_eq!(
-        base.performance.quality_local_copy_mb, 0,
+        layered(&[set, never, silent])
+            .performance
+            .quality_local_copy_mb,
+        0,
         "a layer that leaves it out changes nothing"
+    );
+    assert_eq!(
+        layered(&[never, "[performance]\nquality_local_copy_mb = 2048\n"])
+            .performance
+            .quality_local_copy_mb,
+        2048,
+        "the default written explicitly overrides an import"
     );
 
     let (_temp_dir, config_manager) = setup_test_config_dir();

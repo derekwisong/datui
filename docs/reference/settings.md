@@ -312,19 +312,24 @@ row_numbers = true
 
 - Imports apply in the order listed, each overriding the last; this file's own
   values apply after all of them.
+- A file changes only the settings it writes. One written as the built-in
+  default still overrides an import: `notes_accent = true` undoes an imported
+  `false`. Tables such as `[theme.colors]` or `[display.number_format]` merge
+  key by key.
+- These lists add up across files instead of replacing: `[data] hide_sources`,
+  `[cloud] hide` and `[cloud] env_files`. A `[[sources]]` collection or
+  `[[cloud.connections]]` entry replaces the earlier one of its name whole; two
+  of one name in one file are an error.
+- TOML cannot unset a key, so a setting with no default value, such as
+  `sidebar_width`, cannot be removed once an import sets it; set it to the value
+  you want.
 - An imported file may itself `import`. Chains stop at 8 files; a cycle is an
   error.
 - Paths may be absolute, relative to the importing file, or use `~` and
   `$VAR`.
-- A missing file is skipped with a warning on stderr. A file that exists but
-  cannot be parsed is fatal.
-
-## A caveat when overriding an imported color
-
-Datui decides whether you set a color by comparing it with the built-in
-default, so a color set to **exactly the default value** looks unset and will
-not override an import. If an import sets `error` to `#ff5345` and you want
-red back, write `#ff0000` or `indexed(9)` rather than the default `#f7768e`.
+- A missing import is skipped with a warning on stderr. An import that exists
+  but cannot be read or parsed stops datui with its path, as does your own
+  config file. A missing config file means the defaults.
 
 ## Command-line overrides
 
@@ -339,10 +344,10 @@ datui data.csv --sample-rows 0       # analyze every row, whatever the file says
 
 ## Troubleshooting
 
-**The file is ignored.** Check the path for your OS above, and that the TOML
-parses. Warnings go to stderr, which the UI hides; run
-`datui data.csv 2> /tmp/datui.log` and read the log after quitting. A `version`
-key, if present, must start with `0.2`.
+**The file is ignored.** Check the path for your OS above. A file that does not
+parse stops datui with its path, line and the reason. Warnings go to stderr,
+which the UI hides; run `datui data.csv 2> /tmp/datui.log` and read the log
+after quitting. A `version` key, if present, must start with `0.2`.
 
 **Something failed and the screen said little.** Read the log: `datui.log` in
 the cache directory (`~/.cache/datui` on Linux, `~/Library/Caches/datui` on
@@ -360,9 +365,8 @@ previous file kept as `datui.log.1`; `datui --clear-cache` deletes both.
 On Windows the log receives Polars warnings and datui's own messages, but not
 other stderr output.
 
-**An import does not apply.** Confirm the file exists at the resolved path, that
-your value differs from datui's default (see the caveat above), and that nothing
-later in the chain, including a command-line flag, overrides it.
+**An import does not apply.** Confirm the file exists at the resolved path, and
+that nothing later in the chain, including a command-line flag, overrides it.
 
 **A color is rejected.** `Invalid color value for 'accent': Unknown color name`
 means a typo in a name. Names are case-insensitive; hex needs six digits;

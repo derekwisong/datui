@@ -5,7 +5,7 @@
 mod common;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::config::{AppConfig, CloudDiscover};
+use datui::config::AppConfig;
 use datui::{App, AppEvent};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -55,10 +55,10 @@ fn pump(app: &mut App, rx: &Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
 /// the way.
 fn config_with(extra: &str) -> AppConfig {
     common::isolate_cache();
-    let mut config = AppConfig::default();
-    config.data.use_desktop_recents = false;
-    config.cloud.discover = Some(CloudDiscover::None);
-    config.merge(toml::from_str(extra).expect("test config parses"));
+    let config = common::layered_config(&[
+        "[data]\nuse_desktop_recents = false\n[cloud]\ndiscover = false\n",
+        extra,
+    ]);
     config.validate().expect("test config validates");
     config
 }

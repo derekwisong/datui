@@ -179,6 +179,18 @@ pub fn isolate_cache() {
     });
 }
 
+/// The config TOML `layers` describe, lowest precedence first, as an import chain
+/// stacks them.
+#[allow(dead_code)]
+pub fn layered_config(layers: &[&str]) -> datui::config::AppConfig {
+    datui::config::AppConfig::from_layers(
+        layers
+            .iter()
+            .map(|text| datui::config::ConfigLayer::parse(text).expect("test config layer parses")),
+    )
+    .expect("test config layers resolve")
+}
+
 /// Ensures that sample data files are generated before tests run.
 /// This function uses `std::sync::Once` to ensure it only runs once,
 /// even if called from multiple tests.

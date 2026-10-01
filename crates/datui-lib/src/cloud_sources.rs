@@ -1605,7 +1605,7 @@ mod tests {
         app.sync_dataset_access();
         app.validate().unwrap();
         let mut cloud = app.cloud.clone();
-        cloud.merge(CloudConfig::from_env(env.var));
+        cloud.overlay(CloudConfig::from_env(env.var));
         cloud
     }
 

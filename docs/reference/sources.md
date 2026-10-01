@@ -89,7 +89,7 @@ to keep.
 Across [imported files](settings.md#importing-other-config-files), collections are listed in
 the order defined, imports first. A later collection with the same name replaces
 the earlier one whole; datasets are never merged. `hide_sources` adds up across
-files, and `builtin_catalog = false` in any file turns the catalog off. Two
+files, and the last file that sets `builtin_catalog` decides it. Two
 collections with one name in one file are an error.
 
 Collections are apart from `[data] directories`, remembered directories and

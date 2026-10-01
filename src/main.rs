@@ -108,10 +108,8 @@ fn main() -> Result<()> {
     let mut config = match AppConfig::load(APP_NAME) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "Error: {}",
-                error_display::user_message_from_report(&e, None)
-            );
+            // In full: a TOML parse error's later lines show the offending line and why.
+            eprintln!("Error: {e}");
             eprintln!(
                 "Fix the configuration and try again, or remove/rename the config file to use defaults."
             );

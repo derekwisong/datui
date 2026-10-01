@@ -59,9 +59,9 @@ datui data.csv --sample-rows 0
 The second command makes every analysis tool, Data Quality included, read
 every row.
 
-Imports have a limitation: values equal to built-in defaults may be treated
-as unset. See [import precedence](../reference/settings.md#importing-other-config-files)
-before using one file to override another.
+A setting you write wins over an import, even when it equals the built-in
+default; one you leave out keeps the imported value. See
+[import precedence](../reference/settings.md#importing-other-config-files).
 
 ## Fix a config problem
 

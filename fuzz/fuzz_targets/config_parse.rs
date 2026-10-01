@@ -2,13 +2,13 @@
 //!
 //! The config file is user-authored TOML, and datui also loads theme files written by
 //! other tools. Deserialisation itself is serde's problem, but everything after it is
-//! datui's: `validate` checks ranges, `merge` layers imports over defaults, and
+//! datui's: `validate` checks ranges, `ConfigLayer` layers imports over defaults, and
 //! `ColorParser::parse` slices colour strings by byte offset after checking a byte
 //! length, which is only sound while those strings stay ASCII.
 #![no_main]
 
 use arbitrary::Arbitrary;
-use datui_lib::config::{AppConfig, ColorParser};
+use datui_lib::config::{AppConfig, ColorParser, ConfigLayer};
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
 
@@ -53,10 +53,11 @@ fuzz_target!(|input: Input| {
     // Validation runs on every load and must reject rather than panic.
     let _ = parsed.validate();
 
-    // Merging is how imports and themes layer onto the defaults. It reads fields from
-    // both sides, so a config that deserialised but holds nonsense goes through here
-    // before anything has rejected it.
-    let mut base = AppConfig::default();
-    base.merge(parsed);
-    let _ = base.validate();
+    // Layering is how imports and themes combine. A layer is checked when it is
+    // parsed, so laying it over itself and resolving the result must succeed: a
+    // failure here would surface as an error blamed on no particular file.
+    let layer = ConfigLayer::parse(input.toml).expect("text that deserialises is a layer");
+    let resolved =
+        AppConfig::from_layers([layer.clone(), layer]).expect("layers that parse resolve");
+    let _ = resolved.validate();
 });

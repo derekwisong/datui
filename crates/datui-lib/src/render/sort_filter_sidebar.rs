@@ -106,10 +106,10 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
         }
         HintBar::from_ctx(ctx)
             .hint_weighted("Space", "Sort", 7)
-            .hint_weighted("1-9", "Jump", 5)
+            .hint_weighted("1-9", "Jump", 3)
             .hint_weighted("L", "Lock", 6)
             .hint_weighted("v", "Hide", 4)
-            .hint_weighted("<>", "Width", 3)
+            .hint_weighted("<>", "Width", 5)
             .hint_weighted("f", "Fit", 2)
             .hint_weighted("C", "Clear", 1)
     } else {
@@ -132,6 +132,12 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     };
     hints.render_flush(hints_area, buf);
 }
+
+/// Cells before a column's name in the Columns list: the rail, a space, the lock
+/// and the sort.
+const LIST_LEAD: usize = 13;
+/// Cells for the width at the end of a Columns row, its leading space included.
+const WIDTH_FIELD: usize = 6;
 
 /// The Columns tab: find row, header, one row per column.
 fn render_columns_tab(
@@ -171,7 +177,13 @@ fn render_columns_tab(
     }
     // header
     // One leading gutter column, as the rows below reserve for the rail.
-    let header = format!("  {:<5}{:<6}{:<6}{}", "Lock", "Sort", "Width", "Column");
+    // The width sits at the end of the row, so a narrow sidebar takes its room from
+    // the name's tail rather than moving the name.
+    let name_room = usize::from(area.width).saturating_sub(LIST_LEAD + WIDTH_FIELD);
+    let header = format!(
+        "  {:<5}{:<6}{:<name_room$}{:>WIDTH_FIELD$}",
+        "Lock", "Sort", "Column", "Width"
+    );
     Paragraph::new(header)
         .style(Style::default().fg(ctx.text_secondary))
         .render(
@@ -251,9 +263,19 @@ fn render_columns_tab(
         if is_cursor && on_list {
             style = style.patch(ctx.highlight_style());
         }
+        let name = crate::glyphs::fit_cells(
+            &column.name,
+            name_room - hidden.len().min(name_room),
+            g.ellipsis,
+        );
+        let pad = name_room
+            .saturating_sub(crate::glyphs::cell_width(&name) + crate::glyphs::cell_width(&hidden));
         let text = format!(
-            " {:<5}{:<6}{:>5} {}{}",
-            lock, sort, width, column.name, hidden
+            " {:<5}{:<6}{name}{hidden}{}{:>WIDTH_FIELD$}",
+            lock,
+            sort,
+            " ".repeat(pad),
+            width
         );
         Paragraph::new(Line::from(vec![
             Span::styled(rail, Style::default().fg(ctx.accent)),

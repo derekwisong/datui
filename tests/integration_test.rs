@@ -16259,7 +16259,12 @@ fn column_widths_from_the_sidebar() {
     press(&mut app, KeyCode::Char('f'));
     assert!(app.sort_filter_modal.sort.has_unapplied_changes);
     let staged = draw(&mut app, 100, 24);
-    assert!(staged.contains("fit description"), "{staged}");
+    // The list row ends in the staged width.
+    let listed = staged.match_indices("description").any(|(at, _)| {
+        let rest: String = staged[at..].chars().take(40).collect();
+        rest.contains("fit")
+    });
+    assert!(listed, "{staged}");
     press(&mut app, KeyCode::Esc);
     assert_eq!(choice(&app, "description"), WidthChoice::Auto);
 

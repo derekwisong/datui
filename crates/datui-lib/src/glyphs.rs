@@ -478,7 +478,7 @@ const ASCII: Glyphs = Glyphs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UnicodeMode {
-    /// Detect from the locale.
+    /// Detect from the environment: see [`environment_is_utf8`].
     #[default]
     Auto,
     Always,
@@ -932,22 +932,70 @@ fn apply_overrides(set: &mut Glyphs, overrides: &BTreeMap<String, SlotOverride>)
 
 static GLYPHS: OnceLock<Glyphs> = OnceLock::new();
 
-/// Whether the environment claims a UTF-8 locale.
-///
-/// `LC_ALL` beats `LC_CTYPE` beats `LANG`, as in POSIX. A terminal that is not doing
-/// UTF-8 renders multi-byte characters as replacement boxes, so this is the signal
-/// that matters — not terminal capability, which says nothing about the font.
-pub fn locale_is_utf8() -> bool {
-    for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
-        if let Ok(value) = std::env::var(key) {
-            if value.is_empty() {
-                continue;
+/// The signals the glyph choice reads, gathered so the rule can be tested on
+/// any OS.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Environment {
+    /// The first non-empty of `LC_ALL`, `LC_CTYPE`, `LANG`.
+    locale: Option<String>,
+    /// `WT_SESSION` is set: Windows Terminal. Always false off Windows.
+    windows_terminal: bool,
+    /// The console output code page. Always `None` off Windows.
+    console_code_page: Option<u32>,
+}
+
+/// UTF-8, as a Windows code page.
+const CP_UTF8: u32 = 65001;
+
+impl Environment {
+    fn current() -> Self {
+        let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+            .into_iter()
+            .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty()));
+        #[cfg(windows)]
+        {
+            // SAFETY: takes no arguments and only reads console state; 0 means
+            // there is no console.
+            let page = unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() };
+            Self {
+                locale,
+                windows_terminal: std::env::var_os("WT_SESSION").is_some(),
+                console_code_page: (page != 0).then_some(page),
             }
-            let lower = value.to_ascii_lowercase();
-            return lower.contains("utf-8") || lower.contains("utf8");
+        }
+        #[cfg(not(windows))]
+        Self {
+            locale,
+            ..Self::default()
         }
     }
-    false
+
+    /// The rule. A locale variable decides when one is set, on every OS, so
+    /// `LANG=C` means ASCII everywhere and MSYS2 shells on Windows count as
+    /// they do on Unix. Windows itself sets none: there, Windows Terminal
+    /// (whose consoles default to an OEM code page, but which ships fonts for
+    /// these glyphs) or a console switched to UTF-8 (`chcp 65001`, or the
+    /// system "Use Unicode UTF-8" option) picks Unicode.
+    fn is_utf8(&self) -> bool {
+        match &self.locale {
+            Some(value) => {
+                let lower = value.to_ascii_lowercase();
+                lower.contains("utf-8") || lower.contains("utf8")
+            }
+            None => self.windows_terminal || self.console_code_page == Some(CP_UTF8),
+        }
+    }
+}
+
+/// Whether the terminal can be trusted with UTF-8.
+///
+/// `LC_ALL` beats `LC_CTYPE` beats `LANG`, as in POSIX. With none of them set,
+/// Windows counts as UTF-8 under Windows Terminal or a UTF-8 console code
+/// page. A terminal that is not doing UTF-8 renders multi-byte characters as
+/// replacement boxes, so this is the signal that matters, not terminal
+/// capability, which says nothing about the font.
+pub fn environment_is_utf8() -> bool {
+    Environment::current().is_utf8()
 }
 
 /// Choose the glyph set for this run. Later calls are ignored, so this is safe to
@@ -964,7 +1012,7 @@ pub fn init_with_overrides(mode: UnicodeMode, overrides: &BTreeMap<String, SlotO
         UnicodeMode::Always => UNICODE,
         UnicodeMode::Never => ASCII,
         UnicodeMode::Auto => {
-            if locale_is_utf8() {
+            if environment_is_utf8() {
                 UNICODE
             } else {
                 ASCII
@@ -977,10 +1025,16 @@ pub fn init_with_overrides(mode: UnicodeMode, overrides: &BTreeMap<String, SlotO
     let _ = GLYPHS.set(chosen);
 }
 
-/// The active glyph set. Falls back to locale detection when [`init`] was never
+/// The active glyph set. Falls back to detection when [`init`] was never
 /// called, so library users and tests get sensible symbols without ceremony.
 pub fn get() -> &'static Glyphs {
-    GLYPHS.get_or_init(|| if locale_is_utf8() { UNICODE } else { ASCII })
+    GLYPHS.get_or_init(|| {
+        if environment_is_utf8() {
+            UNICODE
+        } else {
+            ASCII
+        }
+    })
 }
 
 /// Whether the active set is the Unicode one. `get` hands out a copy of a
@@ -1379,6 +1433,39 @@ mod tests {
         assert_eq!(active_is_unicode(), expected);
         assert!(unicode().unicode);
         assert!(!ascii().unicode);
+    }
+
+    /// A locale variable decides on every OS; Windows signals count only when
+    /// none is set (#541).
+    #[test]
+    fn utf8_rule_reads_the_locale_then_the_windows_console() {
+        let env = |locale: Option<&str>, windows_terminal: bool, page: Option<u32>| Environment {
+            locale: locale.map(String::from),
+            windows_terminal,
+            console_code_page: page,
+        };
+        // Unix: the locale alone.
+        assert!(env(Some("en_US.UTF-8"), false, None).is_utf8());
+        assert!(env(Some("C.utf8"), false, None).is_utf8());
+        assert!(!env(Some("C"), false, None).is_utf8());
+        assert!(!env(None, false, None).is_utf8());
+        // Windows sets no locale: Windows Terminal or a UTF-8 code page.
+        assert!(env(None, true, Some(437)).is_utf8());
+        assert!(env(None, false, Some(CP_UTF8)).is_utf8());
+        assert!(!env(None, false, Some(437)).is_utf8());
+        // An explicit locale still wins there, as LANG=C does on Unix.
+        assert!(!env(Some("C"), true, Some(CP_UTF8)).is_utf8());
+        assert!(env(Some("en_US.UTF-8"), false, Some(437)).is_utf8());
+    }
+
+    /// Off Windows the console signals are never read, so Unix behavior is the
+    /// locale's alone.
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_reads_no_windows_signals() {
+        let current = Environment::current();
+        assert!(!current.windows_terminal);
+        assert_eq!(current.console_code_page, None);
     }
 
     /// A bad `[glyphs]` line must fail at config load with the slot named.

@@ -16,7 +16,7 @@ through fontconfig (`fc-list`, `fc-query`), and exits non-zero on a violation.
 |---|---|
 | Every codepoint exists in JetBrainsMono Nerd Font | Required coverage for the default set |
 | No `Emoji=Yes, Emoji_Presentation=No` codepoint missing from any floor font | A terminal whose font lacks one falls back to the **color emoji** font and renders a blank cell or a clipped blob — no user font choice fixes it |
-| The ASCII set is pure ASCII | It is the floor a C locale falls back to |
+| The ASCII set is pure ASCII | It is the floor a terminal without UTF-8 falls back to |
 
 The `plot` marks are mostly ratatui markers rather than strings, so the script
 sees only their column eighths; the `the_ascii_plot_marks_are_ascii` test in

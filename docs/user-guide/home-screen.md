@@ -349,7 +349,8 @@ beside its name, whether it is local or on a share.
 
 The details pane hides below roughly 100 columns; size and shape columns hide
 below roughly 56. Below 28 rows, the wordmark becomes a one-line title.
-Without a UTF-8 locale, markers and borders use ASCII. Override detection with:
+Without UTF-8 ([detection](../reference/settings.md#glyphs-or-ascii)), markers
+and borders use ASCII. Override detection with:
 
 ```toml
 [display]

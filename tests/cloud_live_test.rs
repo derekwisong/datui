@@ -228,7 +228,7 @@ fn pump_until(
         while let Ok(event) = rx.try_recv() {
             match &event {
                 datui::AppEvent::Crash(message) => eprintln!("crash: {message}"),
-                datui::AppEvent::BackgroundError { message, .. } => {
+                datui::AppEvent::BackgroundFailed { message, .. } => {
                     eprintln!("background error: {message}")
                 }
                 datui::AppEvent::BackgroundDownloadReady { temp_path, .. } => {

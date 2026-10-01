@@ -664,6 +664,223 @@ mod tests {
         }
     }
 
+    fn csv_export(path: &std::path::Path) -> crate::ExportRequest {
+        crate::ExportRequest {
+            path: path.to_path_buf(),
+            format: ExportFormat::Csv,
+            options: crate::ExportOptions {
+                csv_delimiter: b',',
+                csv_include_header: true,
+                source_file: false,
+                csv_compression: None,
+                json_compression: None,
+                ndjson_compression: None,
+            },
+            overwrite: crate::output_file::Overwrite::Forbid,
+        }
+    }
+
+    /// #455: an export whose write dies holds the app across the gap between its two
+    /// phases, then ends: the reason on screen, the keyboard back, nothing of its own
+    /// left set and the generation free. The next export writes its file.
+    #[test]
+    fn an_export_whose_write_dies_ends_and_the_next_one_writes() {
+        let (mut p, dir) = loaded_pump();
+        let out = dir.path().join("out.csv");
+        // The second export job is the first one's write.
+        let mut exports = 0;
+        p.app.worker_dies = Some(Box::new(move |job| {
+            exports += usize::from(*job == crate::Job::Export);
+            exports == 2
+        }));
+        p.send(AppEvent::Export(csv_export(&out))).unwrap();
+
+        let mut gap = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        while !p.app.error_modal.active {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the export never ended"
+            );
+            p.wait_and_drain(Duration::from_millis(50)).unwrap();
+            // Collected, with the write queued behind a frame.
+            if p.app.export_df.is_some() && !p.next_up.is_empty() {
+                gap = true;
+                assert!(p.app.is_busy(), "busy between collect and write");
+                assert!(p.app.work_a_bump_would_strand(), "and the generation held");
+                assert!(matches!(
+                    p.app.loading_state,
+                    LoadingState::Exporting { .. }
+                ));
+            }
+        }
+        assert!(gap, "the export handed off from its collect to its write");
+        assert!(
+            p.app.error_modal.message.contains("worker died"),
+            "{}",
+            p.app.error_modal.message
+        );
+        assert!(!p.app.is_busy());
+        assert!(p.app.status_message.is_none());
+        assert!(matches!(p.app.loading_state, LoadingState::Idle));
+        assert!(
+            p.app.export_df.is_none(),
+            "the rows collected for it are let go"
+        );
+        assert!(!out.exists());
+        settle(&mut p);
+        assert!(!p.app.work_a_bump_would_strand(), "its lease came back");
+
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        assert!(!p.app.error_modal.active);
+        p.send(AppEvent::Export(csv_export(&out))).unwrap();
+        settle(&mut p);
+        assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+        assert!(out.exists(), "the next export writes its file");
+        assert!(matches!(p.app.loading_state, LoadingState::Idle));
+    }
+
+    /// #455: a pivot whose worker dies says so and leaves nothing waiting on it — the
+    /// form is not stuck computing — and the next pivot is installed.
+    #[test]
+    fn a_pivot_whose_worker_dies_is_shown_and_the_next_one_installs() {
+        use crate::pivot_melt_modal::{PivotAggregation, PivotSpec};
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("long.csv");
+        std::fs::write(&path, "day,key,val\n1,a,10\n1,b,20\n2,a,30\n2,b,40\n").unwrap();
+        let mut p = pump();
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        settle(&mut p);
+        rendered(&mut p.app);
+        let spec = PivotSpec {
+            index: vec!["day".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: PivotAggregation::Last,
+            sort_columns: None,
+        };
+
+        p.app.input_mode = InputMode::PivotMelt;
+        p.app.worker_dies = crate::tests::worker_dies_once(|job| *job == crate::Job::Pivot);
+        p.send(AppEvent::Pivot(spec.clone())).unwrap();
+        settle(&mut p);
+        assert!(p.app.error_modal.active, "the user is told");
+        assert!(!p.app.is_busy());
+        assert!(!p.app.pivot_computing(), "the form is not left computing");
+        assert_eq!(p.app.input_mode, InputMode::PivotMelt, "and keeps the spec");
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert!(state.last_pivot_spec().is_none(), "the table is as it was");
+
+        p.app.error_modal.hide();
+        p.send(AppEvent::Pivot(spec)).unwrap();
+        settle(&mut p);
+        assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.last_pivot_spec().is_some(),
+            "the next pivot is installed"
+        );
+        assert_eq!(p.app.input_mode, InputMode::Normal);
+    }
+
+    /// #455: failures from work an open has passed are dropped: the open goes on to its
+    /// rows, with no error over them, whatever kind of job the failure names.
+    #[test]
+    fn stale_failures_leave_a_newer_open_alone() {
+        let (mut p, dir) = loaded_pump();
+        let passed = p.app.task_generation();
+        let shown = p.app.dataset_generation;
+        p.send(AppEvent::Open(
+            vec![dir.path().join("people.csv")],
+            OpenOptions::default(),
+        ))
+        .unwrap();
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+        assert!(p.app.awaiting_dataset, "the open is under way");
+        assert_ne!(p.app.task_generation(), passed);
+        for job in [
+            crate::Job::Load,
+            crate::Job::Rows,
+            crate::Job::Analysis,
+            crate::Job::SampleRows,
+            crate::Job::Pivot,
+            crate::Job::ViewPivot,
+            crate::Job::DrillRow,
+            crate::Job::Export,
+            crate::Job::Copy,
+            crate::Job::QualityReport,
+        ] {
+            p.send(AppEvent::BackgroundFailed {
+                generation: passed,
+                job,
+                message: "from work long gone".to_string(),
+            })
+            .unwrap();
+        }
+        settle(&mut p);
+        assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+        assert_ne!(p.app.dataset_generation, shown, "the open finished");
+        assert!(!p.app.awaiting_dataset);
+        assert!(p.app.last_load_error.is_none());
+        assert!(matches!(p.app.loading_state, LoadingState::Idle));
+    }
+
+    /// #455: an open whose schema read dies — its second worker, after the scan and the
+    /// hand-offs between — is held at every hand-off, then ends where a failed open
+    /// ends: the reason shown, the dataset before it still up. Opening again works.
+    #[test]
+    fn an_open_whose_schema_read_dies_ends_and_the_next_one_opens() {
+        let (mut p, dir) = loaded_pump();
+        let shown = p.app.dataset_generation;
+        let path = dir.path().join("people.csv");
+        // The scan is the first load job; the schema read is the second.
+        let mut loads = 0;
+        p.app.worker_dies = Some(Box::new(move |job| {
+            loads += usize::from(*job == crate::Job::Load);
+            loads == 2
+        }));
+        p.send(AppEvent::Open(vec![path.clone()], OpenOptions::default()))
+            .unwrap();
+        let mut handoffs = 0;
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        while !p.app.error_modal.active {
+            assert!(std::time::Instant::now() < deadline, "the open never ended");
+            p.wait_and_drain(Duration::from_millis(50)).unwrap();
+            if !p.next_up.is_empty() {
+                handoffs += 1;
+                assert!(p.app.is_busy(), "busy at hand-off {handoffs}");
+                assert!(p.app.awaiting_dataset);
+                assert!(p.app.work_a_bump_would_strand());
+            }
+        }
+        assert!(
+            handoffs >= 2,
+            "the open handed off between phases: {handoffs}"
+        );
+        assert!(
+            p.app.error_modal.message.contains("worker died"),
+            "{}",
+            p.app.error_modal.message
+        );
+        settle(&mut p);
+        assert!(!p.app.is_busy());
+        assert!(!p.app.awaiting_dataset, "nothing is waited on");
+        assert!(matches!(p.app.loading_state, LoadingState::Idle));
+        assert_eq!(
+            p.app.dataset_generation, shown,
+            "the dataset before it stays"
+        );
+
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        settle(&mut p);
+        assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+        assert_ne!(p.app.dataset_generation, shown, "the next open opens");
+    }
+
     /// A deferred collect that turns out to have nothing to do still takes the loading
     /// screen down.
     ///
@@ -895,8 +1112,9 @@ mod tests {
         type_keys(&mut p, "/x");
         assert_eq!(held(&p).len(), 2);
 
-        p.send(AppEvent::BackgroundError {
+        p.send(AppEvent::BackgroundFailed {
             generation: p.app.task_generation(),
+            job: crate::Job::Analysis,
             message: "disk on fire".to_string(),
         })
         .unwrap();

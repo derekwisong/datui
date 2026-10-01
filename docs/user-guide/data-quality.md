@@ -11,7 +11,7 @@ Setup reads the data; <kbd>Enter</kbd> does, once.
 |---|---|
 | **Rows & sample** | The [sample](analysis-features.md#sampling) every analysis tool reads: which rows, how they are picked, how many, the seed |
 | **Columns** | Text read as time, time roles, and the intervals between them |
-| **Study** | Grain, comparison, values or file metadata only, latency threshold, and the window an interval goes in |
+| **Study** | Grain, the windows rows are expected in, comparison, values or file metadata only, latency threshold, and the window an interval goes in |
 | **Read** | What Run will read: a sampling pass, a count, rows a run already read, or no read at all |
 
 <kbd>s</kbd> opens the Sample form over Setup; its <kbd>Enter</kbd> applies the
@@ -88,6 +88,55 @@ measure. A sample thin per segment, such as 100,000 rows over years of days,
 names only large changes on Segments; Trends shows the smaller ones. To judge
 single days, sample **Equal per value** of the date, or read every row.
 
+## Read a trend
+
+On **Trends**, a sampled report draws the rows the sample drew under the exact
+rows, and says how many segments it reached thinly or not at all: a segment
+with rows and no sampled row is a bar of its own mark (`·`, `?` in ASCII),
+never a short bar. Select a line and press <kbd>Enter</kbd> for its bars;
+<kbd>↑</kbd> <kbd>↓</kbd> walk them.
+
+| Row | Says |
+|---|---|
+| Span | The bar's calendar range, or its first and last segment |
+| Segments | How many it pools, how many were not sampled, how many under 30 sampled rows |
+| Rows | Rows sampled of the exact count, or every row read |
+| The measure | The count, of how many rows or values, and the rate |
+| 95% interval | Where the rate likely sits, from the sample; none when every row was read |
+| Previous bar | The rate before and now, the move in points, and whether it is clear or within sampling noise; the baseline's bar when comparing with one |
+
+When segments are thin, press <kbd>w</kbd>: Setup opens with the next coarser
+window staged (days to weeks, weeks to months). Its **Read** says what that
+costs, often nothing, since days sum into weeks; <kbd>Enter</kbd> runs it and
+<kbd>Esc</kbd> keeps the grain you had. Nothing on these pages reads.
+
+## Find gaps in time windows
+
+A window with no rows is a gap only when you say rows belong in it: a quiet
+weekend is not a defect unless you expect weekend rows.
+
+1. With a time-window grain, move to **Expected** in Setup and press
+   <kbd>Space</kbd>.
+2. Choose **Windows**: every window of the grain, or for hours and days,
+   weekdays only.
+3. Optionally type **From** and **Before**, such as `2024-01-01` and
+   `2025-01-01`. Blank, the range runs from the first window found to the last.
+4. Press <kbd>Enter</kbd>, then <kbd>Enter</kbd> to run. With a report on screen
+   and nothing else changed, this reads nothing: the windows are checked
+   against the counts the report holds.
+
+**Trends** then sums up the expected windows, and <kbd>g</kbd> lists each run
+of them with no rows to show:
+
+| Gap | Means |
+|---|---|
+| empty | No rows in the scope, by the exact count the run took |
+| not sampled | Rows there, with their count, and none in the sample |
+| out of scope | Outside the time range the scope reads: the run did not look |
+
+A range is checked over at most 20,000 windows; past that, Trends says so and
+asks for a shorter range or a coarser grain.
+
 ## Measure the time between dates
 
 1. In Setup, move to **Time roles** and press <kbd>Space</kbd>. Give each role
@@ -137,8 +186,9 @@ Setup's **Read** section says what <kbd>Enter</kbd> will read before it reads:
 one sampling pass (which also counts the grain's segments when it streams), a
 count of the grain's column for exact segment totals, rows a run already read,
 or nothing when the report is already on screen or in the session cache.
-Changing roles, text formats, comparison, row chunks or a coarser window of a
-counted grain reads nothing; a new seed, size or scope reads a new sample.
+Changing roles, text formats, comparison, expected windows, row chunks or a
+coarser window of a counted grain reads nothing; a new seed, size or scope reads
+a new sample.
 <kbd>p</kbd> shows the access plan in full. Reading every row asks for
 confirmation first; <kbd>Esc</kbd> there leaves the sample and the report as
 they were.

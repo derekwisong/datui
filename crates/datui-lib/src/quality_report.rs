@@ -1166,6 +1166,12 @@ pub fn coverage(
             ));
         }
     }
+    if !results.unsampled_segments.is_empty() {
+        coverage.limits.push(format!(
+            "{} segments with rows, none sampled",
+            count(results.unsampled_segments.len())
+        ));
+    }
     if let (Some(files), Some(read)) = (results.source_files, results.footers_read)
         && read < files
     {

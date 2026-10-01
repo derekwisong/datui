@@ -66,7 +66,7 @@ parses) says so, and <kbd>Enter</kbd> closes it.
 |---|---|
 | Checks | The ten checks by what they read: `exact` (every row in scope), `sampled` (the sample), `metadata` (file footers); then `skipped`, with nothing in the data to look at (no float column, one file), and `unavailable`, which apply but this run could not answer (values not read, or a sample where the answer needs every row) |
 | Rows | Rows read of the total: `100,000 of 36,839,175 sampled (0.27%)`, `all 1,204 read, exact`, or `none read, file metadata only`; `up to 500 per value` for an Equal per value sample; then the rows the run's reads passed through, summed over every pass, when the reads counted them: `36,839,175 traversed`, `at least …` when some read could not count, `no source read` when the run used rows already read |
-| Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval` |
+| Limits | Why each unavailable check did not run; segments with fewer than 30 sampled rows (`4 of 31 segments under 30 sampled rows`); segments the scope has rows in and the sample drew none of (`3 segments with rows, none sampled`); `footers of 200 of 5,000 files read` on a dataset too large to read every footer, where the file checks cover only those; `time roles form no interval` |
 
 The coverage comes from what the run measured; showing it reads nothing.
 Traversed rows are counted as each read hands them on, after the filters the
@@ -113,7 +113,7 @@ runs kept. After a run, <kbd>e</kbd> opens it again.
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
 | <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values, Latency over or Window by in place; on another row, <kbd>→</kbd> opens it |
-| <kbd>Space</kbd> | Open the row: the Sample form, the Time roles or Intervals editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses) |
+| <kbd>Space</kbd> | Open the row: the Sample form, the Time roles, Intervals or Expected editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses) |
 | <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup and returns there |
 | <kbd>p</kbd> | Show the access plan |
 | <kbd>Enter</kbd> | Run, from any row |
@@ -133,6 +133,7 @@ were. While a cancelled run is still stopping, Run waits and Setup says why.
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 | Intervals | Which starts and ends are measured, from every pair the assigned roles make; offered once two roles are assigned |
 | Grain | Whole dataset; by file, when the dataset has several; by each partition column; by hour, day, week or month of any date or time column, or text read as time (hours only where there are times); or in chunks of 100,000 or 1,000,000 rows |
+| Expected | With a time-window grain: none, every window, or weekdays only (hours and days); From and Before, a date or UTC timestamp each, blank for the first and last window found. See [Expected windows and gaps](#expected-windows-and-gaps) |
 | Compare | None, the segment before (partitions and files in the order their names count), or a baseline segment |
 | Values | Read, or metadata only (footers, no values); whether a read is sampled or every row is the sample's method |
 | Latency over | None, 1 hour, 1 day or 1 week; offered once there is an interval. A breach is `duration > threshold`, strictly |
@@ -143,6 +144,7 @@ The Read section says what Run will do, before it does it:
 | Read | When |
 |---|---|
 | No read: the report is already here | The setup is the report's, or the session cache holds it |
+| Only Expected changed: no read | The setup differs from the report on screen only in its expected windows; Run checks them against the counts the report holds |
 | Uses the rows a run already read | A sampled setup whose sample (scope, method, size, seed), dataset and view match rows a run read this session; any grain, role or format |
 | Seeded runs of the file | A random sample of one Parquet or IPC file: the whole source, or a view with no filter, query or reshape (a sort is fine); a few dozen short reads |
 | One pass that streams every eligible row | Any other random or equal-per-value sample; the pass counts the scope too |
@@ -155,6 +157,7 @@ The Read section says what Run will do, before it does it:
 | Every eligible row, in up to N passes | A full scan: one collect per check, and one more to count an unknown scope |
 | Window by each interval's start or end: N of those passes | A full scan whose intervals start or end on more than one column: one grouping each |
 | File metadata only | Values set to metadata only |
+| Expected windows: checked against the segment counts, no read | Expected is set: gaps come from the counts the run takes anyway |
 
 Before a run, source-scoped setups report unknown row counts and read sizes,
 and metadata-only runs do not count rows. A local sample estimates its read as
@@ -214,7 +217,7 @@ page's own action, then <kbd>e</kbd> Setup, <kbd>s</kbd> Sample,
 | Key | Action |
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | Previous or next page: Overview, Columns, Segments, Trends, Intervals |
-| <kbd>Enter</kbd> | Open a finding, or show its rows; open an interval's detail, or the rows behind the count under the cursor (asking first when the run kept none); on an empty Segments, Trends or Intervals page, open the Setup row that fills it |
+| <kbd>Enter</kbd> | Open a finding, or show its rows; open a Trends line's bars; open an interval's detail, or the rows behind the count under the cursor (asking first when the run kept none); on an empty Segments, Trends or Intervals page, open the Setup row that fills it |
 | <kbd>c</kbd> / <kbd>t</kbd> | On Overview, only one column's or one type's findings |
 | <kbd>e</kbd> | Open Setup |
 | <kbd>s</kbd> | Open Setup with the shared [Sample](../user-guide/analysis-features.md#sampling) form over it |
@@ -222,6 +225,8 @@ page's own action, then <kbd>e</kbd> Setup, <kbd>s</kbd> Sample,
 | <kbd>1</kbd>–<kbd>5</kbd> | Overview, Columns, Segments, Trends, Intervals, directly |
 | <kbd>o</kbd> | On Overview, order findings ranked, by rows or by rate; on Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | Cycle the measure Trends draws: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
+| <kbd>w</kbd> | On Trends, stage the next coarser window in Setup: an hour to a day, a day to a week, a week to a month, 100,000-row chunks to 1,000,000. Nothing runs until <kbd>Enter</kbd> there |
+| <kbd>g</kbd> | On Trends, list the expected windows with no rows; only once Setup states Expected |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
 | <kbd>r</kbd> | On a sampled report, run again with a new sample seed, for every tool; waits while a cancelled read finishes |
 | <kbd>Tab</kbd> | Move between the result and the tool list |
@@ -291,10 +296,30 @@ sampled, or metadata-only.
 - **Trends** — one line per column over the whole range, with the rows per
   segment first: each bar pools as many consecutive segments as the width
   needs (`each bar 35 days`), so a thin day's sample never makes a bar alone.
-  Columns whose measure moves most come first, and columns that draw the same
-  line, such as columns missing together, share one. <kbd>m</kbd> changes the
-  measure. Without a grain that orders segments the page says so, and
-  <kbd>Enter</kbd> opens Grain in Setup.
+  On a sample, `rows` is the exact count and `sampled rows` the rows the sample
+  drew; a segment the scope has rows in and the sample drew none of keeps its
+  place, and a bar of only such segments is drawn with its own mark (`·`, `?`
+  in ASCII), never a short bar or a blank. The page counts those segments and
+  the thin ones, under 30 sampled rows, and with a coarser window available
+  says <kbd>w</kbd> stages it. Columns whose measure moves most come first, and
+  columns that draw the same line segment by segment, such as columns missing
+  together, share one. <kbd>m</kbd> changes the measure. Without a grain that
+  orders segments the page says so, and <kbd>Enter</kbd> opens Grain in Setup.
+  <kbd>Enter</kbd> on a line opens its bars, the line drawn with a pointer
+  under the bar selected; <kbd>↑</kbd> <kbd>↓</kbd> walk them. From the
+  measurements the report holds:
+
+  | Row | Says |
+  |---|---|
+  | Span | Calendar range of the bar's windows, inclusive (`2024-01-29 to 2024-02-25`), with rows that have no time said apart; on other grains its first and last segment |
+  | Segments | Segments pooled, how many not sampled, how many under 30 sampled rows |
+  | Rows | `412 sampled of 3,210 (12.8%)`, or every row read |
+  | The measure | Count of its denominator (rows, or values for a distinct or parse share) and the rate; on a rows line, rows per segment: the mean, the smallest and the largest |
+  | 95% interval | The [Wilson interval](#data-quality-metric-definitions) of the rate on a sample, said to rest on under 30 rows when it does; none needed when every row was read, and none for a distinct share |
+  | Previous bar, Baseline bar | Against the bar before, or with a baseline, the bar holding it: before and now, the move in points, and `a clear change`, `within sampling noise` or `under a point`, judged as Segments judges a change (a distinct share is not judged) |
+
+  With Expected set in Setup, the page also sums up the expected windows, and
+  <kbd>g</kbd> lists them; see [Expected windows and gaps](#expected-windows-and-gaps).
 - **Intervals** — one row per interval and segment: the interval, its segment
   where the width allows, p50, and the share over the threshold (or negative,
   with no threshold) of the rows with both ends; wider, the rows with both ends,
@@ -322,6 +347,28 @@ sampled, or metadata-only.
   says so. <kbd>Esc</kbd> returns to the list. With nothing to show, the page
   says why; when roles or a pair are missing, <kbd>Enter</kbd> opens Time
   roles or Intervals in Setup.
+
+### Expected windows and gaps
+
+A window with no rows is a gap only against a stated expectation. **Expected**
+in Setup, with a time-window grain, says which windows rows belong in: every
+window, or Monday to Friday's hours or days, from **From** (floored to its
+window) and before **Before**; either blank takes the first or last window the
+run found. Weekend windows under weekdays only are counted apart, never as
+gaps. Each expected window with no sampled row is one of:
+
+| Gap | When |
+|---|---|
+| empty | Not among the run's segment counts: no rows in the scope. Only where the counts are exact: every row read, or every window counted |
+| not sampled | The count has rows in it and the sample drew none; the rows are given. With no count, every window without a sampled row is this, said as not counted |
+| out of scope | The scope is a time range on the grain's column, and the window is not wholly inside it |
+
+Gaps are checked from the counts the run takes for exact segment totals, so
+stating them reads nothing; changing only Expected re-labels the report on
+screen. Consecutive windows of one kind are listed as one run (across the
+weekends not expected), the windows first. At most 20,000 windows are checked;
+a longer range is refused whole, never checked in part, and at most 500 runs
+are listed, the rest counted. Windows are cut in UTC, as the grain cuts them.
 
 <a id="sampling-and-budgets"></a>
 
@@ -351,6 +398,7 @@ else in Setup belongs to the report.
 | Edit | Reads |
 |---|---|
 | Time roles, text as time on a role, compare, latency threshold | Nothing: the retained rows are measured again |
+| Expected windows | Nothing: checked against the report on screen |
 | Row chunks | Nothing: each row's position was kept |
 | A coarser window of a grain already counted | Nothing: hours sum into days, weeks and months, and days into weeks and months |
 | Another partition, a finer window, or a window on newly read text | One count of the grain's column, kept with the rows |
@@ -386,6 +434,9 @@ disk is not noticed until it is opened again.
 | Absent values | Rows held by files whose footer has no such column ÷ rows in the loaded source; read from footers, not values |
 | Type conflicts | Rows held by files that store the column in a type the scan cannot read ÷ rows in the loaded source; read from footers, not values |
 | Segment null rate | Null cells ÷ (evaluated rows × profiled logical columns) in that segment |
+| Trend bar rate | Σ count ÷ Σ denominator over the bar's segments with sampled rows; rows per segment is Σ rows ÷ segments, a segment the sample missed counting zero sampled rows |
+| 95% interval | Wilson score interval at z = 1.96 on a bar's count of its denominator: centre (p + z²/2n) ÷ (1 + z²/n), half-width z·√(p(1−p)/n + z²/4n²) ÷ (1 + z²/n). It assumes a simple random sample; seeded runs of one file are clustered, so read it as a floor on the uncertainty there |
+| Bar change | Against the previous bar, or the baseline's: clear at 1 pp or more and, on a sample, the two-proportion z-test at 4 or more standard errors; a distinct share is shown, not judged, as on Segments |
 | Largest change | Against the compared segment: a row count that halved or doubled, else the biggest percentage-point move in any column's null, empty, blank or NaN rate, named when it reaches 1 pp and, on a sample, when a two-proportion z-test puts it at 4 or more standard errors; on an exact profile with no such move, the first column whose minimum or maximum moved |
 | Lifecycle latency | End role timestamp − start role timestamp per row, on rows with both ends present and read; each end's missing count is of all rows (a row can miss both, so both ends is counted, not derived), text the format does not read is counted apart from missing, and negative values are retained |
 | Negative / zero / breach | Durations below zero, of exactly zero, and above the threshold (`duration > threshold`, strictly) ÷ rows with both ends; compared on the exact difference, so half a second early is negative |

@@ -7,16 +7,16 @@ Setup:
   Rows & sample:  The sample every tool reads
   Columns:        Text read as time, time roles, and
                   the intervals between them
-  Study:          Grain, comparison, values, latency
-                  threshold, and the window intervals
-                  go in
+  Study:          Grain, expected windows, comparison,
+                  values, latency threshold, and the
+                  window intervals go in
   Read:           What Run will read, before it reads
 
   ↑ / ↓, Tab:   Move between rows
   ← / →:        Change a short list's choice
   Space:        Open the row: the Sample form, a
-                list (type to narrow), Time roles or
-                Intervals
+                list (type to narrow), Time roles,
+                Intervals or Expected
   s:            The Sample form; its Enter applies
                 to Setup and returns there
   p:            The access plan: what a run reads
@@ -60,6 +60,18 @@ Intervals in Setup:
   Space:        Measure it or not; ← / → too
   Enter:        Done
   Esc:          Put back the pairs as they were
+
+Expected in Setup:
+  With a time-window grain: which windows rows
+  belong in, every one or weekdays only, From and
+  Before a date or UTC time (blank: the first or
+  last window found). Only then is a window with no
+  rows a gap. Changing only this reads nothing.
+
+  ↑ / ↓, Tab:   Windows, From, Before
+  ← / →:        Choose the windows
+  Enter:        Done
+  Esc:          Put back Expected as it was
 
 Pages:
   Overview:     The report: the verdict, its coverage,
@@ -134,7 +146,18 @@ Segments:
   b:            Compare with the highlighted segment
 
 Trends:
+  Enter:        A line's bars: span, segments, rows
+                sampled of counted, rate, 95%
+                interval, and the bar before
+  ↑ / ↓:        In the bars, the next bar
   m:            Next measure
+  w:            Stage a coarser window in Setup,
+                for segments the sample reached
+                thinly or not at all
+  g:            The expected windows with no rows:
+                empty by exact count, not sampled,
+                or out of scope
+  Esc:          Back to Trends
 
 Intervals page:
   Enter:        An interval's detail: its ends, the

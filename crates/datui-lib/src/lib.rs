@@ -83,6 +83,7 @@ pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
 pub mod quality_report;
+pub mod quality_trends;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
 pub mod sample_modal;
@@ -448,6 +449,43 @@ mod quality_memory_tests {
     use super::*;
     use polars::prelude::IntoLazy;
     use std::sync::mpsc;
+
+    /// A cached report serves a plan that only expects other windows: Run shows it
+    /// under that plan, reading nothing, and the cache keeps one report for both.
+    #[test]
+    fn a_cached_report_serves_other_expected_windows() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let df = polars::df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap();
+        app.data_table_state = Some(
+            crate::widgets::datatable::DataTableState::new(
+                df.clone().lazy(),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        );
+        let plan = data_quality::DataQualityPlan::default();
+        let report =
+            data_quality::compute_data_quality(&df.lazy(), None, &plan, None, false).unwrap();
+        app.cache_quality_result(&report, plan.clone());
+        let expecting = data_quality::DataQualityPlan {
+            expected: Some(data_quality::ExpectedWindows::default()),
+            ..plan
+        };
+        assert!(app.quality_cached(&expecting));
+        app.analysis_modal.data_quality_plan = expecting.clone();
+        assert!(app.restore_cached_quality(), "no run");
+        assert_eq!(
+            app.analysis_modal.data_quality_last_plan.as_ref(),
+            Some(&expecting)
+        );
+        assert_eq!(app.quality_cache.len(), 1);
+        assert_eq!(app.quality_cache[0].plan, expecting);
+    }
 
     /// Past the budget a report that retained rows can remake goes first, then the
     /// oldest rows, which Setup then names as released; the newest rows and the newest
@@ -9119,12 +9157,102 @@ impl App {
                     self.analysis_modal.data_quality_plan_field = 0;
                 }
             }
+            SetupRow::Expected => {
+                // Windows are what a gap is counted in; with no time-window grain
+                // there is nothing to expect yet.
+                if matches!(
+                    self.analysis_modal.data_quality_plan.grain,
+                    data_quality::QualityGrain::TimeWindows { .. }
+                ) {
+                    self.analysis_modal.data_quality_expected_form =
+                        Some(analysis_modal::ExpectedForm::new(
+                            &self.analysis_modal.data_quality_plan,
+                            &self.theme,
+                        ));
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::ExpectedWindows);
+                }
+            }
             row => {
                 let context = self.quality_plan_context();
                 self.analysis_modal.open_plan_picker(row, &context);
             }
         }
         None
+    }
+
+    /// Keys in the Expected editor: ↑↓ the row, ←→ the cadence, typing in From and
+    /// Before. Enter writes it into the draft, or says on its own line why it cannot;
+    /// Esc leaves the draft as it was. Either way back to Setup's Expected row.
+    fn expected_form_key(&mut self, event: &KeyEvent) {
+        let every = match &self.analysis_modal.data_quality_plan.grain {
+            data_quality::QualityGrain::TimeWindows { every, .. } => every.clone(),
+            _ => String::new(),
+        };
+        let Some(form) = self.analysis_modal.data_quality_expected_form.as_mut() else {
+            return;
+        };
+        let typing = form.typing();
+        match event.code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => match form.expected() {
+                Ok(expected) => self.analysis_modal.data_quality_plan.expected = expected,
+                Err(problem) => {
+                    form.error = Some(problem);
+                    return;
+                }
+            },
+            KeyCode::Down | KeyCode::Tab => {
+                form.move_field(true);
+                return;
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                form.move_field(false);
+                return;
+            }
+            KeyCode::Char('j') if !typing => {
+                form.move_field(true);
+                return;
+            }
+            KeyCode::Char('k') if !typing => {
+                form.move_field(false);
+                return;
+            }
+            KeyCode::Left | KeyCode::Char('h') if !typing => {
+                form.cycle(&every, false);
+                return;
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') if !typing => {
+                form.cycle(&every, true);
+                return;
+            }
+            _ => {
+                if let Some(input) = form.input_mut() {
+                    let _ = input.handle_key(event, None);
+                    form.error = None;
+                }
+                return;
+            }
+        }
+        self.analysis_modal.data_quality_expected_form = None;
+        self.analysis_modal.data_quality_setup_note = None;
+        self.analysis_modal
+            .set_quality_page(data_quality::QualityPage::Setup);
+        self.analysis_modal.data_quality_plan_field = analysis_modal::SetupRow::Expected.index();
+    }
+
+    /// `w` on Trends: the next coarser grain, staged in Setup with the Grain row under
+    /// the cursor, for segments the sample reached too thinly. Nothing runs until
+    /// Enter, and Setup's Read says what that run reads; Esc puts the grain back.
+    fn stage_coarser_grain(&mut self) {
+        let Some(coarser) = self.analysis_modal.quality_result_plan().coarser_grain() else {
+            return;
+        };
+        self.open_quality_setup();
+        let plan = &mut self.analysis_modal.data_quality_plan;
+        plan.grain = coarser;
+        plan.baseline_segment = None;
+        self.analysis_modal.data_quality_plan_field = analysis_modal::SetupRow::Grain.index();
     }
 
     /// Enter in a Setup row's list: take the choice, and after a text column, ask
@@ -9280,7 +9408,8 @@ impl App {
                 ))
     }
 
-    /// Whether the session cache holds a report for exactly `plan` on this view.
+    /// Whether the session cache holds a report measuring what `plan` measures on
+    /// this view: the windows it expects are checked against the report, not read.
     pub(crate) fn quality_cached(&self, plan: &data_quality::DataQualityPlan) -> bool {
         let Some(view_generation) = self
             .data_table_state
@@ -9292,7 +9421,7 @@ impl App {
         self.quality_cache.iter().any(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
-                && &entry.plan == plan
+                && entry.plan.same_measurement(plan)
         })
     }
 
@@ -9396,16 +9525,21 @@ impl App {
         else {
             return false;
         };
-        let plan = &self.analysis_modal.data_quality_plan;
+        let plan = self.analysis_modal.data_quality_plan.clone();
         let Some(cached) = self.quality_cache.iter().find(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
-                && &entry.plan == plan
+                && entry.plan.same_measurement(&plan)
         }) else {
             return false;
         };
-        self.analysis_modal.data_quality_results = Some(cached.results.clone());
-        self.analysis_modal.data_quality_last_plan = Some(plan.clone());
+        let results = cached.results.clone();
+        if cached.plan != plan {
+            // Kept under the windows it expects now.
+            self.cache_quality_result(&results, plan.clone());
+        }
+        self.analysis_modal.data_quality_results = Some(results);
+        self.analysis_modal.data_quality_last_plan = Some(plan);
         self.analysis_modal.data_quality_from_cache = true;
         self.analysis_modal
             .set_quality_page(data_quality::QualityPage::Overview);
@@ -9424,10 +9558,12 @@ impl App {
         else {
             return;
         };
+        // One report per measurement: a plan that only expects other windows
+        // replaces it.
         self.quality_cache.retain(|entry| {
             !(entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
-                && entry.plan == plan)
+                && entry.plan.same_measurement(&plan))
         });
         self.quality_cache.insert(
             0,
@@ -9942,12 +10078,16 @@ impl App {
             self.analysis_modal.data_quality_setup_note = Some(problem);
             return None;
         }
-        if self
-            .analysis_modal
-            .data_quality_plan
-            .requires_confirmation()
-            && !self.analysis_modal.data_quality_confirm_run
-        {
+        // A report already here, on screen or cached, reads nothing: nothing to confirm.
+        let plan = &self.analysis_modal.data_quality_plan;
+        let here = (self.analysis_modal.data_quality_results.is_some()
+            && self
+                .analysis_modal
+                .data_quality_last_plan
+                .as_ref()
+                .is_some_and(|last| last.same_measurement(plan)))
+            || self.quality_cached(plan);
+        if plan.requires_confirmation() && !here && !self.analysis_modal.data_quality_confirm_run {
             // The prompt is answered with Enter, which only the main pane hears.
             self.analysis_modal.data_quality_confirm_run = true;
             self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
@@ -9964,6 +10104,20 @@ impl App {
                 page => page,
             };
             modal.set_quality_page(back);
+            return None;
+        }
+        // Only the expected windows changed: the report on screen holds every count
+        // they are checked against, so it is relabeled, not read again.
+        if let (Some(results), Some(last)) = (
+            modal.data_quality_results.as_ref(),
+            modal.data_quality_last_plan.as_ref(),
+        ) && last.same_measurement(&modal.data_quality_plan)
+        {
+            let results = results.clone();
+            let plan = modal.data_quality_plan.clone();
+            modal.data_quality_last_plan = Some(plan.clone());
+            modal.set_quality_page(QualityPage::Trends);
+            self.cache_quality_result(&results, plan);
             return None;
         }
         if self.restore_cached_quality() {
@@ -10333,6 +10487,7 @@ impl App {
             }
             InputMode::Normal => {
                 self.analysis_modal.sample_scope_typing()
+                    || self.analysis_modal.quality_expected_typing()
                     || (self.template_modal.active
                         && self.template_modal.mode != TemplateModalMode::List
                         && matches!(
@@ -17351,6 +17506,14 @@ impl App {
                     }
                     return None;
                 }
+                // The Expected editor owns the keys; `?` is help unless it types.
+                if self.analysis_modal.data_quality_page == QualityPage::ExpectedWindows
+                    && (event.code != KeyCode::Char('?')
+                        || self.analysis_modal.quality_expected_typing())
+                {
+                    self.expected_form_key(event);
+                    return None;
+                }
                 // The pairs editor owns the keys: which pair, and whether it is measured.
                 if self.analysis_modal.data_quality_page == QualityPage::IntervalPairs
                     && event.code != KeyCode::Char('?')
@@ -17536,6 +17699,15 @@ impl App {
                         return None;
                     }
                     KeyCode::Esc
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::TrendDetail | QualityPage::Gaps
+                        ) =>
+                    {
+                        self.analysis_modal.close_to_trends();
+                        return None;
+                    }
+                    KeyCode::Esc
                         if self.analysis_modal.data_quality_page == QualityPage::Detail =>
                     {
                         self.analysis_modal
@@ -17565,6 +17737,40 @@ impl App {
                         if self.analysis_modal.data_quality_page == QualityPage::Trends =>
                     {
                         self.analysis_modal.cycle_quality_metric();
+                        return None;
+                    }
+                    KeyCode::Char('m')
+                        if self.analysis_modal.data_quality_page == QualityPage::TrendDetail =>
+                    {
+                        self.analysis_modal.cycle_trend_detail_metric();
+                        return None;
+                    }
+                    KeyCode::Char('w')
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Trends | QualityPage::TrendDetail
+                        ) && self.analysis_modal.data_quality_results.is_some() =>
+                    {
+                        self.stage_coarser_grain();
+                        return None;
+                    }
+                    KeyCode::Char('g')
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Trends | QualityPage::TrendDetail
+                        ) && self
+                            .analysis_modal
+                            .data_quality_results
+                            .as_ref()
+                            .is_some_and(|results| {
+                                crate::quality_trends::expected_gaps(
+                                    self.analysis_modal.quality_result_plan(),
+                                    results,
+                                )
+                                .is_some()
+                            }) =>
+                    {
+                        self.analysis_modal.set_quality_page(QualityPage::Gaps);
                         return None;
                     }
                     KeyCode::Char('b')
@@ -17691,6 +17897,15 @@ impl App {
                             == QualityPage::SegmentDetail
                         {
                             self.analysis_modal.close_segment_detail();
+                        } else if self.analysis_modal.data_quality_page == QualityPage::Trends
+                            && self.analysis_modal.data_quality_results.is_some()
+                        {
+                            self.analysis_modal.open_trend_detail();
+                        } else if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::TrendDetail | QualityPage::Gaps
+                        ) {
+                            self.analysis_modal.close_to_trends();
                         } else if self.analysis_modal.data_quality_page == QualityPage::Intervals {
                             self.analysis_modal.open_interval_detail();
                         } else if self.analysis_modal.data_quality_page

@@ -46,59 +46,263 @@ pub fn x_axis_temporal_kind_for_column(schema: &Schema, x_column: &str) -> XAxis
         .unwrap_or(XAxisTemporalKind::Numeric)
 }
 
-/// Format a numeric axis tick (for y-axis or generic numeric).
-pub fn format_axis_label(v: f64) -> String {
-    if v.abs() >= 1e6 || (v.abs() < 1e-2 && v != 0.0) {
-        format!("{:.2e}", v)
-    } else {
-        format!("{:.2}", v)
+/// Decimal places past which an axis writes its numbers in scientific notation.
+const MAX_AXIS_PLACES: i32 = 6;
+/// The most decimals a scientific mantissa takes to tell ticks apart.
+const MAX_MANTISSA_PLACES: i32 = 12;
+/// Magnitude from which an axis writes its numbers in scientific notation.
+const SCIENTIFIC_FROM: f64 = 1e15;
+
+/// What a numeric axis holds: the table's format for its numbers, and whether they are
+/// whole (counts, an integer column), which ticks the axis only at whole numbers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AxisNumbers {
+    pub format: crate::numfmt::NumberFormat,
+    pub whole: bool,
+}
+
+impl AxisNumbers {
+    /// `column`'s numbers as the table prints them; plain when the schema lacks it.
+    pub fn column(
+        settings: &crate::numfmt::NumberFormatSettings,
+        schema: Option<&Schema>,
+        column: &str,
+    ) -> Self {
+        match schema.and_then(|s| s.get(column)) {
+            Some(dtype) => Self {
+                format: table_number_format(settings, column, dtype),
+                whole: dtype.is_integer(),
+            },
+            None => Self::default(),
+        }
+    }
+
+    /// Several columns on one axis: the first one's format, whole when every one is.
+    pub fn columns(
+        settings: &crate::numfmt::NumberFormatSettings,
+        schema: Option<&Schema>,
+        columns: &[String],
+    ) -> Self {
+        let mut each = columns.iter().map(|c| Self::column(settings, schema, c));
+        let Some(first) = each.next() else {
+            return Self::default();
+        };
+        let whole = first.whole && each.all(|n| n.whole);
+        Self { whole, ..first }
+    }
+
+    /// Counts, as the table prints a count.
+    pub fn count(settings: &crate::numfmt::NumberFormatSettings) -> Self {
+        Self {
+            format: table_number_format(settings, "Count", &DataType::UInt64),
+            whole: true,
+        }
+    }
+
+    /// A measure of the data such as a density, as the table prints a float.
+    pub fn measure(settings: &crate::numfmt::NumberFormatSettings, name: &str) -> Self {
+        Self {
+            format: table_number_format(settings, name, &DataType::Float64),
+            whole: false,
+        }
+    }
+
+    /// The same numbers, ticked anywhere: on a log scale, or spread by a density.
+    pub fn fractional(self) -> Self {
+        Self {
+            whole: false,
+            ..self
+        }
     }
 }
 
-/// A numeric tick at `level` of detail: 0 is [`format_axis_label`], 1 three
-/// significant figures with a k/M/G/T suffix, for an axis too narrow for the first.
-pub fn axis_label_at(v: f64, level: usize) -> Option<String> {
-    match level {
-        0 => Some(format_axis_label(v)),
-        1 => Some(compact_number(v)),
-        _ => None,
+/// How every tick of one numeric axis is written: one notation and one precision for
+/// all of them, chosen from the ticks, in the table's grouping and decimal separator.
+/// Chosen per tick, an axis switched to scientific notation partway up.
+#[derive(Clone, Debug)]
+pub struct AxisFormat {
+    format: crate::numfmt::NumberFormat,
+    full: Notation,
+    /// The shorter form a narrow axis steps down to, when there is one.
+    short: Option<Notation>,
+    /// Below this a tick is zero: a stepped tick lands a hair off it, which
+    /// scientific notation would print as `1.32e-24`.
+    zero_below: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Notation {
+    /// The value in `unit`s to `places` decimals, then `suffix`: `1,234.5`, `12.3k`.
+    Fixed {
+        places: usize,
+        unit: f64,
+        suffix: &'static str,
+    },
+    /// The mantissa to `places` decimals: `1.23e-5`.
+    Scientific { places: usize },
+}
+
+impl AxisFormat {
+    /// The format for an axis ticked at `ticks`, in order, holding `numbers`.
+    pub fn new(ticks: &[f64], numbers: &AxisNumbers) -> Self {
+        let ticks: Vec<f64> = ticks.iter().copied().filter(|v| v.is_finite()).collect();
+        let top = ticks.iter().fold(0.0_f64, |top, v| top.max(v.abs()));
+        // The closest two ticks, which the labels must still tell apart.
+        let gap = ticks
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .filter(|gap| *gap > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        let places = if top >= SCIENTIFIC_FROM {
+            None
+        } else if numbers.whole {
+            Some(0)
+        } else {
+            fixed_places(&ticks, top, gap)
+        };
+        let (full, short) = match places {
+            Some(places) => (
+                Notation::Fixed {
+                    places,
+                    unit: 1.0,
+                    suffix: "",
+                },
+                short_notation(&ticks, top, gap),
+            ),
+            None => {
+                // Every mantissa to the places that tell the closest ticks apart.
+                let apart = if gap.is_finite() && top > 0.0 {
+                    (magnitude(top) - magnitude(gap)).clamp(0, MAX_MANTISSA_PLACES) as usize
+                } else {
+                    0
+                };
+                (
+                    Notation::Scientific {
+                        places: apart.max(2),
+                    },
+                    Some(Notation::Scientific { places: apart }),
+                )
+            }
+        };
+        Self {
+            format: numbers.format.clone(),
+            full,
+            short,
+            zero_below: if gap.is_finite() { gap * 1e-9 } else { 0.0 },
+        }
+    }
+
+    /// The format for an axis from `lo` to `hi` ticked at its ends and halfway, as
+    /// [`crate::widgets::axes::AxisSpec::ends_and_middle`] ticks it.
+    pub fn ends_and_middle([lo, hi]: [f64; 2], numbers: &AxisNumbers) -> Self {
+        Self::new(&[lo, (lo + hi) / 2.0, hi], numbers)
+    }
+
+    /// A tick at `level` of detail: 0 the full form, 1 the short one, `None` past the
+    /// shortest.
+    pub fn label(&self, v: f64, level: usize) -> Option<String> {
+        let notation = match level {
+            0 => self.full,
+            1 => self.short?,
+            _ => return None,
+        };
+        Some(self.write(v, notation))
+    }
+
+    fn write(&self, v: f64, notation: Notation) -> String {
+        let (places, unit, suffix) = match notation {
+            Notation::Scientific { places } => {
+                let v = if v.abs() < self.zero_below { 0.0 } else { v };
+                return scientific(v, places, self.format.decimal_sep);
+            }
+            Notation::Fixed { .. } if !v.is_finite() => return v.to_string(),
+            Notation::Fixed {
+                places,
+                unit,
+                suffix,
+            } => (places, unit, suffix),
+        };
+        let fixed = crate::numfmt::NumberFormat {
+            float_precision: Some(places as u8),
+            ..self.format.clone()
+        };
+        let mut out = String::new();
+        fixed.write_f64(v / unit, &mut String::new(), &mut out);
+        // A value that rounds to zero is zero: no sign, and no unit to count it in.
+        // Checked on the text, since formatting rounds -0.5 to `-0` and `round` to -1.
+        if !out.chars().any(|c| matches!(c, '1'..='9')) {
+            if unit > 1.0 {
+                return "0".to_string();
+            }
+            out.retain(|c| c != '-');
+        }
+        out.push_str(suffix);
+        out
     }
 }
 
-/// Three significant figures at most, trailing zeros dropped: `12.3k`, `5`, `0.05`.
-fn compact_number(v: f64) -> String {
-    let a = v.abs();
-    if !v.is_finite() || a >= 1e15 || (a < 1e-2 && v != 0.0) {
-        return format!("{v:.0e}");
-    }
-    let (scaled, suffix) = [(1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k")]
+/// Decimal places for `ticks`, whose largest is `top` and closest two `gap` apart:
+/// three significant figures of the largest, and enough to tell the closest apart.
+/// Fewer when they write every tick exactly, so round ticks read `20`, not `20.0`.
+/// `None` for numbers too small to write that way, or ticks too close.
+fn fixed_places(ticks: &[f64], top: f64, gap: f64) -> Option<usize> {
+    let figures = if top > 0.0 { 2 - magnitude(top) } else { 0 };
+    let apart = if gap.is_finite() { -magnitude(gap) } else { 0 };
+    let places = figures.max(apart).max(0);
+    (places <= MAX_AXIS_PLACES).then(|| fewest_places(ticks, 1.0, apart.max(0), places))
+}
+
+/// The fewest places from `least` to `most` that write every one of `ticks`, counted
+/// in `unit`s, exactly; `most` when none do.
+fn fewest_places(ticks: &[f64], unit: f64, least: i32, most: i32) -> usize {
+    let exact = |places: i32| {
+        ticks.iter().all(|v| {
+            let scaled = v / unit * 10f64.powi(places);
+            // Ticks are stepped in floating point: 0.1 * 3 is 0.30000000000000004.
+            (scaled - scaled.round()).abs() <= 1e-9 * scaled.abs().max(1.0)
+        })
+    };
+    (least..most).find(|&p| exact(p)).unwrap_or(most) as usize
+}
+
+/// The short form of `ticks`, whose largest is `top`: counted in the k, M, G or T of
+/// the largest, to two significant figures of it and places enough to tell ticks
+/// `gap` apart, at most two, or fewer as [`fixed_places`] takes them. `None` below a
+/// thousand, where there is no shorter form.
+fn short_notation(ticks: &[f64], top: f64, gap: f64) -> Option<Notation> {
+    let (unit, suffix) = [(1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k")]
         .into_iter()
-        .find(|(unit, _)| a >= *unit)
-        .map_or((v, ""), |(unit, suffix)| (v / unit, suffix));
-    let places = match scaled.abs() {
-        x if x >= 100.0 => 0,
-        x if x >= 10.0 => 1,
-        _ => 2,
-    };
-    let text = format!("{scaled:.places$}");
-    let text = if text.contains('.') {
-        text.trim_end_matches('0').trim_end_matches('.')
+        .find(|(unit, _)| top >= *unit)?;
+    let figures = 1 - magnitude(top / unit);
+    let apart = if gap.is_finite() {
+        -magnitude(gap / unit)
     } else {
-        &text
+        0
     };
-    format!("{text}{suffix}")
+    let most = figures.max(apart).clamp(0, 2);
+    Some(Notation::Fixed {
+        places: fewest_places(ticks, unit, apart.clamp(0, most), most),
+        unit,
+        suffix,
+    })
 }
 
-/// A tick on a whole-number axis (counts, an integer column) at `level` of detail: 0
-/// the whole number in the table's `format`, 1 as [`axis_label_at`] shortens it.
-pub fn whole_axis_label_at(
-    v: f64,
-    level: usize,
-    format: &crate::numfmt::NumberFormat,
-) -> Option<String> {
-    match level {
-        0 => Some(format_bar_value(v.round(), true, format)),
-        level => axis_label_at(v.round(), level),
+/// The power of ten `v` is counted in: 1 for 12.3, -2 for 0.05. A hair under a power
+/// of ten counts as it, since ticks come of floating-point arithmetic: 1000.3 less
+/// 1000.2 is 0.09999... and not a tenth.
+fn magnitude(v: f64) -> i32 {
+    (v.log10() + 1e-9).floor() as i32
+}
+
+/// `v` in scientific notation, its mantissa to `places` decimals.
+fn scientific(v: f64, places: usize, decimal_sep: char) -> String {
+    // No `-0.00e0`.
+    let v = if v == 0.0 { 0.0 } else { v };
+    let text = format!("{v:.places$e}");
+    if decimal_sep == '.' {
+        text
+    } else {
+        text.replacen('.', decimal_sep.encode_utf8(&mut [0; 4]), 1)
     }
 }
 
@@ -112,37 +316,6 @@ pub fn table_number_format(
         crate::numfmt::CellFormatter::Number(format) => format,
         crate::numfmt::CellFormatter::Passthrough => crate::numfmt::NumberFormat::PLAIN,
     }
-}
-
-/// The table's format for `column` when it holds whole numbers, for an axis's ticks;
-/// `None` for any other column.
-pub fn whole_number_format(
-    settings: &crate::numfmt::NumberFormatSettings,
-    schema: &Schema,
-    column: &str,
-) -> Option<crate::numfmt::NumberFormat> {
-    let dtype = schema.get(column)?;
-    dtype
-        .is_integer()
-        .then(|| table_number_format(settings, column, dtype))
-}
-
-/// The first column's format when every one of `columns` holds whole numbers.
-pub fn whole_numbers_format(
-    settings: &crate::numfmt::NumberFormatSettings,
-    schema: &Schema,
-    columns: &[String],
-) -> Option<crate::numfmt::NumberFormat> {
-    let formats: Option<Vec<_>> = columns
-        .iter()
-        .map(|c| whole_number_format(settings, schema, c))
-        .collect();
-    formats?.into_iter().next()
-}
-
-/// The format the table prints a count in.
-pub fn count_format(settings: &crate::numfmt::NumberFormatSettings) -> crate::numfmt::NumberFormat {
-    table_number_format(settings, "Count", &DataType::UInt64)
 }
 
 /// An x value as the date and time it stands for, when `kind` is a date or datetime.
@@ -175,34 +348,31 @@ fn x_time(v: f64) -> Option<NaiveTime> {
     )
 }
 
-/// Format x-axis tick: dates/datetimes/times when kind is temporal, else numeric. Used by chart widget and export.
-pub fn format_x_axis_label(v: f64, kind: XAxisTemporalKind) -> String {
-    x_axis_label_at(v, kind, (v, v), 0).unwrap_or_else(|| format_axis_label(v))
-}
-
 /// An x tick at `level` of detail, 0 the fullest, or `None` past the shortest form.
 /// A narrow axis steps down until its labels fit: a date to year-month and then the
 /// year, or to month-day when both ends of the axis, `bounds`, fall in one year; a
 /// datetime first to its date, or to the minute when the axis spans one day; a time
-/// to the minute.
+/// to the minute. A number, or a time past what it can stand for, is written in
+/// `numbers`.
 pub fn x_axis_label_at(
     v: f64,
     kind: XAxisTemporalKind,
     bounds: (f64, f64),
     level: usize,
+    numbers: &AxisFormat,
 ) -> Option<String> {
     if kind == XAxisTemporalKind::Numeric {
-        return axis_label_at(v, level);
+        return numbers.label(v, level);
     }
     if kind == XAxisTemporalKind::Time {
         let pattern = ["%H:%M:%S", "%H:%M"].get(level)?;
         return Some(match x_time(v) {
             Some(t) => t.format(pattern).to_string(),
-            None => axis_label_at(v, level)?,
+            None => numbers.label(v, level)?,
         });
     }
     let Some(at) = x_datetime(v, kind) else {
-        return axis_label_at(v, level);
+        return numbers.label(v, level);
     };
     let ends = x_datetime(bounds.0, kind).zip(x_datetime(bounds.1, kind));
     let one_day = ends.is_some_and(|(a, b)| a.date() == b.date());
@@ -1074,7 +1244,7 @@ pub fn format_bar_value(v: f64, integer: bool, format: &crate::numfmt::NumberFor
     let places = format.float_precision.unwrap_or(2);
     let smallest = 0.5 * 10f64.powi(-i32::from(places));
     if !v.is_finite() || v.abs() >= 1e15 || (!integer && v != 0.0 && v.abs() < smallest) {
-        return format_axis_label(v);
+        return scientific(v, 2, format.decimal_sep);
     }
     let mut out = String::new();
     if integer {
@@ -1506,36 +1676,51 @@ fn stream_counts(
 mod tests {
     use super::*;
 
-    /// Each form a narrow axis steps down to, and the full form unchanged.
+    /// Every label of an axis at one level: its ticks' labels in order.
+    fn tick_labels(ticks: &[f64], numbers: &AxisNumbers, level: usize) -> Vec<String> {
+        let format = AxisFormat::new(ticks, numbers);
+        ticks
+            .iter()
+            .map(|&v| format.label(v, level).unwrap())
+            .collect()
+    }
+
+    fn preset(name: &str) -> AxisNumbers {
+        AxisNumbers {
+            format: crate::numfmt::NumberFormat::preset(name).unwrap(),
+            whole: false,
+        }
+    }
+
+    /// Each form a narrow axis steps down to, the same for every tick on it.
     #[test]
     fn axis_labels_step_down_to_shorter_forms() {
-        let at = |v, level| axis_label_at(v, level);
-        assert_eq!(at(12345.0, 0).as_deref(), Some("12345.00"));
-        let compact: Vec<_> = [12345.0, -1500.0, 5.0, 0.05, 0.0, 2.5e9, 0.001]
-            .map(|v| at(v, 1).unwrap())
-            .into();
-        assert_eq!(
-            compact,
-            ["12.3k", "-1.5k", "5", "0.05", "0", "2.5G", "1e-3"]
-        );
-        assert_eq!(at(1.0, 2), None);
+        let plain = AxisNumbers::default();
+        let ticks = [0.0, 12_345.0, 24_690.0];
+        assert_eq!(tick_labels(&ticks, &plain, 0), ["0", "12345", "24690"]);
+        assert_eq!(tick_labels(&ticks, &plain, 1), ["0", "12k", "25k"]);
+        let ticks = [-1500.0, 0.0, 1500.0];
+        assert_eq!(tick_labels(&ticks, &plain, 1), ["-1.5k", "0", "1.5k"]);
+        let ticks = [0.0, 1.5e9, 3e9];
+        assert_eq!(tick_labels(&ticks, &plain, 1), ["0", "1.5G", "3.0G"]);
+        // Below a thousand there is no shorter form.
+        let format = AxisFormat::new(&[0.0, 5.0], &plain);
+        assert_eq!(format.label(5.0, 1), None);
+        assert_eq!(format.label(5.0, 2), None);
 
         // 2020-01-01 and 2024-12-31 in days; the same instants in microseconds.
         let (lo, hi) = (18262.0, 20088.0);
-        let date = |v, level| x_axis_label_at(v, XAxisTemporalKind::Date, (lo, hi), level);
-        let forms: Vec<_> = (0..).map_while(|level| date(hi, level)).collect();
+        let numbers = AxisFormat::new(&[], &plain);
+        let date =
+            |v, bounds, level| x_axis_label_at(v, XAxisTemporalKind::Date, bounds, level, &numbers);
+        let forms: Vec<_> = (0..).map_while(|level| date(hi, (lo, hi), level)).collect();
         assert_eq!(forms, ["2024-12-31", "2024-12", "2024"]);
-        assert_eq!(
-            format_x_axis_label(hi, XAxisTemporalKind::Date),
-            "2024-12-31"
-        );
         // Inside one year, month and day tell the ticks apart.
-        let date = |v, level| x_axis_label_at(v, XAxisTemporalKind::Date, (lo, lo + 30.0), level);
-        assert_eq!(date(lo, 1).as_deref(), Some("01-01"));
+        assert_eq!(date(lo, (lo, lo + 30.0), 1).as_deref(), Some("01-01"));
 
         let us = 86_400.0 * 1e6;
         let kind = XAxisTemporalKind::DatetimeUs;
-        let at = |v, bounds, level| x_axis_label_at(v, kind, bounds, level);
+        let at = |v, bounds, level| x_axis_label_at(v, kind, bounds, level, &numbers);
         let forms: Vec<_> = (0..)
             .map_while(|level| at(lo * us, (lo * us, hi * us), level))
             .collect();
@@ -1543,6 +1728,104 @@ mod tests {
         // Inside one day, the time of day.
         let day = (lo * us, lo * us + 3600e6);
         assert_eq!(at(lo * us + 3600e6, day, 1).as_deref(), Some("01:00"));
+    }
+
+    /// One format for every label on an axis: densities around 0.01 keep one
+    /// precision, where per tick they switched to scientific notation partway up.
+    #[test]
+    fn an_axis_keeps_one_notation_and_precision() {
+        let plain = AxisNumbers::default();
+        let density = tick_labels(&[0.0, 0.00651, 0.01302], &plain, 0);
+        assert_eq!(density, ["0.0000", "0.0065", "0.0130"]);
+        let density = tick_labels(&[0.0, 0.00451, 0.00902], &plain, 0);
+        assert_eq!(density, ["0.00000", "0.00451", "0.00902"]);
+        // Round ticks take the fewest places that write them all: `0.006`, not
+        // `0.0060`; `20`, not `20.0`.
+        let round = tick_labels(&[0.0, 0.006, 0.012], &plain, 0);
+        assert_eq!(round, ["0.000", "0.006", "0.012"]);
+        let round = tick_labels(&[0.0, 0.1 * 3.0, 0.6], &plain, 0);
+        assert_eq!(round, ["0.0", "0.3", "0.6"]);
+        let round = tick_labels(&[0.0, 20.0, 40.0, 60.0, 80.0], &plain, 0);
+        assert_eq!(round, ["0", "20", "40", "60", "80"]);
+        let round = tick_labels(&[0.0, 2_000.0, 4_000.0], &plain, 1);
+        assert_eq!(round, ["0", "2k", "4k"]);
+        // Too small to write in places: scientific, all of them.
+        let tiny = tick_labels(&[0.0, 2.5e-8, 5e-8], &plain, 0);
+        assert_eq!(tiny, ["0.00e0", "2.50e-8", "5.00e-8"]);
+        // Three figures of the largest, and places enough to tell ticks apart.
+        assert_eq!(
+            tick_labels(&[3.21, 50.17, 97.2], &plain, 0),
+            ["3.2", "50.2", "97.2"]
+        );
+        let close = tick_labels(&[1000.1, 1000.2, 1000.3], &plain, 0);
+        assert_eq!(close, ["1000.1", "1000.2", "1000.3"]);
+        // Nothing reads as a negative zero, not even a tie formatting rounds to it.
+        assert_eq!(tick_labels(&[-0.0001, 1.0], &plain, 0), ["0.00", "1.00"]);
+        let padded = [-0.5, 249.75, 500.0];
+        assert_eq!(tick_labels(&padded, &plain, 0), ["0", "250", "500"]);
+        let padded = [-500.0, 24_750.0, 50_000.0];
+        assert_eq!(tick_labels(&padded, &plain, 1), ["0", "25k", "50k"]);
+        assert_eq!(tick_labels(&[-0.0, 5e-8], &plain, 0), ["0.00e0", "5.00e-8"]);
+        // A tick stepped a hair off zero is zero.
+        let stepped = [-2e-8, 1.3e-24, 2e-8];
+        assert_eq!(
+            tick_labels(&stepped, &plain, 0),
+            ["-2.00e-8", "0.00e0", "2.00e-8"]
+        );
+        // Ticks too close for places, or for three figures of scientific notation,
+        // take the figures that tell them apart.
+        let close = tick_labels(&[1.0, 1.000_000_1], &plain, 0);
+        assert_eq!(close, ["1.0000000e0", "1.0000001e0"]);
+        let nanoseconds = [1.727e18, 1.727_05e18, 1.7271e18];
+        let labels = tick_labels(&nanoseconds, &plain, 0);
+        assert_eq!(labels, ["1.72700e18", "1.72705e18", "1.72710e18"]);
+        assert_eq!(tick_labels(&nanoseconds, &plain, 1), labels);
+        // Past what places can hold, scientific, and its short form too.
+        let huge = [0.0, 5e15];
+        assert_eq!(tick_labels(&huge, &plain, 0), ["0.00e0", "5.00e15"]);
+        assert_eq!(tick_labels(&huge, &plain, 1), ["0e0", "5e15"]);
+        let huge = [1e15, 1.5e15, 2e15];
+        assert_eq!(
+            tick_labels(&huge, &plain, 1),
+            ["1.0e15", "1.5e15", "2.0e15"]
+        );
+        // A whole-number axis prints whole numbers.
+        let whole = AxisNumbers {
+            whole: true,
+            ..preset("thousands")
+        };
+        assert_eq!(
+            tick_labels(&[0.0, 2161.0, 4322.0], &whole, 0),
+            ["0", "2,161", "4,322"]
+        );
+    }
+
+    /// The table's grouping and decimal separator, in the full form and the short:
+    /// `12,3k` under the european format.
+    #[test]
+    fn axis_labels_take_the_table_number_style() {
+        let european = preset("european");
+        let ticks = [12_000.0, 12_300.0, 12_600.0];
+        assert_eq!(
+            tick_labels(&ticks, &european, 0),
+            ["12.000", "12.300", "12.600"]
+        );
+        assert_eq!(
+            tick_labels(&ticks, &european, 1),
+            ["12,0k", "12,3k", "12,6k"]
+        );
+        let ticks = [0.0, 0.25, 0.5];
+        assert_eq!(tick_labels(&ticks, &european, 0), ["0,00", "0,25", "0,50"]);
+        assert_eq!(
+            tick_labels(&[0.0, 5e-8], &european, 0),
+            ["0,00e0", "5,00e-8"]
+        );
+
+        let thousands = preset("thousands");
+        let ticks = [0.0, 6172.4, 12345.0];
+        assert_eq!(tick_labels(&ticks, &thousands, 0), ["0", "6,172", "12,345"]);
+        let ticks = [0.0, 12_300.0];
+        assert_eq!(tick_labels(&ticks, &thousands, 1), ["0", "12k"]);
     }
 
     fn all_rows() -> ChartSampling {

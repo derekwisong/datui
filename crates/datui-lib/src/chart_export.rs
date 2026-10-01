@@ -6,8 +6,8 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::chart_data::{
-    Bar, BarData, BoxPlotData, HeatmapData, XAxisTemporalKind, format_axis_label, format_bar_value,
-    format_x_axis_label,
+    AxisFormat, AxisNumbers, Bar, BarData, BoxPlotData, HeatmapData, XAxisTemporalKind,
+    x_axis_label_at,
 };
 use crate::chart_modal::ChartType;
 use crate::numfmt::NumberFormat;
@@ -122,29 +122,34 @@ pub struct ChartExportBounds {
     pub chart_title: Option<String>,
     /// What the chart says under the plot about its input (`chart_data::chart_notes`).
     pub notes: Vec<String>,
-    /// The table's format for an x axis of whole numbers (an integer column), whose
-    /// ticks print whole; `None` for any other.
-    pub x_whole: Option<NumberFormat>,
-    /// The same for the y axis: counts, or integer columns.
-    pub y_whole: Option<NumberFormat>,
+    /// What the x axis holds, so its ticks print as the table prints the column.
+    pub x_numbers: AxisNumbers,
+    /// The same for the y axis: counts, or the y columns.
+    pub y_numbers: AxisNumbers,
 }
 
 impl ChartExportBounds {
-    /// An x tick's label, or `None` where a whole-number axis has no tick.
-    fn x_tick(&self, v: f64) -> Option<String> {
-        match self.x_whole {
-            Some(_) => axis_tick(v, self.x_whole.as_ref()),
-            None => Some(format_x_axis_label(v, self.x_axis_kind)),
-        }
+    /// The x axis, ticked at `ticks`.
+    fn x_axis(&self, ticks: &[f64]) -> TickLabels {
+        TickLabels::new(ticks, &self.x_numbers, false, self.x_axis_kind)
     }
 
-    /// A y tick's label, in linear space on a log scale.
-    fn y_tick(&self, v: f64) -> Option<String> {
-        if self.log_scale {
-            Some(format_axis_label(v.exp_m1()))
-        } else {
-            axis_tick(v, self.y_whole.as_ref())
-        }
+    /// The y axis, ticked at `ticks`: in linear space on a log scale.
+    fn y_axis(&self, ticks: &[f64]) -> TickLabels {
+        TickLabels::new(
+            ticks,
+            &self.y_numbers,
+            self.log_scale,
+            XAxisTemporalKind::Numeric,
+        )
+    }
+
+    fn x_whole(&self) -> bool {
+        self.x_numbers.whole
+    }
+
+    fn y_whole(&self) -> bool {
+        self.y_numbers.whole && !self.log_scale
     }
 }
 
@@ -157,8 +162,8 @@ pub struct BoxPlotExportBounds {
     pub y_label: String,
     pub chart_title: Option<String>,
     pub notes: Vec<String>,
-    /// The table's format when every column is of whole numbers.
-    pub y_whole: Option<NumberFormat>,
+    /// What the columns hold, so the y ticks print as the table prints them.
+    pub y_numbers: AxisNumbers,
 }
 
 /// One series: name and (x, y) points (y already log-transformed if log scale).
@@ -250,10 +255,10 @@ pub fn write_chart_eps(
 
     // Tick positions for grid, ticks, and labels
     const MAX_TICKS: usize = 8;
-    let mut x_ticks = nice_ticks(x_min, x_max, MAX_TICKS);
-    let mut y_ticks = nice_ticks(y_min, y_max, MAX_TICKS);
-    x_ticks.retain(|&v| bounds.x_tick(v).is_some());
-    y_ticks.retain(|&v| bounds.y_tick(v).is_some());
+    let x_axis = bounds.x_axis(&nice_ticks(x_min, x_max, MAX_TICKS));
+    let y_axis = bounds.y_axis(&nice_ticks(y_min, y_max, MAX_TICKS));
+    let x_ticks = x_axis.ticks();
+    let y_ticks = y_axis.ticks();
 
     // Grid (light gray, behind plot)
     writeln!(f, "0.9 setgray")?;
@@ -314,11 +319,10 @@ pub fn write_chart_eps(
     // Tick labels and axis titles (text)
     writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
     let char_w: f64 = 5.0;
-    let format_x_tick = |v: f64| bounds.x_tick(v).unwrap_or_default();
     for &v in &x_ticks {
         let px = to_x(v);
         if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            let s = format_x_tick(v);
+            let s = x_axis.label(v).unwrap_or_default();
             let label_w = s.len() as f64 * char_w;
             let tx = (px - label_w / 2.0)
                 .max(MARGIN_LEFT)
@@ -332,11 +336,10 @@ pub fn write_chart_eps(
             )?;
         }
     }
-    let format_y_tick = |v: f64| bounds.y_tick(v).unwrap_or_default();
     for &v in &y_ticks {
         let py = to_y(v);
         if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            let s = format_y_tick(v);
+            let s = y_axis.label(v).unwrap_or_default();
             let label_w = s.len() as f64 * char_w;
             let tx = (MARGIN_LEFT - label_w - 4.0).max(2.0);
             writeln!(f, "{} {} moveto ({}) show", tx, py - 3.0, ps_escape(&s))?;
@@ -464,13 +467,16 @@ pub fn write_chart_png(
         .y_label_area_size(50)
         .build_cartesian_2d(x_min..x_max, y_min..y_max)?;
 
-    let x_formatter = |v: &f64| bounds.x_tick(*v).unwrap_or_default();
-    let y_formatter = |v: &f64| bounds.y_tick(*v).unwrap_or_default();
-    let y_whole = bounds.y_whole.is_some() && !bounds.log_scale;
+    let x_count = tick_count(x_min, x_max, bounds.x_whole());
+    let y_count = tick_count(y_min, y_max, bounds.y_whole());
+    let x_axis = bounds.x_axis(&png_ticks(x_min, x_max, x_count));
+    let y_axis = bounds.y_axis(&png_ticks(y_min, y_max, y_count));
+    let x_formatter = |v: &f64| x_axis.label(*v).unwrap_or_default();
+    let y_formatter = |v: &f64| y_axis.label(*v).unwrap_or_default();
     chart
         .configure_mesh()
-        .x_labels(tick_count(x_min, x_max, bounds.x_whole.is_some()))
-        .y_labels(tick_count(y_min, y_max, y_whole))
+        .x_labels(x_count)
+        .y_labels(y_count)
         .x_desc(bounds.x_label.as_str())
         .y_desc(bounds.y_label.as_str())
         .x_label_formatter(&x_formatter)
@@ -567,12 +573,16 @@ pub fn write_box_plot_png(
 
     let labels = bounds.x_labels.clone();
     let label_span = (x_max - x_min).max(f64::EPSILON);
-    let y_whole = bounds.y_whole.as_ref();
+    let y_count = tick_count(bounds.y_min, bounds.y_max, bounds.y_numbers.whole);
+    let y_axis = TickLabels::numbers(
+        &png_ticks(bounds.y_min, bounds.y_max, y_count),
+        &bounds.y_numbers,
+    );
     chart
         .configure_mesh()
         .x_labels(labels.len())
-        .y_labels(tick_count(bounds.y_min, bounds.y_max, y_whole.is_some()))
-        .y_label_formatter(&|v: &f64| axis_tick(*v, y_whole).unwrap_or_default())
+        .y_labels(y_count)
+        .y_label_formatter(&|v: &f64| y_axis.label(*v).unwrap_or_default())
         .x_desc(bounds.x_label.as_str())
         .y_desc(bounds.y_label.as_str())
         .x_label_formatter(&move |v: &f64| {
@@ -684,22 +694,18 @@ pub fn write_heatmap_png(
         }
     }
 
+    let x_count = tick_count(bounds.x_min, bounds.x_max, bounds.x_whole());
+    let y_count = tick_count(bounds.y_min, bounds.y_max, bounds.y_whole());
+    let x_axis = bounds.x_axis(&png_ticks(bounds.x_min, bounds.x_max, x_count));
+    let y_axis = bounds.y_axis(&png_ticks(bounds.y_min, bounds.y_max, y_count));
     chart
         .configure_mesh()
         .x_desc(bounds.x_label.as_str())
         .y_desc(bounds.y_label.as_str())
-        .x_labels(tick_count(
-            bounds.x_min,
-            bounds.x_max,
-            bounds.x_whole.is_some(),
-        ))
-        .y_labels(tick_count(
-            bounds.y_min,
-            bounds.y_max,
-            bounds.y_whole.is_some(),
-        ))
-        .x_label_formatter(&|v| bounds.x_tick(*v).unwrap_or_default())
-        .y_label_formatter(&|v| bounds.y_tick(*v).unwrap_or_default())
+        .x_labels(x_count)
+        .y_labels(y_count)
+        .x_label_formatter(&|v| x_axis.label(*v).unwrap_or_default())
+        .y_label_formatter(&|v| y_axis.label(*v).unwrap_or_default())
         .draw()?;
 
     draw_png_notes(&root, &bounds.notes, 30)?;
@@ -759,8 +765,8 @@ pub fn write_box_plot_eps(
     }
 
     const MAX_TICKS: usize = 8;
-    let mut y_ticks = nice_ticks(y_min, y_max, MAX_TICKS);
-    y_ticks.retain(|&v| axis_tick(v, bounds.y_whole.as_ref()).is_some());
+    let y_axis = TickLabels::numbers(&nice_ticks(y_min, y_max, MAX_TICKS), &bounds.y_numbers);
+    let y_ticks = y_axis.ticks();
     let x_ticks: Vec<f64> = (0..data.stats.len()).map(|i| i as f64).collect();
 
     writeln!(f, "0.9 setgray")?;
@@ -838,7 +844,7 @@ pub fn write_box_plot_eps(
     for &v in &y_ticks {
         let py = to_y(v);
         if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            let s = axis_tick(v, bounds.y_whole.as_ref()).unwrap_or_default();
+            let s = y_axis.label(v).unwrap_or_default();
             let label_w = s.len() as f64 * char_w;
             let tx = (MARGIN_LEFT - label_w - 4.0).max(2.0);
             writeln!(f, "{} {} moveto ({}) show", tx, py - 3.0, ps_escape(&s))?;
@@ -969,10 +975,10 @@ pub fn write_heatmap_eps(
     }
 
     const MAX_TICKS: usize = 8;
-    let mut x_ticks = nice_ticks(x_min, x_max, MAX_TICKS);
-    let mut y_ticks = nice_ticks(y_min, y_max, MAX_TICKS);
-    x_ticks.retain(|&v| bounds.x_tick(v).is_some());
-    y_ticks.retain(|&v| bounds.y_tick(v).is_some());
+    let x_axis = bounds.x_axis(&nice_ticks(x_min, x_max, MAX_TICKS));
+    let y_axis = bounds.y_axis(&nice_ticks(y_min, y_max, MAX_TICKS));
+    let x_ticks = x_axis.ticks();
+    let y_ticks = y_axis.ticks();
 
     writeln!(f, "0.9 setgray")?;
     writeln!(f, "0.5 setlinewidth")?;
@@ -1049,7 +1055,7 @@ pub fn write_heatmap_eps(
     for &v in &x_ticks {
         let px = to_x(v);
         if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            let s = bounds.x_tick(v).unwrap_or_default();
+            let s = x_axis.label(v).unwrap_or_default();
             let label_w = s.len() as f64 * char_w;
             let tx = (px - label_w / 2.0)
                 .max(MARGIN_LEFT)
@@ -1066,7 +1072,7 @@ pub fn write_heatmap_eps(
     for &v in &y_ticks {
         let py = to_y(v);
         if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            let s = bounds.y_tick(v).unwrap_or_default();
+            let s = y_axis.label(v).unwrap_or_default();
             let label_w = s.len() as f64 * char_w;
             let tx = (MARGIN_LEFT - label_w - 4.0).max(2.0);
             writeln!(f, "{} {} moveto ({}) show", tx, py - 3.0, ps_escape(&s))?;
@@ -1117,6 +1123,15 @@ fn bar_bounds(data: &BarData) -> (f64, f64) {
     if hi > lo { (lo, hi) } else { (lo, lo + 1.0) }
 }
 
+/// What a bar chart's value axis holds: the value column's numbers in `format`, whole
+/// for an integer column or a count.
+fn bar_numbers(data: &BarData, format: &NumberFormat) -> AxisNumbers {
+    AxisNumbers {
+        format: format.clone(),
+        whole: data.value_dtype.is_integer(),
+    }
+}
+
 /// A bar's category as the export writes it, cut to `max` characters.
 fn bar_label(bar: &Bar, max: usize) -> String {
     let label = bar.label.as_deref().unwrap_or("null");
@@ -1127,17 +1142,71 @@ fn bar_label(bar: &Bar, max: usize) -> String {
     format!("{kept}...")
 }
 
-/// A tick on a numeric axis. A whole-number axis's (counts, an integer column) are
-/// whole numbers in the table's format, `whole`, with none between them; any other
-/// axis's print as every axis prints.
-fn axis_tick(v: f64, whole: Option<&NumberFormat>) -> Option<String> {
-    let Some(format) = whole else {
-        return Some(format_axis_label(v));
-    };
-    let whole = v.round();
-    // Ticks are stepped in floating point, so a whole one can be a hair off.
-    ((v - whole).abs() <= 1e-9 * whole.abs().max(1.0))
-        .then(|| format_bar_value(whole, true, format))
+/// An export axis's tick labels, all in one format chosen from its ticks, in the
+/// table's number style. A whole-number axis (counts, an integer column) has no tick
+/// between two whole numbers.
+struct TickLabels {
+    ticks: Vec<f64>,
+    format: AxisFormat,
+    whole: bool,
+    /// A log scale's, where a tick at `v` stands for `exp_m1(v)`.
+    log: bool,
+    kind: XAxisTemporalKind,
+}
+
+impl TickLabels {
+    /// Labels for the ticks among `ticks` an axis holding `numbers` keeps.
+    fn new(ticks: &[f64], numbers: &AxisNumbers, log: bool, kind: XAxisTemporalKind) -> Self {
+        let whole = numbers.whole && !log;
+        let ticks: Vec<f64> = ticks
+            .iter()
+            .copied()
+            .filter(|&v| !whole || is_whole(v))
+            .collect();
+        let shown: Vec<f64> = ticks
+            .iter()
+            .map(|&v| if log { v.exp_m1() } else { v })
+            .collect();
+        Self {
+            format: AxisFormat::new(&shown, numbers),
+            ticks,
+            whole,
+            log,
+            kind,
+        }
+    }
+
+    /// A plain numeric axis's.
+    fn numbers(ticks: &[f64], numbers: &AxisNumbers) -> Self {
+        Self::new(ticks, numbers, false, XAxisTemporalKind::Numeric)
+    }
+
+    /// The ticks kept.
+    fn ticks(&self) -> Vec<f64> {
+        self.ticks.clone()
+    }
+
+    /// The tick at `v`'s label, or `None` where the axis has no tick.
+    fn label(&self, v: f64) -> Option<String> {
+        if self.whole && !is_whole(v) {
+            return None;
+        }
+        let v = if self.log { v.exp_m1() } else { v };
+        x_axis_label_at(v, self.kind, (v, v), 0, &self.format)
+    }
+}
+
+/// Whether `v` is a whole number: ticks are stepped in floating point, so a whole one
+/// can be a hair off.
+fn is_whole(v: f64) -> bool {
+    (v - v.round()).abs() <= 1e-9 * v.round().abs().max(1.0)
+}
+
+/// The ticks plotters puts on an axis from `lo` to `hi` for `count` labels, so the
+/// labels' format is chosen from the ticks it draws.
+fn png_ticks(lo: f64, hi: f64, count: usize) -> Vec<f64> {
+    use plotters::coord::ranged1d::Ranged;
+    plotters::coord::types::RangedCoordf64::from(lo..hi).key_points(count)
 }
 
 /// Ticks plotters puts on an axis from `lo` to `hi`: on a whole-number axis no more
@@ -1217,9 +1286,10 @@ pub fn write_bar_png(
         _ => String::new(),
     };
     let category_title = bar_category_title(data);
-    let whole = data.value_dtype.is_integer().then_some(format);
-    let ticks = tick_count(lo, hi, whole.is_some());
-    let value_tick = |v: &f64| axis_tick(*v, whole).unwrap_or_default();
+    let numbers = bar_numbers(data, format);
+    let ticks = tick_count(lo, hi, numbers.whole);
+    let value_axis = TickLabels::numbers(&png_ticks(lo, hi, ticks), &numbers);
+    let value_tick = |v: &f64| value_axis.label(*v).unwrap_or_default();
     chart
         .configure_mesh()
         .disable_y_mesh()
@@ -1263,7 +1333,6 @@ pub fn write_bar_eps(
         return Err(color_eyre::eyre::eyre!("No data to export"));
     }
     let values = data.labels_in(format);
-    let integer = data.value_dtype.is_integer();
     const W: f64 = 500.0;
     const ROW_H: f64 = 14.0;
     const CHAR_W: f64 = 5.0;
@@ -1310,9 +1379,10 @@ pub fn write_bar_eps(
 
     // Value grid and ticks.
     writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-    for v in nice_ticks(lo, hi, 6) {
+    let value_axis = TickLabels::numbers(&nice_ticks(lo, hi, 6), &bar_numbers(data, format));
+    for v in value_axis.ticks() {
         let px = to_x(v);
-        let Some(s) = axis_tick(v, integer.then_some(format)) else {
+        let Some(s) = value_axis.label(v) else {
             continue;
         };
         if !(margin_left..=margin_left + plot_w).contains(&px) {
@@ -1435,8 +1505,8 @@ mod tests {
                 "sample of 1,000 of 50k rows".to_string(),
                 "4 values outside p1-p99".to_string(),
             ],
-            x_whole: None,
-            y_whole: None,
+            x_numbers: AxisNumbers::default(),
+            y_numbers: AxisNumbers::default(),
         };
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1553,8 +1623,8 @@ mod tests {
                 log_scale: false,
                 chart_title: Some(payload.to_string()),
                 notes: vec![payload.to_string()],
-                x_whole: None,
-                y_whole: None,
+                x_numbers: AxisNumbers::default(),
+                y_numbers: AxisNumbers::default(),
             };
 
             let dir = tempfile::tempdir().expect("temp dir");
@@ -1665,16 +1735,16 @@ mod tests {
     #[test]
     fn a_whole_number_value_axis_has_whole_ticks() {
         let format = NumberFormat::preset("thousands").unwrap();
-        assert_eq!(
-            axis_tick(10_000.0, Some(&format)).as_deref(),
-            Some("10,000")
-        );
-        assert_eq!(
-            axis_tick(2.000_000_000_000_4, Some(&format)).as_deref(),
-            Some("2")
-        );
-        assert_eq!(axis_tick(0.5, Some(&format)), None);
-        assert_eq!(axis_tick(0.5, None).as_deref(), Some("0.50"));
+        let whole = AxisNumbers {
+            format: format.clone(),
+            whole: true,
+        };
+        let axis = TickLabels::numbers(&[0.0, 5_000.0, 10_000.0], &whole);
+        assert_eq!(axis.label(10_000.0).as_deref(), Some("10,000"));
+        assert_eq!(axis.label(2.000_000_000_000_4).as_deref(), Some("2"));
+        assert_eq!(axis.label(0.5), None);
+        let axis = TickLabels::numbers(&[0.0, 0.5, 1.0], &AxisNumbers::default());
+        assert_eq!(axis.label(0.5).as_deref(), Some("0.5"));
 
         let dir = tempfile::tempdir().expect("temp dir");
         let counts = |values: &[f64]| BarData {
@@ -1735,8 +1805,14 @@ mod tests {
             log_scale: false,
             chart_title: None,
             notes: Vec::new(),
-            x_whole: Some(format.clone()),
-            y_whole: Some(format),
+            x_numbers: AxisNumbers {
+                format: format.clone(),
+                whole: true,
+            },
+            y_numbers: AxisNumbers {
+                format,
+                whole: true,
+            },
         };
         let dir = tempfile::tempdir().expect("temp dir");
         let eps = dir.path().join("whole.eps");
@@ -1750,8 +1826,55 @@ mod tests {
         let png = dir.path().join("whole.png");
         write_chart_png(&png, &series, ChartType::Bar, &bounds, (640, 480)).expect("png");
 
-        assert_eq!(bounds.y_tick(15_000.0).as_deref(), Some("15,000"));
-        assert_eq!(bounds.x_tick(0.5), None);
+        let y_axis = bounds.y_axis(&[0.0, 15_000.0, 30_000.0]);
+        assert_eq!(y_axis.label(15_000.0).as_deref(), Some("15,000"));
+        assert_eq!(bounds.x_axis(&[0.0, 0.5, 1.0]).label(0.5), None);
+    }
+
+    /// An export's axis takes one format from its ticks, in the table's number
+    /// style: densities around 0.01 keep their places all the way up, never switching
+    /// to scientific notation, and counts group as the table groups them.
+    #[test]
+    fn export_axes_keep_one_format_in_the_table_style() {
+        let european = NumberFormat::preset("european").unwrap();
+        let series = vec![ChartExportSeries {
+            name: "price".to_string(),
+            points: vec![(0.0, 0.0), (6_000.0, 0.012), (12_000.0, 0.0)],
+            breaks: Vec::new(),
+        }];
+        let bounds = ChartExportBounds {
+            x_min: 0.0,
+            x_max: 12_000.0,
+            y_min: 0.0,
+            y_max: 0.012,
+            x_label: "price".to_string(),
+            y_label: "Density".to_string(),
+            x_axis_kind: XAxisTemporalKind::Numeric,
+            log_scale: false,
+            chart_title: None,
+            notes: Vec::new(),
+            x_numbers: AxisNumbers {
+                format: european,
+                whole: false,
+            },
+            y_numbers: AxisNumbers::default(),
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let eps = dir.path().join("kde.eps");
+        write_chart_eps(&eps, &series, ChartType::Line, &bounds).expect("eps");
+        let content = std::fs::read_to_string(&eps).unwrap();
+        for tick in ["(0.000)", "(0.006)", "(0.012)", "(6.000)", "(12.000)"] {
+            assert!(content.contains(tick), "{tick} in {content}");
+        }
+        // Per tick, the lower ones read `(2.00e-3)`.
+        assert!(!content.contains("e-3)"), "{content}");
+        let png = dir.path().join("kde.png");
+        write_chart_png(&png, &series, ChartType::Line, &bounds, (640, 480)).expect("png");
+
+        // plotters ticks where these say, so its labels are chosen from its ticks.
+        assert_eq!(png_ticks(0.0, 0.012, 10).len(), 7);
+        let y_axis = bounds.y_axis(&png_ticks(0.0, 0.012, 10));
+        assert_eq!(y_axis.label(0.002).as_deref(), Some("0.002"));
     }
 
     /// A long category is cut rather than run into the bars.

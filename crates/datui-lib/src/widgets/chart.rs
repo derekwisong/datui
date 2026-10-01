@@ -10,15 +10,14 @@ use ratatui::{
 };
 
 use crate::chart_data::{
-    BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind, axis_label_at,
-    count_format, segments, whole_axis_label_at, x_axis_label_at,
+    AxisFormat, AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData,
+    XAxisTemporalKind, segments, x_axis_label_at,
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
-use crate::numfmt::NumberFormat;
 use crate::render::context::RenderContext;
-use crate::widgets::axes::{AxisSpec, PlotAxes, TickLabel, cut, fit_x_labels, whole_span};
+use crate::widgets::axes::{AxisSpec, PlotAxes, cut, fit_x_labels};
 use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
 use unicode_width::UnicodeWidthStr;
 
@@ -46,35 +45,36 @@ pub enum ChartRenderData<'a> {
         breaks: Option<&'a Vec<Vec<usize>>>,
         x_axis_kind: XAxisTemporalKind,
         x_bounds: Option<(f64, f64)>,
-        whole: WholeAxes,
+        numbers: PlotNumbers,
     },
     Histogram {
         data: Option<&'a HistogramData>,
-        /// The column's format when it holds whole numbers; the counts always do.
-        x_whole: Option<NumberFormat>,
+        /// The column's numbers; the counts are the table's.
+        x: AxisNumbers,
     },
     BoxPlot {
         data: Option<&'a BoxPlotData>,
-        y_whole: Option<NumberFormat>,
+        y: AxisNumbers,
     },
     Kde {
         data: Option<&'a KdeData>,
+        x: AxisNumbers,
     },
     Heatmap {
         data: Option<&'a HeatmapData>,
-        whole: WholeAxes,
+        numbers: PlotNumbers,
     },
     Bar {
         data: Option<&'a BarData>,
     },
 }
 
-/// The table's number format for each axis of whole numbers (an integer column),
-/// whose ticks then print whole; `None` for any other axis.
+/// What each axis holds, so its ticks print as the table prints its columns: whole
+/// for an integer column, grouped and separated in the table's number format.
 #[derive(Default)]
-pub struct WholeAxes {
-    pub x: Option<NumberFormat>,
-    pub y: Option<NumberFormat>,
+pub struct PlotNumbers {
+    pub x: AxisNumbers,
+    pub y: AxisNumbers,
 }
 
 fn row_label(focus: ChartFocus) -> &'static str {
@@ -338,7 +338,7 @@ fn render_plot(
             breaks,
             x_axis_kind,
             x_bounds,
-            whole,
+            numbers,
         } => render_xy_chart(
             area,
             buf,
@@ -349,26 +349,30 @@ fn render_plot(
                 breaks,
                 x_axis_kind,
                 x_bounds,
-                whole,
+                numbers,
             },
             text_secondary,
             g,
         ),
-        ChartRenderData::Histogram { data, x_whole } => {
-            let whole = WholeAxes {
-                x: x_whole,
-                y: Some(count_format(&ctx.number_format)),
+        ChartRenderData::Histogram { data, x } => {
+            let numbers = PlotNumbers {
+                x,
+                y: AxisNumbers::count(&ctx.number_format),
             };
-            render_histogram_chart(area, buf, theme, data, whole, text_secondary, g)
+            render_histogram_chart(area, buf, theme, data, numbers, text_secondary, g)
         }
-        ChartRenderData::BoxPlot { data, y_whole } => {
-            render_box_plot_chart(area, buf, theme, data, y_whole, text_secondary, g)
+        ChartRenderData::BoxPlot { data, y } => {
+            render_box_plot_chart(area, buf, theme, data, y, text_secondary, g)
         }
-        ChartRenderData::Kde { data } => {
-            render_kde_chart(area, buf, modal, theme, data, text_secondary, g)
+        ChartRenderData::Kde { data, x } => {
+            let numbers = PlotNumbers {
+                x: x.fractional(),
+                y: AxisNumbers::measure(&ctx.number_format, "Density"),
+            };
+            render_kde_chart(area, buf, modal, theme, data, numbers, g)
         }
-        ChartRenderData::Heatmap { data, whole } => {
-            render_heatmap_chart(area, buf, theme, data, whole, text_secondary, g)
+        ChartRenderData::Heatmap { data, numbers } => {
+            render_heatmap_chart(area, buf, theme, data, numbers, text_secondary, g)
         }
         ChartRenderData::Bar { data } => {
             let picked =
@@ -537,7 +541,7 @@ struct XYData<'a> {
     breaks: Option<&'a Vec<Vec<usize>>>,
     x_axis_kind: XAxisTemporalKind,
     x_bounds: Option<(f64, f64)>,
-    whole: WholeAxes,
+    numbers: PlotNumbers,
 }
 
 /// One XY series with where its line breaks.
@@ -561,7 +565,7 @@ fn render_xy_chart(
         breaks,
         x_axis_kind,
         x_bounds,
-        whole,
+        numbers,
     } = xy;
     let chart_type = modal.chart_type;
     let y_starts_at_zero = modal.y_starts_at_zero;
@@ -582,16 +586,10 @@ fn render_xy_chart(
         const PLACEHOLDER_MIN: f64 = 0.0;
         const PLACEHOLDER_MAX: f64 = 1.0;
         let (x_min, x_max) = x_bounds.unwrap_or((PLACEHOLDER_MIN, PLACEHOLDER_MAX));
-        let x_label = |v, level| x_axis_label_at(v, x_axis_kind, (x_min, x_max), level);
-        let (x_whole, y_whole) = whole_labels(&whole);
         let axes = plot_axes(
             theme,
-            axis([x_min, x_max], (&x_label, x_whole.as_deref()), x_name),
-            y_axis(
-                [PLACEHOLDER_MIN, PLACEHOLDER_MAX],
-                (&axis_label_at, y_whole.as_deref()),
-                &y_names,
-            ),
+            x_axis([x_min, x_max], x_axis_kind, &numbers.x, x_name),
+            AxisSpec::y_numbers([PLACEHOLDER_MIN, PLACEHOLDER_MAX], &numbers.y, &y_names),
         );
         let empty_dataset = Dataset::default()
             .name("")
@@ -734,27 +732,29 @@ fn render_xy_chart(
                 all_x_min + 0.5
             };
 
-            let x_bounds = (x_min_bounds, x_max_bounds);
-            let x_label = |v, level| x_axis_label_at(v, x_axis_kind, x_bounds, level);
-            let y_label = |log_v: f64, level| {
-                let v = if log_scale { log_v.exp_m1() } else { log_v };
-                axis_label_at(v, level)
-            };
             let x_axis_title = modal.effective_x_column().map(|s| s.as_str()).unwrap_or("");
             let y_axis_title = y_columns.join(", ");
-            let (x_whole, y_whole) = whole_labels(&whole);
+            let y_bounds = [y_min_bounds, y_max_bounds];
+            // On a log scale a tick stands for its value before the log.
+            let y = if log_scale {
+                AxisSpec::numbers_as(
+                    y_bounds,
+                    &numbers.y.fractional(),
+                    &y_axis_title,
+                    f64::exp_m1,
+                )
+            } else {
+                AxisSpec::y_numbers(y_bounds, &numbers.y, &y_axis_title)
+            };
             let axes = plot_axes(
                 theme,
-                axis(
+                x_axis(
                     [x_min_bounds, x_max_bounds],
-                    (&x_label, x_whole.as_deref()),
+                    x_axis_kind,
+                    &numbers.x,
                     x_axis_title,
                 ),
-                y_axis(
-                    [y_min_bounds, y_max_bounds],
-                    (&y_label, y_whole.as_deref()),
-                    &y_axis_title,
-                ),
+                y,
             );
             let chart = Chart::new(datasets).legend_position(legend(show_legend));
             axes.render(chart, area, buf, g);
@@ -779,41 +779,21 @@ fn plot_axes<'a>(theme: &Theme, x: AxisSpec<'a>, y: AxisSpec<'a>) -> PlotAxes<'a
     }
 }
 
-/// A whole-number tick in each format `whole` holds.
-type WholeLabel<'a> = Box<dyn Fn(f64, usize) -> Option<String> + 'a>;
-
-/// Labels for the whole-number axes in `whole`.
-fn whole_labels(whole: &WholeAxes) -> (Option<WholeLabel<'_>>, Option<WholeLabel<'_>>) {
-    fn label(format: Option<&NumberFormat>) -> Option<WholeLabel<'_>> {
-        format.map(|f| Box::new(move |v, level| whole_axis_label_at(v, level, f)) as WholeLabel<'_>)
-    }
-    (label(whole.x.as_ref()), label(whole.y.as_ref()))
-}
-
-/// An x axis over `bounds` read by `label`, or ticked at whole numbers by `whole`
-/// when it holds them.
-fn axis<'a>(
+/// An XY chart's x axis: numbers as [`AxisSpec::numbers`] ticks them, or dates and
+/// times at its ends and middle.
+fn x_axis<'a>(
     bounds: [f64; 2],
-    (label, whole): (TickLabel<'a>, Option<TickLabel<'a>>),
+    kind: XAxisTemporalKind,
+    numbers: &AxisNumbers,
     title: &'a str,
 ) -> AxisSpec<'a> {
-    match whole {
-        Some(whole) => AxisSpec::whole(bounds, whole, title),
-        None => AxisSpec::ends_and_middle(bounds, label, title),
+    if kind == XAxisTemporalKind::Numeric {
+        return AxisSpec::numbers(bounds, numbers, title);
     }
-}
-
-/// A y axis: its labels sit evenly up the axis, so a whole-number one widens to
-/// bounds its middle tick is whole in.
-fn y_axis<'a>(
-    bounds: [f64; 2],
-    (label, whole): (TickLabel<'a>, Option<TickLabel<'a>>),
-    title: &'a str,
-) -> AxisSpec<'a> {
-    match whole {
-        Some(whole) => AxisSpec::whole(whole_span(bounds), whole, title),
-        None => AxisSpec::ends_and_middle(bounds, label, title),
-    }
+    let format = AxisFormat::ends_and_middle(bounds, numbers);
+    let ends = (bounds[0], bounds[1]);
+    let label = move |v, level| x_axis_label_at(v, kind, ends, level, &format);
+    AxisSpec::ends_and_middle(bounds, Box::new(label), title)
 }
 
 fn legend(show: bool) -> Option<ratatui::widgets::LegendPosition> {
@@ -838,7 +818,7 @@ fn render_histogram_chart(
     buf: &mut ratatui::buffer::Buffer,
     theme: &Theme,
     data: Option<&HistogramData>,
-    whole: WholeAxes,
+    numbers: PlotNumbers,
     text_secondary: ratatui::style::Color,
     g: &Glyphs,
 ) {
@@ -873,19 +853,14 @@ fn render_histogram_chart(
         1.0
     };
 
-    let (x_whole, y_whole) = whole_labels(&whole);
     let axes = plot_axes(
         theme,
-        axis(
+        AxisSpec::numbers(
             [x_min_bounds, x_max_bounds],
-            (&axis_label_at, x_whole.as_deref()),
+            &numbers.x,
             data.column.as_str(),
         ),
-        y_axis(
-            [y_min_bounds, y_max_bounds],
-            (&axis_label_at, y_whole.as_deref()),
-            "Count",
-        ),
+        AxisSpec::y_numbers([y_min_bounds, y_max_bounds], &numbers.y, "Count"),
     );
 
     let style = Style::default().fg(theme.get("primary_chart_series_color"));
@@ -905,9 +880,10 @@ fn render_kde_chart(
     modal: &ChartModal,
     theme: &Theme,
     data: Option<&KdeData>,
-    text_secondary: ratatui::style::Color,
+    numbers: PlotNumbers,
     g: &Glyphs,
 ) {
+    let text_secondary = theme.get("text_secondary");
     let Some(data) = data else {
         Paragraph::new("Select a column for KDE")
             .style(Style::default().fg(text_secondary))
@@ -955,8 +931,8 @@ fn render_kde_chart(
 
     let axes = plot_axes(
         theme,
-        AxisSpec::ends_and_middle([data.x_min, data.x_max], &axis_label_at, "Value"),
-        AxisSpec::ends_and_middle([0.0, data.y_max], &axis_label_at, "Density"),
+        AxisSpec::numbers([data.x_min, data.x_max], &numbers.x, "Value"),
+        AxisSpec::numbers([0.0, data.y_max], &numbers.y, "Density"),
     );
     let chart = Chart::new(datasets).legend_position(legend(modal.show_legend));
     axes.render(chart, area, buf, g);
@@ -967,7 +943,7 @@ fn render_box_plot_chart(
     buf: &mut ratatui::buffer::Buffer,
     theme: &Theme,
     data: Option<&BoxPlotData>,
-    y_whole: Option<NumberFormat>,
+    y_numbers: AxisNumbers,
     text_secondary: ratatui::style::Color,
     g: &Glyphs,
 ) {
@@ -1052,19 +1028,10 @@ fn render_box_plot_chart(
     let x = AxisSpec {
         bounds: [x_min_bounds, x_max_bounds],
         ticks: (0..data.stats.len()).map(|i| i as f64).collect(),
-        label: &name,
+        label: Box::new(name),
         title: "Columns",
     };
-    let whole = WholeAxes {
-        x: None,
-        y: y_whole,
-    };
-    let (_, y_whole) = whole_labels(&whole);
-    let y = y_axis(
-        [data.y_min, data.y_max],
-        (&axis_label_at, y_whole.as_deref()),
-        "Value",
-    );
+    let y = AxisSpec::y_numbers([data.y_min, data.y_max], &y_numbers, "Value");
     plot_axes(theme, x, y).render(Chart::new(datasets), area, buf, g);
 }
 
@@ -1073,7 +1040,7 @@ fn render_heatmap_chart(
     buf: &mut ratatui::buffer::Buffer,
     theme: &Theme,
     data: Option<&HeatmapData>,
-    whole: WholeAxes,
+    numbers: PlotNumbers,
     text_secondary: ratatui::style::Color,
     g: &Glyphs,
 ) {
@@ -1106,14 +1073,22 @@ fn render_heatmap_chart(
         .render(layout[0], buf);
 
     const Y_LABEL_MAX: usize = 12;
-    let (x_whole, y_whole) = whole_labels(&whole);
-    let y_tick = |v: f64, level| match &y_whole {
-        Some(label) => label(v, level),
-        None => axis_label_at(v, level),
-    };
     // Top, middle and bottom, shortened when the fullest form is too wide.
     let y_values = [data.y_max, (data.y_min + data.y_max) / 2.0, data.y_min];
-    let at = |level| y_values.map(|v| y_tick(v, level).unwrap_or_default());
+    let y_format = AxisFormat::new(&y_values, &numbers.y);
+    let at = |level| {
+        y_values.map(|v| {
+            // A whole-number axis has no label between two whole numbers: its
+            // middle of 0 to 1 would read `0` or `1`.
+            if numbers.y.whole && v.fract() != 0.0 {
+                return String::new();
+            }
+            y_format
+                .label(v, level)
+                .or_else(|| y_format.label(v, 0))
+                .unwrap_or_default()
+        })
+    };
     let y_labels = Some(at(0))
         .filter(|labels| labels.iter().all(|l| l.width() <= Y_LABEL_MAX))
         .unwrap_or_else(|| at(1));
@@ -1164,11 +1139,7 @@ fn render_heatmap_chart(
     }
 
     let x_label_area = layout[2];
-    let x_axis = axis(
-        [data.x_min, data.x_max],
-        (&axis_label_at, x_whole.as_deref()),
-        "",
-    );
+    let x_axis = AxisSpec::numbers([data.x_min, data.x_max], &numbers.x, "");
     let span = (x_label_area.left(), x_label_area.right());
     for (x, label) in fit_x_labels(&x_axis, span, (plot_area.x, plot_area.width)) {
         buf.set_string(x, x_label_area.y, label, label_style);
@@ -1228,7 +1199,7 @@ mod tests {
                     breaks: None,
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
-                    whole: WholeAxes::default(),
+                    numbers: PlotNumbers::default(),
                 },
                 notes: Vec::new(),
                 error: None,
@@ -1340,7 +1311,7 @@ mod tests {
                     breaks: None,
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
-                    whole: WholeAxes::default(),
+                    numbers: PlotNumbers::default(),
                 },
                 notes: vec!["sample of 10,000 of 3.5M rows".to_string()],
                 error: None,
@@ -1369,7 +1340,7 @@ mod tests {
             ChartView {
                 data: ChartRenderData::Histogram {
                     data: None,
-                    x_whole: None,
+                    x: AxisNumbers::default(),
                 },
                 notes: notes.iter().map(|n| n.to_string()).collect(),
                 error: None,
@@ -1400,7 +1371,7 @@ mod tests {
                     breaks: None,
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
-                    whole: WholeAxes::default(),
+                    numbers: PlotNumbers::default(),
                 },
                 notes: Vec::new(),
                 error: Some("column not found: gone"),
@@ -1428,7 +1399,7 @@ mod tests {
                         breaks: Some(breaks),
                         x_axis_kind: XAxisTemporalKind::Numeric,
                         x_bounds: None,
-                        whole: WholeAxes::default(),
+                        numbers: PlotNumbers::default(),
                     },
                     notes: Vec::new(),
                     error: None,
@@ -1699,7 +1670,7 @@ mod tests {
                             breaks: None,
                             x_axis_kind: XAxisTemporalKind::Date,
                             x_bounds: None,
-                            whole: WholeAxes::default(),
+                            numbers: PlotNumbers::default(),
                         },
                         "date",
                         "price",
@@ -1712,7 +1683,7 @@ mod tests {
                             breaks: None,
                             x_axis_kind: XAxisTemporalKind::Numeric,
                             x_bounds: None,
-                            whole: WholeAxes::default(),
+                            numbers: PlotNumbers::default(),
                         },
                         "volume",
                         "price",
@@ -1722,7 +1693,7 @@ mod tests {
                         "histogram",
                         ChartRenderData::Histogram {
                             data: Some(&histogram),
-                            x_whole: None,
+                            x: AxisNumbers::default(),
                         },
                         "price",
                         "Count",
@@ -1730,7 +1701,10 @@ mod tests {
                     ),
                     (
                         "KDE",
-                        ChartRenderData::Kde { data: Some(&kde) },
+                        ChartRenderData::Kde {
+                            data: Some(&kde),
+                            x: AxisNumbers::default(),
+                        },
                         "Value",
                         "Density",
                         &is_number,
@@ -1755,12 +1729,144 @@ mod tests {
         }
     }
 
+    /// Every label on an axis in one format, in the table's number style: KDE
+    /// densities around 0.01 keep one precision all the way up, and under the
+    /// european format a narrow axis's short form reads `12,3k`.
+    #[test]
+    fn an_axis_writes_every_label_in_one_format() {
+        use crate::chart_data::KdeSeries;
+        use crate::numfmt::NumberFormat;
+        let g = crate::glyphs::unicode();
+        let y_labels = |text: &str| -> Vec<String> {
+            text.lines()
+                .filter_map(|r| r.split_once('│')?.0.split_whitespace().next())
+                .map(String::from)
+                .collect()
+        };
+        let mut modal = open_modal();
+        modal.show_legend = false;
+
+        let kde = KdeData {
+            series: vec![KdeSeries {
+                name: "price".to_string(),
+                points: (0..=100)
+                    .map(|i| {
+                        let x = f64::from(i);
+                        (x, 0.0126 * (-(x - 50.0).powi(2) / 400.0).exp())
+                    })
+                    .collect(),
+            }],
+            x_min: 0.0,
+            x_max: 100.0,
+            y_max: 0.0126,
+            rows: Default::default(),
+            clipped: None,
+        };
+        let data = ChartRenderData::Kde {
+            data: Some(&kde),
+            x: AxisNumbers::default(),
+        };
+        let text = plot_text_in(&modal, data, g, Rect::new(0, 0, 40, 12));
+        assert_eq!(y_labels(&text), ["0.0126", "0.0063", "0.0000"], "{text}");
+
+        let european = NumberFormat::preset("european").unwrap();
+        let mut ctx = RenderContext::for_test();
+        ctx.number_format.format = european.clone();
+        modal.x_column = Some("volume".to_string());
+        modal.y_columns = vec!["price".to_string()];
+        modal.y_starts_at_zero = false;
+        let series = vec![vec![(0.0, 12_000.0), (5.0, 12_600.0)]];
+        let xy = || ChartRenderData::XY {
+            series: Some(&series),
+            breaks: None,
+            x_axis_kind: XAxisTemporalKind::Numeric,
+            x_bounds: None,
+            numbers: PlotNumbers {
+                x: AxisNumbers::default(),
+                y: AxisNumbers {
+                    format: european.clone(),
+                    whole: false,
+                },
+            },
+        };
+        let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 40, 12));
+        assert_eq!(y_labels(&text), ["12.600", "12.300", "12.000"], "{text}");
+        // Too narrow for those: the short form, each in the same unit and places.
+        let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 16, 12));
+        assert_eq!(y_labels(&text), ["12,6k", "12,3k", "12,0k"], "{text}");
+    }
+
+    /// A heatmap's y labels in one format; an integer column's middle label is left
+    /// out when it falls between two whole numbers, where it read `0` twice.
+    #[test]
+    fn heatmap_y_labels_are_whole_where_the_column_is() {
+        let heatmap = |(y_min, y_max)| HeatmapData {
+            x_column: "price".to_string(),
+            y_column: "flag".to_string(),
+            x_min: 0.0,
+            x_max: 10.0,
+            y_min,
+            y_max,
+            x_bins: 4,
+            y_bins: 4,
+            counts: vec![vec![1.0; 4]; 4],
+            max_count: 1.0,
+            rows: Default::default(),
+        };
+        let y_labels = |text: &str| -> Vec<String> {
+            // The plot's rows, each starting with its label if it has one.
+            text.lines()
+                .filter(|r| r.contains('@'))
+                .filter_map(|r| r.split_whitespace().next())
+                .filter(|l| !l.starts_with('@'))
+                .map(String::from)
+                .collect()
+        };
+        let whole = PlotNumbers {
+            x: AxisNumbers::default(),
+            y: AxisNumbers {
+                whole: true,
+                ..AxisNumbers::default()
+            },
+        };
+        let g = crate::glyphs::unicode();
+        let modal = open_modal();
+        let area = Rect::new(0, 0, 40, 12);
+        let data = heatmap((0.0, 1.0));
+        let text = plot_text_in(
+            &modal,
+            ChartRenderData::Heatmap {
+                data: Some(&data),
+                numbers: whole,
+            },
+            g,
+            area,
+        );
+        assert_eq!(y_labels(&text), ["1", "0"], "{text}");
+        let data = heatmap((0.0, 0.0126));
+        let text = plot_text_in(
+            &modal,
+            ChartRenderData::Heatmap {
+                data: Some(&data),
+                numbers: PlotNumbers::default(),
+            },
+            g,
+            area,
+        );
+        assert_eq!(y_labels(&text), ["0.0126", "0.0063", "0.0000"], "{text}");
+    }
+
     /// A count, or an integer column, ticks in whole numbers as the table prints
     /// them: never `4321.00`, and never a tick between two whole numbers.
     #[test]
     fn whole_number_axes_tick_whole_in_the_table_format() {
         use crate::chart_data::HistogramBin;
+        use crate::numfmt::NumberFormat;
         let thousands = NumberFormat::preset("thousands").unwrap();
+        let whole = AxisNumbers {
+            format: thousands.clone(),
+            whole: true,
+        };
         let mut ctx = RenderContext::for_test();
         ctx.number_format.format = thousands.clone();
         let g = crate::glyphs::unicode();
@@ -1798,7 +1904,7 @@ mod tests {
         };
         let data = ChartRenderData::Histogram {
             data: Some(&histogram),
-            x_whole: Some(thousands.clone()),
+            x: whole.clone(),
         };
         let text = plot_text_with(&ctx, &open_modal(), data, g, area);
         assert_eq!(y_labels(&text), ["4,322", "2,161", "0"], "{text}");
@@ -1810,23 +1916,23 @@ mod tests {
         modal.x_column = Some("volume".to_string());
         modal.y_columns = vec!["price".to_string()];
         modal.show_legend = false;
-        let xy = |whole| ChartRenderData::XY {
+        let xy = |numbers| ChartRenderData::XY {
             series: Some(&series),
             breaks: None,
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
-            whole,
+            numbers,
         };
-        let whole = WholeAxes {
-            x: Some(thousands.clone()),
-            y: Some(thousands),
+        let numbers = PlotNumbers {
+            x: whole.clone(),
+            y: whole,
         };
-        let text = plot_text_with(&ctx, &modal, xy(whole), g, area);
+        let text = plot_text_with(&ctx, &modal, xy(numbers), g, area);
         // 3 to 10 widens to 3 to 11, so the middle tick is whole.
         assert_eq!(y_labels(&text), ["11", "7", "3"], "{text}");
         assert_eq!(axis_row(&text), "0 3 5", "{text}");
-        let text = plot_text_with(&ctx, &modal, xy(WholeAxes::default()), g, area);
-        assert_eq!(axis_row(&text), "0.00 2.50 5.00", "{text}");
+        let text = plot_text_with(&ctx, &modal, xy(PlotNumbers::default()), g, area);
+        assert_eq!(axis_row(&text), "0.0 2.5 5.0", "{text}");
     }
 
     /// Under the ASCII set every plot draws ASCII only, and still draws: its marks,
@@ -1858,7 +1964,7 @@ mod tests {
             breaks: None,
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
-            whole: WholeAxes::default(),
+            numbers: PlotNumbers::default(),
         };
         for (chart_type, mark) in [
             (ChartType::Line, '*'),
@@ -1892,7 +1998,7 @@ mod tests {
         };
         let data = ChartRenderData::Histogram {
             data: Some(&histogram),
-            x_whole: None,
+            x: AxisNumbers::default(),
         };
         check("histogram", &plot_text(&modal, data, ascii), &['#']);
 
@@ -1915,7 +2021,7 @@ mod tests {
         };
         let data = ChartRenderData::BoxPlot {
             data: Some(&box_plot),
-            y_whole: None,
+            y: AxisNumbers::default(),
         };
         check("box plot", &plot_text(&modal, data, ascii), &['o']);
 
@@ -1935,7 +2041,10 @@ mod tests {
             rows: Default::default(),
             clipped: None,
         };
-        let data = ChartRenderData::Kde { data: Some(&kde) };
+        let data = ChartRenderData::Kde {
+            data: Some(&kde),
+            x: AxisNumbers::default(),
+        };
         check("KDE", &plot_text(&modal, data, ascii), &['*']);
 
         // Bars draw no axes of their own.
@@ -1963,7 +2072,7 @@ mod tests {
                     breaks: None,
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
-                    whole: WholeAxes::default(),
+                    numbers: PlotNumbers::default(),
                 },
                 g,
             );

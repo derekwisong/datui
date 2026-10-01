@@ -12,7 +12,7 @@ use ratatui::{
 use crate::analysis_modal::{
     AnalysisFocus, AnalysisTool, AnalysisView, ColumnScroll, HistogramScale,
 };
-use crate::chart_data::axis_label_at;
+use crate::chart_data::{AxisFormat, AxisNumbers};
 use crate::config::Theme;
 use crate::distribution_fit::{FitOutcome, FitTest};
 use crate::glyphs::PlotMarks;
@@ -333,57 +333,32 @@ impl<'a> AnalysisWidget<'a> {
                     .saturating_sub(top_padding_extra), // Account for extra top padding
             );
 
-            // Calculate maximum label width for both charts to ensure alignment
-            // This needs to account for both Q-Q plot labels (data values) and histogram labels (counts)
+            // The value axes, both x axes and the Q-Q plot's y, read the column's
+            // numbers over the sample's range; the histogram's y reads counts.
+            let values = AxisNumbers::measure(self.number_format, &dist.column_name);
+            let counts = AxisNumbers::count(self.number_format);
             let sorted_data = &dist.sorted_sample_values;
-            let max_label_width = if sorted_data.is_empty() {
-                1
-            } else {
-                let data_min = sorted_data[0];
-                let data_max = sorted_data[sorted_data.len() - 1];
-
-                // Q-Q plot labels: data_min, (data_min+data_max)/2, data_max formatted as {:.1}
-                let qq_label_bottom = format!("{:.1}", data_min);
-                let qq_label_mid = format!("{:.1}", (data_min + data_max) / 2.0);
-                let qq_label_top = format!("{:.1}", data_max);
-                let qq_max_width = qq_label_bottom
-                    .chars()
-                    .count()
-                    .max(qq_label_mid.chars().count())
-                    .max(qq_label_top.chars().count());
-
-                // Histogram labels: 0, global_max/2, global_max (formatted as integers)
-                // We need to estimate global_max - it's roughly the max of data bin counts and theory bin counts
-                // For estimation, use the data size as a proxy for maximum counts
-                let estimated_global_max = sorted_data.len();
-                let hist_label_0 = format!("{}", 0);
-                let hist_label_mid = format!("{}", estimated_global_max / 2);
-                let hist_label_max = format!("{}", estimated_global_max);
-                let hist_max_width = hist_label_0
-                    .chars()
-                    .count()
-                    .max(hist_label_mid.chars().count())
-                    .max(hist_label_max.chars().count());
-
-                // Use the maximum of both, adding 1 for padding
-                qq_max_width.max(hist_max_width)
+            let unified_x_range = match (sorted_data.first(), sorted_data.last()) {
+                (Some(&lo), Some(&hi)) => (lo, hi),
+                _ => (0.0, 1.0),
             };
 
-            let shared_y_axis_label_width = (max_label_width as u16).max(1) + 1; // Max label width + 1 char padding
-
-            // Calculate unified X-axis range for visual alignment between Q-Q plot and histogram
-            // This ensures both charts use the same X-axis scale for easy comparison
-            // Calculate unified X-axis range for both Q-Q plot and histogram
-            // Use ONLY actual data range (no padding, no theoretical extensions)
-            // This ensures log scale works correctly and both charts stay in sync
-            let unified_x_range = if !sorted_data.is_empty() {
-                let data_min = sorted_data[0];
-                let data_max = sorted_data[sorted_data.len() - 1];
-                // Use strict data range - no padding, no theoretical extensions
-                (data_min, data_max)
-            } else {
-                (0.0, 1.0) // Fallback for empty data
-            };
+            // Both plots' y labels take one width, so the plots start in the same
+            // column: the widest Q-Q value, or the widest count the histogram could
+            // reach, the sample's size.
+            let qq_axis = AxisSpec::numbers([unified_x_range.0, unified_x_range.1], &values, "");
+            let qq_width = qq_axis
+                .ticks
+                .iter()
+                .filter_map(|&v| (qq_axis.label)(v, 0))
+                .map(|l| l.chars().count())
+                .max()
+                .unwrap_or(1);
+            let n = sorted_data.len() as f64;
+            let count_width = AxisFormat::new(&[0.0, n], &counts)
+                .label(n, 0)
+                .map_or(1, |l| l.chars().count());
+            let shared_y_axis_label_width = (qq_width.max(count_width) as u16).max(1) + 1;
 
             // Both plots of the selected theoretical distribution, on one x range.
             let plot = DistributionPlotConfig {
@@ -395,6 +370,8 @@ impl<'a> AnalysisWidget<'a> {
                 unified_x_range: Some(unified_x_range),
                 histogram_scale: self.histogram_scale,
                 glyphs: crate::glyphs::get(),
+                values: &values,
+                counts: &counts,
             };
             render_qq_plot(plot, buf);
 
@@ -1522,6 +1499,9 @@ struct DistributionPlotConfig<'a> {
     unified_x_range: Option<(f64, f64)>,
     histogram_scale: HistogramScale,
     glyphs: &'a crate::glyphs::Glyphs,
+    /// The column's numbers, on every value axis.
+    values: &'a AxisNumbers,
+    counts: &'a AxisNumbers,
 }
 
 /// The family list's least width: the frame, the rail, "Exponential" and a p-value.
@@ -1632,6 +1612,8 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         unified_x_range,
         histogram_scale,
         glyphs: g,
+        values,
+        counts,
     } = config;
     let sorted_data = &dist.sorted_sample_values;
 
@@ -1857,16 +1839,16 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     };
 
     // The labels are padded to the width shared with the Q-Q plot, so both plots
-    // start in the same column.
+    // start in the same column. The bars stand on a 0-100 scale; their labels read
+    // counts.
     let label_width = y_axis_label_width as usize;
-    // The bars stand on a 0-100 scale; their labels read counts.
-    let count_label = |v: f64, level| {
-        (level == 0).then(|| format!("{:>label_width$}", (v * global_max / 100.0) as usize))
-    };
+    let count_axis = AxisSpec::numbers_as([0.0, 100.0], counts, "Counts", move |v| {
+        v * global_max / 100.0
+    });
     let axes = distribution_axes(
         theme,
-        AxisSpec::ends_and_middle([hist_min, hist_max], &distribution_x_label, ""),
-        AxisSpec::ends_and_middle([0.0, 100.0], &count_label, "Counts"),
+        AxisSpec::numbers([hist_min, hist_max], values, ""),
+        count_axis.padded(label_width),
     );
     let block = distribution_block(format!("Histogram vs {dist_type}"));
     let chart_area = block.inner(area);
@@ -1964,6 +1946,7 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
         theme,
         unified_x_range,
         glyphs: g,
+        values,
         ..
     } = config;
     // Use Chart widget for Q-Q plot: Data quantiles vs Theoretical quantiles
@@ -2113,15 +2096,14 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
     // Padded to the width shared with the histogram, so both plots start in the same
     // column.
     let label_width = shared_y_axis_label_width as usize;
-    let value_label = |v: f64, level| (level == 0).then(|| format!("{v:>label_width$.1}"));
     let axes = distribution_axes(
         theme,
-        AxisSpec::ends_and_middle(
+        AxisSpec::numbers(
             [theory_min_plot, theory_max_plot],
-            &distribution_x_label,
+            values,
             "Theoretical Values",
         ),
-        AxisSpec::ends_and_middle([data_min, data_max], &value_label, "Data Values"),
+        AxisSpec::numbers([data_min, data_max], values, "Data Values").padded(label_width),
     );
     let block = distribution_block(format!("Q-Q Plot vs {dist_type}"));
     let chart_area = block.inner(area);
@@ -2138,14 +2120,6 @@ fn distribution_block<'a>(title: String) -> Block<'a> {
         .title_style(ratatui::style::Style::reset())
         .title_alignment(ratatui::layout::Alignment::Center)
         .padding(ratatui::widgets::Padding::left(1))
-}
-
-/// A Distribution plot's x ticks: one decimal, or three figures when that is too wide.
-fn distribution_x_label(v: f64, level: usize) -> Option<String> {
-    match level {
-        0 => Some(format!("{v:.1}")),
-        level => axis_label_at(v, level),
-    }
 }
 
 fn distribution_axes<'a>(theme: &Theme, x: AxisSpec<'a>, y: AxisSpec<'a>) -> PlotAxes<'a> {
@@ -2326,9 +2300,23 @@ mod tests {
         render: fn(DistributionPlotConfig, &mut Buffer),
         width: u16,
     ) -> Buffer {
+        let numbers = NumberFormatSettings::default();
+        render_distribution_plot_as(dist, g, render, width, &numbers)
+    }
+
+    /// The plot with its numbers in `numbers`.
+    fn render_distribution_plot_as(
+        dist: &DistributionAnalysis,
+        g: &crate::glyphs::Glyphs,
+        render: fn(DistributionPlotConfig, &mut Buffer),
+        width: u16,
+        numbers: &NumberFormatSettings,
+    ) -> Buffer {
         let theme =
             crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
+        let values = AxisNumbers::measure(numbers, &dist.column_name);
+        let counts = AxisNumbers::count(numbers);
         render(
             DistributionPlotConfig {
                 dist,
@@ -2339,10 +2327,47 @@ mod tests {
                 unified_x_range: Some((23.0, 341.1)),
                 histogram_scale: HistogramScale::Linear,
                 glyphs: g,
+                values: &values,
+                counts: &counts,
             },
             &mut buf,
         );
         buf
+    }
+
+    /// The histogram's counts group as the table groups numbers: a bin of thousands
+    /// reads `9,600`, not `9600`.
+    #[test]
+    fn distribution_counts_follow_the_table_number_format() {
+        let mut dist = skewed_normal_fit();
+        let values = dist.sorted_sample_values.clone();
+        dist.sorted_sample_values = values
+            .iter()
+            .cycle()
+            .take(values.len() * 24)
+            .copied()
+            .collect();
+        dist.sorted_sample_values.sort_by(f64::total_cmp);
+        let labels = |numbers: &NumberFormatSettings| -> Vec<String> {
+            let g = crate::glyphs::unicode();
+            let buf =
+                render_distribution_plot_as(&dist, g, render_distribution_histogram, 60, numbers);
+            (0..20)
+                .filter_map(|y| {
+                    let row: String = (0..60).map(|x| buf[(x, y)].symbol()).collect();
+                    let label = row.split_once('│')?.0.trim().to_string();
+                    (!label.is_empty()).then_some(label)
+                })
+                .collect()
+        };
+        let grouped = labels(&settings("thousands", true));
+        assert_eq!(grouped.len(), 3, "{grouped:?}");
+        assert!(
+            grouped[0].contains(',') && grouped[0].len() > 4,
+            "{grouped:?}"
+        );
+        let plain = labels(&settings("thousands", false));
+        assert_eq!(plain[0], grouped[0].replace(',', ""), "{plain:?}");
     }
 
     #[test]

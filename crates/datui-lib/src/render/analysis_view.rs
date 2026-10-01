@@ -189,6 +189,8 @@ fn render_body(
                 note: note.as_deref(),
                 cancelling: app.cancelled_run_shown(),
                 kept: app.quality_kept_rows(),
+                copy: app.quality_copy_plan(plan),
+                copy_released: app.quality_copy_released(),
             };
             let rows_kept = app.quality_rows_kept().is_some();
             let modal = &mut app.analysis_modal;

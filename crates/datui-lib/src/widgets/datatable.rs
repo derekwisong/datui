@@ -218,6 +218,9 @@ pub struct DataTableState {
     row_group_offsets: Option<Vec<usize>>,
     /// The files of a remote dataset, when it is many. See `RemoteFiles`.
     remote_files: Option<RemoteFiles>,
+    /// The size of each remote object the dataset reads, by URL, from the listing or
+    /// the footer read that opened it. What a Data Quality local copy would fetch.
+    remote_object_bytes: Option<Arc<std::collections::HashMap<String, u64>>>,
     /// What the footers said about a many-file dataset's columns: where the schema came
     /// from, and which columns are not in every file. `None` for a single file.
     dataset_schema: Option<crate::schema_union::DatasetSchema>,
@@ -812,6 +815,7 @@ impl DataTableState {
             remote_source: false,
             row_group_offsets: None,
             remote_files: None,
+            remote_object_bytes: None,
             dataset_schema: None,
             drift_column_present: false,
             drift_groups: Arc::new(Vec::new()),
@@ -931,6 +935,7 @@ impl DataTableState {
             remote_source: false,
             row_group_offsets: None,
             remote_files: None,
+            remote_object_bytes: None,
             dataset_schema: None,
             drift_column_present: false,
             drift_groups: Arc::new(Vec::new()),
@@ -4695,6 +4700,56 @@ impl DataTableState {
     /// Record that the data is a remote dataset of many files. See `RemoteFiles`.
     pub fn set_remote_files(&mut self, files: RemoteFiles) {
         self.remote_files = Some(files);
+    }
+
+    /// Record the size of each remote object, by URL, as the open found them.
+    pub fn set_remote_object_bytes(&mut self, sizes: std::collections::HashMap<String, u64>) {
+        self.remote_object_bytes = Some(Arc::new(sizes));
+    }
+
+    /// Whether a Data Quality run over `scope` reads every row and every byte-bearing
+    /// column of the source: the case where a copy of the whole objects costs no more
+    /// than one of its passes. A filter or a hidden column may let a pass read less
+    /// than the objects, and a binary column is never read at all.
+    pub(crate) fn quality_reads_whole_source(
+        &self,
+        scope: &crate::data_quality::QualityScope,
+    ) -> bool {
+        use crate::data_quality::QualityScope;
+        let columns = || {
+            self.original_schema
+                .iter()
+                .filter(|(name, _)| name.as_str() != crate::schema_union::DRIFT_COLUMN)
+        };
+        if columns().any(|(_, dtype)| matches!(dtype, DataType::Binary)) {
+            return false;
+        }
+        match scope {
+            QualityScope::WholeSource => true,
+            QualityScope::CurrentView => {
+                !self.changes_rows()
+                    && columns().all(|(name, _)| self.column_order.iter().any(|kept| kept == name))
+            }
+            _ => false,
+        }
+    }
+
+    /// The remote objects this dataset reads, with their sizes: every file of a
+    /// remote dataset, or the one object. `None` when any size is unknown.
+    pub(crate) fn remote_objects(&self) -> Option<Vec<(String, u64)>> {
+        let sizes = self.remote_object_bytes.as_ref()?;
+        let urls: Vec<&String> = match &self.remote_files {
+            Some(remote) => remote.urls.iter().collect(),
+            None => sizes.keys().collect(),
+        };
+        let mut objects = urls
+            .into_iter()
+            .map(|url| sizes.get(url).map(|size| (url.clone(), *size)))
+            .collect::<Option<Vec<_>>>()?;
+        if self.remote_files.is_none() {
+            objects.sort();
+        }
+        (!objects.is_empty()).then_some(objects)
     }
 
     /// Record what the footers said about the dataset's columns. See `DatasetSchema`.

@@ -1018,7 +1018,7 @@ fn test_stale_background_events_are_ignored() {
     app.analysis_modal.data_quality_results = None;
     app.event(&AppEvent::BackgroundDataQualityReady {
         generation: stale_gen,
-        results: DataQualityResults {
+        results: Box::new(DataQualityResults {
             total_rows: Some(999_999),
             evaluated_rows: 1,
             precision: QualityPrecision::Sampled,
@@ -1038,7 +1038,7 @@ fn test_stale_background_events_are_ignored() {
             unsampled_segments: vec![],
             intent: None,
             source: None,
-        },
+        }),
         kept: None,
         plan: Box::default(),
     });
@@ -4455,7 +4455,7 @@ fn kept_rows_are_released_from_setup() {
     assert!(!text.contains("Release Rows"), "{text}");
     assert!(text.contains("Read before and released since"), "{text}");
     press(&mut app, KeyCode::Char('d'));
-    assert_eq!(app.flash_message(), Some("No kept rows to release"));
+    assert_eq!(app.flash_message(), Some("Nothing kept to release"));
 
     assert_eq!(
         run_quality_reads(&mut app, &rx),

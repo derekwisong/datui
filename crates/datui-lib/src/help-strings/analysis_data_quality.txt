@@ -21,9 +21,10 @@ Setup:
   s:            The Sample form; its Enter applies
                 to Setup and returns there
   p:            The access plan: what a run reads
-  d:            Release the rows runs kept, named on
-                the Read rule; the next run that
-                would reuse them reads again
+  d:            Release the rows runs kept and a
+                full scan's local copy, named on the
+                Read rule; the next run that would
+                reuse them reads again
   Enter:        Run, from any row. A full read asks
                 first; the report on screen or in the
                 session cache is shown, not read again
@@ -48,6 +49,15 @@ Reuse:
   Setup says which, before Run. Kept rows last the
   session, until memory runs short, d in Setup or
   opening the dataset again releases them.
+
+  A full scan of a remote dataset that fits
+  quality_local_copy_mb and the free disk fetches
+  each object once into the cache directory; every
+  pass, and every later full scan, reads that copy.
+  Read says so before Run, or why the passes go to
+  the source. d, opening the dataset again and
+  quitting remove the copy; a cancel or failure
+  while it is fetched removes what was copied.
 
 Time roles:
   ↑ / ↓:        Choose the role

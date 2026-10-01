@@ -1265,6 +1265,14 @@ pub fn coverage(
                 .rows
                 .push(format!("at least {} traversed", count(reads.rows)));
         }
+        if let Some(copy) = reads.copy {
+            let bytes = crate::widgets::info::format_bytes(copy.bytes);
+            coverage.rows.push(if copy.fetched {
+                format!("passes read a local copy, fetched once ({bytes})")
+            } else {
+                format!("passes read a local copy fetched earlier ({bytes})")
+            });
+        }
     }
 
     let segments = &results.segments;
@@ -2182,6 +2190,7 @@ mod tests {
             reads: 1,
             counted: 1,
             rows: 1_000,
+            copy: None,
         });
         let report = build_report(&sampled);
         assert_eq!(report.problems + report.notes, 0, "a clean report");
@@ -2243,6 +2252,7 @@ mod tests {
             reads: 4,
             counted: 3,
             rows: 300,
+            copy: None,
         });
         let report = build_report(&full);
         let found = coverage(&full, &checks(&full, &report), &plan);

@@ -571,8 +571,15 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         }
     }
     keys.extend([(g.updown, "Row"), ("s", "Sample"), ("p", "Access")]);
-    if app.quality_kept_rows().is_some() {
-        keys.push(("d", "Release Rows"));
+    if let Some(kept) = app.quality_kept_rows() {
+        keys.push((
+            "d",
+            if kept.copy_bytes > 0 {
+                "Release"
+            } else {
+                "Release Rows"
+            },
+        ));
     }
     keys.push(("?", "Help"));
     keys

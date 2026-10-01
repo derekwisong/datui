@@ -2,9 +2,10 @@
 //! the columns are drawn at.
 //!
 //! A plan only adds up widths: it formats and reads nothing. A width the table has not
-//! drawn yet is unknown, and a plan that needs one says so with `None`; the next draw
-//! then measures that column from the rows on screen and plans again. Indices here are
-//! scrolling indices: 0 is the first column right of the frozen ones.
+//! drawn in this view (since its widths were last relearned) is unknown, and a plan
+//! that needs one says so with `None`; the next draw then measures that column from
+//! the rows on screen and plans again. Indices here are scrolling indices: 0 is the
+//! first column right of the frozen ones.
 
 /// The room the scrolling columns are laid out in, as the table last drew it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

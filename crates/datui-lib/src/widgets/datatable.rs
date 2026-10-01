@@ -6612,7 +6612,7 @@ impl DataTableState {
         let names = &self.column_order[self.frozen_shown().min(self.column_order.len())..];
         let planned =
             crate::widgets::column_paging::plan(mv, self.termcol_index, names.len(), room, |i| {
-                self.shown_width(&names[i])
+                self.drawn_width(&names[i])
             });
         match planned {
             Some(start) => self.scroll_columns_to(start),
@@ -6643,7 +6643,7 @@ impl DataTableState {
         let names = &self.column_order[self.frozen_shown().min(self.column_order.len())..];
         let guess = crate::widgets::column_widths::UNSEEN_WIDTH;
         let start = crate::widgets::column_paging::plan(mv, from, names.len(), room, |i| {
-            Some(self.shown_width(&names[i]).unwrap_or(guess))
+            Some(self.drawn_width(&names[i]).unwrap_or(guess))
         });
         if let Some(start) = start {
             self.scroll_columns_to(start);
@@ -6800,6 +6800,12 @@ impl DataTableState {
     /// The width a column was last drawn at, if it has been drawn.
     pub fn shown_width(&self, name: &str) -> Option<u16> {
         self.widths.shown(name, &self.width_dtype(name))
+    }
+
+    /// The width a column draws at in this view, if it has been drawn since the
+    /// widths were last relearned. What a sideways page is planned with.
+    fn drawn_width(&self, name: &str) -> Option<u16> {
+        self.widths.drawn(name, &self.width_dtype(name))
     }
 
     /// Set how each named column's width is chosen. Reads nothing: a fit is taken
@@ -9275,9 +9281,10 @@ impl DataTable {
         StatefulWidget::render(table, area, buf, state);
     }
 
-    /// The width a scrolling column is drawn at: the width it was last drawn at, or,
-    /// for one not drawn yet, measured from the rows on screen in the buffer held and
-    /// learned as drawing it would learn it. What a sideways page is planned with.
+    /// The width a scrolling column is drawn at: the width it was last drawn at in
+    /// this view, or, for one not drawn since, measured from the rows on screen in the
+    /// buffer held and learned as drawing it would learn it. What a sideways page is
+    /// planned with.
     fn measure_column(
         &self,
         state: &mut DataTableState,
@@ -9286,7 +9293,7 @@ impl DataTable {
         rows: usize,
         cap: u16,
     ) -> u16 {
-        if let Some(width) = state.shown_width(name) {
+        if let Some(width) = state.drawn_width(name) {
             return width;
         }
         let Some(page) = state.page_column(name, offset, rows) else {
@@ -14900,7 +14907,7 @@ mod tests {
             row_string(&buf, area, 0)
         };
         draw(&mut state);
-        assert!(state.shown_width("col29").is_none(), "not drawn yet");
+        assert!(state.drawn_width("col29").is_none(), "not drawn yet");
 
         state.scroll_columns(ColumnMove::Last);
         assert_eq!(state.termcol_index, 0, "nothing moves before the draw");

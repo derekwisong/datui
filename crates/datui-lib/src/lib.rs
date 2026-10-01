@@ -13078,13 +13078,6 @@ impl App {
         if self.info_modal.active {
             self.read_file_facts();
         }
-        // Enable the cheap footer-sum row count for a local Parquet hive directory.
-        if options.hive
-            && let Some(p) = path.as_ref().filter(|p| p.is_dir())
-            && let Some(state) = self.data_table_state.as_mut()
-        {
-            state.set_parquet_count_dir(p.clone());
-        }
         // The dataset is on screen now; whatever it still has to learn about itself is
         // read behind it.
         self.start_pending_footers();
@@ -17107,6 +17100,13 @@ impl App {
         // really reads the object store in place buffers like one.
         if path.is_some_and(source::scans_in_place) {
             state.set_remote_source();
+        }
+        // The cheap footer-sum row count, for a local Parquet hive directory. Asked
+        // here because a stat on a mount that has stopped answering hangs its thread.
+        if options.hive
+            && let Some(dir) = path.filter(|p| !source::is_remote_url(p) && p.is_dir())
+        {
+            state.set_parquet_count_dir(dir.to_path_buf());
         }
         Ok((state, label))
     }
@@ -27101,6 +27101,25 @@ mod file_facts_tests {
         open_resources(&mut app);
         assert!(matches!(app.file_facts(), Some(FileFacts::Failed(_))));
         assert_eq!(gate.calls.load(Ordering::SeqCst), 0, "no second read");
+    }
+
+    /// Installing a hive dataset takes what the open's worker found and looks at
+    /// nothing itself: a directory on the path is not counted by its footers unless the
+    /// worker said so.
+    #[test]
+    fn installing_a_hive_dataset_looks_at_no_directory() {
+        let (mut app, _rx, _tx) = app();
+        let dir = tempfile::tempdir().unwrap();
+        let lf = polars::df!("a" => [1i64]).unwrap().lazy();
+        let options = OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        };
+        let state = DataTableState::from_lazyframe(lf, &options).unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(state, Some(dir.path().to_path_buf()), &options, None);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.parquet_count_dir(), None);
     }
 
     /// A source with no file on this machine has nothing to read: the panel shows no

@@ -5224,6 +5224,31 @@ fn test_hive_dir_loads_and_counts_via_footers() {
     );
 }
 
+/// The open's worker, not the install, finds out that a hive path is a directory, so
+/// the dataset arrives already counting by its footers (#457).
+#[test]
+fn test_hive_dir_is_known_from_the_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let part = dir.path().join("year=2020");
+    std::fs::create_dir_all(&part).unwrap();
+    let mut df = df!("v" => [1i64, 2, 3]).unwrap();
+    ParquetWriter::new(File::create(part.join("data.parquet")).unwrap())
+        .finish(&mut df)
+        .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let opts = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().parquet_count_dir(),
+        Some(dir.path().to_path_buf())
+    );
+}
+
 /// Open a local directory of Parquet files and return the loaded app, or `None` if the
 /// open never finished.
 fn open_local_dataset(dir: &std::path::Path) -> App {

@@ -9290,8 +9290,7 @@ impl App {
             }
             KeyCode::Enter => match form.target() {
                 Err(error) => form.error = Some(error),
-                Ok(path) => {
-                    let format = form.format;
+                Ok((path, format)) => {
                     if path.exists() {
                         let shown = path.display().to_string();
                         self.pending_quality_export = Some((path, format));

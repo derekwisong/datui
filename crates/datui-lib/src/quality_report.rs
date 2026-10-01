@@ -1755,8 +1755,7 @@ fn describe_intent(
             ));
             if sampled {
                 evidence.push(
-                    "Sampled rows are distinct rows, so each repeat is in the data; \
-                     rows outside the sample are not checked"
+                    "Each repeat here is one in the data; unsampled rows are not checked"
                         .to_string(),
                 );
             }

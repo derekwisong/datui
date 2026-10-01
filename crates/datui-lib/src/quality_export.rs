@@ -995,18 +995,27 @@ impl ExportForm {
         self.path.set_focused(!self.on_format);
     }
 
-    /// Where to write: `~` and `$VAR` expanded, the form's extension added when the
-    /// path has none. A blank path is refused.
-    pub fn target(&self) -> Result<std::path::PathBuf, String> {
+    /// Where to write and in which form: `~` and `$VAR` expanded, a typed `.json`
+    /// or `.md` choosing the form, and the form's extension added when the path has
+    /// none. A blank path is refused.
+    pub fn target(&self) -> Result<(std::path::PathBuf, ReportFormat), String> {
         let typed = self.path.value().trim();
         if typed.is_empty() {
             return Err("Type a path to write to".to_string());
         }
         let mut path = crate::home::expand_user_path(typed);
+        let typed_format = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .and_then(|extension| {
+                ReportFormat::ALL
+                    .into_iter()
+                    .find(|format| extension.eq_ignore_ascii_case(format.extension()))
+            });
         if path.extension().is_none() {
             path.set_extension(self.format.extension());
         }
-        Ok(path)
+        Ok((path, typed_format.unwrap_or(self.format)))
     }
 }
 
@@ -1121,8 +1130,14 @@ mod tests {
         form.path.set_value("report");
         assert_eq!(
             form.target().unwrap(),
-            std::path::PathBuf::from("report.md")
+            (
+                std::path::PathBuf::from("report.md"),
+                ReportFormat::Markdown
+            )
         );
+        // A typed extension chooses the form.
+        form.path.set_value("report.json");
+        assert_eq!(form.target().unwrap().1, ReportFormat::Json);
         form.path.set_value("  ");
         assert!(form.target().is_err());
     }

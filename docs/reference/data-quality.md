@@ -479,7 +479,8 @@ reports them.
 <kbd>x</kbd> on a report page writes the report on screen to a file, from the
 results in memory: nothing is read, and the source may be gone. The dialog
 takes a path and a format; the path gets the format's extension when it has
-none, and changing the format changes a typed `.json` to `.md` or back. A file
+none, changing the format changes a typed `.json` to `.md` or back, and a typed
+`.json` or `.md` writes that format whatever the Format row says. A file
 that exists is overwritten only once confirmed, and declining keeps the dialog.
 
 | Format | Holds |

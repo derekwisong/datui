@@ -1122,6 +1122,16 @@ fn pack_facts(facts: &[String], width: usize, room: usize) -> Vec<String> {
                 *last = line;
                 break;
             }
+            // A line's only fact is cut short rather than given up, so a line
+            // never says only how much it left out.
+            if let [only] = last.as_mut_slice() {
+                let room =
+                    width.saturating_sub(glyphs::display_width(&format!("{sep}+{dropped} more")));
+                if room >= 8 {
+                    *only = fit(only, room);
+                    continue;
+                }
+            }
             last.pop();
             dropped += 1;
         }
@@ -4019,7 +4029,12 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             if lines.is_empty() {
                 "none declared".to_string()
             } else {
-                lines.join("; ")
+                // The row names it; the lines say what it costs.
+                lines
+                    .iter()
+                    .map(|line| line.strip_prefix("Column intent: ").unwrap_or(line))
+                    .collect::<Vec<_>>()
+                    .join("; ")
             }
         }),
         row(
@@ -4665,6 +4680,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A line with room for one fact keeps it, cut short, beside the count of the
+    /// rest, rather than saying only how much it left out.
+    #[test]
+    fn a_lone_fact_is_cut_rather_than_dropped() {
+        let facts = [
+            "Nearly unique: needs every row checked".to_string(),
+            "key repeats among 10,000 sampled rows only".to_string(),
+        ];
+        let lines = pack_facts(&facts, 37, 1);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("Nearly unique"), "{lines:?}");
+        assert!(lines[0].ends_with("+1 more"), "{lines:?}");
+        assert!(glyphs::display_width(&lines[0]) <= 37, "{lines:?}");
     }
 
     /// Facts wrap between facts, never inside one, and what does not fit is counted.

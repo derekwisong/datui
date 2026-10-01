@@ -19,8 +19,7 @@ Keys:
 
 / opens on SQL, or on the active query's mode.
 [query] default_mode in the config chooses another starting mode.
-SQL needs the sql build feature, on by default; a build without it
-offers Search and q-style, and opens on Search.
+A build without the sql feature has no SQL tab and opens on Search.
 
 Running a query — or clearing one — starts a fresh view: sidebar filters,
 sort, frozen columns and pivot/melt are dropped. This is deliberate; apply

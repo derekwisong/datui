@@ -335,7 +335,8 @@ See [large datasets](../advanced/performance-tips.md) for buffering and sampling
 
 ## Building without cloud support
 
-`cargo build --release --no-default-features` leaves out the cloud and HTTP
-dependencies ([features](../getting-started/installation.md#from-source)). A
+`cargo build --release --locked --no-default-features --features sql,streaming`
+leaves out the cloud and HTTP dependencies
+([features](../getting-started/installation.md#from-source)). A
 binary built that way rejects remote URLs with a message saying so, and a bucket
 in a configured collection reads `cloud support not in this build` when browsed.

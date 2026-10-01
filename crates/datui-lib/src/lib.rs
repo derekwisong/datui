@@ -15976,28 +15976,50 @@ impl App {
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
 
+    /// Download `url` to a temporary file. `stop` ends it early, while the server is
+    /// sending or while it is silent, and any failure removes the file; see
+    /// [`crate::download::read_to_temp`].
     #[cfg(feature = "http")]
     fn download_http_to_temp(
         url: &str,
         temp_dir: Option<&Path>,
         extension: Option<&str>,
+        stop: impl Fn() -> bool,
     ) -> Result<crate::download::TempDownload> {
-        let mut temp = crate::download::TempDownload::create(temp_dir, extension)?;
-        let agent = Self::http_agent(std::time::Duration::from_secs(300));
-        let mut response = agent.get(url).call().map_err(|e| {
-            color_eyre::eyre::eyre!("Download failed. Check the URL and your connection: {}", e)
-        })?;
-        let status = response.status();
-        if status.is_client_error() || status.is_server_error() {
-            return Err(color_eyre::eyre::eyre!(
-                "Server returned {} {}. Check the URL.",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown")
-            ));
-        }
-        std::io::copy(&mut response.body_mut().as_reader(), &mut temp)
-            .map_err(|_| color_eyre::eyre::eyre!("Download failed while saving the file."))?;
-        Ok(crate::download::TempDownload::keep(temp))
+        use crate::download::StreamError;
+
+        let url = url.to_string();
+        let open = move || {
+            let agent = Self::http_agent(std::time::Duration::from_secs(300));
+            let response = agent
+                .get(&url)
+                .call()
+                .map_err(|e| format!("Download failed. Check the URL and your connection: {e}"))?;
+            let status = response.status();
+            if status.is_client_error() || status.is_server_error() {
+                return Err(format!(
+                    "Server returned {} {}. Check the URL.",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("Unknown")
+                ));
+            }
+            // No length: ureq hands back a compressed answer decompressed, and the
+            // Content-Length it came with is the wire's, not the file's.
+            Ok((response.into_body().into_reader(), None))
+        };
+        crate::download::read_to_temp(temp_dir, extension, open, stop).map_err(
+            |error| match error {
+                StreamError::Open(message) => color_eyre::eyre::eyre!(message),
+                StreamError::Read(e) => {
+                    color_eyre::eyre::eyre!("Download failed partway. Check your connection: {e}")
+                }
+                StreamError::Short { expected, got } => color_eyre::eyre::eyre!(
+                    "Download failed partway: it ended after {got} of {expected} bytes."
+                ),
+                StreamError::Write(report) => report,
+                StreamError::Cut => color_eyre::eyre::eyre!("Download was cancelled."),
+            },
+        )
     }
 
     /// Stream one S3, GCS or Azure object to a temporary file, named for the user by
@@ -22325,12 +22347,16 @@ impl App {
                 }
                 let url = url.clone();
                 let options = options.clone();
+                // Stopped as a cloud download is; see `DoDownloadS3ToTemp`.
+                let cancelled = self.footer_progress.cancel_flag();
+                let stop = move || cancelled.load(std::sync::atomic::Ordering::Relaxed);
                 self.spawn_bg(Job::Load, "Downloading...", move |task_gen, tx| {
                     let ext = source::download_suffix(url.as_str());
                     let download = Self::download_http_to_temp(
                         url.as_str(),
                         options.temp_dir.as_deref(),
                         ext.as_deref(),
+                        stop,
                     )
                     .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
                     let _ = tx.send(AppEvent::BackgroundDownloadReady {

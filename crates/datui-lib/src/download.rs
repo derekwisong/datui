@@ -1,10 +1,10 @@
-//! Remote objects streamed to local files.
+//! Remote files downloaded to local ones.
 //!
-//! A store answers a GET with a stream of chunks. The stream is polled on the app's
-//! runtime and its chunks are written on the thread that asked, never on a runtime
-//! worker, with at most [`QUEUED_CHUNKS`] waiting between the two: a full queue stops
-//! the stream being polled, so a slow disk holds the transfer back instead of the
-//! object piling up in memory.
+//! A download is read on one side and written on the thread that asked, never on a
+//! runtime worker, with at most [`QUEUED_CHUNKS`] waiting between the two: a full
+//! queue stops the reading, so a slow disk holds the transfer back instead of the
+//! file piling up in memory. A store's stream is polled on the app's runtime; a
+//! blocking HTTP reader runs on a thread of its own.
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -43,21 +43,17 @@ impl TempDownload {
     }
 }
 
-/// Chunks queued between a store's stream and the thread writing them.
-#[cfg(feature = "cloud")]
+/// Chunks queued between the side reading a download and the thread writing it.
 pub const QUEUED_CHUNKS: usize = 4;
 
-/// How often a stream that has gone quiet checks whether it was stopped.
-#[cfg(feature = "cloud")]
+/// How often a download that has gone quiet checks whether it was stopped.
 const STALL_CHECK: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// What opening a stream answers: the stream and its length, when the store gave
-/// one, or why it could not be opened.
-#[cfg(feature = "cloud")]
+/// What opening a download answers: its stream or reader and its length, when the
+/// source gave one, or why it could not be opened.
 pub type Opened<S> = std::result::Result<(S, Option<u64>), String>;
 
-/// Why a stream did not arrive whole.
-#[cfg(feature = "cloud")]
+/// Why a download did not arrive whole.
 #[derive(Debug)]
 pub enum StreamError {
     /// The request failed, or the opener turned its answer down.
@@ -72,10 +68,9 @@ pub enum StreamError {
     Cut,
 }
 
-/// What the runtime side hands the writer, in order.
-#[cfg(feature = "cloud")]
+/// What the reading side hands the writer, in order.
 enum Piece<B> {
-    /// The request was answered; the length, when the store gave one.
+    /// The request was answered; the length, when the source gave one.
     Opened(Option<u64>),
     Refused(String),
     Chunk(B),
@@ -83,21 +78,74 @@ enum Piece<B> {
     End,
 }
 
+/// Hand each chunk `next` gives to `write`, in order, until the end. `next` answers
+/// `None` once the reading side is gone or `stop` says so. Returns the bytes written.
+fn receive<B: AsRef<[u8]>>(
+    stop: &impl Fn() -> bool,
+    mut next: impl FnMut() -> Option<Piece<B>>,
+    mut write: impl FnMut(&[u8]) -> Result<()>,
+) -> std::result::Result<u64, StreamError> {
+    let mut expected = None;
+    let mut written = 0u64;
+    loop {
+        if stop() {
+            return Err(StreamError::Cut);
+        }
+        match next() {
+            Some(Piece::Opened(len)) => expected = len,
+            Some(Piece::Refused(error)) => return Err(StreamError::Open(error)),
+            Some(Piece::Chunk(chunk)) => {
+                let chunk = chunk.as_ref();
+                write(chunk).map_err(StreamError::Write)?;
+                written += chunk.len() as u64;
+            }
+            Some(Piece::Failed(error)) => return Err(StreamError::Read(error)),
+            Some(Piece::End) => break,
+            None => return Err(StreamError::Cut),
+        }
+    }
+    match expected {
+        Some(expected) if expected != written => Err(StreamError::Short {
+            expected,
+            got: written,
+        }),
+        _ => Ok(written),
+    }
+}
+
+/// A new file in `dir`, as [`TempDownload::create`] names it, filled by `fill`
+/// through the writer it is handed. Any failure, and a stop, removes the partial
+/// file before this returns.
+fn fill_temp(
+    dir: Option<&Path>,
+    extension: Option<&str>,
+    fill: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<()>) -> std::result::Result<u64, StreamError>,
+) -> std::result::Result<TempDownload, StreamError> {
+    use std::io::Write;
+
+    let mut file = TempDownload::create(dir, extension).map_err(StreamError::Write)?;
+    let unwritable = |e: std::io::Error| eyre!("Could not write the downloaded file: {e}");
+    fill(&mut |chunk| file.write_all(chunk).map_err(unwritable))?;
+    file.flush()
+        .map_err(|e| StreamError::Write(unwritable(e)))?;
+    Ok(TempDownload::keep(file))
+}
+
 /// Run `open` on `runtime` and hand each chunk of the stream it answers with to
 /// `write` on this thread, in order. Returns the bytes written.
 ///
 /// `open` gives the stream and its length, when known. `stop` is checked between
 /// chunks, and every [`STALL_CHECK`] while the store is silent; so is whether this
-/// side has stopped listening. Ends in an error,
-/// never a short success, when the open or a chunk fails, `write` refuses one, `stop`
-/// says so, or the runtime shuts down mid-transfer; the request is dropped with the
-/// stream then. Must not be called on a runtime worker: it blocks.
+/// side has stopped listening. Ends in an error, never a short success, when the
+/// open or a chunk fails, `write` refuses one, `stop` says so, or the runtime shuts
+/// down mid-transfer; the request is dropped with the stream then. Must not be
+/// called on a runtime worker: it blocks.
 #[cfg(feature = "cloud")]
 pub fn stream_into<O, S, B, E>(
     runtime: &tokio::runtime::Handle,
     open: O,
     stop: impl Fn() -> bool + Clone + Send + Sync + 'static,
-    mut write: impl FnMut(&[u8]) -> Result<()>,
+    write: impl FnMut(&[u8]) -> Result<()>,
 ) -> std::result::Result<u64, StreamError>
 where
     O: std::future::Future<Output = Opened<S>> + Send + 'static,
@@ -142,32 +190,7 @@ where
             }
         }
     });
-    let mut expected = None;
-    let mut written = 0u64;
-    loop {
-        if stop() {
-            return Err(StreamError::Cut);
-        }
-        match rx.blocking_recv() {
-            Some(Piece::Opened(len)) => expected = len,
-            Some(Piece::Refused(error)) => return Err(StreamError::Open(error)),
-            Some(Piece::Chunk(chunk)) => {
-                let chunk = chunk.as_ref();
-                write(chunk).map_err(StreamError::Write)?;
-                written += chunk.len() as u64;
-            }
-            Some(Piece::Failed(error)) => return Err(StreamError::Read(error)),
-            Some(Piece::End) => break,
-            None => return Err(StreamError::Cut),
-        }
-    }
-    match expected {
-        Some(expected) if expected != written => Err(StreamError::Short {
-            expected,
-            got: written,
-        }),
-        _ => Ok(written),
-    }
+    receive(&stop, || rx.blocking_recv(), write)
 }
 
 /// `future`'s output, or `None` once `stop` says so while it is still pending.
@@ -204,16 +227,90 @@ where
     B: AsRef<[u8]> + Send + 'static,
     E: std::fmt::Display,
 {
-    use std::io::Write;
+    fill_temp(dir, extension, |write| {
+        stream_into(runtime, open, stop, write)
+    })
+}
 
-    let mut file = TempDownload::create(dir, extension).map_err(StreamError::Write)?;
-    let unwritable = |e: std::io::Error| eyre!("Could not write the downloaded file: {e}");
-    stream_into(runtime, open, stop, |chunk| {
-        file.write_all(chunk).map_err(unwritable)
-    })?;
-    file.flush()
-        .map_err(|e| StreamError::Write(unwritable(e)))?;
-    Ok(TempDownload::keep(file))
+/// Bytes asked of a blocking reader at a time.
+#[cfg(feature = "http")]
+const READ_CHUNK: usize = 64 * 1024;
+
+/// Run `open` on a thread of its own and hand each chunk read from the reader it
+/// answers with to `write` on this thread, in order. Returns the bytes written; a
+/// length `open` gives must be what arrives.
+///
+/// The reads run at most [`QUEUED_CHUNKS`] ahead of the writes, and a server that
+/// stops sending holds that thread and not this one: `stop` is checked between
+/// chunks and every [`STALL_CHECK`] while nothing arrives. The reading thread ends at
+/// its next chunk once this side has gone.
+#[cfg(feature = "http")]
+pub fn read_into<R: std::io::Read>(
+    open: impl FnOnce() -> Opened<R> + Send + 'static,
+    stop: impl Fn() -> bool,
+    write: impl FnMut(&[u8]) -> Result<()>,
+) -> std::result::Result<u64, StreamError> {
+    use std::sync::mpsc::RecvTimeoutError;
+
+    let (tx, rx) = std::sync::mpsc::sync_channel(QUEUED_CHUNKS);
+    std::thread::Builder::new()
+        .name("datui-download".to_string())
+        .spawn(move || {
+            let mut reader = match open() {
+                Ok((reader, len)) => {
+                    if tx.send(Piece::Opened(len)).is_err() {
+                        return;
+                    }
+                    reader
+                }
+                Err(error) => {
+                    let _ = tx.send(Piece::Refused(error));
+                    return;
+                }
+            };
+            loop {
+                let mut chunk = vec![0; READ_CHUNK];
+                let piece = match reader.read(&mut chunk) {
+                    Ok(0) => Piece::End,
+                    Ok(read) => {
+                        chunk.truncate(read);
+                        Piece::Chunk(chunk)
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => Piece::Failed(error.to_string()),
+                };
+                let last = !matches!(piece, Piece::Chunk(_));
+                if tx.send(piece).is_err() || last {
+                    return;
+                }
+            }
+        })
+        .map_err(|e| StreamError::Open(e.to_string()))?;
+    let next = || loop {
+        match rx.recv_timeout(STALL_CHECK) {
+            Ok(piece) => return Some(piece),
+            Err(RecvTimeoutError::Timeout) if !stop() => {}
+            Err(RecvTimeoutError::Timeout) => return None,
+            // Only a reader that panicked leaves without saying how it ended.
+            Err(RecvTimeoutError::Disconnected) => {
+                return Some(Piece::Failed("the download stopped".to_string()));
+            }
+        }
+    };
+    receive(&stop, next, write)
+}
+
+/// Read what `open` answers with into a new file in `dir`, as
+/// [`TempDownload::create`] names it; see [`read_into`]. Any failure, and a stop,
+/// removes the partial file before this returns.
+#[cfg(feature = "http")]
+pub fn read_to_temp<R: std::io::Read>(
+    dir: Option<&Path>,
+    extension: Option<&str>,
+    open: impl FnOnce() -> Opened<R> + Send + 'static,
+    stop: impl Fn() -> bool,
+) -> std::result::Result<TempDownload, StreamError> {
+    fill_temp(dir, extension, |write| read_into(open, stop, write))
 }
 
 #[cfg(all(test, feature = "cloud"))]
@@ -577,5 +674,200 @@ mod tests {
         let error = waiter.join().expect("no panic").unwrap_err();
         assert!(matches!(error, StreamError::Cut), "{error:?}");
         assert_eq!(files_in(dir.path()), 0);
+    }
+}
+
+#[cfg(all(test, feature = "http"))]
+mod read_tests {
+    use super::*;
+    use std::io::Read;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// Hands out `chunks` one per read, then blocks until `release` sends or is
+    /// dropped, then ends. Counts its reads, and says when it is dropped.
+    struct Source {
+        chunks: std::vec::IntoIter<Vec<u8>>,
+        release: Option<std::sync::mpsc::Receiver<()>>,
+        reads: Arc<AtomicUsize>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Read for Source {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if let Some(chunk) = self.chunks.next() {
+                buf[..chunk.len()].copy_from_slice(&chunk);
+                return Ok(chunk.len());
+            }
+            if let Some(release) = self.release.take() {
+                let _ = release.recv();
+            }
+            Ok(0)
+        }
+    }
+
+    impl Drop for Source {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn source(chunks: Vec<Vec<u8>>, release: Option<std::sync::mpsc::Receiver<()>>) -> Source {
+        Source {
+            chunks: chunks.into_iter(),
+            release,
+            reads: Arc::default(),
+            dropped: Arc::default(),
+        }
+    }
+
+    fn files_in(dir: &Path) -> usize {
+        std::fs::read_dir(dir).unwrap().count()
+    }
+
+    #[track_caller]
+    fn wait_until(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Many reads land in order, byte for byte, and a length given is held to.
+    #[test]
+    fn a_reader_lands_whole_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let chunks = (0..40u8)
+            .map(|i| vec![i; 1000 + usize::from(i) * 13])
+            .collect::<Vec<_>>();
+        let whole = chunks.concat();
+        let len = whole.len() as u64;
+        let reader = source(chunks.clone(), None);
+        let file = read_to_temp(
+            Some(dir.path()),
+            Some("csv"),
+            move || Ok((reader, Some(len))),
+            || false,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(file.path()).unwrap(), whole);
+        assert!(file.path().to_string_lossy().ends_with(".csv"));
+
+        let reader = source(chunks, None);
+        let error = read_to_temp(
+            Some(dir.path()),
+            None,
+            move || Ok((reader, Some(len + 1))),
+            || false,
+        )
+        .unwrap_err();
+        assert!(matches!(error, StreamError::Short { .. }), "{error:?}");
+        drop(file);
+        assert_eq!(files_in(dir.path()), 0);
+    }
+
+    /// A refused request and a read that fails each end in their error, with no file.
+    #[test]
+    fn a_refusal_or_failed_read_leaves_no_file() {
+        struct Reset(bool);
+        impl Read for Reset {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::replace(&mut self.0, true) {
+                    return Err(std::io::ErrorKind::ConnectionReset.into());
+                }
+                buf[..3].copy_from_slice(b"a,b");
+                Ok(3)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let error = read_to_temp(
+            Some(dir.path()),
+            None,
+            || Err::<(Reset, _), _>("Server returned 404 Not Found.".to_string()),
+            || false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, StreamError::Open(e) if e.contains("404")),
+            "{error:?}"
+        );
+        let error = read_to_temp(
+            Some(dir.path()),
+            None,
+            || Ok((Reset(false), None)),
+            || false,
+        )
+        .unwrap_err();
+        assert!(matches!(error, StreamError::Read(_)), "{error:?}");
+        assert_eq!(files_in(dir.path()), 0);
+    }
+
+    /// A slow disk holds the reads back: never more than the queue ahead.
+    #[test]
+    fn a_slow_writer_holds_the_reads_back() {
+        let reader = source((0..64).map(|i| vec![i; 1024]).collect(), None);
+        let reads = reader.reads.clone();
+        let mut written = 0usize;
+        let mut ahead = 0usize;
+        let total = read_into(
+            move || Ok((reader, None)),
+            || false,
+            |_| {
+                std::thread::sleep(Duration::from_millis(2));
+                written += 1;
+                ahead = ahead.max(reads.load(Ordering::SeqCst) - written);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(total, 64 * 1024);
+        // The queue, one read waiting to go into it and the one being written.
+        assert!(ahead <= QUEUED_CHUNKS + 2, "read {ahead} chunks ahead");
+    }
+
+    /// A server gone quiet mid-transfer: a stop ends the download promptly and
+    /// removes the file, and the reading thread lets go at its next chunk.
+    #[test]
+    fn a_stop_while_the_server_is_silent_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (release, held) = std::sync::mpsc::channel();
+        let reader = source(vec![vec![1; 1024]], Some(held));
+        let dropped = reader.dropped.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopper = {
+            let stop = stop.clone();
+            let dir = dir.path().to_path_buf();
+            std::thread::spawn(move || {
+                // Once the first chunk is on disk, the server has gone quiet.
+                wait_until("the first chunk landed", || {
+                    std::fs::read_dir(&dir)
+                        .unwrap()
+                        .any(|f| f.unwrap().metadata().unwrap().len() == 1024)
+                });
+                stop.store(true, Ordering::SeqCst);
+                Instant::now()
+            })
+        };
+        let error = read_to_temp(
+            Some(dir.path()),
+            None,
+            move || Ok((reader, None)),
+            move || stop.load(Ordering::SeqCst),
+        )
+        .unwrap_err();
+        let stopped_at = stopper.join().unwrap();
+        assert!(matches!(error, StreamError::Cut), "{error:?}");
+        assert!(stopped_at.elapsed() < Duration::from_secs(2));
+        assert_eq!(files_in(dir.path()), 0);
+
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "still waiting on the server"
+        );
+        release.send(()).unwrap();
+        wait_until("the reader was let go", || dropped.load(Ordering::SeqCst));
     }
 }

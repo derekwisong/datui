@@ -15276,6 +15276,16 @@ fn serve_over_http(
     name: &str,
     body: Vec<u8>,
 ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    serve_over_http_stalling(name, body, None)
+}
+
+/// [`serve_over_http`], going quiet for `stall.1` after the first `stall.0` bytes of
+/// each body.
+fn serve_over_http_stalling(
+    name: &str,
+    body: Vec<u8>,
+    stall: Option<(usize, std::time::Duration)>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     use std::io::{Read, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15301,12 +15311,83 @@ fn serve_over_http(
                  Content-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len(),
             );
-            if get {
-                let _ = stream.write_all(&body);
+            if !get {
+                continue;
             }
+            let (first, rest) = body.split_at(stall.map_or(0, |(at, _)| at.min(body.len())));
+            let _ = stream.write_all(first).and_then(|()| stream.flush());
+            if let Some((_, quiet)) = stall {
+                std::thread::sleep(quiet);
+            }
+            let _ = stream.write_all(rest);
         }
     });
     (url, fetched)
+}
+
+/// Ctrl+O while an HTTP server has gone quiet mid-body stops the download and
+/// removes its file, long before the server would have sent the rest.
+#[test]
+fn an_abandoned_http_download_stops_while_the_server_is_silent() {
+    use std::time::{Duration, Instant};
+    common::isolate_cache();
+    let quiet = Duration::from_secs(20);
+    let mut body = b"id,name\n".to_vec();
+    body.resize(64 * 1024, b'x');
+    let (url, _) = serve_over_http_stalling("stalled.csv", body, Some((1024, quiet)));
+    let dir = tempfile::tempdir().unwrap();
+    let options = OpenOptions {
+        temp_dir: Some(dir.path().to_path_buf()),
+        ..OpenOptions::default()
+    };
+    let files = || {
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|f| f.unwrap().metadata().unwrap().len())
+            .collect::<Vec<_>>()
+    };
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut next = Some(AppEvent::Open(vec![PathBuf::from(&url)], options));
+    while files() != [1024] {
+        assert!(Instant::now() < deadline, "the first KiB never landed");
+        next = match next.take() {
+            Some(event) => app.event(&event),
+            None if app.awaiting_download_confirmation() => Some(key(KeyCode::Enter)),
+            None => rx.recv_timeout(Duration::from_millis(10)).ok(),
+        };
+    }
+
+    let began = Instant::now();
+    let mut next = Some(ctrl_o());
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    while !files().is_empty() {
+        assert!(
+            began.elapsed() < quiet / 4,
+            "still downloading: {:?}",
+            files()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The stopped worker reports, for a load nobody is waiting on.
+    loop {
+        let event = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the stopped download reports");
+        let failed = matches!(event, AppEvent::BackgroundFailed { .. });
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
+        }
+        if failed {
+            break;
+        }
+    }
+    assert_eq!(app.error_message(), None);
 }
 
 /// A CSV over HTTP is read again from the copy already downloaded, not fetched again.

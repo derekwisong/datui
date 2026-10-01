@@ -17,7 +17,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 const FILES: usize = 4;
@@ -113,13 +113,26 @@ fn screen(app: &mut App) -> String {
 
 /// The bucket's prefix, opened, with Data Quality's Setup on screen.
 fn open_remote(s3: &FakeS3) -> (App, mpsc::Receiver<AppEvent>) {
+    open_remote_with(s3, AppConfig::default(), None)
+}
+
+/// [`open_remote`] with `config` (its cloud settings pointed at the bucket) and,
+/// when given, `cache` as the cache directory local copies are written under.
+fn open_remote_with(
+    s3: &FakeS3,
+    config: AppConfig,
+    cache: Option<&Path>,
+) -> (App, mpsc::Receiver<AppEvent>) {
     let config = AppConfig {
         cloud: s3.cloud_config(),
-        ..AppConfig::default()
+        ..config
     };
     let theme = datui::Theme::from_config(&config.theme).unwrap();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new_with_config(tx, crate::common::test_runtime(), theme, config);
+    if let Some(cache) = cache {
+        app.use_cache(datui::CacheManager::with_dir(cache.to_path_buf()));
+    }
     settle(
         &mut app,
         &rx,
@@ -279,7 +292,8 @@ fn a_remote_prefix_is_sampled_once_and_its_edits_ask_the_bucket_for_nothing() {
 #[test]
 fn a_full_scan_is_compared_again_without_a_request() {
     let s3 = FakeS3::serve("lake", remote_events());
-    let (mut app, rx) = open_remote(&s3);
+    // Each pass over the bucket, as a dataset past the local copy's budget reads.
+    let (mut app, rx) = open_remote_with(&s3, copies_off(), None);
 
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| {
         plan.method = datui::sampling::SampleMethod::EveryRow;
@@ -347,4 +361,358 @@ fn a_full_scan_is_compared_again_without_a_request() {
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| plan.temporal_roles = roles());
     assert!(!reads.is_empty(), "roles on a full scan read again");
     assert!(wire.requests() > 0, "{wire:?}");
+}
+
+fn copies_off() -> AppConfig {
+    let mut config = AppConfig::default();
+    config.performance.quality_local_copy_mb = 0;
+    config
+}
+
+fn full_scan(plan: &mut datui::data_quality::DataQualityPlan) {
+    plan.method = datui::sampling::SampleMethod::EveryRow;
+    plan.compute = QualityCompute::Full;
+    plan.grain = window("1d");
+}
+
+/// The local copies under `cache`.
+fn copies(cache: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(cache.join("quality-copies"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("copy-"))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn bytes_under(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        bytes_under(&path)
+                    } else {
+                        entry.metadata().map(|meta| meta.len()).unwrap_or(0)
+                    }
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// The report, without what says how it was read: the copy and the source must
+/// measure the same thing.
+fn measured(app: &App) -> String {
+    let mut results = app.analysis_modal.data_quality_results.clone().unwrap();
+    results.reads = None;
+    results.source = None;
+    // Each app draws its own seed; a full scan samples nothing with it.
+    results.sample_seed = 0;
+    format!("{results:?}")
+}
+
+/// Run a full scan staged in Setup, confirming it, and settle.
+fn run_staged(app: &mut App, rx: &mpsc::Receiver<AppEvent>) -> Vec<QualityStage> {
+    let mut first = press(app, KeyCode::Enter);
+    if app.analysis_modal.data_quality_confirm_run {
+        first = press(app, KeyCode::Enter);
+    }
+    settle(app, rx, first)
+}
+
+/// A full scan within the copy budget fetches each object once, with one request
+/// each, and every pass reads the copy. Setup says so before Run, the report says
+/// so after, and the copy measures what the source measures. A second full scan
+/// with roles reads the copy again and asks the bucket for nothing.
+#[test]
+fn a_full_scan_fetches_each_object_once_and_reuses_the_copy() {
+    let objects = remote_events();
+    let total: u64 = objects.values().map(|bytes| bytes.len() as u64).sum();
+    let s3 = FakeS3::serve("lake", objects);
+    let cache = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
+
+    full_scan(&mut app.analysis_modal.data_quality_plan);
+    let text = screen(&mut app);
+    assert!(
+        text.contains("One fetch of 4 objects") && text.contains("into a local copy"),
+        "{text}"
+    );
+    let (reads, wire) = edit_and_run(&mut app, &rx, &s3, full_scan);
+    assert_eq!(reads, [QualityStage::CopyingSource], "one read: the fetch");
+    assert_eq!(
+        wire,
+        WireCount {
+            lists: 0,
+            heads: 0,
+            gets: FILES as u64,
+            bytes: total,
+        },
+        "each object once, whole"
+    );
+    let results = app.analysis_modal.data_quality_results.clone().unwrap();
+    assert_eq!(results.evaluated_rows, FILES * ROWS);
+    let copy = results
+        .reads
+        .unwrap()
+        .copy
+        .expect("the passes read the copy");
+    assert!(copy.fetched && copy.bytes == total && copy.objects == FILES);
+    let held = copies(cache.path());
+    assert_eq!(held.len(), 1);
+    assert!(bytes_under(&held[0]) >= total);
+    assert_eq!(app.quality_copy_bytes(), total);
+    let fetched = measured(&app);
+
+    // The same study read from the bucket in its passes measures the same.
+    let source = FakeS3::serve("lake", remote_events());
+    let (mut direct, direct_rx) = open_remote_with(&source, copies_off(), None);
+    edit_and_run(&mut direct, &direct_rx, &source, full_scan);
+    assert!(source.wire.count().gets > FILES as u64, "several passes");
+    assert_eq!(measured(&direct), fetched, "the copy reads as the source");
+
+    // A role is a new measurement: it reads the copy, not the bucket.
+    press(&mut app, KeyCode::Char('e'));
+    app.analysis_modal.data_quality_plan.temporal_roles = roles();
+    let text = screen(&mut app);
+    assert!(text.contains("passes over the local copy"), "{text}");
+    assert!(
+        text.contains("local copy"),
+        "the Read rule names it: {text}"
+    );
+    let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| plan.temporal_roles = roles());
+    assert!(reads.is_empty(), "{reads:?}");
+    assert_eq!(wire, WireCount::default());
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert!(!results.temporal.is_empty(), "the interval is measured");
+    assert!(!results.reads.unwrap().copy.unwrap().fetched);
+}
+
+/// `d` in Setup releases the copy and its files with the kept rows; Setup says the
+/// next run fetches again, and it does. Opening the dataset again removes the copy
+/// too.
+#[test]
+fn a_copy_is_released_by_d_and_by_opening_again() {
+    let s3 = FakeS3::serve("lake", remote_events());
+    let cache = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
+    edit_and_run(&mut app, &rx, &s3, full_scan);
+    assert_eq!(copies(cache.path()).len(), 1);
+
+    press(&mut app, KeyCode::Char('e'));
+    let text = screen(&mut app);
+    assert!(
+        text.contains("local copy"),
+        "the Read rule names it: {text}"
+    );
+    press(&mut app, KeyCode::Char('d'));
+    assert!(copies(cache.path()).is_empty(), "released, the files go");
+    assert_eq!(app.quality_copy_bytes(), 0);
+    assert!(
+        app.flash_message()
+            .is_some_and(|flash| flash.starts_with("Released the local copy")),
+        "{:?}",
+        app.flash_message()
+    );
+    app.analysis_modal.data_quality_plan.temporal_roles = roles();
+    let text = screen(&mut app);
+    assert!(text.contains("released, so fetched again"), "{text}");
+    let before = s3.wire.count();
+    let reads = run_staged(&mut app, &rx);
+    assert_eq!(reads, [QualityStage::CopyingSource]);
+    assert_eq!(
+        s3.wire.count().since(&before).gets,
+        FILES as u64,
+        "fetched again"
+    );
+    assert_eq!(copies(cache.path()).len(), 1);
+
+    settle(
+        &mut app,
+        &rx,
+        Some(AppEvent::Open(
+            vec![PathBuf::from("s3://lake/events/")],
+            OpenOptions::default(),
+        )),
+    );
+    assert!(app.data_table_state.is_some());
+    assert!(
+        copies(cache.path()).is_empty(),
+        "a reopened dataset fetches anew"
+    );
+    assert_eq!(app.quality_copy_bytes(), 0);
+}
+
+/// Two objects of about 0.8 MB of noise each: past a 1 MiB budget.
+fn large_events() -> BTreeMap<String, Vec<u8>> {
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    (0..2)
+        .map(|file| {
+            let noise = (0..100_000)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state
+                })
+                .collect::<Vec<u64>>();
+            let mut df = df!(
+                "id" => (0..100_000i64).collect::<Vec<_>>(),
+                "noise" => noise,
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut df).unwrap();
+            (format!("events/part-{file}.parquet"), bytes)
+        })
+        .collect()
+}
+
+/// Past `performance.quality_local_copy_mb` a full scan reads the bucket in its
+/// passes as before, and Setup says why before Run. Nothing is written locally.
+#[test]
+fn above_the_budget_a_full_scan_reads_the_source_in_passes() {
+    let objects = large_events();
+    let total: u64 = objects.values().map(|bytes| bytes.len() as u64).sum();
+    assert!(total > 1024 * 1024, "{total}");
+    let s3 = FakeS3::serve("lake", objects);
+    let cache = tempfile::tempdir().unwrap();
+    let mut config = AppConfig::default();
+    config.performance.quality_local_copy_mb = 1;
+    let (mut app, rx) = {
+        let config = AppConfig {
+            cloud: s3.cloud_config(),
+            ..config
+        };
+        let theme = datui::Theme::from_config(&config.theme).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new_with_config(tx, crate::common::test_runtime(), theme, config);
+        app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
+        settle(
+            &mut app,
+            &rx,
+            Some(AppEvent::Open(
+                vec![PathBuf::from("s3://lake/events/")],
+                OpenOptions::default(),
+            )),
+        );
+        press(&mut app, KeyCode::Char('a'));
+        app.analysis_modal.sidebar_state.select(Some(3));
+        press(&mut app, KeyCode::Enter);
+        (app, rx)
+    };
+    let full = |plan: &mut datui::data_quality::DataQualityPlan| {
+        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.compute = QualityCompute::Full;
+    };
+    full(&mut app.analysis_modal.data_quality_plan);
+    let text = screen(&mut app);
+    assert!(text.contains("passes over the source"), "{text}");
+    assert!(text.contains("Too large to keep a local copy"), "{text}");
+    let (reads, wire) = edit_and_run(&mut app, &rx, &s3, full);
+    assert!(!reads.contains(&QualityStage::CopyingSource), "{reads:?}");
+    assert!(reads.contains(&QualityStage::ProfilingColumns), "{reads:?}");
+    assert!(wire.gets > 2, "a pass per check: {wire:?}");
+    assert!(copies(cache.path()).is_empty());
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert!(results.reads.unwrap().copy.is_none());
+}
+
+/// Handle events until the run's worker has exited.
+fn until_the_worker_exits(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while app.background_work_in_flight() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never exited"
+        );
+        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
+            let mut next = Some(event);
+            while let Some(event) = next.take() {
+                next = app.event(&event);
+            }
+        }
+    }
+}
+
+/// Esc while the copy is being fetched stops it at its next chunk, and the partial
+/// copy is removed; nothing is kept.
+#[test]
+fn a_cancel_mid_fetch_leaves_no_copy() {
+    let s3 = FakeS3::serve("lake", remote_events());
+    let cache = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
+    s3.slow_gets(300);
+    full_scan(&mut app.analysis_modal.data_quality_plan);
+    let before = s3.wire.count();
+    let mut next = press(&mut app, KeyCode::Enter);
+    if app.analysis_modal.data_quality_confirm_run {
+        next = press(&mut app, KeyCode::Enter);
+    }
+    let generation = app.task_generation();
+    loop {
+        let event = match next.take() {
+            Some(event) => event,
+            None => rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("the run reports its stages"),
+        };
+        let fetching = matches!(
+            &event,
+            AppEvent::BackgroundQualityPhase { generation: g, phase }
+                if *g == generation && phase.stage == QualityStage::CopyingSource
+        );
+        next = app.event(&event);
+        if fetching {
+            break;
+        }
+    }
+    // The first object's answer is still on its way.
+    press(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.computing.is_none(), "cancelled");
+    until_the_worker_exits(&mut app, &rx);
+    let wire = s3.wire.count().since(&before);
+    assert!(
+        wire.gets < FILES as u64,
+        "stopped before the last object: {wire:?}"
+    );
+    assert!(copies(cache.path()).is_empty(), "the partial copy is gone");
+    assert_eq!(app.quality_copy_bytes(), 0);
+}
+
+/// An object gone from the bucket fails the fetch partway: the run says so, and the
+/// objects already copied are removed with the rest.
+#[test]
+fn a_failed_fetch_leaves_no_copy() {
+    let s3 = FakeS3::serve("lake", remote_events());
+    let cache = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_remote_with(&s3, AppConfig::default(), Some(cache.path()));
+    s3.remove(&format!("events/part-{}.parquet", FILES - 1));
+    full_scan(&mut app.analysis_modal.data_quality_plan);
+    let before = s3.wire.count();
+    let reads = run_staged(&mut app, &rx);
+    assert_eq!(reads, [QualityStage::CopyingSource]);
+    until_the_worker_exits(&mut app, &rx);
+    assert!(app.modal_showing(), "the failure is shown");
+    assert!(app.analysis_modal.data_quality_results.is_none());
+    assert_eq!(
+        s3.wire.count().since(&before).gets,
+        FILES as u64 - 1,
+        "three copied; the stand-in counts no GET of a missing key"
+    );
+    assert!(
+        copies(cache.path()).is_empty(),
+        "the objects copied went too"
+    );
+    assert_eq!(app.quality_copy_bytes(), 0);
 }

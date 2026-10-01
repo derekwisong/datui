@@ -15707,6 +15707,22 @@ fn a_freeze_survives_a_narrow_window() {
     assert_eq!(state.locked_columns_count(), 4, "the freeze is kept");
     assert!(state.frozen_shown() < 4, "{narrow}");
     assert!(narrow.contains(g.rule_broken), "{narrow}");
+    // A view saved now keeps the freeze asked for, not what this window fits.
+    let view = app
+        .create_template_from_current_state(
+            "narrow".to_string(),
+            None,
+            datui::template::MatchCriteria {
+                exact_path: None,
+                relative_path: None,
+                path_pattern: None,
+                filename_pattern: None,
+                schema_columns: None,
+                schema_types: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(view.settings.locked_columns_count, 4);
 
     // Sort & Filter opens and changes the freeze at this size: L on a frozen
     // column pulls the boundary back to it.

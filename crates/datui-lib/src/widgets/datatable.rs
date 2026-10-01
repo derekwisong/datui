@@ -2984,6 +2984,42 @@ impl DataTableState {
         )
     }
 
+    /// The rows string inference reads: the first `sample_rows` of the `targets` only,
+    /// trimmed so inference sees "1" not " 1 ", with blanks as null so "all null" and
+    /// the accept test see normalized values. Only the targets are selected, so the
+    /// other columns are neither decoded nor held; the frame the table shows keeps them.
+    fn string_inference_sample(
+        lf: LazyFrame,
+        targets: &[String],
+        sample_rows: usize,
+    ) -> PolarsResult<DataFrame> {
+        let whitespace_pat = lit(PlSmallStr::from_static(" \t\n\r"));
+        let trimmed: Vec<Expr> = targets
+            .iter()
+            .map(|c| {
+                let name = PlSmallStr::from(c.as_str());
+                col(name.clone())
+                    .str()
+                    .strip_chars(whitespace_pat.clone())
+                    .alias(name)
+            })
+            .collect();
+        let blank_to_null: Vec<Expr> = targets
+            .iter()
+            .map(|c| {
+                let name = PlSmallStr::from(c.as_str());
+                when(col(name.clone()).eq(lit(PlSmallStr::from_static(""))))
+                    .then(Null {}.lit())
+                    .otherwise(col(name.clone()))
+                    .alias(name)
+            })
+            .collect();
+        lf.limit(sample_rows as u32)
+            .select(trimmed)
+            .with_columns(blank_to_null)
+            .collect()
+    }
+
     /// Type string columns from the first `sample_rows` rows: trim, then keep the first
     /// of Date, Datetime, Time, Duration, Int64 and Float64 (as `types` allows) that
     /// parses every sampled value, as lazy expressions over `lf`.
@@ -3013,33 +3049,7 @@ impl DataTableState {
         }
         use polars::datatypes::TimeUnit;
         let whitespace_pat = lit(PlSmallStr::from_static(" \t\n\r"));
-        // Re-collect sample with values trimmed so inference sees "1" not " 1 "
-        let trim_sample_exprs: Vec<Expr> = target_cols
-            .iter()
-            .map(|c| {
-                col(PlSmallStr::from(c.as_str()))
-                    .str()
-                    .strip_chars(whitespace_pat.clone())
-                    .alias(PlSmallStr::from(c.as_str()))
-            })
-            .collect();
-        // Treat blank (empty string after trim) as null so "all null" and accept_type use normalized semantics.
-        let blank_to_null_exprs: Vec<Expr> = target_cols
-            .iter()
-            .map(|c| {
-                let name = PlSmallStr::from(c.as_str());
-                when(col(name.clone()).eq(lit(PlSmallStr::from_static(""))))
-                    .then(Null {}.lit())
-                    .otherwise(col(name.clone()))
-                    .alias(name)
-            })
-            .collect();
-        let sample_df = lf
-            .clone()
-            .limit(sample_rows as u32)
-            .with_columns(trim_sample_exprs)
-            .with_columns(blank_to_null_exprs)
-            .collect()?;
+        let sample_df = Self::string_inference_sample(lf.clone(), &target_cols, sample_rows)?;
         log::debug!(
             target: "datui",
             "string inference sample: {} rows x {} columns for {} targets, {} bytes",
@@ -9156,6 +9166,150 @@ mod checkpoint_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn names(df: &DataFrame) -> Vec<String> {
+        df.get_column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect()
+    }
+
+    fn mixed_strings() -> LazyFrame {
+        df!(
+            "id" => &[1i64, 2, 3, 4],
+            "amount" => &[" 10 ", "20", "", " 40"],
+            "day" => &["2024-01-01", "2024-01-02", " ", "2024-01-04"],
+            "at" => &["2024-01-01T10:00:00Z", "2024-01-01T11:00:00Z", "", "2024-01-01T12:00:00Z"],
+            "score" => &[0.5f64, 1.5, 2.5, 3.5],
+            "word" => &["a", " b", "c ", ""],
+            "empty" => &[None::<&str>, None, None, None],
+        )
+        .unwrap()
+        .lazy()
+    }
+
+    /// String inference reads only the columns it types, and reads them exactly as
+    /// the whole-frame sample it replaced did: trimmed, blanks null, same rows.
+    #[test]
+    fn the_inference_sample_holds_only_its_targets() {
+        let targets: Vec<String> = ["amount", "day", "at", "word", "empty"]
+            .map(String::from)
+            .to_vec();
+        let sample = DataTableState::string_inference_sample(mixed_strings(), &targets, 3).unwrap();
+        assert_eq!(names(&sample), ["amount", "day", "at", "word", "empty"]);
+        assert_eq!(sample.height(), 3);
+
+        // The sample as it was taken before: every column, the targets normalized.
+        let blank = lit(PlSmallStr::from_static(""));
+        let wide = mixed_strings()
+            .limit(3)
+            .with_columns(
+                targets
+                    .iter()
+                    .map(|c| {
+                        col(c.as_str())
+                            .str()
+                            .strip_chars(lit(PlSmallStr::from_static(" \t\n\r")))
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .with_columns(
+                targets
+                    .iter()
+                    .map(|c| {
+                        when(col(c.as_str()).eq(blank.clone()))
+                            .then(Null {}.lit())
+                            .otherwise(col(c.as_str()))
+                            .alias(c.as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .collect()
+            .unwrap();
+        assert_eq!(wide.width(), 7);
+        assert!(sample.equals_missing(&wide.select(targets.iter().map(String::as_str)).unwrap()));
+
+        let one =
+            DataTableState::string_inference_sample(mixed_strings(), &["day".to_string()], 1_000)
+                .unwrap();
+        assert_eq!(names(&one), ["day"]);
+        assert_eq!(one.height(), 4);
+    }
+
+    /// The frame string inference returns keeps every column in its place, and types
+    /// the targets as before: numbers, dates, timestamps, text left as text, an
+    /// all-null column left alone.
+    #[test]
+    fn string_inference_keeps_the_whole_frame() {
+        let utc = DataType::Datetime(TimeUnit::Microseconds, Some(TimeZone::UTC));
+        let typed = |target: &ParseStringsTarget, types: StringTypes| {
+            DataTableState::type_string_columns(mixed_strings(), target, 1_000, types)
+                .unwrap()
+                .collect()
+                .unwrap()
+        };
+        let all = StringTypes {
+            dates: true,
+            numbers: true,
+        };
+
+        let df = typed(&ParseStringsTarget::All, all);
+        let schema = df.schema();
+        let order = names(&df);
+        assert_eq!(
+            order,
+            ["id", "amount", "day", "at", "score", "word", "empty"]
+        );
+        assert_eq!(schema.get("id"), Some(&DataType::Int64));
+        assert_eq!(schema.get("amount"), Some(&DataType::Int64));
+        assert_eq!(schema.get("day"), Some(&DataType::Date));
+        assert_eq!(schema.get("at"), Some(&utc));
+        assert_eq!(schema.get("score"), Some(&DataType::Float64));
+        assert_eq!(schema.get("word"), Some(&DataType::String));
+        assert_eq!(schema.get("empty"), Some(&DataType::String));
+        let amount: Vec<Option<i64>> = df.column("amount").unwrap().i64().unwrap().iter().collect();
+        assert_eq!(amount, [Some(10), Some(20), None, Some(40)]);
+        assert_eq!(df.column("day").unwrap().null_count(), 1);
+        assert_eq!(df.column("at").unwrap().null_count(), 1);
+        let word: Vec<Option<&str>> = df.column("word").unwrap().str().unwrap().iter().collect();
+        assert_eq!(word, [Some("a"), Some("b"), Some("c"), Some("")]);
+        let score: Vec<Option<f64>> = df.column("score").unwrap().f64().unwrap().iter().collect();
+        assert_eq!(score, [Some(0.5), Some(1.5), Some(2.5), Some(3.5)]);
+
+        // Named columns: only those that are text are typed; the rest are as read.
+        let some = typed(
+            &ParseStringsTarget::Columns(vec!["day".into(), "id".into(), "missing".into()]),
+            all,
+        );
+        assert_eq!(names(&some), order);
+        assert_eq!(some.schema().get("day"), Some(&DataType::Date));
+        assert_eq!(some.schema().get("amount"), Some(&DataType::String));
+        assert_eq!(
+            some.column("amount").unwrap().str().unwrap().get(0),
+            Some(" 10 ")
+        );
+
+        // Nothing to type: the frame comes back as it was.
+        let none = typed(&ParseStringsTarget::Columns(vec!["id".into()]), all);
+        assert!(none.equals_missing(&mixed_strings().collect().unwrap()));
+
+        // JSON: dates only. Numbers in strings stay text, untrimmed.
+        let json = DataTableState::apply_parse_dates_to_json_lazyframe(
+            mixed_strings(),
+            &crate::OpenOptions::default(),
+        )
+        .unwrap()
+        .collect()
+        .unwrap();
+        assert_eq!(names(&json), order);
+        assert_eq!(json.schema().get("day"), Some(&DataType::Date));
+        assert_eq!(json.schema().get("at"), Some(&utc));
+        assert_eq!(json.schema().get("amount"), Some(&DataType::String));
+        assert_eq!(
+            json.column("word").unwrap().str().unwrap().get(1),
+            Some(" b")
+        );
+    }
 
     /// Scrolling sideways must not count the rows.
     ///

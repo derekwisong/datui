@@ -142,7 +142,7 @@ fn open_remote_with(
         )),
     );
     assert_eq!(
-        app.data_table_state.as_ref().map(|state| state.num_rows),
+        app.data_table_state.as_ref().map(|state| state.num_rows()),
         Some(FILES * ROWS)
     );
     press(&mut app, KeyCode::Char('a'));

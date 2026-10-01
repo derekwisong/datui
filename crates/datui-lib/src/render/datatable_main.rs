@@ -32,7 +32,7 @@ pub fn render(
     } else {
         app.data_table_state
             .as_ref()
-            .and_then(|state| state.error.as_ref())
+            .and_then(|state| state.error())
             .map(crate::error_display::user_message_from_polars)
     };
     // The prompt grows with a long statement, its error and the column list, and
@@ -71,11 +71,7 @@ pub fn render(
         Some(state) => {
             let mut table_area = data_area;
             let breadcrumb_text = if state.is_drilled_down() {
-                state.drilled_down_group_key.as_ref().map(|key_values| {
-                    let key_columns = state
-                        .drilled_down_group_key_columns
-                        .as_deref()
-                        .unwrap_or_default();
+                state.drilled_group_key().map(|(key_columns, key_values)| {
                     let parts: Vec<String> = key_columns
                         .iter()
                         .zip(key_values.iter())

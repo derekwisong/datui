@@ -835,7 +835,7 @@ mod tests {
         assert_eq!(p.app.input_mode, InputMode::Normal);
         let state = p.app.data_table_state.as_ref().unwrap();
         assert_eq!(state.get_active_query(), "select name where age > 40");
-        assert_eq!(state.num_rows, 2);
+        assert_eq!(state.num_rows(), 2);
         assert_eq!(
             state.table_state.selected(),
             Some(1),
@@ -1115,7 +1115,7 @@ mod tests {
         assert_eq!(p.app.input_mode, InputMode::Normal);
         let state = p.app.data_table_state.as_ref().unwrap();
         assert_eq!(state.get_active_query(), "select name where age > 40");
-        assert_eq!(state.num_rows, 2);
+        assert_eq!(state.num_rows(), 2);
         assert_eq!(
             state.table_state.selected(),
             Some(1),

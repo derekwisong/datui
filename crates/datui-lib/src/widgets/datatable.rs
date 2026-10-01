@@ -134,7 +134,7 @@ impl PivotJob {
 }
 
 pub struct DataTableState {
-    pub lf: LazyFrame,
+    lf: LazyFrame,
     /// `lf` before its sort, when it has one. See [`DataTableState::analysis_lf`].
     unsorted_lf: Option<LazyFrame>,
     original_lf: LazyFrame,
@@ -147,14 +147,14 @@ pub struct DataTableState {
     df: Option<DataFrame>,        // Scrollable columns dataframe
     locked_df: Option<DataFrame>, // Locked columns dataframe
     pub table_state: TableState,
-    pub start_row: usize,
+    start_row: usize,
     pub visible_rows: usize,
     pub termcol_index: usize,
     pub visible_termcols: usize,
-    pub error: Option<PolarsError>,
+    error: Option<PolarsError>,
     pub suppress_error_display: bool, // When true, don't show errors in main view (e.g., when query input is active)
-    pub schema: Arc<Schema>,
-    pub num_rows: usize,
+    schema: Arc<Schema>,
+    num_rows: usize,
     /// When true, collect() skips the len() query.
     num_rows_valid: bool,
     /// The dataset's own row count, remembered from the last moment the frame was
@@ -171,6 +171,9 @@ pub struct DataTableState {
     /// zero meant a count still running for the dataset you just closed matched the
     /// one you just opened, and set its row count to the wrong number.
     len_generation: u64,
+    /// Taken afresh whenever `original_lf` is replaced. A checkpoint records it, so one
+    /// taken over other data is never put back over this data.
+    root_generation: u64,
     /// The local Parquet hive directory the data was loaded from, whose per-file footer
     /// counts sum to the exact row count while the frame is the scan as loaded
     /// (`is_pristine`) — far cheaper than a `len()` data scan over a huge/partitioned set.
@@ -190,11 +193,11 @@ pub struct DataTableState {
     sort_ascending: bool,
     /// Last executed DSL query. At most one of the three `active_*` queries is set: running
     /// one clears the other two.
-    pub active_query: String,
+    active_query: String,
     /// Last executed SQL (Sql tab).
-    pub active_sql_query: String,
+    active_sql_query: String,
     /// Last executed fuzzy search (Fuzzy tab).
-    pub active_fuzzy_query: String,
+    active_fuzzy_query: String,
     column_order: Vec<String>,   // Order of columns for display
     locked_columns_count: usize, // Number of locked columns (from left)
     /// The grouped view a drill-down left, restored exactly by `drill_up`.
@@ -205,8 +208,8 @@ pub struct DataTableState {
     /// than the data as loaded (see `query_root`).
     reshaped_lf: Option<LazyFrame>,
     drilled_down_group_index: Option<usize>, // Index of the group we're viewing
-    pub drilled_down_group_key: Option<Vec<String>>, // Key values of the drilled down group
-    pub drilled_down_group_key_columns: Option<Vec<String>>, // Key column names of the drilled down group
+    drilled_down_group_key: Option<Vec<String>>, // Key values of the drilled down group
+    drilled_down_group_key_columns: Option<Vec<String>>, // Key column names of the drilled down group
     pages_lookahead: usize,
     pages_lookback: usize,
     max_buffered_rows: usize, // 0 = no limit
@@ -304,15 +307,15 @@ pub struct DataTableState {
     /// loaded.
     reshape_source: Option<ReshapeSource>,
     /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
-    pub partition_columns: Option<Vec<String>>,
+    partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
     decompress_temp_file: Option<NamedTempFile>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
-    pub polars_streaming: bool,
+    polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
     /// When true, `collect()` / `apply_transformations()` skip the blocking collect.
     /// The caller is responsible for triggering an async collect afterwards.
-    pub defer_collect: bool,
+    defer_collect: bool,
     /// Set by the render code when `visible_rows` changes. The App event loop checks this
     /// after each render and triggers an async collect if needed.
     pub needs_recollect: bool,
@@ -400,11 +403,19 @@ struct GroupRows {
     lead: Vec<String>,
 }
 
-/// The view as it stood before a query replaced it. A query plans
+/// The view as it stood before a query or view replaced it: a checkpoint. A query plans
 /// without reading anything and can still fail once it runs — a value that will not
 /// cast — and then the table goes back to this, rows and all, rather than keep a
 /// frame that fails on every scroll. Frames and buffers are shared, not copied.
+///
+/// Taken by [`DataTableState::rollback_point`] or [`DataTableState::try_transition`],
+/// put back by [`DataTableState::roll_back`].
 pub struct ViewRollback {
+    /// The data as loaded when this was taken; see [`DataTableState::roll_back`].
+    root_generation: u64,
+    /// A count of this frame that came back after it was replaced, to return with it.
+    counted: Option<CountedRows>,
+    drawn_start: usize,
     lf: LazyFrame,
     unsorted_lf: Option<LazyFrame>,
     base_lf: LazyFrame,
@@ -444,6 +455,34 @@ pub struct ViewRollback {
     buffered_start_row: usize,
     buffered_end_row: usize,
     buffered_df: Option<DataFrame>,
+}
+
+impl ViewRollback {
+    /// A background count of frame `len_generation` came back while this checkpoint
+    /// was waiting. Kept when the frame is the one this restores, so the rows and the
+    /// count return together; returns whether it was.
+    pub fn count_landed(
+        &mut self,
+        len_generation: u64,
+        rows: usize,
+        file_row_groups: Option<Vec<Vec<usize>>>,
+    ) -> bool {
+        let ours = len_generation == self.len_generation;
+        if ours {
+            self.counted = Some(CountedRows {
+                rows,
+                file_row_groups,
+            });
+        }
+        ours
+    }
+}
+
+/// A row count read in the background: the total, and for a remote dataset of many
+/// files, the rows in each row group of each file.
+struct CountedRows {
+    rows: usize,
+    file_row_groups: Option<Vec<Vec<usize>>>,
 }
 
 /// The query bar a result came from, with its text. At most one is active at a time.
@@ -793,6 +832,7 @@ impl DataTableState {
             num_rows_valid: false,
             pristine_rows: None,
             len_generation: next_len_generation(),
+            root_generation: next_len_generation(),
             parquet_count_dir: None,
             measurements: Arc::new(crate::measurements::Meter::default()),
             filters: Vec::new(),
@@ -911,6 +951,7 @@ impl DataTableState {
             num_rows_valid: false,
             pristine_rows: None,
             len_generation: next_len_generation(),
+            root_generation: next_len_generation(),
             parquet_count_dir: None,
             measurements: Arc::new(crate::measurements::Meter::default()),
             filters: Vec::new(),
@@ -981,16 +1022,26 @@ impl DataTableState {
     /// trimming, string parsing and dropped footer rows, which have to survive a later
     /// filter or sort.
     fn replace_original_lf(&mut self, lf: &LazyFrame) -> Result<()> {
-        self.original_lf = lf.clone();
+        let schema = lf.clone().collect_schema()?;
+        self.replace_root(lf.clone(), schema);
         // A new root is new data; a count remembered for the old one would show as
         // the "of" total under the first filter on this one.
         self.pristine_rows = None;
-        self.base_lf = lf.clone();
-        self.schema = lf.clone().collect_schema()?;
-        self.original_schema = self.schema.clone();
-        self.lf = lf.clone();
-        self.unsorted_lf = None;
         Ok(())
+    }
+
+    /// Make `lf` the data as loaded, with `schema`: the root, the base and the frame
+    /// shown, until the caller lays the filters and sort back on. The rows read through
+    /// the old root are dropped, and checkpoints taken over it no longer apply.
+    fn replace_root(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
+        self.root_generation = next_len_generation();
+        self.original_schema = schema.clone();
+        self.schema = schema;
+        self.original_lf = lf.clone();
+        self.base_lf = lf.clone();
+        self.lf = lf;
+        self.unsorted_lf = None;
+        self.drop_buffer();
     }
 
     /// Make `lf` the frame shown and the base the sidebar filters and sort go on top of,
@@ -1097,12 +1148,17 @@ impl DataTableState {
         self.restore_footer_count();
     }
 
-    pub fn reset(&mut self) {
+    /// Back to the data as loaded, with nothing applied and no error showing.
+    fn return_to_root(&mut self) {
         self.reset_lf_to_original();
         self.error = None;
         self.suppress_error_display = false;
         self.last_pivot_spec = None;
         self.last_melt_spec = None;
+    }
+
+    pub fn reset(&mut self) {
+        self.return_to_root();
         self.collect();
         if self.num_rows > 0 {
             self.start_row = 0;
@@ -4567,7 +4623,7 @@ impl DataTableState {
 
     /// Apply a row count computed in the background (so prepare_async_collect doesn't
     /// have to fall back to a blocking len() on the UI thread).
-    pub fn set_num_rows(&mut self, n: usize) {
+    fn set_num_rows(&mut self, n: usize) {
         self.num_rows = n;
         self.num_rows_valid = true;
         self.remember_pristine_count();
@@ -4914,8 +4970,7 @@ impl DataTableState {
         // column on screen, it is a scan that cannot run at all.
         self.column_order
             .retain(|name| dataset.schema.contains(name.as_str()));
-        self.schema = dataset.schema.clone();
-        self.original_schema = self.schema.clone();
+        let schema = dataset.schema.clone();
         // The scan is built at a schema, and the one this dataset opened with has never
         // heard of the columns that just arrived. Left in place, the first windowed
         // page read asks it for a column it does not have and the table stops showing
@@ -4935,19 +4990,13 @@ impl DataTableState {
         // not made until the footers are all in, so there is nothing to clear.
         self.set_dataset_schema(dataset, file_rows, files);
         self.footers_pending = None;
-        self.original_lf = lf.clone();
-        // The joined scan may hold rows the two-footer open never saw, so the count
-        // remembered for the narrow root no longer describes the dataset.
-        self.pristine_rows = None;
-        self.base_lf = lf.clone();
-        self.lf = lf;
-        self.unsorted_lf = None;
         // The rows on screen were read through the old frame. Dropping the buffer has
         // the next collect read them through the new one, at the row the user is still
         // sitting on — `start_row` and the column scroll are left exactly as they are.
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.replace_root(lf, schema);
+        // The joined scan may hold rows the two-footer open never saw, so the count
+        // remembered for the narrow root no longer describes the dataset.
+        self.pristine_rows = None;
         // Measured on the frame that just went. A dataset that opened two columns wide
         // and gained thirty would plan its first page after the join from the two-column
         // width, which against a bucket is a read many times the budget the user set.
@@ -4964,9 +5013,7 @@ impl DataTableState {
         // in the dataset, which is the whole cost this staging exists to avoid. The
         // buffer is gone and the caller reads it back off the event loop. This line is
         // what keeps the collect off this thread; do not take it away.
-        let deferred = std::mem::replace(&mut self.defer_collect, true);
-        self.apply_transformations();
-        self.defer_collect = deferred;
+        self.deferred(Self::apply_transformations);
         Ok(())
     }
 
@@ -5270,6 +5317,7 @@ impl DataTableState {
     ///
     /// Returns whether anything happened. `false` for a column that is not on offer,
     /// which is what the panel only ever asks about, and for one already read this way.
+    /// A scan that cannot be built is kept as the error showing, and returned.
     pub fn read_column_as_text(&mut self, column: &str) -> PolarsResult<bool> {
         let name = PlSmallStr::from(column);
         let Some(dataset) = self.dataset_at_open.clone() else {
@@ -5294,15 +5342,23 @@ impl DataTableState {
         // holds the one thing the scan needs: the type each file actually wrote.
         let drift =
             crate::schema_union::ScanDrift::new(&self.drift_files, &dataset, &self.file_rows());
-        let lf = match self.remote_files.as_ref() {
-            Some(remote) => (remote.scan)(&remote.urls, &as_text)?,
+        let scanned = match self.remote_files.as_ref() {
+            Some(remote) => (remote.scan)(&remote.urls, &as_text),
             None => crate::schema_union::lenient_scan(
                 &self.drift_files,
                 dataset.schema.clone(),
                 None,
                 drift.as_ref(),
                 &as_text,
-            )?,
+            ),
+        };
+        let lf = match scanned {
+            Ok(lf) => lf,
+            Err(e) => {
+                // Shown where any failed read is; the view is as it was.
+                self.error = Some(e.clone());
+                return Err(e);
+            }
         };
         // The remote scan hoists inside its own closure, as it does for the frame the
         // dataset opened with; only the local branch has it left to do.
@@ -5321,8 +5377,7 @@ impl DataTableState {
         self.read_as_text = as_text;
         // `text_schema` keeps the columns in their places, so the order the user
         // arranged still names every one of them and still means what it did.
-        self.schema = view.schema.clone();
-        self.original_schema = self.schema.clone();
+        let schema = view.schema.clone();
         self.drift_groups = Arc::new(view.groups.clone());
         self.groups_at_open = self.drift_groups.clone();
         self.notes = Self::notes_datui_can_act_on(&view, self.drift_column_present);
@@ -5331,13 +5386,7 @@ impl DataTableState {
         // now compares — which matters most to a user who has a filter on it.
         self.notes_seen = false;
         self.dataset_schema = Some(view);
-        self.original_lf = lf.clone();
-        self.base_lf = lf.clone();
-        self.lf = lf;
-        self.unsorted_lf = None;
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
+        self.replace_root(lf, schema);
         // Re-applies the filter and sort over the new frame, and with them the note
         // about what they leave out — which is one note shorter now.
         self.apply_transformations();
@@ -6250,6 +6299,9 @@ impl DataTableState {
     /// The view as it is now, to go back to if a query fails while running.
     pub fn rollback_point(&self) -> ViewRollback {
         ViewRollback {
+            root_generation: self.root_generation,
+            counted: None,
+            drawn_start: self.drawn_start,
             lf: self.lf.clone(),
             unsorted_lf: self.unsorted_lf.clone(),
             base_lf: self.base_lf.clone(),
@@ -6292,9 +6344,20 @@ impl DataTableState {
         }
     }
 
-    /// Put back the view `rollback_point` saved. Its row count and buffer come back
-    /// with it, so nothing is read again.
+    /// Put back the view `rollback_point` saved, with no error showing. Its row count
+    /// and buffer come back with it, and a count of it that landed meanwhile (see
+    /// [`ViewRollback::count_landed`]), so nothing is read again. Nothing is read here:
+    /// a view with no rows on hand has them read by the caller's next collect.
+    ///
+    /// A checkpoint taken over data since replaced — a join of the remaining footers,
+    /// a column read as text — holds frames built on data no longer loaded. Putting
+    /// those back would mix two roots, so the view returns to the data as loaded instead.
     pub fn roll_back(&mut self, saved: ViewRollback) {
+        if saved.root_generation != self.root_generation {
+            self.return_to_root();
+            return;
+        }
+        self.drawn_start = saved.drawn_start;
         self.lf = saved.lf;
         self.unsorted_lf = saved.unsorted_lf;
         self.base_lf = saved.base_lf;
@@ -6336,6 +6399,127 @@ impl DataTableState {
         self.buffered_end_row = saved.buffered_end_row;
         self.buffered_df = saved.buffered_df;
         self.error = None;
+        // After the frame, so the count is taken as this frame's.
+        if let Some(counted) = saved.counted {
+            self.take_count(counted.rows, counted.file_row_groups.as_deref());
+        }
+    }
+
+    /// Run `steps` as one transition of the view: planned, never read (no collect
+    /// runs while they do), starting with no error showing. If a step fails, the view
+    /// before them is put back and the error returned. If they all plan, the view
+    /// before them comes back with the result, for the caller to restore with
+    /// [`Self::roll_back`] should reading the new view's rows fail.
+    pub fn try_transition<T, E>(
+        &mut self,
+        steps: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<(T, ViewRollback), E> {
+        let saved = self.rollback_point();
+        self.error = None;
+        match self.deferred(steps) {
+            Ok(value) => Ok((value, saved)),
+            Err(e) => {
+                self.roll_back(saved);
+                Err(e)
+            }
+        }
+    }
+
+    /// Run `steps` with every collect they would make left to the caller, who reads
+    /// the rows off the UI thread (`prepare_async_collect`).
+    pub fn deferred<R>(&mut self, steps: impl FnOnce(&mut Self) -> R) -> R {
+        let deferred = std::mem::replace(&mut self.defer_collect, true);
+        let result = steps(self);
+        self.defer_collect = deferred;
+        result
+    }
+
+    /// A background count of frame `len_generation` came back. Taken when that frame is
+    /// the one on screen; returns whether it was.
+    pub fn count_landed(
+        &mut self,
+        len_generation: u64,
+        rows: usize,
+        file_row_groups: Option<&[Vec<usize>]>,
+    ) -> bool {
+        let current = len_generation == self.len_generation;
+        if current {
+            self.take_count(rows, file_row_groups);
+        }
+        current
+    }
+
+    /// What a staged open leaves: a row total from however far the buffer reached,
+    /// with no count taken.
+    #[cfg(test)]
+    pub(crate) fn set_provisional_rows(&mut self, n: usize) {
+        self.num_rows = n;
+    }
+
+    /// The count of the frame on screen: from the files' row groups when there are
+    /// some, else the total.
+    fn take_count(&mut self, rows: usize, file_row_groups: Option<&[Vec<usize>]>) {
+        match file_row_groups {
+            Some(groups) => self.set_file_row_groups(groups),
+            None => self.set_num_rows(rows),
+        }
+    }
+
+    /// The frame on screen: the root, then the query or reshape, the filters and the
+    /// sort. Column order is applied when rows are read.
+    pub fn lf(&self) -> &LazyFrame {
+        &self.lf
+    }
+
+    /// Hand back the frame on screen, for a caller that built a state only to load it.
+    pub fn into_lf(self) -> LazyFrame {
+        self.lf
+    }
+
+    /// The schema of the frame on screen.
+    pub fn schema(&self) -> &Arc<Schema> {
+        &self.schema
+    }
+
+    /// The rows the frame holds: exact when [`Self::is_num_rows_valid`], else as far as
+    /// the reads so far have reached.
+    pub fn num_rows(&self) -> usize {
+        self.num_rows
+    }
+
+    /// Why the last query, step or read failed, while it is still showing.
+    pub fn error(&self) -> Option<&PolarsError> {
+        self.error.as_ref()
+    }
+
+    /// Stop showing the last failure. The view is as it was; only the message goes.
+    pub fn dismiss_error(&mut self) {
+        self.error = None;
+    }
+
+    /// The first row of the page on screen.
+    pub fn start_row(&self) -> usize {
+        self.start_row
+    }
+
+    /// The hive partition columns the dataset was loaded with.
+    pub fn partition_columns(&self) -> Option<&[String]> {
+        self.partition_columns.as_deref()
+    }
+
+    /// Whether reads use Polars' streaming engine.
+    pub fn polars_streaming(&self) -> bool {
+        self.polars_streaming
+    }
+
+    /// The group drilled into, as its key columns and their values.
+    pub fn drilled_group_key(&self) -> Option<(&[String], &[String])> {
+        let values = self.drilled_down_group_key.as_deref()?;
+        let columns = self
+            .drilled_down_group_key_columns
+            .as_deref()
+            .unwrap_or_default();
+        Some((columns, values))
     }
 
     /// The columns of `df`, the table SQL runs against, with their types. From the

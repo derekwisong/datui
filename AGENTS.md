@@ -95,7 +95,11 @@ drill-down) and `lf` (after sidebar filters, sort and column order). Only the
 rows on screen plus a lookahead buffer are ever collected. When you change how
 a frame is built, go through `install_query_result` / `install_base` /
 `reset_view_state` rather than assigning fields by hand; those helpers keep the
-three frames, the schema and the view state consistent.
+three frames, the schema and the view state consistent. Outside
+`DataTableState` the pipeline fields are private: read them through accessors,
+run steps with `deferred` (nothing collects; the App then calls
+`spawn_async_collect`), and plan a query or view with `try_transition`, whose
+checkpoint `roll_back` restores if its rows fail.
 
 **One event loop, background work by generation.** `run()` reads terminal
 events, sends `AppEvent`s over an mpsc channel, and `App::event` handles them.

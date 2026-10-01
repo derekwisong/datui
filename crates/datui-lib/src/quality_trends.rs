@@ -652,15 +652,16 @@ pub fn expected_gaps(plan: &DataQualityPlan, results: &DataQualityResults) -> Op
             continue;
         }
         check.expected += 1;
-        let gap = if scope.is_some_and(|(first, last)| start < first || end > last) {
-            Some((GapKind::OutOfScope, None))
-        } else {
-            match found.get(&start) {
-                Some((evaluated, _)) if *evaluated > 0 => None,
-                Some((_, total)) => Some((GapKind::Unsampled, *total)),
-                None if counted => Some((GapKind::Empty, None)),
-                None => Some((GapKind::Unsampled, None)),
+        // Rows found settle it, even in a window the scope cuts through; only a window
+        // with none is out of scope for lying outside it.
+        let gap = match found.get(&start) {
+            Some((evaluated, _)) if *evaluated > 0 => None,
+            Some((_, total)) => Some((GapKind::Unsampled, *total)),
+            None if scope.is_some_and(|(first, last)| start < first || end > last) => {
+                Some((GapKind::OutOfScope, None))
             }
+            None if counted => Some((GapKind::Empty, None)),
+            None => Some((GapKind::Unsampled, None)),
         };
         match gap {
             None => {
@@ -798,6 +799,9 @@ mod tests {
         let (low, high) = wilson_interval(0.0, 10.0).unwrap();
         assert_eq!(low, 0.0);
         assert!(high > 0.25, "ten rows say little: {high}");
+        // Every row counted: the mirror image, up against 1.
+        let (low, high) = wilson_interval(10.0, 10.0).unwrap();
+        assert!((1.0 - high).abs() < 1e-12 && low < 0.75, "{low} {high}");
         assert!(wilson_interval(0.0, 0.0).is_none());
     }
 
@@ -998,6 +1002,30 @@ mod tests {
         assert_eq!(check.empty, 0);
         assert_eq!(check.with_rows, 13);
         assert_eq!(check.runs[0].kind, GapKind::OutOfScope);
+
+        // A week cut by the scope: the weeks it holds rows in have rows, whatever
+        // part of them it left out; only a week with none is out of scope.
+        plan.grain = QualityGrain::TimeWindows {
+            column: "day".to_string(),
+            every: "1w".to_string(),
+        };
+        plan.scope = QualityScope::SourceTimeRange {
+            column: "day".to_string(),
+            start: "2024-01-17".to_string(),
+            end: "2024-02-07".to_string(),
+        };
+        let scoped =
+            crate::data_quality::apply_quality_scope(weekdays(), &plan.scope, None).unwrap();
+        let results = compute_data_quality(&scoped, None, &plan, None, false).unwrap();
+        let Some(Gaps::Checked(check)) = expected_gaps(&plan, &results) else {
+            panic!("checked");
+        };
+        assert_eq!(check.expected, 5, "January 1 to before February 5");
+        assert_eq!(
+            check.with_rows, 3,
+            "the weeks of January 15, 22 and 29: {check:?}"
+        );
+        assert_eq!(check.out_of_scope, 2, "the weeks of January 1 and 8");
     }
 
     /// A range too long for its grain is refused whole, never checked in part.

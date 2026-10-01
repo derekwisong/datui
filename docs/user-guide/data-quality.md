@@ -245,10 +245,10 @@ Setup's **Read** section says what <kbd>Enter</kbd> will read before it reads:
 one sampling pass (which also counts the grain's segments when it streams), a
 count of the grain's column for exact segment totals, rows a run already read,
 or nothing when the report is already on screen or in the session cache.
-Changing roles, text formats, column intent, comparison, expected windows, row
-chunks or a
-coarser window of a counted grain reads nothing; a new seed, size or scope reads
-a new sample.
+After a sampled run, changing roles, text formats, column intent, row chunks or
+a coarser window of a counted grain reads nothing; after any run, so does
+changing the comparison or expected windows. A new seed, size or scope reads a
+new sample.
 <kbd>p</kbd> shows the access plan in full. Reading every row asks for
 confirmation first; <kbd>Esc</kbd> there leaves the sample and the report as
 they were.

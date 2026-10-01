@@ -936,12 +936,14 @@ fn stable_order(plan: &mut polars::lazy::dsl::DslPlan, under_sort: bool) {
 /// engine repeats that `first()` for every row of a batch and the list kernels copy
 /// the list into each: rows times values, 26 GB for a page of a 100k-row table where
 /// a third of the rows match (#509). Asked of the values exploded, the questions read
-/// the one list. Only filters asking them are rewritten.
+/// the one list; an empty list explodes to no rows, so both answers are unchanged.
+/// Only those questions are rewritten: a user's own `ARRAY_LENGTH(FIRST(l))` differs
+/// once exploded when the first list is NULL.
 #[cfg(feature = "sql")]
 fn count_subquery_values_once(plan: &mut polars::lazy::dsl::DslPlan) {
     use polars::lazy::dsl::{DslPlan, FunctionExpr, ListFunction};
-    fn ask_once(e: Expr) -> Expr {
-        if !asks_of_subquery_values(&e) {
+    fn ask_once(e: Expr, names: &[PlSmallStr]) -> Expr {
+        if !asks_of_subquery_values(&e, names) {
             return e;
         }
         let Expr::Function {
@@ -960,11 +962,7 @@ fn count_subquery_values_once(plan: &mut polars::lazy::dsl::DslPlan) {
             _ => values.null_count().gt(lit(0)),
         }
     }
-    let asks = |node: &DslPlan| match node {
-        DslPlan::Filter { predicate, .. } => predicate.into_iter().any(asks_of_subquery_values),
-        _ => false,
-    };
-    if !plan.into_iter().any(asks) {
+    if !plan.into_iter().any(asks_per_row) {
         return;
     }
     match plan {
@@ -976,19 +974,62 @@ fn count_subquery_values_once(plan: &mut polars::lazy::dsl::DslPlan) {
             *plan = inner;
             return;
         }
-        DslPlan::Filter { predicate, .. } => *predicate = predicate.clone().map_expr(ask_once),
+        DslPlan::Filter { input, predicate } => {
+            let names = subquery_value_columns(input);
+            *predicate = predicate.clone().map_expr(|e| ask_once(e, &names));
+        }
         _ => {}
     }
     for_each_input(plan, &mut count_subquery_values_once);
 }
 
-/// Whether `e` is polars-sql asking how many values an `IN` subquery returned, or
-/// whether one is NULL: `list.len` or `list.contains(NULL)` of `col(name).first()`.
+/// Whether `node` filters on a question of an `IN` subquery's values that the
+/// streaming engine answers once per row.
 #[cfg(feature = "sql")]
-fn asks_of_subquery_values(e: &Expr) -> bool {
+fn asks_per_row(node: &polars::lazy::dsl::DslPlan) -> bool {
+    let polars::lazy::dsl::DslPlan::Filter { input, predicate } = node else {
+        return false;
+    };
+    let names = subquery_value_columns(input);
+    !names.is_empty()
+        && predicate
+            .into_iter()
+            .any(|e| asks_of_subquery_values(e, &names))
+}
+
+/// The columns polars-sql adds beside `plan` to hold `IN` subqueries' values: each
+/// subquery is selected as one aliased list and concatenated horizontally, broadcast
+/// to the frame's rows (`SQLContext::process_subqueries`).
+#[cfg(feature = "sql")]
+fn subquery_value_columns(plan: &polars::lazy::dsl::DslPlan) -> Vec<PlSmallStr> {
+    use polars::lazy::dsl::DslPlan;
+    match plan {
+        DslPlan::HConcat { inputs, options } if options.broadcast_unit_length => inputs
+            .iter()
+            .skip(1)
+            .filter_map(|input| match input {
+                DslPlan::Select { expr, .. } => match expr.as_slice() {
+                    [Expr::Alias(_, name)] => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect(),
+        DslPlan::IR { dsl, .. } => subquery_value_columns(dsl),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `e` is polars-sql asking how many values an `IN` subquery returned, or
+/// whether one is NULL: `list.len` or `list.contains(NULL)` of `col(name).first()`,
+/// where `name` is one of `names`, the columns holding the values.
+#[cfg(feature = "sql")]
+fn asks_of_subquery_values(e: &Expr, names: &[PlSmallStr]) -> bool {
     use polars::lazy::dsl::{FunctionExpr, ListFunction};
-    let values =
-        |e: &Expr| matches!(e, Expr::Agg(AggExpr::First(c)) if matches!(**c, Expr::Column(_)));
+    let values = |e: &Expr| {
+        matches!(e, Expr::Agg(AggExpr::First(c))
+            if matches!(&**c, Expr::Column(name) if names.contains(name)))
+    };
     match e {
         Expr::Function {
             input,
@@ -11677,15 +11718,21 @@ mod tests {
     /// which on the streaming engine ran out of memory for a page of 100k rows
     /// (#509), and still returns what polars-sql's own plan does, NULLs included.
     /// The data is small, so that without the fix the test fails on the plan rather
-    /// than on memory.
+    /// than on memory. A user's own list question of the same shape is left alone.
     #[cfg(feature = "sql")]
     #[test]
     fn a_sql_in_subquery_reads_its_values_once() {
-        let df = df!(
+        let mut df = df!(
             "k" => (0..3000i64).map(|i| i % 3).collect::<Vec<_>>(),
             "v" => (0..3000i64).map(|i| (i % 7 != 0).then_some(i)).collect::<Vec<_>>(),
         )
         .unwrap();
+        // A first value that is a NULL list: its length is NULL, not 1 as exploded.
+        let lists: ListChunked = (0..3000i64)
+            .map(|i| (i != 0).then(|| Series::new(PlSmallStr::EMPTY, [i])))
+            .collect();
+        df.with_column(lists.into_column().with_name("l".into()))
+            .unwrap();
         let n = df.height();
         for (sql, rows) in [
             (
@@ -11722,10 +11769,36 @@ mod tests {
                 "SELECT * FROM df WHERE v IN (SELECT v FROM df WHERE v NOT IN (SELECT v FROM df WHERE k = 0 AND v IS NOT NULL))",
                 None,
             ),
+            // Unknown, not false, for a value outside a set holding a NULL, and for a
+            // NULL value.
+            (
+                "SELECT * FROM df WHERE (v NOT IN (SELECT v FROM df WHERE k = 1)) IS NULL",
+                None,
+            ),
+            // Only NULLs: every row unknown.
+            (
+                "SELECT * FROM df WHERE (v IN (SELECT v FROM df WHERE v IS NULL)) IS NULL",
+                Some(n),
+            ),
+            // No values: false, a NULL `v` too.
+            (
+                "SELECT * FROM df WHERE (v IN (SELECT v FROM df WHERE k = 5)) IS NULL",
+                Some(0),
+            ),
+            (
+                "SELECT * FROM df WHERE ARRAY_LENGTH(FIRST(l)) IS NULL AND v NOT IN (SELECT v FROM df WHERE k = 5)",
+                Some(n),
+            ),
         ] {
             let mut ctx = polars_sql::SQLContext::new();
             ctx.register("df", df.clone().lazy());
-            let expected = ctx.execute(sql).unwrap().collect().unwrap();
+            let raw = ctx.execute(sql).unwrap();
+            // Else the check on the view's plan below would pass for nothing.
+            assert!(
+                (&raw.logical_plan).into_iter().any(asks_per_row),
+                "{sql}: polars-sql's plan"
+            );
+            let expected = raw.collect().unwrap();
             if let Some(rows) = rows {
                 assert_eq!(expected.height(), rows, "{sql}");
             }
@@ -11733,14 +11806,10 @@ mod tests {
                 DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
             state.sql_query(sql.to_string());
             assert!(state.error.is_none(), "{sql}: {:?}", state.error);
-            let per_row = (&state.lf.logical_plan).into_iter().any(|node| {
-                matches!(
-                    node,
-                    polars::lazy::dsl::DslPlan::Filter { predicate, .. }
-                        if predicate.into_iter().any(asks_of_subquery_values)
-                )
-            });
-            assert!(!per_row, "{sql}");
+            assert!(
+                !(&state.lf.logical_plan).into_iter().any(asks_per_row),
+                "{sql}"
+            );
             for streaming in [false, cfg!(feature = "streaming")] {
                 let got = collect_lazy(state.lf.clone(), streaming).unwrap();
                 assert!(

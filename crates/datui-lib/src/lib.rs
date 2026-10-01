@@ -5182,6 +5182,8 @@ pub mod tests {
             })
         }));
 
+        // Its own runtime, so `test_runtime` does not isolate the config for it.
+        crate::text_input_flows::isolate_cache();
         let (tx, rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -7878,6 +7880,8 @@ pub mod tests {
             }
         };
 
+        // Its own runtime, so `test_runtime` does not isolate the config for it.
+        crate::text_input_flows::isolate_cache();
         let (tx, rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -7923,6 +7927,9 @@ pub mod tests {
         // clears `load_active`. One keystroke there and back must not strand the
         // dataset on two footers for the rest of the session.
         app.abandon_load();
+        // The re-read runs off this thread and would count too, as soon as it runs. It
+        // dies before it reads, so what is counted below is this thread's alone.
+        app.worker_dies = crate::tests::worker_dies_once(|job| *job == crate::Job::Rows);
         let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation });
         // Read again, not asked to be read again. The join drops the buffer, so a
         // request that goes on to be ignored — as a step of the open's chain is, once

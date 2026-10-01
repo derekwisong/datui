@@ -30,8 +30,9 @@ sql = ["datui/sql"]
 streaming = ["datui/streaming"]
 
 [dependencies]
-# Import as `datui` in Rust; package name is datui-lib
-datui = { path = "crates/datui-lib", package = "datui-lib", version = "0.4.0-dev" }
+# Import as `datui` in Rust; package name is datui-lib. Its features come from ours,
+# so `--no-default-features` here reaches the library.
+datui = { path = "crates/datui-lib", package = "datui-lib", version = "0.4.0-dev", default-features = false }
 datui-cli = { path = "crates/datui-cli", version = "0.4.0-dev"}
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"

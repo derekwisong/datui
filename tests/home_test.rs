@@ -4248,6 +4248,8 @@ fn test_typing_finds_bucket_names_from_every_source() {
     assert_eq!(found.subtitle.as_deref(), Some("cloud · 2 names"));
 }
 
+// The hive label comes from the cloud classifier.
+#[cfg(feature = "cloud")]
 #[test]
 fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     use datui::discover::{Entry, EntryKind};

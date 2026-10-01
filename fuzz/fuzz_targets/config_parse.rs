@@ -57,7 +57,7 @@ fuzz_target!(|input: Input| {
     // parsed, so laying it over itself and resolving the result must succeed: a
     // failure here would surface as an error blamed on no particular file.
     let layer = ConfigLayer::parse(input.toml).expect("text that deserialises is a layer");
-    let resolved = AppConfig::from_layers([layer.clone(), layer])
-        .expect("layers that parse resolve");
+    let resolved =
+        AppConfig::from_layers([layer.clone(), layer]).expect("layers that parse resolve");
     let _ = resolved.validate();
 });

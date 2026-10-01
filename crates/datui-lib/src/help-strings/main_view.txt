@@ -58,6 +58,14 @@ While busy:
   held: the allowed keys act, the rest are dropped. While a view is being
   applied, Esc stops it and keeps the table as it was.
 
+Wide columns:
+  A value or name cut short at the edge of its column ends in …. A number is
+  cut only as the first scrolling column with no room for it; otherwise it
+  waits, whole, for the scroll.
+  Frozen columns (L in Sort & Filter) sit left of │. When it shows as ┆, the
+  window is too narrow for them all: the ones that do not fit scroll after
+  it, and are frozen again when there is room.
+
 Empty cells:
   A directory of Parquet files may hold files that disagree, so an empty cell
   says which kind of empty it is:

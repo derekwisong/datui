@@ -1,5 +1,4 @@
 use color_eyre::Result;
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::{fs, fs::File, path::Path, path::PathBuf};
@@ -200,6 +199,10 @@ pub struct DataTableState {
     active_fuzzy_query: String,
     column_order: Vec<String>,   // Order of columns for display
     locked_columns_count: usize, // Number of locked columns (from left)
+    /// What the last layout made of the frozen columns: the count asked for, and how
+    /// many of them fit frozen beside a usable scrolling column. The rest scroll until
+    /// a wider window has room again; a different count asked for starts over.
+    frozen_fit: (usize, usize),
     /// The grouped view a drill-down left, restored exactly by `drill_up`.
     grouped: Option<GroupedView>,
     /// The rows behind a grouped query result, so Enter can drill from an aggregate.
@@ -437,6 +440,8 @@ pub struct ViewRollback {
     active_fuzzy_query: String,
     column_order: Vec<String>,
     locked_columns_count: usize,
+    /// The frozen fit `df` was sliced for; a later layout may have changed it.
+    frozen_fit: (usize, usize),
     grouped: Option<GroupedView>,
     reshaped_lf: Option<LazyFrame>,
     last_pivot_spec: Option<PivotSpec>,
@@ -844,6 +849,7 @@ impl DataTableState {
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
+            frozen_fit: (0, 0),
             grouped: None,
             group_source: None,
             reshaped_lf: None,
@@ -963,6 +969,7 @@ impl DataTableState {
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
+            frozen_fit: (0, 0),
             grouped: None,
             group_source: None,
             reshaped_lf: None,
@@ -5837,7 +5844,7 @@ impl DataTableState {
         let scroll_names: Vec<&str> = self
             .column_order
             .iter()
-            .skip(self.locked_columns_count + self.termcol_index)
+            .skip(self.frozen_shown() + self.termcol_index)
             .map(|s| s.as_str())
             .collect();
         if scroll_names.is_empty() {
@@ -5900,7 +5907,7 @@ impl DataTableState {
         let scroll_names: Vec<&str> = self
             .column_order
             .iter()
-            .skip(self.locked_columns_count + self.termcol_index)
+            .skip(self.frozen_shown() + self.termcol_index)
             .map(|s| s.as_str())
             .collect();
         if scroll_names.is_empty() {
@@ -6146,10 +6153,7 @@ impl DataTableState {
     }
 
     pub fn scroll_right(&mut self) {
-        let max_scroll = self
-            .column_order
-            .len()
-            .saturating_sub(self.locked_columns_count);
+        let max_scroll = self.column_order.len().saturating_sub(self.frozen_shown());
         if self.termcol_index < max_scroll.saturating_sub(1) {
             self.termcol_index += 1;
             self.rescroll_columns();
@@ -6217,6 +6221,42 @@ impl DataTableState {
 
     pub fn locked_columns_count(&self) -> usize {
         self.locked_columns_count
+    }
+
+    /// How many columns are drawn frozen: the count asked for, or fewer while the
+    /// last layout could not fit them all beside a usable scrolling column. The ones
+    /// left out lead the scrolling columns, so every column stays reachable.
+    pub fn frozen_shown(&self) -> usize {
+        let (asked, shown) = self.frozen_fit;
+        if asked == self.locked_columns_count {
+            shown.min(asked)
+        } else {
+            self.locked_columns_count
+        }
+    }
+
+    /// Take the layout's word for how many frozen columns fit, and re-slice the
+    /// scrolling columns to start after them. Unscrolled, the frozen columns left out
+    /// lead the scrolling ones; scrolled, the column the scroll started at stays
+    /// first where it can, so a resize does not also move the view. Reads nothing;
+    /// called while drawing, and only re-selects columns of the buffer already held.
+    fn fit_frozen(&mut self, shown: usize) {
+        let before = self.frozen_shown();
+        let shown = shown.min(self.locked_columns_count);
+        if shown == before {
+            self.frozen_fit = (self.locked_columns_count, shown);
+            return;
+        }
+        if self.defer_collect || !self.buffer_on_hand() {
+            return;
+        }
+        self.frozen_fit = (self.locked_columns_count, shown);
+        if self.termcol_index > 0 {
+            let first = before + self.termcol_index;
+            let last = self.column_order.len().saturating_sub(1);
+            self.termcol_index = first.min(last).saturating_sub(shown);
+        }
+        self.slice_buffer_into_display();
     }
 
     // Getter methods for template creation
@@ -6343,6 +6383,7 @@ impl DataTableState {
             active_fuzzy_query: self.active_fuzzy_query.clone(),
             column_order: self.column_order.clone(),
             locked_columns_count: self.locked_columns_count,
+            frozen_fit: self.frozen_fit,
             grouped: self.grouped.clone(),
             reshaped_lf: self.reshaped_lf.clone(),
             last_pivot_spec: self.last_pivot_spec.clone(),
@@ -6399,6 +6440,7 @@ impl DataTableState {
         self.active_fuzzy_query = saved.active_fuzzy_query;
         self.column_order = saved.column_order;
         self.locked_columns_count = saved.locked_columns_count;
+        self.frozen_fit = saved.frozen_fit;
         self.grouped = saved.grouped;
         // A q-style query or a search forgets the pivot or melt it replaces.
         self.reshaped_lf = saved.reshaped_lf;
@@ -7702,6 +7744,8 @@ pub struct DataTable {
     pub sort_columns: Vec<String>,
     /// Which way each of them runs, per column, as it is applied.
     pub sort_descending: Vec<bool>,
+    /// The glyph set the table draws with: the terminal's, unless a test asks for one.
+    pub glyphs: &'static crate::glyphs::Glyphs,
 }
 
 impl Default for DataTable {
@@ -7731,6 +7775,7 @@ impl Default for DataTable {
             drift_groups: Arc::new(Vec::new()),
             sort_columns: Vec::new(),
             sort_descending: Vec::new(),
+            glyphs: crate::glyphs::get(),
         }
     }
 }
@@ -7795,6 +7840,127 @@ struct RowNumbersParams {
 /// readable `<binary>` instead of mojibake.
 pub(crate) fn binary_stub() -> &'static str {
     crate::glyphs::get().binary_stub
+}
+
+/// One column of the rows on screen, formatted once: what the layout measures and
+/// what the table draws.
+struct ColumnSlice {
+    name: String,
+    drift_mark: &'static str,
+    sort_mark: &'static str,
+    /// Cells for the name and both marks.
+    header_width: u16,
+    type_label: Option<String>,
+    type_width: u16,
+    cells: Vec<SliceCell>,
+    /// Cells for the widest value on screen.
+    value_width: u16,
+    right_align: bool,
+    /// Whether a value may be shown clipped beside other columns (see
+    /// [`is_truncatable_dtype`]).
+    clips: bool,
+    cell_style: Option<Style>,
+    /// The column's type colour, for its heading.
+    colour: Option<Color>,
+}
+
+impl ColumnSlice {
+    /// Cells the column needs to show its heading, type and every value whole.
+    fn natural_width(&self) -> u16 {
+        self.header_width.max(self.type_width).max(self.value_width)
+    }
+}
+
+enum SliceCell {
+    /// A null, drawn as the glyph for its kind of empty.
+    Null(&'static str),
+    Value(String),
+}
+
+/// Columns laid out for one side of the table: the columns that fit, the width each
+/// gets, and the rows they are drawn for.
+struct FittedColumns {
+    cols: Vec<ColumnSlice>,
+    widths: Vec<u16>,
+    rows: usize,
+}
+
+/// The least the scrolling side keeps beside frozen columns, and the most: a third of
+/// the table in between, and never over half. Enough for any number or timestamp whole,
+/// and for the start of a text column.
+const MIN_SCROLL_RESERVE: u16 = 12;
+const MAX_SCROLL_RESERVE: u16 = 40;
+
+/// Narrower than this, a column is not drawn as a clipped sliver: the clip marker plus
+/// at least one cell of what it marks.
+fn min_partial_width(g: &crate::glyphs::Glyphs) -> u16 {
+    let marker = u16::try_from(crate::glyphs::cell_width(g.ellipsis)).unwrap_or(u16::MAX);
+    marker.saturating_add(1).max(3)
+}
+
+/// Which side of the frozen separator a layout is for. Both follow one sizing rule;
+/// they differ in what they do with a column that does not fit whole.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// Only the first column may be clipped, and never as a numeric preview: any other
+    /// column that does not fit whole scrolls instead, where it can be read whole.
+    Frozen,
+    /// The last column shown may be clipped, and a first column with no room for its
+    /// values shows a marked preview rather than nothing.
+    Scrolling,
+}
+
+/// The width a column gets with `remaining` cells left, or `None` to leave it for the
+/// next scroll. The heading and the values are fitted separately: a long heading is
+/// clipped over values that fit whole, and never hides them. Text may be clipped, since
+/// a clipped string still reads as its start. A number or timestamp that does not fit
+/// is left for the scroll, as a cut one reads as a different value, unless it is the
+/// first scrolling column and nothing else would show: then it is drawn clipped,
+/// behind the clip marker.
+fn fit_column(
+    col: &ColumnSlice,
+    remaining: u16,
+    min_partial: u16,
+    first: bool,
+    side: Side,
+) -> Option<u16> {
+    if col.natural_width() <= remaining {
+        return Some(col.natural_width());
+    }
+    if side == Side::Frozen && !first {
+        return None;
+    }
+    if remaining >= min_partial && (col.value_width <= remaining || col.clips) {
+        return Some(remaining);
+    }
+    (side == Side::Scrolling && first && remaining > 0).then_some(remaining)
+}
+
+/// Fitted `spans` as one line of a `width`-cell column, flush right when `right`.
+/// ratatui places a span by its whole string's width, which can differ from the cells
+/// it draws (`لا` draws two, a halfwidth sound mark one): its right alignment then
+/// pushes the last grapheme off the cell, and a span after such a one overwrites it.
+/// So the padding is counted in drawn cells, and spans that disagree are drawn as one.
+fn cell_line(mut spans: Vec<Span<'static>>, width: u16, right: bool) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+    let drawn = |s: &Span| crate::glyphs::cell_width(&s.content);
+    if spans.len() > 1 && spans.iter().any(|s| drawn(s) != s.content.width()) {
+        let style = spans[0].style;
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        spans = vec![Span::styled(joined, style)];
+    }
+    let used: usize = spans.iter().map(drawn).sum();
+    let pad = usize::from(width).saturating_sub(used);
+    if right && pad > 0 {
+        spans.insert(0, Span::raw(" ".repeat(pad)));
+    }
+    Line::from(spans)
+}
+
+/// The rows of `df` on screen: `len` of them from `offset`, or `None` past its end.
+fn visible_slice(df: &DataFrame, offset: usize, len: usize) -> Option<DataFrame> {
+    let len = len.min(df.height().saturating_sub(offset));
+    (offset < df.height() && len > 0).then(|| df.slice(offset as i64, len))
 }
 
 /// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
@@ -7906,7 +8072,7 @@ impl DataTable {
     /// each shows its own column's direction. Empty for unsorted columns.
     fn sort_mark_for(&self, column: &str) -> &'static str {
         if let Some(i) = self.sort_columns.iter().position(|c| c == column) {
-            let g = crate::glyphs::get();
+            let g = self.glyphs;
             if self.sort_descending.get(i).copied().unwrap_or(false) {
                 g.sort_desc
             } else {
@@ -7921,7 +8087,7 @@ impl DataTable {
     /// files disagree on its type. Empty otherwise.
     fn drift_mark_for(&self, column: &str, drifting: &HashSet<&str>) -> &'static str {
         if drifting.contains(column) {
-            crate::glyphs::get().drift_mark
+            self.glyphs.drift_mark
         } else {
             ""
         }
@@ -8030,167 +8196,240 @@ impl DataTable {
         leading_gap: bool,
         _start_row_offset: usize,
     ) -> usize {
-        // make each column as wide as it needs to be to fit the content
-        let (height, cols) = df.shape();
+        let rows = df
+            .height()
+            .min((area.height as usize).saturating_sub(self.header_height() as usize));
+        let fitted = self.fit_columns(
+            df,
+            rows,
+            area.width,
+            u16::from(leading_gap),
+            Side::Scrolling,
+        );
+        self.draw_columns(&fitted, area, buf, state, leading_gap);
+        fitted.cols.len()
+    }
 
-        let header_h = self.header_height();
+    /// The frozen columns that fit beside a usable scrolling column, with their widths.
+    ///
+    /// `width` is the room right of the row numbers. Whenever anything scrolls, the
+    /// scrolling side keeps a third of the table (within bounds), so a wide frozen prefix
+    /// can never leave it a sliver; the frozen columns that do not fit in the rest are
+    /// the caller's to hand to the scrolling side, where each can be read whole. Only
+    /// the first frozen column is ever clipped to stay frozen, and never a number.
+    fn fit_frozen_columns(
+        &self,
+        locked: &DataFrame,
+        rows: usize,
+        width: u16,
+        nothing_else_scrolls: bool,
+        table_width: u16,
+    ) -> FittedColumns {
+        // The space before the separator, and the separator. The gap after it is the
+        // scrolling side's.
+        let room = width.saturating_sub(2);
+        if nothing_else_scrolls {
+            let fitted = self.fit_columns(locked, rows, room, 0, Side::Frozen);
+            if fitted.cols.len() == locked.width() {
+                return fitted;
+            }
+        }
+        let reserve = (table_width / 3)
+            .clamp(MIN_SCROLL_RESERVE, MAX_SCROLL_RESERVE)
+            .min(table_width / 2);
+        self.fit_columns(locked, rows, room.saturating_sub(reserve), 0, Side::Frozen)
+    }
+
+    /// Lay `df`'s columns out left to right in `width` cells, `lead` of them taken first,
+    /// formatting a column's first `rows` values only once it is reached. The one sizing
+    /// rule for frozen and scrolling columns alike, measured on the rows on screen in
+    /// terminal cells.
+    fn fit_columns(
+        &self,
+        df: &DataFrame,
+        rows: usize,
+        width: u16,
+        lead: u16,
+        side: Side,
+    ) -> FittedColumns {
+        let drifting = self.drifting_columns();
+        let min_partial = min_partial_width(self.glyphs);
+        // Reused across every cell so formatting allocates only the string each cell keeps.
+        let mut scratch = String::new();
+        let mut fitted = FittedColumns {
+            cols: Vec::new(),
+            widths: Vec::new(),
+            rows,
+        };
+        let mut used = lead;
+        for col_index in 0..df.width() {
+            let mut remaining = width.saturating_sub(used);
+            if remaining == 0 {
+                break;
+            }
+            let col = self.slice_column(df, col_index, rows, &drifting, &mut scratch);
+            // A scrolling column clipped with more after it leaves the last cell for
+            // the off-screen hint, which would otherwise cover its clip marker.
+            if side == Side::Scrolling
+                && col.natural_width() > remaining
+                && col_index + 1 < df.width()
+            {
+                remaining -= 1;
+            }
+            let first = fitted.cols.is_empty();
+            let Some(w) = fit_column(&col, remaining, min_partial, first, side) else {
+                break;
+            };
+            let whole = w >= col.natural_width();
+            used = used
+                .saturating_add(w)
+                .saturating_add(self.table_cell_padding);
+            fitted.cols.push(col);
+            fitted.widths.push(w);
+            if !whole {
+                // A clipped column took everything left; nothing after it can fit.
+                break;
+            }
+        }
+        fitted
+    }
+
+    /// One column's heading, type and first `rows` values, formatted and measured.
+    fn slice_column(
+        &self,
+        df: &DataFrame,
+        col_index: usize,
+        rows: usize,
+        drifting: &HashSet<&str>,
+        scratch: &mut String,
+    ) -> ColumnSlice {
+        let g = self.glyphs;
+        let col_data = &df[col_index];
+        let name = col_data.name().as_str();
+        let dtype = col_data.dtype();
+        // Binary columns hold the `‹binary›` stub: style them with binary_col + italic so they
+        // read as a placeholder rather than data, regardless of the column_colors setting.
+        let is_binary = self.binary_cols.contains(name);
+        let cell_style = if is_binary {
+            let mut s = Style::default().add_modifier(Modifier::ITALIC);
+            if let Some(c) = self.binary_col {
+                s = s.fg(c);
+            }
+            Some(s)
+        } else {
+            self.column_type_color(dtype)
+                .map(|c| Style::default().fg(c))
+        };
+        // Resolved once per column: dtype eligibility and the include/exclude globs never
+        // touch the per-cell path. A binary column holds the stub, not a number, so it is
+        // always passthrough.
+        let col_fmt = if is_binary {
+            CellFormatter::Passthrough
+        } else {
+            self.number_format.formatter_for(name, dtype)
+        };
+        // Numeric columns render flush-right so magnitudes line up; strings, booleans,
+        // temporals and binary stubs stay left.
+        let right_align = self.number_format.align_numeric_right
+            && !is_binary
+            && numfmt::is_right_aligned_dtype(dtype);
+        // A null in this column means different things in different files: the data's
+        // own null, a file written without the column, or a file that stores it in
+        // another type. Resolved once per column, by group.
+        let null_glyph_by_group = self.null_glyphs_for(name, g, drifting);
+
+        let mut cells = Vec::with_capacity(rows);
+        let mut value_width = 0usize;
+        for row_index in 0..rows.min(col_data.len()) {
+            let value = col_data.get(row_index).unwrap();
+            if matches!(value, AnyValue::Null) {
+                let glyph = self
+                    .drift_rows
+                    .get(row_index)
+                    .and_then(|group| null_glyph_by_group.get(*group as usize))
+                    .copied()
+                    .unwrap_or(g.null);
+                value_width = value_width.max(crate::glyphs::cell_width(glyph));
+                cells.push(SliceCell::Null(glyph));
+                continue;
+            }
+            let text = numfmt::format_any_value(&col_fmt, &value, scratch).into_owned();
+            value_width = value_width.max(crate::glyphs::cell_width(&text));
+            cells.push(SliceCell::Value(text));
+        }
+
+        let drift_mark = self.drift_mark_for(name, drifting);
+        let sort_mark = self.sort_mark_for(name);
+        // Both header marks widen the column, or a sorted or drifting column's last
+        // character would be pushed out of its cell.
+        let header_width = crate::glyphs::cell_width(name)
+            + crate::glyphs::cell_width(drift_mark)
+            + crate::glyphs::cell_width(sort_mark);
         // The type row is part of the header, so a column is at least as wide as its
         // type name; "datetime" under a column called "ts" would otherwise clip.
-        let dtype_labels: Vec<String> = if self.dtype_row {
-            df.dtypes().iter().map(dtype_label).collect()
-        } else {
-            Vec::new()
+        let type_label = self.dtype_row.then(|| dtype_label(dtype));
+        let type_width = type_label
+            .as_deref()
+            .map(crate::glyphs::cell_width)
+            .unwrap_or(0);
+        let cells_u16 = |w: usize| u16::try_from(w).unwrap_or(u16::MAX);
+        ColumnSlice {
+            name: name.to_string(),
+            drift_mark,
+            sort_mark,
+            header_width: cells_u16(header_width),
+            type_label,
+            type_width: cells_u16(type_width),
+            cells,
+            value_width: cells_u16(value_width),
+            right_align,
+            clips: is_binary || is_truncatable_dtype(dtype),
+            cell_style,
+            colour: if is_binary {
+                self.binary_col
+            } else {
+                self.column_type_color(dtype)
+            },
+        }
+    }
+
+    /// Draw fitted columns into `area` as a table. Every heading, type and value is
+    /// fitted to its column here, at a grapheme boundary and marked where cut, so
+    /// ratatui never truncates one itself: it cuts a right-aligned value from the left,
+    /// which turns `1234567` into `34567`.
+    fn draw_columns(
+        &self,
+        fitted: &FittedColumns,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &mut TableState,
+        leading_gap: bool,
+    ) {
+        let g = self.glyphs;
+        let fit = |text: &str, width: u16| -> String {
+            crate::glyphs::fit_cells(text, usize::from(width), g.ellipsis).into_owned()
         };
-
-        let drifting = self.drifting_columns();
-
-        // widths starts at the length of each column name
-        let mut widths: Vec<u16> = df
-            .get_column_names()
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                // Both header marks widen the column, or a sorted or drifting
-                // column's last character would be pushed out of its cell.
-                let mark_w = (self
-                    .drift_mark_for(name.as_str(), &drifting)
-                    .chars()
-                    .count()
-                    + self.sort_mark_for(name.as_str()).chars().count())
-                    as u16;
-                let name_w = name.chars().count() as u16 + mark_w;
-                let type_w = dtype_labels
-                    .get(i)
-                    .map(|l| l.chars().count() as u16)
-                    .unwrap_or(0);
-                name_w.max(type_w)
-            })
-            .collect();
-
-        let mut used_width = u16::from(leading_gap);
-
-        // rows is a vector initialized to a vector of lenth "height" empty rows
-        let mut rows: Vec<Vec<Cell>> = vec![vec![]; height];
-        let mut visible_columns = 0;
-
-        let max_rows = height.min((area.height as usize).saturating_sub(header_h as usize));
-        let g = crate::glyphs::get();
         // A null is drawn as a glyph in the dim colour, so it can never be mistaken
         // for an empty string or a zero that happens to be blank.
         let null_style = Style::default()
             .fg(self.dimmed)
             .add_modifier(Modifier::ITALIC);
+        let columns = || fitted.cols.iter().zip(fitted.widths.iter().copied());
 
-        // Reused across every cell in the frame so formatting allocates only
-        // the destination string each cell already needs.
-        let mut scratch = String::new();
-        // Headers follow their column's alignment; a left-aligned heading over
-        // right-aligned digits reads as a rendering bug.
-        let mut right_aligned_cols: Vec<bool> = vec![false; cols];
-
-        let col_names = df.get_column_names();
-        for col_index in 0..cols {
-            let mut max_len = widths[col_index];
-            let col_data = &df[col_index];
-            // Binary columns hold the `‹binary›` stub: style them with binary_col + italic so they
-            // read as a placeholder rather than data, regardless of the column_colors setting.
-            let is_binary = self.binary_cols.contains(col_names[col_index].as_str());
-            let cell_style = if is_binary {
-                let mut s = Style::default().add_modifier(Modifier::ITALIC);
-                if let Some(c) = self.binary_col {
-                    s = s.fg(c);
-                }
-                Some(s)
-            } else {
-                self.column_type_color(col_data.dtype())
-                    .map(|c| Style::default().fg(c))
-            };
-
-            // Resolved once per column: dtype eligibility and the include/exclude
-            // globs never touch the per-cell path. A binary column holds the
-            // `‹binary›` stub, not a number, so it is always passthrough.
-            let col_fmt = if is_binary {
-                CellFormatter::Passthrough
-            } else {
-                self.number_format
-                    .formatter_for(col_names[col_index].as_str(), col_data.dtype())
-            };
-            // Numeric columns render flush-right so magnitudes line up; strings,
-            // booleans, temporals and binary stubs stay left.
-            let right_align = self.number_format.align_numeric_right
-                && !is_binary
-                && numfmt::is_right_aligned_dtype(col_data.dtype());
-            right_aligned_cols[col_index] = right_align;
-
-            // A null in this column means different things in different files: the
-            // data's own null, a file written without the column, or a file that
-            // stores it in another type. Resolved once per column, by group.
-            let null_glyph_by_group =
-                self.null_glyphs_for(col_names[col_index].as_str(), g, &drifting);
-
-            for (row_index, row) in rows.iter_mut().take(max_rows).enumerate() {
-                let value = col_data.get(row_index).unwrap();
-                if matches!(value, AnyValue::Null) {
-                    let glyph = self
-                        .drift_rows
-                        .get(row_index)
-                        .and_then(|group| null_glyph_by_group.get(*group as usize))
-                        .copied()
-                        .unwrap_or(g.null);
-                    max_len = max_len.max(glyph.chars().count() as u16);
-                    let line = Line::from(Span::styled(glyph, null_style));
-                    row.push(Cell::from(if right_align {
-                        line.right_aligned()
-                    } else {
-                        line
-                    }));
-                    continue;
-                }
-                let val_str: Cow<str> = numfmt::format_any_value(&col_fmt, &value, &mut scratch);
-                let len = val_str.chars().count() as u16;
-                max_len = max_len.max(len);
-                let line = match cell_style {
-                    Some(s) => Line::from(Span::styled(val_str.into_owned(), s)),
-                    None => Line::from(val_str.into_owned()),
-                };
-                row.push(Cell::from(if right_align {
-                    line.right_aligned()
-                } else {
-                    line
-                }));
-            }
-
-            // Use > not >= so the last column is shown when it fits exactly (no padding needed after it)
-            let overflows = (used_width + max_len) > area.width;
-
-            if !overflows {
-                visible_columns += 1;
-                widths[col_index] = max_len;
-                used_width += max_len + self.table_cell_padding;
-            } else {
-                // The column doesn't fully fit. A string column is shown truncated to the
-                // remaining width so the horizontal space is used and (most importantly) its
-                // heading is visible — as long as there's enough room to be meaningful. Numeric
-                // and temporal columns are NOT truncated: a partial value reads as a wrong value,
-                // so they're left for the next scroll (the off-screen indicator still flags them).
-                // Either way nothing past this column can fit, so stop here.
-                const MIN_PARTIAL_COLUMN_WIDTH: u16 = 3;
-                let remaining = area.width.saturating_sub(used_width);
-                if is_truncatable_dtype(col_data.dtype()) && remaining >= MIN_PARTIAL_COLUMN_WIDTH {
-                    visible_columns += 1;
-                    widths[col_index] = remaining;
-                }
-                break;
-            }
-        }
-
-        widths.truncate(visible_columns);
-        // convert rows to a vector of Row, with optional alternate row background
-        let rows: Vec<Row> = rows
-            .into_iter()
-            .enumerate()
-            .map(|(row_index, mut row)| {
-                row.truncate(visible_columns);
+        let rows: Vec<Row> = (0..fitted.rows)
+            .map(|row_index| {
+                let cells: Vec<Cell> = columns()
+                    .map(|(col, w)| {
+                        let span = match col.cells.get(row_index) {
+                            Some(SliceCell::Null(glyph)) => Span::styled(fit(glyph, w), null_style),
+                            Some(SliceCell::Value(text)) => {
+                                Span::styled(fit(text, w), col.cell_style.unwrap_or_default())
+                            }
+                            None => return Cell::default(),
+                        };
+                        Cell::from(cell_line(vec![span], w, col.right_align))
+                    })
+                    .collect();
                 let row_style = if row_index % 2 == 1 {
                     self.alternate_row_bg
                         .map(|c| Style::default().bg(c))
@@ -8198,7 +8437,7 @@ impl DataTable {
                 } else {
                     Style::default()
                 };
-                Row::new(row).style(row_style)
+                Row::new(cells).style(row_style)
             })
             .collect();
 
@@ -8209,58 +8448,57 @@ impl DataTable {
         };
         // The name takes the column's own colour, bold, so the header says what the
         // cells say without a mark in front of it; the type row beneath repeats the
-        // colour in plain weight and spells the type out.
-        let dtypes = df.dtypes();
-        let headers: Vec<Cell> = df
-            .get_column_names()
-            .iter()
-            .take(visible_columns)
-            .enumerate()
-            .map(|(i, name)| {
-                let is_binary = self.binary_cols.contains(name.as_str());
-                let colour = if is_binary {
-                    self.binary_col
-                } else {
-                    self.column_type_color(&dtypes[i])
-                };
-                let name_style = match colour {
+        // colour in plain weight and spells the type out. Headings follow their
+        // column's alignment; a left-aligned heading over right-aligned digits reads
+        // as a rendering bug.
+        let headers: Vec<Cell> = columns()
+            .map(|(col, w)| {
+                let name_style = match col.colour {
                     Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
                     None => Style::default().add_modifier(Modifier::BOLD),
                 };
-                let mut heading = vec![Span::styled(name.to_string(), name_style)];
-                let mark = self.drift_mark_for(name.as_str(), &drifting);
-                if !mark.is_empty() {
-                    heading.push(Span::styled(mark, Style::default().fg(self.dimmed)));
+                // The marks are state, so a long name gives way to them: the name is
+                // what gets clipped, never the sort direction or the drift footnote.
+                let marks = crate::glyphs::cell_width(col.drift_mark)
+                    + crate::glyphs::cell_width(col.sort_mark);
+                let mut heading = Vec::with_capacity(3);
+                match u16::try_from(marks).ok().filter(|&m| m < w) {
+                    Some(marks) => {
+                        heading.push(Span::styled(fit(&col.name, w - marks), name_style));
+                        if !col.drift_mark.is_empty() {
+                            heading.push(Span::styled(
+                                col.drift_mark,
+                                Style::default().fg(self.dimmed),
+                            ));
+                        }
+                        // In the name's own style: the mark says how this column's
+                        // values run, so it reads as part of the heading.
+                        if !col.sort_mark.is_empty() {
+                            heading.push(Span::styled(col.sort_mark, name_style));
+                        }
+                    }
+                    None => heading.push(Span::styled(fit(&col.name, w), name_style)),
                 }
-                // In the name's own style: the mark says how this column's values
-                // run, so it reads as part of the heading, not a footnote.
-                let sort_mark = self.sort_mark_for(name.as_str());
-                if !sort_mark.is_empty() {
-                    heading.push(Span::styled(sort_mark, name_style));
-                }
-                let mut lines = vec![Line::from(heading)];
-                if self.dtype_row {
-                    let type_style = match colour {
+                let mut lines = vec![cell_line(heading, w, col.right_align)];
+                if let Some(label) = &col.type_label {
+                    let type_style = match col.colour {
                         Some(c) => Style::default().fg(c),
                         None => Style::default().fg(self.dimmed),
                     };
-                    lines.push(Line::from(Span::styled(
-                        dtype_labels.get(i).cloned().unwrap_or_default(),
-                        type_style,
-                    )));
+                    let label = Span::styled(fit(label, w), type_style);
+                    lines.push(cell_line(vec![label], w, col.right_align));
                 }
-                let text = if right_aligned_cols[i] {
-                    Text::from(lines).right_aligned()
-                } else {
-                    Text::from(lines)
-                };
-                Cell::from(text)
+                Cell::from(Text::from(lines))
             })
             .collect();
 
-        let mut table = Table::new(rows, widths)
+        let mut table = Table::new(rows, fitted.widths.clone())
             .column_spacing(self.table_cell_padding)
-            .header(Row::new(headers).style(header_row_style).height(header_h))
+            .header(
+                Row::new(headers)
+                    .style(header_row_style)
+                    .height(self.header_height()),
+            )
             .row_highlight_style(self.highlight_style());
         if leading_gap {
             // A blank selection column on every row: the Table offsets the header and
@@ -8271,8 +8509,6 @@ impl DataTable {
                 .highlight_spacing(HighlightSpacing::Always);
         }
         StatefulWidget::render(table, area, buf, state);
-
-        visible_columns
     }
 
     fn render_row_numbers(&self, area: Rect, buf: &mut Buffer, params: RowNumbersParams) {
@@ -8433,233 +8669,111 @@ impl StatefulWidget for DataTable {
         } else {
             0
         };
+        let row_num_width = row_num_width.min(area.width);
+        let data_area = Rect {
+            x: area.x + row_num_width,
+            width: area.width - row_num_width,
+            ..area
+        };
+        let row_num_area = Rect {
+            width: row_num_width,
+            ..area
+        };
+        let (visible_rows, row_start_index) = (state.visible_rows, state.row_start_index);
+        let row_numbers = |start_row, num_rows, selected_row| RowNumbersParams {
+            start_row,
+            visible_rows,
+            num_rows,
+            row_start_index,
+            selected_row,
+        };
+        let row_number_params =
+            row_numbers(start_row, state.num_rows, state.table_state.selected());
 
-        // Calculate locked columns width if any
-        let mut locked_width = row_num_width;
-        if let Some(locked_df) = state.locked_df.as_ref() {
-            let (_, cols) = locked_df.shape();
-            // This pass only needs widths, so integers take numfmt's arithmetic
-            // path instead of building a string per cell and throwing it away.
-            let mut scratch = String::new();
-            let drifting = self.drifting_columns();
-            for col_index in 0..cols {
-                let col_name = locked_df.get_column_names()[col_index];
-                let col_data = &locked_df[col_index];
-                // The heading as `render_dataframe` sizes it: both marks, and the type
-                // row under it. Narrower, and the column overran its area onto the
-                // separator (`i64│`), or was dropped outright.
-                let mut max_len = (col_name.chars().count()
-                    + self.sort_mark_for(col_name.as_str()).chars().count()
-                    + self
-                        .drift_mark_for(col_name.as_str(), &drifting)
-                        .chars()
-                        .count()) as u16;
-                if self.dtype_row {
-                    max_len = max_len.max(dtype_label(col_data.dtype()).chars().count() as u16);
-                }
-                let col_fmt = if self.binary_cols.contains(col_name.as_str()) {
-                    CellFormatter::Passthrough
-                } else {
-                    self.number_format
-                        .formatter_for(col_name.as_str(), col_data.dtype())
-                };
-                for row_index in 0..locked_df.height().min(state.visible_rows) {
-                    let value = col_data.get(row_index).unwrap();
-                    let len = numfmt::display_width(&col_fmt, &value, &mut scratch) as u16;
-                    max_len = max_len.max(len);
-                }
-                locked_width += max_len + 1;
-            }
-        }
+        // Both sides are cut to the same rows on screen, so the frozen columns are
+        // measured on what they show, not on the head of the buffer.
+        let offset = start_row.saturating_sub(state.buffered_start_row);
+        let rows_room = (area.height as usize).saturating_sub(header_h as usize);
+        let locked_slice = state
+            .locked_df
+            .as_ref()
+            .and_then(|df| visible_slice(df, offset, state.visible_rows));
 
-        // Split area into locked and scrollable parts
-        if locked_width > row_num_width && locked_width < area.width {
-            let locked_area = Rect {
-                x: area.x,
-                y: area.y,
-                width: locked_width,
-                height: area.height,
-            };
-            let separator_x = locked_area.x + locked_area.width;
-
-            // If row numbers are enabled, render them first in a separate area
+        if state.df.is_some() || state.locked_df.is_some() {
             if state.row_numbers {
-                let row_num_area = Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: row_num_width,
-                    height: area.height,
-                };
-                self.render_row_numbers(
-                    row_num_area,
-                    buf,
-                    RowNumbersParams {
-                        start_row,
-                        visible_rows: state.visible_rows,
-                        num_rows: state.num_rows,
-                        row_start_index: state.row_start_index,
-                        selected_row: state.table_state.selected(),
-                    },
-                );
+                self.render_row_numbers(row_num_area, buf, row_number_params);
             }
-            let scrollable_area = Rect {
-                x: separator_x + 1,
-                y: area.y,
-                width: area.width.saturating_sub(locked_width + 1),
-                height: area.height,
-            };
-
-            // Render locked columns (no background shading, just the vertical separator)
-            if let Some(locked_df) = state.locked_df.as_ref() {
-                // Adjust locked_area to account for row numbers if present
-                let adjusted_locked_area = if state.row_numbers {
-                    Rect {
-                        x: area.x + row_num_width,
-                        y: area.y,
-                        width: locked_width - row_num_width,
-                        height: area.height,
+            let mut scroll_area = data_area;
+            let mut leading_gap = false;
+            if let Some(locked) = locked_slice {
+                let asked = state.locked_columns_count();
+                let mut fitted = self.fit_frozen_columns(
+                    &locked,
+                    locked.height().min(rows_room),
+                    data_area.width,
+                    state.column_order.len() <= asked,
+                    area.width,
+                );
+                state.fit_frozen(fitted.cols.len());
+                // The state may not take the fit while no buffer is on hand; it then
+                // keeps its count, and only what fits of it is drawn.
+                let shown = state.frozen_shown().min(fitted.cols.len());
+                fitted.cols.truncate(shown);
+                fitted.widths.truncate(shown);
+                let mut separator_x = data_area.x;
+                if shown > 0 {
+                    let gaps = self.table_cell_padding.saturating_mul(shown as u16 - 1);
+                    let columns_width = fitted.widths.iter().sum::<u16>().saturating_add(gaps);
+                    // One cell more than the columns: the space before the separator,
+                    // which takes the header fill and the row tints.
+                    let frozen_area = Rect {
+                        width: columns_width.saturating_add(1).min(data_area.width),
+                        ..data_area
+                    };
+                    self.draw_columns(&fitted, frozen_area, buf, &mut state.table_state, false);
+                    separator_x = frozen_area.right();
+                }
+                if separator_x < data_area.right() {
+                    // A broken rule while some frozen columns had to scroll: the window
+                    // holds fewer than were asked for, and they come back with room.
+                    let rule = if shown < asked {
+                        self.glyphs.rule_broken
+                    } else {
+                        self.glyphs.rule
+                    };
+                    for y in area.y..area.y + area.height {
+                        let cell = &mut buf[(separator_x, y)];
+                        cell.set_symbol(rule);
+                        cell.set_style(Style::default().fg(self.separator_fg));
                     }
-                } else {
-                    locked_area
+                }
+                let scroll_x = separator_x.saturating_add(1).min(data_area.right());
+                scroll_area = Rect {
+                    x: scroll_x,
+                    width: data_area.right() - scroll_x,
+                    ..data_area
                 };
-
-                // Slice buffer to visible portion
-                let offset = start_row.saturating_sub(state.buffered_start_row);
-                let slice_len = state
-                    .visible_rows
-                    .min(locked_df.height().saturating_sub(offset));
-                if offset < locked_df.height() && slice_len > 0 {
-                    let sliced_df = locked_df.slice(offset as i64, slice_len);
-                    self.render_dataframe(
-                        &sliced_df,
-                        adjusted_locked_area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        start_row,
-                    );
-                }
+                leading_gap = true;
             }
-
-            // Draw vertical separator line
-            let separator_x_adjusted = if state.row_numbers {
-                area.x + row_num_width + (locked_width - row_num_width)
-            } else {
-                separator_x
-            };
-            let rule = crate::glyphs::get().rule;
-            for y in area.y..area.y + area.height {
-                let cell = &mut buf[(separator_x_adjusted, y)];
-                cell.set_symbol(rule);
-                cell.set_style(Style::default().fg(self.separator_fg));
-            }
-
-            // Adjust scrollable area to account for row numbers
-            let adjusted_scrollable_area = if state.row_numbers {
-                Rect {
-                    x: separator_x_adjusted + 1,
-                    y: area.y,
-                    width: area.width.saturating_sub(locked_width + 1),
-                    height: area.height,
-                }
-            } else {
-                scrollable_area
-            };
-
-            // Render scrollable columns
-            if let Some(df) = state.df.as_ref() {
-                // Slice buffer to visible portion
-                let offset = start_row.saturating_sub(state.buffered_start_row);
-                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
-                if offset < df.height() && slice_len > 0 {
-                    let sliced_df = df.slice(offset as i64, slice_len);
-                    let total_cols = sliced_df.width();
-                    let shown = self.render_dataframe(
-                        &sliced_df,
-                        adjusted_scrollable_area,
-                        buf,
-                        &mut state.table_state,
-                        true,
-                        start_row,
-                    );
-                    scroll_indicator = Some((
-                        adjusted_scrollable_area,
-                        state.termcol_index > 0,
-                        total_cols.saturating_sub(shown),
-                    ));
-                }
-            }
-        } else if let Some(df) = state.df.as_ref() {
-            // No locked columns, render normally
-            // If row numbers are enabled, render them first
-            if state.row_numbers {
-                let row_num_area = Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: row_num_width,
-                    height: area.height,
-                };
-                self.render_row_numbers(
-                    row_num_area,
+            if let Some(sliced_df) = state
+                .df
+                .as_ref()
+                .and_then(|df| visible_slice(df, offset, state.visible_rows))
+            {
+                let total_cols = sliced_df.width();
+                let shown = self.render_dataframe(
+                    &sliced_df,
+                    scroll_area,
                     buf,
-                    RowNumbersParams {
-                        start_row,
-                        visible_rows: state.visible_rows,
-                        num_rows: state.num_rows,
-                        row_start_index: state.row_start_index,
-                        selected_row: state.table_state.selected(),
-                    },
+                    &mut state.table_state,
+                    leading_gap,
+                    start_row,
                 );
-
-                // Adjust data area to exclude row number column
-                let data_area = Rect {
-                    x: area.x + row_num_width,
-                    y: area.y,
-                    width: area.width.saturating_sub(row_num_width),
-                    height: area.height,
-                };
-
-                // Slice buffer to visible portion
-                let offset = start_row.saturating_sub(state.buffered_start_row);
-                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
-                if offset < df.height() && slice_len > 0 {
-                    let sliced_df = df.slice(offset as i64, slice_len);
-                    let total_cols = sliced_df.width();
-                    let shown = self.render_dataframe(
-                        &sliced_df,
-                        data_area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        start_row,
-                    );
-                    scroll_indicator = Some((
-                        data_area,
-                        state.termcol_index > 0,
-                        total_cols.saturating_sub(shown),
-                    ));
-                }
-            } else {
-                // Slice buffer to visible portion
-                let offset = start_row.saturating_sub(state.buffered_start_row);
-                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
-                if offset < df.height() && slice_len > 0 {
-                    let sliced_df = df.slice(offset as i64, slice_len);
-                    let total_cols = sliced_df.width();
-                    let shown = self.render_dataframe(
-                        &sliced_df,
-                        area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        start_row,
-                    );
-                    scroll_indicator = Some((
-                        area,
-                        state.termcol_index > 0,
-                        total_cols.saturating_sub(shown),
-                    ));
-                }
+                scroll_indicator = Some((
+                    scroll_area,
+                    state.termcol_index > 0,
+                    total_cols.saturating_sub(shown),
+                ));
             }
         } else if !state.column_order.is_empty() {
             // Empty result (0 rows) but we have a schema - show empty table with header, no rows
@@ -8671,47 +8785,16 @@ impl StatefulWidget for DataTable {
             match DataFrame::new_infer_height(empty_columns) {
                 Ok(empty_df) => {
                     if state.row_numbers {
-                        let row_num_area = Rect {
-                            x: area.x,
-                            y: area.y,
-                            width: row_num_width,
-                            height: area.height,
-                        };
-                        self.render_row_numbers(
-                            row_num_area,
-                            buf,
-                            RowNumbersParams {
-                                start_row: 0,
-                                visible_rows: state.visible_rows,
-                                num_rows: 0,
-                                row_start_index: state.row_start_index,
-                                selected_row: None,
-                            },
-                        );
-                        let data_area = Rect {
-                            x: area.x + row_num_width,
-                            y: area.y,
-                            width: area.width.saturating_sub(row_num_width),
-                            height: area.height,
-                        };
-                        self.render_dataframe(
-                            &empty_df,
-                            data_area,
-                            buf,
-                            &mut state.table_state,
-                            false,
-                            0,
-                        );
-                    } else {
-                        self.render_dataframe(
-                            &empty_df,
-                            area,
-                            buf,
-                            &mut state.table_state,
-                            false,
-                            0,
-                        );
+                        self.render_row_numbers(row_num_area, buf, row_numbers(0, 0, None));
                     }
+                    self.render_dataframe(
+                        &empty_df,
+                        data_area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        0,
+                    );
                 }
                 _ => {
                     Paragraph::new("No data").render(area, buf);
@@ -8725,7 +8808,7 @@ impl StatefulWidget for DataTable {
         // The rail: the header rows take the header fill so the bar runs edge to edge,
         // and the selected row gets the accent mark.
         if rail_area.width > 0 && rail_area.height > 0 {
-            let g = crate::glyphs::get();
+            let g = self.glyphs;
             let header_style = if self.header_bg == Color::Reset {
                 Style::default().fg(self.header_fg)
             } else {
@@ -8762,7 +8845,7 @@ impl StatefulWidget for DataTable {
             && scroll_area.width > 0
             && scroll_area.height > 0
         {
-            let g = crate::glyphs::get();
+            let g = self.glyphs;
             let more_right = hidden > 0;
             let hint_style = if self.header_bg == Color::Reset {
                 Style::default()
@@ -11587,9 +11670,10 @@ mod tests {
             shown, 2,
             "the overflowing trailing string column should be kept (truncated)"
         );
-        // Part of the heading should be visible so the user knows what the column is.
+        // Part of the heading should be visible so the user knows what the column is,
+        // behind the clip marker (three cells in the ASCII set).
         assert!(
-            header_row_string(&buf, area).contains("wide"),
+            header_row_string(&buf, area).contains("wid"),
             "truncated column heading should be visible: {:?}",
             header_row_string(&buf, area)
         );
@@ -13343,6 +13427,8 @@ mod tests {
     /// The gap is paid for in the width budget: at every width, the columns right of
     /// the separator are whole or absent. Left out, the last column that fits exactly
     /// comes out one cell short, and a number cut short reads as a different number.
+    /// The one exception is a first column with no room for its value at all, which
+    /// shows a preview behind the clip marker rather than nothing.
     #[test]
     fn the_separator_gap_never_cuts_a_number_short() {
         let values = ["-987", "654", "-32", "10"];
@@ -13364,14 +13450,551 @@ mod tests {
             let mut buf = Buffer::empty(area);
             DataTable::default().render(area, &mut buf, &mut state);
             let row = row_string(&buf, area, data_row);
-            let (_, scrolled) = row
-                .split_once(crate::glyphs::get().rule)
-                .expect("a separator");
-            for token in scrolled.split_whitespace() {
+            let g = crate::glyphs::get();
+            let (_, scrolled) = row.split_once(g.rule).expect("a separator");
+            for (i, token) in scrolled.split_whitespace().enumerate() {
+                let previewed = i == 0 && token.ends_with(g.ellipsis);
                 assert!(
-                    values.contains(&token),
+                    values.contains(&token) || previewed,
                     "width {width}: {token:?} is cut short in {row:?}"
                 );
+            }
+        }
+    }
+
+    fn glyph_sets() -> [&'static crate::glyphs::Glyphs; 2] {
+        [crate::glyphs::unicode(), crate::glyphs::ascii()]
+    }
+
+    fn set_name(g: &crate::glyphs::Glyphs) -> &'static str {
+        if g.unicode { "unicode" } else { "ascii" }
+    }
+
+    /// The cells of row `y` from `x0` on, as the terminal shows them: a wide
+    /// character once, without the blank its second cell holds.
+    fn drawn_from(buf: &Buffer, y: u16, x0: u16) -> String {
+        use ratatui::buffer::CellWidth;
+        let mut row = String::new();
+        let mut x = x0;
+        while x < buf.area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x += symbol.cell_width().max(1);
+        }
+        row
+    }
+
+    /// Draw `state` at `width` × `height` with `table`, row by row as shown.
+    fn draw(table: DataTable, state: &mut DataTableState, width: u16, height: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        table.render(area, &mut buf, state);
+        (0..height).map(|y| drawn_from(&buf, y, 0)).collect()
+    }
+
+    /// A state over `df` with its first page buffered for `visible_rows` rows.
+    fn state_of(df: &DataFrame, visible_rows: usize) -> DataTableState {
+        let mut state =
+            DataTableState::new(df.clone().lazy(), None, None, None, None, true).unwrap();
+        state.visible_rows = visible_rows;
+        state.collect();
+        state
+    }
+
+    /// A heading wider than the table is clipped, marked, over values that fit whole:
+    /// it never leaves the table blank, at any width, in either glyph set, with or
+    /// without the type row. It used to drop the column, and with it everything
+    /// after, leaving the rail and an off-screen hint over nothing.
+    #[test]
+    fn a_long_header_never_blanks_the_table() {
+        let name = format!("numeric_header_{}", "x".repeat(90));
+        let df = DataFrame::new_infer_height(vec![
+            Series::new(name.as_str().into(), &[1i64, 22, 333]).into(),
+            Series::new("tail".into(), &["t1", "t2", "t3"]).into(),
+        ])
+        .unwrap();
+        for g in glyph_sets() {
+            for dtype_row in [false, true] {
+                for width in [12u16, 20, 60, 80, 120] {
+                    let table = || DataTable {
+                        glyphs: g,
+                        dtype_row,
+                        ..DataTable::default()
+                    };
+                    let header_h = usize::from(table().header_height());
+                    let mut state = state_of(&df, 3);
+                    let rows = draw(table(), &mut state, width, header_h as u16 + 3);
+                    let ctx = format!(
+                        "{} glyphs, type row {dtype_row}, width {width}:\n{}",
+                        set_name(g),
+                        rows.join("\n")
+                    );
+                    assert!(rows[0].contains("num"), "{ctx}");
+                    for (i, value) in ["1", "22", "333"].iter().enumerate() {
+                        assert!(
+                            rows[header_h + i].split_whitespace().any(|t| t == *value),
+                            "{value} is whole on its row: {ctx}"
+                        );
+                    }
+                    if dtype_row && width >= 20 {
+                        assert!(rows[1].contains("i64"), "{ctx}");
+                    }
+                    if width >= 120 {
+                        assert!(rows[0].contains(&name), "{ctx}");
+                        assert!(rows[0].contains("tail"), "{ctx}");
+                    } else {
+                        assert!(rows[0].contains(g.ellipsis), "{ctx}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A clipped heading gives way to its marks: the name is cut, never the sort
+    /// direction, which is state.
+    #[test]
+    fn a_clipped_heading_keeps_its_sort_mark() {
+        let name = format!("numeric_header_{}", "x".repeat(90));
+        let df =
+            DataFrame::new_infer_height(vec![Series::new(name.as_str().into(), &[1i64]).into()])
+                .unwrap();
+        for g in glyph_sets() {
+            let table = DataTable {
+                glyphs: g,
+                ..DataTable::default()
+            }
+            .with_sort(vec![name.clone()], vec![true]);
+            let area = Rect::new(0, 0, 30, 2);
+            let mut buf = Buffer::empty(area);
+            let mut ts = TableState::default();
+            table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+            let header = header_row_string(&buf, area);
+            assert!(
+                header.ends_with(&format!("{}{}", g.ellipsis, g.sort_desc)),
+                "{}: {header:?}",
+                set_name(g)
+            );
+        }
+    }
+
+    /// A heading whose drawn width is not its string's width (`لا` draws two cells,
+    /// a halfwidth sound mark one) is drawn whole over right-aligned numbers, with its
+    /// sort mark after it. ratatui's own alignment pushed the last letter off the cell,
+    /// and the mark landed on it.
+    #[test]
+    fn a_heading_is_placed_by_the_cells_it_draws() {
+        for name in ["الاسم", "ｶﾞｷﾞ"] {
+            let df = DataFrame::new_infer_height(vec![
+                Series::new(name.into(), &[1i64]).into(),
+                Series::new("tail".into(), &["x"]).into(),
+            ])
+            .unwrap();
+            let table = DataTable::default().with_sort(vec![name.to_string()], vec![false]);
+            let mark = table.glyphs.sort_asc;
+            let area = Rect::new(0, 0, 30, 3);
+            let mut buf = Buffer::empty(area);
+            let mut ts = TableState::default();
+            table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+            let rows: Vec<String> = (0..3).map(|y| drawn_from(&buf, y, 0)).collect();
+            assert!(rows[0].starts_with(&format!("{name}{mark}")), "{rows:#?}");
+            let width = crate::glyphs::cell_width(name) + 1;
+            assert!(
+                rows[1].starts_with(&format!("{:>width$} x", "1")),
+                "{rows:#?}"
+            );
+        }
+    }
+
+    /// A number too wide for the whole table shows its leading digits behind the clip
+    /// marker: something rather than nothing, and never its trailing digits passing
+    /// for a whole number, which is what ratatui's own cut of a right-aligned value
+    /// would show.
+    #[test]
+    fn a_number_wider_than_the_table_is_a_marked_preview() {
+        let full = "-1234567890123456789";
+        let df = df!("n" => &[-1234567890123456789i64]).unwrap();
+        for g in glyph_sets() {
+            for width in 3u16..=24 {
+                let mut state = state_of(&df, 1);
+                let table = DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                };
+                let rows = draw(table, &mut state, width, 2);
+                let shown: String = rows[1].chars().skip(1).collect::<String>();
+                let shown = shown.trim();
+                let ctx = format!("{} glyphs, width {width}: {rows:?}", set_name(g));
+                if usize::from(width) > full.len() {
+                    assert_eq!(shown, full, "{ctx}");
+                } else if g.ellipsis.starts_with(shown) {
+                    // Room for no more than the marker.
+                    assert!(!shown.is_empty(), "{ctx}");
+                } else {
+                    let kept = shown
+                        .strip_suffix(g.ellipsis)
+                        .unwrap_or_else(|| panic!("a clipped number carries the marker: {ctx}"));
+                    assert!(full.starts_with(kept), "{ctx}");
+                }
+            }
+        }
+    }
+
+    /// Wide characters are measured in cells: a column of four CJK characters is
+    /// eight cells wide, and shows whole beside the columns after it while there is
+    /// room. Counted in characters, it was given four and clipped with space to spare.
+    #[test]
+    fn wide_characters_are_measured_in_cells() {
+        let values = ["東京大阪", "京都横浜", "名古屋市"];
+        let df = df!(
+            "a" => &values,
+            "b" => &[1i64, 2, 3],
+            "tail" => &["x", "y", "z"],
+        )
+        .unwrap();
+        for g in glyph_sets() {
+            for width in [16u16, 30, 80] {
+                let mut state = state_of(&df, 3);
+                let table = DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                };
+                let rows = draw(table, &mut state, width, 4);
+                let ctx = format!("{} glyphs, width {width}: {rows:#?}", set_name(g));
+                assert!(rows[0].contains("tail"), "{ctx}");
+                for (i, value) in values.iter().enumerate() {
+                    assert!(rows[1 + i].contains(value), "{ctx}");
+                }
+            }
+        }
+    }
+
+    /// A value cut where it meets the edge keeps whole graphemes and gains the clip
+    /// marker: no half of a wide character, no accent split from its letter, no
+    /// joined emoji broken apart, at any width, in either glyph set.
+    #[test]
+    fn a_clipped_cell_keeps_whole_graphemes() {
+        let values = [
+            "東京大阪名古屋横浜",
+            "e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}",
+            "👩\u{200d}👩\u{200d}👧👍🏽🇯🇵 and more",
+            "plain text that runs on",
+        ];
+        let df = df!("id" => &[1i64, 2, 3, 4], "text" => &values).unwrap();
+        for g in glyph_sets() {
+            for width in 4u16..=30 {
+                let mut state = state_of(&df, 4);
+                let area = Rect::new(0, 0, width, 5);
+                let mut buf = Buffer::empty(area);
+                DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                }
+                .render(area, &mut buf, &mut state);
+                // The rail, `id` two cells wide, and one cell of padding.
+                let text_x = 4;
+                if text_x >= width {
+                    continue;
+                }
+                for (i, value) in values.iter().enumerate() {
+                    let y = 1 + i as u16;
+                    let shown = drawn_from(&buf, y, text_x);
+                    let shown = shown.trim_end();
+                    let ctx = format!("{} glyphs, width {width}, row {i}: {shown:?}", set_name(g));
+                    if shown.is_empty() || shown == *value {
+                        continue;
+                    }
+                    let kept = shown
+                        .strip_suffix(g.ellipsis)
+                        .unwrap_or_else(|| panic!("a clipped value is marked: {ctx}"));
+                    let span = Span::raw(*value);
+                    let mut whole = String::new();
+                    for grapheme in span.styled_graphemes(Style::default()) {
+                        if whole.len() >= kept.len() {
+                            break;
+                        }
+                        whole.push_str(grapheme.symbol);
+                    }
+                    assert_eq!(whole, kept, "{ctx}");
+                    // And each cell holds a whole grapheme of the value or the marker.
+                    for x in text_x..width {
+                        let symbol = buf[(x, y)].symbol();
+                        assert!(
+                            symbol == " "
+                                || g.ellipsis.contains(symbol)
+                                || span
+                                    .styled_graphemes(Style::default())
+                                    .any(|gr| gr.symbol == symbol),
+                            "cell {x} holds {symbol:?}: {ctx}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A frozen text column wider than the window is clipped, marked and still
+    /// frozen, with the column after it beside it. It used to vanish, leaving only
+    /// the column after it.
+    #[test]
+    fn a_frozen_long_text_is_clipped_not_dropped() {
+        let url = format!("https://example.com/{}", "long-segment/".repeat(15));
+        let df = df!("url" => &[url.as_str(), "short"], "tail" => &[7i64, 8]).unwrap();
+        for g in glyph_sets() {
+            for width in [40u16, 60, 80, 120] {
+                let mut state = state_of(&df, 2);
+                state.set_locked_columns(1);
+                let table = DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                };
+                let rows = draw(table, &mut state, width, 3);
+                let ctx = format!("{} glyphs, width {width}: {rows:#?}", set_name(g));
+                let (frozen, scrolled) = rows[0].split_once(g.rule).expect(&ctx);
+                assert!(frozen.contains("url"), "{ctx}");
+                assert!(scrolled.contains("tail"), "{ctx}");
+                let (frozen, scrolled) = rows[1].split_once(g.rule).expect(&ctx);
+                assert!(frozen.contains("https://example.com/"), "{ctx}");
+                assert!(frozen.trim_end().ends_with(g.ellipsis), "{ctx}");
+                assert!(scrolled.split_whitespace().any(|t| t == "7"), "{ctx}");
+                assert_eq!(state.frozen_shown(), 1, "{ctx}");
+            }
+        }
+    }
+
+    /// The frozen columns are measured on the rows on screen, like the rest. They
+    /// were measured on the head of the buffer, which is not the page on screen once
+    /// the view has moved into it, so a longer value on screen was cut short.
+    #[test]
+    fn frozen_columns_are_measured_on_the_rows_on_screen() {
+        let long = "a much longer frozen value";
+        let names: Vec<String> = (0..400)
+            .map(|i| {
+                if i == 302 {
+                    long.to_string()
+                } else {
+                    format!("n{i}")
+                }
+            })
+            .collect();
+        let df = df!("name" => names, "v" => (0..400i64).collect::<Vec<_>>()).unwrap();
+        let mut state = state_of(&df, 5);
+        state.set_locked_columns(1);
+        state.scroll_to(300);
+        state.collect();
+        assert!(
+            state.buffered_start_row < state.start_row,
+            "the page is not the head of the buffer: {} vs {}",
+            state.buffered_start_row,
+            state.start_row
+        );
+        let rows = draw(DataTable::default(), &mut state, 80, 6);
+        assert!(
+            rows.iter().any(|row| row.contains(long)),
+            "the value on screen is whole: {rows:#?}"
+        );
+    }
+
+    /// Frozen columns are spaced like scrolling ones: the configured padding on both
+    /// sides of the separator, at every setting. The frozen side used a hardcoded
+    /// single space.
+    #[test]
+    fn frozen_and_scrolling_columns_share_the_padding() {
+        let df = df!(
+            "id" => &[1i64, 2],
+            "k" => &["x", "y"],
+            "v" => &[3i64, 4],
+            "w" => &[5i64, 6],
+        )
+        .unwrap();
+        for padding in [0u16, 1, 2, 3] {
+            let mut state = state_of(&df, 2);
+            state.set_locked_columns(2);
+            let table = DataTable {
+                table_cell_padding: padding,
+                ..DataTable::default()
+            };
+            let rows = draw(table, &mut state, 40, 3);
+            let gap = " ".repeat(usize::from(padding));
+            let rule = crate::glyphs::get().rule;
+            assert!(
+                rows[0].starts_with(&format!(" id{gap}k {rule} v{gap}w")),
+                "padding {padding}: {rows:#?}"
+            );
+            assert!(
+                rows[1].contains(&format!(" 1{gap}x {rule} 3{gap}5")),
+                "padding {padding}: {rows:#?}"
+            );
+        }
+    }
+
+    /// The column names, in order, for the frozen-prefix tests.
+    const PHONETIC: [&str; 6] = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+
+    fn phonetic_frame() -> DataFrame {
+        let columns: Vec<Column> = PHONETIC
+            .iter()
+            .map(|n| {
+                Series::new(
+                    (*n).into(),
+                    &[format!("{n}-value-one"), format!("{n}-value-two")],
+                )
+                .into()
+            })
+            .collect();
+        DataFrame::new_infer_height(columns).unwrap()
+    }
+
+    /// Every column name some frame shows while scrolling right from the start.
+    fn names_reached(
+        state: &mut DataTableState,
+        g: &'static crate::glyphs::Glyphs,
+        width: u16,
+    ) -> Vec<&'static str> {
+        let mut seen = Vec::new();
+        for _ in 0..PHONETIC.len() + 2 {
+            let table = DataTable {
+                glyphs: g,
+                ..DataTable::default()
+            };
+            let rows = draw(table, state, width, 3);
+            for name in PHONETIC {
+                if rows[0].contains(name) && !seen.contains(&name) {
+                    seen.push(name);
+                }
+            }
+            state.scroll_right();
+        }
+        seen
+    }
+
+    /// Frozen columns that cannot all fit beside a usable scrolling column: as many
+    /// as fit stay frozen, the broken rule says some had to scroll, those lead the
+    /// scrolling side, every column stays reachable, and the request stands, so a
+    /// wider window freezes them all again.
+    #[test]
+    fn a_frozen_prefix_too_wide_scrolls_until_there_is_room() {
+        let df = phonetic_frame();
+        for g in glyph_sets() {
+            for row_numbers in [false, true] {
+                let mut state = state_of(&df, 2);
+                state.row_numbers = row_numbers;
+                state.set_locked_columns(4);
+                let table = || DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                };
+                let rows = draw(table(), &mut state, 60, 3);
+                let ctx = format!(
+                    "{} glyphs, row numbers {row_numbers}: {rows:#?}",
+                    set_name(g)
+                );
+                assert_eq!(state.locked_columns_count(), 4, "{ctx}");
+                let shown = state.frozen_shown();
+                assert!((1..4).contains(&shown), "{shown} frozen: {ctx}");
+                let (frozen, scrolled) = rows[0].split_once(g.rule_broken).expect(&ctx);
+                assert!(!rows[0].contains(g.rule), "{ctx}");
+                assert!(frozen.contains(PHONETIC[0]), "{ctx}");
+                assert!(
+                    scrolled.trim_start().starts_with(PHONETIC[shown]),
+                    "the first column left out leads the scrolling side: {ctx}"
+                );
+
+                let reached = names_reached(&mut state, g, 60);
+                assert_eq!(reached.len(), PHONETIC.len(), "{reached:?}: {ctx}");
+
+                let rows = draw(table(), &mut state, 160, 3);
+                assert_eq!(state.frozen_shown(), 4, "{rows:#?}");
+                let (frozen, _) = rows[0].split_once(g.rule).expect("the plain rule");
+                for name in &PHONETIC[..4] {
+                    assert!(frozen.contains(name), "{rows:#?}");
+                }
+            }
+        }
+    }
+
+    /// A rollback puts back the frozen fit its columns were sliced for: a wider
+    /// layout since then must re-slice them, or the columns that had to scroll show
+    /// twice, frozen and scrolling.
+    #[test]
+    fn a_rollback_keeps_the_frozen_fit_its_columns_were_sliced_for() {
+        let df = phonetic_frame();
+        let mut state = state_of(&df, 2);
+        state.set_locked_columns(4);
+        draw(DataTable::default(), &mut state, 60, 3);
+        assert!(state.frozen_shown() < 4);
+        let saved = state.rollback_point();
+        draw(DataTable::default(), &mut state, 200, 3);
+        assert_eq!(state.frozen_shown(), 4);
+        state.roll_back(saved);
+        let rows = draw(DataTable::default(), &mut state, 200, 3);
+        for name in PHONETIC {
+            assert_eq!(rows[0].matches(name).count(), 1, "{name}: {rows:#?}");
+        }
+    }
+
+    /// With every column frozen there is nothing to scroll, until the window is too
+    /// narrow for them all: then the ones that do not fit scroll, and each is still
+    /// reachable.
+    #[test]
+    fn with_every_column_frozen_each_is_still_reachable() {
+        let df = phonetic_frame();
+        for g in glyph_sets() {
+            let mut state = state_of(&df, 2);
+            state.set_locked_columns(PHONETIC.len());
+            let table = || DataTable {
+                glyphs: g,
+                ..DataTable::default()
+            };
+            let rows = draw(table(), &mut state, 200, 3);
+            assert_eq!(state.frozen_shown(), PHONETIC.len(), "{rows:#?}");
+            assert!(rows[0].contains(g.rule), "{rows:#?}");
+            assert!(!rows[0].contains(g.arrow_right), "{rows:#?}");
+
+            let rows = draw(table(), &mut state, 60, 3);
+            assert!(state.frozen_shown() < PHONETIC.len(), "{rows:#?}");
+            assert!(rows[0].contains(g.rule_broken), "{rows:#?}");
+            let reached = names_reached(&mut state, g, 60);
+            assert_eq!(reached.len(), PHONETIC.len(), "{reached:?}");
+        }
+    }
+
+    /// The page from the issue's reproduction: one description runs to a long URL.
+    /// That page still shows its rows, with the description clipped and marked
+    /// rather than any column vanishing for it.
+    #[test]
+    fn a_page_with_one_long_value_is_not_blank() {
+        let url = format!("https://example.com/{}", "long-segment/".repeat(15));
+        let n = 80usize;
+        let df = df!(
+            "id" => (0..n as i64).collect::<Vec<_>>(),
+            "description" => (0..n)
+                .map(|i| if i == 24 { url.clone() } else { format!("item {i}") })
+                .collect::<Vec<_>>(),
+            "amount" => (0..n).map(|i| i as f64 * 1.5).collect::<Vec<_>>(),
+            "status" => (0..n).map(|i| if i % 2 == 0 { "open" } else { "closed" }).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for g in glyph_sets() {
+            for width in [60u16, 80, 120] {
+                let mut state = state_of(&df, 20);
+                state.page_down();
+                state.collect();
+                let table = DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                };
+                let rows = draw(table, &mut state, width, 21);
+                let ctx = format!("{} glyphs, width {width}: {rows:#?}", set_name(g));
+                assert!(rows[0].contains("id"), "{ctx}");
+                assert!(rows[0].contains("desc"), "{ctx}");
+                let long = rows
+                    .iter()
+                    .find(|row| row.contains("https://example.com/"))
+                    .expect(&ctx);
+                assert!(long.contains(g.ellipsis), "{ctx}");
+                for row in &rows[1..] {
+                    assert!(!row.trim().is_empty(), "{ctx}");
+                }
             }
         }
     }

@@ -62,6 +62,13 @@ list, then:
 | <kbd>L</kbd> | Freeze this column and every column above it on the left |
 | <kbd>v</kbd> | Hide or show this column (it keeps its place in the list, dimmed) |
 
+Frozen columns stay at the left edge, left of a `│`, while the rest scroll.
+When the window is too narrow for all of them beside a usable scrolling
+column, the separator turns dashed (`┆`, ASCII `:`) and the frozen columns
+that do not fit scroll after it, so every column stays reachable. The freeze
+is kept: a wider window shows them all frozen again. A value or name cut
+short at the edge of its column ends in `…` (ASCII `...`).
+
 Every column carries its own direction, so `calories` can run descending while
 `restaurant` runs ascending. Nulls go last in either direction.
 

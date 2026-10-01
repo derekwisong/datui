@@ -190,7 +190,8 @@ which column is which.
 2. Choose a column and press <kbd>Space</kbd> for its form.
 3. Tick **Key** for the columns whose values together name one row, **Required**
    for a column every row must fill, type the **Allowed** values separated by
-   commas, or a **Minimum** and **Maximum**. Text can be **Read as** a whole
+   commas (quote one that holds a comma: `"a, b"`), or a **Minimum** and
+   **Maximum**. Text can be **Read as** a whole
    number or decimal; a range then compares the number. <kbd>Enter</kbd>
    applies.
 4. <kbd>Enter</kbd> on the list returns to Setup; <kbd>Enter</kbd> there runs.

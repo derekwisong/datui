@@ -5,7 +5,7 @@
 use crate::data_quality::TimeInterpretation;
 use crate::quality_intent::{
     ColumnIntent, DeclaredIntent, NumberReading, ValueKind, allows_set, check_intent,
-    parse_allowed, reads_as_number,
+    format_allowed, parse_allowed, reads_as_number,
 };
 use crate::widgets::text_input::TextInput;
 use polars::prelude::DataType;
@@ -81,7 +81,7 @@ impl IntentForm {
             max: input(),
             error: None,
         };
-        form.allowed.set_value(intent.allowed.join(", "));
+        form.allowed.set_value(format_allowed(&intent.allowed));
         form.min.set_value(intent.min.unwrap_or_default());
         form.max.set_value(intent.max.unwrap_or_default());
         form.sync_focus();

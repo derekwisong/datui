@@ -444,8 +444,8 @@ Column intent row in Setup lists the scope's columns with what each must hold;
 | Key | The columns whose values together name one row, in any number | Every column |
 | Required | Every row has a value | Every column |
 | Read as | Whole number or decimal: text read as a number for the range, and text that does not read is counted | Text; text read as time takes its reading from Text as time |
-| Allowed | Values separated by commas, outer spaces dropped, up to 100 | Text, whole numbers, true/false |
-| Minimum, Maximum | A number; a date `2024-01-31`; or a date and time `2024-01-31 08:00:00` | Numbers, dates and times, and text read as either |
+| Allowed | Values separated by commas, outer spaces dropped, up to 100. A value in double quotes is kept as typed: `"a, b"` holds a comma, `" open"` a space, and `""` is a quote inside one | Text, whole numbers, true/false |
+| Minimum, Maximum | A number; a date `2024-01-31`; or a date and time `2024-01-31 08:00:00`. On a date and time column, a date alone as the maximum takes in its whole day | Numbers, dates and times, and text read as either |
 
 A bound the column's type cannot read, or a minimum above the maximum, is said
 on the form's own line, and <kbd>Enter</kbd> does not apply it. A declared
@@ -541,7 +541,7 @@ data that has not changed.
 | Unparsed times | Non-null text values the chosen format does not read ÷ non-null values of the column; counted in the pass that profiles the columns |
 | Repeated key | Rows whose complete key value another row also holds ÷ rows checked; groups are key values held by more than one row, extra rows Σ(group size − 1). Rows missing part of the key are left out and counted as Incomplete key |
 | Required, missing | Null values ÷ rows checked |
-| Not allowed | Non-null values not exactly equal to one in the set ÷ non-null values; text compared as stored, whole numbers as numbers |
+| Not allowed | Non-null values not exactly equal to one in the set ÷ non-null values; text compared as stored, so case and spaces count; whole numbers as numbers |
 | Out of range | Values `< minimum` or `> maximum` ÷ values read; a bound is inclusive. Times compare as instants in UTC, a time with no zone read as UTC |
 | Unparsed numbers | Non-null text that does not cast to the declared number ÷ non-null values, as Numbers as text parses |
 

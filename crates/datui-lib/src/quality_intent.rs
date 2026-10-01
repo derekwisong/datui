@@ -90,15 +90,9 @@ impl ColumnIntent {
         }
     }
 
-    /// The allowed set in words, cut to `shown` values: `open, closed +3 more`.
+    /// The allowed set as typed, cut to `shown` values: `open, closed +3 more`.
     pub fn allowed_label(&self, shown: usize) -> String {
-        let mut label = self
-            .allowed
-            .iter()
-            .take(shown)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+        let mut label = format_allowed(&self.allowed[..self.allowed.len().min(shown)]);
         if self.allowed.len() > shown {
             label.push_str(&format!(" +{} more", self.allowed.len() - shown));
         }
@@ -295,11 +289,18 @@ impl Bound {
     }
 }
 
-fn parse_bound(kind: ValueKind, text: &str) -> std::result::Result<Bound, String> {
+/// A date alone as a time's maximum takes in its whole day: `at most 2024-06-30`
+/// keeps 2024-06-30 08:00, as it reads.
+fn parse_bound(kind: ValueKind, text: &str, upper: bool) -> std::result::Result<Bound, String> {
     let text = text.trim();
     let midnight = |date: chrono::NaiveDate| {
         date.and_hms_opt(0, 0, 0)
             .map(|time| Bound::Micros(time.and_utc().timestamp_micros()))
+    };
+    let day_end = |date: chrono::NaiveDate| {
+        date.succ_opt()
+            .and_then(|next| next.and_hms_opt(0, 0, 0))
+            .map(|time| Bound::Micros(time.and_utc().timestamp_micros() - 1))
     };
     let parsed = match kind {
         ValueKind::Number => text
@@ -317,7 +318,7 @@ fn parse_bound(kind: ValueKind, text: &str) -> std::result::Result<Bound, String
             .or_else(|| {
                 chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
                     .ok()
-                    .and_then(midnight)
+                    .and_then(|date| if upper { day_end(date) } else { midnight(date) })
             }),
         _ => None,
     };
@@ -325,28 +326,93 @@ fn parse_bound(kind: ValueKind, text: &str) -> std::result::Result<Bound, String
 }
 
 /// The values an allowed set holds, from what was typed: separated by commas, outer
-/// spaces dropped, each once, in the order typed.
+/// spaces dropped, each once, in the order typed. A value in double quotes is taken
+/// as it stands, commas and spaces included, with `""` for a quote inside it.
 pub fn parse_allowed(dtype: &DataType, text: &str) -> std::result::Result<Vec<String>, String> {
-    let mut values = Vec::new();
-    for value in text
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    let values = split_allowed(text)?;
+    check_allowed(dtype, &values)?;
+    Ok(values)
+}
+
+fn split_allowed(text: &str) -> std::result::Result<Vec<String>, String> {
+    let mut values: Vec<String> = Vec::new();
+    let mut push = |value: String| {
+        if !values.contains(&value) {
+            values.push(value);
+        }
+    };
+    let mut chars = text.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        if chars.next_if_eq(&'"').is_some() {
+            let mut value = String::new();
+            loop {
+                match chars.next() {
+                    Some('"') if chars.next_if_eq(&'"').is_some() => value.push('"'),
+                    Some('"') => break,
+                    Some(c) => value.push(c),
+                    None => return Err("A quoted value has no closing quote".to_string()),
+                }
+            }
+            while chars.next_if(|c| c.is_whitespace()).is_some() {}
+            match chars.next() {
+                None | Some(',') => push(value),
+                Some(_) => return Err(format!("Put a comma after {value:?}")),
+            }
+        } else {
+            let mut value = String::new();
+            for c in chars.by_ref() {
+                if c == ',' {
+                    break;
+                }
+                value.push(c);
+            }
+            let value = value.trim();
+            if !value.is_empty() {
+                push(value.to_string());
+            }
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+    }
+    Ok(values)
+}
+
+/// Whether `values` can be compared with a column of `dtype`, and few enough.
+fn check_allowed(dtype: &DataType, values: &[String]) -> std::result::Result<(), String> {
+    for value in values {
         if dtype.is_integer() && value.parse::<i64>().is_err() {
             return Err(format!("{value:?} is not a whole number"));
         }
-        if matches!(dtype, DataType::Boolean) && !matches!(value, "true" | "false") {
+        if matches!(dtype, DataType::Boolean) && !matches!(value.as_str(), "true" | "false") {
             return Err(format!("{value:?} is not true or false"));
-        }
-        if !values.iter().any(|known: &String| known == value) {
-            values.push(value.to_string());
         }
     }
     if values.len() > MAX_ALLOWED_VALUES {
         return Err(format!("At most {MAX_ALLOWED_VALUES} allowed values"));
     }
-    Ok(values)
+    Ok(())
+}
+
+/// An allowed set as it is typed: values joined by commas, quoted where a comma, a
+/// quote or outer spaces would change how it reads back.
+pub fn format_allowed(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| {
+            let plain = !value.is_empty()
+                && value.trim() == value
+                && !value.contains(',')
+                && !value.starts_with('"');
+            if plain {
+                value.clone()
+            } else {
+                format!("\"{}\"", value.replace('"', "\"\""))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Why `intent` cannot be measured on a column of `dtype`, said on the form: a bound
@@ -361,18 +427,18 @@ pub fn check_intent(
         if !allows_set(dtype) {
             return Err("Allowed values are for text, whole numbers or true/false".to_string());
         }
-        parse_allowed(dtype, &intent.allowed.join(","))?;
+        check_allowed(dtype, &intent.allowed)?;
     }
-    let bound = |text: &Option<String>| {
+    let bound = |text: &Option<String>, upper: bool| {
         text.as_deref()
-            .map(|text| parse_bound(kind, text))
+            .map(|text| parse_bound(kind, text, upper))
             .transpose()
     };
     if intent.min.is_some() || intent.max.is_some() {
         if !kind.ranges() {
             return Err("A range is for numbers, dates and times".to_string());
         }
-        if let (Some(min), Some(max)) = (bound(&intent.min)?, bound(&intent.max)?)
+        if let (Some(min), Some(max)) = (bound(&intent.min, false)?, bound(&intent.max, true)?)
             && min.value() > max.value()
         {
             return Err("Minimum is above maximum".to_string());
@@ -433,11 +499,14 @@ impl Measured<'_> {
 
     fn bounds(&self) -> (Option<Bound>, Option<Bound>) {
         let kind = self.kind();
-        let bound = |text: &Option<String>| {
+        let bound = |text: &Option<String>, upper: bool| {
             text.as_deref()
-                .and_then(|text| parse_bound(kind, text).ok())
+                .and_then(|text| parse_bound(kind, text, upper).ok())
         };
-        (bound(&self.intent.min), bound(&self.intent.max))
+        (
+            bound(&self.intent.min, false),
+            bound(&self.intent.max, true),
+        )
     }
 
     fn below(&self) -> Option<Expr> {
@@ -1406,6 +1475,100 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         assert!(parse_allowed(&DataType::String, &many).is_err());
+    }
+
+    /// A quoted value keeps its commas, spaces and doubled quotes, and is written
+    /// back quoted, so reopening the form reads the same set.
+    #[test]
+    fn a_quoted_allowed_value_holds_commas_and_spaces() {
+        let typed = r#""a, b", c, " open", "say ""hi""", 5" pipe"#;
+        let values = parse_allowed(&DataType::String, typed).unwrap();
+        assert_eq!(values, vec!["a, b", "c", " open", "say \"hi\"", "5\" pipe"]);
+        assert_eq!(
+            parse_allowed(&DataType::String, &format_allowed(&values)).unwrap(),
+            values
+        );
+        assert_eq!(
+            parse_allowed(&DataType::Int64, r#""1", 2"#).unwrap(),
+            vec!["1", "2"]
+        );
+        assert!(parse_allowed(&DataType::String, r#""a, b"#).is_err());
+        assert!(parse_allowed(&DataType::String, r#""a" b, c"#).is_err());
+
+        // Compared as stored: case and spaces count.
+        let df = df!("label" => &["a, b", "c", " open", "open", "A, B"]).unwrap();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            intent: DeclaredIntent {
+                key: Vec::new(),
+                columns: vec![ColumnIntent {
+                    allowed: values,
+                    ..ColumnIntent::new("label")
+                }],
+            },
+            ..DataQualityPlan::default()
+        };
+        let results = run(&df, &plan);
+        let label = results.intent.as_ref().unwrap().column("label").unwrap();
+        assert_eq!(label.outside, Some(2));
+        assert_eq!(
+            matching(&df, &results, ObservationKind::NotAllowed, "label"),
+            2
+        );
+    }
+
+    /// A date alone as a time's maximum keeps that whole day; as its minimum, the day
+    /// starts at midnight. Both bounds are in range.
+    #[test]
+    fn a_date_bounds_a_datetime_column_by_whole_days() {
+        let at = |text: &str| {
+            chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S")
+                .unwrap()
+                .and_utc()
+                .timestamp_micros()
+        };
+        let df = df!(
+            "at" => &[
+                at("2024-06-01 00:00:00"),
+                at("2024-06-30 23:59:59"),
+                at("2024-07-01 00:00:00"),
+                at("2024-05-31 23:59:59"),
+            ],
+        )
+        .unwrap()
+        .lazy()
+        .with_column(col("at").cast(DataType::Datetime(TimeUnit::Microseconds, None)))
+        .collect()
+        .unwrap();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            intent: DeclaredIntent {
+                key: Vec::new(),
+                columns: vec![ColumnIntent {
+                    min: Some("2024-06-01".to_string()),
+                    max: Some("2024-06-30".to_string()),
+                    ..ColumnIntent::new("at")
+                }],
+            },
+            ..DataQualityPlan::default()
+        };
+        let results = run(&df, &plan);
+        let check = results.intent.as_ref().unwrap().column("at").unwrap();
+        assert_eq!((check.below, check.above), (Some(1), Some(1)));
+        // The same day as both ends is a day, not an empty range.
+        let one_day = ColumnIntent {
+            min: Some("2024-06-30".to_string()),
+            max: Some("2024-06-30".to_string()),
+            ..ColumnIntent::new("at")
+        };
+        assert!(
+            check_intent(
+                &one_day,
+                &DataType::Datetime(TimeUnit::Microseconds, None),
+                None
+            )
+            .is_ok()
+        );
     }
 
     #[test]

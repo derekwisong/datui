@@ -79,8 +79,11 @@ Column intent:
   In the form, Tab or ↑ / ↓ move between rows, Space
   ticks Key or Required, ← / → change Read as,
   Enter applies and Esc drops the edit. Allowed
-  values are separated by commas; a range bound is
-  a number, a date, or a date and time.
+  values are separated by commas and match exactly,
+  case and spaces included; quote one that holds a
+  comma: "a, b". A range bound is a number, a date,
+  or a date and time, and counts as in range; a
+  date alone as a time's maximum takes its day.
 
 Expected in Setup:
   With a time-window grain: which windows rows

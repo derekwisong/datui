@@ -27,7 +27,7 @@ pub fn intent_columns(schema: &polars::prelude::Schema) -> Vec<(String, DataType
 fn type_label(config: &DataQualityWidgetConfig<'_>, column: &str, dtype: &DataType) -> String {
     match config.plan.time_format(column) {
         Some(format) => format!("text as {}", format.kind.label()),
-        None => dtype.to_string(),
+        None => crate::widgets::datatable::dtype_label(dtype),
     }
 }
 
@@ -162,7 +162,7 @@ pub fn render_form(
     };
     FormRow {
         label: "Type:",
-        value: FormValue::Choice(&form.dtype.to_string()),
+        value: FormValue::Choice(&crate::widgets::datatable::dtype_label(&form.dtype)),
         focused: false,
         label_width: LABEL_WIDTH,
     }
@@ -201,7 +201,7 @@ pub fn render_form(
                     "Text as time reads it; change that in Setup".to_string()
                 }
                 IntentField::ReadAs => "Text that does not read is counted".to_string(),
-                IntentField::Allowed => "Separated by commas; empty for any".to_string(),
+                IntentField::Allowed => "Separated by commas; \"a, b\" holds a comma".to_string(),
                 IntentField::Minimum | IntentField::Maximum => format!(
                     "{}; empty for no bound",
                     upper_first(form.value_kind().bound_hint())

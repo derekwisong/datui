@@ -906,7 +906,10 @@ pub fn to_markdown(file: &ReportFile) -> String {
             rules.push(format!("read as {read_as}"));
         }
         if !intent.allowed.is_empty() {
-            rules.push(format!("one of {}", intent.allowed.join(", ")));
+            rules.push(format!(
+                "one of {}",
+                crate::quality_intent::format_allowed(&intent.allowed)
+            ));
         }
         match (&intent.min, &intent.max) {
             (Some(min), Some(max)) => rules.push(format!("{min} to {max}")),

@@ -26150,12 +26150,75 @@ fn conclude(
 /// Undo `run`'s terminal setup: pop the keyboard flags (a no-op where they were
 /// never pushed; a terminal that ignored the push ignores the pop too), then hand
 /// back the screen.
+///
+/// Says so on stderr if that fails, but never panics: after a hangup the terminal is
+/// gone, and `ratatui::restore`'s `eprintln!` would panic on it, then panic again in
+/// the panic hook and abort.
 fn restore_terminal() {
+    use std::io::Write;
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::PopKeyboardEnhancementFlags
     );
-    ratatui::restore();
+    if let Err(e) = ratatui::try_restore() {
+        let _ = writeln!(std::io::stderr(), "Failed to restore terminal: {e}");
+    }
+}
+
+/// The signal that ended the session, if one did: SIGTERM or SIGHUP. Set once.
+#[cfg(unix)]
+static ENDED_BY_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// The signal (SIGTERM or SIGHUP) that ended the session [`run`] returned from, for
+/// the binary to exit with `128 + n`, as if it had not been caught.
+pub fn ended_by_signal() -> Option<i32> {
+    #[cfg(unix)]
+    {
+        let signal = ENDED_BY_SIGNAL.load(std::sync::atomic::Ordering::SeqCst);
+        (signal != 0).then_some(signal)
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+/// End the session on SIGTERM or SIGHUP (the terminal closing) as a quit does, so the
+/// screen is handed back and an open's temp files are removed (#510). A second signal,
+/// or a session still running a few seconds after the first, ends the process at once,
+/// as the signal would have: a stuck event loop cannot make datui unkillable.
+#[cfg(unix)]
+fn quit_on_signals(runtime: &tokio::runtime::Handle, tx: &std::sync::mpsc::Sender<AppEvent>) {
+    use std::sync::atomic::Ordering;
+    use tokio::signal::unix::{SignalKind, signal};
+    // Longer than the exit sweep's grace, which is part of a normal quit.
+    const STRAGGLE: std::time::Duration = std::time::Duration::from_secs(3);
+    fn end_now(signal: i32) -> ! {
+        restore_terminal();
+        std::process::exit(128 + signal)
+    }
+    // `signal` registers with the runtime it is called in.
+    let _runtime = runtime.enter();
+    for kind in [SignalKind::terminate(), SignalKind::hangup()] {
+        let Ok(mut arrivals) = signal(kind) else {
+            continue;
+        };
+        let tx = tx.clone();
+        runtime.spawn(async move {
+            while arrivals.recv().await.is_some() {
+                let number = kind.as_raw_value();
+                if ENDED_BY_SIGNAL
+                    .compare_exchange(0, number, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    end_now(ENDED_BY_SIGNAL.load(Ordering::SeqCst));
+                }
+                let _ = tx.send(AppEvent::Exit);
+                tokio::spawn(async move {
+                    tokio::time::sleep(STRAGGLE).await;
+                    end_now(number);
+                });
+            }
+        });
+    }
 }
 
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop
@@ -26227,7 +26290,7 @@ fn run_impl(
         .clone();
 
     let mut terminal = match ratatui::try_init() {
-        Ok(terminal) => terminal,
+        Ok(terminal) => QuietTerminal(Some(terminal)),
         Err(e) => {
             // No screen to keep up, so nothing to wait behind: a configuration that
             // cannot be used, or a named file that is not there, is the more useful
@@ -26264,6 +26327,12 @@ fn run_impl(
         });
     }
     let mut reader = terminal_input::TerminalInput::start(tx.clone())?;
+    // Only for the datui binary: the handlers stay for the life of the process, and a
+    // host such as Python keeps its own.
+    #[cfg(unix)]
+    if matches!(input, RunInput::Cli(_)) {
+        quit_on_signals(&rt_handle, &tx);
+    }
 
     // The settings are files, so they are read on a worker while the keys are already
     // being read: a slow mount shows a screen saying so, and Ctrl+C or Ctrl+Q leave it.
@@ -26302,6 +26371,12 @@ fn run_impl(
                 screen.restore();
                 return Err(color_eyre::eyre::eyre!(msg));
             }
+            // A signal, before there was an app to quit.
+            Ok(AppEvent::Exit) => {
+                reader.stop();
+                screen.restore();
+                return Ok(None);
+            }
             Ok(event) => {
                 if waiting_shown
                     && matches!(
@@ -26309,13 +26384,17 @@ fn run_impl(
                         AppEvent::Terminal(crossterm::event::Event::Resize(..))
                     )
                 {
-                    terminal.draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
+                    terminal
+                        .get()
+                        .draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
                 }
                 // Typed before there was an app to take it: handled, in order, first.
                 backlog.push(event);
             }
             Err(_) => {
-                terminal.draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
+                terminal
+                    .get()
+                    .draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
                 let _ = std::io::stdout().flush();
                 waiting_shown = true;
             }
@@ -26372,15 +26451,18 @@ fn run_impl(
     let mut pump = EventPump::new(app, tx, rx);
     pump.handle_first(backlog);
     let end = pump.run(|app| {
-        terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
+        terminal
+            .get()
+            .draw(|frame| frame.render_widget(app, frame.area()))?;
         let _ = std::io::stdout().flush();
         Ok(())
     })?;
     let result = conclude(end, &pump.app, capture, &mut reader, &mut screen);
     // stderr is the terminal again once the session is over.
     drop(session);
+    // Not `eprintln!`, which panics when a hangup has taken the terminal away.
     for note in notes {
-        eprintln!("datui: {note}");
+        let _ = writeln!(std::io::stderr(), "datui: {note}");
     }
     result
 }
@@ -26406,6 +26488,27 @@ fn push_keyboard_flags() {
             crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         )
     );
+}
+
+/// Ratatui's terminal, let go without its `Drop` when the terminal has gone. That
+/// `Drop` shows the cursor and `eprintln!`s a failure, which after a hangup panics,
+/// panics again in the panic hook, and aborts.
+struct QuietTerminal(Option<ratatui::DefaultTerminal>);
+
+impl QuietTerminal {
+    fn get(&mut self) -> &mut ratatui::DefaultTerminal {
+        self.0.as_mut().expect("held until dropped")
+    }
+}
+
+impl Drop for QuietTerminal {
+    fn drop(&mut self) {
+        if let Some(mut terminal) = self.0.take()
+            && terminal.show_cursor().is_err()
+        {
+            std::mem::forget(terminal);
+        }
+    }
 }
 
 /// The terminal while the TUI owns it. Dropped without [`conclude`] — an error

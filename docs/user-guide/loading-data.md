@@ -112,7 +112,8 @@ uses it.
 | Exit | Temporary files |
 |---|---|
 | `q`, Ctrl+Q, Ctrl+C, an error | Removed, including a partial file mid-download or mid-decompression |
-| SIGKILL, SIGTERM, SIGHUP (closing the terminal) | Left in the temp directory; datui does not catch these signals |
+| SIGTERM, SIGHUP (closing the terminal) | Removed by the `datui` command, which quits as for `q` and exits with status 128 + the signal. Left by `datui.view()` in Python, which leaves signals to Python |
+| SIGKILL | Left in the temp directory |
 
 ## Hive-partitioned data
 

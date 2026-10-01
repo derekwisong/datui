@@ -318,7 +318,8 @@ row_numbers = true
   key by key.
 - These lists add up across files instead of replacing: `[data] hide_sources`,
   `[cloud] hide` and `[cloud] env_files`. A `[[sources]]` collection or
-  `[[cloud.connections]]` entry replaces the earlier one of its name whole.
+  `[[cloud.connections]]` entry replaces the earlier one of its name whole; two
+  of one name in one file are an error.
 - TOML cannot unset a key, so a setting with no default value, such as
   `sidebar_width`, cannot be removed once an import sets it; set it to the value
   you want.

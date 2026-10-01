@@ -16322,6 +16322,29 @@ fn column_widths_from_the_sidebar() {
     assert_eq!(choice(&app, "status"), WidthChoice::Auto);
 }
 
+/// `table_cell_padding` names its densities: `"compact"` puts one cell between
+/// columns, `"comfortable"` (the default) two, and a number that many.
+#[test]
+fn named_padding_spaces_the_table() {
+    use datui::config::{AppConfig, ConfigLayer};
+    for (setting, gap) in [("\"compact\"", 1), ("\"comfortable\"", 2), ("3", 3)] {
+        let layer =
+            ConfigLayer::parse(&format!("[display]\ntable_cell_padding = {setting}\n")).unwrap();
+        let config = AppConfig::from_layers([layer]).unwrap();
+        let (mut app, _rx, _tx) =
+            open_query_filter_fixture_with("named_padding_spaces_the_table.csv", config);
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let types: String = (0..area.width).map(|x| buf[(x, 1)].symbol()).collect();
+        let gap = " ".repeat(gap);
+        assert!(
+            types.contains(&format!("i64{gap}i64{gap}str")),
+            "{setting}: {types:?}"
+        );
+    }
+}
+
 /// Sort & Filter (#379): a column hidden after the sidebar reordered the table
 /// comes back after the column it followed there, not where the file has it; and
 /// hiding the last frozen column keeps its lock for when it is shown again.

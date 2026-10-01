@@ -754,6 +754,62 @@ fn estimate_bytes_per_row(
         .max(1)
 }
 
+/// The rows `[offset, offset + len)` of `df`, copied when a slice of them would keep
+/// much more allocated than they are.
+///
+/// A slice keeps every chunk it touches. A fill read in many chunks (a Parquet or CSV
+/// scan) lets the rest go with a slice alone; one read in a single chunk, a stitched
+/// union or a string column sharing its parent's data would keep the whole fill. A
+/// chunk that is itself a slice of more is not seen through.
+fn trim_rows(df: DataFrame, offset: usize, len: usize) -> DataFrame {
+    if backing_rows(&df, offset, len) > len + len / 4 {
+        compact_rows(&df, offset, len)
+    } else {
+        df.slice(offset as i64, len)
+    }
+}
+
+/// The most rows any column of `df` keeps allocated behind the slice `[offset, offset
+/// + len)`: every chunk the slice touches, whole.
+fn backing_rows(df: &DataFrame, offset: usize, len: usize) -> usize {
+    let end = offset + len;
+    df.columns()
+        .iter()
+        .filter_map(Column::as_series)
+        .map(|s| {
+            let mut start = 0;
+            let mut touched = 0;
+            for chunk in s.chunks() {
+                let chunk_end = start + chunk.len();
+                if start < end && offset < chunk_end {
+                    touched += chunk.len();
+                }
+                start = chunk_end;
+            }
+            touched
+        })
+        .max()
+        .unwrap_or(len)
+}
+
+/// The rows `[offset, offset + len)` of `df` in storage of their own, one chunk a column.
+///
+/// A slice keeps the whole of its parent allocated, and neither `rechunk` (a lone chunk
+/// is left as it is) nor `take` (a string column keeps its parent's data buffers) is
+/// sure to let go of it. Polars' builders with `ShareStrategy::Never` copy every
+/// physical type, nested children and string bytes included.
+fn compact_rows(df: &DataFrame, offset: usize, len: usize) -> DataFrame {
+    let mut builder = polars::frame::builder::DataFrameBuilder::new(df.schema().clone());
+    builder.reserve(len);
+    builder.subslice_extend(
+        df,
+        offset,
+        len,
+        polars_arrow::array::builder::ShareStrategy::Never,
+    );
+    builder.freeze()
+}
+
 /// Shrink `[buffer_start, buffer_end)` to at most `max_len` rows, kept around the view
 /// `[view_start, view_end)` and inside `[floor, ceil)`.
 fn shrink_around_view(
@@ -4532,14 +4588,8 @@ impl DataTableState {
             return;
         }
         let (full_df, buffer_start) = self.stitch_buffer(full_df, result.buffer_start);
-        let union_rows = full_df.height();
-        let (mut full_df, eff_start, eff_end) = self.clamp_buffer_bytes(full_df, buffer_start);
-        if stitched && eff_end - eff_start < union_rows {
-            // A trim of the stitched union is a slice: without this the whole of both
-            // chunks stays allocated behind it. A plain fill is left as collected; a
-            // copy of it would be the very spike the budget guards against.
-            full_df.rechunk_mut();
-        }
+        self.release_display_buffer();
+        let (full_df, eff_start, eff_end) = self.clamp_buffer_bytes(full_df, buffer_start);
 
         self.buffered_start_row = eff_start;
         self.buffered_end_row = eff_end;
@@ -4806,13 +4856,15 @@ impl DataTableState {
             return false;
         }
         if (start, end) != (self.buffered_start_row, self.buffered_end_row) {
-            let offset = (start - self.buffered_start_row) as i64;
-            // Rechunked, so the rows let go are freed rather than kept behind a slice.
-            self.buffered_df = self.buffered_df.as_ref().map(|b| {
-                let mut kept = b.slice(offset, end - start);
-                kept.rechunk_mut();
-                kept
-            });
+            let offset = start - self.buffered_start_row;
+            // Trimmed so the rows let go are freed rather than kept behind a slice; the
+            // display frames alias the old buffer and go with it.
+            self.locked_df = None;
+            self.df = None;
+            self.buffered_df = self
+                .buffered_df
+                .take()
+                .map(|b| trim_rows(b, offset, end - start));
             self.buffered_start_row = start;
             self.buffered_end_row = end;
         }
@@ -5803,7 +5855,13 @@ impl DataTableState {
     /// down to the `max_buffered_mb` byte budget. Crucially, the kept window is centered on the
     /// current view rather than always taken from the buffer's head — otherwise a jump near the
     /// END of the dataset drops exactly the rows the view needs, leaving the table blank.
-    /// Returns the (possibly sliced) df and its new `[start, end)` row range.
+    /// Returns the (possibly trimmed) df and its new `[start, end)` row range.
+    ///
+    /// A trim lets go of the rows it drops (see [`trim_rows`]), copying the rows kept when
+    /// a slice would keep the fill allocated behind them. The copy is at most the budget,
+    /// and an untrimmed fill is kept as collected. The budget bounds the rows held between
+    /// collects, not the collect itself: the fill, the operators upstream of it and an
+    /// eager source frame all take memory of their own.
     fn clamp_buffer_bytes(&self, df: DataFrame, buffer_start: usize) -> (DataFrame, usize, usize) {
         let total = df.height();
         let full_end = buffer_start + total;
@@ -5832,9 +5890,8 @@ impl DataTableState {
             keep_start = total - max_rows;
         }
         let kept = max_rows.min(total - keep_start);
-        let sliced = df.slice(keep_start as i64, kept);
         (
-            sliced,
+            trim_rows(df, keep_start, kept),
             buffer_start + keep_start,
             buffer_start + keep_start + kept,
         )
@@ -5865,6 +5922,7 @@ impl DataTableState {
         // Trim to the byte budget while keeping the view in range (see clamp_buffer_bytes).
         self.observe_bytes_per_row(&full_df);
         let (full_df, buffer_start) = self.stitch_buffer(full_df, buffer_start);
+        self.release_display_buffer();
         let (full_df, effective_buffer_start, effective_buffer_end) =
             self.clamp_buffer_bytes(full_df, buffer_start);
 
@@ -5935,6 +5993,15 @@ impl DataTableState {
         self.buffered_start_row = effective_buffer_start;
         self.buffered_end_row = effective_buffer_end;
         self.buffered_df = Some(full_df);
+    }
+
+    /// Let go of the buffer being replaced and the display frames cut from it, so a
+    /// trim of the new fill is not copied while the old rows are still held. A stitch
+    /// has already taken the rows it keeps.
+    fn release_display_buffer(&mut self) {
+        self.buffered_df = None;
+        self.locked_df = None;
+        self.df = None;
     }
 
     /// Recompute locked_df and df from the cached full buffer. Used when only termcol_index (or locked columns) changed.
@@ -11833,6 +11900,330 @@ mod tests {
             eff_end - eff_start,
             "df height must match range"
         );
+    }
+
+    /// The address range of every buffer behind `arr`: values, validity, offsets, string
+    /// views and data, and nested children. Panics on a type it cannot walk, so a test
+    /// cannot pass by skipping a column.
+    fn array_storage(arr: &dyn polars_arrow::array::Array, out: &mut Vec<(usize, usize)>) {
+        use polars_arrow::array::{
+            BinaryViewArray, BooleanArray, FixedSizeListArray, ListArray, PrimitiveArray,
+            StructArray, Utf8ViewArray,
+        };
+        fn push<T>(out: &mut Vec<(usize, usize)>, s: &[T]) {
+            if !s.is_empty() {
+                let start = s.as_ptr() as usize;
+                out.push((start, start + std::mem::size_of_val(s)));
+            }
+        }
+        if let Some(validity) = arr.validity() {
+            push(out, validity.as_slice().0);
+        }
+        let any = arr.as_any();
+        macro_rules! primitive {
+            ($($t:ty),*) => {$(
+                if let Some(a) = any.downcast_ref::<PrimitiveArray<$t>>() {
+                    return push(out, a.values().as_slice());
+                }
+            )*};
+        }
+        primitive!(i8, i16, i32, i64, i128, u8, u16, u32, u64, f32, f64);
+        if let Some(a) = any.downcast_ref::<BooleanArray>() {
+            push(out, a.values().as_slice().0);
+        } else if let Some(a) = any.downcast_ref::<Utf8ViewArray>() {
+            push(out, a.views().as_slice());
+            a.data_buffers()
+                .iter()
+                .for_each(|b| push(out, b.as_slice()));
+        } else if let Some(a) = any.downcast_ref::<BinaryViewArray>() {
+            push(out, a.views().as_slice());
+            a.data_buffers()
+                .iter()
+                .for_each(|b| push(out, b.as_slice()));
+        } else if let Some(a) = any.downcast_ref::<ListArray<i64>>() {
+            push(out, a.offsets().as_slice());
+            array_storage(a.values().as_ref(), out);
+        } else if let Some(a) = any.downcast_ref::<FixedSizeListArray>() {
+            array_storage(a.values().as_ref(), out);
+        } else if let Some(a) = any.downcast_ref::<StructArray>() {
+            a.values()
+                .iter()
+                .for_each(|v| array_storage(v.as_ref(), out));
+        } else {
+            panic!("no storage walk for {:?}", arr.dtype());
+        }
+    }
+
+    fn frame_storage(df: &DataFrame) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for column in df.columns() {
+            for chunk in column.as_materialized_series().chunks() {
+                array_storage(chunk.as_ref(), &mut out);
+            }
+        }
+        out
+    }
+
+    /// Whether any buffer behind `held` lies inside one behind `source`.
+    fn shares_storage(held: &DataFrame, source: &DataFrame) -> bool {
+        let source = frame_storage(source);
+        frame_storage(held)
+            .iter()
+            .any(|&(s, e)| source.iter().any(|&(ss, se)| s < se && ss < e))
+    }
+
+    /// Every kind of column a buffer holds: fixed width, booleans, short and long
+    /// strings, nulls in each, a categorical, a datetime, a list of strings and a struct.
+    fn mixed_frame(start: usize, end: usize) -> DataFrame {
+        let rows = start..end;
+        let long = |i: usize| format!("{i:>8}-{}", "x".repeat(40));
+        let mut df = df!(
+            "id" => rows.clone().map(|i| i as i64).collect::<Vec<_>>(),
+            "maybe" => rows.clone().map(|i| (i % 3 != 0).then_some(i as f64)).collect::<Vec<_>>(),
+            "flag" => rows.clone().map(|i| (i % 5 != 0).then_some(i % 2 == 0)).collect::<Vec<_>>(),
+            "short" => rows.clone().map(|i| format!("s{}", i % 100)).collect::<Vec<_>>(),
+            "long" => rows.clone().map(|i| (i % 7 != 0).then(|| long(i))).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let n = end - start;
+        let cat = df
+            .column("short")
+            .unwrap()
+            .cast(&DataType::from_categories(Categories::global()))
+            .unwrap()
+            .with_name("cat".into());
+        let when = df
+            .column("id")
+            .unwrap()
+            .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+            .unwrap()
+            .with_name("when".into());
+        let list: ListChunked = rows
+            .clone()
+            .map(|i| Some(Series::new("".into(), [long(i), format!("t{i}")])))
+            .collect();
+        let nested = StructChunked::from_columns(
+            "nested".into(),
+            n,
+            &[
+                df.column("id").unwrap().clone(),
+                df.column("long").unwrap().clone(),
+            ],
+        )
+        .unwrap();
+        df.with_column(cat).unwrap();
+        df.with_column(when).unwrap();
+        df.with_column(list.with_name("tags".into()).into_column())
+            .unwrap();
+        df.with_column(nested.into_column()).unwrap();
+        df
+    }
+
+    #[test]
+    fn compacted_rows_own_their_storage() {
+        // A slice of a fill keeps the fill's buffers, rechunked or not; the compacted
+        // rows share none of them and read the same.
+        let source = mixed_frame(0, 20_000);
+        let slice = source.slice(1_000, 1_000);
+        assert!(shares_storage(&slice, &source), "the probe sees a slice");
+        let mut rechunked = slice.clone();
+        rechunked.rechunk_mut();
+        assert!(
+            shares_storage(&rechunked, &source),
+            "a lone chunk rechunked is still the slice"
+        );
+
+        let kept = compact_rows(&source, 1_000, 1_000);
+        assert!(!shares_storage(&kept, &source));
+        assert!(kept.equals_missing(&slice));
+        assert_eq!(kept.schema(), source.schema());
+
+        // Chunks a slice keeps whole are sliced; past a quarter more, the rows are copied.
+        let mut chunked = mixed_frame(0, 1_000);
+        for i in 1..4 {
+            chunked
+                .vstack_mut(&mixed_frame(i * 1_000, (i + 1) * 1_000))
+                .unwrap();
+        }
+        let chunk = |i: usize| chunked.slice(i as i64 * 1_000, 1_000);
+        let sliced = trim_rows(chunked.clone(), 1_000, 2_000);
+        assert!(shares_storage(&sliced, &chunk(1)) && shares_storage(&sliced, &chunk(2)));
+        assert!(!shares_storage(&sliced, &chunk(0)) && !shares_storage(&sliced, &chunk(3)));
+        let copied = trim_rows(chunked.clone(), 1_500, 1_000);
+        assert!((0..4).all(|i| !shares_storage(&copied, &chunk(i))));
+        assert!(copied.equals_missing(&chunked.slice(1_500, 1_000)));
+
+        // Two chunks: rows from one of them, and rows across both.
+        let mut stitched = mixed_frame(0, 3_000);
+        stitched.vstack_mut(&mixed_frame(3_000, 6_000)).unwrap();
+        for (offset, len) in [(3_500, 1_000), (2_500, 1_000), (0, 6_000)] {
+            let kept = compact_rows(&stitched, offset, len);
+            assert!(!shares_storage(&kept, &stitched), "{offset}+{len}");
+            assert!(kept.equals_missing(&stitched.slice(offset as i64, len)));
+            assert_eq!(kept.first_col_n_chunks(), 1);
+        }
+    }
+
+    /// A state with a 1 MB byte budget and the first column locked.
+    fn trimming_state(lf: LazyFrame) -> DataTableState {
+        let mut state = DataTableState::new(lf, None, None, None, Some(1), true).unwrap();
+        state.locked_columns_count = 1;
+        state.visible_rows = 40;
+        state
+    }
+
+    fn assert_view_rows(state: &DataTableState, source: &DataFrame) {
+        let (start, end) = (state.buffered_start(), state.buffered_end());
+        assert!(start <= state.start_row && state.start_row + 40 <= end);
+        let held = state.buffered_df.as_ref().unwrap();
+        assert_eq!(held.height(), end - start);
+        assert!(held.equals_missing(&source.slice(start as i64, end - start)));
+        let id = |df: &DataFrame, row: usize| df.column("id").unwrap().i64().unwrap().get(row);
+        let locked = state.locked_df.as_ref().unwrap();
+        assert_eq!(locked.get_column_names(), ["id"]);
+        assert_eq!(
+            id(locked, state.start_row - start),
+            Some(state.start_row as i64)
+        );
+        let shown = state.df.as_ref().unwrap();
+        assert_eq!(shown.height(), held.height());
+        assert!(
+            shown.column("id").is_err(),
+            "the locked column is not repeated"
+        );
+        for frame in [held, locked, shown] {
+            assert!(!shares_storage(frame, source), "trimmed rows are let go");
+        }
+    }
+
+    #[test]
+    fn a_trimmed_fill_lets_go_of_the_rows_it_drops() {
+        const N: usize = 10_000;
+        let source = mixed_frame(0, N);
+        let budget_rows = 1024 * 1024 / (source.estimated_size() / N);
+        assert!(budget_rows < N * 3 / 4, "the budget trims the fill");
+
+        // Asynchronous: a plain fill over the budget.
+        let mut state = trimming_state(source.clone().lazy());
+        state.num_rows = N;
+        state.num_rows_valid = true;
+        state.start_row = 7_500;
+        state.apply_async_collect(CollectResult {
+            df: source.clone(),
+            buffer_start: 0,
+            buffer_end: N,
+            num_rows: N,
+            count_known: true,
+        });
+        assert!(state.buffered_end() - state.buffered_start() <= budget_rows);
+        assert_view_rows(&state, &source);
+
+        // Synchronous: the same fill collected on the spot from an eager source, which
+        // stays held by the frame itself; the buffer's copy does not.
+        let mut state = trimming_state(source.clone().lazy());
+        state.num_rows = N;
+        state.num_rows_valid = true;
+        state.start_row = 300;
+        state.load_buffer(0, N);
+        assert!(state.error.is_none());
+        assert_view_rows(&state, &source);
+    }
+
+    #[test]
+    fn an_untrimmed_fill_is_kept_as_collected() {
+        // Ordinary paging copies nothing: the buffer is the fill itself.
+        let source = mixed_frame(0, 200);
+        let mut state = trimming_state(source.clone().lazy());
+        state.apply_async_collect(CollectResult {
+            df: source.clone(),
+            buffer_start: 0,
+            buffer_end: 200,
+            num_rows: 200,
+            count_known: true,
+        });
+        let held = state.buffered_df.as_ref().unwrap();
+        assert_eq!(frame_storage(held), frame_storage(&source));
+    }
+
+    #[test]
+    fn a_stitched_trim_lets_go_of_both_groups() {
+        // Forward and back across a row group boundary: the union is trimmed to the
+        // cap, and neither fetched group is held behind the kept rows. Leaving the
+        // stitched rows cuts the buffer down to one group, again in storage of its own.
+        const G: usize = 1_000_000;
+        const CAP: usize = DEFAULT_MAX_BUFFERED_ROWS;
+        let rows = |start: usize, end: usize| {
+            CollectResult {
+            df: df!(
+                "id" => (start as i64..end as i64).collect::<Vec<i64>>(),
+                "name" => (start..end).map(|i| format!("{i:>8}-{}", "y".repeat(24))).collect::<Vec<_>>(),
+            )
+            .unwrap(),
+            buffer_start: start,
+            buffer_end: end,
+            num_rows: 10 * G,
+            count_known: true,
+        }
+        };
+        let check = |state: &DataTableState, fetched: &[&DataFrame]| {
+            let (start, end) = (state.buffered_start(), state.buffered_end());
+            assert!(start <= state.start_row && state.start_row + 40 <= end);
+            assert_eq!(end - start, CAP, "trimmed back to the cap");
+            let held = state.buffered_df.as_ref().unwrap();
+            let ids = held.column("id").unwrap().i64().unwrap();
+            assert_eq!(ids.get(0), Some(start as i64));
+            assert_eq!(ids.get(CAP - 1), Some(end as i64 - 1));
+            for df in fetched {
+                assert!(!shares_storage(held, df));
+                assert!(!shares_storage(state.locked_df.as_ref().unwrap(), df));
+                assert!(!shares_storage(state.df.as_ref().unwrap(), df));
+            }
+        };
+        let lf = rows(0, 1).df.lazy();
+        for forward in [true, false] {
+            let mut state = DataTableState::new(lf.clone(), None, None, None, None, true).unwrap();
+            state.set_remote_source();
+            state.set_row_groups(&[G; 10]);
+            state.locked_columns_count = 1;
+            state.visible_rows = 40;
+            let (first, view) = if forward {
+                (G - 60, G - 20)
+            } else {
+                (G + 20, G - 20)
+            };
+            assert!(state.scroll_to(first));
+            let request = state.prepare_async_collect(None).expect("one group");
+            let first = rows(request.buffer_start, request.buffer_end);
+            let first_df = first.df.clone();
+            state.apply_async_collect(first);
+
+            assert!(state.scroll_to(view));
+            let request = state.prepare_async_collect(None).expect("the other group");
+            assert_eq!(
+                request.buffer_start == G,
+                forward,
+                "fetched alone, to stitch on"
+            );
+            let second = rows(request.buffer_start, request.buffer_end);
+            let second_df = second.df.clone();
+            state.apply_async_collect(second);
+            check(&state, &[&first_df, &second_df]);
+
+            // A window inside one group: the rows of the other are let go.
+            let stitched = state.buffered_df.clone().unwrap();
+            let (start, end) = (state.buffered_start(), state.buffered_end());
+            let (start, end) = if forward { (G, end) } else { (start, G) };
+            assert!(state.scroll_to(if forward { G } else { G - 40 }));
+            assert!(state.holds_buffer(start, end));
+            state.slice_buffer_into_display();
+            assert_eq!((state.buffered_start(), state.buffered_end()), (start, end));
+            let held = state.buffered_df.as_ref().unwrap();
+            assert_eq!(held.height(), end - start);
+            assert!(!shares_storage(held, &stitched));
+            assert!(!shares_storage(state.df.as_ref().unwrap(), &stitched));
+            let ids = held.column("id").unwrap().i64().unwrap();
+            assert_eq!(ids.get(0), Some(state.buffered_start() as i64));
+        }
     }
 
     #[test]

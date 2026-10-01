@@ -708,7 +708,6 @@ mod tests {
 
     /// A pump with a three-row CSV loaded, the way `run()` loads one.
     fn loaded_pump() -> (EventPump, tempfile::TempDir) {
-        crate::text_input_flows::isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         let mut file = std::fs::File::create(&path).expect("create csv");
@@ -1040,7 +1039,6 @@ mod tests {
     #[test]
     fn a_pivot_whose_worker_dies_is_shown_and_the_next_one_installs() {
         use crate::pivot_melt_modal::{PivotAggregation, PivotSpec};
-        crate::text_input_flows::isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("long.csv");
         std::fs::write(&path, "day,key,val\n1,a,10\n1,b,20\n2,a,30\n2,b,40\n").unwrap();
@@ -1687,7 +1685,6 @@ mod tests {
     /// A pump with a CSV of sixty narrow columns loaded and drawn at 100 wide: three
     /// pages sideways.
     fn wide_pump() -> (EventPump, tempfile::TempDir) {
-        crate::text_input_flows::isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("wide.csv");
         let mut file = std::fs::File::create(&path).expect("create csv");
@@ -1874,7 +1871,6 @@ mod tests {
     /// behind the home screen.
     #[test]
     fn ctrl_o_typed_before_the_app_existed_puts_the_startup_open_down() {
-        crate::text_input_flows::isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         std::fs::write(&path, "name,age\nada,36\n").expect("write csv");
@@ -1959,7 +1955,6 @@ mod tests {
     /// A pump with `rows` rows loaded, named `r0000` on, so a row on screen can be
     /// told from every other.
     fn numbered_pump(rows: usize) -> (EventPump, tempfile::TempDir) {
-        crate::text_input_flows::isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("numbered.csv");
         let mut file = std::fs::File::create(&path).expect("create csv");
@@ -2339,7 +2334,6 @@ mod tests {
     /// listing in and nothing turning, there is no next pass.
     #[test]
     fn rows_a_frame_draws_unmeasured_are_asked_for_before_the_loop_sleeps() {
-        crate::text_input_flows::isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         std::fs::write(&path, "name,age\nada,36\n").unwrap();
@@ -2368,7 +2362,6 @@ mod tests {
     /// the spinner to rows through the loop itself, every phase drawn in order.
     #[test]
     fn an_open_draws_each_phase_and_then_the_rows() {
-        crate::text_input_flows::isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         std::fs::write(&path, "name,age\nada,36\ngrace,45\n").unwrap();

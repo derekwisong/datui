@@ -27,6 +27,8 @@ impl ConfigManager {
     /// "pivot then break" entries were found there. As with the cache, a test that
     /// reaches the real directory refuses rather than writes.
     pub fn new(app_name: &str) -> Result<Self> {
+        #[cfg(test)]
+        crate::cache::isolate_cache();
         if let Some(dir) = std::env::var_os("DATUI_CONFIG_DIR") {
             return Ok(Self {
                 config_dir: PathBuf::from(dir),

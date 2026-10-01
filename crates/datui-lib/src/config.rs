@@ -1086,7 +1086,16 @@ impl DatasetConfig {
     /// What two entries naming the same data have in common.
     fn place_key(&self) -> String {
         match (&self.path, &self.url) {
-            (Some(path), _) => format!("path:{}", expand_path(path).display()),
+            // Rebuilt from its components, so separators compare as one: on Windows
+            // `~/a.csv` expands to `C:\Users\me\a.csv` and `$USERPROFILE/a.csv` to
+            // `C:\Users\me/a.csv`, the same file.
+            (Some(path), _) => format!(
+                "path:{}",
+                expand_path(path)
+                    .components()
+                    .collect::<PathBuf>()
+                    .display()
+            ),
             (None, Some(url)) => format!("url:{}", crate::source::canonical_cloud_place(url)),
             (None, None) => String::new(),
         }

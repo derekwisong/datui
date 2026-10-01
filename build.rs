@@ -21,16 +21,16 @@ fn roff_text(text: &str) -> String {
 fn render_examples(w: &mut dyn Write) -> io::Result<()> {
     writeln!(w, ".SH EXAMPLES")?;
     for example in datui_cli::examples() {
-        // `\%` keeps each word whole: a URL hyphenated across a line break no
-        // longer pastes. The man macros turn hyphenation back on at every `.TP`.
-        let command: Vec<String> = example
-            .command
-            .split(' ')
-            .map(|word| format!("\\%{}", roff_text(word)))
-            .collect();
-        writeln!(w, ".TP")?;
-        writeln!(w, "\\fB{}\\fR", command.join(" "))?;
+        // Unfilled, so a command is never broken or hyphenated: a URL split across
+        // lines no longer pastes. A `.TP` tag wider than the page, as the penguins
+        // URL is at 80 columns, also made troff warn on every `man datui`.
+        writeln!(w, ".PP")?;
+        writeln!(w, ".nf")?;
+        writeln!(w, "\\fB{}\\fR", roff_text(&example.command))?;
+        writeln!(w, ".fi")?;
+        writeln!(w, ".RS")?;
         writeln!(w, "{}", roff_text(&example.description))?;
+        writeln!(w, ".RE")?;
     }
     writeln!(w, ".PP")?;
     writeln!(

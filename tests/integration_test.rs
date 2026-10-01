@@ -1512,10 +1512,12 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     assert!(app.analysis_modal.data_quality_observation_detail);
+    // The run's rows are kept: they are cut in memory, off the UI thread.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    drain_events(&mut app, &rx);
     assert!(!app.analysis_modal.active);
     let area = Rect::new(0, 0, 80, 24);
     let mut evidence_buffer = Buffer::empty(area);
@@ -2212,6 +2214,7 @@ fn data_quality_reads_as_a_report() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
+    drain_events(&mut app, &rx);
     assert!(!app.analysis_modal.active);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();

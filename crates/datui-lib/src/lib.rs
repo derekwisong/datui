@@ -8724,75 +8724,237 @@ pub struct App {
 }
 
 impl App {
+    /// The finding under the cursor's rows: from the rows the run kept, at once, or
+    /// staged as a read that says what it reads and waits for Enter. A finding with
+    /// no rows to show opens nothing.
     fn open_quality_evidence(&mut self) -> Option<AppEvent> {
+        let (_, finding) = self.analysis_modal.selected_finding()?;
         let results = self.analysis_modal.data_quality_results.as_ref()?;
-        let report = quality_report::build_report(results);
-        // Files named from the footers open from the table whatever the run read;
-        // a sampled measurement opens the sample it was taken on.
-        let finding = self
-            .analysis_modal
-            .data_quality_table_state
-            .selected()
-            .and_then(|index| report.findings.get(index))
-            .filter(|finding| finding.can_open_rows(results))?;
-        // A column its file never had, or holds in a type the scan cannot read, has no
-        // value to filter on: its rows are the ones those files contributed, which is a
-        // scope rather than a predicate.
-        let by_files = finding.evidence_scope(results);
-        let predicate = match (&by_files, finding.evidence_predicate(results)) {
-            (Some(_), _) => polars::prelude::lit(true),
-            (None, Some(predicate)) => predicate,
-            (None, None) => return None,
-        };
+        let rows = finding.evidence(results).ok()?;
+        let sampled = results.precision == data_quality::QualityPrecision::Sampled;
+        let count = finding.evidence_count(results);
         let label = format!(
             "Data Quality / {} / {}",
             finding.title,
             quality_report::columns_label(&finding.columns, 40)
         );
-        let sampled = finding.opens_sample(results);
-        self.show_quality_rows(predicate, label, sampled, by_files)
+        let what = format!(
+            "{} {} {}",
+            finding.title,
+            glyphs::get().middot,
+            quality_report::columns_label(&finding.columns, 40)
+        );
+        self.show_quality_rows(rows, label, sampled, what, count)
     }
 
-    /// The rows an interval's count under the cursor counted: from the sample the
-    /// run read, cut in memory when it is still kept, or from the scope on an exact
-    /// run. Nothing opens for a count of none.
+    /// The rows an interval's count under the cursor counted: from the rows the run
+    /// kept, or staged as a read when it kept none. Nothing opens for a count of none.
     fn open_interval_evidence(&mut self) -> Option<AppEvent> {
-        let (predicate, label) = self.analysis_modal.interval_evidence()?;
+        let (predicate, label, count) = self.analysis_modal.interval_evidence()?;
         let sampled = self
             .analysis_modal
             .data_quality_results
             .as_ref()
             .is_some_and(|results| results.precision == data_quality::QualityPrecision::Sampled);
-        self.show_quality_rows(predicate, label, sampled, None)
+        let what = label
+            .trim_start_matches("Data Quality / ")
+            .replace(" / ", &format!(" {} ", glyphs::get().middot));
+        self.show_quality_rows(
+            quality_report::EvidenceRows::Matching(predicate),
+            label,
+            sampled,
+            what,
+            Some(count),
+        )
     }
 
-    /// Open rows a Data Quality result counted, labeled: the sample's when the result
-    /// is a sample's, and otherwise the scope's (or `files`, when the rows are the
-    /// ones those files hold).
+    /// The rows the report on screen measured, while they are kept: a sampled run's
+    /// rows, same dataset, view and sample. `None` after a full scan, which keeps
+    /// none, and once they are released.
+    pub(crate) fn quality_rows_kept(&self) -> Option<std::sync::Arc<data_quality::QualitySample>> {
+        self.analysis_modal.data_quality_results.as_ref()?;
+        let plan = self.analysis_modal.quality_result_plan();
+        if plan.compute != data_quality::QualityCompute::Sample {
+            return None;
+        }
+        self.kept_quality_sample(&plan.sample())
+    }
+
+    /// Open rows a Data Quality result counted. Kept rows are cut in memory and
+    /// shown; anything else would read the source, so it is staged with what it
+    /// reads, and only Enter on that reads.
     fn show_quality_rows(
         &mut self,
-        predicate: polars::prelude::Expr,
+        rows: quality_report::EvidenceRows,
         label: String,
         sampled: bool,
-        files: Option<data_quality::QualityScope>,
+        what: String,
+        count: Option<usize>,
     ) -> Option<AppEvent> {
-        if sampled {
-            let sample = self
-                .analysis_modal
-                .data_quality_last_plan
-                .as_ref()
-                .unwrap_or(&self.analysis_modal.data_quality_plan)
-                .sample();
-            return self.read_sample_rows(sample, Some((predicate, format!("{label} / sampled"))));
+        let plan = self.analysis_modal.quality_result_plan().clone();
+        let by_files = matches!(rows, quality_report::EvidenceRows::Files(_));
+        let label = if sampled {
+            format!("{label} / sampled")
+        } else {
+            label
+        };
+        if !by_files && self.quality_rows_kept().is_some() {
+            return self.read_sample_rows(plan.sample(), Some((rows, label)));
         }
         let state = self.data_table_state.as_ref()?;
-        let scope = files.as_ref().unwrap_or_else(|| {
-            self.analysis_modal
-                .data_quality_last_plan
-                .as_ref()
-                .map(|plan| &plan.scope)
-                .unwrap_or(&self.analysis_modal.data_quality_plan.scope)
+        let g = glyphs::get();
+        let rows_label = |rows: usize| {
+            format!(
+                "{} {}",
+                numfmt::group_chrome(rows),
+                if rows == 1 { "row" } else { "rows" }
+            )
+        };
+        let scope = match &rows {
+            quality_report::EvidenceRows::Files(files) => files.clone(),
+            _ => plan.scope.clone(),
+        };
+        let (why, reads) = match &rows {
+            quality_report::EvidenceRows::Files(data_quality::QualityScope::SourceFiles(files)) => {
+                (
+                    "their rows are in the files, not the report".to_string(),
+                    format!(
+                        "the {} named {}",
+                        files.len(),
+                        if files.len() == 1 { "file" } else { "files" }
+                    ),
+                )
+            }
+            _ if sampled => (
+                "the sampled rows are no longer kept".to_string(),
+                format!(
+                    "the sample again: {} {} {}",
+                    widgets::data_quality::compute_label(&plan),
+                    g.middot,
+                    widgets::data_quality::planned_read_label(state, &plan)
+                ),
+            ),
+            quality_report::EvidenceRows::Duplicates => (
+                "a full scan keeps no rows".to_string(),
+                format!(
+                    "every row of {}, once {} {}",
+                    plan.scope.label(),
+                    g.middot,
+                    widgets::data_quality::scope_read_label(state, &plan)
+                ),
+            ),
+            _ => (
+                "a full scan keeps no rows".to_string(),
+                format!(
+                    "{}, as far as the table scrolls {} {}",
+                    plan.scope.label(),
+                    g.middot,
+                    widgets::data_quality::scope_read_label(state, &plan)
+                ),
+            ),
+        };
+        let shows = match (&rows, count) {
+            (quality_report::EvidenceRows::Duplicates, Some(count)) => {
+                format!("{}, copies together", rows_label(count))
+            }
+            (_, Some(count)) => rows_label(count),
+            (_, None) => "the rows that match".to_string(),
+        };
+        let source = if state.is_remote_source() {
+            "remote, read only"
+        } else {
+            "local, read only"
+        };
+        self.analysis_modal.data_quality_evidence_read = Some(analysis_modal::EvidenceRead {
+            summary: vec![
+                ("Rows", what),
+                ("Why", why),
+                ("Reads", reads),
+                ("Shows", shows),
+                ("Source", source.to_string()),
+            ],
+            sample: (sampled && !by_files).then(|| plan.sample()),
+            scope,
+            rows,
+            label,
         });
+        None
+    }
+
+    /// Enter on a staged read: read the rows it named, as it said.
+    fn confirm_evidence_read(&mut self) -> Option<AppEvent> {
+        let read = self.analysis_modal.data_quality_evidence_read.take()?;
+        if let Some(sample) = read.sample {
+            return self.read_sample_rows(sample, Some((read.rows, read.label)));
+        }
+        let predicate = match read.rows {
+            quality_report::EvidenceRows::Matching(predicate) => predicate,
+            // A column its file never had, or holds in a type the scan cannot read,
+            // has no value to filter on: its rows are the ones those files hold.
+            quality_report::EvidenceRows::Files(_) => polars::prelude::lit(true),
+            quality_report::EvidenceRows::Duplicates => {
+                return self.read_duplicate_rows(read.scope, read.label);
+            }
+        };
+        self.open_quality_scope_rows(&read.scope, predicate, read.label)
+    }
+
+    /// Every row of `scope` that repeats, read in one pass off the UI thread and
+    /// shown as a table: what a full scan's duplicate finding opens once asked to.
+    fn read_duplicate_rows(
+        &mut self,
+        scope: data_quality::QualityScope,
+        label: String,
+    ) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        let (lf, schema) = match state.quality_scope_frame(&scope) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.error_modal
+                    .show(format!("Cannot open matching rows: {error}"));
+                return None;
+            }
+        };
+        let keys = schema.iter_names().cloned().collect::<Vec<_>>();
+        let streaming = self.app_config.performance.polars_streaming;
+        self.reading_sample = true;
+        self.analysis_modal.computing = Some(AnalysisProgress::new("Reading the rows that repeat"));
+        self.busy = true;
+        self.spawn_bg("Reading the rows that repeat...", move |task_gen, tx| {
+            let _ = tx.send(
+                match data_quality::duplicate_rows(
+                    lf.select(
+                        keys.iter()
+                            .map(|key| polars::prelude::col(key.clone()))
+                            .collect::<Vec<_>>(),
+                    ),
+                    &keys,
+                    streaming,
+                ) {
+                    Ok(df) => AppEvent::BackgroundSampleReady {
+                        generation: task_gen,
+                        label,
+                        df,
+                    },
+                    Err(error) => AppEvent::BackgroundError {
+                        generation: task_gen,
+                        message: format!("{error}"),
+                    },
+                },
+            );
+        });
+        None
+    }
+
+    /// The rows of `scope` matching `predicate`, in the table viewer in place of the
+    /// table; Esc brings the table and the report back.
+    fn open_quality_scope_rows(
+        &mut self,
+        scope: &data_quality::QualityScope,
+        predicate: polars::prelude::Expr,
+        label: String,
+    ) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
         let view = match state.quality_evidence_view(scope, predicate) {
             Ok(view) => view,
             Err(error) => {
@@ -9562,7 +9724,7 @@ impl App {
     fn read_sample_rows(
         &mut self,
         sample: sampling::Sample,
-        evidence: Option<(polars::prelude::Expr, String)>,
+        evidence: Option<(quality_report::EvidenceRows, String)>,
     ) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let (source, known_total) = Self::sample_source_for(state, &sample.scope);
@@ -9586,15 +9748,23 @@ impl App {
         }));
         self.busy = true;
         self.spawn_bg("Reading the sample...", move |task_gen, tx| {
-            let rows = match kept {
-                Some((kept, columns)) => polars::prelude::IntoLazy::lazy(kept.df().clone())
-                    .select(columns)
+            // The columns shown are the table's; a finding is cut from every column
+            // the run read first, so duplicates are judged as the run judged them.
+            let (rows, columns) = match kept {
+                Some((kept, columns)) => (Ok(kept.analysis_rows(kept.df().clone())), Some(columns)),
+                None => (
+                    source
+                        .cut(&sample.scope)
+                        .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming)),
+                    None,
+                ),
+            };
+            let shown = |df: polars::prelude::DataFrame| match &columns {
+                Some(columns) => polars::prelude::IntoLazy::lazy(df)
+                    .select(columns.clone())
                     .collect()
-                    .map_err(color_eyre::eyre::Report::from)
-                    .map(|df| kept.analysis_rows(df)),
-                None => source
-                    .cut(&sample.scope)
-                    .and_then(|lf| sampling::read(&lf, &sample, known_total, streaming)),
+                    .map_err(color_eyre::eyre::Report::from),
+                None => Ok(df),
             };
             let read = rows.and_then(|rows| {
                 let label = format!(
@@ -9607,13 +9777,34 @@ impl App {
                     )
                 );
                 match evidence {
-                    Some((predicate, label)) => {
+                    Some((quality_report::EvidenceRows::Duplicates, label)) => {
+                        // Every column the run grouped by: the scope's own, not the
+                        // row numbers kept beside them.
+                        let keys = rows
+                            .df
+                            .get_column_names()
+                            .into_iter()
+                            .filter(|name| !name.starts_with("__datui"))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let df = data_quality::duplicate_rows(
+                            polars::prelude::IntoLazy::lazy(rows.df),
+                            &keys,
+                            streaming,
+                        )?;
+                        Ok((shown(df)?, label))
+                    }
+                    Some((quality_report::EvidenceRows::Matching(predicate), label)) => {
                         let df = polars::prelude::IntoLazy::lazy(rows.df)
                             .filter(predicate)
                             .collect()?;
-                        Ok((df, label))
+                        Ok((shown(df)?, label))
                     }
-                    None => Ok((rows.df, label)),
+                    // Files are read from the scope, never from a sample.
+                    Some((quality_report::EvidenceRows::Files(_), label)) => {
+                        Ok((shown(rows.df)?, label))
+                    }
+                    None => Ok((shown(rows.df)?, label)),
                 }
             });
             let _ = tx.send(match read {
@@ -10576,6 +10767,9 @@ impl App {
         self.quality_released.clear();
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
+        // The findings narrowed to the last dataset's columns would hide this one's.
+        self.analysis_modal.data_quality_findings = quality_report::FindingsView::default();
+        self.analysis_modal.data_quality_evidence_read = None;
         // A query still running was over the dataset being replaced; its rollback
         // is that dataset's view. So was a view waiting on its pivot.
         self.query_running = None;
@@ -17077,7 +17271,8 @@ impl App {
                 }
                 if (self.analysis_modal.data_quality_confirm_run
                     || self.analysis_modal.data_quality_show_access
-                    || self.analysis_modal.data_quality_observation_detail)
+                    || self.analysis_modal.data_quality_observation_detail
+                    || self.analysis_modal.data_quality_evidence_read.is_some())
                     && !matches!(event.code, KeyCode::Esc | KeyCode::Enter)
                 {
                     return None;
@@ -17266,6 +17461,15 @@ impl App {
                         self.analysis_modal.data_quality_show_access = false;
                         return None;
                     }
+                    // A staged read of a finding's rows: Enter reads, Esc goes back to
+                    // the finding having read nothing.
+                    KeyCode::Esc if self.analysis_modal.data_quality_evidence_read.is_some() => {
+                        self.analysis_modal.data_quality_evidence_read = None;
+                        return None;
+                    }
+                    KeyCode::Enter if self.analysis_modal.data_quality_evidence_read.is_some() => {
+                        return self.confirm_evidence_read();
+                    }
                     KeyCode::Esc if self.analysis_modal.data_quality_observation_detail => {
                         self.analysis_modal.data_quality_observation_detail = false;
                         return None;
@@ -17284,7 +17488,14 @@ impl App {
                             return None;
                         }
                         let event = self.open_quality_evidence();
-                        if self.analysis_modal.active && !self.error_modal.active {
+                        // Rows on their way, or a read waiting for Enter, keep the
+                        // finding open: Esc from the rows comes back to it. Enter on
+                        // a finding with no rows closes it.
+                        if self.analysis_modal.active
+                            && !self.error_modal.active
+                            && self.analysis_modal.data_quality_evidence_read.is_none()
+                            && self.analysis_modal.computing.is_none()
+                        {
                             self.analysis_modal.data_quality_observation_detail = false;
                         }
                         return event;
@@ -17374,6 +17585,29 @@ impl App {
                         if self.analysis_modal.data_quality_page == QualityPage::Segments =>
                     {
                         self.analysis_modal.toggle_segment_order();
+                        return None;
+                    }
+                    // Overview's findings, narrowed and ordered from the report on
+                    // screen: nothing is measured again.
+                    KeyCode::Char(key @ ('c' | 't' | 'o'))
+                        if self.analysis_modal.data_quality_page == QualityPage::Overview
+                            && self.analysis_modal.data_quality_results.is_some()
+                            && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        if key == 'o' {
+                            self.analysis_modal.cycle_findings_order();
+                        } else {
+                            self.analysis_modal.open_findings_picker(key == 'c');
+                        }
+                        return None;
+                    }
+                    // Esc shows every finding again before it leaves the page.
+                    KeyCode::Esc
+                        if self.analysis_modal.data_quality_page == QualityPage::Overview
+                            && self.analysis_modal.data_quality_findings.narrowed()
+                            && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        self.analysis_modal.clear_findings_narrowing();
                         return None;
                     }
                     // Another sample, run at once: a new seed for every tool. On a sampled

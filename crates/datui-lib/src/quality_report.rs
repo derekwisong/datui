@@ -63,7 +63,20 @@ impl Finding {
     pub fn evidence_predicate(&self, results: &DataQualityResults) -> Option<Expr> {
         self.observations
             .iter()
-            .map(|index| results.observations.get(*index)?.evidence_predicate())
+            .map(|index| {
+                let observation = results.observations.get(*index)?;
+                match observation.kind {
+                    // The values that stop a cast: text the reading does not parse.
+                    ObservationKind::ParseableText => {
+                        let profile = results
+                            .columns
+                            .iter()
+                            .find(|profile| profile.name == observation.column)?;
+                        crate::data_quality::unparsed_text(profile)
+                    }
+                    _ => observation.evidence_predicate(),
+                }
+            })
             .collect::<Option<Vec<_>>>()?
             .into_iter()
             .reduce(Expr::or)
@@ -77,20 +90,76 @@ impl Finding {
         }
     }
 
-    /// Whether Enter can open the rows: files are named at any budget, and a value
-    /// predicate over whatever rows were read, all of them or the sample.
-    pub fn can_open_rows(&self, results: &DataQualityResults) -> bool {
-        self.evidence_scope(results).is_some()
-            || (matches!(
-                results.precision,
-                QualityPrecision::Exact | QualityPrecision::Sampled
-            ) && self.evidence_predicate(results).is_some())
+    /// Which rows are the finding's evidence, or why there are none to show.
+    pub fn evidence(&self, results: &DataQualityResults) -> Result<EvidenceRows, String> {
+        if let Some(scope) = self.evidence_scope(results) {
+            return Ok(EvidenceRows::Files(scope));
+        }
+        match self.kind {
+            None => Err("No rows: every column here passed".to_string()),
+            _ if results.precision == QualityPrecision::Metadata => {
+                Err("No rows: values were not read".to_string())
+            }
+            Some(ObservationKind::DuplicateRows) => Ok(EvidenceRows::Duplicates),
+            Some(ObservationKind::ParseableText) if self.failures(results) == Some(0) => {
+                Err("No rows to show: every value parses, so nothing stops a cast".to_string())
+            }
+            _ => self
+                .evidence_predicate(results)
+                .map(EvidenceRows::Matching)
+                .ok_or_else(|| "No rows: this finding names no rows to filter on".to_string()),
+        }
     }
 
-    /// The rows open from the sample the run measured, not from the whole table:
-    /// the counts on screen are the sample's, and so are the rows.
-    pub fn opens_sample(&self, results: &DataQualityResults) -> bool {
-        self.evidence_scope(results).is_none() && results.precision == QualityPrecision::Sampled
+    /// How many rows Enter shows, where one count is all of them: one observation,
+    /// the same rows in every column, or spellings of one column, which never
+    /// overlap. `None` for a union nobody counted, and for the files' rows.
+    pub fn evidence_count(&self, results: &DataQualityResults) -> Option<usize> {
+        match self.kind? {
+            ObservationKind::DuplicateRows => {
+                Some(results.identity.as_ref()?.rows_involved).filter(|rows| *rows > 0)
+            }
+            ObservationKind::ParseableText => self.failures(results),
+            // Rows beyond one per value are the count; the rows sharing a value are
+            // what opens, and always more.
+            ObservationKind::KeyLike | ObservationKind::Absent | ObservationKind::TypeConflict => {
+                None
+            }
+            ObservationKind::CategoryVariants => Some(self.affected_rows),
+            _ if self.observations.len() == 1 || self.same_rows => Some(self.affected_rows),
+            _ => None,
+        }
+    }
+
+    /// Non-null text in a parseable-text column that its reading does not parse.
+    pub fn failures(&self, results: &DataQualityResults) -> Option<usize> {
+        if self.kind != Some(ObservationKind::ParseableText) {
+            return None;
+        }
+        let profile = results
+            .columns
+            .iter()
+            .find(|profile| Some(&profile.name) == self.columns.first())?;
+        let (parsed, _) = text_reading(profile)?;
+        Some(profile.non_null_rows().saturating_sub(parsed))
+    }
+
+    /// The check that makes this finding, by the name the Checks list gives it.
+    /// `None` for the clean entry.
+    pub fn check(&self) -> Option<&'static str> {
+        Some(match self.kind? {
+            ObservationKind::Nulls => "Missing values",
+            ObservationKind::NonFinite => "NaN or infinite",
+            ObservationKind::DuplicateRows => "Duplicate rows",
+            ObservationKind::Empty | ObservationKind::Whitespace => "Blank text",
+            ObservationKind::CategoryVariants => "Mixed spellings",
+            ObservationKind::TypeConflict => "Type mismatch",
+            ObservationKind::Absent => "Missing in files",
+            ObservationKind::ParseableText => "Numbers as text",
+            ObservationKind::KeyLike => "Nearly unique",
+            ObservationKind::Constant => "Single value",
+            ObservationKind::UnparsedTime => "Unparsed times",
+        })
     }
 
     /// Missing values grouped across columns that go missing at different rates.
@@ -100,6 +169,219 @@ impl Finding {
             && !self.same_rows
             && self.severity == Severity::Note
     }
+
+    /// A count per column that the detail lists one column a line: several columns
+    /// grouped by what they miss, not on the same rows.
+    pub fn lists_columns(&self) -> bool {
+        matches!(
+            self.kind,
+            Some(ObservationKind::Nulls | ObservationKind::Empty | ObservationKind::Whitespace)
+        ) && self.columns.len() > 1
+            && !self.same_rows
+    }
+
+    /// Each column's count and rate, one a line, worst first; then the rows with
+    /// any of them, which no check counted: at least the largest column's count and
+    /// at most their sum.
+    pub fn breakdown(&self, results: &DataQualityResults) -> Vec<String> {
+        let rows = self
+            .observations
+            .iter()
+            .filter_map(|index| results.observations.get(*index))
+            .collect::<Vec<_>>();
+        let name_width = rows
+            .iter()
+            .map(|row| crate::glyphs::display_width(&row.column))
+            .max()
+            .unwrap_or(0)
+            .min(28);
+        let plural = |count: usize| if count == 1 { "row" } else { "rows" };
+        let mut lines = rows
+            .iter()
+            .map(|row| {
+                let name = columns_label(std::slice::from_ref(&row.column), name_width);
+                let pad = name_width.saturating_sub(crate::glyphs::display_width(&name));
+                format!(
+                    "{name}{}  {:>7}  {} {}",
+                    " ".repeat(pad),
+                    percent(row.affected_rows, row.evaluated_rows),
+                    numfmt::group_chrome(row.affected_rows),
+                    plural(row.affected_rows)
+                )
+            })
+            .collect::<Vec<_>>();
+        let least = rows.iter().map(|row| row.affected_rows).max().unwrap_or(0);
+        let most = rows
+            .iter()
+            .map(|row| row.affected_rows)
+            .sum::<usize>()
+            .min(self.evaluated_rows.max(least));
+        lines.push(if least == most {
+            format!(
+                "Rows with any of them: {} {}",
+                numfmt::group_chrome(least),
+                plural(least)
+            )
+        } else {
+            format!(
+                "Rows with any of them: {} to {}, not counted",
+                numfmt::group_chrome(least),
+                numfmt::group_chrome(most)
+            )
+        });
+        lines
+    }
+}
+
+/// The rows behind a finding.
+#[derive(Debug, Clone)]
+pub enum EvidenceRows {
+    /// Rows whose values match.
+    Matching(Expr),
+    /// Every row the named files hold.
+    Files(QualityScope),
+    /// Rows equal to another in every column, copies together; see
+    /// [`crate::data_quality::duplicate_rows`].
+    Duplicates,
+}
+
+/// How the findings list is narrowed and ordered. Presentation only: it reads the
+/// report on screen, and nothing is measured again.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FindingsView {
+    /// Only findings that name this column.
+    pub column: Option<String>,
+    /// Only findings this check made, by [`Finding::check`].
+    pub check: Option<&'static str>,
+    pub order: FindingOrder,
+}
+
+/// The order findings are listed in within each severity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FindingOrder {
+    /// What costs the most trust first; see [`build_report`].
+    #[default]
+    Ranked,
+    /// Most rows affected first.
+    Rows,
+    /// Highest share of the rows checked first.
+    Rate,
+}
+
+impl FindingOrder {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Ranked => Self::Rows,
+            Self::Rows => Self::Rate,
+            Self::Rate => Self::Ranked,
+        }
+    }
+
+    /// The chip that switches to this order.
+    pub fn chip(self) -> &'static str {
+        match self {
+            Self::Ranked => "Ranked",
+            Self::Rows => "By Rows",
+            Self::Rate => "By Rate",
+        }
+    }
+}
+
+impl FindingsView {
+    pub fn narrowed(&self) -> bool {
+        self.column.is_some() || self.check.is_some()
+    }
+
+    fn admits(&self, finding: &Finding) -> bool {
+        self.column
+            .as_ref()
+            .is_none_or(|column| finding.columns.contains(column))
+            && self
+                .check
+                .is_none_or(|check| finding.check() == Some(check))
+    }
+
+    /// Indices into `report.findings`, in the order listed. Severity leads in every
+    /// order, so Problems stay above Notes; within one, a tie keeps the rank.
+    pub fn shown(&self, report: &QualityReport) -> Vec<usize> {
+        let findings = &report.findings;
+        let mut shown = (0..findings.len())
+            .filter(|index| self.admits(&findings[*index]))
+            .collect::<Vec<_>>();
+        let by = |left: &usize, right: &usize| {
+            let (left, right) = (&findings[*left], &findings[*right]);
+            left.severity
+                .cmp(&right.severity)
+                .then_with(|| match self.order {
+                    FindingOrder::Ranked => std::cmp::Ordering::Equal,
+                    FindingOrder::Rows => right.affected_rows.cmp(&left.affected_rows),
+                    // Shares compared exactly: a/b against c/d as a·d against c·b.
+                    FindingOrder::Rate => (right.affected_rows as u128
+                        * left.evaluated_rows.max(1) as u128)
+                        .cmp(&(left.affected_rows as u128 * right.evaluated_rows.max(1) as u128)),
+                })
+        };
+        shown.sort_by(by);
+        shown
+    }
+
+    /// The finding at `position` in the list as shown.
+    pub fn selected<'a>(&self, report: &'a QualityReport, position: usize) -> Option<&'a Finding> {
+        self.shown(report)
+            .get(position)
+            .and_then(|index| report.findings.get(*index))
+    }
+
+    /// What narrows and orders the list, for the line above it: "price · Missing
+    /// values · by rows". Empty when the list is the report as ranked.
+    pub fn describe(&self) -> Vec<String> {
+        let mut parts = Vec::new();
+        if let Some(column) = &self.column {
+            parts.push(format!("column {column}"));
+        }
+        if let Some(check) = self.check {
+            parts.push(check.to_string());
+        }
+        match self.order {
+            FindingOrder::Ranked => {}
+            FindingOrder::Rows => parts.push("by rows".to_string()),
+            FindingOrder::Rate => parts.push("by rate".to_string()),
+        }
+        parts
+    }
+}
+
+/// The columns a report can be narrowed to, each with how many findings name it,
+/// in the results' column order.
+pub fn column_choices(
+    report: &QualityReport,
+    results: &DataQualityResults,
+) -> Vec<(String, usize)> {
+    results
+        .columns
+        .iter()
+        .map(|profile| {
+            let count = report
+                .findings
+                .iter()
+                .filter(|finding| finding.kind.is_some() && finding.columns.contains(&profile.name))
+                .count();
+            (profile.name.clone(), count)
+        })
+        .collect()
+}
+
+/// The checks that made a finding in `report`, each with how many, most important
+/// first.
+pub fn check_choices(report: &QualityReport) -> Vec<(&'static str, usize)> {
+    let mut choices: Vec<(&'static str, usize)> = Vec::new();
+    for check in report.findings.iter().filter_map(Finding::check) {
+        match choices.iter_mut().find(|(name, _)| *name == check) {
+            Some((_, count)) => *count += 1,
+            None => choices.push((check, 1)),
+        }
+    }
+    choices
 }
 
 #[derive(Debug, Clone, Default)]
@@ -354,7 +636,7 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
             if low == high {
                 rows_each(first.affected_rows, " each")
             } else {
-                format!("{low} to {high}")
+                format!("{low} to {high} per column")
             }
         }
         ObservationKind::Nulls | ObservationKind::Empty | ObservationKind::Whitespace
@@ -1009,35 +1291,20 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
         }
         Some(ObservationKind::Nulls) if finding.varied() => {
             // Each column's own rate, worst first: the list row gave only the range.
-            let rows = finding
-                .observations
-                .iter()
-                .map(&observation)
-                .collect::<Vec<_>>();
-            let name_width = rows
-                .iter()
-                .map(|row| crate::glyphs::display_width(&row.column))
-                .max()
-                .unwrap_or(0)
-                .min(28);
-            for row in rows {
-                let name = columns_label(std::slice::from_ref(&row.column), name_width);
-                let pad = name_width.saturating_sub(crate::glyphs::display_width(&name));
-                evidence.push(format!(
-                    "{name}{}  {:>7}  {} {}",
-                    " ".repeat(pad),
-                    percent(row.affected_rows, row.evaluated_rows),
-                    count(row.affected_rows),
-                    if row.affected_rows == 1 {
-                        "row"
-                    } else {
-                        "rows"
-                    }
-                ));
-            }
+            evidence.extend(finding.breakdown(results));
             format!("Null rate in {} columns:", finding.columns.len())
         }
-        Some(ObservationKind::Nulls) if grouped => format!("{of} null in each column"),
+        Some(ObservationKind::Nulls | ObservationKind::Empty | ObservationKind::Whitespace)
+            if finding.lists_columns() =>
+        {
+            evidence.extend(finding.breakdown(results));
+            let what = match finding.kind {
+                Some(ObservationKind::Nulls) => "null",
+                Some(ObservationKind::Empty) => "empty strings",
+                _ => "only spaces or tabs",
+            };
+            format!("{of} {what} in each column:")
+        }
         Some(ObservationKind::Nulls) => format!("{of} null"),
         Some(ObservationKind::Empty) => format!("{of} empty strings"),
         Some(ObservationKind::Whitespace) => format!("{of} only spaces or tabs"),
@@ -1091,6 +1358,22 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
                 if let (Some(min), Some(max)) = (&profile.min, &profile.max) {
                     evidence.push(format!("From {} to {}", quoted(min, 24), quoted(max, 24)));
                 }
+                let failed = profile.non_null_rows().saturating_sub(parsed);
+                if failed > 0 {
+                    let examples = results.examples_of(ObservationKind::ParseableText, column);
+                    evidence.push(if examples.is_empty() {
+                        format!("{} do not parse", count(failed))
+                    } else {
+                        cut(
+                            &format!(
+                                "{} do not parse, such as {}",
+                                count(failed),
+                                examples.join(", ")
+                            ),
+                            EXAMPLE_WIDTH,
+                        )
+                    });
+                }
                 format!(
                     "{} of {} values ({}) parse as {}",
                     count(parsed),
@@ -1103,16 +1386,38 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
             }
         }
         Some(ObservationKind::DuplicateRows) => match results.identity.as_ref() {
-            Some(identity) => format!(
-                "{} rows repeated; {} extra {}",
-                count(identity.duplicate_groups),
-                count(identity.extra_rows),
-                if identity.extra_rows == 1 {
-                    "copy"
-                } else {
-                    "copies"
+            Some(identity) => {
+                evidence.push(format!(
+                    "{} of {} rows ({}) have a copy",
+                    count(identity.rows_involved),
+                    count(identity.evaluated_rows),
+                    percent(identity.rows_involved, identity.evaluated_rows)
+                ));
+                if !identity.examples.is_empty() {
+                    evidence.push("Most copied:".to_string());
                 }
-            ),
+                for example in &identity.examples {
+                    evidence.push(cut(
+                        &format!(
+                            "{}{}  {}",
+                            crate::glyphs::get().times,
+                            example.copies,
+                            example.values.join(", ")
+                        ),
+                        EXAMPLE_WIDTH,
+                    ));
+                }
+                format!(
+                    "{} rows repeated; {} extra {}",
+                    count(identity.duplicate_groups),
+                    count(identity.extra_rows),
+                    if identity.extra_rows == 1 {
+                        "copy"
+                    } else {
+                        "copies"
+                    }
+                )
+            }
             None => observation(&finding.observations[0]).fact.clone(),
         },
         Some(ObservationKind::CategoryVariants) => {
@@ -1170,6 +1475,13 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
             if let Some(format) = &observation.time_format {
                 evidence.push(format!("Read as {} for this study only", format.label()));
             }
+            let examples = results.examples_of(ObservationKind::UnparsedTime, &observation.column);
+            if !examples.is_empty() {
+                evidence.push(cut(
+                    &format!("Such as {}", examples.join(", ")),
+                    EXAMPLE_WIDTH,
+                ));
+            }
             format!(
                 "{} of {} values ({}) do not parse",
                 count(finding.affected_rows),
@@ -1223,6 +1535,25 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
         }
     };
     (headline, evidence)
+}
+
+/// How wide a line of examples runs before it is cut: a row of many columns would
+/// otherwise wrap over the whole detail.
+const EXAMPLE_WIDTH: usize = 72;
+
+/// `text` cut to `width` display columns, the ellipsis glyph marking the cut.
+fn cut(text: &str, width: usize) -> String {
+    if crate::glyphs::display_width(text) <= width {
+        return text.to_string();
+    }
+    let ellipsis = crate::glyphs::get().ellipsis;
+    format!(
+        "{}{ellipsis}",
+        crate::glyphs::take_columns(
+            text,
+            width.saturating_sub(crate::glyphs::display_width(ellipsis))
+        )
+    )
 }
 
 fn upper_first(text: &str) -> String {
@@ -1383,7 +1714,7 @@ mod tests {
         let missing = &report.findings[1];
         assert_eq!(missing.title, "Missing values");
         assert_eq!(missing.columns, vec!["b", "c", "a"]);
-        assert_eq!(missing.summary, "3.0% to 40.0%");
+        assert_eq!(missing.summary, "3.0% to 40.0% per column");
         let (headline, evidence) = describe(missing, &results);
         assert_eq!(headline, "Null rate in 3 columns:");
         assert_eq!(evidence[0], "b    40.0%  40 rows");
@@ -1657,5 +1988,210 @@ mod tests {
         assert_eq!(columns_label(&columns, 40), "open, high, low, close");
         assert_eq!(columns_label(&columns, 14), "open, high +2");
         assert_eq!(columns_label(&columns[..1], 2), "open");
+    }
+
+    /// Narrowing and ordering read the report as it is: Problems stay above Notes in
+    /// every order, a column or a check keeps only the findings that name it, and the
+    /// rows a finding counts or the share they are decide the order within a
+    /// severity.
+    #[test]
+    fn findings_narrow_and_order_without_measuring() {
+        let mut results = results(
+            vec![
+                profile("price", DataType::Float64),
+                profile("region", DataType::String),
+                profile("note", DataType::String),
+                profile("id", DataType::Int64),
+            ],
+            vec![
+                observation(ObservationKind::NonFinite, "price", 2),
+                observation(ObservationKind::Nulls, "region", 3),
+                observation(ObservationKind::Nulls, "note", 30),
+                observation(ObservationKind::Whitespace, "region", 9),
+            ],
+        );
+        // A share over a smaller denominator: fewer rows, higher rate.
+        results.observations[0].evaluated_rows = 4;
+        let report = build_report(&results);
+        let titles = |view: &FindingsView| {
+            view.shown(&report)
+                .into_iter()
+                .map(|index| report.findings[index].title)
+                .collect::<Vec<_>>()
+        };
+        let ranked = FindingsView::default();
+        assert_eq!(
+            titles(&ranked),
+            [
+                "NaN or infinite",
+                "Blank text",
+                "Missing values",
+                "No findings"
+            ]
+        );
+        let rows = FindingsView {
+            order: FindingOrder::Rows,
+            ..FindingsView::default()
+        };
+        assert_eq!(
+            titles(&rows),
+            [
+                "Blank text",
+                "NaN or infinite",
+                "Missing values",
+                "No findings"
+            ],
+            "most rows first, Problems still above Notes"
+        );
+        let rate = FindingsView {
+            order: FindingOrder::Rate,
+            ..FindingsView::default()
+        };
+        assert_eq!(titles(&rate)[0], "NaN or infinite", "2 of 4 beats 9 of 100");
+
+        let region = FindingsView {
+            column: Some("region".to_string()),
+            ..FindingsView::default()
+        };
+        assert_eq!(titles(&region), ["Blank text", "Missing values"]);
+        assert!(region.narrowed());
+        let clean = FindingsView {
+            column: Some("id".to_string()),
+            ..FindingsView::default()
+        };
+        assert_eq!(titles(&clean), ["No findings"], "a clean column is clean");
+        let missing = FindingsView {
+            check: Some("Missing values"),
+            ..FindingsView::default()
+        };
+        assert_eq!(titles(&missing), ["Missing values"]);
+        assert_eq!(
+            missing.selected(&report, 0).map(|finding| finding.title),
+            Some("Missing values")
+        );
+        assert_eq!(
+            check_choices(&report),
+            [
+                ("NaN or infinite", 1),
+                ("Blank text", 1),
+                ("Missing values", 1)
+            ]
+        );
+        assert_eq!(
+            column_choices(&report, &results)
+                .into_iter()
+                .map(|(_, count)| count)
+                .collect::<Vec<_>>(),
+            [1, 2, 1, 0]
+        );
+    }
+
+    /// A finding over several columns lists each column's own count, and says the
+    /// rows with any of them are a range nobody counted, not their sum.
+    #[test]
+    fn grouped_findings_break_down_by_column_and_bound_the_union() {
+        let results = results(
+            vec![
+                profile("a", DataType::String),
+                profile("b", DataType::String),
+            ],
+            vec![
+                observation(ObservationKind::Empty, "a", 6),
+                observation(ObservationKind::Empty, "b", 6),
+            ],
+        );
+        let report = build_report(&results);
+        let finding = &report.findings[0];
+        assert!(finding.lists_columns());
+        assert_eq!(
+            finding.evidence_count(&results),
+            None,
+            "a union nobody counted"
+        );
+        let (headline, evidence) = describe(finding, &results);
+        assert_eq!(
+            headline,
+            "6 of 100 rows (6.0%) empty strings in each column:"
+        );
+        assert_eq!(evidence[0], "a     6.0%  6 rows");
+        assert_eq!(
+            evidence.last().unwrap(),
+            "Rows with any of them: 6 to 12, not counted"
+        );
+    }
+
+    /// A parseable-text finding's rows are the values that stop a cast, counted
+    /// from the profile; with none, there is nothing to open, and it says why.
+    #[test]
+    fn parse_failures_are_the_evidence_of_text_that_parses() {
+        let mut text = profile("amount", DataType::String);
+        text.null_count = 4;
+        text.integer_parse_count = Some(95);
+        text.decimal_parse_count = Some(95);
+        let mut results = results(
+            vec![text],
+            vec![observation(ObservationKind::ParseableText, "amount", 95)],
+        );
+        results.examples = vec![crate::data_quality::FindingExamples {
+            kind: ObservationKind::ParseableText,
+            column: "amount".to_string(),
+            values: vec!["\"n/a\"".to_string()],
+        }];
+        let report = build_report(&results);
+        let finding = &report.findings[0];
+        assert_eq!(finding.check(), Some("Numbers as text"));
+        assert_eq!(finding.failures(&results), Some(1));
+        assert_eq!(finding.evidence_count(&results), Some(1));
+        assert!(matches!(
+            finding.evidence(&results),
+            Ok(EvidenceRows::Matching(_))
+        ));
+        let (_, evidence) = describe(finding, &results);
+        assert!(
+            evidence.contains(&"1 do not parse, such as \"n/a\"".to_string()),
+            "{evidence:?}"
+        );
+
+        results.columns[0].integer_parse_count = Some(96);
+        results.columns[0].decimal_parse_count = Some(96);
+        results.observations[0].affected_rows = 96;
+        let report = build_report(&results);
+        let reason = report.findings[0].evidence(&results).unwrap_err();
+        assert!(reason.contains("every value parses"), "{reason}");
+    }
+
+    /// Duplicate rows open as a group, and the count is every row with a copy.
+    #[test]
+    fn duplicate_rows_open_every_row_with_a_copy() {
+        let mut results = results(
+            vec![profile("id", DataType::Int64)],
+            vec![observation(
+                ObservationKind::DuplicateRows,
+                "all columns",
+                5,
+            )],
+        );
+        results.identity = Some(crate::data_quality::IdentityProfile {
+            duplicate_groups: 2,
+            extra_rows: 3,
+            rows_involved: 5,
+            evaluated_rows: 100,
+            precision: QualityPrecision::Exact,
+            examples: vec![crate::data_quality::DuplicateExample {
+                copies: 3,
+                values: vec!["7".to_string()],
+            }],
+        });
+        let report = build_report(&results);
+        let finding = &report.findings[0];
+        assert!(matches!(
+            finding.evidence(&results),
+            Ok(EvidenceRows::Duplicates)
+        ));
+        assert_eq!(finding.evidence_count(&results), Some(5));
+        let (headline, evidence) = describe(finding, &results);
+        assert_eq!(headline, "2 rows repeated; 3 extra copies");
+        assert_eq!(evidence[0], "5 of 100 rows (5.0%) have a copy");
+        assert_eq!(evidence[2], format!("{}3  7", crate::glyphs::get().times));
     }
 }

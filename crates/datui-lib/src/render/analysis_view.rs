@@ -181,6 +181,7 @@ fn render_body(
                 note: note.as_deref(),
                 cancelling: app.cancelled_run_shown(),
             };
+            let rows_kept = app.quality_rows_kept().is_some();
             let modal = &mut app.analysis_modal;
             let config = data_quality::DataQualityWidgetConfig {
                 checks_expanded: modal.data_quality_checks_expanded,
@@ -212,6 +213,9 @@ fn render_body(
                 show_access: modal.data_quality_show_access,
                 observation_detail: modal.data_quality_observation_detail,
                 confirm_run: modal.data_quality_confirm_run,
+                findings: &modal.data_quality_findings,
+                rows_kept,
+                evidence_read: modal.data_quality_evidence_read.as_ref(),
                 focus: modal.focus,
                 theme: &app.theme,
                 ctx,

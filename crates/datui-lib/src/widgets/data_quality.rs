@@ -1,4 +1,4 @@
-use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll, SetupRow};
+use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll, EvidenceRead, SetupRow};
 use crate::config::Theme;
 use crate::data_quality::{
     ColumnQualityProfile, DataQualityPlan, DataQualityResults, IntervalClock, IntervalFact,
@@ -9,8 +9,8 @@ use crate::data_quality::{
 use crate::glyphs;
 use crate::numfmt;
 use crate::quality_report::{
-    CHECKS_SHOWN, Check, Coverage, Outcome, QualityReport, Severity, advice, build_report, checks,
-    coverage, describe, verdict,
+    CHECKS_SHOWN, Check, Coverage, EvidenceRows, FindingOrder, FindingsView, Outcome,
+    QualityReport, Severity, advice, build_report, checks, coverage, describe, verdict,
 };
 use crate::render::context::RenderContext;
 use crate::widgets::datatable::DataTableState;
@@ -93,6 +93,12 @@ pub struct DataQualityWidgetConfig<'a> {
     pub show_access: bool,
     pub observation_detail: bool,
     pub confirm_run: bool,
+    /// How Overview narrows and orders the findings.
+    pub findings: &'a FindingsView,
+    /// The rows the report measured are still in memory: a finding's open from them.
+    pub rows_kept: bool,
+    /// A read of a finding's rows, waiting for Enter.
+    pub evidence_read: Option<&'a EvidenceRead>,
     pub focus: AnalysisFocus,
     pub theme: &'a Theme,
     /// The dialogs' Surfaces and the table's number formatting.
@@ -178,6 +184,10 @@ pub fn render(
         render_run_confirmation(&config, area, buf);
     } else if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
         render_narrow_tool_picker(&config, sidebar_state, area, buf);
+    }
+    // A staged read of rows sits over whatever asked for it: a finding or a count.
+    if let Some(read) = config.evidence_read {
+        render_evidence_read(&config, read, area, buf);
     }
 }
 
@@ -834,7 +844,7 @@ fn render_overview(
         Paragraph::new(lines).render(sections[1], buf);
     }
 
-    let list = sections[2];
+    let mut list = sections[2];
     if report.findings.is_empty() {
         let message = if report.metadata_only {
             "No values were read, so nothing about them is known. Set Values to read in Setup (e) to check them."
@@ -847,7 +857,47 @@ fn render_overview(
             .render(list, buf);
         return;
     }
-    normalize_selection(table_state, report.findings.len());
+    let shown = config.findings.shown(&report);
+    // Narrowed or reordered, the list says so above itself, and what it holds.
+    let facets = config.findings.describe();
+    if !facets.is_empty() && list.height > 1 {
+        let total = report
+            .findings
+            .iter()
+            .filter(|finding| finding.kind.is_some())
+            .count();
+        let listed = shown
+            .iter()
+            .filter(|index| report.findings[**index].kind.is_some())
+            .count();
+        let middot = glyphs::get().middot;
+        let mut text = if config.findings.narrowed() {
+            format!("{listed} of {total} findings")
+        } else {
+            format!(
+                "{total} {}",
+                if total == 1 { "finding" } else { "findings" }
+            )
+        };
+        for facet in &facets {
+            text.push_str(&format!(" {middot} {facet}"));
+        }
+        Paragraph::new(Line::styled(
+            fit(&text, list.width as usize),
+            Style::default().fg(config.theme.get("dimmed")),
+        ))
+        .render(Rect { height: 1, ..list }, buf);
+        list.y += 1;
+        list.height -= 1;
+    }
+    normalize_selection(table_state, shown.len());
+    if shown.is_empty() {
+        Paragraph::new("No findings match. Esc shows them all.")
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(config.theme.get("dimmed")))
+            .render(list, buf);
+        return;
+    }
     if report.problems == 0 && report.notes == 0 && !report.metadata_only {
         // Nothing to fix: what was checked is the answer, so it is on the page
         // rather than behind the clean entry.
@@ -1034,17 +1084,20 @@ fn render_findings(
         Gap,
         Finding(usize),
     }
+    // Positions in the list as shown, which is what the selection counts; each
+    // severity's rule counts what is shown under it.
+    let shown = config.findings.shown(report);
     let mut items = Vec::new();
     let mut current = None;
-    for (index, finding) in report.findings.iter().enumerate() {
+    for (position, index) in shown.iter().enumerate() {
+        let finding = &report.findings[*index];
         if current != Some(finding.severity) {
             if current.is_some() {
                 items.push(Item::Gap);
             }
-            let count = report
-                .findings
+            let count = shown
                 .iter()
-                .filter(|other| other.severity == finding.severity)
+                .filter(|other| report.findings[**other].severity == finding.severity)
                 .count();
             let count = match finding.severity {
                 // The clean entry is one row naming many columns; count the columns.
@@ -1054,7 +1107,7 @@ fn render_findings(
             items.push(Item::Rule(finding.severity, count));
             current = Some(finding.severity);
         }
-        items.push(Item::Finding(index));
+        items.push(Item::Finding(position));
     }
 
     let height = area.height as usize;
@@ -1092,7 +1145,49 @@ fn render_findings(
     let lead = 4; // rail + space + mark + space
     let rest = width.saturating_sub(lead + title_width);
     let columns_width = (rest * 2 / 5).clamp(10.min(rest), 32);
-    let summary_width = rest.saturating_sub(columns_width + 1);
+    // Ordered by a number, the number is on every row, right-aligned, so the order
+    // can be read; the summary gives up the room.
+    let ordered = config.findings.order != FindingOrder::Ranked;
+    let numbers = |finding: &crate::quality_report::Finding| {
+        if finding.kind.is_none() {
+            return (String::new(), String::new());
+        }
+        (
+            numfmt::group_chrome(finding.affected_rows),
+            crate::quality_report::percent(finding.affected_rows, finding.evaluated_rows),
+        )
+    };
+    let widest = |pick: fn((String, String)) -> String| {
+        shown
+            .iter()
+            .map(|index| glyphs::display_width(&pick(numbers(&report.findings[*index]))))
+            .max()
+            .unwrap_or(0)
+    };
+    let (count_width, rate_width) = (widest(|(count, _)| count), widest(|(_, rate)| rate));
+    // The number the list is ordered by leads, each in its own aligned column.
+    let affected = |finding: &crate::quality_report::Finding| {
+        let (count, rate) = numbers(finding);
+        match config.findings.order {
+            FindingOrder::Rate => format!("{rate:>rate_width$}  {count:>count_width$}"),
+            _ => format!("{count:>count_width$}  {rate:>rate_width$}"),
+        }
+    };
+    let affected_width = if ordered {
+        count_width + rate_width + 3
+    } else {
+        0
+    };
+    let summary_width = rest.saturating_sub(columns_width + 1 + affected_width);
+    // Too narrow to say anything, the summary gives its room to the numbers.
+    let (summary_width, affected_width) = if ordered && summary_width < 12 {
+        (
+            0,
+            rest.saturating_sub(columns_width + 1).max(affected_width),
+        )
+    } else {
+        (summary_width, affected_width)
+    };
     let g = glyphs::get();
     let theme = config.theme;
     let focused = config.focus == AnalysisFocus::Main;
@@ -1110,12 +1205,12 @@ fn render_findings(
                 area.width,
                 theme,
             ),
-            Item::Finding(index) => {
-                let finding = &report.findings[*index];
-                let is_selected = *index == selected;
+            Item::Finding(position) => {
+                let finding = &report.findings[shown[*position]];
+                let is_selected = *position == selected;
                 let columns = fit(&finding.columns_label(columns_width), columns_width);
                 let summary = fit(&finding.summary, summary_width);
-                let line = Line::from(vec![
+                let mut spans = vec![
                     Span::styled(
                         if is_selected { g.rail } else { " " },
                         Style::default().fg(theme.get("accent")),
@@ -1131,8 +1226,22 @@ fn render_findings(
                         format!("{columns:<columns_width$} "),
                         Style::default().fg(theme.get("text_primary")),
                     ),
-                    Span::styled(summary, Style::default().fg(theme.get("dimmed"))),
-                ]);
+                    Span::styled(
+                        if ordered {
+                            format!("{summary:<summary_width$}")
+                        } else {
+                            summary
+                        },
+                        Style::default().fg(theme.get("dimmed")),
+                    ),
+                ];
+                if ordered {
+                    spans.push(Span::styled(
+                        format!("{:>affected_width$}", affected(finding)),
+                        Style::default().fg(theme.get("text_primary")),
+                    ));
+                }
+                let line = Line::from(spans);
                 if is_selected {
                     let style = if focused {
                         theme.highlight_style()
@@ -1284,7 +1393,7 @@ fn render_finding_detail(
     let report = build_report(results);
     let Some(finding) = table_state
         .selected()
-        .and_then(|index| report.findings.get(index))
+        .and_then(|position| config.findings.selected(&report, position))
     else {
         return;
     };
@@ -1317,7 +1426,7 @@ fn render_finding_detail(
     // every column with its rate already.
     if finding.kind.is_some()
         && finding.columns.len() > 1
-        && !finding.varied()
+        && !finding.lists_columns()
         && finding.columns_label(usize::MAX) != finding.columns_label(inner as usize)
     {
         lines.push(bullet(finding.columns.join(", ")));
@@ -1339,54 +1448,11 @@ fn render_finding_detail(
         ));
     }
     if finding.kind.is_some() {
-        // The count is known when the rows are one observation's, or the same rows
-        // in every column; "any of these columns" is a union nobody counted.
-        let counted = finding.observations.len() == 1
-            || finding.same_rows
-            || finding.kind == Some(ObservationKind::CategoryVariants);
-        let sampled = if finding.opens_sample(results) {
-            "sampled "
-        } else {
-            ""
-        };
-        let rows = if finding.can_open_rows(results) {
-            match finding.kind {
-                // The measurement counts rows beyond one per value; the rows that
-                // share a value are always more.
-                Some(ObservationKind::KeyLike) => {
-                    format!("Enter shows every {sampled}row that shares a repeated value.")
-                }
-                Some(ObservationKind::Absent | ObservationKind::TypeConflict) => {
-                    let files = finding
-                        .evidence_scope(results)
-                        .map(|scope| match scope {
-                            QualityScope::SourceFiles(files) => files.len(),
-                            _ => 0,
-                        })
-                        .unwrap_or(0);
-                    format!(
-                        "Enter shows the rows of the {files} named {}.",
-                        if files == 1 { "file" } else { "files" }
-                    )
-                }
-                _ if counted => format!(
-                    "Enter shows the {} {sampled}{}.",
-                    numfmt::group_chrome(finding.affected_rows),
-                    if finding.affected_rows == 1 {
-                        "row"
-                    } else {
-                        "rows"
-                    }
-                ),
-                _ => format!("Enter shows the {sampled}rows."),
-            }
-        } else {
-            String::new()
-        };
-        if !rows.is_empty() {
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(rows, dimmed));
-        }
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            evidence_line(config, finding, results),
+            dimmed,
+        ));
     }
     // Grow with the text up to the screen, then scroll inside the frame; the last
     // row counts what is below.
@@ -1435,6 +1501,98 @@ fn render_finding_detail(
             buf,
         );
     }
+}
+
+/// What Enter does with a finding's rows, in one sentence: shows the ones the run
+/// kept, reads ones it did not keep once asked, or says why there are none.
+fn evidence_line(
+    config: &DataQualityWidgetConfig<'_>,
+    finding: &crate::quality_report::Finding,
+    results: &DataQualityResults,
+) -> String {
+    let rows = match finding.evidence(results) {
+        Ok(rows) => rows,
+        Err(reason) => return format!("{reason}."),
+    };
+    if let EvidenceRows::Files(QualityScope::SourceFiles(files)) = &rows {
+        return format!(
+            "Enter asks before reading the rows of the {} named {}.",
+            files.len(),
+            if files.len() == 1 { "file" } else { "files" }
+        );
+    }
+    let sampled = results.precision == QualityPrecision::Sampled;
+    let noun = |count: usize| {
+        format!(
+            "{} {}{}",
+            numfmt::group_chrome(count),
+            if sampled { "sampled " } else { "" },
+            if count == 1 { "row" } else { "rows" }
+        )
+    };
+    let what = match (finding.kind, finding.evidence_count(results)) {
+        // The measurement counts rows beyond one per value; the rows that share a
+        // value are always more.
+        (Some(ObservationKind::KeyLike), _) => format!(
+            "every {}row that shares a repeated value",
+            if sampled { "sampled " } else { "" }
+        ),
+        (Some(ObservationKind::DuplicateRows), Some(count)) => {
+            format!("the {} that have a copy", noun(count))
+        }
+        (Some(ObservationKind::ParseableText), Some(count)) => {
+            format!("the {} that do not parse", noun(count))
+        }
+        (_, Some(count)) => format!("the {}", noun(count)),
+        // Grouped columns: a row missing in any of them; the table counts them.
+        (_, None) => format!(
+            "the {}rows with any of them",
+            if sampled { "sampled " } else { "" }
+        ),
+    };
+    if config.rows_kept {
+        let together = if matches!(rows, EvidenceRows::Duplicates) {
+            ", copies together"
+        } else {
+            ""
+        };
+        format!("Enter shows {what}{together}.")
+    } else if sampled {
+        format!("The sampled rows are no longer kept: Enter asks before reading {what} again.")
+    } else {
+        format!("A full scan keeps no rows: Enter asks before reading {what}.")
+    }
+}
+
+/// A read of a finding's rows, before it reads: what, why, how much, from where.
+fn render_evidence_read(
+    config: &DataQualityWidgetConfig<'_>,
+    read: &EvidenceRead,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let rows = read
+        .summary
+        .iter()
+        .map(|(label, value)| FieldRow {
+            mark: None,
+            label: label.to_string(),
+            value: value.clone(),
+        })
+        .collect::<Vec<_>>();
+    let width = 72.min(area.width.saturating_sub(2));
+    let label_width = rows
+        .iter()
+        .map(|row| glyphs::display_width(&row.label))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
+    let popup = centered_rect(width, lines.len() as u16 + 2, area);
+    let content = Surface::new("Read Rows")
+        .border_style(Style::default().fg(config.ctx.modal_border_active))
+        .render(popup, buf, config.ctx);
+    render_counted(lines, content, config.theme, buf);
 }
 
 fn render_time_roles(
@@ -3143,7 +3301,7 @@ fn planned_scope_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<
 
 /// The planned read in words: a sample of a scope larger than itself reads at most
 /// the scope, and how much less depends on the source.
-fn planned_read_label(state: &DataTableState, plan: &DataQualityPlan) -> String {
+pub(crate) fn planned_read_label(state: &DataTableState, plan: &DataQualityPlan) -> String {
     let bytes = planned_read_bytes(state, plan);
     let sampled = plan.compute == QualityCompute::Sample
         && plan.method != crate::sampling::SampleMethod::FirstRows
@@ -3154,6 +3312,22 @@ fn planned_read_label(state: &DataTableState, plan: &DataQualityPlan) -> String 
             approximate_bytes(bytes).trim_start_matches("about ")
         ),
         other => approximate_bytes_option(other),
+    }
+}
+
+/// What reading every row of `plan`'s scope again costs, as far as it is known: a
+/// ceiling from the rows and their width, and unknown for a remote or source scope.
+pub(crate) fn scope_read_label(state: &DataTableState, plan: &DataQualityPlan) -> String {
+    if state.is_remote_source() {
+        return "unknown".to_string();
+    }
+    match planned_scope_rows(state, plan) {
+        Some(rows) => format!(
+            "up to {}",
+            approximate_bytes(rows.saturating_mul(state.estimated_row_bytes()))
+                .trim_start_matches("about ")
+        ),
+        None => "unknown".to_string(),
     }
 }
 
@@ -3168,7 +3342,7 @@ fn dataset_rows(plan: &DataQualityPlan) -> usize {
     plan.dataset_rows
 }
 
-fn compute_label(plan: &DataQualityPlan) -> String {
+pub(crate) fn compute_label(plan: &DataQualityPlan) -> String {
     match plan.compute {
         QualityCompute::Metadata => "metadata only".to_string(),
         QualityCompute::Sample => format!(
@@ -3263,6 +3437,7 @@ mod tests {
         state: DataTableState,
         plan: DataQualityPlan,
         results: DataQualityResults,
+        findings: FindingsView,
         theme: Theme,
         ctx: RenderContext,
     }
@@ -3287,6 +3462,7 @@ mod tests {
                 state,
                 plan,
                 results,
+                findings: FindingsView::default(),
                 theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
                 ctx: RenderContext::for_test(),
             }
@@ -3311,6 +3487,9 @@ mod tests {
                 show_access: false,
                 observation_detail: false,
                 confirm_run: false,
+                findings: &self.findings,
+                rows_kept: false,
+                evidence_read: None,
                 focus: AnalysisFocus::Main,
                 theme: &self.theme,
                 ctx: &self.ctx,
@@ -3545,6 +3724,66 @@ mod tests {
                         "{c:?} is not a glyph slot at {width}x{height}:\n{text}"
                     );
                 }
+            }
+        }
+    }
+
+    /// A finding says where its rows come from before Enter: the rows the run kept,
+    /// a sample no longer kept, or a full scan that kept none. A staged read lists
+    /// what it reads, at the baseline size and the smallest, in glyph slots.
+    #[test]
+    fn evidence_says_where_its_rows_come_from() {
+        let screen = Screen::new();
+        let mut sampled = screen.results.clone();
+        sampled.precision = QualityPrecision::Sampled;
+        let report = build_report(&sampled);
+        let position = FindingsView::default()
+            .shown(&report)
+            .iter()
+            .position(|index| report.findings[*index].title == "Missing values")
+            .unwrap();
+        let detail = |results: &DataQualityResults, kept: bool, width, height| {
+            let mut config = screen.config(QualityPage::Overview);
+            config.results = Some(results);
+            config.observation_detail = true;
+            config.rows_kept = kept;
+            screen.draw(config, position, width, height).join("\n")
+        };
+        assert!(detail(&sampled, true, 80, 24).contains("Enter shows the 1 sampled row."));
+        assert!(detail(&sampled, false, 80, 24).contains("no longer kept"));
+        assert!(detail(&screen.results, false, 80, 24).contains("A full scan keeps no rows"));
+
+        let read = EvidenceRead {
+            rows: EvidenceRows::Matching(polars::prelude::lit(true)),
+            label: String::new(),
+            sample: None,
+            scope: QualityScope::CurrentView,
+            summary: vec![
+                ("Rows", "Missing values · region".to_string()),
+                ("Why", "a full scan keeps no rows".to_string()),
+                (
+                    "Reads",
+                    "current view, as far as the table scrolls".to_string(),
+                ),
+                ("Shows", "1 row".to_string()),
+                ("Source", "local, read only".to_string()),
+            ],
+        };
+        let g = glyphs::get();
+        let slots = [g.rail, g.rule_h, g.middot, g.ellipsis, g.warning, g.check].concat();
+        for (width, height) in [(80, 24), (60, 20)] {
+            let mut config = screen.config(QualityPage::Overview);
+            config.observation_detail = true;
+            config.evidence_read = Some(&read);
+            let text = screen.draw(config, position, width, height).join("\n");
+            for label in ["Read Rows", "Why", "Reads", "Shows", "read only"] {
+                assert!(text.contains(label), "{label} at {width}x{height}:\n{text}");
+            }
+            for c in text.chars().filter(|c| !c.is_ascii()) {
+                assert!(
+                    slots.contains(c) || "╭╮╰╯│─·".contains(c),
+                    "{c:?} at {width}x{height}:\n{text}"
+                );
             }
         }
     }
@@ -3823,6 +4062,13 @@ mod interval_tests {
                 show_access: false,
                 observation_detail: false,
                 confirm_run: false,
+                findings: &FindingsView {
+                    column: None,
+                    check: None,
+                    order: FindingOrder::Ranked,
+                },
+                rows_kept: false,
+                evidence_read: None,
                 focus: AnalysisFocus::Main,
                 theme: &self.theme,
                 ctx: &self.ctx,

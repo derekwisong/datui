@@ -183,7 +183,104 @@ pub struct TemplateManager {
     pub broken_templates: Vec<BrokenTemplate>,
 }
 
+/// The saved views, read on a worker from the moment `run` starts.
+///
+/// Reading them enumerates and parses a directory, which is a stall on a slow mount
+/// and tens of milliseconds for a few thousand views; neither belongs in front of the
+/// first frame. Nothing needs them until a dataset's schema is known (`--template` and
+/// auto-apply meet it there) or the views list opens, so the first use waits for the
+/// read if it is still going — a view the user asked for is never skipped by rows
+/// shown without it. Derefs to the [`TemplateManager`].
+pub struct Templates {
+    ready: std::cell::OnceCell<TemplateManager>,
+    pending: std::cell::RefCell<Option<std::sync::mpsc::Receiver<TemplateManager>>>,
+}
+
+impl Templates {
+    /// Start reading the views on a worker.
+    pub fn read_in_background() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let pending = std::thread::Builder::new()
+            .name("datui-views".into())
+            .spawn(move || {
+                let _ = tx.send(TemplateManager::load_or_empty());
+            })
+            .map(|_| rx)
+            .ok();
+        Self {
+            ready: std::cell::OnceCell::new(),
+            pending: std::cell::RefCell::new(pending),
+        }
+    }
+
+    /// Views that arrive on `rx` whenever the test sends them: a reader as slow as the
+    /// test likes.
+    #[cfg(test)]
+    pub(crate) fn waiting_on(rx: std::sync::mpsc::Receiver<TemplateManager>) -> Self {
+        Self {
+            ready: std::cell::OnceCell::new(),
+            pending: std::cell::RefCell::new(Some(rx)),
+        }
+    }
+
+    /// Whether the read has been waited for yet.
+    #[cfg(test)]
+    pub(crate) fn is_read(&self) -> bool {
+        self.ready.get().is_some()
+    }
+
+    fn manager(&self) -> &TemplateManager {
+        self.ready.get_or_init(|| {
+            self.pending
+                .borrow_mut()
+                .take()
+                .and_then(|rx| rx.recv().ok())
+                // No worker, or it died: read them here rather than go without.
+                .unwrap_or_else(TemplateManager::load_or_empty)
+        })
+    }
+}
+
+impl From<TemplateManager> for Templates {
+    fn from(manager: TemplateManager) -> Self {
+        Self {
+            ready: std::cell::OnceCell::from(manager),
+            pending: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl std::ops::Deref for Templates {
+    type Target = TemplateManager;
+
+    fn deref(&self) -> &TemplateManager {
+        self.manager()
+    }
+}
+
+impl std::ops::DerefMut for Templates {
+    fn deref_mut(&mut self) -> &mut TemplateManager {
+        self.manager();
+        self.ready.get_mut().expect("read just now")
+    }
+}
+
 impl TemplateManager {
+    /// The views in the config directory, or none: a directory that cannot be read
+    /// falls back to a temporary one, as the app always has, so startup never fails
+    /// on it.
+    pub fn load_or_empty() -> Self {
+        let config = ConfigManager::new(crate::APP_NAME).unwrap_or_else(|_| ConfigManager {
+            config_dir: std::env::temp_dir().join(crate::APP_NAME).join("config"),
+        });
+        Self::new(&config).unwrap_or_else(|_| {
+            let last_resort = ConfigManager {
+                config_dir: std::env::temp_dir().join("datui_config"),
+            };
+            Self::new(&last_resort).unwrap_or_else(|_| Self::empty(&last_resort))
+        })
+    }
+
     /// Creates a template manager that loads templates from disk. Use `empty()` when
     /// config dirs are unavailable to avoid panicking on startup.
     pub fn new(config: &ConfigManager) -> Result<Self> {

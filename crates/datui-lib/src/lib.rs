@@ -111,6 +111,7 @@ mod sql_assist;
 // statement the prompt runs.
 #[cfg(feature = "sql")]
 pub mod sql_group;
+pub mod startup;
 pub mod statistics;
 pub mod template;
 pub mod terminal_input;
@@ -139,7 +140,7 @@ use output_file::Overwrite;
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus, order_with_hidden};
-pub use template::{Template, TemplateManager};
+pub use template::{Template, TemplateManager, Templates};
 use widgets::controls::Controls;
 use widgets::datatable::{DataTableState, DrillRow};
 use widgets::debug::DebugState;
@@ -2765,7 +2766,7 @@ mod template_rollback_tests {
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(tx.clone(), crate::tests::test_runtime());
         let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
-        app.template_manager = TemplateManager::new(&config).unwrap();
+        app.template_manager = TemplateManager::new(&config).unwrap().into();
         open(&mut app, &rx, &tx, path);
         (app, rx, tx, dir)
     }
@@ -2842,6 +2843,72 @@ mod template_rollback_tests {
             assert!(std::time::Instant::now() < deadline, "the open never ended");
             next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
         }
+    }
+
+    /// The saved views are read on a worker while the app starts. A `--template` open
+    /// that gets to its schema first waits for them rather than showing the rows
+    /// without the view: the app is built, draws and takes keys with the read still
+    /// out, and the view the user asked for is the one installed.
+    #[test]
+    fn a_startup_view_waits_for_views_still_being_read() {
+        let (mut first, _rx, _tx, dir) = long_csv_app();
+        let template = pivot_view(&mut first, "pivot");
+        let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
+        TemplateManager::new(&config)
+            .unwrap()
+            .update_template(&template)
+            .unwrap();
+
+        let (views_tx, views_rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.template_manager = Templates::waiting_on(views_rx);
+        app.startup_template = Some(template.name.clone());
+        app.set_loading_phase("Scanning input", 10);
+        app.busy = true;
+        // The app draws and handles a key with the views still out.
+        control_bar(&mut app);
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            !app.template_manager.is_read(),
+            "nothing has needed them yet"
+        );
+
+        // The views land only after the open has started.
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            views_tx
+                .send(TemplateManager::new(&config).unwrap())
+                .unwrap();
+        });
+        let mut next = app.event(&AppEvent::Open(
+            vec![dir.path().join("long.csv")],
+            OpenOptions::default(),
+        ));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            while let Some(event) = next.take() {
+                next = app.event(&event);
+            }
+            if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the open never ended");
+            next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
+        }
+        sender.join().unwrap();
+        assert_eq!(
+            app.active_template_id.as_deref(),
+            Some(template.id.as_str())
+        );
+        assert!(
+            columns(&app).iter().any(|c| c == "k1"),
+            "the rows shown are the view's: {:?}",
+            columns(&app)
+        );
     }
 
     /// Applying a view plans its steps and returns: the pivot is read by a worker,
@@ -4030,7 +4097,7 @@ mod view_matching_tests {
         open(&mut app, &rx, &tx, path);
         // Views of this test's own, so no other test's saved views show in the list.
         let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
-        app.template_manager = TemplateManager::new(&config).unwrap();
+        app.template_manager = TemplateManager::new(&config).unwrap().into();
 
         // Stand in for an S3 dataset: only the path decides how a view records it.
         let url = PathBuf::from("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/");
@@ -8185,6 +8252,25 @@ pub enum AppEvent {
     /// Something polled rather than sent changed (a background panic, a Polars
     /// warning): the loop should look. Handled as nothing.
     Wake,
+    /// The settings `run` reads on a worker before it can build the app. Never reaches
+    /// the app: `run` waits for it before there is one.
+    SettingsRead(Box<Result<startup::Settings>>),
+    /// The paths named on the command line or by the Python binding: whether each is
+    /// there and whether one is a directory is asked on a worker, a local-looking
+    /// path being no promise of a fast mount. Answered by `NamedPathsResolved`, or by
+    /// `NamedPathMissing`, which ends the session as a missing file always has.
+    OpenNamed(Vec<PathBuf>, OpenOptions),
+    NamedPathsResolved {
+        generation: u64,
+        paths: Vec<PathBuf>,
+        options: Box<OpenOptions>,
+        /// The one directory named, to be looked at before it is opened.
+        directory: Option<PathBuf>,
+    },
+    NamedPathMissing {
+        generation: u64,
+        path: PathBuf,
+    },
     Open(Vec<PathBuf>, OpenOptions),
     /// Open with an existing LazyFrame (e.g. from Python binding); no file load.
     OpenLazyFrame(Box<LazyFrame>, OpenOptions),
@@ -8208,6 +8294,10 @@ pub enum AppEvent {
     HomeListingReady {
         generation: u64,
         listing: Box<crate::home::Listing>,
+        /// What earlier runs measured, read from the cache with the listing.
+        known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+        /// The saved folds, when entering the home screen asked for them.
+        folds: Option<std::collections::HashMap<String, bool>>,
     },
     /// The worker building a home listing panicked, so no listing is coming. The panic
     /// is flashed like any other raw worker's.
@@ -8862,6 +8952,9 @@ pub struct ReadReport {
 /// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
 #[derive(Clone)]
 pub enum RunInput {
+    /// The command line as parsed. The configuration is read, and the flags applied
+    /// over it, behind the first frame ([`startup`]).
+    Cli(Box<Args>),
     Paths(Vec<PathBuf>, OpenOptions),
     LazyFrame(Box<LazyFrame>, OpenOptions),
 }
@@ -10234,7 +10327,7 @@ pub struct App {
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
     cache: CacheManager,
-    template_manager: TemplateManager,
+    template_manager: Templates,
     active_template_id: Option<String>, // ID of currently applied template
     loading_state: LoadingState,        // Current loading state for progress indication
     theme: Theme,                       // Color theme for UI rendering
@@ -13767,31 +13860,27 @@ impl App {
         Self::new_with_config(events, runtime, theme, AppConfig::default())
     }
 
+    /// An app with its saved views read here, before it is returned.
     pub fn new_with_config(
         events: Sender<AppEvent>,
         runtime: tokio::runtime::Handle,
         theme: Theme,
         app_config: AppConfig,
     ) -> App {
+        let templates = TemplateManager::load_or_empty().into();
+        Self::new_with_templates(events, runtime, theme, app_config, templates)
+    }
+
+    /// An app whose saved views may still be on their way ([`Templates`]).
+    pub fn new_with_templates(
+        events: Sender<AppEvent>,
+        runtime: tokio::runtime::Handle,
+        theme: Theme,
+        app_config: AppConfig,
+        template_manager: Templates,
+    ) -> App {
         let cache = CacheManager::new(APP_NAME).unwrap_or_else(|_| CacheManager {
             cache_dir: std::env::temp_dir().join(APP_NAME),
-        });
-
-        let config_manager = ConfigManager::new(APP_NAME).unwrap_or_else(|_| ConfigManager {
-            config_dir: std::env::temp_dir().join(APP_NAME).join("config"),
-        });
-
-        let template_manager = TemplateManager::new(&config_manager).unwrap_or_else(|_| {
-            let temp_config = ConfigManager::new("datui").unwrap_or_else(|_| ConfigManager {
-                config_dir: std::env::temp_dir().join("datui").join("config"),
-            });
-            TemplateManager::new(&temp_config).unwrap_or_else(|_| {
-                let last_resort = ConfigManager {
-                    config_dir: std::env::temp_dir().join("datui_config"),
-                };
-                TemplateManager::new(&last_resort)
-                    .unwrap_or_else(|_| TemplateManager::empty(&last_resort))
-            })
         });
 
         App {
@@ -14483,22 +14572,14 @@ impl App {
         self.home_generation = self.home_generation.wrapping_add(1);
         let generation = self.home_generation;
 
-        // Reading recents touches only the cache directory, which is local by
-        // definition; everything that might block happens on the worker.
-        let recents = self.cache.load_recents();
         self.home.collections = home::collections(&self.app_config);
-        // The same facts the listing is annotated from, kept on the home state so
-        // rows the recursive search finds can be filled in the same way.
-        self.home.known = self.cache.load_dataset_facts();
-        let request = home::ListingRequest {
+        let mut request = home::ListingRequest {
             config_dirs: self.app_config.data.resolved_directories(),
-            remembered_dirs: self.cache.load_remembered_places(),
-            recents,
-            desktop_dirs: if self.app_config.data.use_desktop_recents {
-                home::desktop_recent_dirs()
-            } else {
-                Vec::new()
-            },
+            // Filled in on the worker, from the cache and the desktop's recents: files
+            // all the same, and the first frame does not wait on a file.
+            remembered_dirs: Vec::new(),
+            recents: Vec::new(),
+            desktop_dirs: Vec::new(),
             browsing: self.home.browsing.clone(),
             probed: self.home.probed.clone(),
             unreachable: self.home.unreachable.clone(),
@@ -14508,18 +14589,29 @@ impl App {
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
             collections: self.home.collections.clone(),
-            known: self.home.known.clone(),
+            known: Default::default(),
         };
+        let read_folds = std::mem::take(&mut self.home.folds_owed);
+        let desktop = self.app_config.data.use_desktop_recents;
+        let cache = self.cache.clone();
 
         self.home.listing_in_flight = true;
         let tx = self.events.clone();
         let owed = self.owed_answer(AppEvent::HomeListingFailed);
         self.runtime.spawn_blocking(move || {
-            owed.run(|| {
+            owed.run(move || {
+                request.recents = cache.load_recents();
+                request.remembered_dirs = cache.load_remembered_places();
+                request.known = cache.load_dataset_facts();
+                if desktop {
+                    request.desktop_dirs = home::desktop_recent_dirs();
+                }
                 let listing = home::build_listing(&request);
                 let _ = tx.send(AppEvent::HomeListingReady {
                     generation,
                     listing: Box::new(listing),
+                    known: request.known,
+                    folds: read_folds.then(|| cache.load_folds()),
                 });
             })
         });
@@ -14701,7 +14793,7 @@ impl App {
         self.template_modal.close();
         self.abandon_load();
         self.home.status = None;
-        self.home.folds = self.cache.load_folds();
+        self.home.folds_owed = true;
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
             let target =
@@ -15444,52 +15536,73 @@ impl App {
     /// look inside opens the home screen browsed into it, one keystroke from either file
     /// or union.
     ///
-    /// The directory is looked into here rather than guessed at, because that is what the
+    /// The directory is looked into rather than guessed at, because that is what the
     /// rule is: [`home::look_into`] is the same call the home screen's background pass
-    /// makes, footers and all. On the command line it is on this thread, before the
-    /// first frame, which is where the user is already waiting for the path they named.
+    /// makes, footers and all.
     ///
     /// `--hive` is untouched. It names a glob or forces partition columns, and it is
     /// still the only way to say "read this as partitioned" about something whose
     /// layout does not say so itself.
     ///
-    /// Returns the event to send, or `None` when the app is now at the home screen.
-    pub fn open_the_path_named_on_the_command_line(
-        &mut self,
-        paths: Vec<PathBuf>,
-        options: OpenOptions,
-    ) -> Option<AppEvent> {
+    /// Asks the filesystem whether a local path is a directory, so `run` calls it on a
+    /// worker ([`AppEvent::OpenNamed`]). Returns the event that carries the open on:
+    /// `LookThenOpenDirectory` or `Open`.
+    pub fn route_named_paths(paths: Vec<PathBuf>, options: OpenOptions) -> AppEvent {
+        if let Some(event) = Self::route_named_without_looking(&paths, &options) {
+            return event;
+        }
         // Several paths are a list of files to read together, and `--hive` is an answer
         // already given. Neither is a question about what one directory is.
         let single = (paths.len() == 1 && !options.hive).then(|| paths[0].clone());
-        // A cloud directory is looked at too, by one page of its listing: what is in it
-        // picks the reader, as it does for the `(all files)` row. Scanned blind, it was
-        // read as Parquet whatever it held. A glob, a file name or `--format` already
-        // says what to read.
-        #[cfg(feature = "cloud")]
-        if let Some(dir) = single.as_ref().filter(|p| {
-            home::is_object_store_url(p)
-                && options.format.is_none()
-                && !p.to_string_lossy().contains('*')
-                && !home::names_a_file(p)
-        }) {
-            return Some(AppEvent::LookThenOpenDirectory(dir.clone(), options));
-        }
         let Some(dir) = single.filter(|p| p.is_dir()) else {
-            return Some(AppEvent::Open(paths, options));
+            return AppEvent::Open(paths, options);
         };
-
         // Looking at a directory reads its footers, or the front of a spread of its
         // files. For a directory of large Parquet that is seconds — 4.6 of them on a real
-        // one — and this runs before the first frame is drawn, so doing it here is a
-        // blank terminal for the whole of it: no name, no spinner, no way out. It goes to
-        // a worker, and the answer comes back as an event like every other read.
-        Some(AppEvent::LookThenOpenDirectory(dir, options))
+        // one — so it goes to a worker, and the answer comes back as an event like every
+        // other read.
+        AppEvent::LookThenOpenDirectory(dir, options)
+    }
+
+    /// The part of [`Self::route_named_paths`] that needs no filesystem: a cloud
+    /// directory is looked at too, by one page of its listing — what is in it picks the
+    /// reader, as it does for the `(all files)` row. Scanned blind, it was read as
+    /// Parquet whatever it held. A glob, a file name or `--format` already says what to
+    /// read.
+    fn route_named_without_looking(paths: &[PathBuf], options: &OpenOptions) -> Option<AppEvent> {
+        #[cfg(feature = "cloud")]
+        if let [dir] = paths
+            && !options.hive
+            && home::is_object_store_url(dir)
+            && options.format.is_none()
+            && !dir.to_string_lossy().contains('*')
+            && !home::names_a_file(dir)
+        {
+            return Some(AppEvent::LookThenOpenDirectory(
+                dir.clone(),
+                options.clone(),
+            ));
+        }
+        let _ = (paths, options);
+        None
+    }
+
+    /// The first named local path that is not there. A URL or a glob is left to the
+    /// open, which says what it found.
+    pub fn missing_named_path(paths: &[PathBuf]) -> Option<PathBuf> {
+        paths
+            .iter()
+            .find(|path| {
+                !source::is_remote_url(path)
+                    && !path.to_string_lossy().contains('*')
+                    && !path.exists()
+            })
+            .cloned()
     }
 
     /// Act on what the look at a directory named on the command line found.
     ///
-    /// The other half of [`Self::open_the_path_named_on_the_command_line`], which is
+    /// The other half of [`Self::route_named_paths`], which is
     /// where the reasoning for the rule itself is.
     fn open_the_directory_looked_at(
         &mut self,
@@ -22123,11 +22236,20 @@ impl App {
             AppEvent::HomeListingReady {
                 generation,
                 listing,
+                known,
+                folds,
             } => {
                 // Clear the flag first, whatever the generation: a stale result that
                 // returned early while still marked in flight would wedge the pipeline
                 // permanently, and nothing would ever be listed again.
                 self.home.listing_in_flight = false;
+                // Read fresh from the cache, so true whichever listing carried them:
+                // the facts fill in rows the recursive search finds the same way, and
+                // only the first listing after entering home carries the folds.
+                self.home.known = known.clone();
+                if let Some(folds) = folds {
+                    self.home.folds = folds.clone();
+                }
                 // A listing from a superseded request describes somewhere the user has
                 // already left.
                 if *generation != self.home_generation {
@@ -23420,6 +23542,59 @@ impl App {
                     self.flash_note(format!("Exported to {}", path.display()));
                 }
                 None
+            }
+            AppEvent::OpenNamed(paths, options) => {
+                if let Some(event) = Self::route_named_without_looking(paths, options) {
+                    return Some(event);
+                }
+                let (paths, options) = (paths.clone(), options.clone());
+                // Unleased, as the look is: an answer for a screen the user has left
+                // (Ctrl+O) is thrown away by the generation test, not waited for.
+                self.spawn_bg_replaceable(
+                    Job::Load,
+                    Some("Scanning input..."),
+                    move |task_gen, tx| {
+                        if let Some(missing) = Self::missing_named_path(&paths) {
+                            let _ = tx.send(AppEvent::NamedPathMissing {
+                                generation: task_gen,
+                                path: missing,
+                            });
+                            return Ok(());
+                        }
+                        let (paths, options, directory) =
+                            match Self::route_named_paths(paths, options) {
+                                AppEvent::LookThenOpenDirectory(dir, options) => {
+                                    (Vec::new(), options, Some(dir))
+                                }
+                                AppEvent::Open(paths, options) => (paths, options, None),
+                                _ => unreachable!("a named path is opened or looked at"),
+                            };
+                        let _ = tx.send(AppEvent::NamedPathsResolved {
+                            generation: task_gen,
+                            paths,
+                            options: Box::new(options),
+                            directory,
+                        });
+                        Ok(())
+                    },
+                );
+                None
+            }
+            AppEvent::NamedPathsResolved {
+                generation,
+                paths,
+                options,
+                directory,
+            } => {
+                // Something else took the screen while the paths were looked at.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                let options = (**options).clone();
+                Some(match directory {
+                    Some(dir) => AppEvent::LookThenOpenDirectory(dir.clone(), options),
+                    None => AppEvent::Open(paths.clone(), options),
+                })
             }
             AppEvent::LookThenOpenDirectory(dir, options) => {
                 // The name on the wait, so the first frame says which directory is being
@@ -26081,6 +26256,11 @@ fn conclude(
         event_pump::Ended::Quit if capture => app.capture_view(),
         event_pump::Ended::Quit => Ok(None),
         event_pump::Ended::Crash(msg) => Err(color_eyre::eyre::eyre!(msg)),
+        event_pump::Ended::NotFound(path) => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("File not found: {}", path.display()),
+        )
+        .into()),
     }
 }
 
@@ -26117,61 +26297,9 @@ fn run_impl(
     use std::io::Write;
     use std::sync::{Mutex, Once, mpsc};
 
-    let config = match config {
-        Some(c) => c,
-        None => AppConfig::load(APP_NAME)?,
-    };
-
-    let opts = match &input {
-        RunInput::Paths(_, o) => o.clone(),
-        RunInput::LazyFrame(_, o) => o.clone(),
-    };
-    // The home screen has no `OpenOptions` of its own, so the CLI and environment
-    // S3 overrides are folded into the config here, once, for discovery, listing and
-    // opens started from a listed bucket.
-    let mut config = config;
-    // Variables from `[cloud] env_files` first, so everything below sees them.
-    if let Ok(dir) = std::env::current_dir() {
-        for note in crate::cloud_env::load(&config.cloud, &dir) {
-            eprintln!("datui: {note}");
-        }
-    }
-    config.cloud = opts.effective_cloud(&config.cloud);
-
-    // Open the log before the terminal is taken, so stray stderr has a destination.
-    let cache_dir = crate::cache::CacheManager::new(APP_NAME).ok();
-    logging::init(&logging::LogSettings::resolve(
-        config.debug.log_file.as_deref(),
-        std::env::var("DATUI_LOG").ok().as_deref(),
-        cache_dir.as_ref().map(|c| c.cache_dir()),
-    ));
-    for secret in [
-        &config.cloud.s3_access_key_id,
-        &config.cloud.s3_secret_access_key,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        logging::keep_out_of_log(secret);
-    }
-    // A connection's keys come from variables it names, which need not look secret.
-    for connection in &config.cloud.connections {
-        for name in [
-            &connection.secret_access_key_env,
-            &connection.session_token_env,
-            &connection.account_key_env,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(value) = crate::cloud_env::var(name) {
-                logging::keep_out_of_log(&value);
-            }
-        }
-    }
-
-    let theme = Theme::from_config(&config.theme)
-        .or_else(|e| Theme::from_config(&AppConfig::default().theme).map_err(|_| e))?;
+    // The saved views are read on a worker from here; the first thing that needs them
+    // waits for the rest of the read, if any.
+    let templates = Templates::read_in_background();
 
     // Install color_eyre at most once per process (e.g. first datui.view() in Python).
     // Subsequent run() calls skip install and reuse the result; no error-message detection.
@@ -26186,20 +26314,6 @@ fn run_impl(
         .as_ref()
     {
         return Err(color_eyre::eyre::eyre!(e.to_string()));
-    }
-    // No paths is no longer an error: it means "start at home". Validation below
-    // still applies to any paths that were given.
-    if let RunInput::Paths(ref paths, _) = input {
-        for path in paths {
-            let is_glob = path.to_string_lossy().contains('*');
-            if !source::is_remote_url(path) && !is_glob && !path.exists() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("File not found: {}", path.display()),
-                )
-                .into());
-            }
-        }
     }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -26229,19 +26343,26 @@ fn run_impl(
         .handle()
         .clone();
 
-    // Choose the glyph alphabet before the first frame: on a terminal that is not
-    // doing UTF-8, box-drawing characters render as replacement boxes and make the
-    // UI harder to read rather than prettier.
-    glyphs::init_with_overrides(config.display.unicode, &config.glyphs.overrides);
-
-    let mut terminal = ratatui::try_init().map_err(|e| {
-        color_eyre::eyre::eyre!(
-            "datui requires an interactive terminal (TTY). No terminal detected: {}. \
-             There is no TTY inside a Jupyter notebook or when output is piped or \
-             redirected; run from a terminal with stdout connected to it.",
-            e
-        )
-    })?;
+    let mut terminal = match ratatui::try_init() {
+        Ok(terminal) => terminal,
+        Err(e) => {
+            // No screen to keep up, so nothing to wait behind: a named file that is
+            // not there is the more useful thing to say, as it always came first.
+            if let Some(missing) = App::missing_named_path(startup::named_paths(&input)) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {}", missing.display()),
+                )
+                .into());
+            }
+            return Err(color_eyre::eyre::eyre!(
+                "datui requires an interactive terminal (TTY). No terminal detected: {}. \
+                 There is no TTY inside a Jupyter notebook or when output is piped or \
+                 redirected; run from a terminal with stdout connected to it.",
+                e
+            ));
+        }
+    };
     // Handed back on every way out of this function, after the reader below has let go.
     let mut screen = TakenTerminal { restored: false };
     // Anything written to stderr from here on would be drawn over the screen; it goes
@@ -26256,7 +26377,84 @@ fn run_impl(
         });
     }
     let mut reader = terminal_input::TerminalInput::start(tx.clone())?;
-    let mut app = App::new_with_config(tx.clone(), rt_handle, theme, config.clone());
+
+    // The settings are files, so they are read on a worker while the keys are already
+    // being read: a slow mount shows a screen saying so, and Ctrl+C or Ctrl+Q leave it.
+    let waiting_on = startup::named(&input);
+    {
+        let tx = tx.clone();
+        std::thread::Builder::new()
+            .name("datui-settings".into())
+            .spawn(move || {
+                let read = logging::catch_panic(|| startup::read(input, config))
+                    .unwrap_or_else(|panic| Err(color_eyre::eyre::eyre!(panic)));
+                let _ = tx.send(AppEvent::SettingsRead(Box::new(read)));
+            })?;
+    }
+    let mut backlog = Vec::new();
+    let grace_ends = std::time::Instant::now() + startup::GRACE;
+    let mut waiting_shown = false;
+    let settings = loop {
+        let timeout = if waiting_shown {
+            std::time::Duration::MAX
+        } else {
+            grace_ends.saturating_duration_since(std::time::Instant::now())
+        };
+        match rx.recv_timeout(timeout) {
+            Ok(AppEvent::SettingsRead(read)) => break *read,
+            Ok(AppEvent::Terminal(crossterm::event::Event::Key(key)))
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) =>
+            {
+                reader.stop();
+                screen.restore();
+                return Ok(None);
+            }
+            Ok(AppEvent::Crash(msg)) => {
+                reader.stop();
+                screen.restore();
+                return Err(color_eyre::eyre::eyre!(msg));
+            }
+            Ok(event) => {
+                if waiting_shown
+                    && matches!(
+                        event,
+                        AppEvent::Terminal(crossterm::event::Event::Resize(..))
+                    )
+                {
+                    terminal.draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
+                }
+                // Typed before there was an app to take it: handled, in order, first.
+                backlog.push(event);
+            }
+            Err(_) => {
+                terminal.draw(|frame| startup::draw_waiting(frame, waiting_on.as_deref()))?;
+                let _ = std::io::stdout().flush();
+                waiting_shown = true;
+            }
+        }
+    };
+    let startup::Settings {
+        config,
+        theme,
+        input,
+        opts,
+        notes,
+    } = match settings {
+        Ok(settings) => settings,
+        Err(e) => {
+            reader.stop();
+            screen.restore();
+            return Err(e);
+        }
+    };
+
+    // Choose the glyph alphabet before the first frame: on a terminal that is not
+    // doing UTF-8, box-drawing characters render as replacement boxes and make the
+    // UI harder to read rather than prettier.
+    glyphs::init_with_overrides(config.display.unicode, &config.glyphs.overrides);
+
+    let mut app = App::new_with_templates(tx.clone(), rt_handle, theme, config, templates);
     app.startup_template = opts.template.clone();
     if opts.debug {
         app.enable_debug();
@@ -26271,42 +26469,35 @@ fn run_impl(
             starting_at_home = true;
         }
         RunInput::Paths(paths, opts) => {
-            // A directory named here is read the way `Enter` reads its row, which may be
-            // by opening the home screen on it rather than by loading anything. The
-            // looking is an event, not a call: it is sent here and carried out after
-            // the first frame, so a directory that takes seconds to look at says which
-            // directory it is looking at while it does.
-            match app.open_the_path_named_on_the_command_line(paths, opts) {
-                Some(event) => {
-                    // The first frame is drawn before any event is handled, so what it
-                    // says has to be set here — the handler's own phase lands a frame
-                    // later, and "Scanning input" on a directory nothing has read yet is
-                    // the wrong word for the wait the user is actually in.
-                    match &event {
-                        AppEvent::LookThenOpenDirectory(dir, _) => {
-                            app.set_loading_phase(App::LOOKING_AT_A_DIRECTORY, 5);
-                            app.name_what_is_loading(dir.clone());
-                        }
-                        _ => app.set_loading_phase("Scanning input", 10),
-                    }
-                    tx.send(event)?;
-                }
-                None => starting_at_home = true,
+            // Whether each path is there, and whether a directory was named, is asked
+            // after this frame, on a worker; the frame says what is being opened.
+            app.set_loading_phase("Scanning input", 10);
+            if let [path] = paths.as_slice() {
+                app.name_what_is_loading(path.clone());
             }
+            tx.send(AppEvent::OpenNamed(paths, opts))?;
         }
         RunInput::LazyFrame(lf, opts) => {
             app.set_loading_phase("Scanning input", 10);
             tx.send(AppEvent::OpenLazyFrame(lf, opts))?;
         }
+        RunInput::Cli(_) => unreachable!("read_settings resolves the command line"),
     }
     app.busy = !starting_at_home;
     let mut pump = EventPump::new(app, tx, rx);
+    pump.handle_first(backlog);
     let end = pump.run(|app| {
         terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
         let _ = std::io::stdout().flush();
         Ok(())
     })?;
-    conclude(end, &pump.app, capture, &mut reader, &mut screen)
+    let result = conclude(end, &pump.app, capture, &mut reader, &mut screen);
+    // stderr is the terminal again once the session is over.
+    drop(session);
+    for note in notes {
+        eprintln!("datui: {note}");
+    }
+    result
 }
 
 /// Ask the terminal to tell Ctrl+Enter from Enter.
@@ -26499,12 +26690,12 @@ mod cloud_csv_prefix_tests {
     #[test]
     fn a_cloud_directory_named_on_the_command_line_is_looked_at_first() {
         let named = |path: &str, options: OpenOptions| {
-            new_app().open_the_path_named_on_the_command_line(vec![PathBuf::from(path)], options)
+            App::route_named_paths(vec![PathBuf::from(path)], options)
         };
         for directory in ["s3://local@b/census/data/", "s3://local@b/census"] {
             assert!(matches!(
                 named(directory, OpenOptions::default()),
-                Some(AppEvent::LookThenOpenDirectory(..))
+                AppEvent::LookThenOpenDirectory(..)
             ));
         }
         let csv = OpenOptions {
@@ -26516,10 +26707,7 @@ mod cloud_csv_prefix_tests {
             ("s3://local@b/census/**/*.csv", OpenOptions::default()),
             ("s3://local@b/census/data/", csv),
         ] {
-            assert!(
-                matches!(named(path, options), Some(AppEvent::Open(..))),
-                "{path}"
-            );
+            assert!(matches!(named(path, options), AppEvent::Open(..)), "{path}");
         }
     }
 
@@ -27237,5 +27425,75 @@ mod file_facts_tests {
             "no size, and no wait for one: {line}"
         );
         assert_eq!(gate.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// What the home screen reads from the cache is read on a worker: a cache file that
+/// never finishes opening (a FIFO with no writer, which is what a stalled mount looks
+/// like to `open`) leaves the screen drawn and the keys working, and the listing comes
+/// in when the read does.
+#[cfg(all(test, unix))]
+mod startup_reads_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn a_stalled_cache_read_holds_up_neither_the_home_screen_nor_its_keys() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("recently.csv");
+        std::fs::write(&csv, "a\n1\n").unwrap();
+        let recents = dir.path().join("recents_history.txt");
+        let c_path = std::ffi::CString::new(recents.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a valid NUL-terminated path; mkfifo reads nothing else.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.cache = CacheManager {
+            cache_dir: dir.path().to_path_buf(),
+        };
+        // Returns with the read still blocked, and the screen works meanwhile.
+        app.enter_home();
+        assert_eq!(app.input_mode, InputMode::Home);
+        let area = Rect::new(0, 0, 100, 20);
+        app.render(area, &mut Buffer::empty(area));
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.home.filter, "r", "a key typed now is taken now");
+        assert!(app.home.listing_in_flight, "the listing waits on the read");
+
+        // The read finishes; the listing it was waiting on arrives with the recent.
+        let writer = {
+            let csv = csv.clone();
+            std::thread::spawn(move || {
+                let mut fifo = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(recents)
+                    .unwrap();
+                std::io::Write::write_all(&mut fifo, format!("{}\n", csv.display()).as_bytes())
+                    .unwrap();
+            })
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while app.home.listing_in_flight {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the listing never came"
+            );
+            if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                let mut next = Some(event);
+                while let Some(event) = next.take() {
+                    next = app.event(&event);
+                }
+            }
+        }
+        writer.join().unwrap();
+        assert!(
+            format!("{:?}", app.home.sections).contains("recently.csv"),
+            "the recent read late is listed"
+        );
     }
 }

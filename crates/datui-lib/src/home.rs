@@ -1028,6 +1028,9 @@ pub struct HomeState {
     /// [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`] rather than
     /// touching this directly.
     pub folds: std::collections::HashMap<String, bool>,
+    /// The saved folds are to be read again, with the next listing: entering the home
+    /// screen asks for them, and they arrive with the rows they fold.
+    pub folds_owed: bool,
     /// Datasets found by walking below the working directory.
     pub search: SearchState,
     /// What datui measured on previous runs, keyed by path — the same index the
@@ -1114,6 +1117,7 @@ impl Default for HomeState {
             waiting_since: None,
             enriched: std::collections::HashMap::new(),
             folds: std::collections::HashMap::new(),
+            folds_owed: false,
             search: SearchState::default(),
             known: Default::default(),
             recent_expanded: false,

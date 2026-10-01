@@ -46,6 +46,8 @@ pub enum Drained {
     },
     Exit,
     Crash(String),
+    /// A path named at startup is not there.
+    NotFound(std::path::PathBuf),
 }
 
 /// The screen the held keys were typed at. A change means they were meant for
@@ -74,10 +76,12 @@ pub struct EventPump {
     /// `BackgroundWorkFinished`, which is exactly what made the generation look free in
     /// the middle of an errand.
     ///
-    /// The lease covers the gap the break leaves. A frame is drawn and the terminal is
-    /// polled before the continuation runs, so a key can be handled in between, and that
-    /// key must not find the generation free either.
+    /// The lease covers the gap the break leaves. A frame is drawn before the
+    /// continuation runs, and a key replayed then must not find the generation free.
     next_up: VecDeque<(AppEvent, GenerationLease)>,
+    /// Events that arrived before there was an app to take them — keys typed while
+    /// `run` read the settings — handled first, in the order they came.
+    backlog: VecDeque<AppEvent>,
 }
 
 impl EventPump {
@@ -90,7 +94,13 @@ impl EventPump {
             held: VecDeque::new(),
             held_for,
             next_up: VecDeque::new(),
+            backlog: VecDeque::new(),
         }
+    }
+
+    /// Handle `events` before anything on the channel: they arrived first.
+    pub fn handle_first(&mut self, events: impl IntoIterator<Item = AppEvent>) {
+        self.backlog.extend(events);
     }
 
     pub fn send(&self, event: AppEvent) -> Result<()> {
@@ -181,12 +191,16 @@ impl EventPump {
         Ok(true)
     }
 
-    /// The next event to handle: a continuation first, then the channel.
+    /// The next event to handle: a continuation first, then the backlog, then the
+    /// channel.
     fn take_next(&mut self) -> Result<(AppEvent, Option<GenerationLease>), TryRecvError> {
-        match self.next_up.pop_front() {
-            Some((event, lease)) => Ok((event, Some(lease))),
-            None => self.rx.try_recv().map(|event| (event, None)),
+        if let Some((event, lease)) = self.next_up.pop_front() {
+            return Ok((event, Some(lease)));
         }
+        if let Some(event) = self.backlog.pop_front() {
+            return Ok((event, None));
+        }
+        self.rx.try_recv().map(|event| (event, None))
     }
 
     /// Handle everything waiting on the channel.
@@ -202,7 +216,7 @@ impl EventPump {
     pub fn wait_and_drain(&mut self, timeout: Duration) -> Result<Drained> {
         // A continuation is already here; waiting on the channel would sit on it for the
         // whole timeout while the errand it belongs to is halfway through.
-        if !self.next_up.is_empty() {
+        if !self.next_up.is_empty() || !self.backlog.is_empty() {
             let first = self.take_next();
             return self.drain_from(first);
         }
@@ -227,6 +241,13 @@ impl EventPump {
             match next {
                 Ok((AppEvent::Exit, _)) => return Ok(Drained::Exit),
                 Ok((AppEvent::Crash(msg), _)) => return Ok(Drained::Crash(msg)),
+                // A path named at startup is not there: the session ends as it always
+                // has, with the file named — unless the user has moved on meanwhile.
+                Ok((AppEvent::NamedPathMissing { generation, path }, _))
+                    if generation == self.app.task_generation =>
+                {
+                    return Ok(Drained::NotFound(path));
+                }
                 Ok((AppEvent::Terminal(Event::Key(key)), _)) => {
                     // One key per frame, as when the loop read the terminal itself: a
                     // key that acted is drawn before the next is offered, and a
@@ -429,6 +450,8 @@ impl EventPump {
 pub enum Ended {
     Quit,
     Crash(String),
+    /// A path named at startup is not there.
+    NotFound(std::path::PathBuf),
 }
 
 /// What one turn of the run loop handled.
@@ -454,6 +477,7 @@ impl Pass {
             }
             Drained::Exit => Some(Ended::Quit),
             Drained::Crash(msg) => Some(Ended::Crash(msg)),
+            Drained::NotFound(path) => Some(Ended::NotFound(path)),
         }
     }
 }

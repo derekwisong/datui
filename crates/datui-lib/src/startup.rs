@@ -1,0 +1,175 @@
+//! What `run` reads before it can build the app, read behind the first frame.
+//!
+//! The configuration, its imports, `[cloud] env_files` and the log all live in files,
+//! and a file can sit on a mount that does not answer. They are read on a worker
+//! while the terminal is already taken, its reader running: a slow read shows a
+//! screen that says so, and Ctrl+C or Ctrl+Q leave it. Read promptly, as they almost
+//! always are, the app's own first frame is the first thing drawn.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use color_eyre::Result;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
+
+use crate::{APP_NAME, AppConfig, Args, OpenOptions, RunInput, Theme, logging};
+
+/// How long `run` waits for the settings before drawing a screen of its own. Under
+/// it, nobody sees the difference and the app's first frame is the first one.
+pub(crate) const GRACE: Duration = Duration::from_millis(25);
+
+/// Everything read before the app can be built.
+pub struct Settings {
+    pub(crate) config: AppConfig,
+    pub(crate) theme: Theme,
+    pub(crate) input: RunInput,
+    pub(crate) opts: OpenOptions,
+    /// Things to say on stderr once the terminal is handed back: an env file that
+    /// could not be read, a log that could not be opened.
+    pub(crate) notes: Vec<String>,
+}
+
+/// Read the settings: the configuration (unless one was given), the command line over
+/// it, `[cloud] env_files`, the log.
+pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Settings> {
+    let (input, config) = match input {
+        RunInput::Cli(args) => {
+            let mut config = match config {
+                Some(config) => config,
+                // In full: a TOML parse error's later lines show the offending line
+                // and why.
+                None => AppConfig::load(APP_NAME).map_err(|e| {
+                    color_eyre::eyre::eyre!(
+                        "{e}\nFix the configuration and try again, or remove/rename the \
+                         config file to use defaults."
+                    )
+                })?,
+            };
+            apply_args(&mut config, &args);
+            let opts = OpenOptions::from_args_and_config(&args, &config);
+            (RunInput::Paths(args.paths, opts), config)
+        }
+        input => {
+            let config = match config {
+                Some(config) => config,
+                None => AppConfig::load(APP_NAME)?,
+            };
+            (input, config)
+        }
+    };
+    let opts = match &input {
+        RunInput::Paths(_, o) | RunInput::LazyFrame(_, o) => o.clone(),
+        RunInput::Cli(_) => unreachable!("resolved above"),
+    };
+    // The home screen has no `OpenOptions` of its own, so the CLI and environment S3
+    // overrides are folded into the config here, once, for discovery, listing and
+    // opens started from a listed bucket.
+    let mut config = config;
+    let mut notes = Vec::new();
+    // Variables from `[cloud] env_files` first, so everything below sees them.
+    if let Ok(dir) = std::env::current_dir() {
+        notes.extend(crate::cloud_env::load(&config.cloud, &dir));
+    }
+    config.cloud = opts.effective_cloud(&config.cloud);
+
+    let cache_dir = crate::cache::CacheManager::new(APP_NAME).ok();
+    notes.extend(logging::init(&logging::LogSettings::resolve(
+        config.debug.log_file.as_deref(),
+        std::env::var("DATUI_LOG").ok().as_deref(),
+        cache_dir.as_ref().map(|c| c.cache_dir()),
+    )));
+    for secret in [
+        &config.cloud.s3_access_key_id,
+        &config.cloud.s3_secret_access_key,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        logging::keep_out_of_log(secret);
+    }
+    // A connection's keys come from variables it names, which need not look secret.
+    for connection in &config.cloud.connections {
+        for name in [
+            &connection.secret_access_key_env,
+            &connection.session_token_env,
+            &connection.account_key_env,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(value) = crate::cloud_env::var(name) {
+                logging::keep_out_of_log(&value);
+            }
+        }
+    }
+
+    let theme = Theme::from_config(&config.theme)
+        .or_else(|e| Theme::from_config(&AppConfig::default().theme).map_err(|_| e))?;
+    Ok(Settings {
+        config,
+        theme,
+        input,
+        opts,
+        notes,
+    })
+}
+
+/// The command line's display flags, over the configuration.
+fn apply_args(config: &mut AppConfig, args: &Args) {
+    if let Some(cc) = args.column_colors {
+        config.display.column_colors = cc;
+    }
+    if let Some(nf) = args.number_format.as_deref() {
+        config.display.number_format = config.display.number_format.with_grouping_override(nf);
+    }
+    if let Some(ar) = args.align_numeric_right {
+        config.display.align_numeric_right = ar;
+    }
+    if let Some(rows) = args.sample_rows {
+        config.performance.analysis_sample_rows = rows;
+    }
+    if let Some(ps) = args.polars_streaming {
+        config.performance.polars_streaming = ps;
+    }
+    if let Some(path) = &args.log_file {
+        config.debug.log_file = Some(path.to_string_lossy().into_owned());
+    }
+}
+
+/// The paths `input` names, if any.
+pub(crate) fn named_paths(input: &RunInput) -> &[PathBuf] {
+    match input {
+        RunInput::Cli(args) => &args.paths,
+        RunInput::Paths(paths, _) => paths,
+        RunInput::LazyFrame(..) => &[],
+    }
+}
+
+/// The path to name on the screen drawn while the settings are read.
+pub(crate) fn named(input: &RunInput) -> Option<PathBuf> {
+    named_paths(input).first().cloned()
+}
+
+/// The screen while the settings are slow to read. The theme and the glyph set are
+/// among them, so it uses neither: the terminal's own colors and plain ASCII.
+pub(crate) fn draw_waiting(frame: &mut Frame, path: Option<&Path>) {
+    let area = frame.area();
+    let mut lines = vec![Line::from("Reading settings...")];
+    if let Some(path) = path {
+        lines.push(Line::from(""));
+        lines.push(Line::from(crate::home::display_path(path)));
+    }
+    let height = (lines.len() as u16).min(area.height);
+    let top = area.y + area.height.saturating_sub(height) / 2;
+    frame.render_widget(
+        Paragraph::new(lines).centered(),
+        Rect {
+            y: top,
+            height,
+            ..area
+        },
+    );
+}

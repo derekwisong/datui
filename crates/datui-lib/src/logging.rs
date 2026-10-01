@@ -217,20 +217,23 @@ fn write_record(level: &str, target: &str, message: impl std::fmt::Display) {
 
 /// Open the log and install the logger and the Polars warning hook. Safe to call
 /// again (the Python binding runs the TUI once per `view`); the latest settings win.
-pub fn init(settings: &LogSettings) {
+///
+/// Returns what to tell the user when the log cannot be opened. Not printed here: the
+/// TUI may already own the terminal, and stderr is then the log that failed.
+pub fn init(settings: &LogSettings) -> Option<String> {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
         let _ = log::set_logger(&LOGGER);
         polars_error::set_warning_function(polars_warning);
     });
+    let mut note = None;
     let file = settings
         .path
         .as_deref()
         .and_then(|path| match FileLog::open(path, MAX_BYTES) {
             Ok(file) => Some(file),
             Err(e) => {
-                // Said before the TUI starts, while stderr is still the terminal.
-                eprintln!("datui: cannot write the log {}: {e}", path.display());
+                note = Some(format!("cannot write the log {}: {e}", path.display()));
                 None
             }
         });
@@ -250,6 +253,7 @@ pub fn init(settings: &LogSettings) {
     if let Some(text) = &settings.unknown_level {
         log::warn!(target: "datui", "DATUI_LOG={text} is not a level; using warn");
     }
+    note
 }
 
 /// The file the log is writing to, if it is open.
@@ -486,8 +490,9 @@ impl TuiSession {
         UNREPORTED_PANICS.store(0, Ordering::SeqCst);
         #[cfg(unix)]
         {
-            let logging = state().file.is_some();
-            stderr::redirect(logging);
+            // Through the log's pipe even with no log open yet: the settings that open
+            // it are read after the session begins. Lines with no log are dropped.
+            stderr::redirect(true);
         }
         TUI_ACTIVE.store(true, Ordering::SeqCst);
         install_panic_hook();

@@ -14077,7 +14077,7 @@ impl App {
             theme,
             pending_read_all: false,
             history_limit: app_config.query.history_limit,
-            table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
+            table_cell_padding: app_config.display.table_cell_padding.cells(),
             column_colors: app_config.display.column_colors,
             dtype_row: app_config.display.dtype_row,
             number_format: app_config

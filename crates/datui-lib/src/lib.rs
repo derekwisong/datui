@@ -4522,7 +4522,7 @@ pub mod tests {
         .unwrap();
         // As a staged open leaves it: the number it holds is as far as the buffer
         // reached, a pass is still out, and no count has been taken.
-        // The field, not `set_num_rows`, which would mark it as a count that had been
+        // A provisional, not `count_landed`, which would mark it as a count that had been
         // taken — the state this reproduces is a provisional left by a short read.
         state.set_provisional_rows(70);
         state.set_footers_pending(Arc::new(|_| None));

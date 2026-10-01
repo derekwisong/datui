@@ -4400,7 +4400,7 @@ impl DataTableState {
         } else if !self.num_rows_valid {
             // Full buffer with the count still unresolved: render with a provisional
             // total (at least this buffer's end) and leave num_rows_valid false so the
-            // in-flight background len() corrects it via set_num_rows().
+            // in-flight background len() corrects it via count_landed().
             self.num_rows = self.num_rows.max(result.buffer_end);
         }
         // else: the background len() already resolved the exact count between this

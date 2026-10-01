@@ -24,7 +24,7 @@ the executables Cargo builds.
 | `./scripts/dev/test.sh integration home_test` | Home integration executable |
 | `./scripts/dev/test.sh integration statistics_test` | Statistics integration executable |
 | `./scripts/dev/test.sh cli` | CLI library tests |
-| `./scripts/dev/test.sh preflight` | Formatting and workspace clippy with all targets |
+| `./scripts/dev/test.sh preflight` | Formatting (workspace and fuzz targets) and workspace clippy with all targets |
 | `./scripts/dev/test.sh full` | Full workspace tests, including doctests; ignored tests remain opt-in |
 | `./scripts/dev/test.sh --print full` | Print the command without running it |
 

@@ -73,7 +73,8 @@ case "$command" in
         ;;
     preflight)
         if (( $# != 0 )); then usage >&2; exit 2; fi
-        run cargo fmt --check
+        # Both workspaces: the fuzz targets are their own, and CI checks them too.
+        run scripts/code/check_format.sh
         run cargo clippy --workspace --all-targets --locked -- -D warnings
         ;;
     full)

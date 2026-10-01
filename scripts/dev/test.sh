@@ -15,8 +15,10 @@ Usage: scripts/dev/test.sh [--print] COMMAND [ARGS...]
                           Run one root integration target, with optional filter/flags
   cli [FILTER...]          Run datui-cli's library tests
   preflight               Check formatting and lint all workspace targets
-  features [FEATURE...]    Lint datui and datui-lib with no default features, then
-                          each feature alone (default: none cloud http sql streaming)
+  features [--test] [FEATURE...]
+                          Lint datui and datui-lib with no default features, then
+                          each feature alone (default: none cloud http sql streaming);
+                          --test also runs datui-lib's library tests in each
   full                    Run the full workspace suite, as CI does
 
 Examples:
@@ -64,6 +66,8 @@ run_tests() {
     if [[ tests/sample-data/people.parquet -nt $marker ]]; then
         written=
     fi
+    # `features --test` runs several; the trap only removes the last marker.
+    rm -f "$marker"
     if [[ -n $written ]]; then
         printf 'Tests wrote into tests/sample-data (use common::fixture_dir() or a tempdir):\n%s\n' \
             "$written" >&2
@@ -107,6 +111,11 @@ case "$command" in
         ;;
     features)
         # The binary and datui-lib share feature names; datui-cli has none.
+        test=false
+        if [[ ${1:-} == --test ]]; then
+            test=true
+            shift
+        fi
         features=("$@")
         if (( ${#features[@]} == 0 )); then
             features=(none cloud http sql streaming)
@@ -119,6 +128,14 @@ case "$command" in
                 args+=(--features "$feature")
             fi
             run cargo clippy "${args[@]}" -- -D warnings || failed=1
+            if $test; then
+                # Library tests only: nightly tests the binary without features apart.
+                args=(-p datui-lib --lib --locked --no-default-features)
+                if [[ $feature != none ]]; then
+                    args+=(--features "$feature")
+                fi
+                run_tests cargo test "${args[@]}" || failed=1
+            fi
         done
         exit "$failed"
         ;;

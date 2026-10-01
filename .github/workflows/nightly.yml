@@ -579,10 +579,26 @@ jobs:
   features:
     name: Feature combinations
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Each combination's test build is another polars build, 2-3 GB of it locally;
+      # five of them beside the lints outgrow what the runner image leaves free.
+      - name: Free disk space (Ubuntu)
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -618,8 +634,10 @@ jobs:
       # builds to catch interactions that have never actually broken; each feature on its
       # own is where the missing dependencies show up. Clippy over all targets, for the
       # binary and the library: test code gated on the wrong feature fails here (#481).
-      - name: Lint each feature in isolation
-        run: ./scripts/dev/test.sh features
+      # Then the library's own tests in each: a test that compiles can still assume a
+      # feature it does not name, and nothing else runs them without the defaults.
+      - name: Lint and test each feature in isolation
+        run: ./scripts/dev/test.sh features --test
 
       # A check compiles the configuration; it does not run it. The `(all files)` row
       # was behind `feature = "cloud"` long after it stopped being a cloud row, so a

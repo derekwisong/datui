@@ -891,6 +891,9 @@ fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
                 NoCopy::SizeUnknown => {
                     "Object sizes unknown when it opened, so no local copy".to_string()
                 }
+                NoCopy::Unusable => {
+                    "The local copy did not read as the source, so no local copy".to_string()
+                }
                 NoCopy::PartOfTheSource => {
                     "The scope reads part of the source, so no local copy".to_string()
                 }
@@ -5464,6 +5467,10 @@ mod interval_tests {
             (
                 NoCopy::SizeUnknown,
                 "Object sizes unknown when it opened, so no local copy",
+            ),
+            (
+                NoCopy::Unusable,
+                "The local copy did not read as the source, so no local copy",
             ),
             (
                 NoCopy::PartOfTheSource,

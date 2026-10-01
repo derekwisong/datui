@@ -169,7 +169,7 @@ The Read section says what Run will do, before it does it:
 | The copy stays for later full scans until d releases it | Said with the fetch |
 | Copied before; released, so fetched again | The copy was released by <kbd>d</kbd>: Run fetches it again |
 | Every eligible row, in up to N passes over the local copy: no source read | A full scan of a dataset whose copy a run fetched this session |
-| Every eligible row, in up to N passes over the source | A full scan of a remote dataset with no copy, with the reason on the next line: too large to keep a local copy (size over the limit), more than the free disk, free disk unknown, the scope reads part of the source, object sizes unknown when it opened, or local copies off |
+| Every eligible row, in up to N passes over the source | A full scan of a remote dataset with no copy, with the reason on the next line: too large to keep a local copy (size over the limit), more than the free disk, free disk unknown, the scope reads part of the source, object sizes unknown when it opened, a copy fetched this session that did not read as the source, or local copies off |
 | Window by each interval's start or end: N of those passes | A full scan whose intervals start or end on more than one column: one grouping each |
 | File metadata only | Values set to metadata only |
 | Column intent: checked on the rows read, no extra read | Intent declared on a sampled run: measured on the sample's rows in memory |

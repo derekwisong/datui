@@ -922,6 +922,61 @@ mod quality_sample_tests {
         );
     }
 
+    /// A copy that cannot stand in for the scan is neither used nor kept: the passes
+    /// read the source, and the dataset's later full scans do too.
+    #[test]
+    fn a_copy_that_does_not_read_as_the_source_is_let_go() {
+        let root = tempfile::tempdir().unwrap();
+        let objects = vec![crate::local_copy::RemoteObject {
+            url: "s3://lake/a.parquet".into(),
+            size: 3,
+            etag: None,
+        }];
+        // The scan reads an object the copy does not hold.
+        let lf = LazyFrame::scan_parquet(PlRefPath::new("s3://lake/b.parquet"), Default::default())
+            .unwrap();
+        let mut heard = None;
+        let (read, held) = App::quality_scope_on_copy(
+            lf,
+            QualityCopyJob::Fetch {
+                objects,
+                root: root.path().to_path_buf(),
+            },
+            &data_quality::QualityWatch::default(),
+            |objects, root| {
+                crate::local_copy::LocalCopy::fetch(
+                    root,
+                    objects,
+                    &sampling::ReadWatch::default(),
+                    |_, write| write(b"abc"),
+                )
+            },
+            |copy| heard = Some(copy.is_some()),
+        )
+        .unwrap();
+        assert_eq!(heard, Some(false), "nothing to keep");
+        assert!(held.is_none());
+        assert_eq!(
+            crate::local_copy::scan_paths(&read),
+            ["s3://lake/b.parquet"]
+        );
+        let left = std::fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("copy-"))
+            .count();
+        assert_eq!(left, 0, "its files went with it");
+
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let generation = app.dataset_generation;
+        app.event(&AppEvent::BackgroundQualityCopyKept {
+            dataset_generation: generation,
+            copy: None,
+        });
+        assert_eq!(app.quality_copy_unusable, Some(generation));
+    }
+
     fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
     }
@@ -7372,10 +7427,11 @@ pub enum AppEvent {
         kept: KeptQualitySample,
     },
     /// A full scan finished copying a remote dataset's objects locally: kept for the
-    /// dataset it was fetched for, whatever becomes of the run.
+    /// dataset it was fetched for, whatever becomes of the run. `None` when the copy
+    /// did not read as the source, so later runs read the source and say why.
     BackgroundQualityCopyKept {
         dataset_generation: u64,
-        copy: Arc<crate::local_copy::LocalCopy>,
+        copy: Option<Arc<crate::local_copy::LocalCopy>>,
     },
     /// Background task completed: buffer data collected.
     /// The actual DataFrame is stored in App::pending_collect_result (to avoid cloning).
@@ -8889,6 +8945,9 @@ pub struct App {
     quality_copies: Vec<RetainedCopy>,
     /// The dataset whose copy was released, so Setup says why Run fetches again.
     quality_copy_released: Option<u64>,
+    /// The dataset whose copy did not read as its source: its full scans read the
+    /// source, and Setup says why.
+    quality_copy_unusable: Option<u64>,
     /// Free bytes in the cache directory, and when they were asked: Setup redraws
     /// often, and the answer only feeds a line of text until Run asks again.
     quality_copy_free: std::sync::Mutex<Option<(std::time::Instant, Option<u64>)>>,
@@ -10178,10 +10237,10 @@ impl App {
     }
 
     /// The scope a full scan's passes read: `lf` over a local copy in place of its
-    /// remote objects, fetched first when `job` says so and handed to `kept` the
-    /// moment it is whole. The copy comes back too, for the caller to hold while
-    /// the passes read it. Where the copy cannot stand in for the scan, the passes
-    /// read the source as before.
+    /// remote objects, fetched first when `job` says so. `kept` hears whether the
+    /// copy stands in for the source: the copy to keep, or `None`, after which the
+    /// dataset's full scans read the source. The copy comes back too, for the caller
+    /// to hold while the passes read it.
     fn quality_scope_on_copy(
         lf: LazyFrame,
         job: QualityCopyJob,
@@ -10190,7 +10249,7 @@ impl App {
             &[crate::local_copy::RemoteObject],
             &Path,
         ) -> Result<crate::local_copy::LocalCopy>,
-        kept: impl FnOnce(Arc<crate::local_copy::LocalCopy>),
+        kept: impl FnOnce(Option<Arc<crate::local_copy::LocalCopy>>),
     ) -> Result<(LazyFrame, Option<Arc<crate::local_copy::LocalCopy>>)> {
         let (copy, fetched) = match job {
             QualityCopyJob::Source => return Ok((lf, None)),
@@ -10204,19 +10263,21 @@ impl App {
                         error
                     }
                 })?;
-                let copy = Arc::new(copy);
-                kept(copy.clone());
-                (copy, true)
+                (Arc::new(copy), true)
             }
         };
-        let Some(mut local) = copy.redirect(&lf) else {
-            log::warn!(target: "datui", "local copy does not cover the scan; reading the source");
-            return Ok((lf, Some(copy)));
-        };
         // The copy must read as the source does, or the source is read as before.
-        if local.collect_schema().ok() != lf.clone().collect_schema().ok() {
-            log::warn!(target: "datui", "local copy reads another schema; reading the source");
-            return Ok((lf, Some(copy)));
+        let local = copy.redirect(&lf).filter(|local| {
+            let schemas = (local.clone().collect_schema(), lf.clone().collect_schema());
+            matches!(schemas, (Ok(local), Ok(source)) if local == source)
+        });
+        let Some(local) = local else {
+            log::warn!(target: "datui", "local copy does not read as the source; reading the source");
+            kept(None);
+            return Ok((lf, None));
+        };
+        if fetched {
+            kept(Some(copy.clone()));
         }
         watch.use_copy(data_quality::CopyRead {
             bytes: copy.bytes(),
@@ -10361,6 +10422,9 @@ impl App {
         if limit == 0 {
             return CopyPlan::Passes(NoCopy::Off);
         }
+        if self.quality_copy_unusable == Some(self.dataset_generation) {
+            return CopyPlan::Passes(NoCopy::Unusable);
+        }
         let Some((bytes, objects)) = state.remote_objects_size() else {
             return CopyPlan::Passes(NoCopy::SizeUnknown);
         };
@@ -10380,15 +10444,22 @@ impl App {
     }
 
     /// Keep a copy a run fetched, newest first. Older copies go past the budget;
-    /// the newest stays, so a finished fetch is never thrown away for itself.
+    /// the newest stays, so a finished fetch is never thrown away for itself. With
+    /// none, the dataset's copy did not read as its source: any kept one goes too.
     fn retain_quality_copy(
         &mut self,
         dataset_generation: u64,
-        copy: Arc<crate::local_copy::LocalCopy>,
+        copy: Option<Arc<crate::local_copy::LocalCopy>>,
     ) {
         if dataset_generation != self.dataset_generation {
             return;
         }
+        let Some(copy) = copy else {
+            self.quality_copies
+                .retain(|kept| kept.dataset_generation != dataset_generation);
+            self.quality_copy_unusable = Some(dataset_generation);
+            return;
+        };
         self.quality_copies.insert(
             0,
             RetainedCopy {
@@ -11798,6 +11869,7 @@ impl App {
         // opened now fetches them again.
         self.quality_copies.clear();
         self.quality_copy_released = None;
+        self.quality_copy_unusable = None;
         self.quality_evidence_return = None;
         self.quality_evidence_label = None;
         // The findings narrowed to the last dataset's columns would hide this one's.
@@ -12435,6 +12507,7 @@ impl App {
             quality_memory_budget: QUALITY_MEMORY_BUDGET,
             quality_copies: Vec::new(),
             quality_copy_released: None,
+            quality_copy_unusable: None,
             quality_copy_free: std::sync::Mutex::new(None),
             quality_evidence_return: None,
             quality_evidence_label: None,
@@ -21528,7 +21601,7 @@ impl App {
                                 Err(color_eyre::eyre::eyre!("Built without cloud support"))
                             }
                         };
-                        let kept_copy = |copy: Arc<crate::local_copy::LocalCopy>| {
+                        let kept_copy = |copy: Option<Arc<crate::local_copy::LocalCopy>>| {
                             let _ = tx.send(AppEvent::BackgroundQualityCopyKept {
                                 dataset_generation,
                                 copy,

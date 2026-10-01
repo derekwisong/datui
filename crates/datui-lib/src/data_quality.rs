@@ -2452,6 +2452,8 @@ pub enum NoCopy {
     Off,
     /// The open did not learn every object's size.
     SizeUnknown,
+    /// A copy fetched this session did not read as the source.
+    Unusable,
     /// The scope reads only some of the rows or columns: its passes may read less
     /// than the whole objects a copy would fetch.
     PartOfTheSource,

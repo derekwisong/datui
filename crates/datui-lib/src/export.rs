@@ -828,7 +828,7 @@ mod tests {
     }
 
     /// The views an export is asked for: as loaded, filtered, sorted with its
-    /// columns reordered, and filtered to nothing.
+    /// columns reordered, a query's text of its dates, and filtered to nothing.
     fn views() -> Vec<(&'static str, LazyFrame)> {
         let lf = awkward().lazy();
         vec![
@@ -850,6 +850,17 @@ mod tests {
                         col("at"),
                         col("at_us_tz"),
                     ]),
+            ),
+            (
+                "a query's text",
+                lf.clone().select([
+                    col("id"),
+                    crate::past_calendar::guard_expr(col("at_us_tz").cast(DataType::String), None),
+                    crate::past_calendar::guard_expr(
+                        col("at").dt().to_string("%Y").alias("year"),
+                        None,
+                    ),
+                ]),
             ),
             ("empty", lf.filter(lit(false))),
         ]
@@ -888,7 +899,7 @@ mod tests {
                         "{case}: an empty view still has its header"
                     );
                 }
-                if view == "as loaded" {
+                if view == "as loaded" || view == "a query's text" {
                     let text = String::from_utf8_lossy(&streamed);
                     assert!(
                         text.contains("-9223372036854775807 us since 1970-01-01 UTC"),

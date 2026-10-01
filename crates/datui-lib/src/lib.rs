@@ -91,6 +91,7 @@ pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
 pub mod output_file;
+pub mod past_calendar;
 pub mod pivot_melt_modal;
 pub mod quality_export;
 pub mod quality_intent;

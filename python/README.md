@@ -21,7 +21,8 @@ import polars as pl
 import datui
 
 # From a LazyFrame (e.g. scan)
-lf = pl.scan_csv("data.csv")
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+lf = pl.scan_csv(url)
 datui.view(lf)
 ```
 
@@ -32,6 +33,7 @@ Press `q` to exit Datui and return to Python.
 Run the `datui` command line application:
 
 ```bash
+datui                          # home screen, with a catalog of public datasets
 datui /path/to/data.parquet
 ```
 

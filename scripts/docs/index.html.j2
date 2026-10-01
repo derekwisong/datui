@@ -134,22 +134,22 @@
         <figure class="terminal">
           <figcaption>Example: average body mass by species</figcaption>
           <div class="terminal-body">
-            <pre><span class="prompt">$</span> datui --null-value NA penguins.csv</pre>
-            <pre class="query">select mean_mass_g: avg body_mass_g
-by species</pre>
+            <pre><span class="prompt">$</span> datui</pre>
+            <pre class="query">SELECT species, AVG(body_mass_g) AS mean_mass_g
+FROM df GROUP BY species ORDER BY mean_mass_g DESC</pre>
             <table aria-label="Mean penguin body mass by species, rounded to one decimal">
               <thead><tr><th>species</th><th>mean_mass_g</th></tr></thead>
-              <tbody><tr><td>Adelie</td><td>3,700.7</td></tr><tr><td>Chinstrap</td><td>3,733.1</td></tr><tr><td>Gentoo</td><td>5,076.0</td></tr></tbody>
+              <tbody><tr><td>Gentoo</td><td>5,076.0</td></tr><tr><td>Chinstrap</td><td>3,733.1</td></tr><tr><td>Adelie</td><td>3,700.7</td></tr></tbody>
             </table>
-            <p class="note">Palmer Penguins · 344 records · means ignore nulls<br>Example result, rounded to one decimal.</p>
+            <p class="note">Public datasets › Palmer penguins · 344 records · means ignore nulls<br>Example result, rounded to one decimal.</p>
           </div>
         </figure>
       </div>
       <p class="formats">Parquet · CSV / TSV / PSV · JSON / JSONL · Arrow / Feather · Avro · ORC · Excel</p>
       <section aria-label="What you can do">
         <div class="features">
-          <div><h2>Find your data</h2><p>Browse recent files, directories and cloud buckets. Open S3, GCS, Azure or HTTP URLs, including public datasets that need no login.</p><a href="{{ guide('user-guide/loading-data') }}">Files and cloud storage →</a></div>
-          <div><h2>Query and analyze</h2><p>Use SQL, short queries or fuzzy text search. Sort and filter rows, inspect statistics, and chart the result.</p><a href="{{ guide('user-guide/querying-data') }}">Querying and search →</a></div>
+          <div><h2>Find your data</h2><p>Browse recent files, directories and cloud buckets. Open S3, GCS, Azure or HTTP URLs, or start from the built-in catalog of public datasets that need no login.</p><a href="{{ guide('user-guide/loading-data') }}">Files and cloud storage →</a></div>
+          <div><h2>Query and analyze</h2><p>Use SQL, text search or short q-style queries. Sort and filter rows, inspect statistics, and chart the result.</p><a href="{{ guide('user-guide/querying-data') }}">Querying and search →</a></div>
           <div><h2>Save and reuse</h2><p>Copy a table into a note. Export data or a chart. Save a view to repeat the same steps on the next file.</p><a href="{{ guide('user-guide/exporting-data') }}">Exporting data →</a></div>
         </div>
         {% if demo_path %}
@@ -178,15 +178,15 @@ by species</pre>
         <h2>Start with a file or a DataFrame</h2>
         <p class="section-lead">Use the same UI from your shell or Python. Press <kbd>?</kbd> for help on the screen you're using.</p>
         <div class="paths">
-          <div><h3>In your terminal</h3><pre><code>datui flights.parquet
+          <div><h3>In your terminal</h3><pre><code>datui  # home screen and public datasets
+datui sales.parquet
 datui ./exports/
-datui s3://bucket/events/
-datui  # browse from the home screen</code></pre><p><a href="{{ guide('getting-started/quick-start') }}">Open → query → chart → export</a></p></div>
+datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/</code></pre><p><a href="{{ guide('getting-started/quick-start') }}">Open → query → chart → export</a></p></div>
           <div><h3>From Python</h3><pre><code>import datui
 import polars as pl
 
-frame = pl.scan_parquet("flights.parquet")
-datui.view(frame)</code></pre><p><a href="{{ guide('user-guide/python-module') }}">Explore a frame and capture your view</a></p></div>
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+datui.view(pl.scan_csv(url))</code></pre><p><a href="{{ guide('user-guide/python-module') }}">Explore a frame and capture your view</a></p></div>
         </div>
         <p class="small">Powered by Polars. Scanned formats load rows as needed; sorting, aggregation and analysis may read the full input. <a href="{{ guide('advanced/performance-tips') }}">Working with large datasets</a>.</p>
       </section>
@@ -209,7 +209,7 @@ datui.view(frame)</code></pre><p><a href="{{ guide('user-guide/python-module') }
         {% endif %}
       </section>
     </main>
-    <footer><span>datui · <a href="{{ repo }}/blob/main/LICENSE">MIT license</a></span><span><a href="{{ repo }}/issues">Report an issue</a> · <a href="{{ guide('for-developers') }}">Contribute</a> · <a href="https://allisonhorst.github.io/palmerpenguins/">Example data: Palmer Penguins (CC0)</a></span></footer>
+    <footer><span>datui · <a href="{{ repo }}/blob/main/LICENSE">MIT license</a></span><span><a href="{{ repo }}/issues">Report an issue</a> · <a href="{{ guide('for-developers') }}">Contribute</a> · <a href="https://allisonhorst.github.io/palmerpenguins/">Example data: Palmer penguins (CC0; Horst, Hill and Gorman)</a></span></footer>
   </div>
   <script>
     const toggle = document.getElementById('theme-toggle');

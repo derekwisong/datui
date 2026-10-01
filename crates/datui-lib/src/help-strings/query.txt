@@ -33,7 +33,7 @@ SQL:
   table, df: the group's rows while drilled into one, the pivot or melt
   result while one is in effect, otherwise the data as loaded. Never the
   sidebar filters or sort, nor the previous statement's result.
-  Example: SELECT city, count(*) FROM df GROUP BY city
+  Example: SELECT carrier, COUNT(*) AS flights FROM df GROUP BY carrier
   The columns of df are listed under the input, narrowed to the name being
   typed. A long statement wraps onto up to four lines.
   For values that will not convert, TRY_CAST(col AS INT) reads them as

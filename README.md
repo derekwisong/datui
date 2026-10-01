@@ -13,10 +13,10 @@ export the result. It also works with Polars DataFrames in Python.
 [Website][site] · [Documentation][docs] · [Quick start][quick-start] · [All demos][demos]
 
 ```bash
-datui flights.parquet              # open a file
-datui ./exports/                   # open a dataset or browse its files
-datui s3://bucket/events/           # open a dataset in S3
-datui                              # open the file browser
+datui                              # home screen: your files and a catalog of public datasets
+datui sales.parquet                # open a file
+datui ./exports/                   # open a directory as one table
+datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/   # 37 million rows of NOAA weather, no login
 ```
 
 ![Filtering public US baby-name data to see one name's history](demos/02-querying.gif)
@@ -53,8 +53,15 @@ and building from source. [Prebuilt binaries][latest-release] are also available
 | Save a view to reuse on another file | `v` | [Views][views-guide] |
 
 Press `?` for help on any screen. `Esc` backs out; `Ctrl+Q` quits.
-The [quick start][quick-start] uses public penguin measurements to demonstrate
-queries, charts and export.
+The [quick start][quick-start] opens Palmer penguins from the built-in catalog
+and asks which species is heaviest:
+
+```sql
+SELECT species, AVG(body_mass_g) AS mean_mass_g, COUNT(*) AS penguins
+FROM df GROUP BY species ORDER BY mean_mass_g DESC
+```
+
+Gentoo, at 5,076 g over 124 penguins.
 
 Parquet and other scan-based formats use [Polars](https://pola.rs) to load rows
 as needed. Queries, sorting and analysis can read much more than the visible
@@ -68,12 +75,14 @@ page; see [performance tips][performance] for large datasets.
 import datui
 import polars as pl
 
-datui.view(pl.scan_parquet("flights.parquet"))
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+penguins = pl.scan_csv(url)
+datui.view(penguins)
 
 # Return the current query, filters and sort as a LazyFrame.
-result = datui.view("flights.parquet", capture=True)
+result = datui.view(penguins, capture=True)
 if result is not None:
-    result.collect()
+    print(result.collect())
 ```
 
 [Python guide][python-module] · [Supported formats and cloud access][loading-guide]

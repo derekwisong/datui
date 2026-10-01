@@ -83,7 +83,8 @@ on a sleep or a quiet channel.
 | `scripts/` | Python tooling: `bump_version.py`, `docs/`, `demos/`, `packaging/`, `dev/` |
 
 Modules worth knowing: `query.rs` (the DSL parser), `jobs.rs` (background
-jobs), `widgets/datatable.rs` (`DataTableState`: the LazyFrame pipeline and the
+jobs), `loading.rs` (opening a dataset), `widgets/datatable.rs`
+(`DataTableState`: the LazyFrame pipeline and the
 row buffer), `config.rs` (config structs, merging, theme), `home.rs` +
 `discover.rs` + `search.rs` (the home screen), `cloud_browse.rs` +
 `cloud_hive.rs` + `source.rs` (S3, GCS, HTTP), `statistics.rs` (analysis),
@@ -125,9 +126,23 @@ home-screen workers, keyed by place rather than generation, run inside an
 cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never
 collect inside a render function.
 
-**Keys typed while busy are queued.** While a job the user waits on runs, or an
-errand is between phases, `App::is_busy` is true and the control bar shows a
-spinner. `EventPump` (`event_pump.rs`, owned by
+**An open has one owner.** `loading::Loader` holds the open in flight, from the
+request to its first rows: its `LoadId`, where it was asked from, its `Phase`,
+what the loading screen says, and what it holds (its footer counter, whose
+cancel flag stops it; its download; the hold while a download is asked about).
+App passes it requests and worker answers (`open`, `answered`, `failed`,
+`confirmed`) and carries out the `Step` it returns, starting the next phase's
+job in the same handler, so the generation never reads free between phases.
+Load jobs carry the `LoadId`; an answer for a load that was replaced or put down,
+or for a phase it has left, is dropped with what it carries. `install_dataset`
+hands the counter and download to the dataset and records the recent; going
+home or another open retires the load. Add a phase to `Phase` and `Step`, not a
+flag or a continuation event to App.
+
+**Keys typed while busy are queued.** While a job the user waits on runs, an
+errand is between phases, or an open is on its way to its dataset,
+`App::is_busy` is true and the control bar shows a spinner. `EventPump`
+(`event_pump.rs`, owned by
 `run()`) holds the keys typed meanwhile and replays them in order, one per loop
 iteration, once the app is idle. Ctrl-Q, Ctrl-C outside a text field, Ctrl-O and
 confirmation-modal keys act at once; so do `q`, column scroll and help at the

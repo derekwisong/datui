@@ -326,9 +326,9 @@ impl Widget for &Controls {
             ("p", "Pivot & Melt"),
             ("e", "Export"),
             ("y", "Copy"),
+            ("^O", "Home"),
             ("Space", "Inspect"),
             ("g", "Column"),
-            ("^O", "Home"),
             ("?", "Help"),
             ("q", "Quit"),
         ];

@@ -74,7 +74,12 @@ impl Finding {
                             .find(|profile| profile.name == observation.column)?;
                         crate::data_quality::unparsed_text(profile)
                     }
-                    _ => observation.evidence_predicate(),
+                    _ => observation.evidence_predicate().or_else(|| {
+                        results
+                            .intent
+                            .as_ref()?
+                            .evidence(observation.kind, &observation.column)
+                    }),
                 }
             })
             .collect::<Option<Vec<_>>>()?
@@ -126,6 +131,8 @@ impl Finding {
                 None
             }
             ObservationKind::CategoryVariants => Some(self.affected_rows),
+            // One fact about rows, named once per key column: the same rows each time.
+            ObservationKind::KeyRepeated | ObservationKind::KeyMissing => Some(self.affected_rows),
             _ if self.observations.len() == 1 || self.same_rows => Some(self.affected_rows),
             _ => None,
         }
@@ -159,6 +166,12 @@ impl Finding {
             ObservationKind::KeyLike => "Nearly unique",
             ObservationKind::Constant => "Single value",
             ObservationKind::UnparsedTime => "Unparsed times",
+            ObservationKind::KeyRepeated
+            | ObservationKind::KeyMissing
+            | ObservationKind::RequiredMissing
+            | ObservationKind::NotAllowed
+            | ObservationKind::OutOfRange
+            | ObservationKind::UnparsedNumber => INTENT_CHECK,
         })
     }
 
@@ -427,6 +440,8 @@ pub fn build_report(results: &DataQualityResults) -> QualityReport {
             }
             ObservationKind::Constant => (kind, 0, String::new()),
             ObservationKind::CategoryVariants => (kind, 0, observation.column.clone()),
+            // The key is one fact about rows, named once per key column.
+            ObservationKind::KeyRepeated | ObservationKind::KeyMissing => (kind, 0, String::new()),
             // Everything else stands alone; the index keeps it from merging.
             _ => (u8::MAX, index, String::new()),
         };
@@ -514,6 +529,11 @@ fn rank(finding: &Finding) -> u8 {
     match finding.kind {
         Some(ObservationKind::TypeConflict) => 0,
         Some(ObservationKind::Absent) => 1,
+        // What the study declared comes first: a violation is a fact, not a guess.
+        Some(ObservationKind::KeyRepeated) => 2,
+        Some(ObservationKind::KeyMissing | ObservationKind::RequiredMissing) => 2,
+        Some(ObservationKind::NotAllowed | ObservationKind::OutOfRange) => 2,
+        Some(ObservationKind::UnparsedNumber) => 2,
         Some(ObservationKind::DuplicateRows) => 2,
         Some(ObservationKind::UnparsedTime) => 3,
         Some(ObservationKind::Nulls) if finding.severity == Severity::Problem => 3,
@@ -570,7 +590,13 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         | ObservationKind::CategoryVariants
         | ObservationKind::Absent
         | ObservationKind::TypeConflict
-        | ObservationKind::UnparsedTime => Severity::Problem,
+        | ObservationKind::UnparsedTime
+        | ObservationKind::KeyRepeated
+        | ObservationKind::KeyMissing
+        | ObservationKind::RequiredMissing
+        | ObservationKind::NotAllowed
+        | ObservationKind::OutOfRange
+        | ObservationKind::UnparsedNumber => Severity::Problem,
     };
     let profile = results
         .columns
@@ -606,6 +632,12 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         ObservationKind::TypeConflict => "Type mismatch",
         ObservationKind::KeyLike => "Nearly unique",
         ObservationKind::UnparsedTime => "Unparsed times",
+        ObservationKind::KeyRepeated => "Repeated key",
+        ObservationKind::KeyMissing => "Incomplete key",
+        ObservationKind::RequiredMissing => "Required, missing",
+        ObservationKind::NotAllowed => "Not allowed",
+        ObservationKind::OutOfRange => "Out of range",
+        ObservationKind::UnparsedNumber => "Unparsed numbers",
     };
     let affected_rows = match kind {
         // One group per normalized value; the column's cost is all of them.
@@ -717,6 +749,31 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
             )
         }
         ObservationKind::Absent | ObservationKind::TypeConflict => first.fact.clone(),
+        ObservationKind::KeyRepeated => {
+            match results.intent.as_ref().and_then(|i| i.key.as_ref()) {
+                Some(key) => format!(
+                    "{} {} repeat; {} extra {}",
+                    numfmt::group_chrome(key.groups),
+                    if key.groups == 1 { "value" } else { "values" },
+                    numfmt::group_chrome(key.extra_rows),
+                    if key.extra_rows == 1 { "row" } else { "rows" }
+                ),
+                None => first.fact.clone(),
+            }
+        }
+        ObservationKind::KeyMissing | ObservationKind::RequiredMissing => rows(first.affected_rows),
+        ObservationKind::NotAllowed
+        | ObservationKind::OutOfRange
+        | ObservationKind::UnparsedNumber => format!(
+            "{} {} ({})",
+            numfmt::group_chrome(first.affected_rows),
+            if first.affected_rows == 1 {
+                "value"
+            } else {
+                "values"
+            },
+            percent(first.affected_rows, first.evaluated_rows)
+        ),
     };
     Finding {
         severity,
@@ -892,7 +949,22 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
         (None, _) => "files".to_string(),
     };
     let values = results.precision;
-    vec![
+    let mut checks = Vec::new();
+    // Declared, so first: the question the user asked before the ones datui asks.
+    if let Some(intent) = &results.intent {
+        checks.push(Check {
+            name: INTENT_CHECK,
+            looks_for: "values against the key and rules declared",
+            applies_to: reach(intent.declared.len(), "declared"),
+            outcome: if intent.measured {
+                found(report, &INTENT_TITLES)
+            } else {
+                Outcome::Unavailable("values not read")
+            },
+            basis: intent.precision,
+        });
+    }
+    checks.extend([
         Check {
             name: "Missing values",
             looks_for: "nulls in any column",
@@ -977,7 +1049,15 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             outcome: if keys > 0 && values_read && results.precision != QualityPrecision::Exact {
                 Outcome::Unavailable("needs every row checked")
             } else {
-                outcome(&["Nearly unique"], keys, "no integer or text columns")
+                match outcome(&["Nearly unique"], keys, "no integer or text columns") {
+                    // A declared key's repeats replace the note on that column; the
+                    // check found them all the same.
+                    Outcome::Passed if declared_key_repeats(results) => Outcome::Found {
+                        tier: Severity::Problem,
+                        detail: "the declared key repeats".to_string(),
+                    },
+                    outcome => outcome,
+                }
             },
             basis: values,
         },
@@ -988,8 +1068,32 @@ pub fn checks(results: &DataQualityResults, report: &QualityReport) -> Vec<Check
             outcome: outcome(&["Single value"], all, "no columns"),
             basis: values,
         },
-    ]
+    ]);
+    checks
 }
+
+/// Whether a one-column declared key repeats: the case whose "Nearly unique" note
+/// the key's own finding replaces.
+fn declared_key_repeats(results: &DataQualityResults) -> bool {
+    results
+        .intent
+        .as_ref()
+        .and_then(|intent| intent.key.as_ref())
+        .is_some_and(|key| key.columns.len() == 1 && key.rows_involved > 0)
+}
+
+/// The check the declared intent makes, by the name the Checks list gives it.
+pub const INTENT_CHECK: &str = "Column intent";
+
+/// The findings the declared intent makes.
+pub const INTENT_TITLES: [&str; 6] = [
+    "Repeated key",
+    "Incomplete key",
+    "Required, missing",
+    "Not allowed",
+    "Out of range",
+    "Unparsed numbers",
+];
 
 fn found(report: &QualityReport, titles: &[&str]) -> Outcome {
     let mut columns = Vec::new();
@@ -1181,6 +1285,23 @@ pub fn coverage(
             count(files)
         ));
     }
+    if let Some(intent) = results.intent.as_ref().filter(|intent| intent.measured) {
+        // A key with no repeat in a sample is unique among those rows, and no more.
+        if intent.key.is_some() && intent.precision != QualityPrecision::Exact {
+            coverage.limits.push(format!(
+                "key repeats among {} sampled rows only",
+                count(intent.evaluated_rows)
+            ));
+        }
+    }
+    if let Some(intent) = &results.intent
+        && !intent.absent.is_empty()
+    {
+        coverage.limits.push(format!(
+            "intent on {}: not in scope",
+            columns_label(&intent.absent, 24)
+        ));
+    }
     if !plan.temporal_roles.is_empty() && plan.interval_pairs().is_empty() {
         coverage
             .limits
@@ -1254,6 +1375,25 @@ pub fn advice(finding: &Finding) -> Vec<String> {
             "Left out of time windows and intervals, not counted as missing",
             "Check: another format, or values that are not times (Setup, e)",
         ],
+        (Some(ObservationKind::KeyRepeated), _) => &[
+            "A key names one row; joins on it fan out and counts double",
+            "Check: a double load, or a key that needs another column",
+        ],
+        (Some(ObservationKind::KeyMissing), _) => {
+            &["Rows with no key cannot be joined or told apart by it"]
+        }
+        (Some(ObservationKind::RequiredMissing), _) => {
+            &["Check: the load, or rows the source writes without it"]
+        }
+        (Some(ObservationKind::NotAllowed), _) => {
+            &["Check: a new value upstream, or the allowed list (Setup, e)"]
+        }
+        (Some(ObservationKind::OutOfRange), _) => {
+            &["Check: units, placeholders such as -1 or 9999, or the range (Setup, e)"]
+        }
+        (Some(ObservationKind::UnparsedNumber), _) => {
+            &["A cast makes them null; check the values or the reading (Setup, e)"]
+        }
         (None, _) => &[],
     };
     lines.iter().map(|line| line.to_string()).collect()
@@ -1495,6 +1635,14 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
                 percent(finding.affected_rows, finding.evaluated_rows)
             )
         }
+        Some(
+            kind @ (ObservationKind::KeyRepeated
+            | ObservationKind::KeyMissing
+            | ObservationKind::RequiredMissing
+            | ObservationKind::NotAllowed
+            | ObservationKind::OutOfRange
+            | ObservationKind::UnparsedNumber),
+        ) => describe_intent(kind, finding, results, &mut evidence),
         Some(ObservationKind::Absent | ObservationKind::TypeConflict) => {
             let observation = observation(&finding.observations[0]);
             // Read from the footers, so the denominator is the whole loaded source
@@ -1560,6 +1708,129 @@ fn cut(text: &str, width: usize) -> String {
             width.saturating_sub(crate::glyphs::display_width(ellipsis))
         )
     )
+}
+
+/// A declared rule's violation: the count against what it is out of, the rule as
+/// declared, and what the rows in memory showed of it. A sample's numbers say so.
+fn describe_intent(
+    kind: ObservationKind,
+    finding: &Finding,
+    results: &DataQualityResults,
+    evidence: &mut Vec<String>,
+) -> String {
+    let count = numfmt::group_chrome;
+    let Some(intent) = results.intent.as_ref() else {
+        return finding.summary.clone();
+    };
+    let sampled = intent.precision != QualityPrecision::Exact;
+    let rows_word = if sampled { "sampled rows" } else { "rows" };
+    let share = percent(finding.affected_rows, finding.evaluated_rows);
+    let examples = |values: &[(String, usize)]| {
+        values
+            .iter()
+            .map(|(value, rows)| format!("{} ({})", quoted(value, 24), count(*rows)))
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let column = finding.columns.first().map(String::as_str).unwrap_or("");
+    let check = intent.column(column);
+    match kind {
+        ObservationKind::KeyRepeated | ObservationKind::KeyMissing => {
+            let Some(key) = intent.key.as_ref() else {
+                return finding.summary.clone();
+            };
+            evidence.push(format!("Declared key: {}", key.columns.join(", ")));
+            if kind == ObservationKind::KeyMissing {
+                return format!(
+                    "{} of {} {rows_word} ({share}) have no value in part of the key",
+                    count(key.missing),
+                    count(intent.evaluated_rows)
+                );
+            }
+            evidence.push(format!(
+                "{} {} held by more than one row; {} rows beyond one per value",
+                count(key.groups),
+                if key.groups == 1 { "value" } else { "values" },
+                count(key.extra_rows)
+            ));
+            if sampled {
+                evidence.push(
+                    "Sampled rows are distinct rows, so each repeat is in the data; \
+                     rows outside the sample are not checked"
+                        .to_string(),
+                );
+            }
+            format!(
+                "{} of {} {rows_word} ({share}) share their key with another row",
+                count(key.rows_involved),
+                count(intent.evaluated_rows)
+            )
+        }
+        ObservationKind::RequiredMissing => {
+            evidence.push(format!("Declared required: {column}"));
+            format!(
+                "{} of {} {rows_word} ({share}) have no {column}",
+                count(finding.affected_rows),
+                count(finding.evaluated_rows)
+            )
+        }
+        ObservationKind::NotAllowed => {
+            if let Some(check) = check {
+                evidence.push(format!("Allowed: {}", check.intent.allowed_label(8)));
+                if !check.outside_examples.is_empty() {
+                    evidence.push(format!("Found: {}", examples(&check.outside_examples)));
+                }
+            }
+            format!(
+                "{} of {} values ({share}) are not allowed",
+                count(finding.affected_rows),
+                count(finding.evaluated_rows)
+            )
+        }
+        ObservationKind::OutOfRange => {
+            if let Some(check) = check {
+                evidence.push(format!(
+                    "Range: {}",
+                    check.intent.range_label().unwrap_or_default()
+                ));
+                if let Some(below) = check.below.filter(|below| *below > 0) {
+                    let lowest = check
+                        .lowest
+                        .as_ref()
+                        .map(|value| format!(", lowest {value}"))
+                        .unwrap_or_default();
+                    evidence.push(format!("Below: {}{lowest}", count(below)));
+                }
+                if let Some(above) = check.above.filter(|above| *above > 0) {
+                    let highest = check
+                        .highest
+                        .as_ref()
+                        .map(|value| format!(", highest {value}"))
+                        .unwrap_or_default();
+                    evidence.push(format!("Above: {}{highest}", count(above)));
+                }
+            }
+            format!(
+                "{} of {} values ({share}) outside the range",
+                count(finding.affected_rows),
+                count(finding.evaluated_rows)
+            )
+        }
+        _ => {
+            let reading = check
+                .and_then(|check| check.intent.number)
+                .map_or("number", crate::quality_intent::NumberReading::label);
+            if let Some(check) = check.filter(|check| !check.unparsed_examples.is_empty()) {
+                evidence.push(format!("Such as: {}", examples(&check.unparsed_examples)));
+            }
+            evidence.push(format!("Read as a {reading} for this study only"));
+            format!(
+                "{} of {} values ({share}) do not read as a {reading}",
+                count(finding.affected_rows),
+                count(finding.evaluated_rows)
+            )
+        }
+    }
 }
 
 fn upper_first(text: &str) -> String {

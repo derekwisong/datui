@@ -75,6 +75,7 @@ pub mod gcloud;
 pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
+pub mod intent_modal;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
@@ -82,6 +83,7 @@ pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
+pub mod quality_intent;
 pub mod quality_report;
 pub mod quality_trends;
 #[cfg(feature = "cloud")]
@@ -9126,6 +9128,67 @@ impl App {
         columns
     }
 
+    /// The columns Column intent lists: the draft's scope's, from the schema.
+    pub(crate) fn quality_intent_columns(&self) -> Vec<(String, polars::prelude::DataType)> {
+        self.data_table_state
+            .as_ref()
+            .map(|state| {
+                crate::widgets::quality_intent::intent_columns(
+                    state.quality_schema(&self.analysis_modal.data_quality_plan.scope),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// Open the intent form on the column under the cursor of the Column intent list.
+    fn open_intent_form(&mut self) {
+        let columns = self.quality_intent_columns();
+        let modal = &mut self.analysis_modal;
+        let Some((column, dtype)) = columns.get(modal.data_quality_plan_field) else {
+            return;
+        };
+        let plan = &modal.data_quality_plan;
+        modal.data_quality_intent_form = Some(intent_modal::IntentForm::new(
+            column,
+            dtype.clone(),
+            plan.time_format(column).cloned(),
+            &plan.intent,
+            &self.theme,
+        ));
+    }
+
+    /// Keys while the intent form is open: Tab and ↑↓ walk its rows, Space and ←→
+    /// change a choice, text fields type, Enter stages the declaration in Setup's
+    /// draft and Esc drops the form's edits. Nothing here reads.
+    fn intent_form_key(&mut self, event: &KeyEvent) {
+        let modal = &mut self.analysis_modal;
+        let Some(form) = modal.data_quality_intent_form.as_mut() else {
+            return;
+        };
+        let typing = form.typing();
+        match event.code {
+            KeyCode::Esc => modal.data_quality_intent_form = None,
+            KeyCode::Enter => match form.apply(&mut modal.data_quality_plan.intent) {
+                Ok(()) => modal.data_quality_intent_form = None,
+                Err(error) => form.error = Some(error),
+            },
+            KeyCode::Tab | KeyCode::Down => form.move_field(true),
+            KeyCode::BackTab | KeyCode::Up => form.move_field(false),
+            KeyCode::Char('j') if !typing => form.move_field(true),
+            KeyCode::Char('k') if !typing => form.move_field(false),
+            KeyCode::Char(' ') if !typing => form.adjust(true),
+            KeyCode::Left | KeyCode::Char('h') if !typing => form.adjust(false),
+            KeyCode::Right | KeyCode::Char('l') if !typing => form.adjust(true),
+            _ if typing => {
+                if let Some(input) = form.input_mut() {
+                    let _ = input.handle_key(event, None);
+                }
+                form.error = None;
+            }
+            _ => {}
+        }
+    }
+
     /// Space on a Setup row: the Sample form, the role editor, or the row's choices.
     fn open_setup_row(&mut self) -> Option<AppEvent> {
         use analysis_modal::SetupRow;
@@ -9139,6 +9202,15 @@ impl App {
                         Some(self.analysis_modal.data_quality_plan.clone());
                     self.analysis_modal
                         .set_quality_page(data_quality::QualityPage::TimeRoles);
+                    self.analysis_modal.data_quality_plan_field = 0;
+                }
+            }
+            SetupRow::Intent => {
+                if !self.quality_intent_columns().is_empty() {
+                    self.analysis_modal.data_quality_plan_before_edit =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::Intent);
                     self.analysis_modal.data_quality_plan_field = 0;
                 }
             }
@@ -10488,6 +10560,7 @@ impl App {
             InputMode::Normal => {
                 self.analysis_modal.sample_scope_typing()
                     || self.analysis_modal.quality_expected_typing()
+                    || self.analysis_modal.intent_typing()
                     || (self.template_modal.active
                         && self.template_modal.mode != TemplateModalMode::List
                         && matches!(
@@ -17462,6 +17535,63 @@ impl App {
                                 }
                             }
                         }
+                    }
+                    return None;
+                }
+                // The intent form owns every key while it is open, `?` included
+                // when it types.
+                if self.analysis_modal.data_quality_intent_form.is_some()
+                    && (event.code != KeyCode::Char('?') || self.analysis_modal.intent_typing())
+                {
+                    self.intent_form_key(event);
+                    return None;
+                }
+                // The intent list owns the keys: which column, and its form.
+                if self.analysis_modal.data_quality_page == QualityPage::Intent
+                    && event.code != KeyCode::Char('?')
+                {
+                    let columns = self.quality_intent_columns().len();
+                    let field = self
+                        .analysis_modal
+                        .data_quality_plan_field
+                        .min(columns.saturating_sub(1));
+                    match event.code {
+                        KeyCode::Esc | KeyCode::Enter => {
+                            if event.code == KeyCode::Esc
+                                && let Some(plan) =
+                                    self.analysis_modal.data_quality_plan_before_edit.take()
+                            {
+                                self.analysis_modal.data_quality_plan = plan;
+                            }
+                            self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.analysis_modal.data_quality_setup_note = None;
+                            self.analysis_modal.set_quality_page(QualityPage::Setup);
+                            self.analysis_modal.data_quality_plan_field =
+                                analysis_modal::SetupRow::Intent.index();
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.analysis_modal.data_quality_plan_field =
+                                (field + 1).min(columns.saturating_sub(1));
+                        }
+                        KeyCode::PageUp => {
+                            self.analysis_modal.data_quality_plan_field = field.saturating_sub(10);
+                        }
+                        KeyCode::PageDown => {
+                            self.analysis_modal.data_quality_plan_field =
+                                (field + 10).min(columns.saturating_sub(1));
+                        }
+                        KeyCode::Home => self.analysis_modal.data_quality_plan_field = 0,
+                        KeyCode::End => {
+                            self.analysis_modal.data_quality_plan_field = columns.saturating_sub(1);
+                        }
+                        KeyCode::Char(' ') | KeyCode::Right | KeyCode::Char('l') => {
+                            self.analysis_modal.data_quality_plan_field = field;
+                            self.open_intent_form();
+                        }
+                        _ => {}
                     }
                     return None;
                 }

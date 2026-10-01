@@ -113,6 +113,8 @@ pub struct DataQualityWidgetConfig<'a> {
     pub theme: &'a Theme,
     /// The dialogs' Surfaces and the table's number formatting.
     pub ctx: &'a RenderContext,
+    /// One column's declared intent, being edited over the Column intent list.
+    pub intent_form: Option<&'a crate::intent_modal::IntentForm>,
 }
 
 /// The tool list's width: the width every analysis tool gives it, and none on a
@@ -174,6 +176,9 @@ pub fn render(
         QualityPage::Setup => render_setup(&config, body, buf),
         QualityPage::TimeRoles => render_time_roles(&config, table_state, body, buf),
         QualityPage::IntervalPairs => render_interval_pairs(&config, table_state, body, buf),
+        QualityPage::Intent => {
+            crate::widgets::quality_intent::render_list(&config, table_state, body, buf)
+        }
         QualityPage::Overview => render_overview(&config, table_state, body, buf),
         QualityPage::Columns => render_columns(&config, table_state, body, buf),
         QualityPage::Segments => render_segments(&config, table_state, body, buf),
@@ -189,7 +194,9 @@ pub fn render(
         QualityPage::Detail => render_detail(&config, table_state, body, buf),
     }
 
-    if config.show_access {
+    if let Some(form) = config.intent_form {
+        crate::widgets::quality_intent::render_form(form, &config, area, buf);
+    } else if config.show_access {
         render_access_plan(&config, area, buf);
     } else if config.observation_detail {
         render_finding_detail(&config, table_state, detail_scroll, area, buf);
@@ -343,6 +350,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Row(SetupRow::TextAsTime));
     lines.push(SetupLine::Row(SetupRow::TimeRoles));
     lines.push(SetupLine::Row(SetupRow::Intervals));
+    lines.push(SetupLine::Row(SetupRow::Intent));
     for (note, warn) in column_notes(plan, schema) {
         for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, warn));
@@ -509,6 +517,8 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
                 .join(", "),
             false,
         ),
+        SetupRow::Intent if plan.intent.is_empty() => ("none".to_string(), true),
+        SetupRow::Intent => (plan.intent.summary(), false),
         SetupRow::Grain => (plan.grain.label(), false),
         SetupRow::Expected => match (&plan.grain, plan.expected.as_ref()) {
             (QualityGrain::TimeWindows { every, .. }, Some(expected)) => (
@@ -630,6 +640,19 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
             false,
         ));
     }
+    // Intent on a column the scope does not have measures nothing.
+    let absent = plan
+        .intent
+        .declared_columns()
+        .into_iter()
+        .filter(|column| schema.get(column).is_none())
+        .collect::<Vec<_>>();
+    if !absent.is_empty() {
+        notes.push((
+            format!("Not in this scope, so not checked: {}", absent.join(", ")),
+            true,
+        ));
+    }
     notes
 }
 
@@ -730,6 +753,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     if plan.compute == QualityCompute::Sample {
         lines.push("Then measured in memory: no further reads".to_string());
     }
+    lines.extend(intent_read_lines(plan, exact));
     // Gaps come from the segment counts the run already takes, never a read of
     // their own.
     if plan.expected_windows().is_some() && plan.compute != QualityCompute::Metadata {
@@ -767,6 +791,37 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     lines
 }
 
+/// What the declared intent costs, said before Run: nothing past the rows read, but
+/// a key on a sample speaks only for the sampled rows, and on a full scan it is a
+/// grouping of its own.
+fn intent_read_lines(plan: &DataQualityPlan, every_row: bool) -> Vec<String> {
+    if plan.intent.is_empty() {
+        return Vec::new();
+    }
+    let key = !plan.intent.key.is_empty();
+    match plan.compute {
+        QualityCompute::Metadata => vec!["Column intent needs values: not checked".to_string()],
+        QualityCompute::Full if key => vec![
+            "Column intent: counted in the profile pass; the key adds one pass over its columns"
+                .to_string(),
+        ],
+        QualityCompute::Full => {
+            vec!["Column intent: counted in the profile pass, no extra pass".to_string()]
+        }
+        QualityCompute::Sample => {
+            let mut lines =
+                vec!["Column intent: checked on the rows read, no extra read".to_string()];
+            if key && !every_row {
+                lines.push(format!(
+                    "Key: finds repeats among the {} sampled rows only; Every row checks them all",
+                    numfmt::group_chrome(plan.dataset_rows)
+                ));
+            }
+            lines
+        }
+    }
+}
+
 /// Collects a full run makes over its scope: one per check, and a count first when
 /// the scope's size is not known. How much each reads again depends on the
 /// source; that there are this many is the plan's.
@@ -784,6 +839,8 @@ fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
         passes += 1;
     }
     passes += crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
+    // The declared key is a grouping of its columns: one pass of its own.
+    passes += usize::from(!plan.intent.key.is_empty());
     if planned_scope_rows(state, plan).is_none() {
         passes += 1;
     }
@@ -1070,7 +1127,12 @@ fn pack_facts(facts: &[String], width: usize, room: usize) -> Vec<String> {
 
 /// A title on a rule with a flat count chip, as `SectionRule` draws it, from the
 /// theme this widget is handed.
-fn rule_line(title: &str, chip: Option<&str>, width: u16, theme: &Theme) -> Line<'static> {
+pub(crate) fn rule_line(
+    title: &str,
+    chip: Option<&str>,
+    width: u16,
+    theme: &Theme,
+) -> Line<'static> {
     let mut spans = vec![
         Span::styled(
             title.to_string(),
@@ -1406,7 +1468,7 @@ fn segment_text(label: &str) -> String {
     label.replace('∅', glyphs::get().null)
 }
 
-fn fit(text: &str, width: usize) -> String {
+pub(crate) fn fit(text: &str, width: usize) -> String {
     if glyphs::display_width(text) <= width {
         return text.to_string();
     }
@@ -3946,6 +4008,16 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         row("Remote writes", "none".to_string()),
         row("Local file writes", "none".to_string()),
         row("Passes", passes_label(config)),
+        row("Column intent", {
+            let every_row =
+                planned_scope_rows(state, plan).is_some_and(|rows| rows <= plan.dataset_rows);
+            let lines = intent_read_lines(plan, every_row);
+            if lines.is_empty() {
+                "none declared".to_string()
+            } else {
+                lines.join("; ")
+            }
+        }),
         row(
             "Estimate basis",
             match plan.compute {
@@ -4160,7 +4232,7 @@ fn approximate_bytes(bytes: usize) -> String {
     }
 }
 
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+pub(crate) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let width = width.min(area.width.saturating_sub(2)).max(1);
     let height = height.min(area.height.saturating_sub(2)).max(1);
     Rect {
@@ -4284,6 +4356,7 @@ mod tests {
                 focus: AnalysisFocus::Main,
                 theme: &self.theme,
                 ctx: &self.ctx,
+                intent_form: None,
             }
         }
 
@@ -4875,6 +4948,7 @@ mod interval_tests {
                 focus: AnalysisFocus::Main,
                 theme: &self.theme,
                 ctx: &self.ctx,
+                intent_form: None,
             };
             let (width, height) = size;
             let area = Rect::new(0, 0, width, height);
@@ -5260,6 +5334,7 @@ mod trend_tests {
                 findings: &FindingsView::default(),
                 rows_kept: false,
                 evidence_read: None,
+                intent_form: None,
             };
             let area = Rect::new(0, 0, width, height);
             let mut buf = Buffer::empty(area);

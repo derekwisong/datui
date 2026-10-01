@@ -15,6 +15,8 @@ pub enum SetupRow {
     TextAsTime,
     TimeRoles,
     Intervals,
+    /// What columns must hold, declared: the key and each column's rules.
+    Intent,
     Grain,
     Expected,
     Compare,
@@ -24,11 +26,12 @@ pub enum SetupRow {
 }
 
 impl SetupRow {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Sample,
         Self::TextAsTime,
         Self::TimeRoles,
         Self::Intervals,
+        Self::Intent,
         Self::Grain,
         Self::Expected,
         Self::Compare,
@@ -43,6 +46,7 @@ impl SetupRow {
             Self::TextAsTime => "Text as time",
             Self::TimeRoles => "Time roles",
             Self::Intervals => "Intervals",
+            Self::Intent => "Column intent",
             Self::Grain => "Grain",
             Self::Expected => "Expected",
             Self::Compare => "Compare",
@@ -489,6 +493,8 @@ pub struct AnalysisModal {
     pub data_quality_trend_line: usize,
     /// The Expected editor, while it is open.
     pub data_quality_expected_form: Option<ExpectedForm>,
+    /// One column's declared intent, being edited over the Column intent list.
+    pub data_quality_intent_form: Option<crate::intent_modal::IntentForm>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -556,6 +562,7 @@ impl AnalysisModal {
         self.data_quality_interval_index = 0;
         self.data_quality_trend_line = 0;
         self.data_quality_expected_form = None;
+        self.data_quality_intent_form = None;
         self.sample_form = None;
     }
 
@@ -591,6 +598,7 @@ impl AnalysisModal {
         self.data_quality_interval_index = 0;
         self.data_quality_trend_line = 0;
         self.data_quality_expected_form = None;
+        self.data_quality_intent_form = None;
     }
 
     /// Returns the cached results for the currently selected tool, if any.
@@ -730,6 +738,9 @@ impl AnalysisModal {
             QualityPage::Setup => SetupRow::ALL.len(),
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
             QualityPage::IntervalPairs => self.data_quality_plan.candidate_pairs().len(),
+            // The scope's columns, which the modal does not hold: the list's keys move
+            // by them in `App`.
+            QualityPage::Intent => 0,
             QualityPage::Intervals => results.temporal.len(),
             QualityPage::IntervalDetail => self.interval_facts().len(),
             QualityPage::Overview => self
@@ -889,13 +900,27 @@ impl AnalysisModal {
             && self.data_quality_picker.is_none()
             && !matches!(
                 self.data_quality_page,
-                QualityPage::TimeRoles | QualityPage::IntervalPairs | QualityPage::ExpectedWindows
+                QualityPage::TimeRoles
+                    | QualityPage::IntervalPairs
+                    | QualityPage::ExpectedWindows
+                    | QualityPage::Intent
             )
             && !self.data_quality_confirm_run
             && !self.data_quality_show_access
             && !self.data_quality_observation_detail
             && self.data_quality_evidence_read.is_none()
+            && self.data_quality_intent_form.is_none()
             && self.sample_form.is_none()
+    }
+
+    /// Whether a Column intent field owns typed characters, so Ctrl-C and `?` are
+    /// text there as in any field.
+    pub fn intent_typing(&self) -> bool {
+        self.active
+            && self
+                .data_quality_intent_form
+                .as_ref()
+                .is_some_and(crate::intent_modal::IntentForm::typing)
     }
 
     /// Whether the Sample form's scope field owns typed characters, so Ctrl-C and `?`
@@ -1286,9 +1311,11 @@ impl AnalysisModal {
                     (label, PlanChoice::TextColumn(column.clone()))
                 })
                 .collect(),
-            SetupRow::Sample | SetupRow::TimeRoles | SetupRow::Intervals | SetupRow::Expected => {
-                Vec::new()
-            }
+            SetupRow::Sample
+            | SetupRow::TimeRoles
+            | SetupRow::Intervals
+            | SetupRow::Expected
+            | SetupRow::Intent => Vec::new(),
         }
     }
 

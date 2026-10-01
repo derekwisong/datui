@@ -10,6 +10,7 @@ pub mod debug;
 pub mod export;
 pub mod info;
 pub mod pivot_melt;
+pub mod quality_intent;
 pub mod sample_form;
 pub mod template_modal;
 pub mod text_input;

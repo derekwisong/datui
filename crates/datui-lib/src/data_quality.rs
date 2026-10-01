@@ -448,6 +448,8 @@ pub enum QualityPage {
     Gaps,
     /// Which time windows rows are expected in, edited from Setup.
     ExpectedWindows,
+    /// What each column must hold, declared: the key and each column's rules.
+    Intent,
 }
 
 impl QualityPage {
@@ -467,7 +469,9 @@ impl QualityPage {
             Self::SegmentDetail => Self::Segments,
             Self::IntervalDetail => Self::Intervals,
             Self::TrendDetail | Self::Gaps => Self::Trends,
-            Self::TimeRoles | Self::IntervalPairs | Self::ExpectedWindows => Self::Setup,
+            Self::TimeRoles | Self::IntervalPairs | Self::ExpectedWindows | Self::Intent => {
+                Self::Setup
+            }
             page => page,
         }
     }
@@ -836,6 +840,7 @@ pub enum QualityStage {
     CountingSegments,
     ProfilingColumns,
     CheckingDuplicates,
+    CheckingKey,
     CheckingSpellings,
     ReadingConflicts,
     ProfilingSegments,
@@ -854,6 +859,7 @@ impl QualityStage {
             Self::CountingSegments => "Counting segment rows",
             Self::ProfilingColumns => "Profiling columns",
             Self::CheckingDuplicates => "Checking duplicate rows",
+            Self::CheckingKey => "Checking the declared key",
             Self::CheckingSpellings => "Checking category spellings",
             Self::ReadingConflicts => "Reading conflicting values",
             Self::ProfilingSegments => "Profiling segments",
@@ -1034,6 +1040,9 @@ pub struct DataQualityPlan {
     /// with no rows a gap. Read from the segments a run counted, so it changes what
     /// the report says, never what a run reads.
     pub expected: Option<ExpectedWindows>,
+    /// What the columns must hold, declared: the key and each column's rules. Read
+    /// from the rows the run reads; it decides no rows, so it is the report's.
+    pub intent: crate::quality_intent::DeclaredIntent,
 }
 
 /// Which time windows a study expects rows in, as stated in Setup: every window of
@@ -1129,6 +1138,7 @@ impl Default for DataQualityPlan {
             latency_threshold_seconds: None,
             time_formats: Vec::new(),
             expected: None,
+            intent: crate::quality_intent::DeclaredIntent::default(),
         }
     }
 }
@@ -1548,6 +1558,18 @@ pub enum ObservationKind {
     KeyLike,
     /// Text read as time that the chosen format does not read.
     UnparsedTime,
+    /// Rows sharing a value of the declared key.
+    KeyRepeated,
+    /// Rows with no value in some part of the declared key.
+    KeyMissing,
+    /// A column declared required, with no value.
+    RequiredMissing,
+    /// Values outside a column's declared allowed set.
+    NotAllowed,
+    /// Values outside a column's declared range.
+    OutOfRange,
+    /// Text declared to read as a number that does not.
+    UnparsedNumber,
 }
 
 impl ObservationKind {
@@ -1565,6 +1587,12 @@ impl ObservationKind {
             Self::TypeConflict => "Type conflict",
             Self::KeyLike => "Key-like",
             Self::UnparsedTime => "Unparsed time",
+            Self::KeyRepeated => "Repeated key",
+            Self::KeyMissing => "Incomplete key",
+            Self::RequiredMissing => "Required, missing",
+            Self::NotAllowed => "Not allowed",
+            Self::OutOfRange => "Out of range",
+            Self::UnparsedNumber => "Unparsed number",
         }
     }
 
@@ -1588,6 +1616,14 @@ impl ObservationKind {
             }
             Self::UnparsedTime => {
                 "Non-null text the chosen time format does not read / non-null values"
+            }
+            Self::KeyRepeated => "Rows sharing a declared key value / rows checked",
+            Self::KeyMissing => "Rows with no value in part of the declared key / rows checked",
+            Self::RequiredMissing => "Null values in a required column / rows checked",
+            Self::NotAllowed => "Values not in the declared set / non-null values",
+            Self::OutOfRange => "Values below the minimum or above the maximum / values read",
+            Self::UnparsedNumber => {
+                "Non-null text that does not read as the number / non-null values"
             }
         }
     }
@@ -1684,10 +1720,18 @@ impl QualityObservation {
             }
             // Absent and conflicting rows are named by their files, not by a predicate
             // over values: the column is not in those rows to be tested.
+            // Declared rules find their rows through what the run measured them with:
+            // see `IntentResults::evidence`.
             ObservationKind::ParseableText
             | ObservationKind::DuplicateRows
             | ObservationKind::Absent
-            | ObservationKind::TypeConflict => None,
+            | ObservationKind::TypeConflict
+            | ObservationKind::KeyRepeated
+            | ObservationKind::KeyMissing
+            | ObservationKind::RequiredMissing
+            | ObservationKind::NotAllowed
+            | ObservationKind::OutOfRange
+            | ObservationKind::UnparsedNumber => None,
         }
     }
 }
@@ -2099,6 +2143,8 @@ pub struct DataQualityResults {
     /// the rows are there, the sample did not reach them. Not in `segments`, which
     /// profile only what was read.
     pub unsampled_segments: Vec<UnsampledSegment>,
+    /// What the declared column intent found; `None` when nothing was declared.
+    pub intent: Option<Box<crate::quality_intent::IntentResults>>,
 }
 
 /// A segment the scope has rows in and a sample drew none of.
@@ -2205,6 +2251,7 @@ impl DataQualityResults {
             reads: None,
             examples: Vec::new(),
             unsampled_segments: Vec::new(),
+            intent: None,
         }
     }
 
@@ -2551,6 +2598,8 @@ fn profile_quality(
         results.source_files = source.map(|source| source.file_names.len());
         results.footers_read = source.map(|source| source.footers_read);
         results.reads = Some(watch.observed());
+        results.intent =
+            crate::quality_intent::IntentResults::unmeasured(plan, &schema).map(Box::new);
         return Ok(results);
     }
     let grain_column = match &plan.grain {
@@ -2643,7 +2692,10 @@ fn profile_quality(
     // not, and a sample and a scan are measured the same way.
     let profile_lf = profile_df.clone().lazy();
     add_dominance_lazy(&profile_lf, &mut columns, polars_streaming)?;
-    let formats = interpretation_exprs(plan, &collected_schema);
+    // Text read as time and the declared intent are counted over the rows in memory,
+    // as the columns were.
+    let mut formats = interpretation_exprs(plan, &collected_schema);
+    formats.extend(crate::quality_intent::intent_exprs(plan, &schema));
     let unparsed = if formats.is_empty() {
         DataFrame::default()
     } else {
@@ -2657,6 +2709,19 @@ fn profile_quality(
         precision,
         polars_streaming,
     )?;
+    // The declared key's repeats among the rows in memory: a repeat among distinct
+    // sampled rows is a repeat in the data, and no repeat says nothing past them.
+    let repeats = crate::quality_intent::key_repeats(&profile_lf, plan, &schema, polars_streaming)?;
+    let intent = crate::quality_intent::IntentResults::from_counts(
+        plan,
+        &schema,
+        &unparsed,
+        repeats,
+        evaluated_rows,
+        precision,
+        Some(&profile_lf),
+    )?
+    .map(Box::new);
     watch.stage(QualityStage::CheckingSpellings, false, false)?;
     let category_variants = profile_category_variants_lazy(&profile_lf, &schema, polars_streaming)?;
     let mut observations = observations_from_profiles(&columns, precision);
@@ -2666,6 +2731,10 @@ fn profile_quality(
         &collected_schema,
     ));
     observations.extend(identity_observations(&identity, &category_variants));
+    if let Some(intent) = &intent {
+        observations.extend(intent.observations());
+    }
+    crate::quality_intent::supersede(&mut observations, plan);
     // The rows are in memory, so the detail can show a few of the values behind a
     // finding without reading anything again.
     let mut identity = identity;
@@ -2729,6 +2798,7 @@ fn profile_quality(
         reads: Some(watch.observed()),
         examples,
         unsampled_segments,
+        intent,
     };
     Ok(results)
 }
@@ -2907,6 +2977,8 @@ fn compute_full_quality(
     // Text read as time is counted in the same pass as every column's profile.
     let mut exprs = build_profile_exprs(schema);
     exprs.extend(interpretation_exprs(plan, &full_schema));
+    // The declared intent's counts too: sums over the same rows, in the same pass.
+    exprs.extend(crate::quality_intent::intent_exprs(plan, schema));
     let aggregate = collect_lazy(lf.clone().select(exprs), polars_streaming)
         .map_err(|error| watch.failed(error))?;
     let mut columns = parse_profiles(&aggregate, schema, total_rows);
@@ -2926,9 +2998,29 @@ fn compute_full_quality(
     watch.stage(QualityStage::CheckingSpellings, texts, polars_streaming)?;
     let category_variants =
         profile_category_variants_lazy(lf, schema, polars_streaming).map_err(failed)?;
+    // The declared key is one grouping of its columns: a pass of its own, which
+    // Setup counts among the passes before Run.
+    let keyed = !plan.intent.key.is_empty();
+    watch.stage(QualityStage::CheckingKey, keyed, polars_streaming)?;
+    let repeats =
+        crate::quality_intent::key_repeats(lf, plan, schema, polars_streaming).map_err(failed)?;
+    let intent = crate::quality_intent::IntentResults::from_counts(
+        plan,
+        schema,
+        &aggregate,
+        repeats,
+        total_rows,
+        QualityPrecision::Exact,
+        None,
+    )?
+    .map(Box::new);
     let mut observations = observations_from_profiles(&columns, QualityPrecision::Exact);
     observations.extend(interpretation_observations(&aggregate, plan, &full_schema));
     observations.extend(identity_observations(&identity, &category_variants));
+    if let Some(intent) = &intent {
+        observations.extend(intent.observations());
+    }
+    crate::quality_intent::supersede(&mut observations, plan);
     // Only a run that already reads every value pays for the conflicting values, and
     // only that run's access plan promised the read. Each file is read on its own,
     // so a cancel stops them between files.
@@ -2982,6 +3074,7 @@ fn compute_full_quality(
         reads: Some(watch.observed()),
         examples: Vec::new(),
         unsampled_segments: Vec::new(),
+        intent,
     })
 }
 

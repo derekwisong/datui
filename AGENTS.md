@@ -108,8 +108,10 @@ with `task_generation`; a result whose generation is stale is dropped. Each
 spawn names its `Job`. A worker sends its result and returns `Ok`, or returns
 `Err` with the message for the user; `spawn_bg` reports that, or a panic, as
 one `BackgroundFailed`, and `background_failed` clears only what that job
-set. Async cloud calls go through `wait_on_runtime` on the shared Tokio
-runtime. Never collect inside a render function.
+set. Home-screen workers, keyed by place rather than generation, run inside an
+`OwedAnswer` that sends their in-flight marker an answer if they panic. Async
+cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never
+collect inside a render function.
 
 **Keys typed while busy are queued.** While a background task runs, `busy` is
 set and the control bar shows a spinner. `EventPump` (`event_pump.rs`, owned by

@@ -308,9 +308,6 @@ distribution_skewed = "yellow"
 distribution_other = "white"
 outlier_marker = "red"
 
-[ui.controls]
-row_count_width = 25
-
 [query]
 history_limit = 500
 enable_history = true
@@ -335,7 +332,6 @@ show_transformations = true
     assert!(config.display.row_numbers);
     assert_eq!(config.performance.analysis_sample_rows, 50000);
     assert_eq!(config.theme.colors.keybind_hints, "blue");
-    assert_eq!(config.ui.controls.row_count_width, 25);
     assert_eq!(config.query.history_limit, 500);
     assert!(config.templates.auto_apply);
 
@@ -1423,6 +1419,19 @@ fn test_load_from_missing_config_file_yields_defaults() {
 
     assert_eq!(config.version, AppConfig::default().version);
     assert!(config.import.is_empty());
+}
+
+#[test]
+fn test_a_config_with_the_removed_ui_section_still_loads() {
+    // `[ui.controls]` was never read, and is gone; a config that has it must not break.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "[ui.controls]\nrow_count_width = 25\ncustom_controls = [[\"q\", \"Quit\"]]\n\n[display]\nrow_numbers = true\n",
+    );
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+    assert!(config.display.row_numbers);
 }
 
 #[test]

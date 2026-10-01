@@ -171,11 +171,6 @@ impl ConfigManager {
             comments.insert(format!("clipboard.{}", field), comment.to_string());
         }
 
-        // Controls fields
-        for (field, comment) in CONTROLS_COMMENTS {
-            comments.insert(format!("ui.controls.{}", field), comment.to_string());
-        }
-
         // Query fields
         for (field, comment) in QUERY_COMMENTS {
             comments.insert(format!("query.{}", field), comment.to_string());
@@ -428,7 +423,6 @@ pub struct AppConfig {
     pub glyphs: GlyphsConfig,
     pub clipboard: ClipboardConfig,
     pub data: DataConfig,
-    pub ui: UiConfig,
     pub query: QueryConfig,
     pub templates: TemplateConfig,
     pub debug: DebugConfig,
@@ -490,11 +484,6 @@ const SECTION_HEADERS: &[(&str, &str)] = &[
         "clipboard",
         "# ============================================================================\n# Clipboard\n# ============================================================================\n# How the copy dialog (y) reaches the system clipboard.",
     ),
-    (
-        "ui",
-        "# ============================================================================\n# UI Layout\n# ============================================================================",
-    ),
-    ("ui.controls", "# Control bar settings"),
     (
         "query",
         "# ============================================================================\n# Query System\n# ============================================================================",
@@ -1355,10 +1344,6 @@ const UNSET_EXAMPLES: &[(&str, &str)] = &[
     ("file_loading.single_spine_schema", "true"),
     ("display.sidebar_width", "70"),
     ("theme.mode", "\"auto\""),
-    (
-        "ui.controls.custom_controls",
-        "[[\"q\", \"Quit\"], [\"?\", \"Help\"]]",
-    ),
     ("debug.log_file", "\"~/datui.log\""),
 ];
 
@@ -2409,28 +2394,6 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ),
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct UiConfig {
-    pub controls: ControlsConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ControlsConfig {
-    pub custom_controls: Option<Vec<(String, String)>>,
-    pub row_count_width: usize,
-}
-
-// Field comments for ControlsConfig
-const CONTROLS_COMMENTS: &[(&str, &str)] = &[
-    (
-        "custom_controls",
-        "Custom control keybindings (optional)\nFormat: [[\"key\", \"label\"], [\"key\", \"label\"], ...]\nIf not specified, uses default controls",
-    ),
-    ("row_count_width", "Row count display width in characters"),
-];
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueryConfig {
@@ -2622,7 +2585,6 @@ impl Default for AppConfig {
             glyphs: GlyphsConfig::default(),
             clipboard: ClipboardConfig::default(),
             data: DataConfig::default(),
-            ui: UiConfig::default(),
             query: QueryConfig::default(),
             templates: TemplateConfig::default(),
             debug: DebugConfig::default(),
@@ -2801,15 +2763,6 @@ impl ColorConfig {
             accent_bright: "#1a6cd0".to_string(),
             gradient_start: "#2e7de9".to_string(),
             gradient_end: "#9854f1".to_string(),
-        }
-    }
-}
-
-impl Default for ControlsConfig {
-    fn default() -> Self {
-        Self {
-            custom_controls: None,
-            row_count_width: 20,
         }
     }
 }

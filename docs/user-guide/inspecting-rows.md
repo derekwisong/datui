@@ -11,7 +11,7 @@ preview. The inspector shows what is stored:
 |---|---|
 | Float | The shortest decimal that reads back to the stored value: `1000000.125`, not the table's `1.0000e6`. `-0.0`, `NaN`, `inf` and `-inf` as they are |
 | Integer | Every digit. When the table groups digits, a line under it says what the table shows |
-| Datetime | Every digit of its unit and the zone's offset: `2024-01-02 04:04:05.000120 +01:00` |
+| Datetime | Every digit of its unit and the zone's offset: `2024-01-02 04:04:05.000120 +01:00`. One past the calendar's range shows its stored number: `-9223372036854775807 us since 1970-01-01 UTC` |
 | Text | Whole, wrapped, a line per line break; its length, line count and any spaces at either end are named on the rule above it |
 | Empty text | `empty string`, or `""` escaped |
 | Null | `∅ null`; `· absent` or `≠ conflicting` where the dataset's files differ |
@@ -58,6 +58,7 @@ the pane says so instead of showing that row's values.
 ## In the table
 
 The table keeps a row on one line. A line break in a value shows as `¶`, a
-tab as `»` and another control character as `¤` (`$`, `>` and `?` in an
-ASCII terminal), so `line1\nline2` reads `line1¶line2` instead of
+tab as `»` and another control character or a direction mark (such as
+U+202E, which would turn the rest of the row around) as `¤` (`$`, `>` and `?`
+in an ASCII terminal), so `line1\nline2` reads `line1¶line2` instead of
 `line1line2`.

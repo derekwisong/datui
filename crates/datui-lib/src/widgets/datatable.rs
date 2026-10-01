@@ -8846,7 +8846,9 @@ impl DataTable {
             }
             let text = numfmt::format_any_value(&col_fmt, &value, scratch);
             // A break or a tab would vanish from a cell and run the text together.
-            let text = crate::exact::preview(&text, g).into_owned();
+            // Only a cell's start can be drawn: measuring a huge value whole would
+            // cost every frame what the value costs.
+            let text = crate::exact::cell_preview(&text, g);
             value_width = value_width.max(crate::glyphs::cell_width(&text));
             cells.push(SliceCell::Value(text));
         }
@@ -12272,6 +12274,40 @@ mod tests {
         );
         assert!(row_string(&buf, area, 2).starts_with(&format!("tab{}separated", g.tab_mark)));
         assert!(row_string(&buf, area, 3).starts_with(&format!("esc{}[0m", g.control_mark)));
+    }
+
+    /// A direction control in a value is marked too: drawn, a terminal that lays
+    /// out bidirectional text would reverse the rest of the row.
+    #[test]
+    fn direction_controls_are_marked_in_a_cell() {
+        let table = DataTable::default();
+        let df = df!("s" => ["a\u{202e}evil\u{202c}z"]).unwrap();
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        table.render_dataframe(&df, area, &mut buf, &mut TableState::default(), false, 0);
+        let m = table.glyphs.control_mark;
+        let row = row_string(&buf, area, 1);
+        assert!(row.starts_with(&format!("a{m}evil{m}z")), "{row:?}");
+        assert!(
+            !buf.content()
+                .iter()
+                .any(|c| c.symbol().contains('\u{202e}'))
+        );
+    }
+
+    /// A cell measures only the start of a huge value, and says it goes on.
+    #[test]
+    fn a_huge_value_is_measured_by_its_start() {
+        let table = DataTable::default();
+        let huge = "x".repeat(crate::exact::CELL_PREVIEW_BYTES * 4);
+        let df = df!("s" => [huge.as_str()]).unwrap();
+        let mut scratch = String::new();
+        let slice = table.slice_column(&df, 0, 1, &HashSet::new(), &mut scratch);
+        let ellipsis = crate::glyphs::cell_width(table.glyphs.ellipsis);
+        assert_eq!(
+            usize::from(slice.value_width),
+            crate::exact::CELL_PREVIEW_BYTES + ellipsis
+        );
     }
 
     #[test]

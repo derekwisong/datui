@@ -68,7 +68,8 @@ Wide columns:
   wider, f fits the rows on screen, w back to automatic.
   A value or name cut short at the edge of its column ends in …; Space shows
   the row's values whole. A line break in a value shows as ¶, a tab as »
-  and another control character as ¤ ($, > and ? in ASCII). A number is
+  and another control character or a direction mark as ¤ ($, > and ? in
+  ASCII). A number is
   cut only as the first scrolling column with no room for it; otherwise it
   waits, whole, for the scroll.
   Frozen columns (L in Sort & Filter) sit left of │. When it shows as ┆, the

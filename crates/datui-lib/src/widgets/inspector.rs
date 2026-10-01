@@ -143,7 +143,8 @@ fn wrap_into(line: &str, width: usize, tone: Tone, out: &mut Vec<(String, Tone)>
 }
 
 /// Text as it reads raw: a line per line break, tabs to the next stop of
-/// four, and any other control character as the control mark.
+/// four, and any other control character or direction control as the control
+/// mark, as in a table cell.
 fn raw_lines(text: &str, width: usize, out: &mut Vec<(String, Tone)>) {
     let g = crate::glyphs::get();
     for line in text.split('\n') {
@@ -157,7 +158,7 @@ fn raw_lines(text: &str, width: usize, out: &mut Vec<(String, Tone)>) {
                     expanded.extend(std::iter::repeat_n(' ', stop));
                     column += stop;
                 }
-                c if c.is_control() => {
+                c if exact::marked(c) => {
                     expanded.push_str(g.control_mark);
                     column += 1;
                 }
@@ -390,6 +391,8 @@ fn preview(field: &InspectField, value: &AnyValue, room: usize, ctx: &RenderCont
         v if exact::is_nested_value(v) => {
             exact::preview(&exact::nested_compact(v, budget).text, g).into_owned()
         }
+        // The table's formatting panics on a date past the calendar.
+        v if exact::out_of_range(v).is_some() => exact::value_text(v),
         v => {
             let formatter = ctx.number_format.formatter_for(&field.name, &field.dtype);
             let mut scratch = String::new();

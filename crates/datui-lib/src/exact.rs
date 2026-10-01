@@ -57,6 +57,38 @@ pub fn f32_text(v: f32) -> String {
     }
 }
 
+/// A date or datetime outside the calendar's range, as its stored number: Polars
+/// panics formatting one (a sentinel like `i64::MIN` microseconds is real data).
+/// A day of margin either side leaves room for a zone's offset.
+pub fn out_of_range(value: &AnyValue) -> Option<String> {
+    use chrono::{DateTime, NaiveDate, TimeDelta};
+    let fits = |dt: Option<DateTime<chrono::Utc>>| {
+        dt.is_some_and(|dt| {
+            dt.checked_add_signed(TimeDelta::days(1)).is_some()
+                && dt.checked_sub_signed(TimeDelta::days(1)).is_some()
+        })
+    };
+    match value {
+        AnyValue::Date(days) => {
+            // Days from 0001-01-01 to the epoch, as Polars counts them.
+            let fits = days
+                .checked_add(719_163)
+                .and_then(NaiveDate::from_num_days_from_ce_opt)
+                .is_some();
+            (!fits).then(|| format!("{days} days since 1970-01-01"))
+        }
+        AnyValue::Datetime(v, unit, _) | AnyValue::DatetimeOwned(v, unit, _) => {
+            let (dt, unit) = match unit {
+                TimeUnit::Milliseconds => (DateTime::from_timestamp_millis(*v), "ms"),
+                TimeUnit::Microseconds => (DateTime::from_timestamp_micros(*v), "us"),
+                TimeUnit::Nanoseconds => (Some(DateTime::from_timestamp_nanos(*v)), "ns"),
+            };
+            (!fits(dt)).then(|| format!("{v} {unit} since 1970-01-01 UTC"))
+        }
+        _ => None,
+    }
+}
+
 /// A datetime with every digit its unit stores, and the zone's offset when it
 /// has a zone. Polars' own display drops trailing zeros and names the zone by
 /// abbreviation, which several zones share.
@@ -85,6 +117,9 @@ pub fn base64_text(bytes: &[u8]) -> String {
 /// A value as exact text. A null is empty, as in an export; a list or struct
 /// is compact JSON-like text over exact scalars; bytes are base64.
 pub fn value_text(value: &AnyValue) -> String {
+    if let Some(text) = out_of_range(value) {
+        return text;
+    }
     match value {
         AnyValue::Null => String::new(),
         AnyValue::Float64(v) => f64_text(*v),
@@ -168,51 +203,79 @@ fn write_nested(
     if out.len() >= budget {
         return false;
     }
+    // Items are taken one at a time: a million-item list stops at the budget
+    // rather than being turned into a million values first.
+    match value {
+        AnyValue::List(s) | AnyValue::Array(s, _) => write_items(
+            s.iter().map(|v| (None, v)),
+            s.len(),
+            ('[', ']'),
+            out,
+            indent,
+            depth,
+            budget,
+        ),
+        AnyValue::Struct(_, _, fields) => write_items(
+            fields
+                .iter()
+                .map(|f| Some(f.name().as_str()))
+                .zip(value._iter_struct_av()),
+            fields.len(),
+            ('{', '}'),
+            out,
+            indent,
+            depth,
+            budget,
+        ),
+        AnyValue::StructOwned(payload) => write_items(
+            payload
+                .1
+                .iter()
+                .map(|f| Some(f.name().as_str()))
+                .zip(payload.0.iter().cloned()),
+            payload.1.len(),
+            ('{', '}'),
+            out,
+            indent,
+            depth,
+            budget,
+        ),
+        // Text and bytes are cut at the budget too: one huge string in a list is
+        // as costly as a huge cell.
+        AnyValue::String(s) => write_quoted(s, out, budget),
+        AnyValue::StringOwned(s) => write_quoted(s, out, budget),
+        AnyValue::Binary(b) => write_bytes(b, out, budget),
+        AnyValue::BinaryOwned(b) => write_bytes(b, out, budget),
+        v => {
+            out.push_str(&json_scalar(v));
+            true
+        }
+    }
+}
+
+/// The items of a list, array or struct between `open` and `close`, each named
+/// when a struct's. False once the budget ran out.
+fn write_items<'n, 'v>(
+    items: impl Iterator<Item = (Option<&'n str>, AnyValue<'v>)>,
+    len: usize,
+    (open, close): (char, char),
+    out: &mut String,
+    indent: Option<usize>,
+    depth: usize,
+    budget: usize,
+) -> bool {
     let pad = |out: &mut String, depth: usize| {
         if indent.is_some() {
             out.push('\n');
             out.extend(std::iter::repeat_n("  ", depth));
         }
     };
-    let items: Option<(Vec<Option<String>>, Vec<AnyValue>)> = match value {
-        AnyValue::List(s) | AnyValue::Array(s, _) => {
-            Some((vec![None; s.len()], s.iter().collect()))
-        }
-        AnyValue::Struct(..) | AnyValue::StructOwned(_) => {
-            let fields: Vec<Option<String>> = match value {
-                AnyValue::Struct(_, _, fields) => {
-                    fields.iter().map(|f| Some(f.name().to_string())).collect()
-                }
-                AnyValue::StructOwned(payload) => payload
-                    .1
-                    .iter()
-                    .map(|f| Some(f.name().to_string()))
-                    .collect(),
-                _ => unreachable!(),
-            };
-            let values = match value {
-                AnyValue::StructOwned(payload) => payload.0.clone(),
-                v => v._iter_struct_av().collect(),
-            };
-            Some((fields, values))
-        }
-        _ => None,
-    };
-    let Some((names, values)) = items else {
-        out.push_str(&json_scalar(value));
-        return true;
-    };
-    let (open, close) = if names.first().is_some_and(Option::is_some) {
-        ('{', '}')
-    } else {
-        ('[', ']')
-    };
     out.push(open);
-    if values.is_empty() {
+    if len == 0 {
         out.push(close);
         return true;
     }
-    for (i, (name, item)) in names.iter().zip(values.iter()).enumerate() {
+    for (i, (name, item)) in items.enumerate() {
         if i > 0 {
             out.push(',');
             if indent.is_none() {
@@ -224,15 +287,43 @@ fn write_nested(
             out.push_str(&json_string(name));
             out.push_str(": ");
         }
-        if !write_nested(item, out, indent, depth + 1, budget) {
+        if !write_nested(&item, out, indent, depth + 1, budget) {
             return false;
         }
-        if out.len() >= budget && i + 1 < values.len() {
+        if out.len() >= budget && i + 1 < len {
             return false;
         }
     }
     pad(out, depth);
     out.push(close);
+    true
+}
+
+/// Text quoted and escaped, as much of it as fits the budget. False when cut,
+/// and then with no closing quote, so it does not read as the whole value.
+fn write_quoted(s: &str, out: &mut String, budget: usize) -> bool {
+    out.push('"');
+    let head = prefix(s, budget.saturating_sub(out.len()));
+    escape_into(head, out);
+    if head.len() < s.len() {
+        return false;
+    }
+    out.push('"');
+    true
+}
+
+/// Bytes as quoted base64, as much as fits the budget. False when cut.
+fn write_bytes(bytes: &[u8], out: &mut String, budget: usize) -> bool {
+    // Base64 writes four characters per three bytes; whole groups keep the
+    // part that is shown decodable.
+    let room = budget.saturating_sub(out.len() + 1) / 4 * 3;
+    let head = &bytes[..bytes.len().min(room)];
+    out.push('"');
+    out.push_str(&base64_text(head));
+    if head.len() < bytes.len() {
+        return false;
+    }
+    out.push('"');
     true
 }
 
@@ -260,19 +351,44 @@ fn json_string(s: &str) -> String {
 }
 
 /// Whether `c` draws nothing, or nothing a reader can tell from a space, so the
-/// escaped view spells it out: controls, no-break and zero-width spaces, the
-/// soft hyphen, direction marks and the byte-order mark.
+/// escaped view spells it out: controls, Unicode's default-ignorable characters
+/// (zero-width and direction marks, the soft hyphen, variation selectors, tags,
+/// the byte-order mark) and the spaces other than U+0020.
 fn invisible(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
             '\u{a0}'
                 | '\u{ad}'
-                | '\u{200b}'..='\u{200f}'
+                | '\u{34f}'
+                | '\u{61c}'
+                | '\u{115f}'..='\u{1160}'
+                | '\u{1680}'
+                | '\u{17b4}'..='\u{17b5}'
+                | '\u{180b}'..='\u{180f}'
+                | '\u{2000}'..='\u{200f}'
                 | '\u{2028}'..='\u{202f}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
+                | '\u{205f}'..='\u{206f}'
+                | '\u{3000}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
                 | '\u{feff}'
+                | '\u{ffa0}'
+                | '\u{fff0}'..='\u{fffb}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0000}'..='\u{e0fff}'
+        )
+}
+
+/// Whether a one-line cell draws `c` as a mark rather than as itself: a control
+/// character, which a cell cannot draw, or a direction control, which a terminal
+/// that lays out bidirectional text would apply to the rest of the row.
+pub fn marked(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
         )
 }
 
@@ -350,17 +466,34 @@ pub fn hex_lines(bytes: &[u8], width: usize) -> Vec<String> {
         .collect()
 }
 
-/// Whether one-line text holds a character a cell cannot draw.
-fn has_control(s: &str) -> bool {
+/// Whether one-line text holds a character [`marked`] in a cell. Bytes first:
+/// C1 controls start with 0xc2, U+061C with 0xd8, the other direction controls
+/// with 0xe2.
+fn has_marked(s: &str) -> bool {
     s.bytes().any(|b| b < 0x20 || b == 0x7f)
-        || (s.as_bytes().contains(&0xc2) && s.chars().any(char::is_control))
+        || (s.bytes().any(|b| matches!(b, 0xc2 | 0xd8 | 0xe2)) && s.chars().any(marked))
 }
 
-/// One-line preview of `s`: a line break, a tab or another control character
+/// Bytes of a value a table cell previews: more than any terminal row draws.
+pub const CELL_PREVIEW_BYTES: usize = 4096;
+
+/// [`preview`] of the start of `s`, ending in the ellipsis when cut: a cell
+/// draws only its start, and measuring a huge value whole every frame costs
+/// what the value costs.
+pub fn cell_preview(s: &str, g: &crate::glyphs::Glyphs) -> String {
+    let head = prefix(s, CELL_PREVIEW_BYTES);
+    let mut text = preview(head, g).into_owned();
+    if head.len() < s.len() {
+        text.push_str(g.ellipsis);
+    }
+    text
+}
+
+/// One-line preview of `s`: a line break, a tab or another [`marked`] character
 /// becomes a mark from the glyph set, so `line1\nline2` does not read as
 /// `line1line2`. A `\r\n` pair is one break.
 pub fn preview<'a>(s: &'a str, g: &crate::glyphs::Glyphs) -> Cow<'a, str> {
-    if !has_control(s) {
+    if !has_marked(s) {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
@@ -373,7 +506,7 @@ pub fn preview<'a>(s: &'a str, g: &crate::glyphs::Glyphs) -> Cow<'a, str> {
             }
             '\n' => out.push_str(g.newline_mark),
             '\t' => out.push_str(g.tab_mark),
-            c if c.is_control() => out.push_str(g.control_mark),
+            c if marked(c) => out.push_str(g.control_mark),
             c => out.push(c),
         }
     }
@@ -634,6 +767,87 @@ mod tests {
         let pretty = nested_pretty(&list(&values), 200);
         assert!(pretty.cut);
         assert!(pretty.text.len() < 260, "{}", pretty.text.len());
+    }
+
+    /// Polars panics formatting these; the stored number stands in.
+    #[test]
+    fn a_date_past_the_calendar_is_its_stored_number() {
+        let us = AnyValue::Datetime(i64::MIN + 1, TimeUnit::Microseconds, None);
+        assert_eq!(
+            value_text(&us),
+            "-9223372036854775807 us since 1970-01-01 UTC"
+        );
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris"))
+            .unwrap()
+            .unwrap();
+        let ms = AnyValue::Datetime(i64::MAX, TimeUnit::Milliseconds, Some(&paris));
+        assert!(value_text(&ms).starts_with("9223372036854775807 ms"));
+        assert_eq!(
+            value_text(&AnyValue::Date(i32::MAX)),
+            "2147483647 days since 1970-01-01"
+        );
+        // Every nanosecond count is a date; the edges keep their digits.
+        assert_eq!(
+            value_text(&AnyValue::Datetime(i64::MAX, TimeUnit::Nanoseconds, None)),
+            "2262-04-11 23:47:16.854775807"
+        );
+        assert_eq!(value_text(&AnyValue::Date(-800_000)), "-0221-09-04");
+    }
+
+    #[test]
+    fn the_escaped_view_spells_out_every_invisible_character() {
+        for c in [
+            '\u{61c}',
+            '\u{2000}',
+            '\u{3000}',
+            '\u{180e}',
+            '\u{fe0f}',
+            '\u{e0041}',
+            '\u{9b}',
+            '\u{2066}',
+            '\u{2028}',
+        ] {
+            assert_eq!(
+                escaped(&c.to_string()),
+                format!("\"\\u{{{:x}}}\"", c as u32)
+            );
+        }
+    }
+
+    /// A direction control would turn the rest of a row around in a terminal
+    /// that lays out bidirectional text.
+    #[test]
+    fn the_preview_marks_direction_controls() {
+        let g = crate::glyphs::unicode();
+        assert_eq!(preview("a\u{202e}b\u{202c}c\u{61c}", g), "a¤b¤c¤");
+        assert!(matches!(preview("שלום مرحبا — x", g), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn a_cell_previews_only_the_start_of_a_huge_value() {
+        let g = crate::glyphs::unicode();
+        let huge = "x".repeat(CELL_PREVIEW_BYTES * 10);
+        let cell = cell_preview(&huge, g);
+        assert_eq!(cell.len(), CELL_PREVIEW_BYTES + g.ellipsis.len());
+        assert!(cell.ends_with(g.ellipsis));
+        assert_eq!(cell_preview("a\nb", g), "a¶b");
+    }
+
+    /// One huge string or a million items in a list stop at the budget too.
+    #[test]
+    fn a_nested_value_is_cut_inside_a_huge_item() {
+        let huge = "y".repeat(1 << 20);
+        let s = Series::new("".into(), ["a", huge.as_str()]);
+        let pretty = nested_pretty(&AnyValue::List(s), 200);
+        assert!(pretty.cut);
+        assert!(pretty.text.len() <= 210, "{}", pretty.text.len());
+        assert!(pretty.text.starts_with("[\n  \"a\",\n  \"yyy"));
+        let bytes = Series::new("".into(), [vec![7u8; 1 << 20].as_slice()]);
+        let compact = nested_compact(&AnyValue::List(bytes), 100);
+        assert!(compact.cut && compact.text.len() <= 100, "{}", compact.text);
+        let many = Series::new("".into(), (0..1_000_000i64).collect::<Vec<_>>());
+        let compact = nested_compact(&AnyValue::List(many), 50);
+        assert!(compact.cut && compact.text.len() < 60, "{}", compact.text);
     }
 
     #[test]

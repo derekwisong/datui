@@ -38,5 +38,6 @@ Fields not in the table's rows:
   a second read may order them differently, and the pane says so.
 
 In the table, a line break shows as ¶, a tab as » and another control
-character as ¤ ($, > and ? in ASCII terminals). The inspector shows them
-as they are.
+character or a direction mark as ¤ ($, > and ? in ASCII terminals). The
+inspector breaks the lines and spaces the tabs; escaped, it names every
+invisible character.

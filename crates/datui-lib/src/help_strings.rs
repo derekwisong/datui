@@ -40,6 +40,10 @@ pub fn copy() -> &'static str {
     include_help!("copy")
 }
 
+pub fn inspector() -> &'static str {
+    include_help!("inspector")
+}
+
 pub fn info_panel() -> &'static str {
     include_help!("info_panel")
 }

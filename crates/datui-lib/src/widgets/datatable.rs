@@ -397,6 +397,46 @@ struct GroupSource {
     rows_in_lists: bool,
 }
 
+/// One field the row inspector lists: a column of the frame on screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InspectField {
+    pub name: String,
+    pub dtype: DataType,
+    /// Hidden from the table, so not among the rows read for it.
+    pub hidden: bool,
+}
+
+impl InspectField {
+    /// Whether the table's rows hold this field's value: a hidden column is not
+    /// read for them, and a binary one is read as a stub.
+    pub fn buffered(&self) -> bool {
+        !self.hidden && !matches!(self.dtype, DataType::Binary)
+    }
+}
+
+/// The selected row as the buffer holds it; see [`DataTableState::inspect_row`].
+pub struct InspectRow {
+    /// The row's index in the view.
+    pub row: usize,
+    /// The frame it is a row of (`len_generation`), which a sort, a filter or a
+    /// query replaces.
+    pub frame: u64,
+    /// The row number the table shows.
+    pub display_row: usize,
+    /// The row, one column per table column, raw.
+    pub values: DataFrame,
+    /// Which drift group its file is in, when the files differ.
+    pub drift_group: Option<u32>,
+}
+
+/// What a null means where the files of a dataset differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullKind {
+    Null,
+    Absent,
+    Conflict,
+}
+
 /// The row a drill into a group reads, from [`DataTableState::drill_row`].
 pub enum DrillRow {
     /// Taken from the rows on screen.
@@ -820,11 +860,16 @@ fn conflicting_row_runs(starts: &[usize], total: usize, conflicts: &[bool]) -> V
 
 /// Options for a sort, one direction per column. Nulls go last in both directions, as
 /// in pandas, DuckDB and spreadsheets; Polars would otherwise put them first either way.
+/// Ties keep their order: each page is its own sort-then-slice, and an unstable sort
+/// orders ties differently for a slice at the top (a top-k) than for one further
+/// down, so pages would repeat and skip rows, and the inspector's one-row read would
+/// find another row.
 fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
     let n = descending.len();
     SortMultipleOptions::default()
         .with_order_descending_multi(descending)
         .with_nulls_last_multi(vec![true; n])
+        .with_maintain_order(true)
 }
 
 /// A string's in-memory width when nothing says otherwise: the view plus a short value.
@@ -5823,6 +5868,17 @@ impl DataTableState {
         if self.drift_column_present {
             all_columns.push(col(crate::schema_union::DRIFT_COLUMN));
         }
+        self.window_lf(start, len, all_columns)
+    }
+
+    /// The frame for rows `[start, start + len)` of the view, as `all_columns`. For a
+    /// remote dataset whose files are counted, a scan of only the files holding them.
+    fn window_lf(
+        &self,
+        start: usize,
+        len: usize,
+        all_columns: Vec<Expr>,
+    ) -> PolarsResult<LazyFrame> {
         if let Some((files, offsets)) = self
             .remote_files
             .as_ref()
@@ -7041,17 +7097,14 @@ impl DataTableState {
         (len > 0).then(|| selected.slice(offset as i64, len))
     }
 
-    /// The selected row's raw value in one column. A null is an empty string,
-    /// like a null in an export — never the UI's glyph. A list or struct is
-    /// JSON, as in a CSV export.
+    /// The selected row's value in one column, exactly as stored (see
+    /// [`crate::exact`]): a float as the decimal that reads back to it, never
+    /// the table's rounded preview. A null is an empty string, like a null in
+    /// an export — never the UI's glyph. A list or struct is JSON, as in a CSV
+    /// export.
     pub fn copy_cell_value(&self, column: &str) -> Option<String> {
         let row = self.copy_row_df()?;
-        let row = crate::nested_json::frame_as_json(&row.select([column]).ok()?).ok()?;
-        let series = row.column(column).ok()?.as_materialized_series();
-        Some(match series.get(0).ok()? {
-            AnyValue::Null => String::new(),
-            v => v.str_value().into_owned(),
-        })
+        crate::exact::copy_text(row.column(column).ok()?).ok()
     }
 
     /// The selected row's number as the row-numbers column would print it.
@@ -7132,16 +7185,8 @@ impl DataTableState {
         };
         // The column holds each row's place in the dataset. The file it came from is
         // the last one starting at or before it, and the file says what it is missing.
-        let starts = &self.drift_file_starts;
-        let groups = &self.drift_file_group;
         rows.iter()
-            .map(|row| {
-                let row = row.unwrap_or(0) as usize;
-                let file = starts
-                    .partition_point(|&start| start <= row)
-                    .saturating_sub(1);
-                groups.get(file).copied().unwrap_or(0)
-            })
+            .map(|row| self.file_group_of(row.unwrap_or(0) as usize))
             .collect()
     }
 
@@ -7177,6 +7222,90 @@ impl DataTableState {
             .iter()
             .flat_map(|source| source.keys.iter().map(|(name, _)| name.to_string()))
             .collect()
+    }
+
+    /// The columns the inspector lists for a row: the table's, in its order, then
+    /// the ones hidden from it, in schema order. Never the scan's own row index.
+    pub fn inspect_fields(&self) -> Vec<InspectField> {
+        let shown = self.column_order.iter().filter_map(|name| {
+            Some(InspectField {
+                name: name.clone(),
+                dtype: self.schema.get(name.as_str())?.clone(),
+                hidden: false,
+            })
+        });
+        let hidden = self
+            .schema
+            .iter()
+            .filter(|(name, _)| {
+                name.as_str() != crate::schema_union::DRIFT_COLUMN
+                    && !self.column_order.iter().any(|c| c == name.as_str())
+            })
+            .map(|(name, dtype)| InspectField {
+                name: name.to_string(),
+                dtype: dtype.clone(),
+                hidden: true,
+            });
+        shown.chain(hidden).collect()
+    }
+
+    /// The selected row as the buffer holds it, with the file group that says what
+    /// its nulls are. Reads nothing; `None` while the row is not on hand.
+    pub fn inspect_row(&self) -> Option<InspectRow> {
+        let df = self.buffered_df.as_ref()?;
+        let row = self.start_row + self.table_state.selected()?;
+        let offset = row.checked_sub(self.buffered_start_row)?;
+        if offset >= df.height() {
+            return None;
+        }
+        let names: Vec<&str> = self.column_order.iter().map(|s| s.as_str()).collect();
+        let values = df.select(names).ok()?.slice(offset as i64, 1);
+        let drift_group = self
+            .drift_column_present
+            .then(|| df.column(crate::schema_union::DRIFT_COLUMN).ok())
+            .flatten()
+            .and_then(|c| c.get(offset).ok())
+            .and_then(|v| v.extract::<usize>())
+            .map(|place| self.file_group_of(place));
+        Some(InspectRow {
+            row,
+            frame: self.len_generation,
+            display_row: row + self.row_start_index,
+            values,
+            drift_group,
+        })
+    }
+
+    /// The drift group of the file holding the dataset's row `place`.
+    fn file_group_of(&self, place: usize) -> u32 {
+        let file = self
+            .drift_file_starts
+            .partition_point(|&start| start <= place)
+            .saturating_sub(1);
+        self.drift_file_group.get(file).copied().unwrap_or(0)
+    }
+
+    /// What a null in `column` is, for a row of file group `group`: the data's own,
+    /// a file without the column, or a file holding it in another type.
+    pub fn null_kind(&self, column: &str, group: Option<u32>) -> NullKind {
+        let Some(group) = group.and_then(|g| self.drift_groups.get(g as usize)) else {
+            return NullKind::Null;
+        };
+        if group.absent.iter().any(|c| c == column) {
+            NullKind::Absent
+        } else if group.unread.iter().any(|c| c == column) {
+            NullKind::Conflict
+        } else {
+            NullKind::Null
+        }
+    }
+
+    /// The frame that reads `columns` of row `row` of the view: for the inspector's
+    /// fields the buffer does not hold. One row, through the same window the buffer
+    /// reads, so a remote dataset reads only the file holding it. Run off this thread.
+    pub fn inspect_read_lf(&self, row: usize, columns: &[String]) -> PolarsResult<LazyFrame> {
+        let exprs = columns.iter().map(|c| col(c.as_str())).collect();
+        self.window_lf(row, 1, exprs)
     }
 
     /// What drilling into the group on row `group_index` of the view reads, or `None`
@@ -8720,7 +8849,11 @@ impl DataTable {
                 cells.push(SliceCell::Null(glyph));
                 continue;
             }
-            let text = numfmt::format_any_value(&col_fmt, &value, scratch).into_owned();
+            let text = numfmt::format_any_value(&col_fmt, &value, scratch);
+            // A break or a tab would vanish from a cell and run the text together.
+            // Only a cell's start can be drawn: measuring a huge value whole would
+            // cost every frame what the value costs.
+            let text = crate::exact::cell_preview(&text, g);
             value_width = value_width.max(crate::glyphs::cell_width(&text));
             cells.push(SliceCell::Value(text));
         }
@@ -11097,6 +11230,25 @@ mod tests {
         );
     }
 
+    /// Ties keep their order, so the page read at the top (a top-k to Polars) and
+    /// the page read below it agree on the rows they share.
+    #[test]
+    fn a_sort_with_ties_reads_the_same_rows_page_by_page() {
+        let df = df!(
+            "k" => (0..3000i64).map(|i| i % 3).collect::<Vec<_>>(),
+            "v" => (0..3000i64).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let sorted = df
+            .lazy()
+            .sort_by_exprs([col("k")], sort_options(vec![false]));
+        let top = sorted.clone().slice(0, 200).collect().unwrap();
+        let below = sorted.clone().slice(100, 100).collect().unwrap();
+        assert!(top.slice(100, 100).equals(&below));
+        let one = sorted.slice(5, 1).collect().unwrap();
+        assert!(top.slice(5, 1).equals(&one));
+    }
+
     #[test]
     fn test_multi_column_sort_puts_nulls_last_in_every_column() {
         let lf = df!(
@@ -12126,6 +12278,60 @@ mod tests {
         let mut ts = TableState::default();
         table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
         assert!(row_string(&buf, area, 1).starts_with(binary_stub()));
+    }
+
+    /// A line break or a tab in a value is marked in the one-line cell; drawn as
+    /// is, ratatui drops it and `line1\nline2` reads `line1line2`.
+    #[test]
+    fn breaks_tabs_and_controls_are_marked_in_a_cell() {
+        let table = DataTable::default();
+        let df = df!("s" => ["line1\nline2", "tab\tseparated", "esc\u{1b}[0m"]).unwrap();
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let g = table.glyphs;
+        assert!(
+            row_string(&buf, area, 1).starts_with(&format!("line1{}line2", g.newline_mark)),
+            "{:?}",
+            row_string(&buf, area, 1)
+        );
+        assert!(row_string(&buf, area, 2).starts_with(&format!("tab{}separated", g.tab_mark)));
+        assert!(row_string(&buf, area, 3).starts_with(&format!("esc{}[0m", g.control_mark)));
+    }
+
+    /// A direction control in a value is marked too: drawn, a terminal that lays
+    /// out bidirectional text would reverse the rest of the row.
+    #[test]
+    fn direction_controls_are_marked_in_a_cell() {
+        let table = DataTable::default();
+        let df = df!("s" => ["a\u{202e}evil\u{202c}z"]).unwrap();
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        table.render_dataframe(&df, area, &mut buf, &mut TableState::default(), false, 0);
+        let m = table.glyphs.control_mark;
+        let row = row_string(&buf, area, 1);
+        assert!(row.starts_with(&format!("a{m}evil{m}z")), "{row:?}");
+        assert!(
+            !buf.content()
+                .iter()
+                .any(|c| c.symbol().contains('\u{202e}'))
+        );
+    }
+
+    /// A cell measures only the start of a huge value, and says it goes on.
+    #[test]
+    fn a_huge_value_is_measured_by_its_start() {
+        let table = DataTable::default();
+        let huge = "x".repeat(crate::exact::CELL_PREVIEW_BYTES * 4);
+        let df = df!("s" => [huge.as_str()]).unwrap();
+        let mut scratch = String::new();
+        let slice = table.slice_column(&df, 0, 1, &HashSet::new(), &mut scratch);
+        let ellipsis = crate::glyphs::cell_width(table.glyphs.ellipsis);
+        assert_eq!(
+            usize::from(slice.value_width),
+            crate::exact::CELL_PREVIEW_BYTES + ellipsis
+        );
     }
 
     #[test]

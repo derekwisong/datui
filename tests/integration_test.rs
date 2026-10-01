@@ -18076,3 +18076,453 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
     let after = state.visible_lf().collect().unwrap();
     assert!(after.equals_missing(&before), "{after:?}\n{before:?}");
 }
+
+/// What a test clipboard was given, copy by copy.
+type Copies = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// A clipboard for the inspector tests: keeps the text of every copy.
+struct KeptCopies(Copies);
+
+impl datui::clipboard::Destination for KeptCopies {
+    fn write(&mut self, payload: datui::clipboard::Payload) -> Result<(), String> {
+        self.0.lock().unwrap().push(payload.text);
+        Ok(())
+    }
+    fn describe(&self) -> &'static str {
+        "test"
+    }
+}
+
+/// A Parquet file of awkward values, opened and drawn at 100×30: text with a
+/// line break, a tab, a literal backslash, edge spaces, an empty string and a
+/// null; floats Polars' display rounds; a list and bytes.
+fn open_inspector_fixture(
+    dir: &Path,
+) -> (
+    App,
+    mpsc::Receiver<AppEvent>,
+    mpsc::Sender<AppEvent>,
+    Copies,
+) {
+    let path = dir.join("inspect.parquet");
+    let tags: Vec<Series> = (0..6)
+        .map(|i| Series::new("".into(), vec![format!("t{i}"), "x".to_string()]))
+        .collect();
+    let mut df = df!(
+        "id" => [1i64, 2, 3, 4, 5, 6],
+        "description" => [
+            Some("line1\nline2"),
+            Some("tab\tseparated"),
+            Some(r"literal \n backslash"),
+            Some("  padded  "),
+            Some(""),
+            None,
+        ],
+        "amount" => [1000000.125f64, -0.0, f64::NAN, f64::INFINITY, 0.1 + 0.2, 2.5],
+        "tags" => tags,
+        "blob" => [b"Hi\x00".as_slice(), b"a", b"b", b"c", b"d", b"e"],
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    draw_inspector(&mut app);
+    let copies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(KeptCopies(copies.clone())));
+    (app, rx, tx, copies)
+}
+
+fn draw_inspector(app: &mut App) -> String {
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn inspected_field(app: &App) -> String {
+    app.inspector_modal.focused().unwrap().name.clone()
+}
+
+/// Space opens the inspector over the current row; ↑↓ walk the fields, ←→ the
+/// rows with the table's cursor, and Esc leaves the table where the inspector
+/// left it.
+#[test]
+fn test_inspector_opens_moves_between_rows_and_fields_and_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx, tx, _) = open_inspector_fixture(dir.path());
+
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    assert_eq!(app.input_mode, InputMode::Inspect);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("Row 1"), "{screen}");
+    assert!(screen.contains("Fields"), "{screen}");
+    for name in ["id", "description", "amount", "tags", "blob"] {
+        assert!(screen.contains(name), "{name}: {screen}");
+    }
+
+    // The field list previews the break as a mark; the pane breaks the line.
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "description");
+    let g = datui::glyphs::get();
+    let screen = draw_inspector(&mut app);
+    assert!(
+        screen.contains(&format!("line1{}line2", g.newline_mark)),
+        "{screen}"
+    );
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.trim_start_matches(['│', '|', ' ']).starts_with("line2")),
+        "line2 on a line of its own: {screen}"
+    );
+
+    // The amount: exact in the pane, and what the table rounds it to under it.
+    press_key(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "amount");
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("1000000.125"), "{screen}");
+    assert!(screen.contains("In the table:"), "{screen}");
+
+    // The next rows, with the table's cursor; the field stays.
+    press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("Row 3"), "{screen}");
+    assert!(screen.contains("NaN"), "{screen}");
+    assert_eq!(inspected_field(&app), "amount");
+    press_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("Row 2"), "{screen}");
+    assert!(screen.lines().any(|l| l.contains("│ -0.0 ")), "{screen}");
+
+    // Home and End reach the ends of the list.
+    press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "blob");
+    press_key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "id");
+
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(!app.inspector_modal.active);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.start_row() + state.table_state.selected().unwrap(), 1);
+
+    // Space opens it again, on the field it was on, and Space closes it too.
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "id");
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+/// Text is exact in the pane and escaped on `e`: a break and a literal
+/// backslash-n read apart, edge spaces and the empty string show, and a null is
+/// not an empty string.
+#[test]
+fn test_inspector_shows_text_exactly_raw_and_escaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _rx, _tx, _) = open_inspector_fixture(dir.path());
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    let rows = |app: &mut App| {
+        let screen = draw_inspector(app);
+        press_key(app, KeyCode::Right, KeyModifiers::NONE);
+        screen
+    };
+    assert!(rows(&mut app).contains(r#""line1\nline2""#));
+    assert!(rows(&mut app).contains(r#""tab\tseparated""#));
+    assert!(rows(&mut app).contains(r#""literal \\n backslash""#));
+    let padded = rows(&mut app);
+    assert!(padded.contains(r#""  padded  ""#), "{padded}");
+    assert!(padded.contains("2 leading spaces"), "{padded}");
+    let empty = rows(&mut app);
+    assert!(empty.contains(r#""""#), "{empty}");
+    assert!(empty.contains("empty"), "{empty}");
+    let null = draw_inspector(&mut app);
+    let g = datui::glyphs::get();
+    assert!(null.contains(&format!("{} null", g.null)), "{null}");
+    assert!(
+        !null.contains(r#""""#),
+        "a null is not an empty string: {null}"
+    );
+}
+
+/// `y` copies the focused field exactly: the stored float, not the table's
+/// `1.0000e6`; a list as JSON; a null as nothing.
+#[test]
+fn test_inspector_copies_the_exact_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _rx, _tx, copies) = open_inspector_fixture(dir.path());
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap(), "1000000.125");
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap(), r#"["t0","x"]"#);
+    press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap(), "-0.0");
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("Copied amount of row 2"), "{screen}");
+
+    // The copy dialog's Cell scope is exact too.
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    for c in "amount".chars() {
+        press_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap(), "1000000.125");
+}
+
+/// Binary and hidden columns are not in the table's rows: they show as not
+/// read until Enter reads them for this row, in the background, and then show
+/// and copy like any other field.
+#[test]
+fn test_inspector_reads_hidden_and_binary_fields_on_enter() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx, tx, copies) = open_inspector_fixture(dir.path());
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .set_column_order(["id", "amount", "blob"].map(String::from).to_vec());
+    draw_inspector(&mut app);
+
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    let names: Vec<String> = app
+        .inspector_modal
+        .fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    assert_eq!(names, ["id", "amount", "blob", "description", "tags"]);
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "desc".chars() {
+        press_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "description");
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("not read"), "{screen}");
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(copies.lock().unwrap().is_empty(), "nothing to copy yet");
+
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.is_busy(), "the read runs off the UI thread");
+    pump_until_idle(&mut app, &rx, &tx);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("line2"), "{screen}");
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap(), "line1\nline2");
+
+    // The same read brought the bytes: a hex dump, copied as base64.
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(
+        app.inspector_modal.picker.filter.is_empty(),
+        "Esc clears the find first"
+    );
+    assert!(app.inspector_modal.active);
+    press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "blob");
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("48 69 00"), "{screen}");
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap(), "SGkA");
+
+    // Another row has read nothing.
+    press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    assert!(draw_inspector(&mut app).contains("not read"));
+
+    // The read checks the row it found by the fields the table shows; a NaN
+    // among them is still the same row.
+    press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("Row 3"), "{screen}");
+    assert!(screen.contains("00000000  62"), "{screen}");
+}
+
+/// The inspector shows the row the table shows, after a sort, and lists a
+/// grouped row's lists whole; Enter still drills into the group once it closes.
+#[test]
+fn test_inspector_follows_the_view_and_leaves_enter_to_drill() {
+    let (mut app, rx, tx) = open_query_filter_fixture("inspect_by.csv");
+    press_key(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_inspector(&mut app);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("Row 1"), "{screen}");
+    assert!(
+        screen.contains("beta_99"),
+        "the reversed view's first row: {screen}"
+    );
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select name by c where a < 4".to_string());
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_inspector(&mut app);
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_inspector(&mut app);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "name");
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("2 items"), "{screen}");
+    assert!(
+        screen.lines().any(|l| l.contains("  \"")),
+        "one item per line: {screen}"
+    );
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+}
+
+/// A huge value is formatted a chunk at a time: the first screenful costs one
+/// chunk, Enter shows another, PgDn scrolls, and `y` still copies all of it.
+#[test]
+fn test_inspector_shows_a_huge_value_a_chunk_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("huge.parquet");
+    let huge = "0123456789".repeat(5_000);
+    let mut df = df!("id" => [1i64], "huge" => [huge.as_str()]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    draw_inspector(&mut app);
+    let copies = Copies::default();
+    app.set_clipboard_destination(Box::new(KeptCopies(copies.clone())));
+
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("50,000 chars"), "{screen}");
+    assert!(
+        screen.contains("Enter") && screen.contains("More"),
+        "{screen}"
+    );
+    let body = &app.inspector_modal.body.as_ref().unwrap().1;
+    assert!(body.more);
+    let first = body.lines.len();
+
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    draw_inspector(&mut app);
+    let body = &app.inspector_modal.body.as_ref().unwrap().1;
+    assert!(body.lines.len() > first, "Enter showed another chunk");
+
+    press_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    draw_inspector(&mut app);
+    assert!(app.inspector_modal.scroll > 0, "PgDn scrolls the value");
+
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap().len(), huge.len());
+}
+
+/// A field past a megabyte is copied off the UI thread, whole.
+#[test]
+fn test_inspector_copies_a_large_field_in_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large.parquet");
+    let large = "abcdefgh".repeat(256 * 1024);
+    let mut df = df!("large" => [large.as_str()]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    draw_inspector(&mut app);
+    let copies = Copies::default();
+    app.set_clipboard_destination(Box::new(KeptCopies(copies.clone())));
+
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(app.is_busy(), "written off the UI thread");
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(copies.lock().unwrap().last().unwrap().len(), large.len());
+    assert!(draw_inspector(&mut app).contains("Copied large of row 1"));
+}
+
+/// A capped clipboard, as the terminal's is: keeps the text of every copy.
+struct CappedCopies(Copies, usize);
+
+impl datui::clipboard::Destination for CappedCopies {
+    fn write(&mut self, payload: datui::clipboard::Payload) -> Result<(), String> {
+        self.0.lock().unwrap().push(payload.text);
+        Ok(())
+    }
+    fn describe(&self) -> &'static str {
+        "terminal"
+    }
+    fn accepts(&self) -> datui::clipboard::Accepts {
+        datui::clipboard::Accepts {
+            html: false,
+            base64_limit: Some(self.1),
+        }
+    }
+}
+
+/// `y` asks the destination first, as the copy dialog does: a field over the
+/// terminal's cap is refused at once, never formatted on a worker, and the last
+/// copy stays. One under the cap still goes.
+#[test]
+fn test_inspector_refuses_a_field_over_the_terminal_cap_before_formatting_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("capped.parquet");
+    let large = "abcdefgh".repeat(256 * 1024);
+    let mut df = df!("id" => [1i64], "large" => [large.as_str()]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    draw_inspector(&mut app);
+    let copies = Copies::default();
+    app.set_clipboard_destination(Box::new(CappedCopies(copies.clone(), 100 * 1024)));
+
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(copies.lock().unwrap().last().unwrap(), "1");
+
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert!(!app.is_busy(), "refused before a worker formats it");
+    let message = app.error_message().expect("refused out loud").to_string();
+    assert!(
+        message.contains("over 100 KB of base64") && message.contains("osc52_limit_kb"),
+        "{message}"
+    );
+    assert_eq!(copies.lock().unwrap().len(), 1, "the last copy stays");
+}

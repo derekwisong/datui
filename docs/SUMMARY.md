@@ -15,6 +15,7 @@
 - [Connect to cloud storage](user-guide/remote-data.md)
 - [Browse cloud data](user-guide/cloud-browser.md)
 - [Inspect a dataset](user-guide/dataset-info.md)
+- [Inspect a row](user-guide/inspecting-rows.md)
 
 # Query and reshape
 

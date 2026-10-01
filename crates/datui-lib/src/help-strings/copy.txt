@@ -34,8 +34,9 @@ Formats:
 
   A TSV or CSV copy to the native clipboard also carries an HTML table
   flavor, so pasting into a spreadsheet or an email keeps the columns.
-  Values are raw, like an export: display formatting is not applied and
-  a null is an empty field.
+  Values are raw, like an export: display formatting is not applied, a
+  float is copied as stored rather than as the table rounds it, and a
+  null is an empty field.
   List and struct cells are JSON in every format, as in a CSV export.
   A binary column is base64 in a Table copy; Cell, Row and View copies
   hold the placeholder the screen shows.

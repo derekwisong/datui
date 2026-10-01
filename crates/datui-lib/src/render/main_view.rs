@@ -107,6 +107,10 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             {
                 return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
             }
+            // The inspector's footer names its keys; it has nothing to cancel.
+            if app.input_mode == crate::InputMode::Inspect {
+                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Close")]);
+            }
             // Esc stops a pivot or a view being read, like any other cancellable
             // wait. At the form only the hard escapes act meanwhile.
             if app.pivot_computing() {

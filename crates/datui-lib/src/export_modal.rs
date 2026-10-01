@@ -67,8 +67,8 @@ impl ExportFormat {
     }
 
     /// `lf` as this format can write it: binary as base64 for CSV and JSON,
-    /// nested columns as JSON for CSV, and the types Avro lacks cast to ones it
-    /// has. Planned, not run.
+    /// nested columns as JSON and durations as ISO 8601 for CSV, and the types
+    /// Avro lacks cast to ones it has. Planned, not run.
     pub fn prepare(self, lf: LazyFrame) -> PolarsResult<LazyFrame> {
         match self {
             Self::Csv => crate::nested_json::lazy_as_json(lf),

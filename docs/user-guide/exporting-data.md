@@ -65,6 +65,21 @@ standard base64 text, inside lists and structs too: `hi` is written `aGk=`.
 Polars reads it back with `str.decode("base64")`. Parquet, Arrow and Avro keep
 the bytes.
 
+## Durations
+
+CSV has no duration type, so a CSV export writes a duration as ISO 8601 text
+in seconds: the text JSON and NDJSON exports write, and the same alone or inside
+a list or struct. It is exact in every unit, down to the nanosecond.
+
+| Table shows | CSV cell |
+|---|---|
+| `1h 2m 3s 4ms` | `PT3723.004S` |
+| `-1s -500ms` | `-PT1.5S` |
+| `1500ns` | `PT0.0000015S` |
+| `0ms` | `P0D` |
+
+Parquet and Arrow keep the duration type; Avro writes microseconds, below.
+
 ## Avro types
 
 Avro keeps booleans, 32- and 64-bit integers and floats, strings, binary,

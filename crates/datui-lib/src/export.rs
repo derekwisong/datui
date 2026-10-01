@@ -765,8 +765,8 @@ mod tests {
     }
 
     /// A view with what a CSV has to get right: nulls, quotes, separators and
-    /// line breaks inside text, floats, dates, times, booleans, and the list and
-    /// binary columns [`ExportFormat::prepare`] turns into text.
+    /// line breaks inside text, floats, dates, times, booleans, and the list,
+    /// binary and duration columns [`ExportFormat::prepare`] turns into text.
     fn awkward() -> DataFrame {
         let n = 2_000;
         let mut df = df!(
@@ -782,7 +782,12 @@ mod tests {
             "flag" => (0..n).map(|i| (i % 4 != 0).then_some(i % 2 == 0)).collect::<Vec<_>>(),
             "day" => (0..n).map(|i| i as i32).collect::<Vec<_>>(),
             "at" => (0..n).map(|i| i * 3_600_000).collect::<Vec<i64>>(),
+            "took" => (0..n).map(|i| (i % 7 != 0).then_some((i - 1_000) * 1_234_567)).collect::<Vec<_>>(),
         )
+        .unwrap();
+        df.apply("took", |c| {
+            c.cast(&DataType::Duration(TimeUnit::Microseconds)).unwrap()
+        })
         .unwrap();
         df.apply("day", |c| c.cast(&DataType::Date).unwrap())
             .unwrap();
@@ -816,7 +821,14 @@ mod tests {
                         ["text"],
                         SortMultipleOptions::default().with_nulls_last(true),
                     )
-                    .select([col("x"), col("tags"), col("text"), col("id"), col("at")]),
+                    .select([
+                        col("x"),
+                        col("tags"),
+                        col("took"),
+                        col("text"),
+                        col("id"),
+                        col("at"),
+                    ]),
             ),
             ("empty", lf.filter(lit(false))),
         ]
@@ -856,6 +868,54 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Durations reach a CSV as ISO 8601 by every route, the text a JSON export
+    /// of the same view holds; a null is an empty field.
+    #[test]
+    fn durations_export_as_iso_8601_by_every_route() {
+        use crate::nested_json::tests::{duration_text, durations};
+        let rows = duration_text()[0].1.len();
+        let mut expected = String::from("ms,us,ns\n");
+        for row in 0..rows {
+            let cells: Vec<&str> = duration_text()
+                .iter()
+                .map(|(_, text)| text[row].unwrap_or(""))
+                .collect();
+            expected.push_str(&cells.join(","));
+            expected.push('\n');
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        for (name, compression, streaming) in [
+            ("streamed.csv", None, true),
+            ("collected.csv", None, false),
+            ("compressed.csv.gz", Some(CompressionFormat::Gzip), true),
+        ] {
+            let request = ExportRequest {
+                options: options(ExportFormat::Csv, compression),
+                ..request(&dir.path().join(name), ExportFormat::Csv, Overwrite::Forbid)
+            };
+            let bytes = decompress(
+                exported(durations().lazy(), &request, streaming),
+                compression,
+            );
+            assert_eq!(String::from_utf8(bytes).unwrap(), expected, "{name}");
+        }
+
+        let request = request(
+            &dir.path().join("out.json"),
+            ExportFormat::Json,
+            Overwrite::Forbid,
+        );
+        let back = read_back(
+            exported(durations().lazy(), &request, false),
+            ExportFormat::Json,
+        );
+        for (name, text) in duration_text() {
+            let json = back.column(name).unwrap().str().unwrap();
+            assert_eq!(json.iter().collect::<Vec<_>>(), text, "{name}");
         }
     }
 

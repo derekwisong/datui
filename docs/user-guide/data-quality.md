@@ -257,7 +257,8 @@ While a run reads, the progress names its stage, whether that stage reads the
 source, and the rows seen where the read can count them. <kbd>Esc</kbd>
 cancels: a sampling pass, or a full scan's passes, stop at the next batch. A
 read that cannot stop is shown as finishing, in the header and in Setup, until
-it ends; until then Run waits, and the last report stays.
+it ends; until then Run waits, nothing else reads beside it, and the last
+report stays.
 
 Under the verdict, every report says what it covers:
 

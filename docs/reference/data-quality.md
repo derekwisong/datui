@@ -269,8 +269,9 @@ A run that stops at its next batch flashes `Run cancelled`. For a read that
 runs to its end, the header and Setup say
 `Cancellation requested; source read finishing` until the worker exits; a run
 that should have stopped and is still going after a second says
-`Cancellation requested; run stopping`. Either way Run and <kbd>r</kbd> wait
-rather than start a second read beside it. The last report stays, labeled with
+`Cancellation requested; run stopping`. Either way nothing reads beside it: Run
+and <kbd>r</kbd> say why they wait, and so do a finding's rows, <kbd>v</kbd> and the
+other tools, unless the rows were kept. The last report stays, labeled with
 the setup it was measured with, and Setup opens on the setup that was running.
 A sample read before the cancel is kept for the next run.
 

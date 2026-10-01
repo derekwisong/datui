@@ -1112,6 +1112,81 @@ mod quality_sample_tests {
         assert!(app.cancelled_analysis_running().is_none());
         assert!(!screen(&mut app).contains("Run waits"));
     }
+
+    /// No other way in starts a read beside a cancelled run still reading: not the
+    /// rows a finding stages, not `v` on a sample no longer kept, not another tool.
+    /// Each waits, says why, and stays as it was; once the worker exits, each reads.
+    #[test]
+    fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
+        let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
+            stage: data_quality::QualityStage::CountingRows,
+            reads_source: true,
+            interruptible: false,
+        });
+        assert!(key(&mut app, KeyCode::Esc).is_none());
+        assert!(app.cancelled_analysis_running().is_some());
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.analysis_modal.data_quality_page,
+            data_quality::QualityPage::Overview
+        );
+        let refused = |app: &mut App, what: &str| {
+            assert!(!app.is_busy(), "{what} started a read");
+            assert!(app.analysis_modal.computing.is_none(), "{what}");
+            assert_eq!(app.flash_message(), Some(ANALYSIS_READ_WAITS), "{what}");
+            app.flash = None;
+        };
+        let duplicates = || analysis_modal::EvidenceRead {
+            rows: quality_report::EvidenceRows::Duplicates,
+            label: "Data Quality / Duplicate rows".to_string(),
+            sample: None,
+            scope: data_quality::QualityScope::CurrentView,
+            summary: Vec::new(),
+        };
+
+        // A finding's staged read: Enter waits, and the read stays staged.
+        app.analysis_modal.data_quality_evidence_read = Some(duplicates());
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        refused(&mut app, "a finding's rows");
+        assert!(app.analysis_modal.data_quality_evidence_read.is_some());
+        key(&mut app, KeyCode::Esc);
+
+        // The sample's rows, which the cancelled run never kept.
+        assert!(key(&mut app, KeyCode::Char('v')).is_none());
+        refused(&mut app, "v");
+
+        // Another tool.
+        app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+        app.analysis_modal.sidebar_state.select(Some(0));
+        app.analysis_modal.sample_run_for = Some(app.dataset_generation);
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        refused(&mut app, "Describe");
+        // Its Sample form stays open, as filled.
+        app.analysis_modal.sample_run_for = None;
+        app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        assert!(
+            app.analysis_modal.sample_form.is_some(),
+            "the form is the pane"
+        );
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        refused(&mut app, "Describe's Sample form");
+        assert!(app.analysis_modal.sample_form.is_some());
+        app.analysis_modal.sample_run_for = Some(app.dataset_generation);
+        app.analysis_modal.sample_form = None;
+        app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+
+        // The worker exits: each way in reads again.
+        drop(worker);
+        while let Ok(event) = rx.try_recv() {
+            app.event(&event);
+        }
+        assert!(app.cancelled_analysis_running().is_none());
+        assert!(matches!(
+            key(&mut app, KeyCode::Enter),
+            Some(AppEvent::AnalysisChunk)
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -8474,6 +8549,10 @@ const QUALITY_RELEASED_REMEMBERED: usize = 16;
 /// on Setup's line until it has.
 const QUALITY_RUN_WAITS: &str = "Run waits: the cancelled run is still stopping";
 
+/// Why another read of the source did not start: a cancelled analysis has not
+/// exited yet, and a second read beside it is how memory runs out.
+const ANALYSIS_READ_WAITS: &str = "A cancelled run is still finishing; try again shortly";
+
 /// How long a cancelled run that stops within a batch may take before the screen
 /// says it is still going: time for a batch to finish, and no longer.
 const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
@@ -8949,6 +9028,15 @@ impl App {
 
     /// Enter on a staged read: read the rows it named, as it said.
     fn confirm_evidence_read(&mut self) -> Option<AppEvent> {
+        // Beside a cancelled run still reading, the read stays staged for later.
+        let staged = self.analysis_modal.data_quality_evidence_read.as_ref()?;
+        let kept = staged
+            .sample
+            .as_ref()
+            .is_some_and(|sample| self.kept_quality_sample(sample).is_some());
+        if !kept && self.read_waits_for_cancelled() {
+            return None;
+        }
         let read = self.analysis_modal.data_quality_evidence_read.take()?;
         if let Some(sample) = read.sample {
             return self.read_sample_rows(sample, Some((read.rows, read.label)));
@@ -9935,20 +10023,24 @@ impl App {
     fn run_sample_form(&mut self) -> Option<AppEvent> {
         let quality =
             self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
-        let form = self.analysis_modal.sample_form.as_mut()?;
-        match form.finish() {
+        let finished = self.analysis_modal.sample_form.as_mut()?.finish();
+        match finished {
             Ok(sample) if quality => {
                 self.analysis_modal.sample_form = None;
                 self.analysis_modal.data_quality_plan.adopt_sample(&sample);
                 self.analysis_modal.data_quality_setup_note = None;
                 None
             }
+            // The form stays open, as filled, while a cancelled run finishes.
+            Ok(_) if self.read_waits_for_cancelled() => None,
             Ok(sample) => {
                 self.analysis_modal.sample_form = None;
                 self.apply_sample(sample)
             }
             Err(error) => {
-                form.error = Some(error);
+                if let Some(form) = self.analysis_modal.sample_form.as_mut() {
+                    form.error = Some(error);
+                }
                 None
             }
         }
@@ -10104,6 +10196,9 @@ impl App {
                 .collect();
             (kept, columns)
         });
+        if kept.is_none() && self.read_waits_for_cancelled() {
+            return None;
+        }
         self.reading_sample = true;
         self.analysis_modal.computing = Some(AnalysisProgress::new(if evidence.is_some() {
             "Reading the matching sampled rows"
@@ -10380,6 +10475,12 @@ impl App {
     /// them go, and the tool on screen runs again. Data Quality only takes it into
     /// its plan: nothing reads until its Run.
     fn apply_sample(&mut self, sample: sampling::Sample) -> Option<AppEvent> {
+        // A run it would start waits for a cancelled one, with every result kept.
+        if self.analysis_modal.selected_tool != Some(analysis_modal::AnalysisTool::DataQuality)
+            && self.read_waits_for_cancelled()
+        {
+            return None;
+        }
         // A first run on the sample as it stands takes nothing from the other tools.
         if sample != self.analysis_modal.sample {
             self.analysis_modal.describe_results = None;
@@ -10399,9 +10500,22 @@ impl App {
         self.start_analysis_run()
     }
 
+    /// A cancelled analysis is still reading: say so, and start no read beside it.
+    fn read_waits_for_cancelled(&mut self) -> bool {
+        if self.cancelled_analysis_running().is_none() {
+            return false;
+        }
+        self.flash_note(ANALYSIS_READ_WAITS.to_string());
+        true
+    }
+
     /// Run the selected tool again from scratch, as `r` and `a` do.
     fn start_analysis_run(&mut self) -> Option<AppEvent> {
-        let (phase, event) = match self.analysis_modal.selected_tool? {
+        let tool = self.analysis_modal.selected_tool?;
+        if tool != analysis_modal::AnalysisTool::DataQuality && self.read_waits_for_cancelled() {
+            return None;
+        }
+        let (phase, event) = match tool {
             analysis_modal::AnalysisTool::Describe => {
                 self.analysis_modal.describe_results = None;
                 self.analysis_computation = Some(AnalysisComputationState {
@@ -18303,7 +18417,7 @@ impl App {
                 KeyCode::Char('a')
                     if self.analysis_results_are_sampled() && self.cancelled_work_running() =>
                 {
-                    self.flash_note("A cancelled run is still finishing; try again shortly".into());
+                    self.flash_note(ANALYSIS_READ_WAITS.to_string());
                 }
                 KeyCode::Char('a') if self.analysis_results_are_sampled() => {
                     let total = self

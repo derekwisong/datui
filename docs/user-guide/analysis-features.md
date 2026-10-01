@@ -149,8 +149,8 @@ How a spread sample is read depends on the source:
 A directory of many files is streamed because a run in it opens the footer of
 every file before it; on a 135-file table in S3, one streamed pass over 37
 million rows took 3 seconds against 6 for fifty runs. The sort is left out of
-an analysis read: no statistic depends on it. <kbd>a</kbd> refuses while a
-cancelled full read is still finishing.
+an analysis read: no statistic depends on it. While a cancelled run is still
+finishing, no tool starts another read: <kbd>a</kbd>, <kbd>r</kbd>, <kbd>v</kbd> and a new run wait.
 
 ```toml
 [performance]

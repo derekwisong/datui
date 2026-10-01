@@ -162,8 +162,8 @@ While a run reads:
   them. Esc cancels: a streamed read, a full run's
   passes included, stops at its next batch. A read
   that cannot stop is said to be finishing, in the
-  header and in Setup, until it ends, and Run waits
-  for it. The last report stays.
+  header and in Setup, until it ends; Run and every
+  other read wait for it. The last report stays.
 
 Segments:
   Enter:        A segment's columns beside the one it

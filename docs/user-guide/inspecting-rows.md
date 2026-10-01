@@ -52,8 +52,10 @@ The table reads only the columns it shows, and reads a binary column as a
 [Sort & Filter](filtering-sorting.md) are listed after the others with a `⊘`
 mark, and they and binary columns read `not read`. <kbd>Enter</kbd> on one reads
 those fields for this row only, in the background. The read also checks the
-row's other fields: if a sort with ties put another row there on reading again,
-the pane says so instead of showing that row's values.
+row's other fields: if a query's sort with ties put another row there on
+reading again, the pane says so instead of showing that row's values. A sort
+from Sort & Filter keeps tied rows in order, so a second read finds the same
+row.
 
 ## In the table
 

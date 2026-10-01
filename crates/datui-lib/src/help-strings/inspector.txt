@@ -34,8 +34,8 @@ Copy:
 Fields not in the table's rows:
   Columns hidden in Sort & Filter, and binary columns, are not read with the
   table's rows. They show as not read until Enter reads them, for this row
-  only. The read checks it found the same row; with a sort that leaves ties,
-  a second read may order them differently, and the pane says so.
+  only. The read checks it found the same row; a query whose sort leaves
+  ties may order them differently on a second read, and the pane says so.
 
 In the table, a line break shows as ¶, a tab as » and another control
 character or a direction mark as ¤ ($, > and ? in ASCII terminals). The

@@ -860,11 +860,16 @@ fn conflicting_row_runs(starts: &[usize], total: usize, conflicts: &[bool]) -> V
 
 /// Options for a sort, one direction per column. Nulls go last in both directions, as
 /// in pandas, DuckDB and spreadsheets; Polars would otherwise put them first either way.
+/// Ties keep their order: each page is its own sort-then-slice, and an unstable sort
+/// orders ties differently for a slice at the top (a top-k) than for one further
+/// down, so pages would repeat and skip rows, and the inspector's one-row read would
+/// find another row.
 fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
     let n = descending.len();
     SortMultipleOptions::default()
         .with_order_descending_multi(descending)
         .with_nulls_last_multi(vec![true; n])
+        .with_maintain_order(true)
 }
 
 /// A string's in-memory width when nothing says otherwise: the view plus a short value.
@@ -11223,6 +11228,25 @@ mod tests {
             column_values(&state, "a"),
             [Some(1), Some(2), Some(3), None, None]
         );
+    }
+
+    /// Ties keep their order, so the page read at the top (a top-k to Polars) and
+    /// the page read below it agree on the rows they share.
+    #[test]
+    fn a_sort_with_ties_reads_the_same_rows_page_by_page() {
+        let df = df!(
+            "k" => (0..3000i64).map(|i| i % 3).collect::<Vec<_>>(),
+            "v" => (0..3000i64).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let sorted = df
+            .lazy()
+            .sort_by_exprs([col("k")], sort_options(vec![false]));
+        let top = sorted.clone().slice(0, 200).collect().unwrap();
+        let below = sorted.clone().slice(100, 100).collect().unwrap();
+        assert!(top.slice(100, 100).equals(&below));
+        let one = sorted.slice(5, 1).collect().unwrap();
+        assert!(top.slice(5, 1).equals(&one));
     }
 
     #[test]

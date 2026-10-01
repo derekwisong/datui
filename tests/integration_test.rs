@@ -7985,8 +7985,8 @@ fn test_copy_writes_list_cells_as_json() {
 
     struct Capture(Arc<Mutex<Vec<Payload>>>);
     impl Destination for Capture {
-        fn write(&mut self, payload: &Payload) -> Result<(), String> {
-            self.0.lock().unwrap().push(payload.clone());
+        fn write(&mut self, payload: Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
             Ok(())
         }
         fn describe(&self) -> &'static str {
@@ -17091,8 +17091,8 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
 
     struct Capture(Arc<Mutex<Vec<Payload>>>);
     impl Destination for Capture {
-        fn write(&mut self, payload: &Payload) -> Result<(), String> {
-            self.0.lock().unwrap().push(payload.clone());
+        fn write(&mut self, payload: Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
             Ok(())
         }
         fn describe(&self) -> &'static str {
@@ -17188,6 +17188,88 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
     assert!(screen.contains("Copied 3 rows as TSV"), "no flash drawn");
+}
+
+/// A destination with a cap, as the terminal path has, is sent text alone: no HTML
+/// is built for it. A table copy over the cap is refused with the cap's message
+/// and leaves the last copy in place; under it, the whole table arrives.
+#[test]
+fn test_a_capped_destination_gets_text_within_its_cap() {
+    use datui::clipboard::{Accepts, Destination, Payload};
+    use std::sync::{Arc, Mutex};
+
+    struct Capped(Arc<Mutex<Vec<Payload>>>, usize);
+    impl Destination for Capped {
+        fn write(&mut self, payload: Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+        fn describe(&self) -> &'static str {
+            "terminal"
+        }
+        fn accepts(&self) -> Accepts {
+            Accepts {
+                html: false,
+                base64_limit: Some(self.1),
+            }
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("capped.csv");
+    let mut csv = String::from("id,name\n");
+    for i in 0..5_000 {
+        csv.push_str(&format!("{i},name {i}\n"));
+    }
+    std::fs::write(&path, &csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    let area = Rect::new(0, 0, 120, 32);
+    app.render(area, &mut Buffer::empty(area));
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let copies: Arc<Mutex<Vec<Payload>>> = Arc::new(Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(Capped(copies.clone(), 4 * 1024)));
+
+    // The view scope: TSV with no HTML beside it.
+    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    {
+        let copies = copies.lock().unwrap();
+        assert!(copies[0].text.starts_with("id\tname\n0\tname 0"));
+        assert!(copies[0].html.is_none(), "no HTML for a capped destination");
+    }
+
+    // The whole table is about 60 KB, over a 4 KB cap: refused, nothing sent.
+    let copy_table = |app: &mut App| {
+        press_key(app, KeyCode::Char('y'), KeyModifiers::NONE);
+        press_key(app, KeyCode::Char(' '), KeyModifiers::NONE);
+        press_key(app, KeyCode::Char('t'), KeyModifiers::NONE);
+        press_key(app, KeyCode::Enter, KeyModifiers::NONE);
+        press_key(app, KeyCode::Enter, KeyModifiers::NONE);
+        pump_until_idle(app, &rx, &tx);
+    };
+    copy_table(&mut app);
+    let message = app.error_message().expect("refused out loud").to_string();
+    assert!(
+        message.contains("over 4 KB of base64") && message.contains("osc52_limit_kb"),
+        "{message}"
+    );
+    assert_eq!(copies.lock().unwrap().len(), 1, "the last copy stays");
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+    // Under a 1 MB cap the whole table goes, as text alone.
+    app.set_clipboard_destination(Box::new(Capped(copies.clone(), 1024 * 1024)));
+    copy_table(&mut app);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let copies = copies.lock().unwrap();
+    assert_eq!(copies.len(), 2);
+    assert_eq!(copies[1].text, csv.trim_end().replace(',', "\t"));
+    assert!(copies[1].html.is_none());
 }
 
 /// Press `c` with Ctrl held, as a text field receives it.

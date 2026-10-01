@@ -56,10 +56,10 @@ rows; **View** includes only the rows on screen.
 | CSV | Comma-separated |
 | Markdown | A pipe table, padded and aligned, numeric columns right-aligned |
 
-A TSV or CSV copy also carries an HTML table flavor, so a paste into a
-spreadsheet or an email keeps its columns while a paste into a terminal stays
-plain text. Values are raw, like an export: display formatting is not applied
-and a null is an empty field. List and struct cells are JSON in every format,
+A TSV or CSV copy to the `native` clipboard also carries an HTML table flavor,
+so a paste into a spreadsheet or an email keeps its columns while a paste into
+a terminal stays plain text. Values are raw, like an export: display formatting
+is not applied and a null is an empty field. List and struct cells are JSON in every format,
 as in a [CSV export](exporting-data.md#lists-and-structs). A binary column is
 [base64](exporting-data.md#binary) in a Table copy; Cell, Row and View copies
 hold the `‹binary›` placeholder, since the screen never reads the bytes. The **Header**
@@ -72,7 +72,8 @@ Parquet files or a single Parquet object in cloud storage. A copy whose size is
 not known asks too: the row count is still being read, or no footer gave a
 binary column's size, as for a single local file.
 Above 200 MiB the copy is refused with a pointer to
-[export](exporting-data.md).
+[export](exporting-data.md). An `osc52` copy asks only when its cap is over
+10 MiB, since it never holds more than the cap.
 
 ## Keys
 
@@ -104,7 +105,11 @@ you are sitting at does the copy. Caveats terminals impose:
 - tmux needs `set-clipboard on` to pass the sequence through.
 - Terminals cap the sequence length; datui refuses payloads above
   `osc52_limit_kb` (default 100) rather than sending a copy that arrives
-  truncated. Some terminals disable OSC 52 writes entirely by default.
+  truncated. A Table copy is read in batches and stops at the first one over
+  the cap, so a copy too large is refused without reading the whole table.
+  The clipboard keeps what it held. Some terminals disable OSC 52 writes
+  entirely by default.
+- No HTML flavor: the terminal takes plain text only.
 
 A `native` copy on Wayland or X11 belongs to the datui process: quitting can
 drop it unless a clipboard manager keeps copies. datui holds the offer for as

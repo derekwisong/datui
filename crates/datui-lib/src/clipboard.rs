@@ -457,7 +457,8 @@ pub fn bounded_table_text(
     limit: usize,
 ) -> Result<(String, usize), String> {
     use std::sync::{Arc, Mutex};
-    let schema = lf.clone().collect_schema().map_err(|e| e.to_string())?;
+    let polars_error = |e: PolarsError| crate::error_display::user_message_from_polars(&e);
+    let schema = lf.clone().collect_schema().map_err(polars_error)?;
     let state = Arc::new(Mutex::new(BoundedText::new(format, header, limit)));
     let sink_state = Arc::clone(&state);
     let sink = lf
@@ -472,8 +473,10 @@ pub fn bounded_table_text(
             true,
             std::num::NonZeroUsize::new(BOUNDED_BATCH_ROWS),
         )
-        .map_err(|e| e.to_string())?;
-    crate::statistics::collect_lazy(sink, true).map_err(|e| e.to_string())?;
+        .map_err(polars_error)?;
+    // Streaming whatever the setting: the in-memory engine collects the whole result
+    // before the first batch, which is what stopping at the cap is here to avoid.
+    crate::statistics::collect_lazy(sink, true).map_err(polars_error)?;
     let mut text = std::mem::replace(
         &mut *state.lock().map_err(|_| "copy lock failed".to_string())?,
         BoundedText::new(format, header, limit),
@@ -813,6 +816,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A failed read says what the collected copy would: Polars' words, tidied.
+    #[test]
+    fn a_bounded_table_copy_fails_in_the_words_a_whole_one_does() {
+        let lf = df!("s" => ["a"]).unwrap().lazy().select([col("missing")]);
+        let whole = crate::statistics::collect_lazy(lf.clone(), true).unwrap_err();
+        let err = bounded_table_text(lf, CopyFormat::Tsv, true, 1 << 20).unwrap_err();
+        assert_eq!(
+            err,
+            crate::error_display::user_message_from_polars(&whole),
+            "{whole}"
+        );
     }
 
     #[test]

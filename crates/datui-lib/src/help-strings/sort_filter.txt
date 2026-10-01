@@ -1,5 +1,5 @@
-Tabbed sidebar: Columns (sort, order, lock, visibility) and Filters (row
-filters).
+Tabbed sidebar: Columns (sort, order, lock, visibility, width) and Filters
+(row filters).
 
   Tab / Shift+Tab:  Move focus between the tab bar and the body
   ← / →:            Switch Columns / Filters (h/l on the tab bar)
@@ -25,7 +25,14 @@ Columns tab:
   L:                Freeze this column and every column up to it at the left
                     edge; on a column already frozen, pull the boundary back
   v:                Show or hide the column (it keeps its place, dimmed)
-  C:                Clear the staged sort, order, locks and hidden columns
+  < / > (, / .):    Make the column 4 cells narrower or wider. A number
+                    column is never narrower than its numbers
+  f:                Fit the column to the rows on screen, its name up to
+                    the automatic limit
+  w:                Back to the automatic width
+  C:                Clear the staged sort, order, locks, hidden columns
+                    and widths
+  The Width column shows a width set here, or fit until it is applied.
 
 Filters tab:
   Each filter is one row: column, operator, value, and how it joins the

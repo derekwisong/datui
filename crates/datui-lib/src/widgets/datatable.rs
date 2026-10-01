@@ -25,6 +25,7 @@ use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSour
 use crate::query::{ParsedQuery, parse_query};
 use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
+use crate::widgets::column_widths::{ColumnWidths, PageMeasure, WidthChoice};
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 use polars::io::csv::read::NullValues;
 use polars::prelude::StrptimeOptions;
@@ -203,6 +204,10 @@ pub struct DataTableState {
     /// many of them fit frozen beside a usable scrolling column. The rest scroll until
     /// a wider window has room again; a different count asked for starts over.
     frozen_fit: (usize, usize),
+    /// The width each column is drawn at, by column identity, so paging, reordering,
+    /// hiding and opening a sidebar move nothing. Learned by the renderer from rows it
+    /// formats anyway; not part of a rollback, since it describes columns, not a view.
+    widths: ColumnWidths,
     /// The grouped view a drill-down left, restored exactly by `drill_up`.
     grouped: Option<GroupedView>,
     /// The rows behind a grouped query result, so Enter can drill from an aggregate.
@@ -287,7 +292,7 @@ pub struct DataTableState {
     not_the_table: Option<&'static str>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
-    column_widths: Vec<(String, usize)>,
+    column_bytes: Vec<(String, usize)>,
     /// Bytes per row of the last buffer collected, which outranks the estimate from
     /// the schema.
     observed_bytes_per_row: Option<usize>,
@@ -826,16 +831,16 @@ fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
 const STRING_BYTES_GUESS: usize = 40;
 
 /// Bytes a row of `columns` takes in memory, estimated from the schema: the width of
-/// each fixed-size type; for a string the footer's average in `column_widths` (or a
+/// each fixed-size type; for a string the footer's average in `column_bytes` (or a
 /// guess) plus its view; for a nested column the footer's average, else a guess.
 /// Binary columns are buffered as a stub (see `binary_stub_exprs`).
 fn estimate_bytes_per_row(
     schema: &Schema,
     columns: &[String],
-    column_widths: &[(String, usize)],
+    column_bytes: &[(String, usize)],
 ) -> usize {
     let footer_width = |name: &String| {
-        column_widths
+        column_bytes
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, w)| *w)
@@ -1123,6 +1128,7 @@ impl DataTableState {
             column_order,
             locked_columns_count: 0,
             frozen_fit: (0, 0),
+            widths: ColumnWidths::default(),
             grouped: None,
             group_source: None,
             reshaped_lf: None,
@@ -1155,7 +1161,7 @@ impl DataTableState {
             drift_dataset_rows: 0,
             dataset_at_open: None,
             read_as_text: Vec::new(),
-            column_widths: Vec::new(),
+            column_bytes: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
             buffered_end_row: 0,
@@ -1245,6 +1251,7 @@ impl DataTableState {
             column_order,
             locked_columns_count: 0,
             frozen_fit: (0, 0),
+            widths: ColumnWidths::default(),
             grouped: None,
             group_source: None,
             reshaped_lf: None,
@@ -1279,7 +1286,7 @@ impl DataTableState {
             drift_dataset_rows: 0,
             dataset_at_open: None,
             read_as_text: Vec::new(),
-            column_widths: Vec::new(),
+            column_bytes: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
             buffered_end_row: 0,
@@ -1443,7 +1450,10 @@ impl DataTableState {
         self.last_melt_spec = None;
     }
 
+    /// Back to the table as opened: the data as loaded, nothing applied, and every
+    /// column's width learned afresh from the first page.
     pub fn reset(&mut self) {
+        self.widths = ColumnWidths::default();
         self.return_to_root();
         self.collect();
         if self.num_rows > 0 {
@@ -5834,15 +5844,15 @@ impl DataTableState {
 
     /// Record the footer's average uncompressed width of each column, for the byte
     /// estimate of a buffer before one has been collected.
-    pub fn set_column_widths(&mut self, widths: Vec<(String, usize)>) {
-        self.column_widths = widths;
+    pub fn set_column_bytes(&mut self, bytes: Vec<(String, usize)>) {
+        self.column_bytes = bytes;
     }
 
     /// Bytes a buffered row takes: measured on the last buffer collected, or until
     /// then estimated from the schema.
     fn bytes_per_row(&self) -> usize {
         self.observed_bytes_per_row.unwrap_or_else(|| {
-            estimate_bytes_per_row(&self.schema, &self.column_order, &self.column_widths)
+            estimate_bytes_per_row(&self.schema, &self.column_order, &self.column_bytes)
         })
     }
 
@@ -6497,6 +6507,43 @@ impl DataTableState {
         self.slice_buffer_into_display();
     }
 
+    /// The type a column has in the frame on screen: with its name, the identity its
+    /// width is kept under.
+    fn width_dtype(&self, name: &str) -> DataType {
+        self.schema.get(name).cloned().unwrap_or(DataType::Null)
+    }
+
+    /// How a column's width is chosen.
+    pub fn width_choice(&self, name: &str) -> WidthChoice {
+        self.widths.choice(name, &self.width_dtype(name))
+    }
+
+    /// The width a column was last drawn at, if it has been drawn.
+    pub fn shown_width(&self, name: &str) -> Option<u16> {
+        self.widths.shown(name, &self.width_dtype(name))
+    }
+
+    /// Set how each named column's width is chosen. Reads nothing: a fit is taken
+    /// from the rows on screen when the table is next drawn.
+    pub fn set_width_choices(&mut self, choices: impl IntoIterator<Item = (String, WidthChoice)>) {
+        for (name, choice) in choices {
+            let dtype = self.width_dtype(&name);
+            self.widths.set_choice(&name, &dtype, choice);
+        }
+    }
+
+    /// One column's rows on screen, from the buffer already held, as the table draws
+    /// them. For fitting a column that may be scrolled out of view.
+    fn page_column(&self, name: &str, offset: usize, len: usize) -> Option<DataFrame> {
+        let column = self.buffered_df.as_ref()?.select([name]).ok()?;
+        let page = visible_slice(&column, offset, len)?;
+        if self.is_grouped() {
+            self.format_grouped_dataframe(page).ok()
+        } else {
+            Some(page)
+        }
+    }
+
     // Getter methods for template creation
     /// Filters for a template: while drilled into a group these are the grouped view's,
     /// which is what a template reproduces (it cannot express a drill-down).
@@ -7023,7 +7070,7 @@ impl DataTableState {
         }
         let base64 = |bytes: usize| bytes.div_ceil(3) * 4;
         let footer_width = |name: &str| {
-            self.column_widths
+            self.column_bytes
                 .iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, w)| *w)
@@ -7984,6 +8031,9 @@ pub struct DataTable {
     pub sort_descending: Vec<bool>,
     /// The glyph set the table draws with: the terminal's, unless a test asks for one.
     pub glyphs: &'static crate::glyphs::Glyphs,
+    /// The terminal's width, which bounds automatic text widths (see
+    /// [`crate::widgets::column_widths::text_cap`]). 0 takes the table's own width.
+    pub screen_width: u16,
 }
 
 impl Default for DataTable {
@@ -8014,6 +8064,7 @@ impl Default for DataTable {
             sort_columns: Vec::new(),
             sort_descending: Vec::new(),
             glyphs: crate::glyphs::get(),
+            screen_width: 0,
         }
     }
 }
@@ -8093,6 +8144,11 @@ struct ColumnSlice {
     cells: Vec<SliceCell>,
     /// Cells for the widest value on screen.
     value_width: u16,
+    /// Whether any row on screen holds a value rather than a null.
+    has_values: bool,
+    /// The width the column is laid out at: its stable width once sized (see
+    /// [`ColumnWidths`]), until then what shows this page whole.
+    width: u16,
     right_align: bool,
     /// Whether a value may be shown clipped beside other columns (see
     /// [`is_truncatable_dtype`]).
@@ -8103,10 +8159,28 @@ struct ColumnSlice {
 }
 
 impl ColumnSlice {
-    /// Cells the column needs to show its heading, type and every value whole.
+    /// The width the column asks for: whole within it, or clipped behind the marker.
     fn natural_width(&self) -> u16 {
-        self.header_width.max(self.type_width).max(self.value_width)
+        self.width
     }
+
+    fn measure(&self) -> PageMeasure {
+        PageMeasure {
+            header: self.header_width,
+            type_label: self.type_width,
+            values: self.value_width,
+            has_values: self.has_values,
+            clips: self.clips,
+        }
+    }
+}
+
+/// What sizes columns for one draw: the stable widths, the types that key them, and
+/// the cap on automatic text.
+struct Sizing<'a> {
+    widths: &'a mut ColumnWidths,
+    schema: &'a Schema,
+    cap: u16,
 }
 
 enum SliceCell {
@@ -8121,6 +8195,10 @@ struct FittedColumns {
     cols: Vec<ColumnSlice>,
     widths: Vec<u16>,
     rows: usize,
+    /// The last column ends at the table's right edge with more columns after it:
+    /// its heading leaves its last cell to the off-screen hint, which would
+    /// otherwise cover the heading's last character or clip marker.
+    hint_cell: bool,
 }
 
 /// The least the scrolling side keeps beside frozen columns, and the most: a third of
@@ -8202,13 +8280,15 @@ fn visible_slice(df: &DataFrame, offset: usize, len: usize) -> Option<DataFrame>
 }
 
 /// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
-/// (strings, raw bytes, categorical/enum labels) are fine to clip — a partial value still reads
-/// as a clipped string. Numeric, temporal and boolean columns are excluded: a truncated number or
+/// (strings, raw bytes, categorical/enum labels) and nested previews (structs, lists,
+/// arrays) are fine to clip: a partial value still reads as a clipped string, and a
+/// nested value left whole would hold one long value's width on every page after it.
+/// Numeric, temporal and boolean columns are excluded: a truncated number or
 /// timestamp reads as a different (wrong) value, so those are dropped until scrolled into view.
 fn is_truncatable_dtype(dtype: &DataType) -> bool {
     match dtype {
         DataType::String | DataType::Binary => true,
-        other => other.is_categorical() || other.is_enum(),
+        other => other.is_categorical() || other.is_enum() || other.is_nested(),
     }
 }
 
@@ -8233,6 +8313,12 @@ impl DataTable {
 
     pub fn with_cell_padding(mut self, padding: u16) -> Self {
         self.table_cell_padding = padding;
+        self
+    }
+
+    /// The terminal's width, so automatic widths do not change when a sidebar opens.
+    pub fn with_screen_width(mut self, width: u16) -> Self {
+        self.screen_width = width;
         self
     }
 
@@ -8419,12 +8505,12 @@ impl DataTable {
         }
     }
 
-    /// Render the dataframe into `area`, returning the number of columns that were actually
-    /// shown (which may be fewer than `df`'s column count when they don't all fit). The caller
-    /// uses this to decide whether to draw an "more columns off-screen" indicator.
+    /// Render `df` into `area` on its own, with widths learned from this page alone,
+    /// returning how many columns were shown. For tests of the layout rules.
     ///
     /// `leading_gap` keeps the first column one cell off the left edge: the columns right
     /// of the frozen separator, which would otherwise touch it.
+    #[cfg(test)]
     fn render_dataframe(
         &self,
         df: &DataFrame,
@@ -8434,18 +8520,52 @@ impl DataTable {
         leading_gap: bool,
         _start_row_offset: usize,
     ) -> usize {
+        let mut widths = ColumnWidths::default();
+        let sizing = Sizing {
+            widths: &mut widths,
+            schema: df.schema(),
+            cap: self.text_cap(area.width),
+        };
+        self.render_scrolling(df, area, buf, state, leading_gap, sizing)
+    }
+
+    /// The cap on automatic text widths, from the terminal's width when known.
+    fn text_cap(&self, table_width: u16) -> u16 {
+        let basis = if self.screen_width > 0 {
+            self.screen_width
+        } else {
+            table_width
+        };
+        crate::widgets::column_widths::text_cap(basis)
+    }
+
+    /// Lay out and draw the scrolling columns, at their stable widths. Returns how
+    /// many were drawn.
+    fn render_scrolling(
+        &self,
+        df: &DataFrame,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &mut TableState,
+        leading_gap: bool,
+        mut sizing: Sizing,
+    ) -> usize {
         let rows = df
             .height()
             .min((area.height as usize).saturating_sub(self.header_height() as usize));
-        let fitted = self.fit_columns(
-            df,
-            rows,
-            area.width,
-            u16::from(leading_gap),
-            Side::Scrolling,
-        );
+        let lead = u16::from(leading_gap);
+        let mut fitted = self.fit_columns(df, rows, area.width, lead, Side::Scrolling, &mut sizing);
+        let shown = fitted.cols.len();
+        let used = fitted
+            .widths
+            .iter()
+            .fold(lead, |used, &w| used.saturating_add(w))
+            + self
+                .table_cell_padding
+                .saturating_mul(u16::try_from(shown.saturating_sub(1)).unwrap_or(u16::MAX));
+        fitted.hint_cell = shown > 0 && shown < df.width() && used >= area.width;
         self.draw_columns(&fitted, area, buf, state, leading_gap);
-        fitted.cols.len()
+        shown
     }
 
     /// The frozen columns that fit beside a usable scrolling column, with their widths.
@@ -8462,12 +8582,13 @@ impl DataTable {
         width: u16,
         nothing_else_scrolls: bool,
         table_width: u16,
+        sizing: &mut Sizing,
     ) -> FittedColumns {
         // The space before the separator, and the separator. The gap after it is the
         // scrolling side's.
         let room = width.saturating_sub(2);
         if nothing_else_scrolls {
-            let fitted = self.fit_columns(locked, rows, room, 0, Side::Frozen);
+            let fitted = self.fit_columns(locked, rows, room, 0, Side::Frozen, sizing);
             if fitted.cols.len() == locked.width() {
                 return fitted;
             }
@@ -8475,13 +8596,20 @@ impl DataTable {
         let reserve = (table_width / 3)
             .clamp(MIN_SCROLL_RESERVE, MAX_SCROLL_RESERVE)
             .min(table_width / 2);
-        self.fit_columns(locked, rows, room.saturating_sub(reserve), 0, Side::Frozen)
+        self.fit_columns(
+            locked,
+            rows,
+            room.saturating_sub(reserve),
+            0,
+            Side::Frozen,
+            sizing,
+        )
     }
 
     /// Lay `df`'s columns out left to right in `width` cells, `lead` of them taken first,
     /// formatting a column's first `rows` values only once it is reached. The one sizing
-    /// rule for frozen and scrolling columns alike, measured on the rows on screen in
-    /// terminal cells.
+    /// rule for frozen and scrolling columns alike: each column at its stable width,
+    /// learned from the rows on screen in terminal cells the first time it is drawn.
     fn fit_columns(
         &self,
         df: &DataFrame,
@@ -8489,6 +8617,7 @@ impl DataTable {
         width: u16,
         lead: u16,
         side: Side,
+        sizing: &mut Sizing,
     ) -> FittedColumns {
         let drifting = self.drifting_columns();
         let min_partial = min_partial_width(self.glyphs);
@@ -8498,22 +8627,22 @@ impl DataTable {
             cols: Vec::new(),
             widths: Vec::new(),
             rows,
+            hint_cell: false,
         };
         let mut used = lead;
         for col_index in 0..df.width() {
-            let mut remaining = width.saturating_sub(used);
+            let remaining = width.saturating_sub(used);
             if remaining == 0 {
                 break;
             }
-            let col = self.slice_column(df, col_index, rows, &drifting, &mut scratch);
-            // A scrolling column clipped with more after it leaves the last cell for
-            // the off-screen hint, which would otherwise cover its clip marker.
-            if side == Side::Scrolling
-                && col.natural_width() > remaining
-                && col_index + 1 < df.width()
-            {
-                remaining -= 1;
-            }
+            let mut col = self.slice_column(df, col_index, rows, &drifting, &mut scratch);
+            let dtype = sizing
+                .schema
+                .get(col.name.as_str())
+                .unwrap_or_else(|| df[col_index].dtype());
+            col.width = sizing
+                .widths
+                .width(&col.name, dtype, col.measure(), sizing.cap);
             let first = fitted.cols.is_empty();
             let Some(w) = fit_column(&col, remaining, min_partial, first, side) else {
                 break;
@@ -8611,6 +8740,7 @@ impl DataTable {
             .map(crate::glyphs::cell_width)
             .unwrap_or(0);
         let cells_u16 = |w: usize| u16::try_from(w).unwrap_or(u16::MAX);
+        let has_values = cells.iter().any(|c| matches!(c, SliceCell::Value(_)));
         ColumnSlice {
             name: name.to_string(),
             drift_mark,
@@ -8620,6 +8750,8 @@ impl DataTable {
             type_width: cells_u16(type_width),
             cells,
             value_width: cells_u16(value_width),
+            has_values,
+            width: cells_u16(header_width.max(type_width).max(value_width)),
             right_align,
             clips: is_binary || is_truncatable_dtype(dtype),
             cell_style,
@@ -8689,8 +8821,18 @@ impl DataTable {
         // colour in plain weight and spells the type out. Headings follow their
         // column's alignment; a left-aligned heading over right-aligned digits reads
         // as a rendering bug.
+        let last = fitted.cols.len().saturating_sub(1);
         let headers: Vec<Cell> = columns()
-            .map(|(col, w)| {
+            .enumerate()
+            .map(|(i, (col, w))| {
+                // The off-screen hint goes on the type row when there is one, else on
+                // the name row: that line of the last column stops a cell short.
+                let hint = u16::from(fitted.hint_cell && i == last && w > 1);
+                let (name_w, type_w) = if col.type_label.is_some() {
+                    (w, w - hint)
+                } else {
+                    (w - hint, w)
+                };
                 let name_style = match col.colour {
                     Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
                     None => Style::default().add_modifier(Modifier::BOLD),
@@ -8700,9 +8842,9 @@ impl DataTable {
                 let marks = crate::glyphs::cell_width(col.drift_mark)
                     + crate::glyphs::cell_width(col.sort_mark);
                 let mut heading = Vec::with_capacity(3);
-                match u16::try_from(marks).ok().filter(|&m| m < w) {
+                match u16::try_from(marks).ok().filter(|&m| m < name_w) {
                     Some(marks) => {
-                        heading.push(Span::styled(fit(&col.name, w - marks), name_style));
+                        heading.push(Span::styled(fit(&col.name, name_w - marks), name_style));
                         if !col.drift_mark.is_empty() {
                             heading.push(Span::styled(
                                 col.drift_mark,
@@ -8715,16 +8857,16 @@ impl DataTable {
                             heading.push(Span::styled(col.sort_mark, name_style));
                         }
                     }
-                    None => heading.push(Span::styled(fit(&col.name, w), name_style)),
+                    None => heading.push(Span::styled(fit(&col.name, name_w), name_style)),
                 }
-                let mut lines = vec![cell_line(heading, w, col.right_align)];
+                let mut lines = vec![cell_line(heading, name_w, col.right_align)];
                 if let Some(label) = &col.type_label {
                     let type_style = match col.colour {
                         Some(c) => Style::default().fg(c),
                         None => Style::default().fg(self.dimmed),
                     };
-                    let label = Span::styled(fit(label, w), type_style);
-                    lines.push(cell_line(vec![label], w, col.right_align));
+                    let label = Span::styled(fit(label, type_w), type_style);
+                    lines.push(cell_line(vec![label], type_w, col.right_align));
                 }
                 Cell::from(Text::from(lines))
             })
@@ -8747,6 +8889,24 @@ impl DataTable {
                 .highlight_spacing(HighlightSpacing::Always);
         }
         StatefulWidget::render(table, area, buf, state);
+    }
+
+    /// Fit each column waiting for it to the rows on screen, from the buffer already
+    /// held, so a column scrolled out of view is fitted to this page too.
+    fn fit_pending(&self, state: &mut DataTableState, offset: usize, rows: usize, cap: u16) {
+        let pending = state.widths.fits_pending();
+        if pending.is_empty() || !state.buffer_on_hand() {
+            return;
+        }
+        let drifting = self.drifting_columns();
+        let mut scratch = String::new();
+        for (name, dtype) in pending {
+            let Some(page) = state.page_column(&name, offset, rows) else {
+                continue;
+            };
+            let col = self.slice_column(&page, 0, page.height(), &drifting, &mut scratch);
+            state.widths.fit(&name, &dtype, col.measure(), cap);
+        }
     }
 
     fn render_row_numbers(&self, area: Rect, buf: &mut Buffer, params: RowNumbersParams) {
@@ -8844,6 +9004,7 @@ impl StatefulWidget for DataTable {
         // cursor is on, where it carries the accent. It also holds the "columns off to
         // the left" hint in the header, so no header name ever gets a character
         // overwritten.
+        let cap = self.text_cap(area.width);
         let rail_area = Rect {
             x: area.x,
             y: area.y,
@@ -8936,6 +9097,7 @@ impl StatefulWidget for DataTable {
             .locked_df
             .as_ref()
             .and_then(|df| visible_slice(df, offset, state.visible_rows));
+        self.fit_pending(state, offset, state.visible_rows.min(rows_room), cap);
 
         if state.df.is_some() || state.locked_df.is_some() {
             if state.row_numbers {
@@ -8951,6 +9113,11 @@ impl StatefulWidget for DataTable {
                     data_area.width,
                     state.column_order.len() <= asked,
                     area.width,
+                    &mut Sizing {
+                        widths: &mut state.widths,
+                        schema: &state.schema,
+                        cap,
+                    },
                 );
                 state.fit_frozen(fitted.cols.len());
                 // The state may not take the fit while no buffer is on hand; it then
@@ -8999,13 +9166,17 @@ impl StatefulWidget for DataTable {
                 .and_then(|df| visible_slice(df, offset, state.visible_rows))
             {
                 let total_cols = sliced_df.width();
-                let shown = self.render_dataframe(
+                let shown = self.render_scrolling(
                     &sliced_df,
                     scroll_area,
                     buf,
                     &mut state.table_state,
                     leading_gap,
-                    start_row,
+                    Sizing {
+                        widths: &mut state.widths,
+                        schema: &state.schema,
+                        cap,
+                    },
                 );
                 scroll_indicator = Some((
                     scroll_area,
@@ -9025,13 +9196,17 @@ impl StatefulWidget for DataTable {
                     if state.row_numbers {
                         self.render_row_numbers(row_num_area, buf, row_numbers(0, 0, None));
                     }
-                    self.render_dataframe(
+                    self.render_scrolling(
                         &empty_df,
                         data_area,
                         buf,
                         &mut state.table_state,
                         false,
-                        0,
+                        Sizing {
+                            widths: &mut state.widths,
+                            schema: &state.schema,
+                            cap,
+                        },
                     );
                 }
                 _ => {
@@ -13404,10 +13579,10 @@ mod tests {
             true,
         )
         .unwrap();
-        tiny.set_column_widths(vec![("a".to_string(), 2_000)]);
+        tiny.set_column_bytes(vec![("a".to_string(), 2_000)]);
         tiny.visible_rows = 40;
         assert_eq!(tiny.byte_cap_rows(), 1024 * 1024 / 2_016);
-        tiny.set_column_widths(vec![("a".to_string(), 1 << 20)]);
+        tiny.set_column_bytes(vec![("a".to_string(), 1 << 20)]);
         assert_eq!(tiny.byte_cap_rows(), 40);
     }
 
@@ -13614,7 +13789,7 @@ mod tests {
         let mut state = DataTableState::new(lf, None, None, None, Some(64), true).unwrap();
         state.set_remote_source();
         state.set_row_groups(&[G; 5]);
-        state.set_column_widths(vec![("a".to_string(), 1_000)]);
+        state.set_column_bytes(vec![("a".to_string(), 1_000)]);
         state.visible_rows = 40;
         let cap = state.byte_cap_rows();
         assert!(
@@ -14294,11 +14469,11 @@ mod tests {
                     if dtype_row && width >= 20 {
                         assert!(rows[1].contains("i64"), "{ctx}");
                     }
-                    if width >= 120 {
-                        assert!(rows[0].contains(&name), "{ctx}");
+                    // Wider than any cap on automatic widths: always clipped, and from
+                    // 60 columns on, with the column after it beside it.
+                    assert!(rows[0].contains(g.ellipsis), "{ctx}");
+                    if width >= 60 {
                         assert!(rows[0].contains("tail"), "{ctx}");
-                    } else {
-                        assert!(rows[0].contains(g.ellipsis), "{ctx}");
                     }
                 }
             }
@@ -14325,7 +14500,9 @@ mod tests {
             table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
             let header = header_row_string(&buf, area);
             assert!(
-                header.ends_with(&format!("{}{}", g.ellipsis, g.sort_desc)),
+                header
+                    .trim_end()
+                    .ends_with(&format!("{}{}", g.ellipsis, g.sort_desc)),
                 "{}: {header:?}",
                 set_name(g)
             );
@@ -14508,7 +14685,7 @@ mod tests {
                 assert!(frozen.contains("url"), "{ctx}");
                 assert!(scrolled.contains("tail"), "{ctx}");
                 let (frozen, scrolled) = rows[1].split_once(g.rule).expect(&ctx);
-                assert!(frozen.contains("https://example.com/"), "{ctx}");
+                assert!(frozen.contains("https://exa"), "{ctx}");
                 assert!(frozen.trim_end().ends_with(g.ellipsis), "{ctx}");
                 assert!(scrolled.split_whitespace().any(|t| t == "7"), "{ctx}");
                 assert_eq!(state.frozen_shown(), 1, "{ctx}");
@@ -14749,6 +14926,347 @@ mod tests {
                 assert!(long.contains(g.ellipsis), "{ctx}");
                 for row in &rows[1..] {
                     assert!(!row.trim().is_empty(), "{ctx}");
+                }
+            }
+        }
+    }
+
+    /// The issue's long-URL frame: six columns over 80 rows, every description short
+    /// but row 24's.
+    fn long_url_frame() -> DataFrame {
+        let url = format!("https://example.com/{}", "long-segment/".repeat(15));
+        let n = 80usize;
+        let start = NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        df!(
+            "id" => (0..n as i64).collect::<Vec<_>>(),
+            "description" => (0..n)
+                .map(|i| if i == 24 { url.clone() } else { format!("item {i}") })
+                .collect::<Vec<_>>(),
+            "amount" => (0..n).map(|i| i as f64 * 1.5).collect::<Vec<_>>(),
+            "status" => (0..n).map(|i| if i % 2 == 0 { "open" } else { "closed" }).collect::<Vec<_>>(),
+            "timestamp" => (0..n)
+                .map(|i| start + chrono::Duration::hours(i as i64))
+                .collect::<Vec<_>>(),
+            "uuid" => (0..n)
+                .map(|i| format!("00000000-0000-0000-0000-{:012x}", i * 7919 + 1))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    /// Paging down past a page with one long value, and back, moves no column: the
+    /// heading row is the same on every page, at every width, in both glyph sets.
+    /// Measured per page, the long URL turned a six-column view into a two-column one.
+    /// On its page the URL is clipped and marked.
+    #[test]
+    fn widths_hold_still_across_pages() {
+        let df = long_url_frame();
+        for g in glyph_sets() {
+            for width in [60u16, 80, 120] {
+                let mut state = state_of(&df, 20);
+                let table = || DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                };
+                let first = draw(table(), &mut state, width, 21);
+                let ctx =
+                    |rows: &[String]| format!("{} glyphs, width {width}: {rows:#?}", set_name(g));
+                if width >= 80 {
+                    assert!(first[0].contains("timestamp"), "{}", ctx(&first));
+                }
+                let mut saw_url = false;
+                for step in 0..6 {
+                    if step < 3 {
+                        state.page_down();
+                    } else {
+                        state.page_up();
+                    }
+                    state.collect();
+                    let rows = draw(table(), &mut state, width, 21);
+                    assert_eq!(rows[0], first[0], "page {step}: {}", ctx(&rows));
+                    if let Some(row) = rows.iter().find(|r| r.contains("https://")) {
+                        saw_url = true;
+                        let clipped = row.split_whitespace().nth(1).unwrap();
+                        assert!(clipped.ends_with(g.ellipsis), "{}", ctx(&rows));
+                    }
+                }
+                assert!(saw_url, "the long URL's page was drawn");
+            }
+        }
+    }
+
+    /// A frozen column keeps its width across pages, so the number of columns that
+    /// stay frozen does not change with the page either.
+    #[test]
+    fn frozen_columns_hold_still_across_pages() {
+        let df = long_url_frame();
+        for g in glyph_sets() {
+            for width in [60u16, 80, 120] {
+                let mut state = state_of(&df, 20);
+                state.set_locked_columns(3);
+                let table = || DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                };
+                let first = draw(table(), &mut state, width, 21);
+                let frozen = state.frozen_shown();
+                for _ in 0..3 {
+                    state.page_down();
+                    state.collect();
+                    let rows = draw(table(), &mut state, width, 21);
+                    let ctx = format!("{} glyphs, width {width}: {rows:#?}", set_name(g));
+                    assert_eq!(state.frozen_shown(), frozen, "{ctx}");
+                    assert_eq!(rows[0], first[0], "{ctx}");
+                }
+            }
+        }
+    }
+
+    /// A number's column widens for a wider number on a later page, so it is never
+    /// cut, and does not narrow again on a page of narrower ones.
+    #[test]
+    fn a_number_column_widens_and_stays_wide() {
+        let values: Vec<i64> = (0..60)
+            .map(|i| if i == 30 { 123_456_789 } else { i })
+            .collect();
+        let df = df!("n" => values, "t" => (0..60).map(|i| format!("t{i}")).collect::<Vec<_>>())
+            .unwrap();
+        let mut state = state_of(&df, 20);
+        draw(DataTable::default(), &mut state, 60, 21);
+        assert_eq!(state.shown_width("n"), Some(2));
+        state.page_down();
+        state.collect();
+        let rows = draw(DataTable::default(), &mut state, 60, 21);
+        assert!(rows.iter().any(|r| r.contains("123456789")), "{rows:#?}");
+        state.page_down();
+        state.collect();
+        draw(DataTable::default(), &mut state, 60, 21);
+        assert_eq!(state.shown_width("n"), Some(9));
+    }
+
+    /// A struct is a preview like text: one long value on a later page is clipped
+    /// at the cap, and the columns after it stay on screen on the pages after.
+    #[test]
+    fn a_long_struct_value_does_not_widen_its_column_for_good() {
+        let n = 60usize;
+        let y: Vec<String> = (0..n)
+            .map(|i| {
+                if i == 30 {
+                    "a very long struct value ".repeat(6)
+                } else {
+                    "short".to_string()
+                }
+            })
+            .collect();
+        let s = StructChunked::from_series(
+            "s".into(),
+            n,
+            [
+                Series::new("x".into(), (0..n as i64).collect::<Vec<_>>()),
+                Series::new("y".into(), y),
+            ]
+            .iter(),
+        )
+        .unwrap()
+        .into_series();
+        let df = DataFrame::new_infer_height(vec![
+            Series::new("id".into(), (0..n as i64).collect::<Vec<_>>()).into(),
+            s.into(),
+            Series::new("tail".into(), (0..n as i64).collect::<Vec<_>>()).into(),
+        ])
+        .unwrap();
+        let mut state = state_of(&df, 20);
+        for page in 0..3 {
+            let rows = draw(DataTable::default(), &mut state, 80, 21);
+            assert!(rows[0].contains("tail"), "page {page}: {rows:#?}");
+            assert!(
+                state.shown_width("s").is_some_and(|w| w <= 32),
+                "page {page}: {rows:#?}"
+            );
+            if page == 1 {
+                let long = rows.iter().find(|r| r.contains("{30,")).unwrap();
+                assert!(long.contains(crate::glyphs::get().ellipsis), "{rows:#?}");
+            }
+            state.page_down();
+            state.collect();
+        }
+    }
+
+    /// Automatic text and headings stop at two fifths of the terminal, marked where
+    /// cut: 32 cells at 80 columns, 48 at 120.
+    #[test]
+    fn automatic_text_stops_at_the_cap_and_is_marked() {
+        let long = "x".repeat(200);
+        let df = df!("text" => &[long.as_str()], "tail" => &[1i64]).unwrap();
+        for g in glyph_sets() {
+            for (width, cap) in [(80u16, 32u16), (120, 48)] {
+                let mut state = state_of(&df, 1);
+                let table = DataTable {
+                    glyphs: g,
+                    ..DataTable::default()
+                };
+                let rows = draw(table, &mut state, width, 2);
+                let ctx = format!("{} glyphs, width {width}: {rows:#?}", set_name(g));
+                assert_eq!(state.shown_width("text"), Some(cap), "{ctx}");
+                let row: String = rows[1].chars().skip(1).collect();
+                let value = row.split_whitespace().next().unwrap();
+                assert!(value.ends_with(g.ellipsis), "{ctx}");
+                assert_eq!(crate::glyphs::cell_width(value), usize::from(cap), "{ctx}");
+                assert!(rows[0].contains("tail"), "{ctx}");
+            }
+        }
+    }
+
+    /// The cap follows the terminal, not the table: a sidebar narrowing the table
+    /// moves no column.
+    #[test]
+    fn a_sidebar_moves_no_column() {
+        let df = long_url_frame();
+        let mut state = state_of(&df, 20);
+        state.page_down();
+        state.collect();
+        let table = || DataTable {
+            screen_width: 120,
+            ..DataTable::default()
+        };
+        let whole = draw(table(), &mut state, 120, 21);
+        let widths: Vec<_> = ["id", "description", "amount"]
+            .iter()
+            .map(|c| state.shown_width(c))
+            .collect();
+        let beside = draw(table(), &mut state, 70, 21);
+        for (c, before) in ["id", "description", "amount"].iter().zip(&widths) {
+            assert_eq!(state.shown_width(c), *before, "{c}: {beside:#?}");
+        }
+        assert!(
+            whole[0].starts_with(&beside[0][..40]),
+            "{whole:#?} {beside:#?}"
+        );
+    }
+
+    /// A width set by hand: exact for text, values clipped and marked; it survives
+    /// paging, scrolling, reordering, hiding and resizing; fit and reset change it.
+    #[test]
+    fn a_manual_width_survives_everything_but_fit_and_reset() {
+        let df = long_url_frame();
+        let mut state = state_of(&df, 20);
+        state.set_width_choices([("description".to_string(), WidthChoice::Manual(6))]);
+        let rows = draw(DataTable::default(), &mut state, 80, 21);
+        assert_eq!(state.shown_width("description"), Some(6), "{rows:#?}");
+        let clipped = format!("item {}", crate::glyphs::get().ellipsis);
+        assert!(rows.iter().any(|r| r.contains(&clipped)), "{rows:#?}");
+
+        state.page_down();
+        state.collect();
+        state.scroll_right();
+        draw(DataTable::default(), &mut state, 80, 21);
+        state.scroll_left();
+        // Moved to the end, then hidden and shown again.
+        let mut order = state.headers();
+        order.retain(|c| c != "description");
+        order.push("description".to_string());
+        state.set_column_order(order.clone());
+        draw(DataTable::default(), &mut state, 200, 21);
+        assert_eq!(state.shown_width("description"), Some(6));
+        order.pop();
+        state.set_column_order(order.clone());
+        draw(DataTable::default(), &mut state, 40, 21);
+        order.insert(1, "description".to_string());
+        state.set_column_order(order);
+        draw(DataTable::default(), &mut state, 120, 21);
+        assert_eq!(state.width_choice("description"), WidthChoice::Manual(6));
+        assert_eq!(state.shown_width("description"), Some(6));
+
+        // Fit takes the rows on screen: page two holds the URL.
+        state.set_width_choices([("description".to_string(), WidthChoice::Fit)]);
+        draw(DataTable::default(), &mut state, 120, 21);
+        let url_width = 20 + 13 * 15;
+        assert_eq!(
+            state.width_choice("description"),
+            WidthChoice::Manual(url_width)
+        );
+        state.reset();
+        assert_eq!(state.width_choice("description"), WidthChoice::Auto);
+    }
+
+    /// A column scrolled out of view is fitted to the rows on screen too.
+    #[test]
+    fn a_column_out_of_view_is_fitted_to_the_page() {
+        let df = long_url_frame();
+        let mut state = state_of(&df, 20);
+        state.page_down();
+        state.collect();
+        for _ in 0..3 {
+            state.scroll_right();
+        }
+        draw(DataTable::default(), &mut state, 80, 21);
+        state.set_width_choices([("description".to_string(), WidthChoice::Fit)]);
+        let rows = draw(DataTable::default(), &mut state, 80, 21);
+        assert!(!rows[0].contains("description"), "{rows:#?}");
+        assert_eq!(
+            state.width_choice("description"),
+            WidthChoice::Manual(20 + 13 * 15)
+        );
+    }
+
+    /// A number column set narrower than its numbers still shows them whole.
+    #[test]
+    fn a_number_column_set_narrow_still_shows_whole_numbers() {
+        let df = df!("n" => &[1_234_567i64, 2], "t" => &["a", "b"]).unwrap();
+        let mut state = state_of(&df, 2);
+        state.set_width_choices([("n".to_string(), WidthChoice::Manual(4))]);
+        let rows = draw(DataTable::default(), &mut state, 40, 3);
+        assert!(rows[1].contains("1234567"), "{rows:#?}");
+    }
+
+    /// The same name with another type, as a query can make it, is another column:
+    /// it starts from an automatic width, and the first gets its own back.
+    #[test]
+    fn a_column_whose_type_changes_starts_afresh() {
+        let df = df!("a" => &["x", "y"], "n" => &[1i64, 2]).unwrap();
+        let mut state = state_of(&df, 2);
+        state.set_width_choices([("a".to_string(), WidthChoice::Manual(9))]);
+        state.query("select a: n".to_string());
+        assert_eq!(state.width_choice("a"), WidthChoice::Auto);
+        state.query("select a, n".to_string());
+        assert_eq!(state.width_choice("a"), WidthChoice::Manual(9));
+    }
+
+    /// A column ending at the table's edge with more after it leaves its heading's
+    /// last cell to the off-screen hint, so the hint covers neither a letter nor the
+    /// clip marker, and the values keep the full width: a number that fits is whole,
+    /// never a preview.
+    #[test]
+    fn the_offscreen_hint_takes_a_heading_cell_not_a_value_cell() {
+        let df = df!(
+            "aaaaaaaaaa" => &["aaaaaaaaaa"],
+            "bbbbbbb" => &[1_234_567i64],
+            "c" => &["x"],
+        )
+        .unwrap();
+        for g in glyph_sets() {
+            for dtype_row in [false, true] {
+                let table = DataTable {
+                    glyphs: g,
+                    dtype_row,
+                    ..DataTable::default()
+                };
+                let header_h = usize::from(table.header_height());
+                let mut state = state_of(&df, 1);
+                // The rail, ten cells, a gap and seven: the second column ends at the edge.
+                let rows = draw(table, &mut state, 19, header_h as u16 + 1);
+                let ctx = format!("{} glyphs, type row {dtype_row}: {rows:#?}", set_name(g));
+                assert!(rows[header_h].ends_with(" 1234567"), "{ctx}");
+                let hint_row = &rows[header_h - 1];
+                assert!(hint_row.ends_with(g.arrow_right), "{ctx}");
+                let before = hint_row.strip_suffix(g.arrow_right).unwrap();
+                if dtype_row {
+                    assert!(before.trim_end().ends_with("i64"), "{ctx}");
+                } else {
+                    assert!(before.ends_with(g.ellipsis), "{ctx}");
                 }
             }
         }

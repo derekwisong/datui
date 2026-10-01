@@ -1558,7 +1558,8 @@ pub struct DisplayConfig {
     pub max_buffered_mb: usize,
     pub row_numbers: bool,
     pub row_start_index: usize,
-    pub table_cell_padding: usize,
+    /// Spacing between table columns: `"comfortable"`, `"compact"` or a count of cells.
+    pub table_cell_padding: CellPadding,
     /// When true, colorize main table cells by column type (string, int, float, bool, temporal).
     pub column_colors: bool,
     /// Show a second header row naming each column's type. `D` toggles it for the session.
@@ -1578,6 +1579,64 @@ pub struct DisplayConfig {
     /// or a `[display.number_format]` table for finer control.
     #[serde(default)]
     pub number_format: NumberFormatConfig,
+}
+
+/// Spacing between the main table's columns, frozen and scrolling alike: a density
+/// by name, or a count of cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum CellPadding {
+    Cells(usize),
+    Density(Density),
+}
+
+/// The named spacings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Density {
+    /// One cell between columns: more columns on screen.
+    Compact,
+    /// Two cells between columns, the default.
+    Comfortable,
+}
+
+impl Default for CellPadding {
+    fn default() -> Self {
+        Self::Density(Density::Comfortable)
+    }
+}
+
+impl CellPadding {
+    /// Cells between two columns.
+    pub fn cells(self) -> u16 {
+        match self {
+            Self::Cells(n) => u16::try_from(n).unwrap_or(u16::MAX),
+            Self::Density(Density::Compact) => 1,
+            Self::Density(Density::Comfortable) => 2,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CellPadding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Cells(usize),
+            Name(String),
+        }
+        const EXPECTED: &str =
+            "table_cell_padding is \"compact\", \"comfortable\" or a number of cells";
+        match Raw::deserialize(deserializer).map_err(|_| D::Error::custom(EXPECTED))? {
+            Raw::Cells(n) => Ok(Self::Cells(n)),
+            Raw::Name(name) => match name.as_str() {
+                "compact" => Ok(Self::Density(Density::Compact)),
+                "comfortable" => Ok(Self::Density(Density::Comfortable)),
+                other => Err(D::Error::custom(format!("{EXPECTED}, not {other:?}"))),
+            },
+        }
+    }
 }
 
 /// Number display settings: a preset name shorthand, or a full table.
@@ -1793,7 +1852,7 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
     ("row_start_index", "Starting index for row numbers (0 or 1)"),
     (
         "table_cell_padding",
-        "Number of spaces between columns in the main data table (>= 0)\nDefault 2",
+        "Spacing between columns in the main data table: \"comfortable\" (2 cells, the default),\n\"compact\" (1 cell) or a number of cells (>= 0)",
     ),
     (
         "column_colors",
@@ -2599,7 +2658,7 @@ impl Default for DisplayConfig {
             max_buffered_mb: 512,
             row_numbers: false,
             row_start_index: 1,
-            table_cell_padding: 2,
+            table_cell_padding: CellPadding::default(),
             column_colors: true,
             dtype_row: true,
             notes_accent: true,

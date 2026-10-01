@@ -19,7 +19,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
 | <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md) |
 | <kbd>r</kbd> | Reverse the sort; with no sort, reverse the row order |
-| <kbd>R</kbd> | Reset: clear query, filters, sort, column order and hidden columns, frozen columns, pivot/melt, drill-down and the applied view |
+| <kbd>R</kbd> | Reset: clear query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
 | <kbd>c</kbd> | [Chart](../user-guide/charting.md) |
 | <kbd>a</kbd> | [Analysis](../user-guide/analysis-features.md) |
 | <kbd>p</kbd> | [Pivot and melt](../user-guide/reshaping.md) |
@@ -146,7 +146,10 @@ On the Columns tab, with a column highlighted:
 | <kbd>+</kbd> <kbd>-</kbd> | Move it left or right in the table |
 | <kbd>L</kbd> | Freeze it and the columns above it; on a column already frozen, pull the boundary back |
 | <kbd>v</kbd> | Hide or show it |
-| <kbd>C</kbd> | Clear the staged sort, order, locks and hidden columns |
+| <kbd>&lt;</kbd> <kbd>&gt;</kbd> (<kbd>,</kbd> <kbd>.</kbd>) | Make it 4 cells narrower or wider |
+| <kbd>f</kbd> | Fit it to the rows on screen |
+| <kbd>w</kbd> | Back to the automatic width |
+| <kbd>C</kbd> | Clear the staged sort, order, locks, hidden columns and widths |
 
 On the Filters tab:
 

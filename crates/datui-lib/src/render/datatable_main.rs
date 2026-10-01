@@ -114,6 +114,7 @@ pub fn render(
                     ctx.column_separator,
                 )
                 .with_cell_padding(ctx.table_cell_padding)
+                .with_screen_width(main_area.width)
                 .with_alternate_row_bg(ctx.alternate_row_color)
                 .with_binary_col(ctx.binary_col)
                 .with_binary_columns(state.binary_column_names())

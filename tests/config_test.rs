@@ -37,7 +37,7 @@ fn test_default_config() {
     assert_eq!(config.display.pages_lookback, 3);
     assert!(!config.display.row_numbers);
     assert_eq!(config.display.row_start_index, 1);
-    assert_eq!(config.display.table_cell_padding, 2);
+    assert_eq!(config.display.table_cell_padding.cells(), 2);
 
     // Check performance defaults
     assert_eq!(config.performance.analysis_sample_rows, 100_000);
@@ -3129,4 +3129,37 @@ fn test_quality_local_copy_mb() {
     let (_temp_dir, config_manager) = setup_test_config_dir();
     let template: AppConfig = toml::from_str(&config_manager.generate_default_config()).unwrap();
     assert_eq!(template.performance.quality_local_copy_mb, 2048);
+}
+
+/// `table_cell_padding` takes a density by name or a count of cells, keeps the
+/// comfortable two cells when omitted, follows the last file that writes it, and
+/// says what it takes when given anything else.
+#[test]
+fn cell_padding_takes_a_density_or_a_count() {
+    let cells = |layers: &[&str]| layered(layers).display.table_cell_padding.cells();
+    let compact = "[display]\ntable_cell_padding = \"compact\"\n";
+    let comfortable = "[display]\ntable_cell_padding = \"comfortable\"\n";
+    let silent = "[display]\nrow_numbers = true\n";
+    assert_eq!(cells(&[silent]), 2, "comfortable unless asked otherwise");
+    assert_eq!(cells(&[compact]), 1);
+    assert_eq!(cells(&[comfortable]), 2);
+    assert_eq!(cells(&["[display]\ntable_cell_padding = 0\n"]), 0);
+    assert_eq!(cells(&["[display]\ntable_cell_padding = 3\n"]), 3);
+    assert_eq!(cells(&[compact, silent]), 1);
+    assert_eq!(
+        cells(&[compact, comfortable]),
+        2,
+        "an explicit default undoes an imported compact"
+    );
+
+    let err = ConfigLayer::parse("[display]\ntable_cell_padding = \"dense\"\n")
+        .and_then(|layer| AppConfig::from_layers([layer]))
+        .unwrap_err();
+    let err = format!("{err:#}");
+    assert!(err.contains("compact") && err.contains("dense"), "{err}");
+    assert!(
+        ConfigLayer::parse("[display]\ntable_cell_padding = -1\n")
+            .and_then(|layer| AppConfig::from_layers([layer]))
+            .is_err()
+    );
 }

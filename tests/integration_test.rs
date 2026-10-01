@@ -231,6 +231,8 @@ fn test_full_workflow() {
             is_locked: false,
             is_to_be_locked: false,
             is_visible: true,
+            width: datui::widgets::column_widths::WidthChoice::Auto,
+            shown_width: None,
         })
         .collect();
     app.sort_filter_modal.sort.table_state.select(Some(0));
@@ -10891,6 +10893,8 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
         is_locked: false,
         is_to_be_locked: false,
         is_visible: true,
+        width: datui::widgets::column_widths::WidthChoice::Auto,
+        shown_width: None,
     }];
 
     // Enter on the highlighted group row drills in.
@@ -16176,6 +16180,183 @@ fn a_freeze_survives_a_narrow_window() {
     assert_eq!(state.frozen_shown(), 3, "{wide}");
     assert!(wide.contains(g.rule), "{wide}");
     assert!(!wide.contains(g.rule_broken), "{wide}");
+}
+
+/// Columns sidebar width controls (#462): a fit is staged, discarded by Esc,
+/// applied by Enter to the page on screen without moving the view, and kept
+/// through paging and a resize; `>` and `<` step from the width drawn, `w` returns
+/// to automatic, and R puts every column back.
+#[test]
+fn column_widths_from_the_sidebar() {
+    use datui::widgets::column_widths::{WIDTH_STEP, WidthChoice};
+    let url = format!("https://example.com/{}", "long-segment/".repeat(15));
+    let csv_path = common::fixture_dir().join("sidebar_column_widths.csv");
+    let n = 80usize;
+    let mut df = df!(
+        "id" => (0..n as i64).collect::<Vec<_>>(),
+        "description" => (0..n)
+            .map(|i| if i == 24 { url.clone() } else { format!("item {i}") })
+            .collect::<Vec<_>>(),
+        "amount" => (0..n).map(|i| i as f64 * 1.5).collect::<Vec<_>>(),
+        "status" => (0..n).map(|i| if i % 2 == 0 { "open" } else { "closed" }).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    CsvWriter::new(&mut File::create(&csv_path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    // As the main loop draws: a frame that changes the rows on screen reads them,
+    // and the next frame shows them.
+    let draw = |app: &mut App, width: u16, height: u16| {
+        app.event(&AppEvent::Resize(width, height));
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let state = app.data_table_state.as_mut().unwrap();
+        if std::mem::take(&mut state.needs_recollect) {
+            app.spawn_async_collect("Loading buffer...");
+            pump_until_idle(app, &rx, &tx);
+            app.render(area, &mut buf);
+        }
+        rendered_text(&buf)
+    };
+    let on_column = |app: &mut App, name: &str| {
+        press(app, KeyCode::Char('s'));
+        press(app, KeyCode::Tab);
+        press(app, KeyCode::Tab);
+        let sort = &mut app.sort_filter_modal.sort;
+        let row = sort
+            .filtered_columns()
+            .iter()
+            .position(|(_, c)| c.name == name)
+            .unwrap();
+        sort.table_state.select(Some(row));
+    };
+    let apply = |app: &mut App| {
+        if let Some(next) = press(app, KeyCode::Enter) {
+            let _ = tx.send(next);
+        }
+        pump_until_idle(app, &rx, &tx);
+    };
+    let choice = |app: &App, name: &str| app.data_table_state.as_ref().unwrap().width_choice(name);
+
+    draw(&mut app, 100, 24);
+    press_and_send(&mut app, &tx, KeyCode::PageDown);
+    pump_until_idle(&mut app, &rx, &tx);
+    let paged = draw(&mut app, 100, 24);
+    assert!(paged.contains("https://ex"), "{paged}");
+    let start = app.data_table_state.as_ref().unwrap().start_row();
+    assert!(start > 0);
+
+    // A narrow sidebar gives the names the room until a column has a width to show.
+    let heading = |text: &str| -> String {
+        text.lines()
+            .find(|l| l.contains("Lock") && l.contains("Column"))
+            .unwrap()
+            .to_string()
+    };
+    on_column(&mut app, "description");
+    let narrow = draw(&mut app, 60, 20);
+    assert!(!heading(&narrow).contains("Width"), "{narrow}");
+    assert!(narrow.contains("description "), "{narrow}");
+    press(&mut app, KeyCode::Char('f'));
+    let narrow = draw(&mut app, 60, 20);
+    assert!(heading(&narrow).contains("Width"), "{narrow}");
+    press(&mut app, KeyCode::Esc);
+
+    // Staged, shown in the list, and gone with Esc.
+    on_column(&mut app, "description");
+    press(&mut app, KeyCode::Char('f'));
+    assert!(app.sort_filter_modal.sort.has_unapplied_changes);
+    let staged = draw(&mut app, 100, 24);
+    // The list row ends in the staged width.
+    let listed = staged.match_indices("description").any(|(at, _)| {
+        let rest: String = staged[at..].chars().take(40).collect();
+        rest.contains("fit")
+    });
+    assert!(listed, "{staged}");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(choice(&app, "description"), WidthChoice::Auto);
+
+    // Applied: fitted to this page, which stays on screen.
+    on_column(&mut app, "description");
+    press(&mut app, KeyCode::Char('f'));
+    apply(&mut app);
+    let fitted = draw(&mut app, 100, 24);
+    let url_width = u16::try_from(url.len()).unwrap();
+    assert_eq!(choice(&app, "description"), WidthChoice::Manual(url_width));
+    assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), start);
+    assert!(
+        fitted.contains("https://example.com/long-segment/long-segment/"),
+        "{fitted}"
+    );
+
+    // Kept through paging and a resize.
+    press_and_send(&mut app, &tx, KeyCode::PageDown);
+    pump_until_idle(&mut app, &rx, &tx);
+    draw(&mut app, 60, 20);
+    draw(&mut app, 100, 24);
+    assert_eq!(choice(&app, "description"), WidthChoice::Manual(url_width));
+
+    // w is automatic again; wider and narrower step from the width drawn.
+    on_column(&mut app, "description");
+    press(&mut app, KeyCode::Char('w'));
+    apply(&mut app);
+    assert_eq!(choice(&app, "description"), WidthChoice::Auto);
+    draw(&mut app, 100, 24);
+    let shown = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .shown_width("status")
+        .unwrap();
+    on_column(&mut app, "status");
+    press(&mut app, KeyCode::Char('>'));
+    press(&mut app, KeyCode::Char('.'));
+    press(&mut app, KeyCode::Char('<'));
+    apply(&mut app);
+    assert_eq!(
+        choice(&app, "status"),
+        WidthChoice::Manual(shown + WIDTH_STEP)
+    );
+    let wider = draw(&mut app, 100, 24);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().shown_width("status"),
+        Some(shown + WIDTH_STEP),
+        "{wider}"
+    );
+
+    // R resets every column to automatic.
+    press_and_send(&mut app, &tx, KeyCode::Char('R'));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(choice(&app, "status"), WidthChoice::Auto);
+}
+
+/// `table_cell_padding` names its densities: `"compact"` puts one cell between
+/// columns, `"comfortable"` (the default) two, and a number that many.
+#[test]
+fn named_padding_spaces_the_table() {
+    use datui::config::{AppConfig, ConfigLayer};
+    for (setting, gap) in [("\"compact\"", 1), ("\"comfortable\"", 2), ("3", 3)] {
+        let layer =
+            ConfigLayer::parse(&format!("[display]\ntable_cell_padding = {setting}\n")).unwrap();
+        let config = AppConfig::from_layers([layer]).unwrap();
+        let (mut app, _rx, _tx) =
+            open_query_filter_fixture_with("named_padding_spaces_the_table.csv", config);
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let types: String = (0..area.width).map(|x| buf[(x, 1)].symbol()).collect();
+        let gap = " ".repeat(gap);
+        assert!(
+            types.contains(&format!("i64{gap}i64{gap}str")),
+            "{setting}: {types:?}"
+        );
+    }
 }
 
 /// Sort & Filter (#379): a column hidden after the sidebar reordered the table

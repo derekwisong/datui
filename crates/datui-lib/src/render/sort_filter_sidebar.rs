@@ -6,6 +6,7 @@ use crate::filter_modal::{FilterEditStep, FilterModal};
 use crate::render::context::RenderContext;
 use crate::sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use crate::sort_modal::SortFocus;
+use crate::widgets::column_widths::WidthChoice;
 use crate::widgets::ui::{HintBar, Picker, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -104,10 +105,12 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
             return;
         }
         HintBar::from_ctx(ctx)
-            .hint_weighted("Space", "Sort", 5)
-            .hint_weighted("1-9", "Jump", 4)
-            .hint_weighted("L", "Lock", 3)
-            .hint_weighted("v", "Hide", 2)
+            .hint_weighted("Space", "Sort", 7)
+            .hint_weighted("1-9", "Jump", 3)
+            .hint_weighted("L", "Lock", 6)
+            .hint_weighted("v", "Hide", 4)
+            .hint_weighted("<>", "Width", 5)
+            .hint_weighted("f", "Fit", 2)
             .hint_weighted("C", "Clear", 1)
     } else {
         let filters_focused = modal.focus == SortFilterFocus::Body;
@@ -129,6 +132,13 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     };
     hints.render_flush(hints_area, buf);
 }
+
+/// Cells before a column's name in the Columns list: the rail, a space, the lock
+/// and the sort.
+const LIST_LEAD: usize = 13;
+/// Cells for the width at the end of a Columns row, its leading space included,
+/// while any column has a width set.
+const WIDTH_FIELD: usize = 6;
 
 /// The Columns tab: find row, header, one row per column.
 fn render_columns_tab(
@@ -168,7 +178,25 @@ fn render_columns_tab(
     }
     // header
     // One leading gutter column, as the rows below reserve for the rail.
-    let header = format!("  {:<5}{:<6}{}", "Lock", "Sort", "Column");
+    // The width sits at the end of the row, so a narrow sidebar takes its room from
+    // the name's tail rather than moving the name. Its field is there only while a
+    // column has a width to show: in a narrow sidebar the names need the room.
+    let width_field = if modal
+        .sort
+        .columns
+        .iter()
+        .any(|c| c.width != WidthChoice::Auto)
+    {
+        WIDTH_FIELD
+    } else {
+        0
+    };
+    let name_room = usize::from(area.width).saturating_sub(LIST_LEAD + width_field);
+    let width_heading = if width_field > 0 { "Width" } else { "" };
+    let header = format!(
+        "  {:<5}{:<6}{:<name_room$}{:>width_field$}",
+        "Lock", "Sort", "Column", width_heading
+    );
     Paragraph::new(header)
         .style(Style::default().fg(ctx.text_secondary))
         .render(
@@ -225,6 +253,13 @@ fn render_columns_tab(
             ),
             None => "   ".to_string(),
         };
+        // A width set by hand, or a fit waiting for the table, is state; automatic
+        // is the default and stays blank.
+        let width = match column.width {
+            WidthChoice::Auto => String::new(),
+            WidthChoice::Manual(cells) => cells.to_string(),
+            WidthChoice::Fit => "fit".to_string(),
+        };
         let hidden = if column.is_visible {
             String::new()
         } else {
@@ -241,7 +276,20 @@ fn render_columns_tab(
         if is_cursor && on_list {
             style = style.patch(ctx.highlight_style());
         }
-        let text = format!(" {:<5}{:<6}{}{}", lock, sort, column.name, hidden);
+        let name = crate::glyphs::fit_cells(
+            &column.name,
+            name_room.saturating_sub(crate::glyphs::cell_width(&hidden)),
+            g.ellipsis,
+        );
+        let pad = name_room
+            .saturating_sub(crate::glyphs::cell_width(&name) + crate::glyphs::cell_width(&hidden));
+        let text = format!(
+            " {:<5}{:<6}{name}{hidden}{}{:>width_field$}",
+            lock,
+            sort,
+            " ".repeat(pad),
+            width
+        );
         Paragraph::new(Line::from(vec![
             Span::styled(rail, Style::default().fg(ctx.accent)),
             Span::styled(text, style),

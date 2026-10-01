@@ -19,8 +19,8 @@ Data Operations:
   r:                Reverse sort order (sorted columns carry a direction
                     mark in the header); with no sort, reverse the row order
   R:                Reset table: clear the query, filters, sort, column
-                    order and hidden columns, frozen columns, pivot/melt,
-                    drill-down and the applied view
+                    order, hidden columns and widths, frozen columns,
+                    pivot/melt, drill-down and the applied view
   V:                Apply the best-matching view (or open the list)
   v:                Open the views list
 
@@ -59,6 +59,11 @@ While busy:
   applied, Esc stops it and keeps the table as it was.
 
 Wide columns:
+  A column keeps the width it was first drawn at, so paging and scrolling
+  move nothing. Text, lists, structs and names get at most two fifths of
+  the window (32 cells at 80 columns, 48 at 120); a numbers column widens
+  to its widest number yet seen. Set a width in Sort & Filter (s): < and > narrower and
+  wider, f fits the rows on screen, w back to automatic.
   A value or name cut short at the edge of its column ends in …. A number is
   cut only as the first scrolling column with no room for it; otherwise it
   waits, whole, for the scroll.

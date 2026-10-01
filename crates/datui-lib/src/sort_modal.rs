@@ -1,3 +1,4 @@
+use crate::widgets::column_widths::WidthChoice;
 use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
 
@@ -12,6 +13,10 @@ pub struct SortColumn {
     pub is_locked: bool,       // Whether this column is locked (and all columns before it)
     pub is_to_be_locked: bool, // Whether this column is to-be-locked (pending, shown as dim lock)
     pub is_visible: bool,      // Whether this column is visible in the table
+    /// How the column's width is chosen, as staged.
+    pub width: WidthChoice,
+    /// The width the table last drew the column at, where narrower and wider start.
+    pub shown_width: Option<u16>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
@@ -465,8 +470,35 @@ impl SortModal {
             col.is_to_be_locked = false;
             col.display_order = idx; // Reset to natural order (0, 1, 2, ...)
             col.is_visible = true; // Make all columns visible
+            col.width = WidthChoice::Auto;
         }
         self.has_unapplied_changes = true;
+    }
+
+    /// Change how the width of the column under the cursor is chosen, from what is
+    /// staged: `<` and `>` step it, `f` fits it to the rows on screen, `w` returns
+    /// it to automatic.
+    pub fn change_width(&mut self, change: impl FnOnce(WidthChoice, Option<u16>) -> WidthChoice) {
+        let Some(idx) = self.table_state.selected() else {
+            return;
+        };
+        let Some(&(real_idx, _)) = self.filtered_columns().get(idx) else {
+            return;
+        };
+        let col = &mut self.columns[real_idx];
+        let width = change(col.width, col.shown_width);
+        if width != col.width {
+            col.width = width;
+            self.has_unapplied_changes = true;
+        }
+    }
+
+    /// Every column's width choice, as staged, for the table to apply.
+    pub fn width_choices(&self) -> Vec<(String, WidthChoice)> {
+        self.columns
+            .iter()
+            .map(|c| (c.name.clone(), c.width))
+            .collect()
     }
 
     /// Hide or show the column under the cursor. Visibility only: the column keeps
@@ -634,6 +666,8 @@ mod tests {
                 is_locked: false,
                 is_to_be_locked: false,
                 is_visible: true,
+                width: WidthChoice::Auto,
+                shown_width: Some(10),
             })
             .collect()
     }
@@ -800,6 +834,35 @@ mod tests {
         assert!(modal.columns[0].sort_order.is_none());
         assert!(!modal.columns[0].sort_descending);
         assert!(modal.columns[1].sort_order.is_none());
+    }
+
+    /// Narrower and wider step from the width drawn, fit and automatic stage as
+    /// asked, and each change is staged rather than applied.
+    #[test]
+    fn width_changes_are_staged_on_the_column_under_the_cursor() {
+        let mut modal = SortModal::new();
+        modal.columns = columns(&["a", "b"]);
+        modal.table_state.select(Some(1));
+        modal.change_width(WidthChoice::wider);
+        assert_eq!(modal.columns[1].width, WidthChoice::Manual(14));
+        assert!(modal.has_unapplied_changes);
+        modal.change_width(WidthChoice::narrower);
+        modal.change_width(WidthChoice::narrower);
+        assert_eq!(modal.columns[1].width, WidthChoice::Manual(6));
+        modal.change_width(|_, _| WidthChoice::Fit);
+        assert_eq!(modal.columns[1].width, WidthChoice::Fit);
+        modal.change_width(|_, _| WidthChoice::Auto);
+        assert_eq!(modal.columns[0].width, WidthChoice::Auto);
+        assert_eq!(
+            modal.width_choices(),
+            vec![
+                ("a".to_string(), WidthChoice::Auto),
+                ("b".to_string(), WidthChoice::Auto)
+            ]
+        );
+        modal.change_width(WidthChoice::wider);
+        modal.clear_selection();
+        assert_eq!(modal.columns[1].width, WidthChoice::Auto);
     }
 
     fn names(order: &[&str]) -> Vec<String> {

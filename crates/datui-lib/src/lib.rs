@@ -141,6 +141,7 @@ use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, P
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus, order_with_hidden};
 pub use template::{Template, TemplateManager, Templates};
+use widgets::column_widths::WidthChoice;
 use widgets::controls::Controls;
 use widgets::datatable::{DataTableState, DrillRow};
 use widgets::debug::DebugState;
@@ -6790,7 +6791,7 @@ pub mod tests {
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
             if let Some(width) = footer_width {
-                state.set_column_widths(vec![("blob".to_string(), width)]);
+                state.set_column_bytes(vec![("blob".to_string(), width)]);
             }
             app.set_clipboard_destination(Box::new(TestClipboard(Some(limit))));
             app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
@@ -6883,7 +6884,7 @@ pub mod tests {
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
             if let Some(width) = footer_width {
-                state.set_column_widths(vec![("blob".to_string(), width)]);
+                state.set_column_bytes(vec![("blob".to_string(), width)]);
             }
             uncapped_clipboard(&mut app);
             app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
@@ -14076,7 +14077,7 @@ impl App {
             theme,
             pending_read_all: false,
             history_limit: app_config.query.history_limit,
-            table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
+            table_cell_padding: app_config.display.table_cell_padding.cells(),
             column_colors: app_config.display.column_colors,
             dtype_row: app_config.display.dtype_row,
             number_format: app_config
@@ -16674,7 +16675,7 @@ impl App {
                 .ok()?;
         // The footers just read say how wide each column is, as the cloud object's do:
         // a binary column's width is known nowhere else.
-        state.set_column_widths(crate::schema_union::column_bytes_per_row(&footers));
+        state.set_column_bytes(crate::schema_union::column_bytes_per_row(&footers));
         state.set_dataset_schema(
             dataset
                 .with_partition_layouts(&p.to_string_lossy(), &paths)
@@ -17588,7 +17589,7 @@ impl App {
         // The commonest cloud open, and the one the dataset index never heard about:
         // the prefix route records what it read, and this one read a footer too.
         Self::record_cloud_object_facts(report.remembered.as_ref(), &full, &footer);
-        state.set_column_widths(footer.column_bytes_per_row);
+        state.set_column_bytes(footer.column_bytes_per_row);
         Ok(state)
     }
 
@@ -19132,6 +19133,24 @@ impl App {
                 KeyCode::Char('v') if on_column_list => {
                     self.sort_filter_modal.sort.toggle_visibility();
                     self.sort_filter_modal.sort.has_unapplied_changes = true;
+                }
+                KeyCode::Char('<' | ',') if on_column_list => {
+                    self.sort_filter_modal
+                        .sort
+                        .change_width(WidthChoice::narrower);
+                }
+                KeyCode::Char('>' | '.') if on_column_list => {
+                    self.sort_filter_modal.sort.change_width(WidthChoice::wider);
+                }
+                KeyCode::Char('f') if on_column_list => {
+                    self.sort_filter_modal
+                        .sort
+                        .change_width(|_, _| WidthChoice::Fit);
+                }
+                KeyCode::Char('w') if on_column_list => {
+                    self.sort_filter_modal
+                        .sort
+                        .change_width(|_, _| WidthChoice::Auto);
                 }
                 KeyCode::Char('C') if on_body && sort_tab => {
                     self.sort_filter_modal.sort.clear_selection();
@@ -24796,6 +24815,8 @@ impl App {
                     is_locked: last_locked.is_some_and(|l| display_order <= l),
                     is_to_be_locked: false,
                     is_visible: shown.contains(name.as_str()),
+                    width: state.width_choice(name),
+                    shown_width: state.shown_width(name),
                 }
             })
             .collect();
@@ -24817,12 +24838,27 @@ impl App {
             self.sort_filter_modal.sort.get_full_column_order();
         self.sort_filter_modal.sort.applied_locked = self.sort_filter_modal.sort.get_locked_span();
         let statements = self.sort_filter_modal.filter.statements.clone();
+        // Widths read nothing, so they apply here; a fit measures the rows on screen
+        // when the table is next drawn. With nothing else changed the view stays
+        // where it is, on the page the fit was asked for: applying the order, filters
+        // and sort again would read the rows afresh from the top.
+        let view_unchanged = self.data_table_state.as_mut().is_some_and(|state| {
+            state.set_width_choices(self.sort_filter_modal.sort.width_choices());
+            state.headers() == column_order
+                && state.locked_columns_count() == locked_count
+                && state.view_filters() == statements.as_slice()
+                && state.view_sort_columns() == columns.as_slice()
+                && state.view_sort_descending() == descending.as_slice()
+        });
         for col in &mut self.sort_filter_modal.sort.columns {
             col.is_to_be_locked = false;
         }
         self.sort_filter_modal.sort.has_unapplied_changes = false;
         self.sort_filter_modal.close();
         self.input_mode = InputMode::Normal;
+        if view_unchanged {
+            return None;
+        }
         let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
         let _ = self.send_event(AppEvent::Filter(statements));
         Some(AppEvent::Sort(columns, descending))

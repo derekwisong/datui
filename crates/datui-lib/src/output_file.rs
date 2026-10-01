@@ -218,6 +218,10 @@ fn replaceable(target: &Path, overwrite: Overwrite) -> io::Result<Option<fs::Per
     if meta.permissions().readonly() {
         return Err(Refused::ReadOnly.into());
     }
+    // A write bit in the mode is not leave to write: another user's file in a
+    // directory of ours has one, and a rename would replace it where opening
+    // it fails. Opening for write, without truncating, asks the OS.
+    fs::OpenOptions::new().write(true).open(target)?;
     Ok(Some(meta.permissions()))
 }
 
@@ -467,6 +471,24 @@ mod tests {
             drop(out);
             assert_eq!(mode(&path), 0o604);
             assert_eq!(fs::read(&path).unwrap(), b"old");
+        }
+
+        /// Writable by its group only: not by us, its owner, though the mode
+        /// is not read-only. Writing in place was refused, so replacing by
+        /// rename is too.
+        #[test]
+        fn a_file_we_may_not_write_is_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("out.csv");
+            fs::write(&path, b"old").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o060)).unwrap();
+            if fs::OpenOptions::new().write(true).open(&path).is_ok() {
+                return; // root writes anything
+            }
+            let err = OutputFile::create(&path, Overwrite::Replace).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(mode(&path), 0o060);
+            assert!(leftovers(dir.path(), &["out.csv"]).is_empty());
         }
 
         /// Private while written; a plain create's mode once it lands.

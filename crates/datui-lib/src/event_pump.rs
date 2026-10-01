@@ -357,6 +357,9 @@ impl EventPump {
                     state.needs_recollect = false;
                     app.spawn_async_collect(App::LOADING_BUFFER);
                 }
+                // And it marks the rows it drew without knowing them. Asked now, not
+                // on the next pass: with nothing else arriving there may not be one.
+                app.request_what_the_frame_needs();
             }
         }
     }
@@ -2085,6 +2088,36 @@ mod tests {
             .unwrap();
         assert_eq!(end, Ended::Quit);
         assert!(p.app.flash.is_some(), "woken by the event, not a deadline");
+    }
+
+    /// A frame that draws rows nothing has measured asks for them before the loop
+    /// sleeps. Asked on the next pass instead, they would wait for a key: with the
+    /// listing in and nothing turning, there is no next pass.
+    #[test]
+    fn rows_a_frame_draws_unmeasured_are_asked_for_before_the_loop_sleeps() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nada,36\n").unwrap();
+        let mut p = pump();
+        long_flash(&mut p.app);
+        p.app.enter_home();
+        p.app.home_jump_into(dir.path().to_path_buf());
+        let tx = p.tx.clone();
+        let mut asked = false;
+        let end = p
+            .run(|app| {
+                rendered(app);
+                if !asked && app.home.enriched.contains_key(&path) {
+                    asked = true;
+                    let _ = tx.send(AppEvent::Exit);
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(end, Ended::Quit);
+        assert!(p.app.home.enriched.contains_key(&path), "measured");
+        assert!(p.app.flash.is_some(), "without waiting for a deadline");
     }
 
     /// Each loading phase gets its frame, then the next phase runs: the open goes from

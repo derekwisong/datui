@@ -396,7 +396,10 @@ impl Fitted {
         0.5 * (low + high)
     }
 
-    /// Walk the whole numbers up from the bottom of the support.
+    /// The smallest whole number whose CDF reaches `p`, found by bisection from a
+    /// guess: a number of CDF evaluations that grows with the log of the spread. A walk
+    /// one number at a time took a million steps per draw on a geometric fitted to
+    /// values in the millions, and the bootstrap draws a hundred thousand.
     fn discrete_quantile(&self, p: f64) -> f64 {
         let start = match *self {
             Self::Geometric { start, .. } => start as f64,
@@ -412,32 +415,66 @@ impl Fitted {
                 _ => f64::INFINITY,
             };
         }
-        // Jump near the answer first: the normal approximation for the counts with a
-        // large mean, where walking from zero is a long walk.
-        let mut k = match *self {
-            Self::Poisson { rate } if rate > 50.0 => (rate + rate.sqrt() * normal_quantile(p)
-                - 5.0 * rate.sqrt())
-            .floor()
-            .max(0.0),
-            Self::Binomial { trials, p: q } if trials > 100 => {
+        let (guess, spread) = match *self {
+            // The geometric's own inverse, exact up to rounding.
+            Self::Geometric { p: q, .. } => {
+                let k = ((-p).ln_1p() / (-q).ln_1p()).ceil() - 1.0;
+                (start + k.max(0.0), 1.0)
+            }
+            Self::Poisson { rate } => (rate + rate.sqrt() * normal_quantile(p), rate.sqrt()),
+            Self::Binomial { trials, p: q } => {
                 let n = trials as f64;
                 let sd = (n * q * (1.0 - q)).sqrt();
-                (n * q + sd * normal_quantile(p) - 5.0 * sd)
-                    .floor()
-                    .max(0.0)
+                (n * q + sd * normal_quantile(p), sd)
             }
-            _ => start,
+            _ => (start, 1.0),
         };
-        while self.cdf(k - 1.0) >= p && k > start {
-            k -= 1.0;
-        }
-        while self.cdf(k) < p {
-            k += 1.0;
-            if k > 1e12 {
-                break;
+        let top = match *self {
+            Self::Bernoulli { .. } => 1.0,
+            Self::Binomial { trials, .. } => trials as f64,
+            _ => 1e15,
+        };
+        let guess = guess.floor().clamp(start, top);
+        let step = spread.max(1.0).ceil();
+        // The answer lies in (low, high]: cdf(low) < p <= cdf(high), with `low` below
+        // the support when nothing in it falls short.
+        let (mut low, mut high);
+        if self.cdf(guess) >= p {
+            high = guess;
+            low = start - 1.0;
+            let mut step = step;
+            while high > start {
+                let next = (high - step).max(start);
+                if self.cdf(next) < p {
+                    low = next;
+                    break;
+                }
+                high = next;
+                step *= 2.0;
+            }
+        } else {
+            low = guess;
+            high = top;
+            let mut step = step;
+            while low < top {
+                let next = (low + step).min(top);
+                if self.cdf(next) >= p {
+                    high = next;
+                    break;
+                }
+                low = next;
+                step *= 2.0;
             }
         }
-        k
+        while high - low > 1.0 {
+            let mid = (low + (high - low) / 2.0).floor();
+            if self.cdf(mid) >= p {
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+        high
     }
 
     /// `ln` of the density, or of the probability at a whole number for a discrete
@@ -554,6 +591,13 @@ impl Fitted {
                 let z = rng.normal();
                 let v = rng.gamma(df / 2.0) * 2.0;
                 location + scale * z / (v / df).sqrt()
+            }
+            // Inverting the CDF costs a few dozen incomplete gammas or betas per draw,
+            // each longer as the counts grow: seconds to minutes per test at counts in
+            // the millions.
+            Self::Poisson { rate } if rate >= 10.0 => rng.poisson(rate),
+            Self::Binomial { trials, p } if trials as f64 * p.min(1.0 - p) >= 10.0 => {
+                rng.binomial(trials, p)
             }
             _ => self.quantile(rng.uniform()),
         }
@@ -1361,6 +1405,69 @@ impl Rng {
             }
         }
     }
+
+    /// A Poisson(rate) draw for a rate of 10 or more, by Hörmann's transformed
+    /// rejection (PTRS): exact, and a constant cost whatever the rate.
+    pub fn poisson(&mut self, rate: f64) -> f64 {
+        let ln_rate = rate.ln();
+        let b = 0.931 + 2.53 * rate.sqrt();
+        let a = -0.059 + 0.02483 * b;
+        let ln_inv_alpha = (1.1239 + 1.1328 / (b - 3.4)).ln();
+        let v_r = 0.9277 - 3.6224 / (b - 2.0);
+        loop {
+            let u = self.uniform() - 0.5;
+            let v = self.uniform();
+            let us = 0.5 - u.abs();
+            let k = ((2.0 * a / us + b) * u + rate + 0.43).floor();
+            if us >= 0.07 && v <= v_r {
+                return k;
+            }
+            if k < 0.0 || (us < 0.013 && v > us) {
+                continue;
+            }
+            if v.ln() + ln_inv_alpha - (a / (us * us) + b).ln()
+                <= -rate + k * ln_rate - ln_gamma(k + 1.0)
+            {
+                return k;
+            }
+        }
+    }
+
+    /// A Binomial(trials, p) draw for `trials * min(p, 1 - p)` of 10 or more, by
+    /// Hörmann's transformed rejection (BTRS): exact, and a constant cost whatever
+    /// the trials.
+    pub fn binomial(&mut self, trials: u64, p: f64) -> f64 {
+        if p > 0.5 {
+            return trials as f64 - self.binomial(trials, 1.0 - p);
+        }
+        let n = trials as f64;
+        let q = 1.0 - p;
+        let spq = (n * p * q).sqrt();
+        let b = 1.15 + 2.53 * spq;
+        let a = -0.0873 + 0.0248 * b + 0.01 * p;
+        let c = n * p + 0.5;
+        let v_r = 0.92 - 4.2 / b;
+        let alpha = (2.83 + 5.1 / b) * spq;
+        let ln_pq = (p / q).ln();
+        let m = ((n + 1.0) * p).floor();
+        let h = ln_gamma(m + 1.0) + ln_gamma(n - m + 1.0);
+        loop {
+            let u = self.uniform() - 0.5;
+            let v = self.uniform();
+            let us = 0.5 - u.abs();
+            let k = ((2.0 * a / us + b) * u + c).floor();
+            if k < 0.0 || k > n {
+                continue;
+            }
+            if us >= 0.07 && v <= v_r {
+                return k;
+            }
+            let v = (v * alpha / (a / (us * us) + b)).ln();
+            if v <= h - ln_gamma(k + 1.0) - ln_gamma(n - k + 1.0) + (k - m) * ln_pq {
+                return k;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1486,6 +1593,14 @@ mod tests {
             Fitted::Binomial { trials: 20, p: 0.4 },
             Fitted::Geometric { p: 0.3, start: 1 },
             Fitted::Bernoulli { p: 0.3 },
+            // Fitted to counts in the millions, where walking to the answer is a
+            // million steps.
+            Fitted::Poisson { rate: 1e6 },
+            Fitted::Binomial {
+                trials: 2_000_000,
+                p: 0.4,
+            },
+            Fitted::Geometric { p: 1e-6, start: 0 },
         ];
         for fit in discrete {
             for i in 1..100 {
@@ -1514,6 +1629,30 @@ mod tests {
     fn draw(fit: Fitted, n: usize, seed: u64) -> Vec<f64> {
         let mut rng = Rng::new(seed);
         (0..n).map(|_| fit.sample(&mut rng)).collect()
+    }
+
+    /// The Poisson and binomial samplers for large counts draw the distribution, not
+    /// an approximation: whole numbers whose CDF matches the family's.
+    #[test]
+    fn large_count_draws_follow_their_family() {
+        let fits = [
+            Fitted::Poisson { rate: 10.0 },
+            Fitted::Poisson { rate: 37.5 },
+            Fitted::Poisson { rate: 1e6 },
+            Fitted::Binomial { trials: 40, p: 0.7 },
+            Fitted::Binomial {
+                trials: 2_000_000,
+                p: 0.4,
+            },
+        ];
+        for fit in fits {
+            let mut values = draw(fit, 5_000, 9);
+            assert!(values.iter().all(|v| *v >= 0.0 && *v == v.floor()));
+            values.sort_by(f64::total_cmp);
+            // 1.63 / sqrt(n) is the 1% critical value of the KS statistic.
+            let d = ks_statistic(&values, &fit);
+            assert!(d < 1.63 / (5_000f64).sqrt(), "{fit:?}: D = {d}");
+        }
     }
 
     /// The bootstrap p-value is calibrated: values drawn from a family are rejected at

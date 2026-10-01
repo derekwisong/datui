@@ -9,8 +9,58 @@ The first line counts problems, notes and clean columns. Under it, on every
 report, the coverage says how far that verdict reaches. Below, findings are
 grouped under **Problems**, **Notes** and **Clean**. <kbd>Enter</kbd> on a
 finding lists its numbers, evidence and what to check; <kbd>Enter</kbd>
-again shows its rows. On a sampled run those are the sample's rows, drawn again
-from its seed, so the count the finding gave is the count in the table.
+again shows its rows. On a sampled run those are the sample's rows, so the
+count the finding gave is the count in the table.
+
+### Narrowing and ordering
+
+| Key | Overview shows |
+|---|---|
+| <kbd>c</kbd> | Only the findings that name one column, chosen from a list with each column's count; **All columns** undoes it |
+| <kbd>t</kbd> | Only one type's findings, by the check that made them (Missing values covers Missing together, Mostly and Always missing); **All types** undoes it |
+| <kbd>o</kbd> | Ranked (the default), then by rows affected, then by rate: rows affected over rows checked, compared exactly. The number ordered by is on every row |
+| <kbd>Esc</kbd> | Every finding again, in the order chosen; a second <kbd>Esc</kbd> leaves |
+
+Problems stay above notes in every order, and ties keep the ranked order. A
+finding over several columns orders by its largest column's count. The line
+above the list says what is narrowed and how it is ordered, such as
+`2 of 7 findings · column price · by rows`. Narrowing and ordering read the
+report on screen: nothing is read or measured again.
+
+### Evidence
+
+The detail of a finding over several columns lists each column's count and
+rate, then `Rows with any of them`: the largest column's count when that is
+all of them, otherwise a range from the largest count to their sum (at most
+the rows checked), marked not counted. **Missing together** columns are null on
+the same rows, so their count is the rows.
+
+| Finding | Rows it opens | Count shown | Examples in the detail |
+|---|---|---|---|
+| Duplicate rows | Every row equal to another in every column; copies together, most copied first | Rows with a copy | The three most copied rows, with their copies |
+| Numbers as text, Dates as text | Non-null text the reading does not parse | Non-null values less those that parse | Up to three values that do not parse |
+| Unparsed times | Text the chosen time format does not read | Unparsed values | Up to three of them |
+| Nearly unique | Every row whose value repeats | Rows beyond one per value; more open | The most repeated value |
+| Missing in files, Type mismatch | Every row of the named files | Rows of those files | The files and the values a conflict hides |
+| Any other | Rows matching the check | The finding's rows, or a range for grouped columns | |
+
+Rows open from the rows the run kept, in memory: no read, and the same rows
+whether or not the source is still there. A sample is kept while it is the
+sample the report measured. Examples come from kept rows too, so a full scan
+shows the counts without them. When the rows are not kept, the detail says why,
+and <kbd>Enter</kbd> shows a **Read Rows** dialog before anything is read:
+
+| Row | Says |
+|---|---|
+| Rows | The finding and its columns |
+| Why | A full scan keeps no rows; the sampled rows are no longer kept; or the rows are in the named files |
+| Reads | The sample again from its seed, every row of the scope once (duplicates), the scope as far as the table scrolls, or the named files; with a read size where one can be estimated |
+| Shows | How many rows, when one count is all of them |
+| Source | Local or remote, read only |
+
+<kbd>Enter</kbd> reads; <kbd>Esc</kbd> goes back to the finding having read
+nothing. A finding with no rows to show (a text column whose every value
+parses) says so, and <kbd>Enter</kbd> closes it.
 
 | Coverage line | Says |
 |---|---|
@@ -164,17 +214,18 @@ page's own action, then <kbd>e</kbd> Setup, <kbd>s</kbd> Sample,
 | Key | Action |
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | Previous or next page: Overview, Columns, Segments, Trends, Intervals |
-| <kbd>Enter</kbd> | Open a finding, or show its rows; open an interval's detail, or the rows behind the count under the cursor; on an empty Segments, Trends or Intervals page, open the Setup row that fills it |
+| <kbd>Enter</kbd> | Open a finding, or show its rows; open an interval's detail, or the rows behind the count under the cursor (asking first when the run kept none); on an empty Segments, Trends or Intervals page, open the Setup row that fills it |
+| <kbd>c</kbd> / <kbd>t</kbd> | On Overview, only one column's or one type's findings |
 | <kbd>e</kbd> | Open Setup |
 | <kbd>s</kbd> | Open Setup with the shared [Sample](../user-guide/analysis-features.md#sampling) form over it |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>1</kbd>–<kbd>5</kbd> | Overview, Columns, Segments, Trends, Intervals, directly |
-| <kbd>o</kbd> | On Segments, list the largest change first, or back in order |
+| <kbd>o</kbd> | On Overview, order findings ranked, by rows or by rate; on Segments, list the largest change first, or back in order |
 | <kbd>m</kbd> | Cycle the measure Trends draws: null, empty, whitespace, non-finite, distinct, integer-parse, decimal-parse |
 | <kbd>b</kbd> | Use the highlighted segment as the comparison baseline; deltas update without another data read |
 | <kbd>r</kbd> | On a sampled report, run again with a new sample seed, for every tool; waits while a cancelled read finishes |
 | <kbd>Tab</kbd> | Move between the result and the tool list |
-| <kbd>Esc</kbd> | Back one level; from a page, close Analysis |
+| <kbd>Esc</kbd> | Back one level: a narrowed Overview shows every finding first; from a page, close Analysis |
 
 ### While a run reads
 
@@ -211,9 +262,11 @@ sampled, or metadata-only.
   repeated value, the files behind a missing or mistyped column and the values
   a conflict hides, values with the most rows first. A finding taller than the
   screen scrolls with <kbd>↑</kbd> <kbd>↓</kbd>. <kbd>Enter</kbd> again opens the matching rows in a
-  temporary table (every column's rows, for a grouped finding): from the table
-  when every row was read, from the sample when one was. <kbd>Esc</kbd> returns
-  to the report.
+  temporary table (every column's rows, for a grouped finding) from the rows
+  the run kept, or, when it kept none, asks first with what the read would be
+  (see [Evidence](#evidence)). <kbd>Esc</kbd> returns to the finding.
+  <kbd>c</kbd>, <kbd>t</kbd> and <kbd>o</kbd> narrow and order the list (see
+  [Narrowing and ordering](#narrowing-and-ordering)).
 - **Columns** — a mark per column (problem, note or clean), its missing
   count and its findings. <kbd>Enter</kbd> opens the column's detail: its
   findings first, then what was measured on it, one aligned row each (type,
@@ -261,9 +314,10 @@ sampled, or metadata-only.
   | Threshold, Over | `duration > threshold`, strictly, of the rows with both ends |
 
   <kbd>↑</kbd> <kbd>↓</kbd> move between the counts, and <kbd>Enter</kbd>
-  shows the rows behind the one under the cursor: on a sampled run the
-  sample's, cut from the rows the run kept while they are held (drawn again
-  from the seed otherwise), and on an exact one the table's. A row chunk or a
+  shows the rows behind the one under the cursor, cut from the rows the run
+  kept: on a sampled run the sample's. When the run kept none (a full scan,
+  or a sample since released), a **Read Rows** dialog says what reading them
+  takes first, as for a finding (see [Evidence](#evidence)). A row chunk or a
   file is not a value to filter on, so its rows do not open, and the detail
   says so. <kbd>Esc</kbd> returns to the list. With nothing to show, the page
   says why; when roles or a pair are missing, <kbd>Enter</kbd> opens Time

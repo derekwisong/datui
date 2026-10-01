@@ -82,6 +82,7 @@ pub mod home;
 pub mod inspector_modal;
 pub mod intent_modal;
 mod jobs;
+mod loading;
 pub mod local_copy;
 pub mod locality;
 pub mod logging;
@@ -680,8 +681,7 @@ mod export_format_tests {
             &opts(),
         )
         .unwrap();
-        app.load_active = true;
-        app.apply_schema_ready(other, None, &opts(), None);
+        app.install_for_tests(other, None, &opts(), None);
         assert_ne!(app.count_after_paint, Some(dataset));
         assert_ne!(app.len_count_inflight, Some(dataset));
         app.frame_painted();
@@ -2063,7 +2063,7 @@ mod chart_prepare_tests {
         app.enter_home();
         app.event(&next);
         assert!(!app.is_busy());
-        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert!(app.nothing_loading());
         assert!(app.chart_export_waiting.is_none());
     }
 
@@ -2082,16 +2082,16 @@ mod chart_prepare_tests {
             },
             Some("Exporting chart..."),
         );
-        app.loading_state = LoadingState::Exporting {
+        app.export_progress = Some(crate::ExportProgress {
             file_path: path,
             current_phase: "Exporting chart".to_string(),
             written: None,
-        };
+        });
         let task_generation = app.task_generation();
 
         app.abandon_load();
         assert!(!app.is_busy());
-        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert!(app.nothing_loading());
         assert_eq!(app.task_generation(), task_generation);
 
         let ticket = write.ticket();
@@ -2125,11 +2125,11 @@ mod chart_prepare_tests {
         );
         let export = app.job_for_tests(Job::Export, Some("Exporting..."));
         let ticket = export.ticket();
-        app.loading_state = LoadingState::Exporting {
+        app.export_progress = Some(crate::ExportProgress {
             file_path: PathBuf::from("/tmp/out.csv"),
             current_phase: "Collecting data".to_string(),
             written: None,
-        };
+        });
         // An export that has ended.
         let older = app.job_for_tests(Job::Export, None);
         let passed = older.ticket();
@@ -2171,7 +2171,7 @@ mod chart_prepare_tests {
         ))));
         app.event(&AppEvent::JobEnded(ticket));
         app.event(&writing(ticket, 2_000_000));
-        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert!(app.nothing_loading());
         assert!(!app.is_busy());
         assert!(bar(&mut app).contains("Exported to"), "{}", bar(&mut app));
     }
@@ -2884,17 +2884,16 @@ mod template_rollback_tests {
         app.startup_template = Some(template.name.clone());
         let path = dir.path().join("long.csv");
         let mut next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
-        let mut loads = 0;
+        let asked = app.first_rows_asked;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             while let Some(event) = next.take() {
-                loads += usize::from(matches!(event, AppEvent::DoLoadBuffer));
                 if !intercept(app, &event) {
                     next = app.event(&event);
                 }
             }
-            if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset {
-                return loads;
+            if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset() {
+                return app.first_rows_asked - asked;
             }
             assert!(std::time::Instant::now() < deadline, "the open never ended");
             next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
@@ -2949,7 +2948,7 @@ mod template_rollback_tests {
             while let Some(event) = next.take() {
                 next = app.event(&event);
             }
-            if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset {
+            if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset() {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "the open never ended");
@@ -3242,7 +3241,7 @@ mod template_rollback_tests {
         assert_eq!(columns(&app), ["id", "k1", "k2"]);
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.display_df().map(|df| df.height()), Some(5));
-        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert!(app.nothing_loading());
     }
 
     /// A view's pivot whose worker dies on open is not applied, and the dataset's own
@@ -3267,7 +3266,7 @@ mod template_rollback_tests {
         assert!(state.last_pivot_spec().is_none());
         assert!(state.display_df().is_some_and(|df| df.height() > 0));
         assert!(app.active_template_id.is_none());
-        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert!(app.nothing_loading());
     }
 
     /// A view whose rows' worker dies puts the view before it back.
@@ -3370,7 +3369,7 @@ mod template_rollback_tests {
             app.query_prompt_error()
         );
         assert!(!app.error_modal.active, "no modal over the prompt");
-        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert!(app.nothing_loading());
     }
 
     /// #432: a query sent without the prompt whose rows' worker dies is not applied,
@@ -4743,8 +4742,7 @@ pub mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // End, while the footers are still on their way.
         let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
@@ -4876,8 +4874,7 @@ pub mod tests {
             let code = key.code;
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
-            app.load_active = true;
-            app.apply_schema_ready(staged(), None, &OpenOptions::default(), None);
+            app.install_for_tests(staged(), None, &OpenOptions::default(), None);
             if !app.key_acts_while_busy(&key) {
                 continue;
             }
@@ -4981,8 +4978,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(staged(), None, &OpenOptions::default(), None);
+        app.install_for_tests(staged(), None, &OpenOptions::default(), None);
         let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         assert!(
             app.end_when_the_footers_land.is_some(),
@@ -4990,8 +4986,7 @@ pub mod tests {
         );
 
         // The user goes elsewhere before they land.
-        app.load_active = true;
-        app.apply_schema_ready(staged(), None, &OpenOptions::default(), None);
+        app.install_for_tests(staged(), None, &OpenOptions::default(), None);
         assert!(
             app.end_when_the_footers_land.is_none(),
             "and does not take the key with them"
@@ -5069,8 +5064,7 @@ pub mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
         app.spawn_async_collect(App::LOADING_BUFFER);
 
         // Two answers are in flight here — the pass's and the collect's — and either
@@ -5131,8 +5125,7 @@ pub mod tests {
         .unwrap();
         // The network was there for the open's two footers and gone for the rest.
         state.set_footers_pending(Arc::new(|_progress| None));
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         let reported = rx
             .recv_timeout(std::time::Duration::from_secs(10))
@@ -5192,8 +5185,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
         app.busy = false;
 
         let area = Rect::new(0, 0, 100, 24);
@@ -5282,8 +5274,7 @@ pub mod tests {
             .build()
             .unwrap();
         let mut app = App::new(tx, runtime.handle().clone());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
         let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
 
         let reported = loop {
@@ -5340,8 +5331,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // Sorted — which is one of the things the staging exists to let you do while
         // the footers read — and then End.
@@ -5437,8 +5427,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // A question of the dataset, whose answer has a count of its own.
         let state = app.data_table_state.as_mut().unwrap();
@@ -5545,8 +5534,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // End on the frame that is here, whose count is running.
         let live = app.data_table_state.as_ref().unwrap().len_generation();
@@ -5609,8 +5597,7 @@ pub mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
         (app, rx)
     }
 
@@ -5967,8 +5954,7 @@ pub mod tests {
             None,
         )
         .unwrap();
-        app.load_active = true;
-        app.apply_schema_ready(next, None, &OpenOptions::default(), None);
+        app.install_for_tests(next, None, &OpenOptions::default(), None);
         app.busy = false;
 
         let bar = control_bar(&mut app);
@@ -6133,8 +6119,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(remote_state(100), None, &OpenOptions::default(), None);
+        app.install_for_tests(remote_state(100), None, &OpenOptions::default(), None);
         let theirs = app.data_table_state.as_ref().unwrap().len_generation();
 
         // End on the first directory, before its count lands.
@@ -6146,8 +6131,7 @@ pub mod tests {
         );
 
         // And they open another one instead.
-        app.load_active = true;
-        app.apply_schema_ready(remote_state(500), None, &OpenOptions::default(), None);
+        app.install_for_tests(remote_state(500), None, &OpenOptions::default(), None);
         assert_eq!(
             app.end_after_count, None,
             "the key they pressed in the directory they left does not come with them"
@@ -6239,7 +6223,7 @@ pub mod tests {
 
     /// A job the user waits on holds the keys and its line on the bar; its end gives
     /// both back in one place, whatever the job, and leaves a line that is not its
-    /// own. An answer that goes on to a continuation keeps the wait up across the gap.
+    /// own. An open's answer hands the wait to its next phase in the same step.
     #[test]
     fn a_job_puts_down_the_keys_and_the_line_it_held() {
         use crate::{Answer, App, AppEvent, Job, OpenOptions, Outcome};
@@ -6278,19 +6262,29 @@ pub mod tests {
             "a line that is not the job's stays"
         );
 
-        app.load_active = true;
-        let scan = app.job_for_tests(Job::Load, Some("Scanning input..."));
+        let load = app.open_for_tests("a.csv");
+        let scan = app.job_for_tests(Job::Load(load), Some("Scanning input..."));
         let next = end(
             &mut app,
             scan,
-            Outcome::answered(Answer::Scanned {
-                lf: polars::df!("a" => [1i32]).unwrap().lazy(),
-                path: None,
-                options: Box::<OpenOptions>::default(),
-            }),
+            Outcome::answered(Answer::Load(Box::new(
+                crate::loading::LoadAnswer::Scanned {
+                    lf: Box::new(polars::df!("a" => [1i32]).unwrap().lazy()),
+                    path: None,
+                    options: OpenOptions::default(),
+                },
+            ))),
         );
-        assert!(matches!(next, Some(AppEvent::DoLoadSchema(..))));
+        assert!(
+            next.is_none(),
+            "the next phase starts in the answer's own step"
+        );
         assert!(app.is_busy(), "the open's wait goes on into its next phase");
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Caching schema..."),
+            "under the next phase's line"
+        );
     }
 
     /// A job's end leaves the line a job still running shows, even when the two say
@@ -6322,16 +6316,11 @@ pub mod tests {
     /// over a table nobody is waiting on.
     #[test]
     fn going_home_takes_down_the_line_of_the_rows_it_stops_waiting_on() {
-        use crate::{App, InflightCollect, Job, LoadingState};
+        use crate::{App, InflightCollect, Job};
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.loading_state = LoadingState::Loading {
-            file_path: None,
-            file_size: 0,
-            current_phase: "Loading buffer".to_string(),
-            progress_percent: 70,
-        };
+        app.loading.first_rows_for_tests();
         let read = app.job_for_tests(
             Job::Rows(InflightCollect::for_tests(0, 100)),
             Some(App::LOADING_BUFFER),
@@ -6382,37 +6371,80 @@ pub mod tests {
     }
 
     /// A scan from a load the app has moved past is dropped rather than applied: it
-    /// asks for no next phase. What makes leaving a slow load safe: the work keeps
-    /// running (Polars has no cancellation), so the only thing between an abandoned
-    /// load and a clobbered screen is whether its job is current.
+    /// starts no next phase and changes nothing the screen says about the open that
+    /// replaced it. What makes leaving a slow load safe: the work keeps running (Polars
+    /// has no cancellation), so the only thing between an abandoned load and a
+    /// clobbered screen is whether its load is the one in flight.
     #[test]
     fn a_superseded_scan_does_not_continue_the_load() {
-        use crate::{Answer, App, AppEvent, Job, Outcome};
+        use crate::loading::LoadAnswer;
+        use crate::{Answer, App, AppEvent, Job, OpenOptions, Outcome};
         use polars::prelude::IntoLazy;
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        let scanned = || Answer::Scanned {
-            lf: polars::df!("a" => [1i32]).unwrap().lazy(),
-            path: Some(std::path::PathBuf::from("whatever.parquet")),
-            options: Box::default(),
+        let scanned = || {
+            Answer::Load(Box::new(LoadAnswer::Scanned {
+                lf: Box::new(polars::df!("a" => [1i32]).unwrap().lazy()),
+                path: Some(std::path::PathBuf::from("whatever.parquet")),
+                options: OpenOptions::default(),
+            }))
         };
 
-        let scan = app.job_for_tests(Job::Load, Some("Scanning input..."));
-        app.jobs.advance();
+        let first = app.open_for_tests("first.parquet");
+        let scan = app.job_for_tests(Job::Load(first), Some("Scanning input..."));
+        let second = app.open_for_tests("second.parquet");
+        assert_ne!(first, second);
         let ticket = scan.ticket();
         scan.end(Outcome::answered(scanned()));
+        assert!(app.event(&AppEvent::JobEnded(ticket)).is_none());
         assert!(
-            app.event(&AppEvent::JobEnded(ticket)).is_none(),
+            app.jobs
+                .current(|job| matches!(job, Job::Load(_)))
+                .is_none(),
             "a superseded scan must not continue the load pipeline"
+        );
+        assert_eq!(
+            app.load_shown()
+                .map(|(phase, _, path, _)| (phase.to_string(), path.map(Path::to_path_buf))),
+            Some((
+                "Scanning input".to_string(),
+                Some(std::path::PathBuf::from("second.parquet"))
+            )),
+            "nor change what the screen says about the open that replaced it"
+        );
+
+        // Nor does the first's dataset install, read after all.
+        let state = crate::widgets::datatable::DataTableState::from_lazyframe(
+            polars::df!("a" => [1i32]).unwrap().lazy(),
+            &OpenOptions::default(),
+        )
+        .unwrap();
+        let read = Answer::Load(Box::new(LoadAnswer::SchemaRead {
+            state: Box::new(state),
+            path: Some(std::path::PathBuf::from("first.parquet")),
+            options: OpenOptions::default(),
+            debug_label: None,
+        }));
+        assert!(app.answer_for_tests(Job::Load(first), read).is_none());
+        assert!(app.data_table_state.is_none(), "nothing was installed");
+        assert!(
+            app.awaiting_dataset(),
+            "the second open is still on its way"
         );
 
         // The current one does.
-        assert!(matches!(
-            app.answer_for_tests(Job::Load, scanned()),
-            Some(AppEvent::DoLoadSchema(..))
-        ));
+        assert!(app.answer_for_tests(Job::Load(second), scanned()).is_none());
+        assert!(
+            app.jobs
+                .current(|job| matches!(job, Job::Load(_)))
+                .is_some(),
+            "the schema is read next"
+        );
+        assert_eq!(
+            app.load_shown().map(|shown| shown.0),
+            Some("Caching schema")
+        );
     }
 
     /// An analysis answer from a run the app has moved past changes nothing on
@@ -6643,10 +6675,12 @@ pub mod tests {
     #[test]
     fn a_failure_leaves_other_work_alone() {
         use crate::{
-            AnalysisProgress, App, AppEvent, ChartExportFormat, InflightCollect, Job, LoadingState,
-            Outcome,
+            AnalysisProgress, App, AppEvent, ChartExportFormat, InflightCollect, Job, Outcome,
         };
         use std::path::PathBuf;
+
+        // An open replaced long since.
+        let gone = crate::loading::LoadId::for_tests(u64::MAX);
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
@@ -6674,8 +6708,8 @@ pub mod tests {
         let kinds = [
             analysis(),
             Job::SampleRows,
-            Job::Load,
-            Job::OpenNamed,
+            Job::Load(gone),
+            Job::OpenNamed(gone),
             Job::Rows(InflightCollect::for_tests(0, 100)),
             Job::Pivot,
             Job::DrillRow,
@@ -6723,9 +6757,15 @@ pub mod tests {
         untouched(&app, "an older look");
 
         // The same for a look at a directory named to open.
-        let older = app.job_for_tests(Job::LookAtDirectory(PathBuf::from("/older")), None);
+        let older = app.job_for_tests(
+            Job::LookAtDirectory {
+                load: gone,
+                path: PathBuf::from("/older"),
+            },
+            None,
+        );
         app.jobs
-            .supersede(|job| matches!(job, Job::LookAtDirectory(_)));
+            .supersede(|job| matches!(job, Job::LookAtDirectory { .. }));
         fail(&mut app, older);
         untouched(&app, "an older look at a directory");
 
@@ -6744,14 +6784,9 @@ pub mod tests {
         assert!(!app.chart_export_modal.active);
 
         // An open is no longer waited on once the user has gone home from it.
-        app.awaiting_dataset = false;
-        app.loading_state = LoadingState::Loading {
-            file_path: None,
-            file_size: 0,
-            current_phase: "Scanning input".to_string(),
-            progress_percent: 10,
-        };
-        let open = app.job_for_tests(Job::Load, None);
+        let load = app.open_for_tests("gone.csv");
+        let open = app.job_for_tests(Job::Load(load), None);
+        app.abandon_load();
         fail(&mut app, open);
         untouched(&app, "an abandoned open");
 
@@ -6814,18 +6849,17 @@ pub mod tests {
         );
     }
 
-    /// A handler returning a continuation does not let the errands behind it in.
+    /// An open's first phase holds the generation before the errands behind it get
+    /// their turn.
     ///
     /// `App::handle` runs the owed re-read and the owed collect at its tail, after
-    /// `dispatch_event` has already returned the follow-up — so this is a window inside
-    /// one event, before `EventPump` has seen the continuation and taken a lease for it.
-    /// `Open` is the case that costs most: it bumps `task_generation`, sets
-    /// `awaiting_dataset` and returns `DoLoadScanPaths` without spawning anything, so
-    /// nothing holds a lease at all. An owed collect going in there bumps the generation
-    /// the scan is about to be spawned against, and `BackgroundSchemaReady`'s mismatch
-    /// branch returns without resetting anything: the file never opens.
+    /// `dispatch_event` has handled the open. `Open` bumps `task_generation`; had it
+    /// left its scan to a later step, nothing would hold the generation at that tail, an
+    /// owed collect would go in there and bump the generation out from under the open,
+    /// and the file would never open. The scan is started in the same handler instead,
+    /// and holds the generation itself.
     #[test]
-    fn a_continuation_does_not_let_the_errands_behind_it_in() {
+    fn an_open_holds_the_generation_before_the_errands_behind_it() {
         use crate::widgets::datatable::DataTableState;
         use crate::{App, AppEvent, OpenOptions};
         use polars::prelude::*;
@@ -6848,8 +6882,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // A collect owed to the dataset on screen, waiting for the generation to be free.
         app.owe_rows_for_tests("Loading buffer...");
@@ -6862,7 +6895,11 @@ pub mod tests {
         let out = app
             .handle(&AppEvent::Open(vec![path], OpenOptions::default()))
             .expect("the open is not a key");
-        assert!(out.is_some(), "the open returned a continuation");
+        assert!(out.is_none(), "the open started its scan itself");
+        assert!(
+            app.work_a_bump_would_strand(),
+            "and the scan holds the generation"
+        );
         assert!(
             app.rows_owed(),
             "the collect is still owed rather than run: running it here would bump the \
@@ -6879,21 +6916,25 @@ pub mod tests {
     #[cfg(feature = "http")]
     #[test]
     fn a_download_waiting_on_the_user_holds_the_generation() {
-        use crate::{Answer, App, Job, OpenOptions, PendingDownload};
+        use crate::loading::{LoadAnswer, PendingDownload};
+        use crate::{Answer, App, Job, OpenOptions};
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.awaiting_dataset = true;
+        let url = "https://example.invalid/data.parquet";
+        let load = app.open_for_tests(url);
         assert!(!app.work_a_bump_would_strand(), "nothing is running yet");
 
         let pending = PendingDownload::Http {
-            url: "https://example.invalid/data.parquet".to_string(),
+            url: url.to_string(),
             size: Some(1024),
             options: OpenOptions::default(),
         };
-        let _ = app.answer_for_tests(Job::Load, Answer::RemoteSize(Box::new(pending)));
+        let _ = app.answer_for_tests(
+            Job::Load(load),
+            Answer::Load(Box::new(LoadAnswer::Sized(pending))),
+        );
 
         assert!(app.confirmation_modal.active, "the user is being asked");
         assert!(
@@ -7070,8 +7111,7 @@ pub mod tests {
             .unwrap();
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
-            app.load_active = true;
-            app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+            app.install_for_tests(state, None, &OpenOptions::default(), None);
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
             if let Some(width) = footer_width {
@@ -7119,8 +7159,7 @@ pub mod tests {
         .unwrap();
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         let state = app.data_table_state.as_mut().unwrap();
         state.invalidate_num_rows();
@@ -7163,8 +7202,7 @@ pub mod tests {
             .unwrap();
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
-            app.load_active = true;
-            app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+            app.install_for_tests(state, None, &OpenOptions::default(), None);
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
             if let Some(width) = footer_width {
@@ -7224,8 +7262,7 @@ pub mod tests {
             .expect("the local footer route");
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
-            app.load_active = true;
-            app.apply_schema_ready(state, None, &options, None);
+            app.install_for_tests(state, None, &options, None);
             let state = app.data_table_state.as_mut().unwrap();
             assert!(state.count_landed(state.len_generation(), 3, None));
             uncapped_clipboard(&mut app);
@@ -7285,10 +7322,9 @@ pub mod tests {
     /// `BackgroundLenReady` answers an End by jumping to the end, which reaches
     /// `spawn_async_collect` with no key pressed and, on a large remote dataset, minutes
     /// after the one that was — long enough for the user to have opened something else.
-    /// That bump threw the open's answer away, and `BackgroundSchemaReady`'s mismatch
-    /// branch returns without resetting anything, so `awaiting_dataset`, `busy` and
-    /// `loading_state` stayed set and the file never opened, silently, for the rest of
-    /// the session.
+    /// That bump threw the open's answer away and left the open waiting on it, so the
+    /// loading screen stayed up and the file never opened, silently, for the rest of the
+    /// session.
     #[test]
     fn a_count_landing_during_a_load_does_not_bump_the_generation() {
         use crate::widgets::datatable::{DataTableState, RemoteFiles};
@@ -7318,8 +7354,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // End on a dataset whose rows are not counted yet: the jump waits for the count.
         let waiting = app.data_table_state.as_ref().unwrap().len_generation();
@@ -7376,7 +7411,7 @@ pub mod tests {
     #[test]
     fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
         use crate::widgets::datatable::DataTableState;
-        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use crate::{App, AppEvent, OpenOptions};
         use polars::prelude::*;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
@@ -7399,8 +7434,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
         app.busy = false;
 
         let bar_says_seventy = |app: &mut App| {
@@ -7419,11 +7453,11 @@ pub mod tests {
 
         // An export is running and holds a lease, so the errand the failure raises has
         // to wait.
-        app.loading_state = LoadingState::Exporting {
+        app.export_progress = Some(crate::ExportProgress {
             file_path: std::path::PathBuf::from("/tmp/out.csv"),
             current_phase: "Collecting".to_string(),
             written: None,
-        };
+        });
         let _lease = app.hold_the_generation();
         let live = app.dataset_generation;
         App::record_footers(&app.pending_footers_result, live, None);
@@ -7482,8 +7516,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // And then the user asks a question of it, whose answer has a count of its own.
         let state = app.data_table_state.as_mut().unwrap();
@@ -7554,8 +7587,7 @@ pub mod tests {
                 remote: None,
             })
         }));
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
         let reported = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the first dataset's pass reports back");
@@ -7563,8 +7595,7 @@ pub mod tests {
         // The user opens something else before those columns arrive. Nothing here sets
         // the generation by hand: if opening a dataset does not move it, this test is
         // the one that notices.
-        app.load_active = true;
-        app.apply_schema_ready(state_of(second()), None, &OpenOptions::default(), None);
+        app.install_for_tests(state_of(second()), None, &OpenOptions::default(), None);
 
         let _ = app.handle(&reported);
         assert_eq!(
@@ -7592,7 +7623,7 @@ pub mod tests {
     #[test]
     fn a_pass_that_failed_waits_for_work_already_asked_for() {
         use crate::widgets::datatable::DataTableState;
-        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use crate::{App, AppEvent, OpenOptions};
         use polars::prelude::*;
         use std::sync::Arc;
 
@@ -7619,16 +7650,15 @@ pub mod tests {
             None,
         )
         .unwrap();
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // An export is collecting: it holds a lease on this exact generation, and its
         // answer is thrown away if anything bumps it.
-        app.loading_state = LoadingState::Exporting {
+        app.export_progress = Some(crate::ExportProgress {
             file_path: std::path::PathBuf::from("/tmp/out.csv"),
             current_phase: "Collecting".to_string(),
             written: None,
-        };
+        });
         let lease = app.hold_the_generation();
         let waiting_on = app.task_generation();
 
@@ -7649,7 +7679,7 @@ pub mod tests {
         );
 
         // The export finishes, and the errand gets its turn on the next event.
-        app.loading_state = LoadingState::Idle;
+        app.export_progress = None;
         drop(lease);
         let _ = app.handle(&AppEvent::Update);
         let _ = app.handle(&AppEvent::Update);
@@ -7705,8 +7735,7 @@ pub mod tests {
             None,
         )
         .unwrap();
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // Work whose answer the join would throw away. A lease stands for all of it —
         // an open, an export, an analysis — which is the point: the decision is no
@@ -7821,8 +7850,7 @@ pub mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
-        app.load_active = true;
-        app.apply_schema_ready(state_of(first()), None, &OpenOptions::default(), None);
+        app.install_for_tests(state_of(first()), None, &OpenOptions::default(), None);
 
         // The user is in a query when this dataset's columns arrive, so they wait.
         app.data_table_state
@@ -7844,8 +7872,7 @@ pub mod tests {
         assert!(app.footers_held.is_some(), "waiting, as they should be");
 
         // And instead of clearing the query, the user opens something else.
-        app.load_active = true;
-        app.apply_schema_ready(state_of(second()), None, &OpenOptions::default(), None);
+        app.install_for_tests(state_of(second()), None, &OpenOptions::default(), None);
         let _ = app.handle(&AppEvent::Update);
 
         assert_eq!(
@@ -7898,8 +7925,7 @@ pub mod tests {
             None,
         )
         .unwrap();
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // This dataset's own pass has finished and put its answer in the slot.
         let live = app.dataset_generation;
@@ -8042,8 +8068,7 @@ pub mod tests {
             None,
         )
         .unwrap();
-        app.load_active = true;
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
 
         // The user asks a question of the two columns that are there.
         let table = app.data_table_state.as_mut().unwrap();
@@ -8180,11 +8205,10 @@ pub mod tests {
                 remote: None,
             })
         }));
-        app.load_active = true;
         // Installed the way an open installs it, rather than dropped into the field:
-        // handing the pass over is one line of `apply_schema_ready`, and a test that
+        // handing the pass over is one line of `install_dataset`, and a test that
         // starts the pass itself would not notice that line going missing.
-        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.install_for_tests(state, None, &OpenOptions::default(), None);
         assert!(
             !app.is_busy(),
             "the dataset is on screen and must keep working while the rest are read"
@@ -8197,8 +8221,8 @@ pub mod tests {
         };
 
         // It lands after a glance at the home screen, which leaves the dataset up and
-        // clears `load_active`. One keystroke there and back must not strand the
-        // dataset on two footers for the rest of the session.
+        // puts down whatever open was in flight. One keystroke there and back must not
+        // strand the dataset on two footers for the rest of the session.
         app.abandon_load();
         // The re-read runs off this thread and would count too, as soon as it runs. It
         // dies before it reads, so what is counted below is this thread's alone.
@@ -8636,25 +8660,11 @@ pub enum AppEvent {
     /// A path named on the command line is not there: the session ends as a missing
     /// file always has. The continuation of the look's answer.
     NamedPathMissing(PathBuf),
+    /// Open these paths. Its phases are the loading controller's: each worker's answer
+    /// starts the next, and the dataset is installed when its schema is read.
     Open(Vec<PathBuf>, OpenOptions),
     /// Open with an existing LazyFrame (e.g. from Python binding); no file load.
     OpenLazyFrame(Box<LazyFrame>, OpenOptions),
-    /// Scan paths and build LazyFrame; then emit DoLoadSchema (phased loading).
-    DoLoadScanPaths(Vec<PathBuf>, OpenOptions),
-    /// Build LazyFrame for CSV with --parse-strings (phase already set to "Scanning string columns" so UI shows it).
-    DoLoadCsvWithParseStrings(Vec<PathBuf>, OpenOptions),
-    /// Perform HTTP download (next loop so "Downloading" can render first). Then emit DoLoadDownload.
-    #[cfg(feature = "http")]
-    DoDownloadHttp(String, OpenOptions),
-    /// Perform S3 download to temp (next loop so "Downloading" can render first). Then emit DoLoadDownload.
-    #[cfg(feature = "cloud")]
-    DoDownloadS3ToTemp(String, OpenOptions),
-    /// Perform GCS download to temp (next loop so "Downloading" can render first). Then emit DoLoadDownload.
-    #[cfg(feature = "cloud")]
-    DoDownloadGcsToTemp(String, OpenOptions),
-    /// An HTTP, S3, GCS or Azure download is on disk. Scan it and continue the load.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    DoLoadDownload(crate::download::TempDownload, OpenOptions),
     /// A home listing built off-thread is ready.
     HomeListingReady {
         generation: u64,
@@ -8762,19 +8772,6 @@ pub enum AppEvent {
     HomeProbeFailed {
         root: PathBuf,
         message: String,
-    },
-    /// Update phase to "Caching schema" and emit DoLoadSchemaBlocking so UI can draw before blocking.
-    DoLoadSchema(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
-    /// Actually run collect_schema() and create state; then emit DoLoadBuffer (phased loading).
-    DoLoadSchemaBlocking(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
-    /// First collect() on state; then emit Collect (phased loading).
-    DoLoadBuffer,
-    /// Decompress a CSV once the UI shows "Decompressing". `file` is what is read;
-    /// `path` is where the dataset is from: the same file, or the URL of a download.
-    DoDecompress {
-        file: PathBuf,
-        path: PathBuf,
-        options: OpenOptions,
     },
     /// Run the export, from plan to committed file, once the UI has drawn its
     /// progress.
@@ -9205,95 +9202,13 @@ impl ConfirmationModal {
     }
 }
 
-/// Pending remote download; shown in confirmation modal before starting download.
-#[cfg(any(feature = "http", feature = "cloud"))]
-#[derive(Clone)]
-pub enum PendingDownload {
-    #[cfg(feature = "http")]
-    Http {
-        url: String,
-        size: Option<u64>,
-        options: OpenOptions,
-    },
-    #[cfg(feature = "cloud")]
-    S3 {
-        url: String,
-        size: Option<u64>,
-        options: OpenOptions,
-    },
-    #[cfg(feature = "cloud")]
-    Gcs {
-        url: String,
-        size: Option<u64>,
-        options: OpenOptions,
-    },
-    #[cfg(feature = "cloud")]
-    Azure {
-        url: String,
-        size: Option<u64>,
-        options: OpenOptions,
-    },
-}
-
-#[cfg(any(feature = "http", feature = "cloud"))]
-impl PendingDownload {
-    /// The url, the size the probe found, and the open options — the same three
-    /// fields whichever store this came from.
-    fn parts(&self) -> (&str, Option<u64>, &OpenOptions) {
-        match self {
-            #[cfg(feature = "http")]
-            PendingDownload::Http { url, size, options } => (url, *size, options),
-            #[cfg(feature = "cloud")]
-            PendingDownload::S3 { url, size, options } => (url, *size, options),
-            #[cfg(feature = "cloud")]
-            PendingDownload::Gcs { url, size, options } => (url, *size, options),
-            #[cfg(feature = "cloud")]
-            PendingDownload::Azure { url, size, options } => (url, *size, options),
-        }
-    }
-
-    /// Replace the placeholder size with what the probe actually found.
-    fn with_size(mut self, found: Option<u64>) -> Self {
-        match &mut self {
-            #[cfg(feature = "http")]
-            PendingDownload::Http { size, .. } => *size = found,
-            #[cfg(feature = "cloud")]
-            PendingDownload::S3 { size, .. } => *size = found,
-            #[cfg(feature = "cloud")]
-            PendingDownload::Gcs { size, .. } => *size = found,
-            #[cfg(feature = "cloud")]
-            PendingDownload::Azure { size, .. } => *size = found,
-        }
-        self
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub enum LoadingState {
-    #[default]
-    Idle,
-    Loading {
-        /// None when loading from LazyFrame (e.g. Python binding); Some for file paths.
-        file_path: Option<PathBuf>,
-        file_size: u64,        // Size of compressed file in bytes (0 when no path)
-        current_phase: String, // e.g., "Scanning input", "Caching schema", "Loading buffer"
-        progress_percent: u16, // 0-100
-    },
-    Exporting {
-        file_path: PathBuf,
-        current_phase: String, // e.g., "Collecting data", "Writing file"
-        /// Bytes written so far, once writing has started.
-        written: Option<u64>,
-    },
-}
-
-impl LoadingState {
-    pub fn is_loading(&self) -> bool {
-        matches!(
-            self,
-            LoadingState::Loading { .. } | LoadingState::Exporting { .. }
-        )
-    }
+/// An export under way, for the control bar: the file, its phase, and the bytes
+/// written once writing has started.
+#[derive(Clone, Debug)]
+pub struct ExportProgress {
+    pub file_path: PathBuf,
+    pub current_phase: String,
+    pub written: Option<u64>,
 }
 
 /// In-progress analysis computation state (orchestration in App; modal only displays progress).
@@ -10219,10 +10134,10 @@ const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct App {
     pub data_table_state: Option<DataTableState>,
-    /// How far the footer pass of an open has got. Written by the threads reading
-    /// them; read once a frame into [`Self::footers_this_frame`], which is what the
-    /// loading screen and the control bar actually show.
-    pub footer_progress: Arc<crate::schema_union::FooterProgress>,
+    /// The footer counter of the dataset on screen, which its pass behind the open
+    /// reports to. Handed over by the load that installed it; a load in flight counts on
+    /// its own until then. See [`Self::footer_progress`].
+    footer_progress: Arc<crate::schema_union::FooterProgress>,
     /// The count as it stood when this frame began, or `None` if no pass was running.
     ///
     /// Taken once because the pass is running on other threads while the frame is
@@ -10363,23 +10278,14 @@ pub struct App {
     pending_chart_export: Option<ChartExportRequest>,
     /// A Data Quality report export waiting on the overwrite confirmation.
     pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
-    /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation.
-    /// Size is from HEAD when available.
-    ///
-    /// Carries a [`jobs::Hold`], because this is the one errand that waits on neither
-    /// a worker nor a continuation: nothing is running, the open is very much
-    /// unfinished, and the wait is as long as the user takes. Paired with the download
-    /// rather than kept beside it, so the two cannot drift — every path out of the modal
-    /// takes the download, and the hold goes with it.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    pending_download: Option<(PendingDownload, jobs::Hold)>,
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
     cache: CacheManager,
     template_manager: Templates,
     active_template_id: Option<String>, // ID of currently applied template
-    loading_state: LoadingState,        // Current loading state for progress indication
-    theme: Theme,                       // Color theme for UI rendering
+    /// An export under way, which the control bar reports.
+    export_progress: Option<ExportProgress>,
+    theme: Theme, // Color theme for UI rendering
     /// `a` is waiting on the confirmation to read every row.
     pending_read_all: bool,
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
@@ -10393,34 +10299,13 @@ pub struct App {
     /// Every general background operation, and the generation their answers are judged
     /// by. See [`jobs`].
     jobs: Jobs,
-    /// True while the load started by the most recent `Open`/`OpenLazyFrame` is still
-    /// wanted. Going home clears it, which is what abandons an in-flight load: the
-    /// remaining `Do*` chain events and the results that would install a dataset all
-    /// check this and bail. Deliberately separate from the jobs' generation, which also
-    /// gates analysis and export results — going home must not cancel an export.
-    load_active: bool,
-    /// True from the moment a load starts until it installs its dataset, fails, or is
-    /// abandoned. While it is set, whatever `data_table_state` holds belongs to the
-    /// *previous* dataset, so the main view shows the load's progress instead of it —
-    /// otherwise the old table sits under the new file's name for the whole load.
-    ///
-    /// Separate from `load_active`, which stays set through the buffer collect that
-    /// follows installation: by then the table on screen is the right one.
-    awaiting_dataset: bool,
-    /// Whether the load in flight was chosen on the home screen, which is where its
-    /// failure is reported: the dataset left over from before is not what the user
-    /// was looking at when they chose.
-    load_from_home: bool,
-    /// The path an open was asked for, recorded as a recent when its dataset installs.
-    recent_on_install: Option<PathBuf>,
-    /// The paths an open was asked for, kept with the options it installed with once it
-    /// does: what `H` opens again with its header turned the other way.
-    opening: Option<Vec<PathBuf>>,
+    /// The open in flight, from the request to its first rows: its phase, what the
+    /// loading screen says, and what it holds. See [`loading`]. Going home abandons it;
+    /// an answer from an open it no longer holds is dropped.
+    loading: loading::Loader,
+    /// The paths the dataset on screen was opened from, with the options it installed
+    /// with: what `H` opens again with its header turned the other way.
     opened: Option<(Vec<PathBuf>, OpenOptions)>,
-    /// The URL `download` was downloaded from. Opening it again reads that copy
-    /// rather than downloading it again, which is how `H` re-reads a downloaded file.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    downloaded_from: Option<PathBuf>,
     /// Where the last load-ahead was asked from. See [`App::load_ahead`].
     loaded_ahead_from: Option<(u64, usize, usize, usize)>,
     // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
@@ -10434,6 +10319,10 @@ pub struct App {
     /// Counts started, so a test can say none began before the page was painted.
     #[cfg(test)]
     counts_spawned: std::cell::Cell<usize>,
+    /// Times an installed dataset's own first rows were asked for, so a test can say a
+    /// view applied on open read them instead.
+    #[cfg(test)]
+    first_rows_asked: usize,
     // `len_generation` whose background row-count failed. While this matches the current
     // generation (and the count is still invalid) the row count is shown as "?" rather than a
     // misleading provisional total.
@@ -10493,11 +10382,6 @@ pub struct App {
     status_message: Option<String>,
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
-    /// The last remote file downloaded, kept to be read again until different data is
-    /// opened. The dataset scanning it holds the file too, so it is removed once both
-    /// have let go: opening something else, then that dataset being replaced, or exit.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    download: Option<crate::download::TempDownload>,
 }
 
 impl App {
@@ -11817,10 +11701,10 @@ impl App {
         }
     }
 
-    /// Whether keys wait: a job the user is waiting on is running or owed, or an
-    /// errand is between its phases.
+    /// Whether keys wait: a job the user is waiting on is running or owed, an errand
+    /// is between its phases, or an open is on its way to its dataset.
     pub fn is_busy(&self) -> bool {
-        self.busy || self.jobs.holds_keys()
+        self.busy || self.jobs.holds_keys() || self.loading.waits()
     }
 
     /// The generation background answers are judged by. Advanced each time work starts
@@ -12852,7 +12736,7 @@ impl App {
         // number it holds meanwhile is only as far as the buffer reaches. Printed
         // plainly, a prefix of six thousand files reads `Rows: 70`.
         self.len_count_inflight.is_some()
-            || self.awaiting_dataset
+            || self.loading.awaiting_dataset()
             // A re-read owed to a dataset whose footers could not be read is a count
             // that is coming: the collect it is waiting to run is what starts one. The
             // dataset has already stopped saying it counts itself later (it gave up on
@@ -12892,7 +12776,31 @@ impl App {
     /// shown because two parts of the screen show it, they are painted at different
     /// moments, and a background thread is moving it between them.
     fn begin_frame(&mut self) {
-        self.footers_this_frame = self.footer_progress.reading();
+        self.footers_this_frame = self.footer_progress().reading();
+    }
+
+    /// The footer counter the screen reads: the open's own while one is on its way to
+    /// a dataset, else the dataset on screen's. Each open counts on its own, so one
+    /// replaced half way through cannot count under the name of the file that replaced
+    /// it.
+    pub fn footer_progress(&self) -> &Arc<crate::schema_union::FooterProgress> {
+        self.loading.progress().unwrap_or(&self.footer_progress)
+    }
+
+    /// Whether an open is on its way and its dataset not installed yet: whatever table
+    /// `data_table_state` holds meanwhile belongs to the dataset being replaced, so the
+    /// main view shows the open's progress instead of it.
+    pub(crate) fn awaiting_dataset(&self) -> bool {
+        self.loading.awaiting_dataset()
+    }
+
+    /// What the loading screen and the control bar say about the open in flight: its
+    /// phase, the flat percentage beside it, the path it names and that path's size.
+    pub(crate) fn load_shown(&self) -> Option<(&str, u16, Option<&Path>, u64)> {
+        self.loading.current().map(|load| {
+            let (phase, percent) = load.phase().label();
+            (phase, percent, load.path(), load.size())
+        })
     }
 
     /// What the load is doing, for whichever part of the screen is saying so.
@@ -12912,31 +12820,132 @@ impl App {
         }
     }
 
-    /// Set loading state and phase so the progress dialog is visible. Used by run() to show
-    /// loading UI immediately when launching from LazyFrame (e.g. Python) before sending the open event.
+    /// An open is on its way: the loading screen takes over now, saying `phase`, and keys
+    /// wait for it. Called before the event that carries the open out — by `run` before
+    /// the first frame, and by a key before the `Open` it returns — because a frame is
+    /// drawn between the two and would otherwise show the outgoing dataset.
     pub fn set_loading_phase(&mut self, phase: impl Into<String>, progress_percent: u16) {
-        self.busy = true;
-        // A frame is drawn between the keypress that starts a load and the `Open` that
-        // carries it out, so the handover has to happen here too or that frame still
-        // shows the outgoing dataset.
-        self.awaiting_dataset = true;
-        self.loading_state = LoadingState::Loading {
-            file_path: None,
-            file_size: 0,
-            current_phase: phase.into(),
-            progress_percent,
-        };
+        self.announce_open(false, phase.into(), progress_percent);
     }
 
-    /// Apply a successfully loaded DataTableState to the app. Shared by all schema load paths.
+    /// As [`Self::set_loading_phase`], for an open chosen on the home screen when
+    /// `from_home`: that is where its failure is reported.
+    fn announce_open(&mut self, from_home: bool, phase: String, percent: u16) {
+        self.make_way_for_an_open();
+        self.loading.announce(from_home, phase, percent);
+    }
+
+    /// Put the path on the loading screen, so a wait says what it is waiting for.
+    pub(crate) fn name_what_is_loading(&mut self, path: PathBuf) {
+        self.loading.name(path);
+    }
+
+    /// An open is being asked for: a load already doing work is put down for it, unless
+    /// it has not started any (the look or the frame that leads to this open).
+    fn make_way_for_an_open(&mut self) {
+        if let Some(retired) = self.loading.make_way() {
+            self.put_down_load(retired);
+        }
+    }
+
+    /// An open has its request: make way for it, and stop what the dataset on screen
+    /// was still reading for itself.
+    fn begin_new_dataset(&mut self) {
+        self.make_way_for_an_open();
+        self.reset_chart_state();
+        self.jobs.advance();
+        // The dataset's footer pass is no longer wanted, and unread, unpaid-for is better
+        // than read and dropped. The open counts its own footers on a counter of its
+        // own, which the dataset takes over if it installs.
+        //
+        // The meter needs no equivalent: it belongs to the dataset rather than to the
+        // app, so a load that never reaches the screen never has one installed. See
+        // `DataTableState::measurements`.
+        self.footer_progress.cancel();
+        *self
+            .pending_footers_result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Put down what the app keeps for a load the loader has retired: its jobs, whose
+    /// answers are for a screen nobody is on, their lines on the control bar, and the
+    /// question about its download.
+    fn put_down_load(&mut self, retired: loading::Retired) {
+        let id = retired.id;
+        let lines = self.jobs.quiet(|job| job.load() == Some(id));
+        self.jobs.supersede(|job| job.load() == Some(id));
+        if self
+            .status_message
+            .as_ref()
+            .is_some_and(|status| lines.contains(status))
+        {
+            self.status_message = None;
+        }
+        if retired.asking {
+            self.confirmation_modal.hide();
+        }
+    }
+
+    /// Carry out what the open needs next.
+    fn run_load_step(&mut self, step: loading::Step) -> Option<AppEvent> {
+        use loading::Step;
+        let load = self.loading.id();
+        match step {
+            Step::Nothing => None,
+            Step::Crash(message) => Some(AppEvent::Crash(message)),
+            Step::Failed(failed) => {
+                self.load_failed(failed);
+                None
+            }
+            Step::Install(loaded) => {
+                // The view an open applies reads its own first rows, so the dataset's are
+                // not read.
+                if self.install_dataset(*loaded) {
+                    return None;
+                }
+                #[cfg(test)]
+                {
+                    self.first_rows_asked += 1;
+                }
+                if !self.spawn_async_collect(Self::LOADING_BUFFER) {
+                    // Nothing to read: the buffer already serves the view.
+                    if self.status_message.as_deref() == Some(Self::LOADING_BUFFER) {
+                        self.status_message = None;
+                    }
+                    self.first_rows_settled();
+                }
+                None
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Step::Ask(pending) => {
+                // Nothing runs while the question is up: datui waits on a key, and a
+                // spinner would read as progress. The loader holds the generation
+                // meanwhile.
+                self.confirmation_modal
+                    .show(Self::download_confirmation_message(&pending));
+                None
+            }
+            step => {
+                let load = load.expect("a step that runs work belongs to the open in flight");
+                self.spawn_load_phase(load, step);
+                None
+            }
+        }
+    }
+
+    /// The first rows of an open are on screen, or will not be read: its wait is over.
+    fn first_rows_settled(&mut self) {
+        self.loading.first_rows_settled();
+    }
+
     /// Read the rows on screen again, now that the frame they were read through has
     /// been replaced.
     ///
-    /// Not through `DoLoadBuffer`: that is a step of the open's chain and is ignored
-    /// unless a load is in progress, and this happens long after the load has finished
-    /// — and after a glance at the home screen, never again. The join has already
-    /// dropped the buffer, so nothing dropping this leaves the table with no rows to
-    /// show at the moment it was to show more of them.
+    /// The dataset's own errand, not its open's: this happens long after the open has
+    /// finished, and after a glance at the home screen just the same. The join has
+    /// already dropped the buffer, so nothing dropping this leaves the table with no
+    /// rows to show at the moment it was to show more of them.
     fn reread_after_the_footers_joined(&mut self) {
         // Any re-read satisfies one that was owed: this is the collect the errand was
         // waiting to run, whoever asked for it.
@@ -12987,15 +12996,10 @@ impl App {
         if !self.spawn_async_collect(&status) {
             self.busy = false;
             self.status_message = None;
-            // The collect that was owed may have been the last step of an open, and
-            // `DoLoadBuffer` takes the loading screen down itself when there turns out
-            // to be nothing to collect. Deferred, that branch is not the one that runs,
-            // and the screen would read "Loading buffer... 70%" with the app idle for
-            // the rest of the session. Only a load's own state: an export owns
-            // `loading_state` too, and it is still going.
-            if matches!(self.loading_state, LoadingState::Loading { .. }) {
-                self.loading_state = LoadingState::Idle;
-            }
+            // The collect that was owed may have been an open's first rows. Left waiting
+            // on them, the bar would read "Loading buffer... 70%" with the app idle for
+            // the rest of the session.
+            self.first_rows_settled();
         }
     }
 
@@ -13117,13 +13121,6 @@ impl App {
                 .is_some_and(|inflight| inflight.began.elapsed() < Self::A_FETCH_WORTH_SAYING)
     }
 
-    /// Put the path on the loading screen, so a wait says what it is waiting for.
-    fn name_what_is_loading(&mut self, path: PathBuf) {
-        if let LoadingState::Loading { file_path, .. } = &mut self.loading_state {
-            *file_path = Some(path);
-        }
-    }
-
     /// Work already running that the re-read after a join would cancel.
     ///
     /// The re-read goes through the ordinary collect, which bumps `task_generation`, so
@@ -13232,22 +13229,24 @@ impl App {
         true
     }
 
-    /// Install a loaded dataset and apply the view it opens with, if any. Returns
-    /// whether that view is reading the first rows, which the caller then leaves to it.
-    fn apply_schema_ready(
-        &mut self,
-        state: DataTableState,
-        path: Option<PathBuf>,
-        options: &OpenOptions,
-        debug_label: Option<String>,
-    ) -> bool {
-        // Installing a dataset is the point of no return for abandonment, so every
-        // caller has to have checked. A new one that forgets swaps a dataset in
-        // underneath the home screen.
-        debug_assert!(
-            self.load_active,
-            "apply_schema_ready called for an abandoned load"
-        );
+    /// Install the dataset an open read, and apply the view it opens with, if any.
+    /// Returns whether that view is reading the first rows, which the caller then leaves
+    /// to it.
+    ///
+    /// Only the loader hands one over, and only for the open in flight: an abandoned or
+    /// replaced open's answer never gets this far.
+    fn install_dataset(&mut self, loaded: loading::Loaded) -> bool {
+        let loading::Loaded {
+            state,
+            path,
+            options,
+            debug_label,
+            paths,
+            recent,
+            from_home,
+            footers,
+        } = loaded;
+        let options = &options;
         // A key pressed at the dataset being replaced belongs to it, not to this one.
         self.end_when_the_footers_land = None;
         // Its companion, for the same reason. This one keys itself to a
@@ -13279,17 +13278,16 @@ impl App {
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
-        self.awaiting_dataset = false;
         // Home is now in the stack, so q pops back to it; never unset, since a
         // reread from the table (H) is not a new place.
-        if self.load_from_home {
+        if from_home {
             self.opened_from_home = true;
         }
-        self.load_from_home = false;
-        if let Some(paths) = self.opening.take() {
-            self.opened = Some((paths, options.clone()));
-        }
-        if let Some(path) = self.recent_on_install.take() {
+        // A frame handed over has no path to go back to.
+        self.opened = paths.map(|paths| (paths, options.clone()));
+        // Recorded once the dataset is installed: a file that fails to load is not one
+        // anybody wants to get back to.
+        if let Some(path) = recent {
             // Off the opening path. Recording a recent is a convenience that nothing
             // waits on, and it takes a lock several instances may be contending for --
             // opening a dataset must not queue behind another instance's bookkeeping.
@@ -13298,15 +13296,10 @@ impl App {
         }
         self.forget_the_rows_read();
         self.file_facts = None;
-        // A downloaded file lives as long as the dataset scanning it.
-        #[cfg(any(feature = "http", feature = "cloud"))]
-        let state = {
-            let mut state = state;
-            if path.is_some() && path == self.downloaded_from {
-                state.hold_download(self.download.clone());
-            }
-            state
-        };
+        // The footers it still has to read are counted on the open's counter, which is
+        // the dataset's now; the last dataset's pass, if any is left, stops.
+        self.footer_progress.cancel();
+        self.footer_progress = footers;
         self.data_table_state = Some(state);
         // A count still waiting for the last dataset's rows to paint is not owed now.
         self.retire_a_count_the_rows_answered();
@@ -13329,19 +13322,6 @@ impl App {
         self.start_pending_footers();
         self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
-        if let LoadingState::Loading {
-            file_path,
-            file_size,
-            ..
-        } = &self.loading_state
-        {
-            self.loading_state = LoadingState::Loading {
-                file_path: file_path.clone(),
-                file_size: *file_size,
-                current_phase: "Loading buffer".to_string(),
-                progress_percent: 70,
-            };
-        }
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
 
         // The dataset is installed and its schema known, so this is where a template
@@ -13472,9 +13452,9 @@ impl App {
         // This is the door #238 was about. `BackgroundLenReady` answers a count by
         // jumping to the end, which reaches here with no key pressed and minutes after
         // the one that was — long enough for a dataset to have been opened meanwhile.
-        // The bump cancelled that open, whose schema answer then returned without
-        // resetting anything, so `awaiting_dataset`, `busy` and `loading_state` stayed
-        // set and the file never opened, silently, for the rest of the session.
+        // The bump cancelled that open's phase in flight, whose answer was then thrown
+        // away with the open still waiting on it, and the file never opened, silently,
+        // for the rest of the session.
         if a_bump_would_strand {
             // The count that was going to ride in this collect is put down rather than
             // run on its own. On an object store it answers itself out of the short read
@@ -13561,7 +13541,7 @@ impl App {
     /// being read: the page an open, a query or a scroll asked for. A load-ahead is
     /// nobody's wait, so a count does not queue behind one.
     fn waited_on_rows_pending(&self, generation: u64) -> bool {
-        self.awaiting_dataset
+        self.loading.awaiting_dataset()
             || self.jobs.owed(Self::owed_rows).is_some()
             || (self.rows_waited_on()
                 && self
@@ -13694,6 +13674,77 @@ impl App {
     #[cfg(test)]
     pub(crate) fn job_for_tests(&mut self, job: Job, status: Option<&str>) -> jobs::Started {
         self.start_job(job, status)
+    }
+
+    /// Whether the bar has no open and no export to report.
+    #[cfg(test)]
+    pub(crate) fn nothing_loading(&self) -> bool {
+        self.loading.current().is_none() && self.export_progress.is_none()
+    }
+
+    /// An open on the loading screen, saying `phase` about `path` of `size` bytes, with
+    /// nothing running: for tests of what the screen says.
+    #[cfg(test)]
+    pub(crate) fn loading_for_tests(
+        &mut self,
+        path: Option<PathBuf>,
+        size: u64,
+        phase: &str,
+        percent: u16,
+    ) {
+        self.announce_open(false, phase.to_string(), percent);
+        if let Some(path) = path {
+            self.loading.name(path);
+        }
+        self.loading.size_for_tests(size);
+    }
+
+    /// An open of `path` begun and scanning, with no worker: for tests that decide how
+    /// its phases answer. Its jobs are [`Job::Load`] with the id returned.
+    #[cfg(test)]
+    pub(crate) fn open_for_tests(&mut self, path: &str) -> loading::LoadId {
+        self.make_way_for_an_open();
+        let _ = self.loading.open(loading::OpenRequest {
+            paths: vec![PathBuf::from(path)],
+            options: OpenOptions::default(),
+            size: 0,
+            recent: None,
+        });
+        self.loading.id().expect("an open was begun")
+    }
+
+    /// Install `state` as the dataset on screen, the way an open of a frame does: through
+    /// the loader, so what the load hands over (its footer counter) is handed over for
+    /// real. Its first rows are not read; the open is done once it is installed.
+    #[cfg(test)]
+    pub(crate) fn install_for_tests(
+        &mut self,
+        state: DataTableState,
+        path: Option<PathBuf>,
+        options: &OpenOptions,
+        debug_label: Option<String>,
+    ) -> bool {
+        self.make_way_for_an_open();
+        let _ = self
+            .loading
+            .open_frame(LazyFrame::default(), options.clone());
+        let load = self.loading.id().expect("an open was begun");
+        let loading::Step::Install(loaded) = self.loading.answered(
+            load,
+            loading::LoadAnswer::SchemaRead {
+                state: Box::new(state),
+                path,
+                options: options.clone(),
+                debug_label,
+            },
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            &self.jobs,
+        ) else {
+            unreachable!("a schema read installs");
+        };
+        let view = self.install_dataset(*loaded);
+        self.first_rows_settled();
+        view
     }
 
     /// A page owed to the dataset on screen, as one asked for while the generation was
@@ -14007,14 +14058,12 @@ impl App {
             pending_export: None,
             pending_chart_export: None,
             pending_quality_export: None,
-            #[cfg(any(feature = "http", feature = "cloud"))]
-            pending_download: None,
             show_help: false,
             help_scroll: 0,
             cache,
             template_manager,
             active_template_id: None,
-            loading_state: LoadingState::Idle,
+            export_progress: None,
             theme,
             pending_read_all: false,
             history_limit: app_config.query.history_limit,
@@ -14034,14 +14083,8 @@ impl App {
                 }),
             jobs,
             runtime,
-            load_active: false,
-            awaiting_dataset: false,
-            load_from_home: false,
-            recent_on_install: None,
-            opening: None,
+            loading: loading::Loader::default(),
             opened: None,
-            #[cfg(any(feature = "http", feature = "cloud"))]
-            downloaded_from: None,
             loaded_ahead_from: None,
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
@@ -14056,6 +14099,8 @@ impl App {
             count_after_paint: None,
             #[cfg(test)]
             counts_spawned: std::cell::Cell::new(0),
+            #[cfg(test)]
+            first_rows_asked: 0,
             len_count_failed: None,
             end_after_count: None,
             busy: false,
@@ -14065,8 +14110,6 @@ impl App {
             status_message: None,
             analysis_computation: None,
             app_config,
-            #[cfg(any(feature = "http", feature = "cloud"))]
-            download: None,
         }
     }
 
@@ -14757,20 +14800,18 @@ impl App {
     /// Returning home puts the cursor on whatever you currently have open, so the
     /// round trip out and back lands where you left rather than at the top.
     ///
-    /// Abandoning is `load_active = false` plus clearing the load's own UI state,
-    /// and cancelling the load's footer counter, so an in-flight cloud pass stops
-    /// issuing paid reads within a wave. Other background work runs to completion
-    /// and its results are dropped on arrival. Work that is not a load — an
-    /// export, an analysis — is deliberately left alone, so its progress
-    /// indicator and its completion modal must survive this.
+    /// Abandoning puts the open in flight down at once ([`loading::Loader::retire`]):
+    /// its jobs are superseded, so their answers are dropped on arrival and none can
+    /// install a dataset or take the user off the screen they went to; its stop flag
+    /// is raised, so a download stops and an in-flight cloud pass stops issuing paid
+    /// reads within a wave. Work that is not the open's — an export, an analysis, the
+    /// footer pass of the dataset already on screen — is deliberately left alone, so
+    /// its progress indicator and its completion modal must survive this.
     pub fn abandon_load(&mut self) {
-        // Only the in-flight load's counter: with no load running, this counter
-        // belongs to the installed dataset's own background pass, which a trip
-        // home must not stop.
-        if self.load_active {
-            self.footer_progress.cancel();
+        let retired = self.loading.retire();
+        if let Some(retired) = retired {
+            self.put_down_load(retired);
         }
-        self.load_active = false;
         // A chart being prepared for the dataset we are leaving would otherwise keep
         // the throbber up on the home screen, and its result could later land in a
         // different dataset with the same column names.
@@ -14781,42 +14822,16 @@ impl App {
         if self.jobs.supersede(|job| matches!(job, Job::Classify(_))) {
             self.home.status = None;
         }
-        // And the look at a directory named on the command line, for the same reason: it
-        // takes seconds, Ctrl+O works throughout, and its answer must not take the user
-        // off the screen they went to instead.
-        if self
-            .jobs
-            .supersede(|job| matches!(job, Job::LookAtDirectory(_)))
-            && self.status_message.as_deref() == Some(Self::LOOKING_AT_A_DIRECTORY)
-        {
-            self.status_message = None;
-        }
-        // The load's own phases: their answers are for a screen the user has left.
-        self.jobs.supersede(|job| matches!(job, Job::Load));
-        // Nothing is arriving to replace it, so the dataset already on screen is the
-        // current one again — Esc from home goes straight back to it.
-        self.awaiting_dataset = false;
-        self.load_from_home = false;
-        self.recent_on_install = None;
-        self.opening = None;
         // And a collect that was waiting behind this load goes with it. Left standing,
         // it runs the moment the generation is free — reading the dataset the user
         // walked away from, at the home screen, with every key held.
         self.jobs.take_owed(Self::owed_rows);
-        #[cfg(any(feature = "http", feature = "cloud"))]
-        if self.pending_download.take().is_some() {
-            self.confirmation_modal.hide();
-        }
-        // Only a load's own wait is put down. An export holds keys and owns
-        // `loading_state` too, and it keeps running. The rows the load's last step is
-        // reading still land; nobody waits on them, and nor does anyone wait on the look
-        // at the named paths, which still opens what it finds.
-        if matches!(self.loading_state, LoadingState::Loading { .. }) {
-            self.loading_state = LoadingState::Idle;
+        // Only an open's own wait is put down. An export holds keys too, and it keeps
+        // running. The rows the open's last step is reading still land; nobody waits on
+        // them.
+        if retired.is_some() {
             self.busy = false;
-            let quieted = self
-                .jobs
-                .quiet(|job| matches!(job, Job::Rows(_) | Job::OpenNamed));
+            let quieted = self.jobs.quiet(Self::reading_rows);
             if self
                 .status_message
                 .as_ref()
@@ -15688,7 +15703,6 @@ impl App {
             options.hive = true;
             self.set_loading_phase("Scanning input", 10);
             self.name_what_is_loading(dir.clone());
-            self.busy = true;
             return Some(AppEvent::Open(vec![dir], options));
         }
         // A place to look inside. `datui .` is this, and so is a directory of separate
@@ -15713,7 +15727,6 @@ impl App {
         let open = |app: &mut Self, path: PathBuf, options: OpenOptions| {
             app.set_loading_phase("Scanning input", 10);
             app.name_what_is_loading(path.clone());
-            app.busy = true;
             Some(AppEvent::Open(vec![path], options))
         };
         // The listing was refused. The open says why, in the words of whatever
@@ -15806,7 +15819,6 @@ impl App {
             Some((format, left_out)) => (Some(format), left_out),
             None => (None, Vec::new()),
         };
-        self.load_from_home = true;
         // A directory of partitions is only meaningful read as one hive dataset. Told
         // rather than stat'ed: the caller already knows what this is, and on a share that
         // has gone away a `stat` here would freeze the thread reading the keys — the same
@@ -15819,15 +15831,13 @@ impl App {
             ..OpenOptions::default()
         };
         self.input_mode = InputMode::Normal;
-        self.set_loading_phase("Scanning input", 10);
+        // Chosen here, so a failure is reported here.
+        self.announce_open(true, "Scanning input".to_string(), 10);
         // A frame is drawn between this keypress and the `Open` that carries it out,
         // and it is the one the user is looking at when they press Enter — so it says
         // which file, not just that something is happening. `Open` fills in the size a
         // frame later; stat'ing here would put a possibly-dead mount on this thread.
-        if let LoadingState::Loading { file_path, .. } = &mut self.loading_state {
-            *file_path = Some(path.clone());
-        }
-        self.busy = true;
+        self.name_what_is_loading(path.clone());
         AppEvent::Open(vec![path], options)
     }
 
@@ -16328,54 +16338,197 @@ impl App {
         })
     }
 
-    /// Build LazyFrame from paths for phased loading (non-compressed only). Caller must not use for compressed CSV.
-    /// Ask the store how big a remote file is, off the event thread.
+    /// Run the worker of an open's phase, as `load`'s job: its answer goes to the loader.
     ///
-    /// The answer only feeds a confirmation message, but getting it means a HEAD
-    /// request: fifteen seconds of timeout for HTTP, unbounded for S3 and GCS. Doing
-    /// that inline froze the UI, and froze it precisely where the user is most likely
-    /// to want out.
-    #[cfg(any(feature = "http", feature = "cloud"))]
-    fn spawn_remote_size_probe(&mut self, pending: PendingDownload) -> Option<AppEvent> {
-        #[cfg(feature = "cloud")]
-        let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
-        // The loading phase is what the bar and the loading screen print, so it has to
-        // name the probe; nothing has been scanned yet. No percentage: the probe is
-        // not a fraction of the load.
-        if let LoadingState::Loading {
-            file_path,
-            file_size,
-            ..
-        } = &self.loading_state
-        {
-            self.loading_state = LoadingState::Loading {
-                file_path: file_path.clone(),
-                file_size: *file_size,
-                current_phase: "Checking size".to_string(),
-                progress_percent: 0,
-            };
-        }
-        self.spawn_job(Job::Load, Some("Checking size..."), move |_| {
-            let size = match &pending {
-                #[cfg(feature = "http")]
-                PendingDownload::Http { url, .. } => {
-                    Self::fetch_remote_size_http(url).unwrap_or(None)
-                }
+    /// Every phase runs off the event thread. The size probe is a HEAD request: fifteen
+    /// seconds of timeout for HTTP, unbounded for S3 and GCS, and inline it froze the UI
+    /// precisely where the user is most likely to want out. Scanning is where the
+    /// wall-clock time goes — CSV schema inference, and hive directories with many files
+    /// — and the schema read of a directory reads a footer from each file.
+    fn spawn_load_phase(&mut self, load: loading::LoadId, step: loading::Step) {
+        use loading::{LoadAnswer, Step};
+        let job = Job::Load(load);
+        match step {
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Step::Probe(pending) => {
                 #[cfg(feature = "cloud")]
-                PendingDownload::S3 { url, .. }
-                | PendingDownload::Gcs { url, .. }
-                | PendingDownload::Azure { url, .. } => {
-                    Self::fetch_remote_size_cloud(url, &cloud, &runtime).unwrap_or(None)
-                }
-            };
-            Ok(Answer::RemoteSize(Box::new(pending.with_size(size))))
-        });
-        None
+                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
+                self.spawn_job(job, Some("Checking size..."), move |_| {
+                    let size = match &pending {
+                        #[cfg(feature = "http")]
+                        loading::PendingDownload::Http { url, .. } => {
+                            Self::fetch_remote_size_http(url).unwrap_or(None)
+                        }
+                        #[cfg(feature = "cloud")]
+                        loading::PendingDownload::S3 { url, .. }
+                        | loading::PendingDownload::Gcs { url, .. }
+                        | loading::PendingDownload::Azure { url, .. } => {
+                            Self::fetch_remote_size_cloud(url, &cloud, &runtime).unwrap_or(None)
+                        }
+                    };
+                    Ok(Answer::Load(Box::new(LoadAnswer::Sized(
+                        pending.with_size(size),
+                    ))))
+                });
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Step::Download { pending, stop } => {
+                // The load's stop flag is raised when it is abandoned or another open
+                // replaces it, and when the app drops: the download stops at the next
+                // chunk, or while the source is silent, and removes its file.
+                let stop = move || stop.load(std::sync::atomic::Ordering::Relaxed);
+                #[cfg(feature = "cloud")]
+                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
+                let status = match &pending {
+                    #[cfg(feature = "http")]
+                    loading::PendingDownload::Http { .. } => "Downloading...",
+                    #[cfg(feature = "cloud")]
+                    loading::PendingDownload::S3 { .. } => "Downloading from S3...",
+                    #[cfg(feature = "cloud")]
+                    loading::PendingDownload::Gcs { .. } => "Downloading from GCS...",
+                    #[cfg(feature = "cloud")]
+                    loading::PendingDownload::Azure { .. } => "Downloading from Azure...",
+                };
+                self.spawn_job(job, Some(status), move |_| {
+                    let (url, _, options) = pending.parts();
+                    let download = match &pending {
+                        #[cfg(feature = "http")]
+                        loading::PendingDownload::Http { .. } => {
+                            let ext = source::download_suffix(url);
+                            Self::download_http_to_temp(
+                                url,
+                                options.temp_dir.as_deref(),
+                                ext.as_deref(),
+                                stop,
+                            )
+                        }
+                        #[cfg(feature = "cloud")]
+                        loading::PendingDownload::S3 { .. }
+                        | loading::PendingDownload::Gcs { .. }
+                        | loading::PendingDownload::Azure { .. } => {
+                            Self::download_cloud_to_temp(url, &cloud, options, &runtime, stop)
+                        }
+                    }
+                    .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    Ok(Answer::Load(Box::new(LoadAnswer::Downloaded {
+                        download,
+                        options: options.clone(),
+                    })))
+                });
+            }
+            Step::Decompress {
+                file,
+                path,
+                options,
+            } => {
+                // Only a CSV comes this way; said, so it can have its header turned off.
+                let options = OpenOptions {
+                    format: options.format.or(Some(FileFormat::Csv)),
+                    ..options
+                };
+                self.spawn_job(job, Some("Decompressing..."), move |_| {
+                    let state = Self::decompressed_csv_state(&file, &options).map_err(|e| {
+                        crate::error_display::user_message_from_report(&e, Some(path.as_path()))
+                    })?;
+                    Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
+                        state: Box::new(state),
+                        path: Some(path),
+                        options,
+                        debug_label: Some("decompressed csv".to_string()),
+                    })))
+                });
+            }
+            Step::Scan {
+                paths,
+                options,
+                display,
+                status,
+            } => {
+                let cloud = self.app_config.cloud.clone();
+                // A download is scanned from a temp path the user never typed and would not
+                // recognise; the URL they did type is what names the dataset.
+                let path = display.or_else(|| paths.first().cloned());
+                self.spawn_job(job, Some(status), move |_| {
+                    // What the read passed over rides back with the options it was asked
+                    // for, so the dataset can say what it left out. Seeded with what the
+                    // caller already knows and overwritten by what the read finds: a
+                    // directory on disk is the read's own answer, because it is the pass
+                    // that decides, while for a prefix in an object store Polars does the
+                    // listing and never sees the other formats — there the home screen's
+                    // listing is the only witness.
+                    let mut report = ReadReport {
+                        left_out: options.left_out.clone(),
+                        files_disagree: options.files_disagree,
+                        format: None,
+                    };
+                    let lf = Self::build_lazyframe_from_paths_with(
+                        &cloud,
+                        &paths,
+                        &options,
+                        &mut report,
+                    )
+                    .map_err(|e| {
+                        crate::error_display::user_message_from_report(
+                            &e,
+                            paths.first().map(|p| p.as_path()),
+                        )
+                    })?;
+                    let options = OpenOptions {
+                        left_out: report.left_out,
+                        files_disagree: report.files_disagree,
+                        format: report.format.or(options.format),
+                        ..options
+                    };
+                    Ok(Answer::Load(Box::new(LoadAnswer::Scanned {
+                        lf: Box::new(lf),
+                        path,
+                        options,
+                    })))
+                });
+            }
+            Step::ReadSchema {
+                lf,
+                path,
+                options,
+                progress,
+            } => {
+                self.debug.schema_load = None;
+                let cloud = self.app_config.cloud.clone();
+                let runtime = self.runtime.clone();
+                let report = crate::measurements::OpenReport {
+                    progress,
+                    meter: Arc::new(crate::measurements::Meter::default()),
+                    remembered: Some(self.cache.clone()),
+                };
+                self.spawn_job(job, Some("Caching schema..."), move |_| {
+                    let (state, debug_label) = Self::build_schema_state(
+                        *lf,
+                        path.as_deref(),
+                        &options,
+                        &cloud,
+                        &runtime,
+                        &report,
+                    )
+                    .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
+                        state: Box::new(state),
+                        path,
+                        options,
+                        debug_label: Some(debug_label),
+                    })))
+                });
+            }
+            Step::Nothing | Step::Crash(_) | Step::Install(_) | Step::Failed(_) => {
+                unreachable!("not a phase with a worker")
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Step::Ask(_) => unreachable!("not a phase with a worker"),
+        }
     }
 
     /// What the user is being asked to agree to before a remote file is downloaded.
     #[cfg(any(feature = "http", feature = "cloud"))]
-    fn download_confirmation_message(pending: &PendingDownload) -> String {
+    fn download_confirmation_message(pending: &loading::PendingDownload) -> String {
         let (url, size, options) = pending.parts();
         let size_str = size
             .map(Self::format_bytes)
@@ -16388,69 +16541,6 @@ impl App {
         format!(
             "URL: {url}\nFile size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
         )
-    }
-
-    /// Run the LazyFrame scan for `paths` on a background thread.
-    ///
-    /// Scanning is where the wall-clock time goes — CSV schema inference, and hive
-    /// directories with many files — so doing it on the event thread freezes the UI
-    /// for its whole duration: no repaint, no throbber, no way out. Both CSV entry
-    /// points funnel through here.
-    fn spawn_scan(
-        &mut self,
-        status: &str,
-        paths: Vec<PathBuf>,
-        options: OpenOptions,
-    ) -> Option<AppEvent> {
-        self.spawn_scan_as(status, paths, options, None)
-    }
-
-    /// As [`App::spawn_scan`], but reporting `display_path` as the dataset's identity.
-    ///
-    /// A downloaded remote file is scanned from a temp path the user never typed and
-    /// would not recognise; the URL they did type is what belongs on screen.
-    fn spawn_scan_as(
-        &mut self,
-        status: &str,
-        paths: Vec<PathBuf>,
-        options: OpenOptions,
-        display_path: Option<PathBuf>,
-    ) -> Option<AppEvent> {
-        let cloud = self.app_config.cloud.clone();
-        let path_for_event = display_path.or_else(|| paths.first().cloned());
-        self.spawn_job(Job::Load, Some(status), move |_| {
-            // What the read passed over rides back with the options it was asked for, so
-            // the dataset can say what it left out. Seeded with what the caller already
-            // knows and overwritten by what the read finds: a directory on disk is the
-            // read's own answer, because it is the pass that decides, while for a prefix
-            // in an object store Polars does the listing and never sees the other formats
-            // — there the home screen's listing is the only witness.
-            let mut report = ReadReport {
-                left_out: options.left_out.clone(),
-                files_disagree: options.files_disagree,
-                format: None,
-            };
-            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options, &mut report) {
-                Ok(lf) => {
-                    let options = OpenOptions {
-                        left_out: report.left_out,
-                        files_disagree: report.files_disagree,
-                        format: report.format.or(options.format),
-                        ..options
-                    };
-                    Ok(Answer::Scanned {
-                        lf,
-                        path: path_for_event,
-                        options: Box::new(options),
-                    })
-                }
-                Err(e) => Err(crate::error_display::user_message_from_report(
-                    &e,
-                    paths.first().map(|p| p.as_path()),
-                )),
-            }
-        });
-        None
     }
 
     /// Take the offer on the note the cursor is on: read its column as text.
@@ -17953,7 +18043,8 @@ impl App {
                     || path_str.contains(".parquet")
                     || path_str.contains("*.parquet");
                 if use_parquet_hive {
-                    // Only build LazyFrame here; schema + partition discovery happen in DoLoadSchema ("Caching schema")
+                    // Only build the LazyFrame here; schema and partition discovery are the
+                    // schema phase's ("Caching schema").
                     return DataTableState::scan_parquet_hive(path);
                 }
                 return Err(color_eyre::eyre::eyre!(
@@ -18484,14 +18575,7 @@ impl App {
     /// size probe behind it can take fifteen seconds, and the answer to "actually,
     /// never mind" is the home screen, not the exit.
     pub fn awaiting_download_confirmation(&self) -> bool {
-        #[cfg(any(feature = "http", feature = "cloud"))]
-        {
-            self.confirmation_modal.active && self.pending_download.is_some()
-        }
-        #[cfg(not(any(feature = "http", feature = "cloud")))]
-        {
-            false
-        }
+        self.confirmation_modal.active && self.loading.asking()
     }
 
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
@@ -18644,42 +18728,13 @@ impl App {
                             return Some(AppEvent::CopyTable { format, header });
                         }
                         #[cfg(any(feature = "http", feature = "cloud"))]
-                        if let Some((pending, hold)) = self.pending_download.take() {
-                            // Dropped rather than held: the event returned below is a
-                            // continuation, and the pump holds the generation for it as
-                            // soon as this handler returns. Nothing between the two can
-                            // advance it: the errands that wait on the generation do not
-                            // run after a handler that returns a continuation.
-                            drop(hold);
+                        if self.loading.asking() {
                             self.confirmation_modal.hide();
-                            if let LoadingState::Loading {
-                                file_path,
-                                file_size,
-                                ..
-                            } = &self.loading_state
-                            {
-                                self.loading_state = LoadingState::Loading {
-                                    file_path: file_path.clone(),
-                                    file_size: *file_size,
-                                    current_phase: "Downloading".to_string(),
-                                    progress_percent: 20,
-                                };
-                            }
-                            return Some(match pending {
-                                #[cfg(feature = "http")]
-                                PendingDownload::Http { url, options, .. } => {
-                                    AppEvent::DoDownloadHttp(url, options)
-                                }
-                                #[cfg(feature = "cloud")]
-                                PendingDownload::S3 { url, options, .. } => {
-                                    AppEvent::DoDownloadS3ToTemp(url, options)
-                                }
-                                #[cfg(feature = "cloud")]
-                                PendingDownload::Gcs { url, options, .. }
-                                | PendingDownload::Azure { url, options, .. } => {
-                                    AppEvent::DoDownloadGcsToTemp(url, options)
-                                }
-                            });
+                            // The loader lets go of its hold on the generation as the
+                            // download starts, and the download's job takes it before
+                            // anything else can look.
+                            let step = self.loading.confirmed();
+                            return self.run_load_step(step);
                         }
                     } else {
                         self.pending_clear_recents = false;
@@ -18697,8 +18752,7 @@ impl App {
                             self.input_mode = InputMode::Export;
                         }
                         self.pending_copy = None;
-                        #[cfg(any(feature = "http", feature = "cloud"))]
-                        if self.pending_download.is_some() {
+                        if self.loading.asking() {
                             self.enter_home();
                             return None;
                         }
@@ -18722,11 +18776,10 @@ impl App {
                         self.input_mode = InputMode::Export;
                     }
                     self.pending_copy = None;
-                    #[cfg(any(feature = "http", feature = "cloud"))]
-                    if self.pending_download.is_some() {
+                    if self.loading.asking() {
                         // Declining a download used to quit datui outright, which made
                         // a remote open the one thing in the app you could not back out
-                        // of. `enter_home` clears the pending download and hides this.
+                        // of. `enter_home` puts the open down and hides this.
                         self.enter_home();
                         return None;
                     }
@@ -21968,7 +22021,7 @@ impl App {
             .supersede(|job| matches!(job, Job::ChartExport { .. }));
         let waiting = self.chart_export_waiting.take().is_some();
         if writing || waiting {
-            self.loading_state = LoadingState::Idle;
+            self.export_progress = None;
             self.status_message = None;
             self.busy = false;
         }
@@ -22080,258 +22133,17 @@ impl App {
                 if &expanded != paths {
                     return Some(AppEvent::Open(expanded, options.clone()));
                 }
-                // The last download is let go, unless this is opening it again. The
-                // dataset on screen still holds it until this open replaces it.
-                #[cfg(any(feature = "http", feature = "cloud"))]
-                if self.download.is_some()
-                    && !(paths.len() == 1 && self.downloaded_from.as_ref() == Some(&paths[0]))
-                {
-                    self.download = None;
-                    self.downloaded_from = None;
-                }
-                self.reset_chart_state();
-                self.jobs.advance();
-                // A new counter for a new load, and the old counter cancelled: what
-                // the last dataset was still reading is no longer wanted, and unread,
-                // unpaid-for is better than read and dropped.
-                //
-                // The meter needs no equivalent: it belongs to the dataset rather than
-                // to the app, so a load that never reaches the screen never has one
-                // installed. See `DataTableState::measurements`.
-                self.footer_progress.cancel();
-                self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
-                // Whatever the last dataset was still reading is no longer wanted.
-                *self
-                    .pending_footers_result
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = None;
-                self.load_active = true;
-                self.awaiting_dataset = true;
-                self.busy = true;
-                let first = &paths[0];
-                // Every open records a recent, not just those started from the home
-                // screen — most datasets are named on the command line, and those are
-                // exactly the ones worth getting back to. An object-store URL counts
-                // doubly: `s3://bucket/warehouse/events/year=2024` is far more painful
-                // to retype than any local path, and it is recorded verbatim, since
-                // canonicalising a URL is meaningless.
-                //
-                // Recorded once the dataset is installed, not here: a file that fails
-                // to load is not one anybody wants to get back to. Kept as named, since
-                // what is installed may be a download's temporary copy.
-                let is_local = matches!(source::input_source(first), source::InputSource::Local(_));
-                self.recent_on_install = (!is_local || first.exists()).then(|| first.clone());
-                self.opening = Some(paths.clone());
-                let file_size = match source::input_source(first) {
-                    source::InputSource::Local(_) => {
-                        std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
-                    }
-                    source::InputSource::S3(_)
-                    | source::InputSource::Gcs(_)
-                    | source::InputSource::Azure(_)
-                    | source::InputSource::Http(_) => 0,
-                };
-                let path_str = first.as_os_str().to_string_lossy();
-                let _is_partitioned_path = paths.len() == 1
-                    && options.hive
-                    && (first.is_dir() || path_str.contains('*') || path_str.contains("**"));
-                let phase = "Scanning input";
-
-                self.loading_state = LoadingState::Loading {
-                    file_path: Some(first.clone()),
-                    file_size,
-                    current_phase: phase.to_string(),
-                    progress_percent: 10,
-                };
-
-                Some(AppEvent::DoLoadScanPaths(paths.clone(), options.clone()))
+                // Asks the filesystem for the size the loading screen shows, and whether
+                // the path is there to be a recent.
+                let request = loading::OpenRequest::named(paths.clone(), options.clone());
+                self.begin_new_dataset();
+                let step = self.loading.open(request);
+                self.run_load_step(step)
             }
             AppEvent::OpenLazyFrame(lf, options) => {
-                // A frame handed over has no path to go back to.
-                self.recent_on_install = None;
-                self.opening = None;
-                self.opened = None;
-                self.reset_chart_state();
-                self.jobs.advance();
-                // A new counter for a new load, and the old counter cancelled: what
-                // the last dataset was still reading is no longer wanted, and unread,
-                // unpaid-for is better than read and dropped.
-                //
-                // The meter needs no equivalent: it belongs to the dataset rather than
-                // to the app, so a load that never reaches the screen never has one
-                // installed. See `DataTableState::measurements`.
-                self.footer_progress.cancel();
-                self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
-                // Whatever the last dataset was still reading is no longer wanted.
-                *self
-                    .pending_footers_result
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = None;
-                self.load_active = true;
-                self.awaiting_dataset = true;
-                self.busy = true;
-                self.loading_state = LoadingState::Loading {
-                    file_path: None,
-                    file_size: 0,
-                    current_phase: "Scanning input".to_string(),
-                    progress_percent: 10,
-                };
-                Some(AppEvent::DoLoadSchema(lf.clone(), None, options.clone()))
-            }
-            AppEvent::DoLoadScanPaths(paths, options) => {
-                // The user went home while this load was in flight. The chain stops
-                // here; whatever is already running finishes and is discarded.
-                if !self.load_active {
-                    return None;
-                }
-                let first = &paths[0];
-                let src = source::input_source(first);
-                if paths.len() > 1 {
-                    match &src {
-                        source::InputSource::S3(_) => {
-                            return Some(AppEvent::Crash(
-                                "Only one S3 URL at a time. Open a single s3:// path.".to_string(),
-                            ));
-                        }
-                        source::InputSource::Gcs(_) => {
-                            return Some(AppEvent::Crash(
-                                "Only one GCS URL at a time. Open a single gs:// path.".to_string(),
-                            ));
-                        }
-                        source::InputSource::Azure(_) => {
-                            return Some(AppEvent::Crash(
-                                "Only one Azure URL at a time. Open a single abfss:// path."
-                                    .to_string(),
-                            ));
-                        }
-                        source::InputSource::Http(_) => {
-                            return Some(AppEvent::Crash(
-                                "Only one HTTP/HTTPS URL at a time. Open a single URL.".to_string(),
-                            ));
-                        }
-                        source::InputSource::Local(_) => {}
-                    }
-                }
-                let compression = options
-                    .compression
-                    .or_else(|| CompressionFormat::from_extension(first));
-                let is_csv = options.format == Some(FileFormat::Csv)
-                    || first
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .map(|stem| {
-                            stem.ends_with(".csv")
-                                || first
-                                    .extension()
-                                    .and_then(|e| e.to_str())
-                                    .map(|e| e.eq_ignore_ascii_case("csv"))
-                                    .unwrap_or(false)
-                        })
-                        .unwrap_or(false);
-                let is_compressed_csv = matches!(src, source::InputSource::Local(_))
-                    && paths.len() == 1
-                    && compression.is_some()
-                    && is_csv;
-                if is_compressed_csv {
-                    if let LoadingState::Loading {
-                        file_path,
-                        file_size,
-                        ..
-                    } = &self.loading_state
-                    {
-                        self.loading_state = LoadingState::Loading {
-                            file_path: file_path.clone(),
-                            file_size: *file_size,
-                            current_phase: "Decompressing".to_string(),
-                            progress_percent: 30,
-                        };
-                    }
-                    Some(AppEvent::DoDecompress {
-                        file: first.clone(),
-                        path: first.clone(),
-                        options: options.clone(),
-                    })
-                } else {
-                    // Opened again, and downloaded already: read the copy on hand. `H`
-                    // re-reads a downloaded file this way rather than fetching it again.
-                    #[cfg(any(feature = "http", feature = "cloud"))]
-                    if paths.len() == 1
-                        && self.downloaded_from.as_ref() == Some(&paths[0])
-                        && let Some(download) = self.download.clone().filter(|d| d.path().exists())
-                    {
-                        return Some(AppEvent::DoLoadDownload(download, options.clone()));
-                    }
-                    // The size probe is a network round trip, so it runs off the event
-                    // thread and the confirmation modal is raised when it answers.
-                    #[cfg(feature = "http")]
-                    if let source::InputSource::Http(ref url) = src {
-                        return self.spawn_remote_size_probe(PendingDownload::Http {
-                            url: url.clone(),
-                            size: None,
-                            options: options.clone(),
-                        });
-                    }
-                    #[cfg(feature = "cloud")]
-                    if let source::InputSource::S3(ref url) = src {
-                        let full = format!("s3://{url}");
-                        let (_, ext) = source::url_path_extension(&full);
-                        let is_glob = source::is_prefix_or_glob(&full);
-                        if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            return self.spawn_remote_size_probe(PendingDownload::S3 {
-                                url: full,
-                                size: None,
-                                options: options.clone(),
-                            });
-                        }
-                    }
-                    #[cfg(feature = "cloud")]
-                    if let source::InputSource::Azure(ref url) = src {
-                        let (_, ext) = source::url_path_extension(url);
-                        let is_glob = source::is_prefix_or_glob(url);
-                        if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            return self.spawn_remote_size_probe(PendingDownload::Azure {
-                                url: url.clone(),
-                                size: None,
-                                options: options.clone(),
-                            });
-                        }
-                    }
-                    #[cfg(feature = "cloud")]
-                    if let source::InputSource::Gcs(ref url) = src {
-                        let full = format!("gs://{url}");
-                        let (_, ext) = source::url_path_extension(&full);
-                        let is_glob = source::is_prefix_or_glob(&full);
-                        if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            return self.spawn_remote_size_probe(PendingDownload::Gcs {
-                                url: full,
-                                size: None,
-                                options: options.clone(),
-                            });
-                        }
-                    }
-                    // When CSV with --parse-strings, set "Scanning string columns" and defer build so UI can show it before blocking.
-                    if paths.len() == 1 && is_csv && options.parse_strings.is_some() {
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Scanning string columns".to_string(),
-                                progress_percent: 55,
-                            };
-                        }
-                        return Some(AppEvent::DoLoadCsvWithParseStrings(
-                            paths.clone(),
-                            options.clone(),
-                        ));
-                    }
-                    #[allow(clippy::needless_borrow)]
-                    self.spawn_scan("Scanning input...", paths.clone(), options.clone())
-                }
+                self.begin_new_dataset();
+                let step = self.loading.open_frame((**lf).clone(), options.clone());
+                self.run_load_step(step)
             }
             AppEvent::HomeListingReady {
                 generation,
@@ -22600,224 +22412,6 @@ impl App {
                     self.home.apply_cloud_kinds(&root);
                 }
                 self.home_refresh();
-                None
-            }
-            AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
-                if !self.load_active {
-                    return None;
-                }
-                self.spawn_scan("Scanning string columns...", paths.clone(), options.clone())
-            }
-            #[cfg(feature = "http")]
-            AppEvent::DoDownloadHttp(url, options) => {
-                if !self.load_active {
-                    return None;
-                }
-                let url = url.clone();
-                let options = options.clone();
-                // Stopped as a cloud download is; see `DoDownloadS3ToTemp`.
-                let cancelled = self.footer_progress.cancel_flag();
-                let stop = move || cancelled.load(std::sync::atomic::Ordering::Relaxed);
-                self.spawn_job(Job::Load, Some("Downloading..."), move |_| {
-                    let ext = source::download_suffix(url.as_str());
-                    let download = Self::download_http_to_temp(
-                        url.as_str(),
-                        options.temp_dir.as_deref(),
-                        ext.as_deref(),
-                        stop,
-                    )
-                    .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
-                    Ok(Answer::Downloaded {
-                        download,
-                        options: Box::new(options),
-                    })
-                });
-                None
-            }
-            #[cfg(feature = "cloud")]
-            AppEvent::DoDownloadS3ToTemp(url, options)
-            | AppEvent::DoDownloadGcsToTemp(url, options) => {
-                if !self.load_active {
-                    return None;
-                }
-                let url = url.clone();
-                let options = options.clone();
-                let cloud_config = self.app_config.cloud.clone();
-                let rt = self.runtime.clone();
-                let status = match source::input_source(Path::new(&url)) {
-                    source::InputSource::Gcs(_) => "Downloading from GCS...",
-                    source::InputSource::Azure(_) => "Downloading from Azure...",
-                    _ => "Downloading from S3...",
-                };
-                // The load's counter is cancelled when the load is abandoned or another
-                // open replaces it, and when the app drops: the download stops at the
-                // next chunk, or while the store is silent, and removes its file.
-                let cancelled = self.footer_progress.cancel_flag();
-                let stop = move || cancelled.load(std::sync::atomic::Ordering::Relaxed);
-                self.spawn_job(Job::Load, Some(status), move |_| {
-                    let download =
-                        Self::download_cloud_to_temp(&url, &cloud_config, &options, &rt, stop)
-                            .map_err(|e| {
-                                crate::error_display::user_message_from_report(&e, None)
-                            })?;
-                    Ok(Answer::Downloaded {
-                        download,
-                        options: Box::new(options),
-                    })
-                });
-                None
-            }
-            #[cfg(any(feature = "http", feature = "cloud"))]
-            AppEvent::DoLoadDownload(download, options) => {
-                // Abandoned: unless the app still keeps it, the file goes with the event.
-                if !self.load_active {
-                    return None;
-                }
-                self.download = Some(download.clone());
-                let temp_path = download.path().to_path_buf();
-                // The URL the user typed, not the temp file it landed in.
-                let display_path = match &self.loading_state {
-                    LoadingState::Loading { file_path, .. } => file_path.clone(),
-                    _ => None,
-                };
-                if let LoadingState::Loading {
-                    file_path,
-                    file_size,
-                    ..
-                } = &self.loading_state
-                {
-                    self.loading_state = LoadingState::Loading {
-                        file_path: file_path.clone(),
-                        file_size: *file_size,
-                        current_phase: "Scanning".to_string(),
-                        progress_percent: 30,
-                    };
-                }
-                // A compressed CSV has to be decompressed before it can be scanned, as it
-                // is when opened from disk; scanning the download directly read `.gz` as
-                // a format and refused it.
-                let compressed_csv = options
-                    .compression
-                    .or_else(|| CompressionFormat::from_extension(&temp_path))
-                    .is_some()
-                    && (options.format == Some(FileFormat::Csv)
-                        || temp_path
-                            .file_stem()
-                            .and_then(|stem| stem.to_str())
-                            .is_some_and(|stem| stem.to_ascii_lowercase().ends_with(".csv")));
-                if compressed_csv {
-                    return Some(AppEvent::DoDecompress {
-                        file: temp_path.clone(),
-                        path: display_path.unwrap_or_else(|| temp_path.clone()),
-                        options: options.clone(),
-                    });
-                }
-                self.spawn_scan_as(
-                    "Scanning...",
-                    vec![temp_path.clone()],
-                    options.clone(),
-                    display_path,
-                )
-            }
-            AppEvent::DoLoadSchema(lf, path, options) => {
-                if !self.load_active {
-                    return None;
-                }
-                // Set "Caching schema" and return so the UI draws this phase before we block in DoLoadSchemaBlocking
-                if let LoadingState::Loading {
-                    file_path,
-                    file_size,
-                    ..
-                } = &self.loading_state
-                {
-                    self.loading_state = LoadingState::Loading {
-                        file_path: file_path.clone(),
-                        file_size: *file_size,
-                        current_phase: "Caching schema".to_string(),
-                        progress_percent: 40,
-                    };
-                }
-                Some(AppEvent::DoLoadSchemaBlocking(
-                    lf.clone(),
-                    path.clone(),
-                    options.clone(),
-                ))
-            }
-            AppEvent::DoLoadSchemaBlocking(lf, path, options) => {
-                if !self.load_active {
-                    return None;
-                }
-                self.debug.schema_load = None;
-                let lf_owned = (**lf).clone();
-                let path_owned = path.clone();
-                let options_owned = options.clone();
-                let cloud = self.app_config.cloud.clone();
-                let runtime = self.runtime.clone();
-                let report = crate::measurements::OpenReport {
-                    progress: self.footer_progress.clone(),
-                    meter: Arc::new(crate::measurements::Meter::default()),
-                    remembered: Some(self.cache.clone()),
-                };
-                self.spawn_job(Job::Load, Some("Caching schema..."), move |_| {
-                    let (state, debug_label) = Self::build_schema_state(
-                        lf_owned,
-                        path_owned.as_deref(),
-                        &options_owned,
-                        &cloud,
-                        &runtime,
-                        &report,
-                    )
-                    .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
-                    Ok(Answer::SchemaRead {
-                        state: Box::new(state),
-                        path: path_owned,
-                        options: Box::new(options_owned),
-                        debug_label: Some(debug_label),
-                    })
-                });
-                None
-            }
-            AppEvent::DoLoadBuffer => {
-                if !self.load_active {
-                    return None;
-                }
-                // No cleanup arm of its own. A collect asked for here is always owed
-                // rather than run — the pump holds the generation for the whole of this
-                // handler
-                // — so `collect_when_the_work_allows` is what finds out there is nothing
-                // to collect, and it is the one that takes the loading screen down. Two
-                // copies of that cleanup, one of them unreachable and less careful about
-                // an export's `loading_state`, is an invitation to fix the wrong one.
-                self.spawn_async_collect(Self::LOADING_BUFFER);
-                None
-            }
-            AppEvent::DoDecompress {
-                file,
-                path,
-                options,
-            } => {
-                if !self.load_active {
-                    return None;
-                }
-                let file = file.clone();
-                let path = path.clone();
-                // Only a CSV comes this way; said, so it can have its header turned off.
-                let options_owned = OpenOptions {
-                    format: options.format.or(Some(FileFormat::Csv)),
-                    ..options.clone()
-                };
-                self.spawn_job(Job::Load, Some("Decompressing..."), move |_| {
-                    let state =
-                        Self::decompressed_csv_state(&file, &options_owned).map_err(|e| {
-                            crate::error_display::user_message_from_report(&e, Some(path.as_path()))
-                        })?;
-                    Ok(Answer::SchemaRead {
-                        state: Box::new(state),
-                        path: Some(path),
-                        options: Box::new(options_owned),
-                        debug_label: Some("decompressed csv".to_string()),
-                    })
-                });
                 None
             }
             AppEvent::Resize(_cols, _rows) => {
@@ -23256,10 +22850,10 @@ impl App {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take();
-                // Whether this is still the dataset on screen. Not `load_active`: going
-                // home leaves the dataset up and clears that flag, and coming straight
-                // back to it must not find it stranded on two footers for the rest of
-                // the session.
+                // Whether this is still the dataset on screen. Not whether an open is in
+                // flight: going home leaves the dataset up and puts any open down, and
+                // coming straight back to it must not find it stranded on two footers
+                // for the rest of the session.
                 if let Some((slot_generation, found)) = taken
                     && slot_generation == self.dataset_generation
                 {
@@ -23305,9 +22899,11 @@ impl App {
                     return Some(event);
                 }
                 let (paths, options) = (paths.clone(), options.clone());
-                // Unleased, as the look is: an answer for a screen the user has left
-                // (Ctrl+O) is thrown away by the generation test, not waited for.
-                self.spawn_job(Job::OpenNamed, Some("Scanning input..."), move |_| {
+                // The open's first phase. Unleased, as the look is: an answer for an open
+                // the user has left (Ctrl+O) is thrown away by the loader, not waited for.
+                self.make_way_for_an_open();
+                let load = self.loading.look_at_paths();
+                self.spawn_job(Job::OpenNamed(load), Some("Scanning input..."), move |_| {
                     if let Some(missing) = Self::missing_named_path(&paths) {
                         return Ok(Answer::NamedPathMissing(missing));
                     }
@@ -23334,11 +22930,11 @@ impl App {
                 // is the whole of what doing this on the event thread cost.
                 let looking = dir.clone();
                 let options = options.clone();
-                self.set_loading_phase(Self::LOOKING_AT_A_DIRECTORY, 5);
-                self.name_what_is_loading(looking.clone());
+                self.make_way_for_an_open();
+                let load = self.loading.look_at_directory(looking.clone());
                 // A newer look replaces an older one.
                 self.jobs
-                    .supersede(|job| matches!(job, Job::LookAtDirectory(_)));
+                    .supersede(|job| matches!(job, Job::LookAtDirectory { .. }));
                 // The same words the loading screen shows, so the control bar and the
                 // screen above it do not name the wait two different ways.
                 // Unleased. A lease exists to make a bump wait for an answer that
@@ -23351,7 +22947,10 @@ impl App {
                 // next dataset behind it is the wait again, wearing a different hat.
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
-                let job = Job::LookAtDirectory(looking.clone());
+                let job = Job::LookAtDirectory {
+                    load,
+                    path: looking.clone(),
+                };
                 self.spawn_job(job, Some(Self::LOOKING_AT_A_DIRECTORY), move |_| {
                     #[cfg(feature = "cloud")]
                     if home::is_object_store_url(&looking) {
@@ -23534,11 +23133,11 @@ impl App {
             }
             AppEvent::ChartExport(request) => {
                 self.busy = true;
-                self.loading_state = LoadingState::Exporting {
+                self.export_progress = Some(ExportProgress {
                     file_path: request.path.clone(),
                     current_phase: "Exporting chart".to_string(),
                     written: None,
-                };
+                });
                 Some(AppEvent::DoChartExport(request.clone()))
             }
             AppEvent::DoChartExport(request) => {
@@ -23547,7 +23146,7 @@ impl App {
                 // there is nothing to export any more: release the app rather than park
                 // an export that no view would ever prepare.
                 if self.input_mode != InputMode::Chart || !self.chart_modal.active {
-                    self.loading_state = LoadingState::Idle;
+                    self.export_progress = None;
                     self.status_message = None;
                     self.busy = false;
                     return None;
@@ -23594,11 +23193,11 @@ impl App {
             AppEvent::Export(request) => {
                 if self.data_table_state.is_some() {
                     self.busy = true;
-                    self.loading_state = LoadingState::Exporting {
+                    self.export_progress = Some(ExportProgress {
                         file_path: request.path.clone(),
                         current_phase: "Preparing export".to_string(),
                         written: None,
-                    };
+                    });
                     // Drawn before the export starts.
                     Some(AppEvent::DoExport(request.clone()))
                 } else {
@@ -23607,7 +23206,7 @@ impl App {
             }
             AppEvent::DoExport(request) => {
                 let Some(state) = &self.data_table_state else {
-                    self.loading_state = LoadingState::Idle;
+                    self.export_progress = None;
                     self.busy = false;
                     return None;
                 };
@@ -23619,11 +23218,11 @@ impl App {
                     crate::export::Route::Streamed => Self::export_write_phase(request),
                     crate::export::Route::Collected => "Collecting data",
                 };
-                self.loading_state = LoadingState::Exporting {
+                self.export_progress = Some(ExportProgress {
                     file_path: request.path.clone(),
                     current_phase: phase.to_string(),
                     written: None,
-                };
+                });
                 let writing = Self::export_write_phase(request);
                 let request = request.clone();
                 self.spawn_job(Job::Export, Some("Exporting..."), move |worker| {
@@ -24031,7 +23630,7 @@ impl App {
         result: Result<(), String>,
     ) {
         self.chart_export_waiting = None;
-        self.loading_state = LoadingState::Idle;
+        self.export_progress = None;
         self.status_message = None;
         self.busy = false;
         match result {
@@ -24245,9 +23844,7 @@ impl App {
             self.query_running = None;
             self.busy = false;
             self.status_message = None;
-            if matches!(self.loading_state, LoadingState::Loading { .. }) {
-                self.loading_state = LoadingState::Idle;
-            }
+            self.first_rows_settled();
         }
     }
 
@@ -24342,14 +23939,9 @@ impl App {
         }
         match progress {
             Progress::ExportWriting { phase, bytes } => {
-                if let LoadingState::Exporting {
-                    current_phase,
-                    written,
-                    ..
-                } = &mut self.loading_state
-                {
-                    *current_phase = phase.to_string();
-                    *written = Some(*bytes);
+                if let Some(export) = self.export_progress.as_mut() {
+                    export.current_phase = phase.to_string();
+                    export.written = Some(*bytes);
                 }
             }
             Progress::QualityPhase(phase) => {
@@ -24373,114 +23965,70 @@ impl App {
         answer: Answer,
     ) -> Option<AppEvent> {
         match answer {
-            Answer::Scanned { lf, path, options } => {
-                // A scan a newer open superseded, or one for a load given up, describes
-                // data nobody is looking at.
-                if !current || !self.load_active {
+            Answer::Load(answer) => {
+                // The open's to judge, by its own identity rather than the generation: an
+                // answer for an open given up or replaced, or for a phase it has left,
+                // changes nothing on screen, and what it carries — a download's file, a
+                // dataset — is dropped with it.
+                let Job::Load(load) = job else {
                     return None;
-                }
-                if let LoadingState::Loading {
-                    file_path,
-                    file_size,
-                    ..
-                } = &self.loading_state
-                {
-                    self.loading_state = LoadingState::Loading {
-                        file_path: file_path.clone(),
-                        file_size: *file_size,
-                        current_phase: "Caching schema".to_string(),
-                        progress_percent: 40,
-                    };
-                }
-                Some(AppEvent::DoLoadSchema(Box::new(lf), path, *options))
-            }
-            Answer::SchemaRead {
-                state,
-                path,
-                options,
-                debug_label,
-            } => {
-                // An abandoned load must not install a dataset under the screen the user
-                // went to.
-                if !current || !self.load_active {
-                    return None;
-                }
-                if self.apply_schema_ready(*state, path, &options, debug_label) {
-                    return None;
-                }
-                Some(AppEvent::DoLoadBuffer)
-            }
-            #[cfg(any(feature = "http", feature = "cloud"))]
-            Answer::RemoteSize(pending) => {
-                if !current || !self.load_active {
-                    return None;
-                }
-                // Nothing runs while the question is up: datui waits on a key, and a
-                // spinner would read as progress. The pending download's hold keeps the
-                // generation meanwhile.
-                self.confirmation_modal
-                    .show(Self::download_confirmation_message(&pending));
-                self.pending_download = Some((*pending, self.hold_the_generation()));
-                None
-            }
-            #[cfg(any(feature = "http", feature = "cloud"))]
-            Answer::Downloaded { download, options } => {
-                // A download nobody is going to use goes with the answer that carried it.
-                if !current || !self.load_active {
-                    return None;
-                }
-                self.download = Some(download.clone());
-                // The URL the load was opened as, which is what opening it again names.
-                if let LoadingState::Loading { file_path, .. } = &self.loading_state {
-                    self.downloaded_from = file_path.clone();
-                }
-                if let LoadingState::Loading {
-                    file_path,
-                    file_size,
-                    ..
-                } = &self.loading_state
-                {
-                    self.loading_state = LoadingState::Loading {
-                        file_path: file_path.clone(),
-                        file_size: *file_size,
-                        current_phase: "Scanning".to_string(),
-                        progress_percent: 30,
-                    };
-                }
-                self.status_message = Some("Scanning...".to_string());
-                Some(AppEvent::DoLoadDownload(download, *options))
+                };
+                let step = self.loading.answered(
+                    load,
+                    *answer,
+                    #[cfg(any(feature = "http", feature = "cloud"))]
+                    &self.jobs,
+                );
+                self.run_load_step(step)
             }
             Answer::NamedPaths {
                 paths,
                 options,
                 directory,
             } => {
-                // Something else took the screen while the paths were looked at.
-                if !current {
+                // The user left the open while its paths were looked at, or another took
+                // its place.
+                let Job::OpenNamed(load) = job else {
+                    return None;
+                };
+                if !self.loading.looking_at_paths(load) {
                     return None;
                 }
+                // Either carries the same open on: it is still starting.
                 Some(match directory {
                     Some(dir) => AppEvent::LookThenOpenDirectory(dir, *options),
                     None => AppEvent::Open(paths, *options),
                 })
             }
-            Answer::NamedPathMissing(path) => current.then_some(AppEvent::NamedPathMissing(path)),
+            Answer::NamedPathMissing(path) => {
+                let Job::OpenNamed(load) = job else {
+                    return None;
+                };
+                if !self.loading.looking_at_paths(load) {
+                    return None;
+                }
+                // The session ends saying so; nothing is opened.
+                if let Some(retired) = self.loading.retire() {
+                    self.put_down_load(retired);
+                }
+                Some(AppEvent::NamedPathMissing(path))
+            }
             Answer::LookedAt {
                 kind,
                 holds,
                 options,
             } => {
                 // The user pressed Ctrl+O and went to the home screen, a newer look
-                // replaced this one, or something else took the screen while this was
+                // replaced this one, or another open took its place while this was
                 // reading. Their choice is the one on screen, and this is the answer to a
                 // question nobody is waiting for.
-                let Job::LookAtDirectory(path) = job else {
+                let Job::LookAtDirectory { load, path } = job else {
                     return None;
                 };
-                if !current {
+                if !self.loading.looking_at_directory(load) {
                     return None;
                 }
-                // An `Open` that follows keeps the wait up: it sets its own phase.
+                // An `Open` that follows carries the same open on.
                 self.open_the_directory_looked_at(path, kind, holds.as_deref(), *options)
             }
             Answer::Kind(found) => {
@@ -24545,7 +24093,7 @@ impl App {
                 // A load-ahead's end is nobody's wait ending: whatever else is under
                 // way meanwhile keeps its spinner and its message.
                 if waited {
-                    self.loading_state = LoadingState::Idle;
+                    self.first_rows_settled();
                     if let Some(RunOrigin::Query(mode)) = ran.map(|run| run.origin)
                         && self.query_prompt_mode() == Some(mode)
                     {
@@ -24694,14 +24242,14 @@ impl App {
             }
             Answer::Exported(path) => {
                 if current {
-                    self.loading_state = LoadingState::Idle;
+                    self.export_progress = None;
                     self.flash_note(format!("Exported to {}", path.display()));
                 }
                 None
             }
             Answer::Copied { payload, message } => {
                 if current {
-                    self.loading_state = LoadingState::Idle;
+                    self.export_progress = None;
                     self.finish_copy(payload, message);
                 }
                 None
@@ -24752,14 +24300,11 @@ impl App {
         panicked: bool,
     ) {
         match job {
-            Job::Load | Job::OpenNamed => {
-                if current && self.awaiting_dataset {
-                    self.load_failed(message);
-                }
-            }
-            Job::LookAtDirectory(_) => {
-                if current {
-                    self.load_failed(message);
+            // Judged by the open, as its answers are: one put down or replaced is not the
+            // open the user is waiting on.
+            Job::Load(load) | Job::OpenNamed(load) | Job::LookAtDirectory { load, .. } => {
+                if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
+                    self.load_failed(failed);
                 }
             }
             Job::Classify(_) => {
@@ -24822,9 +24367,7 @@ impl App {
             }
             Job::Export => {
                 if current {
-                    if matches!(self.loading_state, LoadingState::Exporting { .. }) {
-                        self.loading_state = LoadingState::Idle;
-                    }
+                    self.export_progress = None;
                     self.error_modal.show(message.to_string());
                 }
             }
@@ -24932,25 +24475,21 @@ impl App {
         }
     }
 
-    /// An open failed before its first rows. The dataset already up is the current one
-    /// again, or the home screen is, when that is where the open was chosen.
-    fn load_failed(&mut self, message: &str) {
-        let back_home = self.awaiting_dataset && self.load_from_home;
-        self.load_from_home = false;
-        self.recent_on_install = None;
-        self.opening = None;
-        self.awaiting_dataset = false;
-        self.loading_state = LoadingState::Idle;
+    /// An open failed before its first rows; the loader has put it down. The dataset
+    /// already up is the current one again, or the home screen is, when that is where
+    /// the open was chosen.
+    fn load_failed(&mut self, failed: loading::Failed) {
+        let loading::Failed { message, from_home } = failed;
         self.status_message = None;
         self.busy = false;
         // Kept so the home screen can say why, if that is where dismissing the error
         // lands the user.
-        self.last_load_error = Some(message.to_string());
-        if back_home {
+        self.last_load_error = Some(message.clone());
+        if from_home {
             self.enter_home();
             self.home.status = self.last_load_error.clone();
         }
-        self.error_modal.show(message.to_string());
+        self.error_modal.show(message);
     }
 
     /// The table's rows could not be read. A query or view waiting on them is not
@@ -24987,9 +24526,7 @@ impl App {
                 self.len_count_failed = Some(generation);
             }
         }
-        if matches!(self.loading_state, LoadingState::Loading { .. }) {
-            self.loading_state = LoadingState::Idle;
-        }
+        self.first_rows_settled();
         self.error_modal.show(message.to_string());
     }
 
@@ -25010,7 +24547,7 @@ impl App {
     ) {
         let rows = run.rows;
         let origin = self.roll_back_query_run(run);
-        self.loading_state = LoadingState::Idle;
+        self.first_rows_settled();
         self.status_message = None;
         self.busy = false;
         // Run from the prompt, the reason goes under the query, which stays open to
@@ -25057,10 +24594,8 @@ impl App {
     fn read_after_view_rollback(&mut self) {
         self.busy = false;
         self.status_message = None;
-        if !self.spawn_async_collect(Self::LOADING_BUFFER)
-            && matches!(self.loading_state, LoadingState::Loading { .. })
-        {
-            self.loading_state = LoadingState::Idle;
+        if !self.spawn_async_collect(Self::LOADING_BUFFER) {
+            self.first_rows_settled();
         }
     }
 
@@ -26030,15 +25565,16 @@ impl Widget for &mut App {
         let mut controls = Controls::from_context(row_count.unwrap_or(0), &ctx)
             .with_unicode_throbber(use_unicode_throbber);
 
-        // Derive status message from loading_state or explicit status_message.
-        let status_msg = match &self.loading_state {
+        // Derive the status message from the open in flight, an export, or the explicit
+        // status message. An export started over an open's first rows is the one the
+        // user is waiting on.
+        let load = self
+            .load_shown()
+            .filter(|_| self.awaiting_dataset() || self.export_progress.is_none());
+        let status_msg = match (load, &self.export_progress) {
             // The load is paused on the user; the bar names the modal's keys instead.
-            LoadingState::Loading { .. } if self.awaiting_download_confirmation() => None,
-            LoadingState::Loading {
-                current_phase,
-                progress_percent,
-                ..
-            } => {
+            (Some(_), _) if self.awaiting_download_confirmation() => None,
+            (Some((current_phase, progress_percent, ..)), _) => {
                 let current_phase = self.loading_phase(current_phase);
                 // The percentage is a constant per phase, which was harmless beside a
                 // phase name and is not beside a real fraction: 1,203 of 6,541 is 18%,
@@ -26046,17 +25582,20 @@ impl Widget for &mut App {
                 // number the phase was built from, so a pass that ends mid-frame
                 // cannot leave the count showing with the percentage back beside it.
                 let counting = self.footers_this_frame.is_some();
-                if *progress_percent > 0 && !counting {
+                if progress_percent > 0 && !counting {
                     Some(format!("{}... ({}%)", current_phase, progress_percent))
                 } else {
                     Some(format!("{}...", current_phase))
                 }
             }
-            LoadingState::Exporting {
-                current_phase,
-                written,
-                file_path,
-            } => {
+            (
+                None,
+                Some(ExportProgress {
+                    current_phase,
+                    written,
+                    file_path,
+                }),
+            ) => {
                 let filename = file_path.file_name().and_then(|f| f.to_str()).unwrap_or("");
                 // The count last, so its changing width moves nothing.
                 Some(match written {
@@ -26069,7 +25608,7 @@ impl Widget for &mut App {
                     None => format!("{}...  {}", current_phase, filename),
                 })
             }
-            LoadingState::Idle => {
+            (None, None) => {
                 if self.fetch_too_young_to_mention() {
                     None
                 } else if self.is_busy() {
@@ -26292,11 +25831,12 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        // A download still running stops at its next chunk and removes its partial
-        // file. A finished one is removed as the fields holding it drop. Drop rather
-        // than the end of `run`, because it covers every exit: a normal quit, an
-        // error return, an unwind from a panic, and the Python binding calling `run`
-        // again in the same process.
+        // The dataset's footer pass stops issuing reads. The open in flight is the
+        // loader's, which stops it as it drops: a download still running stops at its
+        // next chunk and removes its partial file, and a finished one is removed as
+        // whatever holds it drops. Drop rather than the end of `run`, because it covers
+        // every exit: a normal quit, an error return, an unwind from a panic, and the
+        // Python binding calling `run` again in the same process.
         self.footer_progress.cancel();
     }
 }
@@ -26688,13 +26228,9 @@ fn run_impl(
     }
 
     // Send initial event and show the first frame immediately.
-    let mut starting_at_home = false;
     match input {
         // No paths: open the home screen instead of loading anything.
-        RunInput::Paths(paths, _) if paths.is_empty() => {
-            app.enter_home();
-            starting_at_home = true;
-        }
+        RunInput::Paths(paths, _) if paths.is_empty() => app.enter_home(),
         RunInput::Paths(paths, opts) => {
             // Whether each path is there, and whether a directory was named, is asked
             // after this frame, on a worker; the frame says what is being opened.
@@ -26710,7 +26246,6 @@ fn run_impl(
         }
         RunInput::Cli(_) => unreachable!("read_settings resolves the command line"),
     }
-    app.busy = !starting_at_home;
     let mut pump = EventPump::new(app, tx, rx);
     pump.handle_first(backlog);
     let end = pump.run(|app| {
@@ -27292,8 +26827,7 @@ mod file_facts_tests {
     fn install(app: &mut App, path: &str) {
         let lf = polars::df!("a" => [1i64, 2, 3]).unwrap().lazy();
         let state = DataTableState::from_lazyframe(lf, &OpenOptions::default()).unwrap();
-        app.load_active = true;
-        app.apply_schema_ready(
+        app.install_for_tests(
             state,
             Some(PathBuf::from(path)),
             &OpenOptions::default(),
@@ -27546,11 +27080,14 @@ mod file_facts_tests {
         assert!(app.file_facts().is_none());
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
 
-        app.opening = Some(vec![
-            PathBuf::from("/nowhere/a.parquet"),
-            PathBuf::from("/nowhere/b.parquet"),
-        ]);
         install(&mut app, "/nowhere/a.parquet");
+        app.opened = Some((
+            vec![
+                PathBuf::from("/nowhere/a.parquet"),
+                PathBuf::from("/nowhere/b.parquet"),
+            ],
+            OpenOptions::default(),
+        ));
         open_resources(&mut app);
         assert!(app.file_facts().is_none());
         let text = screen(&mut app);
@@ -27630,8 +27167,7 @@ mod file_facts_tests {
             ..OpenOptions::default()
         };
         let state = DataTableState::from_lazyframe(lf, &options).unwrap();
-        app.load_active = true;
-        app.apply_schema_ready(state, Some(dir.path().to_path_buf()), &options, None);
+        app.install_for_tests(state, Some(dir.path().to_path_buf()), &options, None);
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.parquet_count_dir(), None);
     }

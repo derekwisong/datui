@@ -1,0 +1,1423 @@
+//! Opening a dataset, from the request to its first rows, and its one owner.
+//!
+//! [`Loader`] holds the open in flight ([`Load`]): where it was asked from, the paths it
+//! was asked for, the phase it is in, what the loading screen says about it, and what
+//! it holds — its stop flag and footer counter, the download it fetched, and the hold
+//! on the generation while the user is asked about a download. The app tells it what
+//! happened (an open asked for, a phase's worker answering or failing, the user's answer
+//! to the download question) and it says what to do next ([`Step`]). The app carries the
+//! step out, runs the workers and installs the dataset. Nothing else keeps a copy of the
+//! open's state.
+//!
+//! - **Identity.** Every load has a [`LoadId`], and the jobs of its phases carry it. An
+//!   answer is taken only while its load is the one in flight and in the phase that asked
+//!   for it: one from an open that was abandoned or replaced installs nothing and changes
+//!   no title, and its payload is dropped with it.
+//! - **Retirement.** Abandoning, replacing or failing a load drops what it holds: its
+//!   stop flag is raised, so a download stops at its next chunk and removes its file and a
+//!   footer pass stops issuing reads; its download is let go; its hold is released.
+//! - **Handover.** The dataset a load installs takes the load's footer counter and its
+//!   download. From then on they are the dataset's: what is left of the load is the read
+//!   of the first rows ([`Phase::FirstRows`]), and abandoning that stops neither.
+//!
+//! The home screen's looks at a path, analyses and charts are not loads, and are not here.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+#[cfg(any(feature = "http", feature = "cloud"))]
+use std::sync::atomic::AtomicBool;
+
+use polars::prelude::LazyFrame;
+
+use crate::schema_union::FooterProgress;
+use crate::widgets::datatable::DataTableState;
+use crate::{CompressionFormat, FileFormat, OpenOptions, source};
+
+#[cfg(any(feature = "http", feature = "cloud"))]
+use crate::download::TempDownload;
+#[cfg(any(feature = "http", feature = "cloud"))]
+use crate::jobs::{Hold, Jobs};
+
+/// Names one open, from the moment it is asked for until it is done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct LoadId(u64);
+
+impl LoadId {
+    /// A load's name for a job a test starts by hand.
+    #[cfg(test)]
+    pub(crate) fn for_tests(n: u64) -> Self {
+        Self(n)
+    }
+}
+
+/// A remote file to download once the user agrees; its size is what the probe found.
+#[cfg(any(feature = "http", feature = "cloud"))]
+#[derive(Clone)]
+pub(crate) enum PendingDownload {
+    #[cfg(feature = "http")]
+    Http {
+        url: String,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
+    #[cfg(feature = "cloud")]
+    S3 {
+        url: String,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
+    #[cfg(feature = "cloud")]
+    Gcs {
+        url: String,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
+    #[cfg(feature = "cloud")]
+    Azure {
+        url: String,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
+}
+
+#[cfg(any(feature = "http", feature = "cloud"))]
+impl PendingDownload {
+    /// The url, the size the probe found, and the open options — the same three
+    /// fields whichever store this came from.
+    pub(crate) fn parts(&self) -> (&str, Option<u64>, &OpenOptions) {
+        match self {
+            #[cfg(feature = "http")]
+            PendingDownload::Http { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::S3 { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::Gcs { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::Azure { url, size, options } => (url, *size, options),
+        }
+    }
+
+    /// Replace the placeholder size with what the probe actually found.
+    pub(crate) fn with_size(mut self, found: Option<u64>) -> Self {
+        match &mut self {
+            #[cfg(feature = "http")]
+            PendingDownload::Http { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::S3 { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::Gcs { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::Azure { size, .. } => *size = found,
+        }
+        self
+    }
+}
+
+/// Paths asked to be opened, and what the screen and the recents need of them. Built
+/// once, when the open is asked for, and not changed after.
+#[derive(Clone)]
+pub(crate) struct OpenRequest {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) options: OpenOptions,
+    /// The first path's size on disk, for the loading screen; 0 for a URL.
+    pub(crate) size: u64,
+    /// The path recorded as a recent if the dataset installs: the first, as named,
+    /// unless it is a local path that is not there.
+    pub(crate) recent: Option<PathBuf>,
+}
+
+impl OpenRequest {
+    /// The request for `paths`, asking the filesystem for the first one's size and
+    /// whether it is there.
+    ///
+    /// Every open records a recent, not just those started from the home screen — most
+    /// datasets are named on the command line, and those are exactly the ones worth
+    /// getting back to. An object-store URL counts doubly: `s3://bucket/warehouse/events`
+    /// is far more painful to retype than any local path, and it is recorded verbatim.
+    /// Kept as named, since what is installed may be a download's temporary copy.
+    pub(crate) fn named(paths: Vec<PathBuf>, options: OpenOptions) -> Self {
+        let first = &paths[0];
+        let local = matches!(source::input_source(first), source::InputSource::Local(_));
+        let size = if local {
+            std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
+        let recent = (!local || first.exists()).then(|| first.clone());
+        Self {
+            paths,
+            options,
+            size,
+            recent,
+        }
+    }
+}
+
+/// Where an open stands. Each phase but the first rows is waiting on one worker, or on
+/// the user.
+pub(crate) enum Phase {
+    /// Asked for, before its first step: the frame between a key and the open it asks
+    /// for, or a startup open before its paths are looked at. Says what its caller says.
+    Starting {
+        label: String,
+        percent: u16,
+    },
+    /// Whether the paths named on the command line are there, and which is a directory.
+    LookingAtPaths,
+    /// What a directory named on the command line holds, before it is opened.
+    LookingAtDirectory,
+    /// The size of a remote file, to put the download to the user.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    CheckingSize,
+    /// Waiting on the user to agree to the download. Holds the generation meanwhile:
+    /// nothing is running, and the open is very much unfinished.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    Confirming {
+        pending: Box<PendingDownload>,
+        _hold: Hold,
+    },
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    Downloading,
+    Decompressing,
+    /// A CSV read with its string columns parsed.
+    ScanningStrings,
+    /// The scan; `downloaded` when it reads a download rather than what was named.
+    Scanning {
+        downloaded: bool,
+    },
+    /// The schema, and whatever the dataset needs before its first rows.
+    ReadingSchema,
+    /// Installed: its first rows are being read. The dataset is the one on screen, and
+    /// what the load held is its now.
+    FirstRows,
+}
+
+impl Phase {
+    /// What the loading screen and the control bar call this phase, and the flat
+    /// percentage the bar shows beside it (0 for none).
+    pub(crate) fn label(&self) -> (&str, u16) {
+        match self {
+            Phase::Starting { label, percent } => (label, *percent),
+            Phase::LookingAtPaths => ("Scanning input", 10),
+            Phase::LookingAtDirectory => (crate::App::LOOKING_AT_A_DIRECTORY, 5),
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Phase::CheckingSize | Phase::Confirming { .. } => ("Checking size", 0),
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Phase::Downloading => ("Downloading", 20),
+            Phase::Decompressing => ("Decompressing", 30),
+            Phase::ScanningStrings => ("Scanning string columns", 55),
+            Phase::Scanning { downloaded: false } => ("Scanning input", 10),
+            Phase::Scanning { downloaded: true } => ("Scanning", 30),
+            Phase::ReadingSchema => ("Caching schema", 40),
+            Phase::FirstRows => ("Loading buffer", 70),
+        }
+    }
+
+    /// Whether the open has not started any work of its own yet, so an open asked for
+    /// now carries it on rather than replacing it: the `Open` a key or a look returns.
+    fn starting(&self) -> bool {
+        matches!(
+            self,
+            Phase::Starting { .. } | Phase::LookingAtPaths | Phase::LookingAtDirectory
+        )
+    }
+}
+
+/// A download a load fetched, and the URL it was fetched from.
+#[cfg(any(feature = "http", feature = "cloud"))]
+#[derive(Clone)]
+struct Fetched {
+    url: PathBuf,
+    file: TempDownload,
+}
+
+/// The open in flight.
+pub(crate) struct Load {
+    id: LoadId,
+    /// Chosen on the home screen, which is where its failure is reported: the dataset
+    /// left over from before is not what the user was looking at when they chose.
+    from_home: bool,
+    phase: Phase,
+    /// What the screen names: the path as asked for (a URL, not the temporary file it
+    /// landed in), and its size on disk.
+    path: Option<PathBuf>,
+    size: u64,
+    /// The paths asked for, which `H` opens again; `None` for a frame handed over.
+    paths: Option<Vec<PathBuf>>,
+    recent: Option<PathBuf>,
+    /// This load's footer counter, and through it its stop flag.
+    progress: Arc<FooterProgress>,
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    download: Option<Fetched>,
+}
+
+impl Load {
+    pub(crate) fn phase(&self) -> &Phase {
+        &self.phase
+    }
+
+    /// The path the screen names, if it names one.
+    pub(crate) fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The size the screen shows beside the path.
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+}
+
+/// What the app does next for the open.
+pub(crate) enum Step {
+    /// Nothing: the answer was for an open nobody is waiting on, or the phase waits.
+    Nothing,
+    /// The open cannot be read at all, and the session ends saying why.
+    Crash(String),
+    /// Find the remote file's size.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    Probe(PendingDownload),
+    /// Ask the user whether to download it.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    Ask(PendingDownload),
+    /// Download it; `stop` is the load's stop flag.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    Download {
+        pending: PendingDownload,
+        stop: Arc<AtomicBool>,
+    },
+    /// Decompress the CSV in `file`; `path` names it on screen and in errors.
+    Decompress {
+        file: PathBuf,
+        path: PathBuf,
+        options: OpenOptions,
+    },
+    /// Scan `paths`, saying `status` on the control bar; `display` names the dataset when
+    /// what is scanned is a download.
+    Scan {
+        paths: Vec<PathBuf>,
+        options: OpenOptions,
+        display: Option<PathBuf>,
+        status: &'static str,
+    },
+    /// Read the scan's schema, reporting footers to `progress`.
+    ReadSchema {
+        lf: Box<LazyFrame>,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+        progress: Arc<FooterProgress>,
+    },
+    /// Install the dataset, then read its first rows.
+    Install(Box<Loaded>),
+    /// The open failed. Its load is retired.
+    Failed(Failed),
+}
+
+/// A failed open: why, and whether it was chosen on the home screen.
+#[derive(Debug)]
+pub(crate) struct Failed {
+    pub(crate) message: String,
+    pub(crate) from_home: bool,
+}
+
+/// A dataset read and ready to install, with everything the load hands over to it.
+pub(crate) struct Loaded {
+    pub(crate) state: DataTableState,
+    /// What names the dataset: the path or URL asked for.
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) options: OpenOptions,
+    pub(crate) debug_label: Option<String>,
+    /// The paths asked for, which `H` opens again; `None` for a frame handed over.
+    pub(crate) paths: Option<Vec<PathBuf>>,
+    /// Recorded as a recent once installed.
+    pub(crate) recent: Option<PathBuf>,
+    pub(crate) from_home: bool,
+    /// The footer counter the dataset's own pass reports to from now on.
+    pub(crate) footers: Arc<FooterProgress>,
+}
+
+/// What a phase's worker found.
+pub(crate) enum LoadAnswer {
+    /// The scan's frame; `path` names the dataset.
+    Scanned {
+        lf: Box<LazyFrame>,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+    },
+    /// The dataset, its schema read.
+    SchemaRead {
+        state: Box<DataTableState>,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+        debug_label: Option<String>,
+    },
+    /// The remote file's size.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    Sized(PendingDownload),
+    /// The remote file, downloaded. Dropped unused, it removes the file.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    Downloaded {
+        download: TempDownload,
+        options: OpenOptions,
+    },
+}
+
+/// A load put down before it finished: which, and what of it the app has to put down.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Retired {
+    pub(crate) id: LoadId,
+    /// It was asking the user about a download: the question goes with it.
+    pub(crate) asking: bool,
+}
+
+/// The owner of the open in flight, and of the last download, kept to be read again.
+#[derive(Default)]
+pub(crate) struct Loader {
+    next_id: u64,
+    load: Option<Load>,
+    /// The last remote file downloaded by an open that installed, kept so opening the
+    /// same URL again reads it rather than downloading it again: how `H` re-reads a
+    /// download. Let go when different data is opened; the dataset scanning it holds
+    /// the file too, so it is removed once both have let go.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    kept: Option<Fetched>,
+}
+
+impl Loader {
+    /// The open in flight, if there is one.
+    pub(crate) fn current(&self) -> Option<&Load> {
+        self.load.as_ref()
+    }
+
+    pub(crate) fn id(&self) -> Option<LoadId> {
+        self.load.as_ref().map(|load| load.id)
+    }
+
+    fn current_in(&self, id: LoadId, phase: impl Fn(&Phase) -> bool) -> bool {
+        self.load
+            .as_ref()
+            .is_some_and(|load| load.id == id && phase(&load.phase))
+    }
+
+    /// Whether `id` is still looking at the paths named on the command line.
+    pub(crate) fn looking_at_paths(&self, id: LoadId) -> bool {
+        self.current_in(id, |phase| matches!(phase, Phase::LookingAtPaths))
+    }
+
+    /// Whether `id` is still looking at a directory named on the command line.
+    pub(crate) fn looking_at_directory(&self, id: LoadId) -> bool {
+        self.current_in(id, |phase| matches!(phase, Phase::LookingAtDirectory))
+    }
+
+    /// Whether an open is on its way and its dataset is not installed yet. Whatever
+    /// table is up meanwhile belongs to the dataset being replaced.
+    pub(crate) fn awaiting_dataset(&self) -> bool {
+        self.load
+            .as_ref()
+            .is_some_and(|load| !matches!(load.phase, Phase::FirstRows))
+    }
+
+    /// Whether the user waits on the open: keys are held while it works. Not while it
+    /// asks about a download, which the question's own keys answer, and not once the
+    /// dataset is up, when the read of its first rows holds them.
+    pub(crate) fn waits(&self) -> bool {
+        self.awaiting_dataset() && !self.asking()
+    }
+
+    /// Whether the open is waiting on the user to agree to a download.
+    pub(crate) fn asking(&self) -> bool {
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        {
+            self.load
+                .as_ref()
+                .is_some_and(|load| matches!(load.phase, Phase::Confirming { .. }))
+        }
+        #[cfg(not(any(feature = "http", feature = "cloud")))]
+        {
+            false
+        }
+    }
+
+    /// The footer counter of the open that has not installed yet: what the loading
+    /// screen counts.
+    pub(crate) fn progress(&self) -> Option<&Arc<FooterProgress>> {
+        self.load
+            .as_ref()
+            .filter(|load| !matches!(load.phase, Phase::FirstRows))
+            .map(|load| &load.progress)
+    }
+
+    /// Put down the open in flight, if there is one, and what it holds. Its stop flag is
+    /// raised unless its dataset is installed, when the counter is the dataset's.
+    pub(crate) fn retire(&mut self) -> Option<Retired> {
+        let load = self.load.take()?;
+        if !matches!(load.phase, Phase::FirstRows) {
+            load.progress.cancel();
+        }
+        Some(Retired {
+            id: load.id,
+            asking: {
+                #[cfg(any(feature = "http", feature = "cloud"))]
+                {
+                    matches!(load.phase, Phase::Confirming { .. })
+                }
+                #[cfg(not(any(feature = "http", feature = "cloud")))]
+                {
+                    false
+                }
+            },
+        })
+    }
+
+    /// Make way for an open being asked for: the load in flight is retired, unless it
+    /// has not started work of its own yet, in which case the open carries it on.
+    pub(crate) fn make_way(&mut self) -> Option<Retired> {
+        if self.load.as_ref().is_some_and(|load| load.phase.starting()) {
+            return None;
+        }
+        self.retire()
+    }
+
+    /// The load an open being asked for belongs to: the starting one, or a new one.
+    fn start(&mut self, from_home: bool) -> &mut Load {
+        // A caller that did not make way would leave a load doing work behind with its
+        // stop flag down; retired here so its download and its footer pass stop.
+        if self
+            .load
+            .as_ref()
+            .is_some_and(|load| !load.phase.starting())
+        {
+            debug_assert!(false, "an open started without making way");
+            self.retire();
+        }
+        if self.load.is_none() {
+            self.next_id = self.next_id.wrapping_add(1);
+            self.load = Some(Load {
+                id: LoadId(self.next_id),
+                from_home,
+                phase: Phase::Starting {
+                    label: "Loading".to_string(),
+                    percent: 0,
+                },
+                path: None,
+                size: 0,
+                paths: None,
+                recent: None,
+                progress: Arc::default(),
+                #[cfg(any(feature = "http", feature = "cloud"))]
+                download: None,
+            });
+        }
+        let load = self.load.as_mut().expect("started just above");
+        load.from_home |= from_home;
+        load
+    }
+
+    /// An open is on its way, asked for from the home screen when `from_home`: the
+    /// screen is handed over to it now, saying `label`.
+    pub(crate) fn announce(&mut self, from_home: bool, label: String, percent: u16) -> LoadId {
+        let load = self.start(from_home);
+        load.phase = Phase::Starting { label, percent };
+        load.id
+    }
+
+    /// An open whose dataset is up and whose first rows are being read, with nothing
+    /// running: for tests of what ends that wait.
+    #[cfg(test)]
+    pub(crate) fn first_rows_for_tests(&mut self) {
+        self.retire();
+        self.start(false).phase = Phase::FirstRows;
+    }
+
+    /// Give the starting load's path a size, as an open asking the filesystem does.
+    #[cfg(test)]
+    pub(crate) fn size_for_tests(&mut self, size: u64) {
+        if let Some(load) = self.load.as_mut() {
+            load.size = size;
+        }
+    }
+
+    /// Put `path` on the loading screen, so a wait says what it is waiting for.
+    pub(crate) fn name(&mut self, path: PathBuf) {
+        if let Some(load) = self
+            .load
+            .as_mut()
+            .filter(|load| !matches!(load.phase, Phase::FirstRows))
+        {
+            load.path = Some(path);
+        }
+    }
+
+    /// The paths named on the command line are looked at before they are opened.
+    pub(crate) fn look_at_paths(&mut self) -> LoadId {
+        let load = self.start(false);
+        load.phase = Phase::LookingAtPaths;
+        load.id
+    }
+
+    /// A directory named on the command line is looked at before it is opened.
+    pub(crate) fn look_at_directory(&mut self, dir: PathBuf) -> LoadId {
+        let load = self.start(false);
+        load.phase = Phase::LookingAtDirectory;
+        load.path = Some(dir);
+        load.id
+    }
+
+    /// Open `request`: carry on the starting load, or begin one. The last download is
+    /// let go unless this opens it again.
+    pub(crate) fn open(&mut self, request: OpenRequest) -> Step {
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        if !(request.paths.len() == 1
+            && self
+                .kept
+                .as_ref()
+                .is_some_and(|kept| kept.url == request.paths[0]))
+        {
+            self.kept = None;
+        }
+        let OpenRequest {
+            paths,
+            options,
+            size,
+            recent,
+        } = request;
+        let load = self.start(false);
+        load.path = Some(paths[0].clone());
+        load.size = size;
+        load.recent = recent;
+        load.paths = Some(paths.clone());
+        self.first_step(paths, options)
+    }
+
+    /// Open a frame handed over (the Python binding's): only its schema is read.
+    pub(crate) fn open_frame(&mut self, lf: LazyFrame, options: OpenOptions) -> Step {
+        let load = self.start(false);
+        load.path = None;
+        load.size = 0;
+        load.paths = None;
+        load.recent = None;
+        load.phase = Phase::ReadingSchema;
+        Step::ReadSchema {
+            lf: Box::new(lf),
+            path: None,
+            options,
+            progress: load.progress.clone(),
+        }
+    }
+
+    /// What the open of `paths` does first: decompress, download, or scan.
+    fn first_step(&mut self, paths: Vec<PathBuf>, options: OpenOptions) -> Step {
+        let first = paths[0].clone();
+        let src = source::input_source(&first);
+        if paths.len() > 1 {
+            let only_one = match &src {
+                source::InputSource::S3(_) => {
+                    Some("Only one S3 URL at a time. Open a single s3:// path.")
+                }
+                source::InputSource::Gcs(_) => {
+                    Some("Only one GCS URL at a time. Open a single gs:// path.")
+                }
+                source::InputSource::Azure(_) => {
+                    Some("Only one Azure URL at a time. Open a single abfss:// path.")
+                }
+                source::InputSource::Http(_) => {
+                    Some("Only one HTTP/HTTPS URL at a time. Open a single URL.")
+                }
+                source::InputSource::Local(_) => None,
+            };
+            if let Some(message) = only_one {
+                self.load = None;
+                return Step::Crash(message.to_string());
+            }
+        }
+        let load = self.load.as_mut().expect("an open has a load");
+        let compression = options
+            .compression
+            .or_else(|| CompressionFormat::from_extension(&first));
+        let csv = is_csv(&first, &options);
+        if matches!(src, source::InputSource::Local(_))
+            && paths.len() == 1
+            && compression.is_some()
+            && csv
+        {
+            load.phase = Phase::Decompressing;
+            return Step::Decompress {
+                file: first.clone(),
+                path: first,
+                options,
+            };
+        }
+        // Opened again, and downloaded already: read the copy on hand.
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        if let Some(kept) = self
+            .kept
+            .clone()
+            .filter(|kept| paths.len() == 1 && kept.file.path().exists())
+        {
+            return self.read_download(kept, options);
+        }
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        if let Some(pending) = remote_download(&src, &options) {
+            let load = self.load.as_mut().expect("an open has a load");
+            load.phase = Phase::CheckingSize;
+            return Step::Probe(pending);
+        }
+        let load = self.load.as_mut().expect("an open has a load");
+        if paths.len() == 1 && csv && options.parse_strings.is_some() {
+            load.phase = Phase::ScanningStrings;
+            return Step::Scan {
+                paths,
+                options,
+                display: None,
+                status: "Scanning string columns...",
+            };
+        }
+        load.phase = Phase::Scanning { downloaded: false };
+        Step::Scan {
+            paths,
+            options,
+            display: None,
+            status: "Scanning input...",
+        }
+    }
+
+    /// Read a download: decompress it first if it is a compressed CSV, else scan it.
+    /// Either way the dataset is named by the URL, not the temporary file.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    fn read_download(&mut self, fetched: Fetched, options: OpenOptions) -> Step {
+        let load = self.load.as_mut().expect("a download read has a load");
+        let file = fetched.file.path().to_path_buf();
+        let url = fetched.url.clone();
+        load.download = Some(fetched);
+        // A compressed CSV has to be decompressed before it can be scanned, as it is
+        // when opened from disk; scanning the download directly read `.gz` as a format
+        // and refused it.
+        let compressed_csv = options
+            .compression
+            .or_else(|| CompressionFormat::from_extension(&file))
+            .is_some()
+            && (options.format == Some(FileFormat::Csv)
+                || file
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| stem.to_ascii_lowercase().ends_with(".csv")));
+        if compressed_csv {
+            load.phase = Phase::Decompressing;
+            return Step::Decompress {
+                file,
+                path: url,
+                options,
+            };
+        }
+        load.phase = Phase::Scanning { downloaded: true };
+        Step::Scan {
+            paths: vec![file],
+            options,
+            display: Some(url),
+            status: "Scanning...",
+        }
+    }
+
+    /// A worker of `id` answered. Taken only while `id` is in flight and in the phase
+    /// that asked; otherwise the answer, and whatever it carries, is dropped.
+    pub(crate) fn answered(
+        &mut self,
+        id: LoadId,
+        answer: LoadAnswer,
+        #[cfg(any(feature = "http", feature = "cloud"))] jobs: &Jobs,
+    ) -> Step {
+        let Some(load) = self.load.as_mut().filter(|load| load.id == id) else {
+            return Step::Nothing;
+        };
+        match (answer, &load.phase) {
+            (
+                LoadAnswer::Scanned { lf, path, options },
+                Phase::Scanning { .. } | Phase::ScanningStrings,
+            ) => {
+                load.phase = Phase::ReadingSchema;
+                Step::ReadSchema {
+                    lf,
+                    path,
+                    options,
+                    progress: load.progress.clone(),
+                }
+            }
+            (
+                LoadAnswer::SchemaRead {
+                    state,
+                    path,
+                    options,
+                    debug_label,
+                },
+                Phase::ReadingSchema | Phase::Decompressing,
+            ) => {
+                load.phase = Phase::FirstRows;
+                let state = *state;
+                // A downloaded file lives as long as the dataset scanning it, and is
+                // kept to be read again.
+                #[cfg(any(feature = "http", feature = "cloud"))]
+                let state = {
+                    let mut state = state;
+                    if let Some(fetched) = load.download.take() {
+                        state.hold_download(Some(fetched.file.clone()));
+                        self.kept = Some(fetched);
+                    }
+                    state
+                };
+                let load = self.load.as_ref().expect("installing its load");
+                Step::Install(Box::new(Loaded {
+                    state,
+                    path,
+                    options,
+                    debug_label,
+                    paths: load.paths.clone(),
+                    recent: load.recent.clone(),
+                    from_home: load.from_home,
+                    footers: load.progress.clone(),
+                }))
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            (LoadAnswer::Sized(pending), Phase::CheckingSize) => {
+                load.phase = Phase::Confirming {
+                    pending: Box::new(pending.clone()),
+                    _hold: jobs.hold(),
+                };
+                Step::Ask(pending)
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            (LoadAnswer::Downloaded { download, options }, Phase::Downloading) => {
+                let fetched = Fetched {
+                    // The URL the open was asked for, which is what opening it again names.
+                    url: load.path.clone().unwrap_or_default(),
+                    file: download,
+                };
+                self.read_download(fetched, options)
+            }
+            _ => Step::Nothing,
+        }
+    }
+
+    /// A worker of `id` failed. The open ends there, with its reason, unless it is no
+    /// longer the one in flight or its dataset is already up.
+    pub(crate) fn failed(&mut self, id: LoadId, message: &str) -> Step {
+        let Some(load) = self.load.as_ref().filter(|load| load.id == id) else {
+            return Step::Nothing;
+        };
+        if matches!(load.phase, Phase::FirstRows) {
+            return Step::Nothing;
+        }
+        let from_home = load.from_home;
+        self.retire();
+        Step::Failed(Failed {
+            message: message.to_string(),
+            from_home,
+        })
+    }
+
+    /// The user agreed to the download: let go of the hold and fetch it.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    pub(crate) fn confirmed(&mut self) -> Step {
+        let Some(load) = self
+            .load
+            .as_mut()
+            .filter(|load| matches!(load.phase, Phase::Confirming { .. }))
+        else {
+            return Step::Nothing;
+        };
+        // The hold goes as the phase changes: the download job the caller starts next
+        // holds the generation before anything else can look at it.
+        let Phase::Confirming { pending, .. } =
+            std::mem::replace(&mut load.phase, Phase::Downloading)
+        else {
+            unreachable!("matched just above");
+        };
+        Step::Download {
+            pending: *pending,
+            stop: load.progress.cancel_flag(),
+        }
+    }
+
+    /// The first rows of the installed dataset are on screen, or will not be read: the
+    /// open is done.
+    pub(crate) fn first_rows_settled(&mut self) {
+        if self
+            .load
+            .as_ref()
+            .is_some_and(|load| matches!(load.phase, Phase::FirstRows))
+        {
+            self.load = None;
+        }
+    }
+}
+
+impl Drop for Loader {
+    /// A download still running stops at its next chunk and removes its partial file.
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
+
+/// Whether `path` is read as CSV.
+fn is_csv(path: &Path, options: &OpenOptions) -> bool {
+    options.format == Some(FileFormat::Csv)
+        || path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| {
+                stem.ends_with(".csv")
+                    || path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("csv"))
+            })
+}
+
+/// The download a remote source needs before it can be read, if it needs one: an HTTP
+/// file always, and one object of a store that cannot be scanned in place.
+#[cfg(any(feature = "http", feature = "cloud"))]
+fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
+    let options = options.clone();
+    match src {
+        #[cfg(feature = "http")]
+        source::InputSource::Http(url) => Some(PendingDownload::Http {
+            url: url.clone(),
+            size: None,
+            options,
+        }),
+        #[cfg(feature = "cloud")]
+        source::InputSource::S3(url) => {
+            let full = format!("s3://{url}");
+            should_download(&full).then_some(PendingDownload::S3 {
+                url: full,
+                size: None,
+                options,
+            })
+        }
+        #[cfg(feature = "cloud")]
+        source::InputSource::Gcs(url) => {
+            let full = format!("gs://{url}");
+            should_download(&full).then_some(PendingDownload::Gcs {
+                url: full,
+                size: None,
+                options,
+            })
+        }
+        #[cfg(feature = "cloud")]
+        source::InputSource::Azure(url) => should_download(url).then(|| PendingDownload::Azure {
+            url: url.clone(),
+            size: None,
+            options,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "cloud")]
+fn should_download(url: &str) -> bool {
+    let (_, ext) = source::url_path_extension(url);
+    source::cloud_path_should_download(ext.as_deref(), source::is_prefix_or_glob(url))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use polars::prelude::IntoLazy;
+
+    fn frame() -> LazyFrame {
+        polars::df!("a" => [1i32, 2, 3]).unwrap().lazy()
+    }
+
+    fn state() -> Box<DataTableState> {
+        Box::new(DataTableState::from_lazyframe(frame(), &OpenOptions::default()).unwrap())
+    }
+
+    fn request(path: &str) -> OpenRequest {
+        OpenRequest {
+            paths: vec![PathBuf::from(path)],
+            options: OpenOptions::default(),
+            size: 7,
+            recent: Some(PathBuf::from(path)),
+        }
+    }
+
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    fn jobs() -> Jobs {
+        Jobs::new(std::sync::mpsc::channel().0)
+    }
+
+    /// `answered`, with the job owner the download question needs.
+    fn answer(loader: &mut Loader, id: LoadId, answer: LoadAnswer) -> Step {
+        loader.answered(
+            id,
+            answer,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            &jobs(),
+        )
+    }
+
+    fn scanned(path: &str) -> LoadAnswer {
+        LoadAnswer::Scanned {
+            lf: Box::new(frame()),
+            path: Some(PathBuf::from(path)),
+            options: OpenOptions::default(),
+        }
+    }
+
+    fn schema_read(path: &str) -> LoadAnswer {
+        LoadAnswer::SchemaRead {
+            state: state(),
+            path: Some(PathBuf::from(path)),
+            options: OpenOptions::default(),
+            debug_label: None,
+        }
+    }
+
+    /// A local file goes scan, schema, install, first rows, done; each step says what to
+    /// run, and the screen says each phase in turn.
+    #[test]
+    fn a_local_open_runs_its_phases_in_order() {
+        let mut loader = Loader::default();
+        let step = loader.open(request("data.parquet"));
+        let id = loader.id().expect("a load");
+        assert!(matches!(
+            step,
+            Step::Scan { ref paths, display: None, status: "Scanning input...", .. }
+                if paths == &[PathBuf::from("data.parquet")]
+        ));
+        let load = loader.current().unwrap();
+        assert_eq!(load.phase().label(), ("Scanning input", 10));
+        assert_eq!(load.path(), Some(Path::new("data.parquet")));
+        assert_eq!(load.size(), 7);
+        assert!(loader.awaiting_dataset() && loader.waits());
+
+        let Step::ReadSchema { progress, .. } = answer(&mut loader, id, scanned("data.parquet"))
+        else {
+            panic!("the scan goes on to the schema");
+        };
+        assert!(Arc::ptr_eq(&progress, loader.progress().unwrap()));
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Caching schema", 40)
+        );
+
+        let Step::Install(loaded) = answer(&mut loader, id, schema_read("data.parquet")) else {
+            panic!("the schema goes on to the install");
+        };
+        assert_eq!(loaded.path.as_deref(), Some(Path::new("data.parquet")));
+        assert_eq!(
+            loaded.paths.as_deref(),
+            Some(&[PathBuf::from("data.parquet")][..])
+        );
+        assert_eq!(loaded.recent.as_deref(), Some(Path::new("data.parquet")));
+        assert!(!loaded.from_home);
+        assert!(
+            Arc::ptr_eq(&loaded.footers, &progress),
+            "the dataset takes the load's footer counter"
+        );
+        assert!(!loader.awaiting_dataset(), "the dataset is up");
+        assert!(!loader.waits(), "the read of its rows holds the keys");
+        assert!(loader.progress().is_none(), "the counter is the dataset's");
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Loading buffer", 70)
+        );
+
+        loader.first_rows_settled();
+        assert!(loader.current().is_none(), "the open is done");
+    }
+
+    /// An answer from a load that is no longer in flight, or from a phase it has left,
+    /// changes nothing: no install, no new phase, no title.
+    #[test]
+    fn an_old_load_s_answers_change_nothing() {
+        let mut loader = Loader::default();
+        let _ = loader.open(request("first.csv"));
+        let first = loader.id().unwrap();
+        assert!(loader.make_way().is_some(), "the first is doing work");
+        let _ = loader.open(request("second.csv"));
+        let second = loader.id().unwrap();
+        assert_ne!(first, second);
+
+        assert!(matches!(
+            answer(&mut loader, first, scanned("first.csv")),
+            Step::Nothing
+        ));
+        assert!(matches!(
+            answer(&mut loader, first, schema_read("first.csv")),
+            Step::Nothing
+        ));
+        assert!(matches!(loader.failed(first, "gone"), Step::Nothing));
+        assert_eq!(loader.id(), Some(second));
+        let load = loader.current().unwrap();
+        assert_eq!(load.path(), Some(Path::new("second.csv")));
+        assert_eq!(load.phase().label(), ("Scanning input", 10));
+
+        // An answer for a phase the load is not in is dropped too: a schema before the
+        // scan has answered.
+        assert!(matches!(
+            answer(&mut loader, second, schema_read("second.csv")),
+            Step::Nothing
+        ));
+        assert!(loader.awaiting_dataset());
+    }
+
+    /// Opening something new replaces a load doing work, and stops it: its footer pass
+    /// and its download read the stop flag.
+    #[test]
+    fn a_superseding_open_stops_the_one_it_replaces() {
+        let mut loader = Loader::default();
+        let _ = loader.open(request("big"));
+        let id = loader.id().unwrap();
+        let Step::ReadSchema { progress, .. } = answer(&mut loader, id, scanned("big")) else {
+            panic!("reading the schema");
+        };
+        let retired = loader.make_way().expect("the load is replaced");
+        assert!(!retired.asking);
+        assert!(progress.is_cancelled(), "its pass stops issuing reads");
+        assert!(loader.current().is_none());
+    }
+
+    /// The frame between a key and its open, and the look at named paths, are carried on
+    /// by the open they lead to: one load, one identity, and the origin it was asked from.
+    #[test]
+    fn an_open_carries_on_the_load_that_announced_it() {
+        let mut loader = Loader::default();
+        let announced = loader.announce(true, "Scanning input".to_string(), 10);
+        loader.name(PathBuf::from("chosen.csv"));
+        assert_eq!(
+            loader.current().unwrap().path(),
+            Some(Path::new("chosen.csv"))
+        );
+        assert!(loader.waits(), "the keys wait from the key that asked");
+        assert!(loader.make_way().is_none(), "nothing to replace yet");
+        let _ = loader.open(request("chosen.csv"));
+        assert_eq!(loader.id(), Some(announced));
+
+        let Step::Install(loaded) = ({
+            let _ = answer(&mut loader, announced, scanned("chosen.csv"));
+            answer(&mut loader, announced, schema_read("chosen.csv"))
+        }) else {
+            panic!("installs");
+        };
+        assert!(loaded.from_home, "a failure would be reported at home");
+
+        // A look at named paths, then the directory it found, then the open of it.
+        let mut loader = Loader::default();
+        let look = loader.look_at_paths();
+        assert!(loader.looking_at_paths(look));
+        assert!(loader.make_way().is_none());
+        let directory = loader.look_at_directory(PathBuf::from("dir"));
+        assert_eq!(directory, look);
+        assert!(!loader.looking_at_paths(look), "that look is answered");
+        assert!(loader.looking_at_directory(look));
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            (crate::App::LOOKING_AT_A_DIRECTORY, 5)
+        );
+        let _ = loader.open(request("dir"));
+        assert_eq!(loader.id(), Some(look));
+        assert!(
+            !loader.looking_at_directory(look),
+            "nor is a late look taken"
+        );
+    }
+
+    /// A worker's failure ends its load with the reason and where it was asked from, and
+    /// retires it; one from a load already installed, or gone, is not the open's.
+    #[test]
+    fn a_failed_phase_retires_its_load() {
+        let mut loader = Loader::default();
+        let id = loader.announce(true, "Scanning input".to_string(), 10);
+        let _ = loader.open(request("broken.parquet"));
+        let Step::ReadSchema { progress, .. } = answer(&mut loader, id, scanned("broken.parquet"))
+        else {
+            panic!("reading the schema");
+        };
+        let Step::Failed(failed) = loader.failed(id, "not parquet") else {
+            panic!("the open fails");
+        };
+        assert_eq!(failed.message, "not parquet");
+        assert!(failed.from_home);
+        assert!(loader.current().is_none());
+        assert!(progress.is_cancelled());
+        assert!(matches!(loader.failed(id, "again"), Step::Nothing));
+
+        let id = {
+            let _ = loader.open(request("good.parquet"));
+            loader.id().unwrap()
+        };
+        let _ = answer(&mut loader, id, scanned("good.parquet"));
+        let Step::Install(loaded) = answer(&mut loader, id, schema_read("good.parquet")) else {
+            panic!("installs");
+        };
+        assert!(
+            matches!(loader.failed(id, "the rows"), Step::Nothing),
+            "the rows' failure is the table's"
+        );
+        assert!(!loaded.footers.is_cancelled());
+        assert!(
+            loader.retire().is_some(),
+            "going home puts down the read of the first rows"
+        );
+        assert!(
+            !loaded.footers.is_cancelled(),
+            "but not the dataset's footer pass"
+        );
+    }
+
+    /// Several URLs at once cannot be read, and say so.
+    #[test]
+    fn several_urls_end_the_session() {
+        let mut loader = Loader::default();
+        let step = loader.open(OpenRequest {
+            paths: vec![PathBuf::from("s3://a/x.csv"), PathBuf::from("s3://a/y.csv")],
+            options: OpenOptions::default(),
+            size: 0,
+            recent: None,
+        });
+        assert!(matches!(step, Step::Crash(message) if message.contains("S3")));
+        assert!(loader.current().is_none());
+    }
+
+    /// A local compressed CSV is decompressed rather than scanned; a CSV read with its
+    /// strings parsed scans saying so; a frame handed over goes straight to its schema
+    /// and has no path to open again.
+    #[test]
+    fn the_first_step_follows_what_was_asked_for() {
+        let mut loader = Loader::default();
+        assert!(matches!(
+            loader.open(request("logs.csv.gz")),
+            Step::Decompress { ref file, ref path, .. }
+                if file == Path::new("logs.csv.gz") && path == Path::new("logs.csv.gz")
+        ));
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Decompressing", 30)
+        );
+        let id = loader.id().unwrap();
+        assert!(matches!(
+            answer(&mut loader, id, schema_read("logs.csv.gz")),
+            Step::Install(_)
+        ));
+
+        let mut loader = Loader::default();
+        let mut parsed = request("table.csv");
+        parsed.options.parse_strings = Some(crate::ParseStringsTarget::All);
+        assert!(matches!(
+            loader.open(parsed),
+            Step::Scan {
+                status: "Scanning string columns...",
+                ..
+            }
+        ));
+
+        let mut loader = Loader::default();
+        let Step::ReadSchema { path: None, .. } =
+            loader.open_frame(frame(), OpenOptions::default())
+        else {
+            panic!("a frame's schema is read");
+        };
+        let id = loader.id().unwrap();
+        let Step::Install(loaded) = answer(
+            &mut loader,
+            id,
+            LoadAnswer::SchemaRead {
+                state: state(),
+                path: None,
+                options: OpenOptions::default(),
+                debug_label: None,
+            },
+        ) else {
+            panic!("installs");
+        };
+        assert!(loaded.paths.is_none() && loaded.recent.is_none());
+    }
+
+    #[cfg(feature = "http")]
+    fn downloaded(dir: &Path, body: &str, extension: &str) -> TempDownload {
+        use std::io::Write;
+        let mut file = TempDownload::create(Some(dir), Some(extension)).unwrap();
+        file.write_all(body.as_bytes()).unwrap();
+        TempDownload::keep(file)
+    }
+
+    /// A remote file is sized, put to the user, downloaded, then scanned under its URL;
+    /// the installed dataset holds the file, and opening the URL again reads that copy
+    /// rather than asking again.
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_remote_file_is_asked_about_then_downloaded_and_kept() {
+        let url = "https://example.com/data.csv";
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = jobs();
+        let mut loader = Loader::default();
+        let Step::Probe(pending) = loader.open(request(url)) else {
+            panic!("the size is asked first");
+        };
+        let id = loader.id().unwrap();
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Checking size", 0)
+        );
+
+        let sized = pending.with_size(Some(42));
+        assert!(matches!(
+            loader.answered(id, LoadAnswer::Sized(sized), &jobs),
+            Step::Ask(ref p) if p.parts().1 == Some(42)
+        ));
+        assert!(loader.asking() && loader.awaiting_dataset());
+        assert!(!loader.waits(), "the question has the keys");
+        assert!(jobs.would_strand(), "the generation is held while it asks");
+
+        let Step::Download { .. } = loader.confirmed() else {
+            panic!("agreed to, it downloads");
+        };
+        assert!(!jobs.would_strand(), "the hold goes with the question");
+        assert!(matches!(loader.confirmed(), Step::Nothing), "asked once");
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Downloading", 20)
+        );
+
+        let file = downloaded(dir.path(), "a\n1\n", "csv");
+        let at = file.path().to_path_buf();
+        let Step::Scan {
+            paths,
+            display,
+            status,
+            ..
+        } = loader.answered(
+            id,
+            LoadAnswer::Downloaded {
+                download: file,
+                options: OpenOptions::default(),
+            },
+            &jobs,
+        )
+        else {
+            panic!("the download is scanned");
+        };
+        assert_eq!(paths, vec![at.clone()]);
+        assert_eq!(display.as_deref(), Some(Path::new(url)), "named by its URL");
+        assert_eq!(status, "Scanning...");
+        let _ = loader.answered(id, scanned(url), &jobs);
+        let Step::Install(loaded) = loader.answered(id, schema_read(url), &jobs) else {
+            panic!("installs");
+        };
+        assert!(
+            loaded.state.scans_a_download(),
+            "the dataset holds its file"
+        );
+        loader.first_rows_settled();
+        drop(loaded);
+        assert!(at.exists(), "and the loader keeps it to read again");
+
+        let Step::Scan { paths, display, .. } = loader.open(request(url)) else {
+            panic!("the copy on hand is scanned, with no question");
+        };
+        assert_eq!(paths, vec![at.clone()]);
+        assert_eq!(display.as_deref(), Some(Path::new(url)));
+
+        // Opening something else lets the copy go.
+        assert!(loader.make_way().is_some());
+        let _ = loader.open(request("local.csv"));
+        assert!(!at.exists(), "nothing else held it");
+    }
+
+    /// Declining the download, a superseding open and a stale download each retire what
+    /// the load held: the question's hold, and the file.
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_remote_open_put_down_leaves_nothing_behind() {
+        let url = "https://example.com/data.csv";
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = jobs();
+        let mut loader = Loader::default();
+        let Step::Probe(pending) = loader.open(request(url)) else {
+            panic!("probe");
+        };
+        let id = loader.id().unwrap();
+        let _ = loader.answered(id, LoadAnswer::Sized(pending), &jobs);
+        let retired = loader.retire().expect("declined");
+        assert!(retired.asking, "the question goes with it");
+        assert!(!jobs.would_strand(), "and so does its hold");
+
+        // A download answering for a load replaced meanwhile is dropped, and its file
+        // with it.
+        let Step::Probe(pending) = loader.open(request(url)) else {
+            panic!("probe");
+        };
+        let old = loader.id().unwrap();
+        let _ = loader.answered(old, LoadAnswer::Sized(pending), &jobs);
+        let Step::Download { stop, .. } = loader.confirmed() else {
+            panic!("download");
+        };
+        assert!(loader.make_way().is_some());
+        assert!(
+            stop.load(std::sync::atomic::Ordering::Relaxed),
+            "the download in flight is told to stop"
+        );
+        let _ = loader.open(request("local.csv"));
+        let file = downloaded(dir.path(), "a\n1\n", "csv");
+        let at = file.path().to_path_buf();
+        assert!(matches!(
+            loader.answered(
+                old,
+                LoadAnswer::Downloaded {
+                    download: file,
+                    options: OpenOptions::default()
+                },
+                &jobs
+            ),
+            Step::Nothing
+        ));
+        assert!(!at.exists(), "the stale download's file went with it");
+
+        // A download whose scan fails is let go, not kept.
+        assert!(loader.make_way().is_some());
+        let Step::Probe(pending) = loader.open(request(url)) else {
+            panic!("probe");
+        };
+        let id = loader.id().unwrap();
+        let _ = loader.answered(id, LoadAnswer::Sized(pending), &jobs);
+        let _ = loader.confirmed();
+        let file = downloaded(dir.path(), "a\n1\n", "csv");
+        let at = file.path().to_path_buf();
+        let _ = loader.answered(
+            id,
+            LoadAnswer::Downloaded {
+                download: file,
+                options: OpenOptions::default(),
+            },
+            &jobs,
+        );
+        assert!(matches!(loader.failed(id, "bad csv"), Step::Failed(_)));
+        assert!(!at.exists(), "a failed open keeps no download");
+    }
+
+    /// A compressed CSV downloaded is decompressed under its URL, as one opened from
+    /// disk is.
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_downloaded_compressed_csv_is_decompressed() {
+        let url = "https://example.com/data.csv.gz";
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = jobs();
+        let mut loader = Loader::default();
+        let Step::Probe(pending) = loader.open(request(url)) else {
+            panic!("probe");
+        };
+        let id = loader.id().unwrap();
+        let _ = loader.answered(id, LoadAnswer::Sized(pending), &jobs);
+        let _ = loader.confirmed();
+        let file = downloaded(dir.path(), "", "csv.gz");
+        let step = loader.answered(
+            id,
+            LoadAnswer::Downloaded {
+                download: file,
+                options: OpenOptions::default(),
+            },
+            &jobs,
+        );
+        assert!(matches!(step, Step::Decompress { ref path, .. } if path == Path::new(url)));
+    }
+}

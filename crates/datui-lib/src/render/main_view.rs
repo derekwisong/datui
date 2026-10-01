@@ -24,7 +24,7 @@ impl MainViewContent {
     pub fn current(app: &crate::App) -> Self {
         if app.input_mode == crate::InputMode::Home {
             MainViewContent::Home
-        } else if app.awaiting_dataset {
+        } else if app.awaiting_dataset() {
             MainViewContent::Loading
         } else {
             MainViewContent::from_app_state(

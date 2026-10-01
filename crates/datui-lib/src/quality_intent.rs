@@ -1373,8 +1373,8 @@ mod tests {
     #[test]
     fn a_composite_key_repeats_where_all_its_parts_do() {
         let df = df!(
-            "region" => &["east", "east", "west", "west"],
-            "id" => &[1i64, 2, 1, 1],
+            "region" => &[Some("east"), Some("east"), Some("west"), Some("west"), Some("east"), Some("east"), None],
+            "id" => &[Some(1i64), Some(2), Some(1), Some(1), None, None, Some(1)],
         )
         .unwrap();
         let results = run(
@@ -1389,10 +1389,15 @@ mod tests {
             },
         );
         let key = results.intent.as_ref().unwrap().key.clone().unwrap();
-        assert_eq!((key.groups, key.rows_involved), (1, 2));
+        // Rows missing a part are incomplete, never a repeat of each other.
+        assert_eq!((key.groups, key.rows_involved, key.missing), (1, 2, 3));
         assert_eq!(
             matching(&df, &results, ObservationKind::KeyRepeated, "region"),
             2
+        );
+        assert_eq!(
+            matching(&df, &results, ObservationKind::KeyMissing, "id"),
+            3
         );
         // One finding names both columns.
         let report = build_report(&results);

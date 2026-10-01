@@ -65,3 +65,8 @@ tab as `»` and another control character or a direction mark (such as
 U+202E, which would turn the rest of the row around) as `¤` (`$`, `>` and `?`
 in an ASCII terminal), so `line1\nline2` reads `line1¶line2` instead of
 `line1line2`.
+
+A date or datetime past the calendar's range, such as a sentinel of
+`i64::MIN + 1` microseconds, shows its stored number:
+`-9223372036854775807 us since 1970-01-01 UTC`, `2147483647 days since
+1970-01-01`. So do Describe, Data Quality and copies.

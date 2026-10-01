@@ -1066,6 +1066,30 @@ mod probe_slot_tests {
             "a thread still stuck on a dead mount must keep costing a slot"
         );
     }
+
+    /// Without `cloud`, a bucket browsed into says the build cannot list it, rather
+    /// than reading as a place that did not answer.
+    #[cfg(not(feature = "cloud"))]
+    #[test]
+    fn without_cloud_a_bucket_says_it_cannot_be_listed() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let bucket = PathBuf::from("s3://bucket/prefix/");
+        app.home.browsing = Some(bucket.clone());
+        app.home.network_check = |_| true;
+        app.spawn_home_probes();
+        assert!(app.home_probes_inflight.contains(&bucket));
+        while !app.home_probes_inflight.is_empty() {
+            let event = rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the probe answers");
+            app.event(&event);
+        }
+        assert_eq!(
+            app.home.probe_errors.get(&bucket).map(String::as_str),
+            Some("cloud support not in this build")
+        );
+    }
 }
 
 /// #455: a home-screen worker that panics still answers, so what marks it in flight
@@ -14368,6 +14392,14 @@ impl App {
                                 });
                             }
                         }
+                        return;
+                    }
+                    // Nothing to list a bucket with, and `read_dir` on its URL would
+                    // only call it unavailable.
+                    #[cfg(not(feature = "cloud"))]
+                    if source::is_remote_url(&root) {
+                        let message = "cloud support not in this build".to_string();
+                        let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
                         return;
                     }
                     let mut cut_short = false;

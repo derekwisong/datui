@@ -687,13 +687,27 @@ impl Collection {
 }
 
 /// The collections the home screen shows, in order.
+///
+/// The built-in catalog keeps only what this build can open: every dataset in it is
+/// remote, and a build without `cloud` or `http` would list rows that only fail.
+/// A configured collection is shown whole; the user named those, and opening one
+/// says why it cannot be read.
 pub fn collections(config: &crate::config::AppConfig) -> Vec<Collection> {
     config
         .shown_collections()
         .iter()
-        .map(|source| {
+        .filter_map(|source| {
             let builtin = !config.sources.iter().any(|s| s.name == source.name);
-            Collection::from_config(source, builtin)
+            let mut collection = Collection::from_config(source, builtin);
+            if builtin {
+                collection
+                    .datasets
+                    .retain(|d| crate::source::opens_in_this_build(&d.location));
+                if collection.datasets.is_empty() {
+                    return None;
+                }
+            }
+            Some(collection)
         })
         .collect()
 }
@@ -4140,5 +4154,54 @@ mod known_facts_tests {
             "but what it measured is still measured"
         );
         assert_eq!(row.columns, vec!["id".to_string(), "amount".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod build_feature_tests {
+    use super::*;
+
+    /// The built-in catalog lists only what this build can open; with neither `cloud`
+    /// nor `http` the section is gone rather than a list of failures.
+    #[test]
+    fn the_builtin_catalog_lists_only_what_this_build_opens() {
+        let urls: Vec<String> = collections(&crate::config::AppConfig::default())
+            .into_iter()
+            .filter(|c| c.builtin)
+            .flat_map(|c| c.datasets)
+            .map(|d| d.location.to_string_lossy().into_owned())
+            .collect();
+        let web = urls.iter().filter(|u| u.starts_with("https://")).count();
+        let stores = urls
+            .iter()
+            .filter(|u| is_object_store_url(Path::new(u)))
+            .count();
+        assert_eq!(web + stores, urls.len(), "{urls:?}");
+        assert_eq!(web > 0, cfg!(feature = "http"), "{urls:?}");
+        assert_eq!(stores > 0, cfg!(feature = "cloud"), "{urls:?}");
+    }
+
+    /// A configured collection stays whole whatever the build: the user named it, and
+    /// opening a dataset it cannot read says why.
+    #[test]
+    fn a_configured_collection_is_shown_whole() {
+        let mut config = crate::config::AppConfig::default();
+        let mine: crate::config::SourceConfig = toml::from_str(
+            r#"
+            name = "mine"
+            label = "Mine"
+            [[datasets]]
+            name = "Bucket"
+            url = "s3://bucket/prefix/"
+            [[datasets]]
+            name = "Web"
+            url = "https://example.com/data.csv"
+            "#,
+        )
+        .unwrap();
+        config.sources = vec![mine];
+        let shown = collections(&config);
+        let mine = shown.iter().find(|c| c.name == "mine").unwrap();
+        assert_eq!(mine.datasets.len(), 2);
     }
 }

@@ -46,6 +46,19 @@ pub fn is_remote_url(path: &Path) -> bool {
             .is_some_and(|(scheme, _)| is_azure_short_scheme(scheme))
 }
 
+/// Whether this build can open `path`: object stores need the `cloud` feature and web
+/// URLs the `http` feature; a local path always opens.
+pub fn opens_in_this_build(path: &Path) -> bool {
+    match input_source(path) {
+        InputSource::Local(_) if is_remote_url(path) => cfg!(feature = "cloud"),
+        InputSource::Local(_) => true,
+        InputSource::S3(_) | InputSource::Gcs(_) | InputSource::Azure(_) => {
+            cfg!(feature = "cloud")
+        }
+        InputSource::Http(_) => cfg!(feature = "http"),
+    }
+}
+
 /// `az`, `adl` and `azure`: Azure schemes that name a container but no account.
 pub(crate) fn is_azure_short_scheme(scheme: &str) -> bool {
     matches!(scheme.to_ascii_lowercase().as_str(), "az" | "adl" | "azure")

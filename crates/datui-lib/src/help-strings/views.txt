@@ -29,7 +29,8 @@ Save and edit form:
   Space:            Expand or collapse Matching; toggle schema match
   Esc:              Back to the list, discarding edits
 
-  Name is required and starts as the file's name. The Matching section
+  Name is required and starts as the file's name, selected: typing
+  replaces it, arrows edit it. The Matching section
   holds the optional criteria: exact path, relative path, path pattern and
   filename pattern (glob-like), and schema match (column names). Schema
   match starts enabled — it is what carries the view to the next table

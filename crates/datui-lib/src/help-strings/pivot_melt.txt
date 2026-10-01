@@ -17,3 +17,5 @@ the toggles made so far.
 
 Pivot: long → wide (index × columns → aggregate(values)).
 Melt:  wide → long (index, strategy, variable/value names).
+       The names start as variable and value, selected: typing
+       replaces them, arrows edit them.

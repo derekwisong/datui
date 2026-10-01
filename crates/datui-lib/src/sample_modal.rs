@@ -338,9 +338,9 @@ impl SampleForm {
                 self.kind = kinds[step(kinds.len(), at)];
                 // A range starts as the whole table, so its rows say what they cover.
                 if self.kind == RowsKind::Range && self.range_to.value().is_empty() {
-                    self.range_from.set_value("1");
+                    self.range_from.suggest("1");
                     if let Some(rows) = self.context.view_rows {
-                        self.range_to.set_value(rows.to_string());
+                        self.range_to.suggest(rows.to_string());
                     }
                 }
             }

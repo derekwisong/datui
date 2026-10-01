@@ -176,7 +176,7 @@ impl ExportModal {
         // `--delimiter` if the file was read with one, else a comma.
         let delimiter_char = file_delimiter.unwrap_or(b',');
         self.csv_delimiter_input
-            .set_value(format!("{}", delimiter_char as char));
+            .suggest(format!("{}", delimiter_char as char));
         self.csv_include_header = true;
         self.source_file = false;
         self.offer_source_file = false;

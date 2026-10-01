@@ -71,7 +71,12 @@ pub struct TextInput {
     cursor_color: Option<Color>,
     /// Text under the cursor block; the theme picks it, never this widget.
     cursor_text: Option<Color>,
+    /// How selected text is drawn; the theme's highlight when there is one.
+    selection_style: Option<Style>,
     focused: bool,
+    /// The value is one the form proposed, untouched since. While it holds,
+    /// the whole value is selected whenever the field has focus.
+    suggested: bool,
 }
 
 impl Default for TextInput {
@@ -106,7 +111,9 @@ impl TextInput {
             background_color: None,
             cursor_color: None,
             cursor_text: None,
+            selection_style: None,
             focused: false,
+            suggested: false,
         };
         input.textarea.set_wrap(mode == TextInputMode::Statement);
         input.apply_styles();
@@ -147,6 +154,7 @@ impl TextInput {
         let cursor = theme.get("cursor_focused");
         self.cursor_color = Some(cursor);
         self.cursor_text = Some(theme.cursor_text_for(cursor));
+        self.selection_style = Some(theme.highlight_style());
         self.apply_styles();
         self
     }
@@ -175,8 +183,10 @@ impl TextInput {
         }
         self.textarea.set_style(style);
         self.textarea.set_cursor_style(self.cursor_style());
-        self.textarea
-            .set_selection_style(Style::default().add_modifier(Modifier::REVERSED));
+        self.textarea.set_selection_style(
+            self.selection_style
+                .unwrap_or_else(|| Style::default().add_modifier(Modifier::REVERSED)),
+        );
         self.textarea.set_cursor_visible(self.focused);
     }
 
@@ -195,6 +205,13 @@ impl TextInput {
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
         self.textarea.set_cursor_visible(focused);
+        if self.suggested {
+            if focused {
+                self.textarea.select_all();
+            } else {
+                self.textarea.cancel_selection();
+            }
+        }
     }
 
     pub fn is_focused(&self) -> bool {
@@ -208,6 +225,7 @@ impl TextInput {
 
     /// Replace the contents, leaving the cursor at the end.
     pub fn set_value(&mut self, value: impl AsRef<str>) {
+        self.suggested = false;
         let value = value.as_ref();
         if self.is_single_line() {
             self.textarea.set_text(&flatten(value));
@@ -218,6 +236,23 @@ impl TextInput {
         self.sync();
     }
 
+    /// Fill the field with a default the form proposes rather than a value the
+    /// user chose. Until the first key, the value is selected whenever the field
+    /// has focus: a printable replaces it, Backspace or Delete clears it, and a
+    /// cursor movement or Enter keeps it. Leaving the field drops the selection.
+    pub fn suggest(&mut self, value: impl AsRef<str>) {
+        self.set_value(value);
+        self.suggested = !self.value.is_empty();
+        if self.suggested && self.focused {
+            self.textarea.select_all();
+        }
+    }
+
+    /// Whether the value is still the untouched default from [`TextInput::suggest`].
+    pub fn is_suggested(&self) -> bool {
+        self.suggested
+    }
+
     /// Select the whole value, so the next printable replaces it while any
     /// cursor movement drops the selection and edits in place.
     pub fn select_all(&mut self) {
@@ -226,6 +261,7 @@ impl TextInput {
 
     /// Empty the field and stop any history walk in progress.
     pub fn clear(&mut self) {
+        self.suggested = false;
         self.textarea.clear();
         self.history.reset_position();
         self.sync();
@@ -296,6 +332,7 @@ impl TextInput {
 
     /// Replace the `count` characters before the cursor with `text`.
     pub fn replace_before_cursor(&mut self, count: usize, text: &str) {
+        self.suggested = false;
         self.textarea.replace_before_cursor(count, text);
         self.history.reset_position();
         self.sync();
@@ -324,6 +361,7 @@ impl TextInput {
 
     /// Replace the value with an older history entry.
     pub fn navigate_history_up(&mut self, cache: Option<&CacheManager>) {
+        self.suggested = false;
         let current = self.value.clone();
         if let Some(entry) = self.history.older(&current, cache) {
             self.textarea.set_text(&entry);
@@ -334,6 +372,7 @@ impl TextInput {
     /// Replace the value with a newer history entry, or the value that was
     /// being edited before the walk started.
     pub fn navigate_history_down(&mut self) {
+        self.suggested = false;
         if let Some(entry) = self.history.newer() {
             self.textarea.set_text(&entry);
             self.sync();
@@ -352,8 +391,16 @@ impl TextInput {
         let submits = self.submits_on_enter();
         let recall = self.history.is_enabled();
 
+        if event.code == KeyCode::Esc {
+            return TextInputEvent::Cancel;
+        }
+        // The first key settles a suggestion. It acts on the whole value even when
+        // focus never reached the field through `set_focused`.
+        if std::mem::take(&mut self.suggested) {
+            self.textarea.select_all();
+        }
+
         match event.code {
-            KeyCode::Esc => TextInputEvent::Cancel,
             // Alt, not Ctrl: legacy terminals send Ctrl+Enter as Ctrl+J, and both
             // submit.
             KeyCode::Enter if statement && alt => {
@@ -413,6 +460,7 @@ impl TextInput {
     }
 
     fn submit(&mut self, cache: Option<&CacheManager>) -> TextInputEvent {
+        self.textarea.cancel_selection();
         if let Some(cache) = cache {
             self.save_to_history(cache).or_log("save input history");
         }

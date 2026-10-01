@@ -60,7 +60,8 @@ file, the same columns, or a pattern.
 
 ## Saving
 
-The save form starts with the filename as its name. Add a description if
+The save form starts with the filename as its name, selected: typing
+replaces it, and an arrow key keeps it for editing. Add a description if
 needed, then expand **Matching** with <kbd>Space</kbd> to choose which files
 should match the view:
 

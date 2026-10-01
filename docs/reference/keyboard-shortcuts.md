@@ -104,6 +104,11 @@ screen's <kbd>~</kbd> path prompt takes characters, <kbd>Backspace</kbd>,
 <kbd>Ctrl</kbd>+<kbd>U</kbd>, <kbd>Tab</kbd> to complete, <kbd>Enter</kbd>
 and <kbd>Esc</kbd>.
 
+A default a form fills in, such as a new view's name or melt's `variable`
+and `value`, is selected while the field has focus: typing replaces it,
+<kbd>Backspace</kbd> clears it, and a cursor key, <kbd>Enter</kbd> or
+<kbd>Tab</kbd> keeps it. Editing a saved view opens its values unselected.
+
 | Key | Action |
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Move the cursor |

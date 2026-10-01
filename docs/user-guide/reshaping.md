@@ -76,7 +76,8 @@ of the 38 years Jennifer has none.
 
 Other strategies select columns by regex (**By pattern**), data type
 (**By type**) or an **Explicit list**. The form shows how many columns match
-before it runs. Default output names are `variable` and `value`.
+before it runs. The output names start as `variable` and `value`, selected:
+typing replaces them.
 
 Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 

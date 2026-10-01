@@ -247,8 +247,8 @@ impl Default for PivotMeltModal {
             melt_variable_input: TextInput::new(),
             melt_value_input: TextInput::new(),
         };
-        modal.melt_variable_input.set_value("variable");
-        modal.melt_value_input.set_value("value");
+        modal.melt_variable_input.suggest("variable");
+        modal.melt_value_input.suggest("value");
         modal
     }
 }
@@ -290,8 +290,8 @@ impl PivotMeltModal {
         self.melt_pattern_input.clear();
         self.melt_type_filter = MeltTypeFilter::default();
         self.melt_explicit_list.clear();
-        self.melt_variable_input.set_value("variable");
-        self.melt_value_input.set_value("value");
+        self.melt_variable_input.suggest("variable");
+        self.melt_value_input.suggest("value");
     }
 
     // ----- Focus -----

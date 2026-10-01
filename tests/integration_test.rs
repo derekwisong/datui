@@ -15666,6 +15666,121 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
     assert_eq!(app.error_message(), None);
 }
 
+/// Quitting while an HTTP server has gone quiet mid-body removes the partial file
+/// before the session ends, rather than leaving it to a worker the process may not
+/// wait for (#510).
+#[cfg(feature = "http")]
+#[test]
+fn quitting_mid_http_download_removes_the_partial_file() {
+    use std::time::{Duration, Instant};
+    common::isolate_cache();
+    let mut body = b"id,name\n".to_vec();
+    body.resize(64 * 1024, b'x');
+    let (url, _) = serve_over_http_stalling(
+        "quit_mid_download.csv",
+        body,
+        Some((1024, Duration::from_secs(20))),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let options = OpenOptions {
+        temp_dir: Some(dir.path().to_path_buf()),
+        ..OpenOptions::default()
+    };
+    let files = || {
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|f| f.unwrap().metadata().unwrap().len())
+            .collect::<Vec<_>>()
+    };
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut next = Some(AppEvent::Open(vec![PathBuf::from(&url)], options));
+    while files() != [1024] {
+        assert!(Instant::now() < deadline, "the first KiB never landed");
+        next = match next.take() {
+            Some(event) => app.event(&event),
+            None if app.awaiting_download_confirmation() => Some(key(KeyCode::Enter)),
+            None => rx.recv_timeout(Duration::from_millis(10)).ok(),
+        };
+    }
+
+    let sweep = app.exit_sweep();
+    drop(app);
+    drop(sweep);
+    assert!(files().is_empty(), "left behind: {:?}", files());
+}
+
+/// Quitting mid-decompression removes the partial copy before the session ends, even
+/// while the worker is stuck in a read and cannot see the stop: the source is a pipe
+/// that sends part of the file and then nothing (#510).
+#[cfg(unix)]
+#[test]
+fn quitting_mid_decompression_removes_the_partial_copy() {
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write;
+    use std::os::unix::ffi::OsStrExt;
+    use std::time::{Duration, Instant};
+    common::isolate_cache();
+    let source = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let pipe = source.path().join("rows.csv.gz");
+    let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a valid, NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let mut sent = b"id,name\n".to_vec();
+    for i in 0..10_000 {
+        writeln!(sent, "{i},row").unwrap();
+    }
+    let feeder = {
+        let pipe = pipe.clone();
+        std::thread::spawn(move || {
+            let sink = std::fs::OpenOptions::new().write(true).open(&pipe)?;
+            let mut gz = GzEncoder::new(sink, Compression::fast());
+            gz.write_all(&sent)?;
+            // A sync flush: what is written so far can be decompressed. The encoder
+            // is kept, so the rest never comes until the test lets it go.
+            gz.flush()?;
+            std::io::Result::Ok(gz)
+        })
+    };
+    let options = OpenOptions {
+        temp_dir: Some(scratch.path().to_path_buf()),
+        ..OpenOptions::default()
+    };
+    let copy = || {
+        std::fs::read_dir(scratch.path())
+            .unwrap()
+            .map(|f| f.unwrap().metadata().unwrap().len())
+            .collect::<Vec<_>>()
+    };
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let mut next = app.event(&AppEvent::Open(vec![pipe], options));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    // The copy has stopped growing: the worker waits in a read for the rest.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = Vec::new();
+    loop {
+        std::thread::sleep(Duration::from_millis(200));
+        let now = copy();
+        if now == seen && now.first().is_some_and(|len| *len > 0) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "decompressed {now:?}");
+        seen = now;
+    }
+
+    let sweep = app.exit_sweep();
+    drop(app);
+    drop(sweep);
+    assert!(copy().is_empty(), "left behind: {:?}", copy());
+    // The rest of the file, and its end: the stopped worker gives up.
+    drop(feeder.join().expect("the feeder"));
+}
+
 /// A CSV over HTTP is read again from the copy already downloaded, not fetched again.
 #[cfg(feature = "http")]
 #[test]

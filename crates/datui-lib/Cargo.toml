@@ -82,6 +82,9 @@ polars-error = "0.55"
 # Pointing fd 2 at the log while the TUI owns the terminal. Already in the tree.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# SIGTERM and SIGHUP end a session as a quit does. signal-hook-registry, which this
+# turns on, is already in the tree through crossterm.
+tokio = { version = "1", features = ["signal"] }
 
 [dependencies.polars]
 version = "0.55"

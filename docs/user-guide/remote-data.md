@@ -318,8 +318,10 @@ datui https://example.com/data.csv
 datui --format parquet https://example.com/download?id=42
 ```
 
-The file is downloaded, then opened. Use `--format` when the URL has no useful
-extension.
+The file is downloaded to the temp directory (`--temp-dir`), then opened. Use
+`--format` when the URL has no useful extension. The copy is removed when datui
+exits, including a quit mid-download; see
+[temporary files](loading-data.md#temporary-files).
 
 ## What gets read
 

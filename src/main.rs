@@ -107,7 +107,14 @@ fn main() -> Result<()> {
 
     // The configuration is read, and these flags applied over it, behind the first
     // frame: a config on a slow mount must not hold up the screen.
-    if let Err(e) = datui::run(RunInput::Cli(Box::new(args)), None) {
+    let ran = datui::run(RunInput::Cli(Box::new(args)), None);
+    // Cleaned up after, but ended by the signal as far as the caller can tell. A
+    // terminal that hung up may have failed the session on its way out; that is the
+    // signal's doing, not an error to print to it.
+    if let Some(signal) = datui::ended_by_signal() {
+        std::process::exit(128 + signal);
+    }
+    if let Err(e) = ran {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }

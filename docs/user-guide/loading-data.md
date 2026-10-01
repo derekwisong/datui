@@ -104,6 +104,17 @@ Compressed CSV is decompressed to a temporary file so it can still be scanned
 lazily. `--temp-dir` chooses where; `--decompress-in-memory` skips the
 file and reads the whole thing into memory instead.
 
+### Temporary files
+
+A decompressed CSV or a downloaded file lives in the temp directory while datui
+uses it.
+
+| Exit | Temporary files |
+|---|---|
+| `q`, Ctrl+Q, Ctrl+C, an error | Removed, including a partial file mid-download or mid-decompression |
+| SIGTERM, SIGHUP (closing the terminal) | Removed by the `datui` command, which quits as for `q` and exits with status 128 + the signal. Left by `datui.view()` in Python, which leaves signals to Python |
+| SIGKILL | Left in the temp directory |
+
 ## Hive-partitioned data
 
 A directory tree whose segments are `key=value` (`year=2024/month=01/...`)

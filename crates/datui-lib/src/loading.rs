@@ -26,12 +26,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(any(feature = "http", feature = "cloud"))]
-use std::sync::atomic::AtomicBool;
 
 use polars::prelude::LazyFrame;
 
 use crate::schema_union::FooterProgress;
+use crate::unfinished::{Unfinished, Writer};
 use crate::widgets::datatable::DataTableState;
 use crate::{CompressionFormat, FileFormat, OpenOptions, source};
 
@@ -249,6 +248,8 @@ pub(crate) struct Load {
     recent: Option<PathBuf>,
     /// This load's footer counter, and through it its stop flag.
     progress: Arc<FooterProgress>,
+    /// The stop flag again, for the workers that write files, and where they claim them.
+    writer: Writer,
     #[cfg(any(feature = "http", feature = "cloud"))]
     download: Option<Fetched>,
 }
@@ -281,17 +282,20 @@ pub(crate) enum Step {
     /// Ask the user whether to download it.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Ask(PendingDownload),
-    /// Download it; `stop` is the load's stop flag.
+    /// Download it, writing through `writer`: the load's stop flag, and its claim on
+    /// the file for quitting to find.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Download {
         pending: PendingDownload,
-        stop: Arc<AtomicBool>,
+        writer: Writer,
     },
-    /// Decompress the CSV in `file`; `path` names it on screen and in errors.
+    /// Decompress the CSV in `file`, writing through `writer`; `path` names it on screen
+    /// and in errors.
     Decompress {
         file: PathBuf,
         path: PathBuf,
         options: OpenOptions,
+        writer: Writer,
         /// The download `file` is, given to the dataset built from it.
         #[cfg(any(feature = "http", feature = "cloud"))]
         download: Option<TempDownload>,
@@ -388,9 +392,17 @@ pub(crate) struct Loader {
     /// the file too, so it is removed once both have let go.
     #[cfg(any(feature = "http", feature = "cloud"))]
     kept: Option<Fetched>,
+    /// The files every load's workers have written and not yet let go, for quitting to
+    /// remove. See [`crate::unfinished`].
+    unfinished: Unfinished,
 }
 
 impl Loader {
+    /// The files this loader's opens are writing, swept when the app exits.
+    pub(crate) fn unfinished(&self) -> &Unfinished {
+        &self.unfinished
+    }
+
     /// The open in flight, if there is one.
     pub(crate) fn current(&self) -> Option<&Load> {
         self.load.as_ref()
@@ -499,6 +511,7 @@ impl Loader {
         }
         if self.load.is_none() {
             self.next_id = self.next_id.wrapping_add(1);
+            let progress = Arc::<FooterProgress>::default();
             self.load = Some(Load {
                 id: LoadId(self.next_id),
                 from_home,
@@ -510,7 +523,8 @@ impl Loader {
                 size: 0,
                 paths: None,
                 recent: None,
-                progress: Arc::default(),
+                writer: self.unfinished.writer(progress.cancel_flag()),
+                progress,
                 #[cfg(any(feature = "http", feature = "cloud"))]
                 download: None,
             });
@@ -654,6 +668,7 @@ impl Loader {
                 file: first.clone(),
                 path: first,
                 options,
+                writer: load.writer.clone(),
                 #[cfg(any(feature = "http", feature = "cloud"))]
                 download: None,
             };
@@ -719,6 +734,7 @@ impl Loader {
                 file,
                 path: url,
                 options,
+                writer: load.writer.clone(),
                 download: Some(download),
             };
         }
@@ -843,7 +859,7 @@ impl Loader {
         };
         Step::Download {
             pending: *pending,
-            stop: load.progress.cancel_flag(),
+            writer: load.writer.clone(),
         }
     }
 
@@ -1354,6 +1370,55 @@ mod tests {
         assert!(!at.exists(), "nothing else held it");
     }
 
+    /// The download handed to the schema read is claimed like any file the open wrote:
+    /// quitting while that read is out removes it, though the worker still holds it.
+    #[cfg(feature = "http")]
+    #[test]
+    fn quitting_mid_schema_read_sweeps_the_download_the_worker_holds() {
+        use std::time::{Duration, Instant};
+        let url = "https://example.com/data.csv";
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = jobs();
+        let mut loader = Loader::default();
+        let Step::Probe(pending) = loader.open(request(url)) else {
+            panic!("the size is asked first");
+        };
+        let id = loader.id().unwrap();
+        let _ = loader.answered(id, LoadAnswer::Sized(pending.with_size(Some(4))), &jobs);
+        let Step::Download { writer, .. } = loader.confirmed() else {
+            panic!("agreed to, it downloads");
+        };
+        let file = crate::download::read_to_temp(
+            Some(dir.path()),
+            Some("csv"),
+            || Ok((std::io::Cursor::new(b"a\n1\n".to_vec()), Some(4))),
+            &writer,
+        )
+        .unwrap();
+        let at = file.path().to_path_buf();
+        let downloaded = LoadAnswer::Downloaded {
+            download: file,
+            options: OpenOptions::default(),
+        };
+        let _ = loader.answered(id, downloaded, &jobs);
+        let Step::ReadSchema {
+            download: Some(held),
+            ..
+        } = loader.answered(id, scanned(url), &jobs)
+        else {
+            panic!("the schema read is handed the download");
+        };
+
+        // Quitting drops the app, and the loader with it; the worker is still reading.
+        let unfinished = loader.unfinished().clone();
+        drop(loader);
+        assert!(at.exists(), "the worker's copy keeps it");
+        unfinished.sweep(Instant::now() + Duration::from_millis(50));
+        assert!(!at.exists(), "the sweep removes it");
+        // The worker ending later finds nothing to remove.
+        drop(held);
+    }
+
     /// Declining the download, a superseding open and a stale download each retire what
     /// the load held: the question's hold, and the file.
     #[cfg(feature = "http")]
@@ -1379,14 +1444,11 @@ mod tests {
         };
         let old = loader.id().unwrap();
         let _ = loader.answered(old, LoadAnswer::Sized(pending), &jobs);
-        let Step::Download { stop, .. } = loader.confirmed() else {
+        let Step::Download { writer, .. } = loader.confirmed() else {
             panic!("download");
         };
         assert!(loader.make_way().is_some());
-        assert!(
-            stop.load(std::sync::atomic::Ordering::Relaxed),
-            "the download in flight is told to stop"
-        );
+        assert!(writer.stopped(), "the download in flight is told to stop");
         let _ = loader.open(request("local.csv"));
         let file = downloaded(dir.path(), "a\n1\n", "csv");
         let at = file.path().to_path_buf();

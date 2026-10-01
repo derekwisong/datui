@@ -34,7 +34,9 @@ The control-bar construction in `lib.rs` reads the setting in
 checking whether a new setting reaches its intended behavior.
 
 The generated config shows ordinary fields as commented examples. The public
-dataset catalog is active TOML; preserve that distinction.
+dataset catalog is active TOML; preserve that distinction. The unit tests in
+`config.rs` fail when a setting has no comment, is missing from the generated
+config, or does not layer by presence.
 
 ## Merge and validation rules
 

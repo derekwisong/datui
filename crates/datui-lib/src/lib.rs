@@ -10206,10 +10206,12 @@ impl App {
             }
         };
         let Some(mut local) = copy.redirect(&lf) else {
+            log::warn!(target: "datui", "local copy does not cover the scan; reading the source");
             return Ok((lf, Some(copy)));
         };
         // The copy must read as the source does, or the source is read as before.
         if local.collect_schema().ok() != lf.clone().collect_schema().ok() {
+            log::warn!(target: "datui", "local copy reads another schema; reading the source");
             return Ok((lf, Some(copy)));
         }
         watch.use_copy(data_quality::CopyRead {

@@ -883,38 +883,33 @@ fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
         .with_maintain_order(true)
 }
 
-/// `plan` with every sort keeping tied rows in the order they come, as
-/// [`sort_options`] does, and the groupings, distincts, unions and joins under a sort
-/// giving them in one order. Polars SQL sorts unstably and offers no option, and a
-/// grouping or a join returns its rows in any order; each page is its own
-/// sort-then-slice, so with ties pages would repeat some rows and skip others.
+/// `plan` giving its rows in one order on every read. Each page is its own read of
+/// the view, so a node free to return rows in any order lets pages repeat some rows
+/// and skip others, a `LIMIT` keep different groups on each read, and a sort's ties
+/// arrive in a different order each time. Every sort keeps tied rows in the order
+/// they come, as [`sort_options`] does (Polars SQL sorts unstably and offers no
+/// option), and every grouping, distinct, union and join keeps its input's order.
 /// Only the parts of the plan holding such a node are rewritten.
 #[cfg(feature = "sql")]
-fn stable_order(plan: &mut polars::lazy::dsl::DslPlan, under_sort: bool) {
+fn stable_order(plan: &mut polars::lazy::dsl::DslPlan) {
     use polars::lazy::dsl::DslPlan;
     let unordered = |node: &DslPlan| match node {
         DslPlan::Sort { sort_options, .. } => !sort_options.maintain_order,
-        DslPlan::GroupBy { maintain_order, .. } => under_sort && !maintain_order,
-        DslPlan::Distinct { options, .. } => under_sort && !options.maintain_order,
-        DslPlan::Union { args, .. } => under_sort && !args.maintain_order,
-        DslPlan::Join { options, .. } => {
-            under_sort && options.args.maintain_order == MaintainOrderJoin::None
-        }
+        DslPlan::GroupBy { maintain_order, .. } => !maintain_order,
+        DslPlan::Distinct { options, .. } => !options.maintain_order,
+        DslPlan::Union { args, .. } => !args.maintain_order,
+        DslPlan::Join { options, .. } => options.args.maintain_order == MaintainOrderJoin::None,
         _ => false,
     };
     if !plan.into_iter().any(unordered) {
         return;
     }
-    let mut below = under_sort;
     match plan {
-        DslPlan::Sort { sort_options, .. } => {
-            sort_options.maintain_order = true;
-            below = true;
-        }
-        DslPlan::GroupBy { maintain_order, .. } if under_sort => *maintain_order = true,
-        DslPlan::Distinct { options, .. } if under_sort => options.maintain_order = true,
-        DslPlan::Union { args, .. } if under_sort => args.maintain_order = true,
-        DslPlan::Join { options, .. } if under_sort => {
+        DslPlan::Sort { sort_options, .. } => sort_options.maintain_order = true,
+        DslPlan::GroupBy { maintain_order, .. } => *maintain_order = true,
+        DslPlan::Distinct { options, .. } => options.maintain_order = true,
+        DslPlan::Union { args, .. } => args.maintain_order = true,
+        DslPlan::Join { options, .. } => {
             Arc::make_mut(options).args.maintain_order = MaintainOrderJoin::LeftRight;
         }
         _ => {}
@@ -923,11 +918,11 @@ fn stable_order(plan: &mut polars::lazy::dsl::DslPlan, under_sort: bool) {
         // A plan asked for its schema is wrapped as IR, which would run as converted:
         // rewrite the plan it came from, and leave the IR behind.
         let mut inner = Arc::unwrap_or_clone(dsl.clone());
-        stable_order(&mut inner, below);
+        stable_order(&mut inner);
         *plan = inner;
         return;
     }
-    for_each_input(plan, &mut |input| stable_order(input, below));
+    for_each_input(plan, &mut stable_order);
 }
 
 /// `plan` with an `IN (SELECT …)` subquery's values counted once instead of once per
@@ -8353,7 +8348,7 @@ impl DataTableState {
             ctx.register("df", root.clone());
             match ctx.execute(trimmed) {
                 Ok(mut result_lf) => {
-                    stable_order(&mut result_lf.logical_plan, false);
+                    stable_order(&mut result_lf.logical_plan);
                     count_subquery_values_once(&mut result_lf.logical_plan);
                     let schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
@@ -11874,6 +11869,68 @@ mod tests {
                     v.into_no_null_iter().is_sorted(),
                     "{sql}, streaming {streaming}: {:?}",
                     v.head(Some(10))
+                );
+            }
+        }
+    }
+
+    /// A SQL result with no ORDER BY reads the same rows page by page, and a Sort &
+    /// Filter sort over it keeps its ties in that order: groupings, distincts, unions
+    /// and joins give their rows in one order, so every page agrees with a read of
+    /// the whole result, and a LIMIT keeps the same rows (#508). Both engines give the
+    /// same order.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_sql_result_without_order_by_reads_the_same_rows_page_by_page() {
+        let df = df!(
+            "k" => (0..5000i64).map(|i| i % 3).collect::<Vec<_>>(),
+            "v" => (0..5000i64).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for sql in [
+            "SELECT a.k, a.v FROM df a JOIN df b ON a.v = b.v",
+            "SELECT a.k, a.v, b.v AS w FROM df a LEFT JOIN df b ON a.v = b.v + 1",
+            "SELECT k, v FROM df UNION ALL SELECT k, v FROM df",
+            "SELECT k, v FROM df UNION SELECT k, v FROM df",
+            "SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g LIMIT 300",
+            "SELECT g, COUNT(*) AS n FROM (SELECT v % 1000 AS g FROM df) GROUP BY g",
+            "SELECT DISTINCT v % 1000 AS g FROM df",
+            "SELECT * FROM df WHERE v IN (SELECT v FROM df WHERE k = 1) LIMIT 1000",
+        ] {
+            for sort in [false, true] {
+                let mut state =
+                    DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default())
+                        .unwrap();
+                state.sql_query(sql.to_string());
+                assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+                if sort {
+                    // By the first column, which most of these results repeat.
+                    let first = state.schema.get_at_index(0).unwrap().0.to_string();
+                    state.sort(vec![first], true);
+                    assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+                }
+                let mut fulls = Vec::new();
+                for streaming in [false, cfg!(feature = "streaming")] {
+                    let read = |lf: LazyFrame| collect_lazy(lf, streaming).unwrap();
+                    let full = read(state.lf.clone());
+                    let middle = full.height() as i64 / 2;
+                    for offset in [0, 100, middle] {
+                        let page = read(state.lf.clone().slice(offset, 200));
+                        assert!(
+                            page.equals_missing(&full.slice(offset, 200)),
+                            "{sql}, sort {sort}, streaming {streaming}, offset {offset}"
+                        );
+                    }
+                    let one = read(state.lf.clone().slice(middle + 7, 1));
+                    assert!(
+                        one.equals_missing(&full.slice(middle + 7, 1)),
+                        "{sql}, sort {sort}, streaming {streaming}"
+                    );
+                    fulls.push(full);
+                }
+                assert!(
+                    fulls[0].equals_missing(&fulls[1]),
+                    "{sql}, sort {sort}: the engines disagree"
                 );
             }
         }

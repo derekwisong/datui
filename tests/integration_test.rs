@@ -2382,8 +2382,8 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 5_000);
 }
 
-/// A table with whole rows copied, text that parses but for a few values, codes
-/// that all parse, and two columns missing at different rates.
+/// A table with whole rows copied (but for their bytes), text that parses but for a
+/// few values, codes that all parse, and two columns missing at different rates.
 fn open_findings_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&dir).unwrap();
@@ -2401,6 +2401,12 @@ fn open_findings_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Se
         "b" => rows.iter().map(|row| (row % 4 != 1).then_some(*row as f64)).collect::<Vec<_>>(),
     )
     .unwrap();
+    // Bytes that differ on every row, copies too: the checks read binary as one stub,
+    // so they do not tell copies apart, and neither may the rows a finding opens.
+    let blob = (0..rows.len() as u32)
+        .map(|position| position.to_le_bytes().to_vec())
+        .collect::<Vec<_>>();
+    df.with_column(Column::new("blob".into(), blob)).unwrap();
     ParquetWriter::new(File::create(&path).unwrap())
         .finish(&mut df)
         .unwrap();
@@ -2443,6 +2449,7 @@ fn assert_glyph_slots(screen: &str) {
         g.updown_lr,
         g.null,
         g.scroll_thumb,
+        g.binary_stub,
     ]
     .concat();
     for c in screen.chars().filter(|c| !c.is_ascii()) {

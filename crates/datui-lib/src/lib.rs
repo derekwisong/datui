@@ -8916,21 +8916,25 @@ impl App {
             }
         };
         let keys = schema.iter_names().cloned().collect::<Vec<_>>();
+        // Binary values as the run grouped them: one stub for all, so they never
+        // split a group the check counted as copies.
+        let columns = schema
+            .iter()
+            .map(|(name, dtype)| {
+                if matches!(dtype, polars::prelude::DataType::Binary) {
+                    polars::prelude::lit(widgets::datatable::binary_stub()).alias(name.clone())
+                } else {
+                    polars::prelude::col(name.clone())
+                }
+            })
+            .collect::<Vec<_>>();
         let streaming = self.app_config.performance.polars_streaming;
         self.reading_sample = true;
         self.analysis_modal.computing = Some(AnalysisProgress::new("Reading the rows that repeat"));
         self.busy = true;
         self.spawn_bg("Reading the rows that repeat...", move |task_gen, tx| {
             let _ = tx.send(
-                match data_quality::duplicate_rows(
-                    lf.select(
-                        keys.iter()
-                            .map(|key| polars::prelude::col(key.clone()))
-                            .collect::<Vec<_>>(),
-                    ),
-                    &keys,
-                    streaming,
-                ) {
+                match data_quality::duplicate_rows(lf.select(columns), &keys, streaming) {
                     Ok(df) => AppEvent::BackgroundSampleReady {
                         generation: task_gen,
                         label,

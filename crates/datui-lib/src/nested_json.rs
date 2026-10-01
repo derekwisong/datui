@@ -49,10 +49,7 @@ pub fn has_binary(dtype: &DataType) -> bool {
 /// A date or datetime the writers can panic on. Every nanosecond count is a
 /// date (1677 to 2262), so those go to the writers as they are, at no cost.
 fn is_calendar(dtype: &DataType) -> bool {
-    matches!(
-        dtype,
-        DataType::Date | DataType::Datetime(TimeUnit::Milliseconds | TimeUnit::Microseconds, _)
-    )
+    crate::past_calendar::can_leave_calendar(dtype)
 }
 
 /// Whether `dtype` is binary or [`is_calendar`], or has one inside: what the
@@ -241,27 +238,10 @@ pub fn calendar_as_text(series: &Series, writer: Writer) -> PolarsResult<Series>
         (DataType::Datetime(_, Some(_)), Writer::Json) => "%Y-%m-%dT%H:%M:%S%.f%:z",
         (dtype, _) => polars_bail!(InvalidOperation: "expected a date or datetime, got {dtype}"),
     };
-    let dtype = series.dtype();
-    let text = |s: &Series| match s.dtype() {
+    crate::past_calendar::text_or_stored(series, |s| match s.dtype() {
         DataType::Date => s.date()?.to_string(format),
         _ => s.datetime()?.to_string(format),
-    };
-    let text = match crate::exact::calendar_without_out_of_range(series)? {
-        // The rest formatted as usual, these written in after.
-        Some(shown) => {
-            let stored = series.to_physical_repr().cast(&DataType::Int64)?;
-            text(&shown)?
-                .iter()
-                .zip(stored.i64()?.iter())
-                .map(|(text, v)| match text {
-                    Some(text) => Some(text.to_string()),
-                    None => v.and_then(|v| crate::exact::stored_out_of_range(dtype, v)),
-                })
-                .collect::<StringChunked>()
-        }
-        None => text(series)?,
-    };
-    Ok(text.with_name(series.name().clone()).into_series())
+    })
 }
 
 /// One nested column as a String column of JSON, null where the value is null.

@@ -34,6 +34,10 @@ Output columns are sorted alphabetically. Pivot reads the rows once, in the
 background, and keeps one value per index and column pair in memory; filter
 large datasets first.
 
+A date or datetime past the calendar's range, such as a sentinel of
+`i64::MIN + 1` microseconds, names its column by its stored number, as the
+table shows it: `-9223372036854775807 us since 1970-01-01 UTC`.
+
 ### Choose an aggregate
 
 Available functions are `last` (default), `first`, `min`, `max`, `avg`, `med`,
@@ -77,6 +81,9 @@ of the 38 years Jennifer has none.
 Other strategies select columns by regex (**By pattern**), data type
 (**By type**) or an **Explicit list**. The form shows how many columns match
 before it runs.
+
+Melting dates together with text makes the values text. A date past the
+calendar's range becomes its stored number, as in a pivot.
 
 Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 

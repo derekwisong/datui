@@ -19389,3 +19389,266 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
         assert_eq!(columns_shown(&app), None);
     }
 }
+
+/// Each column's name, its first value's text (1970-01-01, Polars' own) and its
+/// second's, a date past the calendar written as its stored number.
+const PAST_CALENDAR: [(&str, &str, &str); 5] = [
+    ("d", "1970-01-01", "2147483647 days since 1970-01-01"),
+    (
+        "t_ms",
+        "1970-01-01 00:00:00.000",
+        "-9223372036854775807 ms since 1970-01-01 UTC",
+    ),
+    (
+        "t_us",
+        "1970-01-01 00:00:00.000000",
+        "-9223372036854775807 us since 1970-01-01 UTC",
+    ),
+    (
+        "t_ms_tz",
+        "1970-01-01 01:00:00.000+01:00",
+        "-9223372036854775807 ms since 1970-01-01 UTC",
+    ),
+    (
+        "t_us_tz",
+        "1970-01-01 01:00:00.000000+01:00",
+        "-9223372036854775807 us since 1970-01-01 UTC",
+    ),
+];
+
+/// A Parquet file of [`PAST_CALENDAR`]'s columns, with text `s` beside them, opened.
+fn open_past_calendar(dir: &Path) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let path = dir.join("past.parquet");
+    let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+    let datetime = |name: &str, unit, zone: Option<TimeZone>| {
+        Series::new(name.into(), [0, i64::MIN + 1])
+            .cast(&DataType::Datetime(unit, zone))
+            .unwrap()
+            .into_column()
+    };
+    let mut df = DataFrame::new(
+        2,
+        vec![
+            Column::new("s".into(), ["a", "b"]),
+            Series::new("d".into(), [0, i32::MAX])
+                .cast(&DataType::Date)
+                .unwrap()
+                .into_column(),
+            datetime("t_ms", TimeUnit::Milliseconds, None),
+            datetime("t_us", TimeUnit::Microseconds, None),
+            datetime("t_ms_tz", TimeUnit::Milliseconds, paris.clone()),
+            datetime("t_us_tz", TimeUnit::Microseconds, paris),
+        ],
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+/// The view's column `name`, each value as the table shows it.
+fn view_text(app: &App, name: &str) -> Vec<Option<String>> {
+    let df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf()
+        .clone()
+        .collect()
+        .unwrap();
+    let column = df.column(name).unwrap();
+    (0..column.len())
+        .map(|i| {
+            let value = column.get(i).unwrap();
+            (!value.is_null()).then(|| datui::exact::str_value(&value).into_owned())
+        })
+        .collect()
+}
+
+/// Run `query` from the query prompt and wait for its rows; fails on an error.
+#[track_caller]
+fn run_query(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    query: &str,
+) {
+    app.event(&AppEvent::Search(query.to_string()));
+    pump_until_idle(app, rx, tx);
+    assert_eq!(app.error_message(), None, "{query}");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error().is_none(), "{query}: {:?}", state.error());
+}
+
+/// A query's text of a date past the calendar is its stored number, as the table
+/// shows it, and its date parts are null, where Polars panicked and failed the
+/// query for the whole column (#506). The first row is Polars' own text.
+#[test]
+fn out_of_range_dates_in_a_query_cast_to_their_stored_number() {
+    let dir = common::fixture_dir();
+    let (mut app, rx, tx) = open_past_calendar(&dir);
+    let some = |s: &str| Some(s.to_string());
+    for (c, first, past) in PAST_CALENDAR {
+        let word = |s: &str| some(s.split(' ').next().unwrap());
+        for (query, expected) in [
+            (format!("select x: {c}.str"), [some(first), some(past)]),
+            (
+                format!("select x: {c}.format[\"%Y\"]"),
+                [some("1970"), some(past)],
+            ),
+            (
+                format!("select x: {c}.part[\" \", 0]"),
+                [word(first), word(past)],
+            ),
+            (
+                format!("select x: {c}.slice[0, 4]"),
+                [some(&first[..4]), some(&past[..4])],
+            ),
+            (
+                format!("select x: {c}.replace[\"since\", \"after\"]"),
+                [some(first), some(&past.replace("since", "after"))],
+            ),
+            (format!("select x: {c}.strip"), [some(first), some(past)]),
+            // Coalesced with text, Polars casts the date to text itself.
+            (
+                format!("select x: {c} ^ \"none\""),
+                [some(first), some(past)],
+            ),
+        ] {
+            run_query(&mut app, &rx, &tx, &query);
+            assert_eq!(view_text(&app, "x"), expected, "{query}");
+        }
+        run_query(
+            &mut app,
+            &rx,
+            &tx,
+            &format!("select s where {c} like \"*since*\""),
+        );
+        assert_eq!(view_text(&app, "s"), [some("b")], "{c} like");
+        // Read back as a date, the stored number reads as none.
+        for query in [
+            format!("select x: {c}.to_date[\"%Y-%m-%d\"]"),
+            format!("select x: {c}.to_datetime[\"%Y-%m-%d\"]"),
+            format!("select x: {c}.date"),
+            format!("select x: {c}.month_start"),
+            format!("select x: {c}.month_end"),
+            format!("select x: {c}.doy"),
+        ] {
+            run_query(&mut app, &rx, &tx, &query);
+            assert_eq!(view_text(&app, "x")[1], None, "{query}");
+        }
+        run_query(&mut app, &rx, &tx, &format!("select x: {c}.date"));
+        assert_eq!(view_text(&app, "x")[0], some("1970-01-01"), "{c}.date");
+        // A key of the text drills into the row that holds it.
+        run_query(
+            &mut app,
+            &rx,
+            &tx,
+            &format!("select n: count s by k: {c}.str"),
+        );
+        let keys = view_text(&app, "k");
+        assert!(keys.contains(&some(past)), "{c}: {keys:?}");
+        assert_drills_to_its_row(&mut app, &keys, past, c);
+    }
+    draw_wide(&mut app, "query");
+}
+
+/// SQL's casts to text, `||`, `CONCAT`, `STRFTIME`, and a `COALESCE`, `CASE` or
+/// `UNION` of a date with text write a date past the calendar as its stored number,
+/// where Polars panicked (#506), and a grouping by that text drills into its row.
+#[cfg(feature = "sql")]
+#[test]
+fn out_of_range_dates_in_sql_cast_to_their_stored_number() {
+    let dir = common::fixture_dir();
+    let (mut app, rx, tx) = open_past_calendar(&dir);
+    let some = |s: &str| Some(s.to_string());
+    for (c, first, past) in PAST_CALENDAR {
+        for (sql, expected) in [
+            (
+                format!("SELECT CAST({c} AS VARCHAR) AS x FROM df"),
+                [some(first), some(past)],
+            ),
+            (
+                format!("SELECT STRFTIME({c}, '%Y') AS x FROM df"),
+                [some("1970"), some(past)],
+            ),
+            (
+                format!("SELECT {c} || '!' AS x FROM df"),
+                [some(&format!("{first}!")), some(&format!("{past}!"))],
+            ),
+            (
+                format!("SELECT CONCAT({c}, '!') AS x FROM df"),
+                [some(&format!("{first}!")), some(&format!("{past}!"))],
+            ),
+            (
+                format!(
+                    "SELECT x FROM (SELECT s, CAST({c} AS VARCHAR) AS x FROM df) \
+                     WHERE x IS NOT NULL ORDER BY s"
+                ),
+                [some(first), some(past)],
+            ),
+            // Met with text, Polars casts the date to text itself.
+            (
+                format!("SELECT COALESCE({c}, 'none') AS x FROM df"),
+                [some(first), some(past)],
+            ),
+            (
+                format!("SELECT CASE WHEN s = 'b' THEN {c} ELSE s END AS x FROM df"),
+                [some("a"), some(past)],
+            ),
+        ] {
+            run_sql(&mut app, &rx, &tx, &sql);
+            assert_eq!(app.error_message(), None, "{sql}");
+            assert_eq!(view_text(&app, "x"), expected, "{sql}");
+        }
+        let sql = format!("SELECT {c} AS x FROM df UNION ALL SELECT s FROM df");
+        run_sql(&mut app, &rx, &tx, &sql);
+        assert_eq!(app.error_message(), None, "{sql}");
+        let mut stacked = view_text(&app, "x");
+        stacked.sort();
+        let mut expected = [some(first), some(past), some("a"), some("b")];
+        expected.sort();
+        assert_eq!(stacked, expected, "{sql}");
+
+        let sql = format!("SELECT s FROM df WHERE CAST({c} AS VARCHAR) LIKE '%since%'");
+        run_sql(&mut app, &rx, &tx, &sql);
+        assert_eq!(view_text(&app, "s"), [some("b")], "{sql}");
+
+        let sql = format!("SELECT CAST({c} AS VARCHAR) AS k, COUNT(*) AS n FROM df GROUP BY k");
+        run_sql(&mut app, &rx, &tx, &sql);
+        let keys = view_text(&app, "k");
+        assert!(keys.contains(&some(past)), "{sql}");
+        assert!(
+            app.data_table_state.as_ref().unwrap().can_drill_down(),
+            "{sql}"
+        );
+        assert_drills_to_its_row(&mut app, &keys, past, &sql);
+    }
+    draw_wide(&mut app, "sql");
+}
+
+/// Each group of a grouping keyed on the text of a [`PAST_CALENDAR`] column drills
+/// into the one row holding it: `b` for the date past the calendar, else `a`.
+#[track_caller]
+fn assert_drills_to_its_row(app: &mut App, keys: &[Option<String>], past: &str, case: &str) {
+    for (group, key) in keys.iter().enumerate() {
+        let state = app.data_table_state.as_mut().unwrap();
+        state.drill_down_into_group(group).unwrap();
+        let row = if key.as_deref() == Some(past) {
+            "b"
+        } else {
+            "a"
+        };
+        assert_eq!(
+            view_text(app, "s"),
+            [Some(row.to_string())],
+            "{case}: {key:?}"
+        );
+        app.data_table_state.as_mut().unwrap().drill_up().unwrap();
+    }
+}

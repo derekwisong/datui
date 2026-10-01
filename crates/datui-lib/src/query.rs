@@ -1169,6 +1169,22 @@ pub struct ParsedQuery {
     pub distinct: bool,
 }
 
+impl ParsedQuery {
+    /// The query with its casts to text and date parts safe on a date past the
+    /// calendar, where Polars panics ([`crate::past_calendar::guard_expr`]).
+    /// `schema` is the data the query runs against: with it, only operations on a
+    /// date or datetime change.
+    pub fn past_calendar_safe(self, schema: Option<&Schema>) -> Self {
+        let guard = |e: Expr| crate::past_calendar::guard_expr(e, schema);
+        Self {
+            cols: self.cols.into_iter().map(guard).collect(),
+            filter: self.filter.map(guard),
+            group_by: self.group_by.into_iter().map(guard).collect(),
+            ..self
+        }
+    }
+}
+
 /// Convert Polars-specific error messages to user-friendly query errors.
 pub fn sanitize_query_error(msg: &str) -> String {
     let msg_lower = msg.to_lowercase();

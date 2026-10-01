@@ -1,6 +1,7 @@
 use crate::statistics::collect_lazy;
 use color_eyre::Result;
 use color_eyre::eyre::Report;
+use polars::chunked_array::cast::CastOptions;
 use polars::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -5577,7 +5578,10 @@ fn read_conflict_examples(
             continue;
         };
         let query = lf
-            .select([col(column).cast(DataType::String)])
+            .select([crate::past_calendar::text_expr(
+                col(column),
+                CastOptions::NonStrict,
+            )])
             .drop_nulls(None)
             .limit(MAX_CONFLICT_EXAMPLES as u32);
         let Ok(values) = collect_lazy(query, polars_streaming) else {
@@ -8574,6 +8578,55 @@ mod tests {
             assert!(
                 stages.iter().all(|phase| !phase.interruptible),
                 "{stages:?}"
+            );
+        }
+    }
+
+    /// A file that stores a conflicting column as dates gives a date past the
+    /// calendar as its stored number, as the table shows it, where Polars' cast to
+    /// text panicked and lost every file's examples (#506).
+    #[test]
+    fn conflict_examples_give_a_date_past_the_calendar_as_its_stored_number() {
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let values = move |name: &str| match name {
+            "d" => Series::new("n".into(), [0, i32::MAX]).cast(&DataType::Date),
+            "ms" => Series::new("n".into(), [0, i64::MIN + 1])
+                .cast(&DataType::Datetime(TimeUnit::Milliseconds, None)),
+            _ => Series::new("n".into(), [0, i64::MIN + 1])
+                .cast(&DataType::Datetime(TimeUnit::Microseconds, paris.clone())),
+        };
+        let scan = QualityConflictScan(Arc::new(move |files, _| {
+            let n = values(&files[0])?;
+            Ok(DataFrame::new_infer_height(vec![n.into()])?.lazy())
+        }));
+        let mut files: Vec<QualityFileEvidence> = ["d", "ms", "us_tz"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| QualityFileEvidence {
+                number: i + 1,
+                name: name.to_string(),
+                rows: 2,
+                stored_type: None,
+                examples: Vec::new(),
+            })
+            .collect();
+        let watch = QualityWatch::new(|_| {});
+        for streaming in [false, true] {
+            read_conflict_examples(&scan, "n", &mut files, streaming, &watch);
+            let examples: Vec<&[String]> = files.iter().map(|f| f.examples.as_slice()).collect();
+            assert_eq!(
+                examples,
+                [
+                    ["1970-01-01", "2147483647 days since 1970-01-01"],
+                    [
+                        "1970-01-01 00:00:00.000",
+                        "-9223372036854775807 ms since 1970-01-01 UTC"
+                    ],
+                    [
+                        "1970-01-01 01:00:00.000000+01:00",
+                        "-9223372036854775807 us since 1970-01-01 UTC"
+                    ],
+                ]
             );
         }
     }

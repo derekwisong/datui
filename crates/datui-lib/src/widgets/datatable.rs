@@ -4228,6 +4228,11 @@ impl DataTableState {
         }
         view.visible_rows = self.visible_rows;
         view.remote_source = self.remote_source;
+        // It scans the same file, and a view captured from it must be refused too.
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        {
+            view.download = self.download.clone();
+        }
         Ok(view)
     }
 
@@ -9412,6 +9417,32 @@ mod tests {
             json.column("word").unwrap().str().unwrap().get(1),
             Some(" b")
         );
+    }
+
+    /// Data Quality's evidence rows read the downloaded file the dataset scans, so
+    /// they hold it too: a view captured there is refused like the dataset's own.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    #[test]
+    fn evidence_rows_hold_the_download_they_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = crate::download::TempDownload::create(Some(dir.path()), Some("csv"))
+            .expect("a temp file");
+        std::io::Write::write_all(&mut file, b"id\n1\n2\n").unwrap();
+        let download = crate::download::TempDownload::keep(file);
+        let mut state = DataTableState::from_csv(download.path(), &Default::default()).unwrap();
+        state.hold_download(Some(download.clone()));
+        let path = download.path().to_path_buf();
+        drop(download);
+
+        let view = state
+            .quality_evidence_view(&crate::data_quality::QualityScope::WholeSource, lit(true))
+            .unwrap();
+        assert!(view.scans_a_download());
+        drop(state);
+        assert!(path.exists(), "the view still scans it");
+        assert_eq!(collect_lazy(view.lf.clone(), false).unwrap().height(), 2);
+        drop(view);
+        assert!(!path.exists());
     }
 
     /// Scrolling sideways must not count the rows.

@@ -18970,17 +18970,25 @@ fn wide_table_pages_across_300_columns() {
     let screen = draw_sized(&mut app, size);
     assert!(header_line(&screen).contains("code_299"), "{screen}");
 
-    // And back, with no gap either.
+    // And back, through the same pages: `[` after `]` goes back to the page it left.
+    let mut back = pages.clone();
+    back.pop();
+    while let Some(expected) = back.pop() {
+        press_and_draw(&mut app, KeyCode::Char('['), size);
+        assert_eq!(columns_shown(&app), Some(expected));
+    }
+    // Paged back from somewhere `]` did not go, `[` still leaves no gap.
+    press_and_draw(&mut app, KeyCode::Char('}'), size);
+    press_and_draw(&mut app, KeyCode::Char('h'), size);
     loop {
+        let before = columns_shown(&app).unwrap();
         press_and_draw(&mut app, KeyCode::Char('['), size);
         let now = columns_shown(&app).unwrap();
-        let before = pages.pop().unwrap_or(now);
         if now.first == 1 {
             break;
         }
         assert!(now.first < before.first, "{before:?} -> {now:?}");
         assert!(now.last + 1 >= before.first, "a gap: {now:?} -> {before:?}");
-        pages.push(now);
     }
 
     press_and_draw(&mut app, KeyCode::Char('}'), size);

@@ -4862,9 +4862,18 @@ pub mod tests {
             state
         };
 
+        // Shift+arrows page, which plans from widths and may land at the draw.
+        let keys = candidates
+            .into_iter()
+            .map(|code| KeyEvent::new(code, KeyModifiers::NONE))
+            .chain(
+                [KeyCode::Left, KeyCode::Right]
+                    .map(|code| KeyEvent::new(code, KeyModifiers::SHIFT)),
+            );
+
         let mut admitted = 0;
-        for code in candidates {
-            let key = KeyEvent::new(code, KeyModifiers::NONE);
+        for key in keys {
+            let code = key.code;
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
             app.load_active = true;
@@ -4905,7 +4914,7 @@ pub mod tests {
             );
         }
         assert!(
-            admitted >= 10,
+            admitted >= 12,
             "the classifier should admit the view keys; it admitted {admitted}"
         );
     }

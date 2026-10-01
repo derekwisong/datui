@@ -155,9 +155,11 @@ pub struct DataTableState {
     /// The scrolling side as last drawn, which a sideways page is planned in. `None`
     /// before the first draw.
     scroll_room: Option<Room>,
-    /// A sideways move waiting on the next draw to measure columns not drawn yet, with
-    /// the `termcol_index` it was asked from. See [`Self::scroll_columns`].
-    column_move: Option<(ColumnMove, usize)>,
+    /// Sideways moves waiting on the next draw to measure columns not drawn yet, in
+    /// the order asked. See [`Self::scroll_columns`].
+    column_moves: Vec<ColumnMove>,
+    /// The pages `]` went, from and to, so `[` straight after goes back exactly.
+    page_trail: Vec<(usize, usize)>,
     /// Which columns the last draw showed, while some are off screen.
     on_screen: Option<OnScreen>,
     error: Option<PolarsError>,
@@ -1253,7 +1255,8 @@ impl DataTableState {
             termcol_index: 0,
             visible_termcols: 0,
             scroll_room: None,
-            column_move: None,
+            column_moves: Vec::new(),
+            page_trail: Vec::new(),
             on_screen: None,
             error: None,
             suppress_error_display: false,
@@ -1379,7 +1382,8 @@ impl DataTableState {
             termcol_index: 0,
             visible_termcols: 0,
             scroll_room: None,
-            column_move: None,
+            column_moves: Vec::new(),
+            page_trail: Vec::new(),
             on_screen: None,
             error: None,
             suppress_error_display: false,
@@ -1536,7 +1540,7 @@ impl DataTableState {
         self.sort_ascending = true;
         self.start_row = 0;
         self.termcol_index = 0;
-        self.column_move = None;
+        self.clear_column_moves();
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
@@ -6567,19 +6571,11 @@ impl DataTableState {
     }
 
     pub fn scroll_right(&mut self) {
-        self.settle_column_move();
-        if self.termcol_index + 1 < self.scroll_count() {
-            self.termcol_index += 1;
-            self.rescroll_columns();
-        }
+        self.scroll_columns(ColumnMove::StepRight);
     }
 
     pub fn scroll_left(&mut self) {
-        self.settle_column_move();
-        if self.termcol_index > 0 {
-            self.termcol_index -= 1;
-            self.rescroll_columns();
-        }
+        self.scroll_columns(ColumnMove::StepLeft);
     }
 
     /// Which shown columns the table last drew, while some are off screen: what the
@@ -6595,28 +6591,27 @@ impl DataTableState {
 
     /// Back to the first scrolling column.
     pub fn scroll_to_first_column(&mut self) {
-        self.column_move = None;
-        self.scroll_columns_to(0);
+        self.scroll_columns(ColumnMove::First);
     }
 
-    /// Page sideways, go to the last page, or show a column, planned from the widths
-    /// the columns were last drawn at. Reads nothing, like [`Self::scroll_right`]. A
-    /// plan that needs a column not drawn yet waits for the next draw, which measures
-    /// it from the rows on screen: until then the view stays where it is.
+    /// Move sideways, planned from the widths the columns were last drawn at. Reads
+    /// nothing. A page that needs a column not drawn yet waits for the next draw,
+    /// which measures it from the rows on hand; a relative move typed behind it waits
+    /// too and lands after it, in order, so no key is lost or planned on a guess.
     pub fn scroll_columns(&mut self, mv: ColumnMove) {
-        self.settle_column_move();
-        let Some(room) = self.scroll_room else {
-            self.column_move = Some((mv, self.termcol_index));
-            return;
-        };
-        let names = &self.column_order[self.frozen_shown().min(self.column_order.len())..];
-        let planned =
-            crate::widgets::column_paging::plan(mv, self.termcol_index, names.len(), room, |i| {
-                self.drawn_width(&names[i])
-            });
-        match planned {
-            Some(start) => self.scroll_columns_to(start),
-            None => self.column_move = Some((mv, self.termcol_index)),
+        if matches!(
+            mv,
+            ColumnMove::First | ColumnMove::Last | ColumnMove::Reveal(_)
+        ) {
+            // Where these go does not depend on where the moves before them went.
+            self.column_moves.clear();
+        }
+        if self.column_moves.is_empty()
+            && let Some(start) = self.plan_known(mv)
+        {
+            self.apply_column_move(mv, start);
+        } else if self.column_moves.len() < MAX_WAITING_MOVES {
+            self.column_moves.push(mv);
         }
     }
 
@@ -6630,24 +6625,62 @@ impl DataTableState {
         }
     }
 
-    /// A move still waiting when another is asked for lands first, on the widths
-    /// known and a guess for the rest, so a key pressed before the frame is drawn
-    /// moves from where the one before it went.
-    fn settle_column_move(&mut self) {
-        let Some((mv, from)) = self.column_move.take() else {
-            return;
-        };
-        let Some(room) = self.scroll_room.filter(|_| from == self.termcol_index) else {
-            return;
-        };
-        let names = &self.column_order[self.frozen_shown().min(self.column_order.len())..];
-        let guess = crate::widgets::column_widths::UNSEEN_WIDTH;
-        let start = crate::widgets::column_paging::plan(mv, from, names.len(), room, |i| {
-            Some(self.drawn_width(&names[i]).unwrap_or(guess))
-        });
-        if let Some(start) = start {
-            self.scroll_columns_to(start);
+    /// The scrolling columns, by name.
+    fn scrolling_names(&self) -> &[String] {
+        &self.column_order[self.frozen_shown().min(self.column_order.len())..]
+    }
+
+    /// `[` straight after the `]` that came here goes back where that one started,
+    /// whatever the widths say, so a page and back is the page left.
+    fn retrace(&self, mv: ColumnMove) -> Option<usize> {
+        let &(back, to) = self.page_trail.last()?;
+        (mv == ColumnMove::PageLeft && to == self.termcol_index).then_some(back)
+    }
+
+    /// Where `mv` lands on the widths drawn in this view, or `None` when it needs one
+    /// not drawn yet (or the room, before the first draw).
+    fn plan_known(&self, mv: ColumnMove) -> Option<usize> {
+        if let Some(back) = self.retrace(mv) {
+            return Some(back);
         }
+        let needs_widths = !matches!(
+            mv,
+            ColumnMove::StepLeft | ColumnMove::StepRight | ColumnMove::First
+        );
+        let room = match self.scroll_room {
+            Some(room) => room,
+            None if needs_widths => return None,
+            None => Room::default(),
+        };
+        let names = self.scrolling_names();
+        crate::widgets::column_paging::plan(mv, self.termcol_index, names.len(), room, |i| {
+            self.drawn_width(&names[i])
+        })
+    }
+
+    /// Land `mv` at `start`, keeping the trail `[` retraces.
+    fn apply_column_move(&mut self, mv: ColumnMove, start: usize) {
+        let from = self.termcol_index;
+        let start = start.min(self.scroll_count().saturating_sub(1));
+        match mv {
+            ColumnMove::PageRight => {
+                if start > from {
+                    self.page_trail.push((from, start));
+                }
+            }
+            ColumnMove::PageLeft if self.retrace(mv) == Some(start) => {
+                self.page_trail.pop();
+            }
+            _ => self.page_trail.clear(),
+        }
+        self.scroll_columns_to(start);
+    }
+
+    /// Forget sideways moves waiting on a draw and the trail `[` retraces: the
+    /// columns they were counted over are gone.
+    fn clear_column_moves(&mut self) {
+        self.column_moves.clear();
+        self.page_trail.clear();
     }
 
     /// Start the scrolling columns at `start`, re-slicing the buffer held.
@@ -6659,29 +6692,30 @@ impl DataTableState {
         }
     }
 
-    /// The scrolling side as the renderer lays it out, and any move waiting on it,
-    /// resolved with `width`, which measures a column not drawn yet. Called while
-    /// drawing, before the scrolling columns are drawn; reads nothing.
-    fn land_column_move(&mut self, room: Room, mut width: impl FnMut(&mut Self, &str) -> u16) {
+    /// Record the scrolling side as the renderer lays it out, and land the moves
+    /// waiting on it, in order, with `width`, which measures a column not drawn yet
+    /// from the rows on hand. Called while drawing, before the scrolling columns are
+    /// drawn; reads nothing. With no rows on hand the moves wait for a draw that has
+    /// them.
+    fn land_column_moves(&mut self, room: Room, mut width: impl FnMut(&mut Self, &str) -> u16) {
         self.scroll_room = Some(room);
-        let Some((mv, from)) = self.column_move else {
-            return;
-        };
-        if from != self.termcol_index || !self.buffer_on_hand() || self.defer_collect {
-            // Moved since by another key, or nothing to measure with yet.
-            if from != self.termcol_index {
-                self.column_move = None;
-            }
+        if self.column_moves.is_empty() || !self.buffer_on_hand() || self.defer_collect {
             return;
         }
-        self.column_move = None;
-        let names: Vec<String> =
-            self.column_order[self.frozen_shown().min(self.column_order.len())..].to_vec();
-        let start = crate::widgets::column_paging::plan(mv, from, names.len(), room, |i| {
-            Some(width(self, &names[i]))
-        });
-        if let Some(start) = start {
-            self.scroll_columns_to(start);
+        let moves = std::mem::take(&mut self.column_moves);
+        let names: Vec<String> = self.scrolling_names().to_vec();
+        for mv in moves {
+            let start = match self.retrace(mv) {
+                Some(back) => back,
+                None => {
+                    let from = self.termcol_index;
+                    crate::widgets::column_paging::plan(mv, from, names.len(), room, |i| {
+                        Some(width(self, &names[i]))
+                    })
+                    .unwrap_or(from)
+                }
+            };
+            self.apply_column_move(mv, start);
         }
     }
 
@@ -6723,7 +6757,7 @@ impl DataTableState {
 
     pub fn set_column_order(&mut self, order: Vec<String>) {
         self.column_order = order;
-        self.column_move = None;
+        self.clear_column_moves();
         // Fewer columns shown may leave the scroll past the last; keep one on screen.
         self.termcol_index = self
             .termcol_index
@@ -6736,7 +6770,7 @@ impl DataTableState {
 
     pub fn set_locked_columns(&mut self, count: usize) {
         self.locked_columns_count = count.min(self.column_order.len());
-        self.column_move = None;
+        self.clear_column_moves();
         self.termcol_index = self
             .termcol_index
             .min(self.scroll_count().saturating_sub(1));
@@ -6778,6 +6812,8 @@ impl DataTableState {
             return;
         }
         self.frozen_fit = (self.locked_columns_count, shown);
+        // The scrolling indices the trail was kept in shift with the frozen count.
+        self.page_trail.clear();
         if self.termcol_index > 0 {
             let first = before + self.termcol_index;
             let last = self.column_order.len().saturating_sub(1);
@@ -6998,7 +7034,7 @@ impl DataTableState {
         self.table_state = saved.table_state;
         self.start_row = saved.start_row;
         self.termcol_index = saved.termcol_index;
-        self.column_move = None;
+        self.clear_column_moves();
         self.schema = saved.schema;
         self.num_rows = saved.num_rows;
         self.num_rows_valid = saved.num_rows_valid;
@@ -7650,7 +7686,7 @@ impl DataTableState {
         self.drilled_down_group_index = Some(group_index);
         self.start_row = 0;
         self.termcol_index = 0;
-        self.column_move = None;
+        self.clear_column_moves();
         self.locked_columns_count = 0;
         self.table_state.select(Some(0));
         self.collect();
@@ -7771,7 +7807,7 @@ impl DataTableState {
         self.drilled_down_group_key_columns = None;
         self.start_row = view.start_row;
         self.termcol_index = view.termcol_index;
-        self.column_move = None;
+        self.clear_column_moves();
         self.table_state.select(view.selected);
         self.collect();
         Ok(())
@@ -8566,6 +8602,10 @@ enum SliceCell {
     Null(&'static str),
     Value(String),
 }
+
+/// The most sideways moves held for a draw: a held key typed faster than frames
+/// can land, bounded so the draw that lands them stays a frame's work.
+const MAX_WAITING_MOVES: usize = 32;
 
 /// Where the scrolling columns are, for the off-screen hints over the header.
 struct ScrollCue {
@@ -9585,7 +9625,7 @@ impl StatefulWidget for DataTable {
                 padding: self.table_cell_padding,
             };
             let rows = state.visible_rows.min(rows_room);
-            state.land_column_move(room, |state, name| {
+            state.land_column_moves(room, |state, name| {
                 self.measure_column(state, name, offset, rows, cap)
             });
             if let Some(sliced_df) = state
@@ -14934,6 +14974,108 @@ mod tests {
         assert_eq!(state.termcol_index, start);
         state.scroll_to_first_column();
         assert_eq!(state.termcol_index, 0);
+    }
+
+    /// A state over thirty text columns of mixed widths, drawn once at 50 wide.
+    fn paging_state() -> (DataTableState, impl Fn(&mut DataTableState)) {
+        let columns: Vec<Column> = (0..30)
+            .map(|i| {
+                let value = "x".repeat(3 + (i * 7) % 11);
+                Series::new(format!("col{i:02}").into(), vec![value; 3]).into()
+            })
+            .collect();
+        let lf = DataFrame::new_infer_height(columns).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 3;
+        state.collect();
+        let draw = |state: &mut DataTableState| {
+            let area = Rect::new(0, 0, 50, 4);
+            DataTable::default().render(area, &mut Buffer::empty(area), state);
+        };
+        draw(&mut state);
+        (state, draw)
+    }
+
+    /// Keys typed faster than frames, over columns not drawn yet, land at the draw in
+    /// the order typed, exactly where they land with a frame after each, and keep
+    /// waiting while no rows are on hand to measure with.
+    #[test]
+    fn moves_typed_before_a_draw_land_in_order() {
+        use ColumnMove::*;
+        let keys = [PageRight, PageRight, StepRight, PageLeft, PageRight];
+        let (mut paced, draw) = paging_state();
+        for mv in keys {
+            paced.scroll_columns(mv);
+            draw(&mut paced);
+        }
+        assert!(paced.termcol_index > 0);
+
+        let (mut typed, draw) = paging_state();
+        typed.defer_collect = true;
+        for mv in keys {
+            typed.scroll_columns(mv);
+        }
+        draw(&mut typed);
+        assert_eq!(typed.termcol_index, 0, "no rows to measure with: they wait");
+        typed.defer_collect = false;
+        draw(&mut typed);
+        assert_eq!(typed.termcol_index, paced.termcol_index);
+        assert!(typed.column_moves.is_empty());
+
+        // First drops what waits; nothing is left to land later.
+        let (mut first, draw) = paging_state();
+        first.scroll_columns(Last);
+        first.scroll_columns(StepRight);
+        first.scroll_to_first_column();
+        draw(&mut first);
+        assert_eq!(first.termcol_index, 0);
+    }
+
+    /// `[` straight after `]` goes back to the page `]` left, even where the page
+    /// before, packed from the right, would start further left.
+    #[test]
+    fn page_left_after_page_right_retraces() {
+        let (mut state, draw) = paging_state();
+        let room = state.scroll_room.unwrap();
+        let p = room.padding;
+        let usable = room.width - room.lead;
+        // Three of `a` fill the first page, two of `b` the second with a column too
+        // wide for the room after them; packed from the right, the page ending before
+        // that wide column would take in two of the `a` columns as well.
+        let a = (usable - 2 * p) / 3;
+        let b = (usable.saturating_sub(2 * a + 3 * p) / 2)
+            .max(crate::widgets::column_widths::MIN_WIDTH);
+        let widths = [a, a, a, b, b, usable + 10];
+        state.set_width_choices(
+            widths
+                .iter()
+                .enumerate()
+                .map(|(i, &w)| (format!("col{i:02}"), WidthChoice::Manual(w))),
+        );
+        draw(&mut state);
+        state.scroll_columns(ColumnMove::PageRight);
+        draw(&mut state);
+        assert_eq!(state.termcol_index, 3);
+        state.scroll_columns(ColumnMove::PageRight);
+        draw(&mut state);
+        assert_eq!(state.termcol_index, 5);
+        let names = state.scrolling_names().to_vec();
+        let packed =
+            crate::widgets::column_paging::plan(ColumnMove::PageLeft, 5, names.len(), room, |i| {
+                state.drawn_width(&names[i])
+            });
+        assert!(packed < Some(3), "the packed page differs: {packed:?}");
+        state.scroll_columns(ColumnMove::PageLeft);
+        assert_eq!(state.termcol_index, 3, "back to the page left");
+        state.scroll_columns(ColumnMove::PageLeft);
+        assert_eq!(state.termcol_index, 0);
+        // Not straight after `]`: the page before, packed from the right.
+        state.scroll_columns(ColumnMove::PageRight);
+        state.scroll_columns(ColumnMove::PageRight);
+        state.scroll_columns(ColumnMove::StepRight);
+        state.scroll_columns(ColumnMove::StepLeft);
+        state.scroll_columns(ColumnMove::PageLeft);
+        assert_eq!(Some(state.termcol_index), packed);
     }
 
     /// The hidden-columns count goes in the blank run after the last column, or not

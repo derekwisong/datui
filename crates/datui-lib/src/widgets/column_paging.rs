@@ -29,6 +29,17 @@ pub struct OnScreen {
 }
 
 impl OnScreen {
+    /// The widest label this table can have: the bar reserves it, so paging moves
+    /// nothing on the bar as the numbers change.
+    pub fn widest_label(&self, compact: bool) -> String {
+        Self {
+            first: self.total,
+            last: self.total + 1,
+            total: self.total,
+        }
+        .label(compact)
+    }
+
     /// `cols 41-47 of 300`, or `cols 41-47/300` where the bar is short of room.
     pub fn label(&self, compact: bool) -> String {
         let range = if self.last > self.first {
@@ -44,9 +55,16 @@ impl OnScreen {
     }
 }
 
-/// A sideways move that needs the columns' widths to land.
+/// A sideways move. The pages need the columns' widths to land; the rest do not, and
+/// are moves here so that one typed behind a page waiting on a draw lands after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnMove {
+    /// One column left.
+    StepLeft,
+    /// One column right.
+    StepRight,
+    /// The first scrolling column.
+    First,
     /// The page before: the column left of the first one shown ends it.
     PageLeft,
     /// The page after: the first column not shown whole starts it, or the last page
@@ -117,6 +135,9 @@ pub fn plan(
     };
     let current = current.min(last);
     match mv {
+        ColumnMove::StepLeft => Some(current.saturating_sub(1)),
+        ColumnMove::StepRight => Some((current + 1).min(last)),
+        ColumnMove::First => Some(0),
         ColumnMove::PageLeft if current == 0 => Some(0),
         ColumnMove::PageLeft => start_ending_at(current - 1, room, &mut width),
         ColumnMove::PageRight if current == last => Some(current),

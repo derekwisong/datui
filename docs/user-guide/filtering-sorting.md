@@ -119,6 +119,9 @@ columns and widths, frozen columns, pivot/melt, drill-down and the applied view.
   a column cut at the edge is read whole there. A column wider than the
   window still moves one at a time.
 - The last page is full: it ends with the last column.
+- <kbd>[</kbd> right after <kbd>]</kbd> goes back to the page it left;
+  otherwise it ends the page before with the column left of the first one
+  shown.
 - <kbd>g</kbd> leaves a column already whole on screen where it is; another
   becomes the first after the frozen ones, or lands on the last page.
 - Frozen columns stay put; hidden ones are not listed by <kbd>g</kbd>.

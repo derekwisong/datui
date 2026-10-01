@@ -1784,9 +1784,18 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     // This ensures both histogram and Q-Q plot use the same padding for alignment
     let y_axis_label_width = shared_y_axis_label_width;
 
-    // Bin centers for x-axis positioning (value at center of each bin)
+    // On Log the bins are equal in log space, and so is the x axis: a position is the
+    // log of the value it stands for, and a bin's center is its geometric middle.
+    let position = |x: f64| if use_log_scale { x.ln() } else { x };
     let bin_centers: Vec<f64> = (0..num_bins)
-        .map(|i| (bin_boundaries[i] + bin_boundaries[i + 1]) / 2.0)
+        .map(|i| {
+            let (lo, hi) = (bin_boundaries[i], bin_boundaries[i + 1]);
+            if use_log_scale {
+                (lo * hi).sqrt()
+            } else {
+                (lo + hi) / 2.0
+            }
+        })
         .collect();
 
     // Create data bars - use BarChart for actual bars
@@ -1845,11 +1854,12 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     let count_axis = AxisSpec::numbers_as([0.0, 100.0], counts, "Counts", move |v| {
         v * global_max / 100.0
     });
-    let axes = distribution_axes(
-        theme,
-        AxisSpec::numbers([hist_min, hist_max], values, ""),
-        count_axis.padded(label_width),
-    );
+    let x_axis = if use_log_scale {
+        AxisSpec::numbers_as([log_hist_min.ln(), log_hist_max.ln()], values, "", f64::exp)
+    } else {
+        AxisSpec::numbers([hist_min, hist_max], values, "")
+    };
+    let axes = distribution_axes(theme, x_axis, count_axis.padded(label_width));
     let block = distribution_block(format!("Histogram vs {dist_type}"));
     let chart_area = block.inner(area);
 
@@ -1895,7 +1905,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         Some(_) => bin_centers
             .iter()
             .zip(&theory_bin_counts)
-            .map(|(center, count)| (*center, height(*count)))
+            .map(|(center, count)| (position(*center), height(*count)))
             .collect(),
         None => Vec::new(),
     };
@@ -2399,6 +2409,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// On Log the bins are equal in log space and the labels sit where their values
+    /// do: over 1 to 10,000 the middle of the axis is 100, not the linear 5,000.
+    #[test]
+    fn log_histogram_labels_sit_at_their_values() {
+        let values: Vec<f64> = (0..400)
+            .map(|i| 10f64.powf(4.0 * i as f64 / 399.0))
+            .collect();
+        let dist = analysis(1_000.0, 2_000.0, values);
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let numbers = NumberFormatSettings::default();
+        let g = crate::glyphs::unicode();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
+        render_distribution_histogram(
+            DistributionPlotConfig {
+                dist: &dist,
+                dist_type: DistributionType::Normal,
+                area: Rect::new(0, 0, 80, 20),
+                shared_y_axis_label_width: 5,
+                theme: &theme,
+                unified_x_range: Some((1.0, 10_000.0)),
+                histogram_scale: HistogramScale::Log,
+                glyphs: g,
+                values: &AxisNumbers::measure(&numbers, &dist.column_name),
+                counts: &AxisNumbers::count(&numbers),
+            },
+            &mut buf,
+        );
+        let text = rendered_text(&buf);
+        let rows: Vec<&str> = text.lines().collect();
+        let axis = rows
+            .iter()
+            .rposition(|r| r.contains(g.plot.axis.bottom_left))
+            .expect(&text);
+        let row = rows[axis + 1];
+        let labels: Vec<(usize, f64)> = row
+            .split_whitespace()
+            .map(|l| {
+                let at = row.find(l).unwrap() + l.len() / 2;
+                (at, l.replace(',', "").parse::<f64>().expect(&text))
+            })
+            .collect();
+        assert_eq!(labels.len(), 3, "{text}");
+        let [(left, first), (at, middle), (right, last)] = labels[..] else {
+            unreachable!()
+        };
+        assert_eq!((first, middle, last), (1.0, 100.0, 10_000.0), "{text}");
+        assert!(
+            at.abs_diff((left + right) / 2) <= 1,
+            "the middle label is at the axis's middle:\n{text}"
+        );
     }
 
     /// Under the ASCII set, both of the Distribution detail's plots draw ASCII only:

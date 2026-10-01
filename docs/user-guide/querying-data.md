@@ -82,8 +82,12 @@ not the full SQL standard. A statement reads one table, `df`:
 Sidebar filters and sort are not part of `df`, and neither is the previous
 statement's result: each statement starts from `df` again.
 
-Rows that an `ORDER BY` ranks equal keep the order they come in, so paging
-through the result never repeats a row or skips one.
+A statement's rows come back in one order on every read: joins, unions,
+`DISTINCT` and groupings keep the order of the rows they read (a grouping that
+[drills](#drill-into-a-group-by), with no `ORDER BY` or `LIMIT`, is sorted by
+its keys instead), and rows that an `ORDER BY` ranks equal keep the order they
+come in. Paging through the result never repeats a row or skips one, and a
+`LIMIT` without `ORDER BY` keeps the same rows.
 
 ## Write SQL
 

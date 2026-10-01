@@ -450,6 +450,38 @@ pub fn check_intent(
     Ok(())
 }
 
+/// A date or millisecond datetime held to what microseconds since the epoch can
+/// count, so converting it to them cannot overflow, which made a date past the
+/// calendar null and never compared. One held at a limit (about 292,000 years from
+/// 1970) is still further out than any bound, which the calendar keeps within
+/// 262,143 years. Any other value as it is; a batch with none so far out costs a
+/// min and a max.
+fn within_micros(value: Expr) -> Expr {
+    value.map(
+        |c| {
+            let limit = match c.dtype() {
+                DataType::Date => i64::MAX / 86_400_000_000,
+                DataType::Datetime(TimeUnit::Milliseconds, _) => i64::MAX / 1_000,
+                _ => return Ok(c),
+            };
+            let series = c.as_materialized_series();
+            let stored = series.to_physical_repr().cast(&DataType::Int64)?;
+            let stored = stored.i64()?;
+            let fits = |v: i64| (-limit..=limit).contains(&v);
+            if [stored.min(), stored.max()].into_iter().flatten().all(fits) {
+                return Ok(c);
+            }
+            let held = stored.apply_values(|v| v.clamp(-limit, limit));
+            Ok(held
+                .into_series()
+                .cast(c.dtype())?
+                .with_name(series.name().clone())
+                .into_column())
+        },
+        |_, field| Ok(field.clone()),
+    )
+}
+
 /// One column's declared rules, as a run measures them: the declaration, the type it
 /// met, and the expressions that count it.
 struct Measured<'a> {
@@ -488,11 +520,11 @@ impl Measured<'_> {
         let value = self.value();
         Some(match self.kind() {
             ValueKind::Number => value.cast(DataType::Float64),
-            ValueKind::Date => value
+            ValueKind::Date => within_micros(value)
                 .cast(DataType::Datetime(TimeUnit::Microseconds, None))
                 .dt()
                 .timestamp(TimeUnit::Microseconds),
-            ValueKind::Datetime => value.dt().timestamp(TimeUnit::Microseconds),
+            ValueKind::Datetime => within_micros(value).dt().timestamp(TimeUnit::Microseconds),
             _ => return None,
         })
     }
@@ -1462,6 +1494,90 @@ mod tests {
             matching(&df, &results, ObservationKind::OutOfRange, "day"),
             2
         );
+    }
+
+    /// A date or datetime past the calendar is the furthest out of range a value can
+    /// be, and counts so, where its conversion to microseconds overflowed and the
+    /// rule never compared it (#518). Values in range count as they did.
+    #[test]
+    fn a_date_past_the_calendar_is_out_of_range() {
+        const DAY_MS: i64 = 86_400_000;
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let df = df!(
+            "d" => &[Some(19_737i32), Some(19_000), Some(i32::MAX), Some(i32::MIN), None],
+            "ms" => &[
+                Some(19_737 * DAY_MS),
+                Some(19_000 * DAY_MS),
+                Some(i64::MAX),
+                Some(i64::MIN + 1),
+                None,
+            ],
+            "us" => &[
+                Some(19_737 * DAY_MS * 1000),
+                Some(19_000 * DAY_MS * 1000),
+                Some(i64::MAX),
+                Some(i64::MIN + 1),
+                None,
+            ],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("d").cast(DataType::Date),
+            col("ms").cast(DataType::Datetime(TimeUnit::Milliseconds, None)),
+            col("us").cast(DataType::Datetime(TimeUnit::Microseconds, paris)),
+        ])
+        .collect()
+        .unwrap();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            intent: DeclaredIntent {
+                key: Vec::new(),
+                columns: ["d", "ms", "us"]
+                    .into_iter()
+                    .map(|column| ColumnIntent {
+                        min: Some("2024-01-01".to_string()),
+                        max: Some("2024-12-31".to_string()),
+                        ..ColumnIntent::new(column)
+                    })
+                    .collect(),
+            },
+            ..DataQualityPlan::default()
+        };
+        for streaming in [false, true] {
+            let results = compute_data_quality(
+                &df.clone().lazy(),
+                Some(df.height()),
+                &plan,
+                None,
+                streaming,
+            )
+            .unwrap();
+            for (column, unit) in [("d", "days"), ("ms", "ms"), ("us", "us")] {
+                let check = results.intent.as_ref().unwrap().column(column).unwrap();
+                // 2024-01-15 in range; 2022-01-08 and the two past the calendar out.
+                assert_eq!(
+                    (check.compared, check.below, check.above),
+                    (Some(4), Some(2), Some(1)),
+                    "{column}"
+                );
+                let (low, high) = match unit {
+                    "days" => (i64::from(i32::MIN), i64::from(i32::MAX)),
+                    _ => (i64::MIN + 1, i64::MAX),
+                };
+                let since = |v: i64| match unit {
+                    "days" => format!("{v} days since 1970-01-01"),
+                    unit => format!("{v} {unit} since 1970-01-01 UTC"),
+                };
+                assert_eq!(check.lowest, Some(since(low)), "{column}");
+                assert_eq!(check.highest, Some(since(high)), "{column}");
+                assert_eq!(
+                    matching(&df, &results, ObservationKind::OutOfRange, column),
+                    3,
+                    "{column}"
+                );
+            }
+        }
     }
 
     #[test]

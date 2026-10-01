@@ -522,7 +522,9 @@ that Setup counts before Run.
 Each violation is a problem with its count and what it is out of, and
 <kbd>Enter</kbd> on it opens its rows as any finding's open: from the rows the
 run kept, or on a full scan after a **Read Rows** dialog. Out of range names the lowest value below the range and
-the highest above it. When the rows are in memory (a sample, or a scope no
+the highest above it. A date past the calendar's range, such as a sentinel of
+`i64::MIN + 1` microseconds, counts as out of range and is named by its stored
+number. When the rows are in memory (a sample, or a scope no
 larger than it), Not allowed and Unparsed numbers also list their commonest
 values with their rows; a full scan keeps no rows to list them from. A
 one-column key replaces the Nearly unique note on that column: its repeats are

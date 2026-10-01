@@ -370,7 +370,7 @@ fn temporal_stats_of(series: &Series) -> Result<Option<TemporalStatistics>> {
 fn get_value_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
     match df.column(col_name).ok()?.get(row).ok()? {
         AnyValue::Null => None,
-        v => Some(v.str_value().to_string()),
+        v => Some(crate::exact::str_value(&v).to_string()),
     }
 }
 
@@ -744,9 +744,11 @@ fn get_f64(df: &DataFrame, col_name: &str, row: usize) -> f64 {
 }
 
 fn get_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
-    df.column(col_name)
-        .ok()
-        .and_then(|s| s.get(row).ok().map(|v| v.str_value().to_string()))
+    df.column(col_name).ok().and_then(|s| {
+        s.get(row)
+            .ok()
+            .map(|v| crate::exact::str_value(&v).to_string())
+    })
 }
 
 /// Uses Polars' definition so Int128, UInt128, Decimal, and future numeric types are included.
@@ -1461,7 +1463,7 @@ fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
 
     let mode = if unique_count > 0 {
         match value_counts.get(0) {
-            Some(col) => col.first().map(|v| v.str_value().to_string()),
+            Some(col) => col.first().map(|v| crate::exact::str_value(v).to_string()),
             _ => None,
         }
     } else {
@@ -1473,7 +1475,7 @@ fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
         if let (Some(value_col), Some(count_col)) = (value_counts.get(0), value_counts.get(1))
             && let (Some(value), Some(count)) = (value_col.get(i), count_col.get(i))
         {
-            let value_str = value.str_value();
+            let value_str = crate::exact::str_value(value);
             if let Ok(count_u32) = count.try_extract::<u32>() {
                 top_values.push((value_str.to_string(), count_u32 as usize));
             }

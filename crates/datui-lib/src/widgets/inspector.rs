@@ -410,8 +410,6 @@ fn preview(field: &InspectField, value: &AnyValue, room: usize, ctx: &RenderCont
         v if exact::is_nested_value(v) => {
             exact::preview(&exact::nested_compact(v, budget).text, g).into_owned()
         }
-        // The table's formatting panics on a date past the calendar.
-        v if exact::out_of_range(v).is_some() => exact::value_text(v),
         v => {
             let formatter = ctx.number_format.formatter_for(&field.name, &field.dtype);
             let mut scratch = String::new();

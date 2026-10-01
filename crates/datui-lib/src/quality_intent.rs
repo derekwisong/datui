@@ -689,7 +689,7 @@ fn count_at(df: &DataFrame, name: &str) -> Option<usize> {
 
 fn text_at(df: &DataFrame, name: &str) -> Option<String> {
     let value = df.column(name).ok()?.get(0).ok()?;
-    (!value.is_null()).then(|| value.str_value().into_owned())
+    (!value.is_null()).then(|| crate::exact::str_value(&value).into_owned())
 }
 
 /// The commonest values `rows` holds in `value`, with how many rows hold each: over
@@ -718,7 +718,7 @@ fn commonest(lf: &LazyFrame, rows: Expr, value: Expr) -> Result<Vec<(String, usi
                 AnyValue::UInt64(count) => count as usize,
                 _ => return None,
             };
-            Some((value.str_value().into_owned(), count))
+            Some((crate::exact::str_value(&value).into_owned(), count))
         })
         .collect())
 }

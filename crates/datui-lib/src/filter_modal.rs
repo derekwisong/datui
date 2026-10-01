@@ -72,7 +72,7 @@ impl LogicalOperator {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FilterStatement {
     pub column: String,
     pub operator: FilterOperator,

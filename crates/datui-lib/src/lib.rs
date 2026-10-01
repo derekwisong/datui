@@ -141,6 +141,7 @@ use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, P
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus, order_with_hidden};
 pub use template::{Template, TemplateManager, Templates};
+use widgets::column_widths::WidthChoice;
 use widgets::controls::Controls;
 use widgets::datatable::{DataTableState, DrillRow};
 use widgets::debug::DebugState;
@@ -19133,6 +19134,24 @@ impl App {
                     self.sort_filter_modal.sort.toggle_visibility();
                     self.sort_filter_modal.sort.has_unapplied_changes = true;
                 }
+                KeyCode::Char('<' | ',') if on_column_list => {
+                    self.sort_filter_modal
+                        .sort
+                        .change_width(WidthChoice::narrower);
+                }
+                KeyCode::Char('>' | '.') if on_column_list => {
+                    self.sort_filter_modal.sort.change_width(WidthChoice::wider);
+                }
+                KeyCode::Char('f') if on_column_list => {
+                    self.sort_filter_modal
+                        .sort
+                        .change_width(|_, _| WidthChoice::Fit);
+                }
+                KeyCode::Char('w') if on_column_list => {
+                    self.sort_filter_modal
+                        .sort
+                        .change_width(|_, _| WidthChoice::Auto);
+                }
                 KeyCode::Char('C') if on_body && sort_tab => {
                     self.sort_filter_modal.sort.clear_selection();
                 }
@@ -24796,6 +24815,8 @@ impl App {
                     is_locked: last_locked.is_some_and(|l| display_order <= l),
                     is_to_be_locked: false,
                     is_visible: shown.contains(name.as_str()),
+                    width: state.width_choice(name),
+                    shown_width: state.shown_width(name),
                 }
             })
             .collect();
@@ -24817,12 +24838,27 @@ impl App {
             self.sort_filter_modal.sort.get_full_column_order();
         self.sort_filter_modal.sort.applied_locked = self.sort_filter_modal.sort.get_locked_span();
         let statements = self.sort_filter_modal.filter.statements.clone();
+        // Widths read nothing, so they apply here; a fit measures the rows on screen
+        // when the table is next drawn. With nothing else changed the view stays
+        // where it is, on the page the fit was asked for: applying the order, filters
+        // and sort again would read the rows afresh from the top.
+        let view_unchanged = self.data_table_state.as_mut().is_some_and(|state| {
+            state.set_width_choices(self.sort_filter_modal.sort.width_choices());
+            state.headers() == column_order
+                && state.locked_columns_count() == locked_count
+                && state.view_filters() == statements.as_slice()
+                && state.view_sort_columns() == columns.as_slice()
+                && state.view_sort_descending() == descending.as_slice()
+        });
         for col in &mut self.sort_filter_modal.sort.columns {
             col.is_to_be_locked = false;
         }
         self.sort_filter_modal.sort.has_unapplied_changes = false;
         self.sort_filter_modal.close();
         self.input_mode = InputMode::Normal;
+        if view_unchanged {
+            return None;
+        }
         let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
         let _ = self.send_event(AppEvent::Filter(statements));
         Some(AppEvent::Sort(columns, descending))

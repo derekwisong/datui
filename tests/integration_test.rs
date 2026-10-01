@@ -231,6 +231,8 @@ fn test_full_workflow() {
             is_locked: false,
             is_to_be_locked: false,
             is_visible: true,
+            width: datui::widgets::column_widths::WidthChoice::Auto,
+            shown_width: None,
         })
         .collect();
     app.sort_filter_modal.sort.table_state.select(Some(0));
@@ -10891,6 +10893,8 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
         is_locked: false,
         is_to_be_locked: false,
         is_visible: true,
+        width: datui::widgets::column_widths::WidthChoice::Auto,
+        shown_width: None,
     }];
 
     // Enter on the highlighted group row drills in.

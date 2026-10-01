@@ -7290,8 +7290,8 @@ fn test_the_hidden_drift_column_is_never_part_of_the_data() {
     assert_eq!(header, "date,id,extra", "nor in what an export writes");
 }
 
-/// Run a CSV export through the app's own two-phase export events and return the
-/// header line of the file it wrote.
+/// Run a CSV export through the app's own export events and return the header line
+/// of the file it wrote.
 fn export_csv_header(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
@@ -7305,8 +7305,8 @@ fn export_csv_header(
         .to_string()
 }
 
-/// Run a CSV export through the app's own two-phase export events and return the whole
-/// file. `source_file` asks it to name the file each row came from.
+/// Run a CSV export through the app's own export events and return the whole file.
+/// `source_file` asks it to name the file each row came from.
 fn export_csv(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
@@ -7325,7 +7325,7 @@ fn export_csv(
     std::fs::read_to_string(path).expect("the export wrote a file")
 }
 
-/// Run an export in `format` through the app's own two-phase export events.
+/// Run an export in `format` through the app's own export events.
 fn export_as(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
@@ -7342,26 +7342,14 @@ fn export_as(
         json_compression: None,
         ndjson_compression: None,
     };
-    let start = AppEvent::DoExportCollect(datui::ExportRequest {
+    let start = AppEvent::Export(datui::ExportRequest {
         path: path.to_path_buf(),
         format,
         options,
         overwrite: datui::output_file::Overwrite::Forbid,
     });
-    if let Some(next) = app.event(&start) {
-        let _ = tx.send(next);
-    }
-    for _ in ticks() {
-        while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
-                let _ = tx.send(next);
-            }
-        }
-        if path.exists() && !app.is_busy() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    run_to_idle(app, rx, tx, start);
+    assert_eq!(app.error_message(), None, "the export to {path:?} failed");
 }
 
 /// Feed `first` to the app and pump until nothing is left to do.
@@ -7481,51 +7469,105 @@ fn test_a_file_that_appears_during_an_export_is_left_alone() {
     assert!(leftovers(dir.path(), &["out.csv"]).is_empty());
 }
 
-/// A write that fails part way over an agreed overwrite: the error reaches the
-/// app, and the old file's bytes, its mode, and nothing else are left. CSV
-/// cannot write a list column it was not prepared for, which is the failure.
+/// A view whose rows fail part way through, over an agreed overwrite, by both
+/// routes: streamed to an uncompressed CSV, collected for a gzipped one. The error
+/// reaches the app, and the old file's bytes, its mode, and nothing else are left.
 #[test]
 fn test_a_failed_export_keeps_the_old_file() {
     let (mut app, rx, tx) = open_query_filter_fixture("export_fails.csv");
+    // Past the first of the streaming engine's 100,000-row batches, so the
+    // streamed route has written rows before the failure.
+    let rows = 300_000i64;
+    let failing = df!("id" => (0..rows).collect::<Vec<_>>())
+        .unwrap()
+        .lazy()
+        .with_column(col("id").map(
+            move |c| {
+                if c.i64()?.max().is_some_and(|id| id >= rows - 1) {
+                    polars_bail!(ComputeError: "injected failure at the last row");
+                }
+                Ok(c)
+            },
+            |_, field| Ok(field.clone()),
+        ));
+    let state =
+        datui::widgets::datatable::DataTableState::new(failing, None, None, None, None, true)
+            .unwrap();
+    app.data_table_state = Some(state);
     let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("out.csv.gz");
-    std::fs::write(&target, "old contents").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o604)).unwrap();
+
+    for (name, compression) in [
+        ("out.csv", None),
+        ("out.csv.gz", Some(datui::CompressionFormat::Gzip)),
+    ] {
+        let target = dir.path().join(name);
+        std::fs::write(&target, "old contents").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o604)).unwrap();
+        }
+        let mut request = csv_request(&target, datui::output_file::Overwrite::Replace);
+        request.options.csv_compression = compression;
+        run_to_idle(&mut app, &rx, &tx, AppEvent::Export(request));
+
+        assert!(
+            app.error_message().is_some_and(|m| m.contains("injected")),
+            "{name}: the failure reaches the app: {:?}",
+            app.error_message()
+        );
+        assert!(!app.is_busy());
+        assert!(
+            !app.flash_message()
+                .is_some_and(|m| m.starts_with("Exported to "))
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old contents");
+        assert!(leftovers(dir.path(), &["out.csv", "out.csv.gz"]).is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o604);
+        }
+        press(&mut app, KeyCode::Esc);
     }
-    let mut df = df!("a" => [1i64, 2]).unwrap();
-    df.with_column(Column::new(
-        "list".into(),
-        [
-            Series::new("".into(), [1i64]),
-            Series::new("".into(), [2i64]),
-        ],
-    ))
-    .unwrap();
+}
 
-    let collected = AppEvent::BackgroundExportCollected {
-        generation: app.task_generation(),
-        df,
-        request: csv_request(&target, datui::output_file::Overwrite::Replace),
-    };
-    run_to_idle(&mut app, &rx, &tx, collected);
-
-    assert!(app.error_message().is_some(), "the failure reaches the app");
-    assert!(!app.is_busy());
+/// With the streaming engine off, a CSV or Parquet export is collected and still
+/// writes what the streamed one does.
+#[test]
+fn test_an_export_without_the_streaming_engine_writes_the_same_file() {
+    use datui::export_modal::ExportFormat;
+    let dir = tempfile::tempdir().unwrap();
+    let mut written = Vec::new();
+    for streaming in [true, false] {
+        let mut config = datui::AppConfig::default();
+        config.performance.polars_streaming = streaming;
+        let (mut app, rx, tx) =
+            open_query_filter_fixture_with(&format!("export_engine_{streaming}.csv"), config);
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .query("select a, name where c = 1".to_string());
+        pump_until_idle(&mut app, &rx, &tx);
+        let csv = dir.path().join(format!("{streaming}.csv"));
+        export_as(&mut app, &rx, &tx, &csv, ExportFormat::Csv, false);
+        let parquet = dir.path().join(format!("{streaming}.parquet"));
+        export_as(&mut app, &rx, &tx, &parquet, ExportFormat::Parquet, false);
+        let back = ParquetReader::new(File::open(&parquet).unwrap())
+            .finish()
+            .unwrap();
+        written.push((std::fs::read_to_string(&csv).unwrap(), back));
+    }
+    let (streamed, collected) = (&written[0], &written[1]);
+    assert_eq!(streamed.0, collected.0);
     assert!(
-        !app.flash_message()
-            .is_some_and(|m| m.starts_with("Exported to "))
+        streamed.0.starts_with("a,name\n1,beta_1\n4,alpha_4\n"),
+        "{}",
+        streamed.0
     );
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), "old contents");
-    assert!(leftovers(dir.path(), &["out.csv.gz"]).is_empty());
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o604);
-    }
+    assert_eq!(streamed.0.lines().count(), 34);
+    assert!(streamed.1.equals_missing(&collected.1));
 }
 
 /// Read a CSV export back with every column as text, sorted by `key`.
@@ -8480,6 +8522,34 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
         lines[2]
     );
 
+    // Streamed to Parquet, the names are the same.
+    let parquet = dir.path().join("named.parquet");
+    export_as(
+        &mut app,
+        &rx,
+        &tx,
+        &parquet,
+        datui::export_modal::ExportFormat::Parquet,
+        true,
+    );
+    let back = ParquetReader::new(File::open(&parquet).unwrap())
+        .finish()
+        .unwrap();
+    assert_eq!(
+        back.get_column_names(),
+        ["date", "id", "extra", "source_file"]
+    );
+    let files = back.column("source_file").unwrap().str().unwrap().clone();
+    assert!(
+        files
+            .get(0)
+            .is_some_and(|f| f.ends_with(&native("date=2024-01-01/data.parquet")))
+            && files
+                .get(1)
+                .is_some_and(|f| f.ends_with(&native("date=2024-01-02/data.parquet"))),
+        "{files:?}"
+    );
+
     // Off by default, and then the hidden index must not leak in its place.
     let plain = dir.path().join("plain.csv");
     let csv = export_csv(&mut app, &rx, &tx, &plain, false);
@@ -8492,8 +8562,8 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
     );
 }
 
-/// Avro widens the hidden row index along with every other `u32`; the files are
-/// still named from it.
+/// Avro widens every `u32`; the files are named from the hidden row index before
+/// that, through the collected route.
 #[test]
 fn test_an_avro_export_can_name_the_file_each_row_came_from() {
     use polars::io::avro::AvroReader;
@@ -8567,11 +8637,8 @@ fn test_naming_source_files_never_overwrites_a_column_of_that_name() {
 /// Asking for source files on a frame that no longer has them must not leak datui's
 /// bookkeeping instead.
 ///
-/// This exercises the path where the option is on but the dataset cannot honour it, so
-/// the export never collects the index at all. The other path — collected with the
-/// index, then unable to name it — is guarded by `drop_row_index`, which is unit
-/// tested; it needs the dataset to change between the collect being spawned and its
-/// result arriving, which keys held while busy make unreachable today.
+/// The option is on but the dataset cannot honor it, so the export plans the view
+/// without the index at all.
 #[test]
 fn test_asking_to_name_files_on_a_query_result_leaks_nothing() {
     let dir = tempfile::tempdir().unwrap();

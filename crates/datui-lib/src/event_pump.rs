@@ -599,26 +599,14 @@ mod tests {
     /// continuation lease, and that has to be true at each phase change rather than only
     /// at the first.
     ///
-    /// The export is the errand with the most of them: collect, then write.
+    /// An export hands off once, from drawing its progress to the job, which then
+    /// runs from plan to committed file holding its own lease.
     #[test]
     fn an_export_holds_the_generation_at_every_phase_change() {
         let (mut p, dir) = loaded_pump();
         let out = dir.path().join("out.csv");
 
-        p.send(AppEvent::DoExport(crate::ExportRequest {
-            path: out.clone(),
-            format: crate::ExportFormat::Csv,
-            options: crate::ExportOptions {
-                csv_delimiter: b',',
-                csv_include_header: true,
-                source_file: false,
-                csv_compression: None,
-                json_compression: None,
-                ndjson_compression: None,
-            },
-            overwrite: crate::output_file::Overwrite::Forbid,
-        }))
-        .unwrap();
+        p.send(AppEvent::Export(csv_export(&out))).unwrap();
 
         let mut breaks = 0;
         for _ in 0..10_000 {
@@ -632,9 +620,11 @@ mod tests {
                     // Mid-errand, at the moment the loop would draw and poll.
                     if !p.next_up.is_empty() {
                         breaks += 1;
+                    }
+                    if !p.next_up.is_empty() || p.app.is_busy() {
                         assert!(
                             p.app.work_a_bump_would_strand(),
-                            "phase change {breaks} left the generation free"
+                            "the export left the generation free after {breaks} hand-offs"
                         );
                     }
                     if !updated && p.next_up.is_empty() && !p.app.is_busy() {
@@ -646,9 +636,8 @@ mod tests {
         }
 
         assert!(
-            breaks >= 2,
-            "the export handed off at least twice — collect, then write — and each was \
-             checked; saw {breaks}"
+            breaks >= 1,
+            "the export handed off to its job, and that was checked; saw {breaks}"
         );
         assert!(out.exists(), "and the file was written, which is the point");
 
@@ -682,22 +671,20 @@ mod tests {
         }
     }
 
-    /// #455: an export whose write dies holds the app across the gap between its two
-    /// phases, then ends: the reason on screen, the keyboard back, nothing of its own
-    /// left set and the generation free. The next export writes its file.
+    /// #455: an export whose worker dies ends: the reason on screen, the keyboard
+    /// back, nothing of its own left set, no file and the generation free. The
+    /// next export writes its file.
     #[test]
-    fn an_export_whose_write_dies_ends_and_the_next_one_writes() {
+    fn an_export_whose_worker_dies_ends_and_the_next_one_writes() {
         let (mut p, dir) = loaded_pump();
         let out = dir.path().join("out.csv");
-        // The second export job is the first one's write.
         let mut exports = 0;
         p.app.worker_dies = Some(Box::new(move |job| {
             exports += usize::from(*job == crate::Job::Export);
-            exports == 2
+            exports == 1
         }));
         p.send(AppEvent::Export(csv_export(&out))).unwrap();
 
-        let mut gap = false;
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
         while !p.app.error_modal.active {
             assert!(
@@ -705,18 +692,7 @@ mod tests {
                 "the export never ended"
             );
             p.wait_and_drain(Duration::from_millis(50)).unwrap();
-            // Collected, with the write queued behind a frame.
-            if p.app.export_df.is_some() && !p.next_up.is_empty() {
-                gap = true;
-                assert!(p.app.is_busy(), "busy between collect and write");
-                assert!(p.app.work_a_bump_would_strand(), "and the generation held");
-                assert!(matches!(
-                    p.app.loading_state,
-                    LoadingState::Exporting { .. }
-                ));
-            }
         }
-        assert!(gap, "the export handed off from its collect to its write");
         assert!(
             p.app.error_modal.message.contains("worker died"),
             "{}",
@@ -725,10 +701,6 @@ mod tests {
         assert!(!p.app.is_busy());
         assert!(p.app.status_message.is_none());
         assert!(matches!(p.app.loading_state, LoadingState::Idle));
-        assert!(
-            p.app.export_df.is_none(),
-            "the rows collected for it are let go"
-        );
         assert!(!out.exists());
         settle(&mut p);
         assert!(!p.app.work_a_bump_would_strand(), "its lease came back");

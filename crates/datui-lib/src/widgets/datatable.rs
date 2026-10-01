@@ -577,6 +577,76 @@ pub struct RemoteFiles {
     pub offsets: Option<Vec<usize>>,
 }
 
+/// The rows an export writes. See [`DataTableState::export_frame`].
+pub struct ExportFrame {
+    lf: LazyFrame,
+    files: Option<SourceFiles>,
+}
+
+/// The dataset's files in scan order, and the row each starts at.
+struct SourceFiles {
+    names: Arc<Vec<String>>,
+    starts: Arc<Vec<usize>>,
+}
+
+impl ExportFrame {
+    /// The name of the column an export adds when asked to say where each row is from.
+    pub const SOURCE_FILE_COLUMN: &'static str = "source_file";
+
+    /// The plan. Naming the files reads the schema, which may resolve the scan, so
+    /// this belongs off the UI thread.
+    ///
+    /// The names are mapped from the row index batch by batch, so a streamed export
+    /// still never holds every row.
+    pub fn into_lazy(self) -> PolarsResult<LazyFrame> {
+        let Some(SourceFiles { names, starts }) = self.files else {
+            return Ok(self.lf);
+        };
+        let mut lf = self.lf;
+        let schema = lf.collect_schema()?;
+        let name = Self::free_name(schema.iter_names().map(|n| n.as_str()));
+        let index = crate::schema_union::DRIFT_COLUMN;
+        let file_of = move |rows: Column| -> PolarsResult<Column> {
+            let rows = rows.strict_cast(&DataType::UInt64)?;
+            let named: StringChunked = rows
+                .u64()?
+                .iter()
+                .map(|row| {
+                    let row = row? as usize;
+                    let file = starts
+                        .partition_point(|&start| start <= row)
+                        .saturating_sub(1);
+                    names.get(file).map(String::as_str)
+                })
+                .collect();
+            Ok(named.with_name(rows.name().clone()).into_column())
+        };
+        // Added last, after the dataset's own columns, as the index comes off.
+        Ok(lf
+            .with_column(
+                col(index)
+                    .map(file_of, |_, field| {
+                        Ok(Field::new(field.name().clone(), DataType::String))
+                    })
+                    .alias(name),
+            )
+            .drop(by_name([index], true, false)))
+    }
+
+    /// A name for the source-file column that no column already has.
+    ///
+    /// `source_file` is a name a dataset may well use itself — a directory of per-file
+    /// extracts is exactly this feature's audience — and adding a column by a name
+    /// already present replaces it, silently, in the file the user takes away.
+    fn free_name<'a>(taken: impl Iterator<Item = &'a str>) -> String {
+        let taken: HashSet<&str> = taken.collect();
+        std::iter::once(Self::SOURCE_FILE_COLUMN.to_string())
+            .chain((1..).map(|n| format!("{}_{n}", Self::SOURCE_FILE_COLUMN)))
+            .find(|candidate| !taken.contains(candidate.as_str()))
+            .expect("some suffix is free")
+    }
+}
+
 /// Result of a background buffer load. Consumed by `apply_async_collect()`.
 pub struct CollectResult {
     pub df: DataFrame,
@@ -5109,9 +5179,6 @@ impl DataTableState {
         self.drift_groups.clone()
     }
 
-    /// The name of the column an export adds when asked to say where each row is from.
-    pub const SOURCE_FILE_COLUMN: &'static str = "source_file";
-
     /// Whether an export can name each row's file: the frame has to still carry the
     /// scan's row index, and the dataset has to have files to name.
     pub fn can_name_source_files(&self) -> bool {
@@ -5120,59 +5187,25 @@ impl DataTableState {
             && self.drift_files.len() == self.drift_file_starts.len()
     }
 
-    /// A name for the source-file column that no column of `df` already has.
-    ///
-    /// `source_file` is a name a dataset may well use itself — a directory of per-file
-    /// extracts is exactly this feature's audience — and adding a column by a name
-    /// already present replaces it, silently, in the file the user takes away.
-    fn free_source_file_name(df: &DataFrame) -> String {
-        let taken: Vec<String> = df
-            .get_column_names()
-            .iter()
-            .map(|n| n.to_string())
-            .collect();
-        if !taken.iter().any(|n| n == Self::SOURCE_FILE_COLUMN) {
-            return Self::SOURCE_FILE_COLUMN.to_string();
+    /// The rows an export writes, planned and not run: the view, and when
+    /// `name_files` asks and the dataset can, a column naming each row's file in
+    /// place of the scan's hidden row index. Otherwise the index is dropped, so
+    /// datui's own bookkeeping never lands in the user's file.
+    pub fn export_frame(&self, name_files: bool) -> ExportFrame {
+        if name_files && self.can_name_source_files() {
+            ExportFrame {
+                lf: self.lf.clone(),
+                files: Some(SourceFiles {
+                    names: Arc::new(self.drift_files.clone()),
+                    starts: Arc::new(self.drift_file_starts.clone()),
+                }),
+            }
+        } else {
+            ExportFrame {
+                lf: self.visible_lf(),
+                files: None,
+            }
         }
-        (1..)
-            .map(|n| format!("{}_{n}", Self::SOURCE_FILE_COLUMN))
-            .find(|candidate| !taken.contains(candidate))
-            .expect("some suffix is free")
-    }
-
-    /// Replace the scan's hidden row index with the path of the file each row came
-    /// from. The frame must have been collected with the index still on it.
-    pub fn name_source_files(&self, mut df: DataFrame) -> PolarsResult<DataFrame> {
-        let name = Self::free_source_file_name(&df);
-        // An Avro export has widened the index to i64 along with every other u32.
-        let rows = df
-            .drop_in_place(crate::schema_union::DRIFT_COLUMN)?
-            .strict_cast(&DataType::UInt32)?;
-        let rows = rows.u32()?;
-        let names: Vec<Option<&str>> = rows
-            .iter()
-            .map(|row| {
-                let row = row? as usize;
-                let file = self
-                    .drift_file_starts
-                    .partition_point(|&start| start <= row)
-                    .saturating_sub(1);
-                self.drift_files.get(file).map(String::as_str)
-            })
-            .collect();
-        let column = Column::new(name.into(), names).cast(&DataType::String)?;
-        df.with_column(column)?;
-        Ok(df)
-    }
-
-    /// Take the scan's hidden row index off a collected frame, if it is there.
-    ///
-    /// An export that asked to name each row's file collects with the index still on,
-    /// so every path out of that — including the ones where naming fails — has to
-    /// remove it, or datui's own bookkeeping ends up in the user's file.
-    pub fn drop_row_index(mut df: DataFrame) -> DataFrame {
-        let _ = df.drop_in_place(crate::schema_union::DRIFT_COLUMN);
-        df
     }
 
     /// What datui noticed about the dataset itself, as its footers were read.
@@ -10394,30 +10427,6 @@ mod tests {
         assert!(state.schema.contains("column_3"));
         assert_eq!(state.num_rows, 3);
         let _ = std::fs::remove_file(&path);
-    }
-
-    /// Every way out of an export that collected the scan's row index has to take it
-    /// off again, including the ones where the file names cannot be worked out.
-    #[test]
-    fn dropping_the_row_index_leaves_the_data_alone() {
-        let with = df!(
-            "id" => &[1i64, 2],
-            crate::schema_union::DRIFT_COLUMN => &[0u32, 1],
-        )
-        .unwrap();
-        let without = DataTableState::drop_row_index(with);
-        assert_eq!(
-            without.get_column_names(),
-            ["id"],
-            "the index goes and nothing else does"
-        );
-
-        // A frame that never had one is handed back unchanged.
-        let plain = df!("id" => &[1i64]).unwrap();
-        assert_eq!(
-            DataTableState::drop_row_index(plain).get_column_names(),
-            ["id"]
-        );
     }
 
     #[test]

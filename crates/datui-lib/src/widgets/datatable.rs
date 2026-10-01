@@ -8348,8 +8348,6 @@ impl DataTableState {
             ctx.register("df", root.clone());
             match ctx.execute(trimmed) {
                 Ok(mut result_lf) => {
-                    stable_order(&mut result_lf.logical_plan);
-                    count_subquery_values_once(&mut result_lf.logical_plan);
                     let schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
                         Err(e) => {
@@ -8359,8 +8357,15 @@ impl DataTableState {
                     };
                     let group_source =
                         Self::sql_group_source(&mut ctx, trimmed, root, &mut result_lf, &schema);
+                    // Groups sorted by their keys have no ties, and a statement simple
+                    // enough to trace holds nothing else that gives rows in any order.
+                    // Keeping the groups' order too would double the grouping's time.
+                    if !group_source.as_ref().is_some_and(|(_, by_keys)| *by_keys) {
+                        stable_order(&mut result_lf.logical_plan);
+                    }
+                    count_subquery_values_once(&mut result_lf.logical_plan);
                     self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql), 0);
-                    self.install_sql_group_source(group_source);
+                    self.install_sql_group_source(group_source.map(|(source, _)| source));
                 }
                 Err(e) => {
                     self.error = Some(e);
@@ -8381,7 +8386,7 @@ impl DataTableState {
     /// A grouping with no ORDER BY or LIMIT has its rows sorted by key, as a `by`
     /// query's are: Polars returns groups in any order, and every read of the result
     /// (each page, the row count, coming back from a drill) would otherwise be free to
-    /// shuffle them.
+    /// shuffle them. Also says whether it sorted them.
     #[cfg(feature = "sql")]
     fn sql_group_source(
         ctx: &mut polars_sql::SQLContext,
@@ -8389,7 +8394,7 @@ impl DataTableState {
         root: LazyFrame,
         result_lf: &mut LazyFrame,
         result: &Schema,
-    ) -> Option<GroupSource> {
+    ) -> Option<(GroupSource, bool)> {
         use crate::sql_group::KeySource;
         let columns = root.clone().collect_schema().ok()?;
         let names: Vec<&str> = columns.iter_names().map(|n| n.as_str()).collect();
@@ -8424,12 +8429,13 @@ impl DataTableState {
             let options = sort_options(vec![false; by.len()]);
             *result_lf = result_lf.clone().sort_by_exprs(by, options);
         }
-        Some(GroupSource {
+        let source = GroupSource {
             rows,
             keys,
             scratch,
             rows_in_lists: false,
-        })
+        };
+        Some((source, !plan.ordered))
     }
 
     /// Record a SQL result's group source and freeze the keys that lead it, as a `by`
@@ -11878,7 +11884,7 @@ mod tests {
     /// Filter sort over it keeps its ties in that order: groupings, distincts, unions
     /// and joins give their rows in one order, so every page agrees with a read of
     /// the whole result, and a LIMIT keeps the same rows (#508). Both engines give the
-    /// same order.
+    /// same order. A grouping sorted by its keys leaves its groups' order to the sort.
     #[cfg(feature = "sql")]
     #[test]
     fn a_sql_result_without_order_by_reads_the_same_rows_page_by_page() {
@@ -11893,6 +11899,7 @@ mod tests {
             "SELECT k, v FROM df UNION ALL SELECT k, v FROM df",
             "SELECT k, v FROM df UNION SELECT k, v FROM df",
             "SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g LIMIT 300",
+            "SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g",
             "SELECT g, COUNT(*) AS n FROM (SELECT v % 1000 AS g FROM df) GROUP BY g",
             "SELECT DISTINCT v % 1000 AS g FROM df",
             "SELECT * FROM df WHERE v IN (SELECT v FROM df WHERE k = 1) LIMIT 1000",
@@ -11934,6 +11941,16 @@ mod tests {
                 );
             }
         }
+        // Keeping the groups' order as well would double a large grouping's time.
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.sql_query("SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g".to_string());
+        assert!((&state.lf.logical_plan).into_iter().any(|node| matches!(
+            node,
+            polars::lazy::dsl::DslPlan::GroupBy {
+                maintain_order: false,
+                ..
+            }
+        )));
     }
 
     #[test]

@@ -1010,7 +1010,9 @@ impl QualityWatch {
         let phase = QualityPhase {
             stage,
             reads_source,
-            interruptible,
+            // Without the streaming engine a read is one in-memory collect, with no
+            // batch boundary for a cancel to stop at.
+            interruptible: interruptible && cfg!(feature = "streaming"),
         };
         let mut last = self
             .last
@@ -8435,6 +8437,7 @@ mod tests {
 
     /// A full run's passes stop within a batch when cancelled mid-read, rather than
     /// running their collect to its end, and say they can.
+    #[cfg(feature = "streaming")]
     #[test]
     fn a_full_run_stops_inside_its_read() {
         const ROWS: usize = 2_000_000;
@@ -8467,6 +8470,32 @@ mod tests {
             observed.rows < ROWS,
             "stopped partway through the first pass: {observed:?}"
         );
+    }
+
+    /// Without the streaming engine every read is one collect a cancel cannot enter,
+    /// and no stage promises otherwise (#498).
+    #[cfg(not(feature = "streaming"))]
+    #[test]
+    fn without_streaming_no_read_says_it_stops_partway() {
+        let (_dir, lf) = csv_source(1_000);
+        for compute in [QualityCompute::Full, QualityCompute::Sample] {
+            let plan = DataQualityPlan {
+                compute,
+                ..DataQualityPlan::default()
+            };
+            let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = Arc::clone(&stages);
+            let watch = QualityWatch::new(move |phase| seen.lock().unwrap().push(phase));
+            let (results, _) =
+                compute_data_quality_watched(&lf, Some(1_000), &plan, None, true, None, &watch);
+            results.unwrap();
+            let stages = stages.lock().unwrap().clone();
+            assert!(stages.iter().any(|phase| phase.reads_source), "{stages:?}");
+            assert!(
+                stages.iter().all(|phase| !phase.interruptible),
+                "{stages:?}"
+            );
+        }
     }
 
     /// A finished full run counts the rows every pass traversed; a sampled run the

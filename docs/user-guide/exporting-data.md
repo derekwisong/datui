@@ -5,9 +5,23 @@ as queried, filtered and sorted.
 
 ## Save a CSV
 
-1. Apply the query and filters to export.
-2. Press <kbd>e</kbd> and enter `result.csv` in **Path**.
+1. Open **Premier League (2020-21)** from **Public datasets** and run the
+   [goals query](querying-data.md#dates-and-messy-text).
+2. Press <kbd>e</kbd> and type `goals.csv` in **Path**.
 3. Press <kbd>Enter</kbd>. If the file exists, confirm whether to overwrite it.
+
+The status line says `Exported to goals.csv`. The file holds a header and 380
+matches, in the query's order:
+
+```text
+Round,match_date,home,away,goals
+4,2020-10-04,Aston Villa,Liverpool,9
+22,2021-02-02,Manchester Utd,Southampton,9
+14,2020-12-20,Manchester Utd,Leeds United,8
+```
+
+`match_date` is written as a date because the query casts it; a `STRPTIME`
+result alone is a datetime and exports as `2020-10-04T00:00:00.000000`.
 
 The file contains all matching rows and displayed columns, not just the page
 on screen. Numbers use their raw values, without display formatting.

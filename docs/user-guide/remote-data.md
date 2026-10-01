@@ -1,7 +1,8 @@
 # Connect to cloud storage
 
 Pass a cloud URL to datui, or use the [cloud browser](cloud-browser.md).
-The examples below use placeholder bucket/account names; substitute your own.
+The setup examples below use placeholder bucket and account names; substitute
+your own. [Public data](#public-data) has examples that run as written.
 
 | Storage | Setup | Example URL |
 |---|---|---|
@@ -225,6 +226,65 @@ datui abfss://release@overturemapswestus2.dfs.core.windows.net/
 
 The retry matters most on Azure, which refuses a public container to a login from
 another tenant.
+
+### Examples on public data
+
+NOAA's daily weather for 2024 is one Hive partition in S3, `by_year/YEAR=2024/`,
+with an `ELEMENT=` directory per measurement. Open it from **Public datasets** › **NOAA daily
+weather (GHCN-D)**, or:
+
+```bash
+datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/
+```
+
+37,108,477 rows, with `YEAR` and `ELEMENT` as columns from the directory
+names. Which measurements are most common?
+
+```sql
+SELECT ELEMENT, COUNT(*) AS observations, COUNT(DISTINCT ID) AS stations
+FROM df
+GROUP BY ELEMENT
+ORDER BY observations DESC
+```
+
+Precipitation, `PRCP`, leads with 11,266,140 observations from 42,675
+stations, then `SNOW`, `TMAX` and `TMIN`. The query reads every file, a few
+seconds on a home connection.
+
+One station, from `by_year/YEAR=2024/ELEMENT=TMAX/`: `USW00094728` is Central
+Park, and `DATA_VALUE` is tenths of a degree Celsius.
+
+```sql
+SELECT CAST(STRPTIME(DATE, '%Y%m%d') AS DATE) AS day, DATA_VALUE / 10.0 AS high_c
+FROM df
+WHERE ID = 'USW00094728'
+ORDER BY day
+```
+
+366 days, from −6.0 to 35.0 °C. Chart `day` against `high_c` as a line, or
+save it as a [view](views.md) for another year.
+
+Bitcoin blocks are partitioned by day, one directory per date, under
+**Public datasets** › **Bitcoin and Ethereum** › `btc` › `blocks`:
+
+```bash
+datui s3://aws-public-blockchain/v1.0/btc/blocks/
+```
+
+A filter on the partition column reads only the matching days:
+
+```sql
+SELECT EXTRACT(MONTH FROM mediantime) AS month, COUNT(*) AS blocks,
+       SUM(transaction_count) AS txs
+FROM df
+WHERE date >= '2024-01-01' AND date < '2025-01-01'
+GROUP BY month
+ORDER BY month
+```
+
+12 rows, 4,179 to 4,761 blocks a month; October has the most transactions,
+20,482,111. The table opens before every file's footer is read; the bottom bar counts
+them, `Reading footers: …`, while you work. The feed adds a partition a day.
 
 For public data without a URL, run `datui` and open a dataset under
 [**Public datasets**](home-screen.md#public-datasets), which lists publishers and

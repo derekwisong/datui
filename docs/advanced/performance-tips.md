@@ -21,7 +21,7 @@ Parquet or IPC file uses selected ranges; other views stream the data while
 keeping a bounded sample. See [sampling](../user-guide/analysis-features.md#sampling).
 
 ```bash
-datui --sample-rows 50000 events.parquet
+datui --sample-rows 50000 https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet
 ```
 
 Use `--sample-rows 0` to analyze every row, or press <kbd>a</kbd> on a sampled

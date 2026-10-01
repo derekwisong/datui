@@ -5,33 +5,30 @@ Press <kbd>p</kbd> to reshape the current query and filters.
 
 ## Pivot
 
-With the [quick-start penguin data](../getting-started/quick-start.md),
-run this query to keep the three needed columns and exclude missing sex values:
+Open **US baby names (1880-2017)** from **Public datasets**: 1.9 million rows
+of `year`, `sex`, `name`, `n` and `prop`. Keep three girls' names:
 
-```text
-select species, sex, body_mass_g where not null sex
+```sql
+SELECT year, name, n FROM df WHERE sex = 'F' AND name IN ('Emma', 'Jennifer', 'Olivia')
 ```
 
-Press <kbd>p</kbd> and choose these settings on **Pivot**:
+376 rows. Press <kbd>p</kbd> and choose these settings on **Pivot**:
 
 | Setting | Value | Meaning |
 |---|---|---|
-| Index | `species` | One row per species |
-| Columns | `sex` | One output column per sex |
-| Values | `body_mass_g` | Values to aggregate |
-| Aggregate | `avg` | Mean body mass for each species/sex pair |
+| Index | `year` | One row per year |
+| Columns | `name` | One output column per name |
+| Values | `n` | The count to put in each cell |
+| Aggregate | `last` | There is one value per year and name, so any aggregate keeps it |
 
 Use <kbd>Tab</kbd> to move through settings. <kbd>Space</kbd> opens a column
-picker; type to narrow, select columns and press <kbd>Enter</kbd> to close it.
-Press <kbd>Enter</kbd> in the form to apply.
+picker; type to narrow, <kbd>Space</kbd> to select and <kbd>Enter</kbd> to
+close it. Press <kbd>Enter</kbd> in the form to apply.
 
-The result has three rows. Values below are rounded to one decimal:
-
-| species | female | male |
-|---|---:|---:|
-| Adelie | 3368.8 | 4043.5 |
-| Chinstrap | 3527.2 | 3939.0 |
-| Gentoo | 4679.7 | 5484.8 |
+The result has 138 rows, one per year, and the columns `year`, `Emma`,
+`Jennifer` and `Olivia`. A year with no count for a name is null: Jennifer is
+`∅` before 1916, and in 1917 and 1918. Chart it as three lines; see
+[the examples](charting.md#examples-on-the-built-in-datasets).
 
 Output columns are sorted alphabetically. Pivot reads the rows once, in the
 background, and keeps one value per index and column pair in memory; filter
@@ -44,21 +41,37 @@ Available functions are `last` (default), `first`, `min`, `max`, `avg`, `med`,
 Those two functions are positional and retain nulls. After sorting with nulls
 last, `last` returns null for any group ending in a null.
 
+### Count with a pivot
+
+`count` turns rows into tallies. On **Space launches (1957-2018)**, with no
+query, press <kbd>p</kbd> and set:
+
+| Setting | Value |
+|---|---|
+| Index | `launch_year` |
+| Columns | `category` |
+| Values | `tag` |
+| Aggregate | `count` |
+
+62 rows of launches per year: `O` for those that reached orbit, `F` for
+failures. 1967 has 127 and 12. Rows come in the order the years first appear
+in the file; a line chart draws them in X order regardless.
+
 ## Melt
 
-To turn the pivot above back into rows, press <kbd>p</kbd>, select **Melt**,
+To turn the names pivot back into rows, press <kbd>p</kbd>, select **Melt**,
 and set:
 
 | Setting | Value |
 |---|---|
-| Index | `species` |
+| Index | `year` |
 | Strategy | **All except index** |
-| Variable name | `sex` |
-| Value name | `mean_mass_g` |
+| Variable name | `name` |
+| Value name | `n` |
 
-Apply with <kbd>Enter</kbd>. The result has six rows with columns `species`,
-`sex` and `mean_mass_g`. This reshapes the averages; it does not recover the
-original individual penguins.
+Apply with <kbd>Enter</kbd>. The result has 414 rows with columns `year`,
+`name` and `n`: the 376 counts, plus a null for each of the 38 years Jennifer
+has none.
 
 Other strategies select columns by regex (**By pattern**), data type
 (**By type**) or an **Explicit list**. The form shows how many columns match

@@ -5,17 +5,18 @@ to return to the table.
 
 ## Plot two columns
 
-Open the [quick-start penguin data](../getting-started/quick-start.md), then:
+Open **Palmer penguins** from **Public datasets**, as in the
+[quick start](../getting-started/quick-start.md), then:
 
 1. Press <kbd>c</kbd> and select **XY**.
-2. Set **Plot style** to **Scatter**.
-3. Choose `flipper_length_mm` for **X** and `body_mass_g` for **Y**.
+2. Set **Style** to **Scatter** with <kbd>→</kbd>.
+3. Choose `flipper_length_mm` for **X axis** and `body_mass_g` for **Y series**.
 
 Use <kbd>Tab</kbd> to move through settings and <kbd>Space</kbd> to open a
-column picker. Type part of a name to narrow it; on Y, <kbd>Space</kbd>
-toggles a series and <kbd>Enter</kbd> closes the picker. The Y picker leaves
-out the X column.
-The chart contains the 342 rows with both measurements present.
+column picker. Type part of a name to narrow it; on **Y series**,
+<kbd>Space</kbd> toggles a series and <kbd>Enter</kbd> closes the picker. The
+picker leaves out the X column. The two penguins with no measurements are left
+out.
 
 Points are drawn in X order, so a line runs left to right whatever order the
 table is in. Nulls are dropped per series: a row with no X is left out, and a
@@ -49,7 +50,7 @@ same way.
 
 ## Count rows per category
 
-With the [quick-start penguin data](../getting-started/quick-start.md):
+With **Palmer penguins** open:
 
 1. Press <kbd>c</kbd>, then <kbd>6</kbd> for **Bar**.
 2. Choose `species` for **Category** and **Count** for **Value**.
@@ -71,11 +72,16 @@ A view that fits in the rows the chart already read is counted from those.
 ## Chart one value per category
 
 With a numeric **Value**, the Bar tab charts a grouped result: one row per
-category. Group first with a [query](querying-data.md), then chart it:
+category. Group first with a [query](querying-data.md), then chart it. On
+**NYC flights (2013)**:
 
-1. Press <kbd>/</kbd> and run `select avg body_mass_g by species`.
+1. Press <kbd>/</kbd> and run
+   `SELECT carrier, AVG(arr_delay) AS delay, COUNT(*) AS flights FROM df GROUP BY carrier ORDER BY delay DESC`.
 2. Press <kbd>c</kbd>, then <kbd>6</kbd> for **Bar**.
-3. Choose `species` for **Category** and `avg_body_mass_g` for **Value**.
+3. Choose `carrier` for **Category** and `delay` for **Value**.
+
+Sixteen bars, F9 longest at 21.92 minutes. HA and AS arrive early on average,
+so their bars grow left of zero.
 
 | Option | What it does |
 |---|---|
@@ -93,6 +99,20 @@ category. Group first with a [query](querying-data.md), then chart it:
 
 A chart of values reads at most **Sample size** rows, so a grouped result with
 more categories than that is sampled, and says so.
+
+## Examples on the built-in datasets
+
+Each starts from the dataset of that name under **Public datasets**.
+
+| Chart | Data and query | Settings | What you see |
+|---|---|---|---|
+| JFK delay by hour | NYC flights, the [JFK query](querying-data.md#run-a-query) | XY, Line; X axis `hour`, Y series `mean_delay` | A climb from 0.5 minutes at 5:00 to 26.1 at 21:00 |
+| A year of delays | NYC flights, the [daily query](querying-data.md#dates-and-messy-text) | XY, Line; X axis `flight_date`, Y series `delay` | 2013 on a date axis; the peak is 83.54 on 2013-03-08 |
+| Three names | US baby names, the [pivot](reshaping.md#pivot) of Emma, Jennifer and Olivia | XY, Line; X axis `year`, Y series `Emma`, `Jennifer`, `Olivia` | Jennifer's peak of 63,604 in 1972; Emma and Olivia rising after 2000. Emma and Olivia start in 1880; Jennifer, with no published counts before 1916, starts there |
+| Launches per year | Space launches, the [count pivot](reshaping.md#count-with-a-pivot) | XY, Line; X axis `launch_year`, Y series `F`, `O` | `O`, launches that reached orbit, near 130 a year from the late 1960s to the mid-1980s, then a slump in the 1990s; `F`, failures, along the bottom |
+| Central Park highs | NOAA daily weather, `by_year/YEAR=2024/ELEMENT=TMAX`, the [station query](remote-data.md#public-data) | XY, Line; X axis `day`, Y series `high_c` | 366 daily highs from −6.0 to 35.0 °C |
+| Earthquakes on a map | Earthquakes (past month), no query | XY, Scatter; X axis `longitude`, Y series `latitude` | The Pacific Ring of Fire. A sample of 10,000; set **Sample size** to **Every row** for all of them |
+| Calories by chain | Food nutrition, the [restaurant summary](copying.md#copy-a-table-into-a-note) | Bar; Category `restaurant`, Value `avg_calories` | Mcdonalds first at 640, Chick Fil-A last at 384 |
 
 ## Large tables
 

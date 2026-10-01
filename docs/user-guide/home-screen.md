@@ -63,7 +63,7 @@ directories = ["/mnt/data", "~/datasets", "$WORK/warehouse"]
 `unavailable`.
 
 To add a cloud account or storage endpoint to the home screen, see
-[Named cloud sources](../reference/cloud-sources.md#named-sources).
+[Connections](../reference/cloud-sources.md#connections).
 
 ### Desktop places
 
@@ -241,7 +241,20 @@ dataset files, and hosted CSV extracts have the coverage shown.
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
 
 The details pane gives each one's publisher, license and homepage. The license is
-the publisher's: check it before you use the data. A collection named `public`
+the publisher's: check it before you use the data.
+
+| Dataset | Used in |
+|---|---|
+| Palmer penguins | [Quick start](../getting-started/quick-start.md), [charts](charting.md), [correlation](analysis-features.md#correlation-matrix), [Python](python-module.md) |
+| NYC flights (2013) | [Queries](querying-data.md#run-a-query), [drill-down](querying-data.md#drill-into-a-group-by), [bar charts](charting.md#chart-one-value-per-category) |
+| Food nutrition (fast food) | [Search, filter and sort](filtering-sorting.md), [copy](copying.md), [data quality](data-quality.md) |
+| US baby names (1880-2017) | [Pivot and melt](reshaping.md) |
+| Space launches (1957-2018) | [Count with a pivot](reshaping.md#count-with-a-pivot) |
+| Premier League (2020-21) | [Dates and messy text](querying-data.md#dates-and-messy-text), [export](exporting-data.md) |
+| NYC yellow taxis (January 2025) | [Describe and Distribution](analysis-features.md), [data quality on a sample](data-quality.md) |
+| Earthquakes (past month) | [A map as a scatter chart](charting.md#examples-on-the-built-in-datasets) |
+| NOAA daily weather (GHCN-D) | [Public data in S3](remote-data.md#examples-on-public-data), [views](views.md) |
+| Bitcoin and Ethereum | [Partitions by date](remote-data.md#examples-on-public-data) | A collection named `public`
 replaces this one, `[data] builtin_catalog = false` drops it, and
 `[data] hide_sources = ["public"]` hides it; see
 [Dataset collections](../reference/sources.md).

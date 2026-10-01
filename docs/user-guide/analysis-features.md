@@ -19,6 +19,13 @@ min and max. When they do not all fit, the header counts those out of view
 (`+4 →`) and <kbd>←</kbd> <kbd>→</kbd> scroll to the last. Distribution scrolls
 its columns the same way.
 
+On **NYC yellow taxis (January 2025)**, 3,475,226 trips: press <kbd>a</kbd>,
+<kbd>Enter</kbd> on **Describe**, set **Random seed** to `1` in the Sample form
+and press <kbd>Enter</kbd>. The header reads
+`Describe · sample of 100,000 of 3,475,226 rows`. `fare_amount` has a mean of
+16.92 and a median of 12.47, from −595.20 to 950.00: refunds and typos are
+part of the data. `passenger_count` and four other columns have 16,000 nulls.
+
 ## Distribution
 
 Compares each numeric column against fourteen distributions — Normal, Log-Normal,
@@ -48,6 +55,11 @@ another family to compare with, which does not change the verdict; <kbd>s</kbd>
 toggles the histogram between linear and log scale; <kbd>Esc</kbd> returns to
 the table.
 
+On the same taxi sample, every column reads `No clear fit`, which is honest
+for fares, distances and tips. `fare_amount` has 10,459 outliers (10.5%),
+skewness 6.92 and kurtosis 279.05; its detail view shows the median, 12.47,
+as Describe does.
+
 ## Correlation matrix
 
 Pairwise correlations between every numeric column, colored by strength.
@@ -55,6 +67,13 @@ Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for the
 pair: the Pearson coefficient with a plain reading of it, R², the p-value,
 and how many row pairs it was computed from. Correlation is undefined for a
 constant column.
+
+On **Palmer penguins**, first hide `rownames`, the host's row number, so it is
+not treated as a measurement: <kbd>s</kbd>, <kbd>Tab</kbd>, <kbd>↓</kbd>,
+<kbd>v</kbd>, <kbd>Enter</kbd>. Then <kbd>a</kbd>, **Correlation Matrix**,
+<kbd>Enter</kbd> to read all 344 rows. `flipper_length_mm` against
+`body_mass_g` is r = 0.871, strong positive, with R² 0.759 from 342 of 344
+rows.
 
 ## Data quality
 

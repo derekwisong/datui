@@ -5,7 +5,8 @@ datui data.parquet                             # a file
 datui jan.csv feb.csv mar.csv                  # files of the same shape, as one table
 datui /data/events/                            # a directory, read the way Enter reads its row
 datui --hive "/data/events/**/*.parquet"       # a glob (quote it)
-datui s3://bucket/path/file.parquet            # S3, GCS (gs://) or HTTP(S)
+datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/   # public S3; gs:// and abfss:// too
+datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
 datui --format csv https://example.com/export  # force the format when the name gives no hint
 ```
 
@@ -204,11 +205,13 @@ analysis. The placeholder color is `binary_col` in the
 ## Remote data
 
 ```bash
-datui s3://bucket/events/
-datui gs://bucket/data.parquet
-datui abfss://container@account.dfs.core.windows.net/data.parquet
-datui https://example.com/data.csv
+datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/
+datui gs://cloud-samples-data/bigquery/us-states/us-states.parquet
+datui abfss://release@overturemapswestus2.dfs.core.windows.net/
+datui https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.csv
 ```
+
+Each of these is public and opens with no login.
 
 [Remote data](remote-data.md) explains credentials, public access and what gets
 downloaded. Use the [cloud browser](cloud-browser.md) to find data without

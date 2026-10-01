@@ -16254,6 +16254,22 @@ fn column_widths_from_the_sidebar() {
     let start = app.data_table_state.as_ref().unwrap().start_row();
     assert!(start > 0);
 
+    // A narrow sidebar gives the names the room until a column has a width to show.
+    let heading = |text: &str| -> String {
+        text.lines()
+            .find(|l| l.contains("Lock") && l.contains("Column"))
+            .unwrap()
+            .to_string()
+    };
+    on_column(&mut app, "description");
+    let narrow = draw(&mut app, 60, 20);
+    assert!(!heading(&narrow).contains("Width"), "{narrow}");
+    assert!(narrow.contains("description "), "{narrow}");
+    press(&mut app, KeyCode::Char('f'));
+    let narrow = draw(&mut app, 60, 20);
+    assert!(heading(&narrow).contains("Width"), "{narrow}");
+    press(&mut app, KeyCode::Esc);
+
     // Staged, shown in the list, and gone with Esc.
     on_column(&mut app, "description");
     press(&mut app, KeyCode::Char('f'));

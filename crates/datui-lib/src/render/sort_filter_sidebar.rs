@@ -136,7 +136,8 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
 /// Cells before a column's name in the Columns list: the rail, a space, the lock
 /// and the sort.
 const LIST_LEAD: usize = 13;
-/// Cells for the width at the end of a Columns row, its leading space included.
+/// Cells for the width at the end of a Columns row, its leading space included,
+/// while any column has a width set.
 const WIDTH_FIELD: usize = 6;
 
 /// The Columns tab: find row, header, one row per column.
@@ -178,11 +179,23 @@ fn render_columns_tab(
     // header
     // One leading gutter column, as the rows below reserve for the rail.
     // The width sits at the end of the row, so a narrow sidebar takes its room from
-    // the name's tail rather than moving the name.
-    let name_room = usize::from(area.width).saturating_sub(LIST_LEAD + WIDTH_FIELD);
+    // the name's tail rather than moving the name. Its field is there only while a
+    // column has a width to show: in a narrow sidebar the names need the room.
+    let width_field = if modal
+        .sort
+        .columns
+        .iter()
+        .any(|c| c.width != WidthChoice::Auto)
+    {
+        WIDTH_FIELD
+    } else {
+        0
+    };
+    let name_room = usize::from(area.width).saturating_sub(LIST_LEAD + width_field);
+    let width_heading = if width_field > 0 { "Width" } else { "" };
     let header = format!(
-        "  {:<5}{:<6}{:<name_room$}{:>WIDTH_FIELD$}",
-        "Lock", "Sort", "Column", "Width"
+        "  {:<5}{:<6}{:<name_room$}{:>width_field$}",
+        "Lock", "Sort", "Column", width_heading
     );
     Paragraph::new(header)
         .style(Style::default().fg(ctx.text_secondary))
@@ -265,13 +278,13 @@ fn render_columns_tab(
         }
         let name = crate::glyphs::fit_cells(
             &column.name,
-            name_room - hidden.len().min(name_room),
+            name_room.saturating_sub(crate::glyphs::cell_width(&hidden)),
             g.ellipsis,
         );
         let pad = name_room
             .saturating_sub(crate::glyphs::cell_width(&name) + crate::glyphs::cell_width(&hidden));
         let text = format!(
-            " {:<5}{:<6}{name}{hidden}{}{:>WIDTH_FIELD$}",
+            " {:<5}{:<6}{name}{hidden}{}{:>width_field$}",
             lock,
             sort,
             " ".repeat(pad),

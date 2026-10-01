@@ -6459,11 +6459,13 @@ pub mod tests {
 
     /// Skipping the lease is a deliberate act rather than an oversight.
     ///
-    /// Two spawns do. The buffer collect, whose answer is simply asked for again if a
-    /// bump throws it away. And the look at a directory named on the command line, whose
-    /// answer is *meant* to be thrown away when the user moves on — leased, it made a
-    /// seventeen-second look hold the next dataset's buffer collect behind it, after
-    /// Ctrl+O had been offered as the way out.
+    /// Four spawns do. The buffer collect, whose answer is simply asked for again if a
+    /// bump throws it away. The two looks at a path named on the command line —
+    /// whether it is there and a directory, then what the directory holds — whose
+    /// answers are *meant* to be thrown away when the user moves on: leased, the look
+    /// made a seventeen-second wait hold the next dataset's buffer collect behind it,
+    /// after Ctrl+O had been offered as the way out. And the Info panel's file facts,
+    /// whose answer is judged by the dataset, not the generation.
     ///
     /// `spawn_bg` leases by construction, so a new kind of gated background work is
     /// accounted for without anyone remembering to account for it. The two ways around
@@ -6478,7 +6480,7 @@ pub mod tests {
     fn an_unleased_spawn_is_a_deliberate_act() {
         // Split so this test's own needles are not among the things it finds.
         let needles = [
-            (concat!("spawn_bg_", "replaceable("), 3usize),
+            (concat!("spawn_bg_", "replaceable("), 4usize),
             (concat!("spawn_bg_", "inner("), 2usize),
         ];
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -6503,10 +6505,11 @@ pub mod tests {
             let found: usize = sources.iter().map(|s| s.matches(needle).count()).sum();
             assert_eq!(
                 found, expected,
-                "`{needle}` appears {found} times, not {expected}. Three spawns skip the \
+                "`{needle}` appears {found} times, not {expected}. Four spawns skip the \
                  lease on purpose: the buffer collect, whose answer is asked for again \
-                 if a bump throws it away; the look at a directory named on the \
-                 command line, whose answer is meant to be thrown away; and the Info \
+                 if a bump throws it away; the two looks at a path named on the \
+                 command line (is it there, is it a directory; then what the directory \
+                 holds), whose answers are meant to be thrown away; and the Info \
                  panel's file facts, whose answer is judged by the dataset, not the \
                  generation. Anything else that skips it can be stranded by a bump, \
                  silently. See GenerationLease."

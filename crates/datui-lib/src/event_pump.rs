@@ -90,6 +90,11 @@ pub struct EventPump {
     /// Events handled since a key was last offered. Bounded by [`RESULTS_PER_KEY`], so
     /// a worker reporting faster than it is handled cannot starve the keyboard.
     since_key: usize,
+    /// How many of the keys at the front of [`Self::typed`] came from the backlog.
+    /// Typed before anything on the channel was sent, they wait on none of it: a
+    /// Ctrl+O typed while the settings were read lost to the startup open whenever
+    /// that open answered before the channel was ever found empty.
+    early: usize,
 }
 
 /// The most channel events handled while a typed key waits; then the key is offered.
@@ -108,12 +113,22 @@ impl EventPump {
             backlog: VecDeque::new(),
             typed: VecDeque::new(),
             since_key: 0,
+            early: 0,
         }
     }
 
-    /// Handle `events` before anything on the channel: they arrived first.
+    /// Handle `events` before anything on the channel: they arrived first. Keys among
+    /// them are offered, in order, ahead of the channel too.
     pub fn handle_first(&mut self, events: impl IntoIterator<Item = AppEvent>) {
-        self.backlog.extend(events);
+        for event in events {
+            match event {
+                AppEvent::Terminal(Event::Key(key)) => {
+                    self.typed.push_back(key);
+                    self.early += 1;
+                }
+                event => self.backlog.push_back(event),
+            }
+        }
     }
 
     pub fn send(&self, event: AppEvent) -> Result<()> {
@@ -205,7 +220,8 @@ impl EventPump {
     }
 
     /// The next event to handle: a continuation first, then the backlog, then the
-    /// channel. `Empty` once a typed key has waited long enough, so it is offered.
+    /// channel. `Empty` once a typed key has waited long enough, or came from the
+    /// backlog, so it is offered.
     fn take_next(&mut self) -> Result<(AppEvent, Option<Hold>), TryRecvError> {
         if let Some((event, lease)) = self.next_up.pop_front() {
             return Ok((event, Some(lease)));
@@ -213,7 +229,7 @@ impl EventPump {
         if let Some(event) = self.backlog.pop_front() {
             return Ok((event, None));
         }
-        if !self.typed.is_empty() && self.since_key >= RESULTS_PER_KEY {
+        if !self.typed.is_empty() && (self.early > 0 || self.since_key >= RESULTS_PER_KEY) {
             return Err(TryRecvError::Empty);
         }
         self.rx.try_recv().map(|event| (event, None))
@@ -313,6 +329,7 @@ impl EventPump {
                         break;
                     };
                     self.since_key = 0;
+                    self.early = self.early.saturating_sub(1);
                     // One key per frame, as when the loop read the terminal itself: a
                     // key that acted is drawn before the next is offered, and a
                     // continuation it queued gets its frame first.
@@ -1866,9 +1883,9 @@ mod tests {
         assert!(held(&p).is_empty());
     }
 
-    /// A Ctrl+O typed while the settings were read is offered after the startup open
-    /// has begun, so it puts that open down: its look lands for nobody, and nothing opens
-    /// behind the home screen.
+    /// A Ctrl+O typed while the settings were read is offered ahead of the startup
+    /// open on the channel, so that open is put down however fast it would have been:
+    /// nothing opens behind the home screen.
     #[test]
     fn ctrl_o_typed_before_the_app_existed_puts_the_startup_open_down() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1883,7 +1900,7 @@ mod tests {
             .unwrap();
         p.handle_first([AppEvent::Terminal(Event::Key(ctrl('o')))]);
         settle(&mut p);
-        // The look was put down, not waited on: let its answer land.
+        // Anything that went out anyway is for nobody: let its answer land.
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
         while p.app.background_work_in_flight() {
             assert!(std::time::Instant::now() < deadline, "the look never ended");

@@ -23067,6 +23067,12 @@ impl App {
                 None
             }
             AppEvent::OpenNamed(paths, options) => {
+                // `run` sends this behind the loading screen it puts up. A key typed
+                // before the app existed, offered first, may have left that screen for
+                // home: then nothing is opened.
+                if self.input_mode == InputMode::Home {
+                    return None;
+                }
                 if let Some(event) = Self::route_named_without_looking(paths, options) {
                     return Some(event);
                 }

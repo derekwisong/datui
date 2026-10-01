@@ -765,7 +765,7 @@ mod tests {
     }
 
     /// A view with what a CSV has to get right: nulls, quotes, separators and
-    /// line breaks inside text, floats, dates, times, booleans, and the list,
+    /// line breaks inside text, floats, dates, datetimes, booleans, and the list,
     /// binary and duration columns [`ExportFormat::prepare`] turns into text.
     fn awkward() -> DataFrame {
         let n = 2_000;
@@ -796,6 +796,26 @@ mod tests {
                 .unwrap()
         })
         .unwrap();
+        // Datetimes in the other units and a zone, as the CSV writer's text, and
+        // one past the calendar in a single batch, as its stored number.
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let stamps: Vec<Option<i64>> = (0..n)
+            .map(|i| match i {
+                1_500 => Some(i64::MIN + 1),
+                i if i % 9 == 0 => None,
+                i => Some(i * 3_600_000_123),
+            })
+            .collect();
+        for (name, dtype) in [
+            (
+                "at_us_tz",
+                DataType::Datetime(TimeUnit::Microseconds, paris),
+            ),
+            ("at_ns", DataType::Datetime(TimeUnit::Nanoseconds, None)),
+        ] {
+            let column = Series::new(name.into(), &stamps).cast(&dtype).unwrap();
+            df.with_column(column.into_column()).unwrap();
+        }
         let tags: Vec<Option<Series>> = (0..n)
             .map(|i| (i % 6 != 0).then(|| Series::new("".into(), [format!("t{i}"), "x,y".into()])))
             .collect();
@@ -828,6 +848,7 @@ mod tests {
                         col("text"),
                         col("id"),
                         col("at"),
+                        col("at_us_tz"),
                     ]),
             ),
             ("empty", lf.filter(lit(false))),
@@ -865,6 +886,13 @@ mod tests {
                     assert!(
                         !streamed.is_empty(),
                         "{case}: an empty view still has its header"
+                    );
+                }
+                if view == "as loaded" {
+                    let text = String::from_utf8_lossy(&streamed);
+                    assert!(
+                        text.contains("-9223372036854775807 us since 1970-01-01 UTC"),
+                        "{case}"
                     );
                 }
             }

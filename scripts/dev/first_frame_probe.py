@@ -50,7 +50,9 @@ from pathlib import Path
 QUERY = b"\x1b[?u\x1b[c"
 # Primary device attributes only: the answer of a terminal without the kitty protocol.
 REPLY = b"\x1b[?1;2c"
-FRAME_MARKERS = (b"Scanning", b"Loading", b"Places", b"Recent", b"datui", b"ROWMARK")
+# Words on the first screen of each case: the loading screen, the home screen's
+# control bar, the screen shown while slow settings are read, or the rows.
+FRAME_MARKERS = (b"Scanning", b"Quit", b"settings", b"ROWMARK")
 QUIT = b"\x11"  # Ctrl+Q
 
 
@@ -205,28 +207,34 @@ def main() -> None:
         f"| idle CPU (ms/{opts.idle:g}s) | idle wakeups/s | idle bytes |"
     )
     print("|---|---|---:|---:|---:|---:|---:|---:|")
+    builds = []
     for spec in opts.binaries:
         label, _, path = spec.rpartition("=")
         binary = Path(path).resolve()
-        label = label or binary.name
-        for case in opts.case:
-            args = [] if case == "home" else [str(fixtures[case])]
-            runs = [run_once(binary, args, root, opts, wait_rows=case != "home") for _ in range(opts.runs)]
+        builds.append((label or binary.name, binary))
+    for case in opts.case:
+        args = [] if case == "home" else [str(fixtures[case])]
+        # Interleaved, so the builds share whatever else the machine is doing.
+        runs = {label: [] for label, _ in builds}
+        for _ in range(opts.runs):
+            for label, binary in builds:
+                runs[label].append(run_once(binary, args, root, opts, wait_rows=case != "home"))
+        for label, _ in builds:
             if opts.json:
-                for r in runs:
+                for r in runs[label]:
                     print(json.dumps({"build": label, "case": case, **r}), file=sys.stderr)
-            frames = [r["first_frame_ms"] for r in runs if r["first_frame_ms"] is not None]
-            rows = [r["first_rows_ms"] for r in runs if r["first_rows_ms"] is not None]
-            cpu = [r["idle_cpu_ms"] for r in runs if "idle_cpu_ms" in r]
-            wakes = [r["idle_wakeups_per_s"] for r in runs if "idle_wakeups_per_s" in r]
-            idle_bytes = [r["idle_bytes"] for r in runs if "idle_bytes" in r]
+            done = runs[label]
+            frames = [r["first_frame_ms"] for r in done if r["first_frame_ms"] is not None]
+            rows = [r["first_rows_ms"] for r in done if r["first_rows_ms"] is not None]
+            cpu = [r["idle_cpu_ms"] for r in done if "idle_cpu_ms" in r]
+            wakes = [r["idle_wakeups_per_s"] for r in done if "idle_wakeups_per_s" in r]
+            idle_bytes = [r["idle_bytes"] for r in done if "idle_bytes" in r]
             rows_cell = "—" if case == "home" else f"{pct(rows, 0.5)} / {pct(rows, 0.95)}"
             print(
-                f"| {label} | {case} | {len(runs)} | {pct(frames, 0.5)} / {pct(frames, 0.95)} | {rows_cell} "
+                f"| {label} | {case} | {len(done)} | {pct(frames, 0.5)} / {pct(frames, 0.95)} | {rows_cell} "
                 f"| {pct(cpu, 0.5)} | {pct(wakes, 0.5)} | {pct(idle_bytes, 0.5)} |",
                 flush=True,
             )
-
 
 if __name__ == "__main__":
     main()

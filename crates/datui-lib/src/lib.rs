@@ -15226,17 +15226,22 @@ impl App {
         // Whatever the last place said about itself, it said about that place. "these
         // are the files under it" is wrong the moment "it" is somewhere else.
         self.home.status = None;
-        self.home.browsing = to;
+        let from = std::mem::replace(&mut self.home.browsing, to);
         // Backspace can climb above where the browse began; the start follows, so a
         // later Esc still has a place to stop.
         if !self.home.below_browse_start() {
             self.home.browse_start = self.home.browsing.clone();
         }
-        // Going up widens what a search would cover, so the previous one no longer
-        // answers the question being asked.
-        self.home.search.reset();
+        // The filter, search and row the user left here, if they were here; the
+        // listing lands later, and the cursor goes back to that row when it does.
+        // Somewhere new, a search of the old place no longer answers the question.
+        self.home.come_back(from);
+        self.home.sync_search_section();
         self.home.selected = 0;
         self.home_refresh();
+        if !self.home.filter.is_empty() {
+            self.spawn_home_search();
+        }
     }
 
     /// Whether a peek's answer changes anything a row draws.
@@ -15356,6 +15361,7 @@ impl App {
 
     /// Browse into a directory or bucket, local or remote.
     fn home_browse_into(&mut self, path: PathBuf) {
+        self.home.leave_mark();
         if self.home.browsing.is_none() {
             self.home.browse_start = Some(path.clone());
         } else if self.home.browse_start.is_none() {
@@ -15884,6 +15890,12 @@ impl App {
     /// Unlike `home_browse_into`, the browse *starts* here: Esc comes back from here to
     /// the listing rather than up through whatever the path happens to sit under.
     fn home_jump_into(&mut self, path: PathBuf) {
+        // A new browse: Esc comes back from here to the listing, so only the listing's
+        // mark is still a way back.
+        self.home.trail.retain(|mark| mark.place.is_none());
+        if self.home.browsing.is_none() {
+            self.home.leave_mark();
+        }
         self.home.browse_start = Some(path.clone());
         self.home.browsing = Some(path);
         self.home.status = None;
@@ -22424,6 +22436,10 @@ impl App {
                     self.home.search_finished(root, *scanned, limited.clone());
                 }
                 self.home_search_inflight = false;
+                // A walk abandoned by a browse held up the one the filter now asks for.
+                if !self.home.filter.is_empty() && self.home.search.root.is_none() {
+                    self.spawn_home_search();
+                }
                 None
             }
             #[cfg(feature = "cloud")]

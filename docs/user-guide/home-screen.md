@@ -320,7 +320,7 @@ These commands do not delete data files.
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember or forget the selected directory; a file represents its parent |
 | <kbd>Delete</kbd> | Forget a recent entry; on a place, confirm forgetting its entries; on a remembered heading, forget it; on a cloud source, hide it |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Confirm forgetting all recent entries |
-| <kbd>Esc</kbd> | Clear the filter, leave a directory, or return to the open table |
+| <kbd>Esc</kbd> | Clear the filter, go back to the row a directory was entered from, or return to the open table |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
 | <kbd>?</kbd> | Help |
 

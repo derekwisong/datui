@@ -20,7 +20,8 @@ Navigation:
                     the top of a collection's remote dataset, back here)
   Tab:              Cycle the sort; the control bar names the order in effect
   Esc:              Back out one layer: the path prompt, the filter, the
-                    directory, then to the open data
+                    directory (back to the row it was entered from), then
+                    to the open data
 
 Finding:
   (type):           Filter by name or column; fuzzy, so "sal" finds "sales".

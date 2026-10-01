@@ -1064,6 +1064,30 @@ pub struct HomeState {
     /// `RECENT` shows every place, however many rows that takes. Set by `Enter` on the
     /// `… N more` row, for the session.
     pub recent_expanded: bool,
+    /// The listings the user went inside from, outermost first: where to put the
+    /// cursor back on the way out. See [`HomeState::leave_mark`].
+    pub trail: Vec<Mark>,
+    /// The row the cursor goes back to once the listing being returned to lands.
+    /// Held across listings while rows are still arriving, since the row may not be in
+    /// the first one; dropped as soon as the user moves the cursor.
+    pub returning: Option<RowKey>,
+}
+
+/// Where the cursor was in a listing the user went inside from.
+///
+/// By row identity, not index: the listing returned to is rebuilt on a worker and
+/// lands later, and may have changed in the meantime.
+#[derive(Debug, Clone)]
+pub struct Mark {
+    /// The listing left: the place browsed, or `None` for the root listing.
+    pub place: Option<PathBuf>,
+    pub key: Option<RowKey>,
+    /// The filter typed there, which entering cleared.
+    pub filter: String,
+    /// The search below that place, when it had finished or not started. A walk still
+    /// running is dropped by its generation once the user leaves, so it is started
+    /// again rather than kept.
+    pub search: Option<SearchState>,
 }
 
 /// The result of one recursive walk below the working directory.
@@ -1135,6 +1159,8 @@ impl Default for HomeState {
             search: SearchState::default(),
             known: Default::default(),
             recent_expanded: false,
+            trail: Vec::new(),
+            returning: None,
         }
     }
 }
@@ -2183,7 +2209,8 @@ impl HomeState {
 
     /// Install a listing built elsewhere, keeping the cursor on whatever it was on.
     pub fn apply_listing(&mut self, listing: Listing) {
-        let previous = self.selected_key();
+        let returning = self.returning.take();
+        let previous = returning.clone().or_else(|| self.selected_key());
         self.sections = listing.sections;
         self.missing = listing.missing;
         // Browsing, the first section is the directory browsed.
@@ -2210,8 +2237,78 @@ impl HomeState {
         // every time a background result arrives makes the screen unusable.
         if !self.reselect(previous) {
             self.select_first_entry();
+            // The row being returned to may be in a later listing: a remote place
+            // still answering, or a search still walking.
+            if self.rows_still_arriving() {
+                self.returning = returning;
+            }
         }
         self.follow_selection();
+    }
+
+    /// Remember where the cursor is before going inside something, so leaving comes
+    /// back to it. Call before `browsing` changes.
+    pub fn leave_mark(&mut self) {
+        let mark = Mark {
+            place: self.browsing.clone(),
+            key: self.selected_key(),
+            filter: self.filter.clone(),
+            search: (!self.search.running).then(|| self.search.clone()),
+        };
+        // A place already on the trail is being entered again from elsewhere; its
+        // old mark describes a visit that is over.
+        self.trail.retain(|m| m.place != mark.place);
+        self.trail.push(mark);
+    }
+
+    /// Come back to the place now browsed, from `from`: the filter and search it had,
+    /// and the cursor on the row it was on once the listing lands. Call after
+    /// `browsing` is set.
+    ///
+    /// A place never entered from — Backspace above where the browse began — puts the
+    /// cursor on the place just left instead, which is the row that leads back to it.
+    pub fn come_back(&mut self, from: Option<PathBuf>) {
+        let to = self.browsing.clone();
+        let mark = self
+            .trail
+            .iter()
+            .rposition(|m| m.place == to)
+            .map(|at| self.trail.split_off(at).remove(0));
+        match mark {
+            Some(mark) => {
+                self.filter = mark.filter;
+                self.search = mark.search.unwrap_or_default();
+                self.returning = mark.key;
+            }
+            None => {
+                self.filter.clear();
+                self.search.reset();
+                self.returning = from.map(RowKey::Entry);
+            }
+        }
+    }
+
+    /// Whether rows may yet arrive without the user asking: a remote listing still
+    /// answering, or a search still walking.
+    fn rows_still_arriving(&self) -> bool {
+        self.listing_in_flight
+            || self.sections_waiting()
+            || self.awaiting_listing().is_some()
+            || self.search.running
+    }
+
+    /// Put the cursor on the row being returned to, if it has arrived.
+    fn settle_return(&mut self) {
+        let Some(key) = self.returning.clone() else {
+            return;
+        };
+        if let Some(idx) = self.row_of(&key) {
+            self.selected = idx;
+            self.returning = None;
+            self.follow_selection();
+        } else if !self.rows_still_arriving() {
+            self.returning = None;
+        }
     }
 
     /// What the cursor is on, as something that survives the rows changing.
@@ -2239,8 +2336,26 @@ impl HomeState {
             self.clamp_selection();
             return false;
         };
+        match self.row_of(&key) {
+            Some(idx) => {
+                self.selected = idx;
+                true
+            }
+            None => {
+                self.clamp_selection();
+                false
+            }
+        }
+    }
+
+    /// Where the row `key` names is on screen, or the `more` row hiding it.
+    ///
+    /// A row the cap has just hidden is still there, behind the `more` row that now
+    /// stands for it, so that row is the answer rather than whatever fell into its
+    /// index in the section below.
+    fn row_of(&self, key: &RowKey) -> Option<usize> {
         let rows = self.visible();
-        let found = rows.iter().position(|row| match (row, &key) {
+        let found = rows.iter().position(|row| match (row, key) {
             (Row::Entry { entry, .. }, RowKey::Entry(path)) => entry.path == *path,
             (Row::Door { entry, .. }, RowKey::Door(path)) => entry.path == *path,
             (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
@@ -2252,11 +2367,10 @@ impl HomeState {
                 .is_some_and(|s| s.title == *title),
             _ => false,
         });
-        if let Some(idx) = found {
-            self.selected = idx;
-            return true;
+        if found.is_some() {
+            return found;
         }
-        let behind_the_cap = match &key {
+        match key {
             RowKey::Entry(path) | RowKey::Place(path) => rows.iter().position(|row| {
                 matches!(row, Row::More { section, .. }
                 if self.sections.get(*section).is_some_and(|s| {
@@ -2265,16 +2379,6 @@ impl HomeState {
                 }))
             }),
             _ => None,
-        };
-        match behind_the_cap {
-            Some(idx) => {
-                self.selected = idx;
-                true
-            }
-            None => {
-                self.clamp_selection();
-                false
-            }
         }
     }
 
@@ -2354,6 +2458,7 @@ impl HomeState {
     /// Move the cursor to the next (`delta` > 0) or previous section header,
     /// wrapping. The way past a long section to the one you came for.
     pub fn jump_section(&mut self, delta: isize) {
+        self.returning = None;
         let rows = self.visible();
         let headers: Vec<usize> = rows
             .iter()
@@ -2808,6 +2913,7 @@ impl HomeState {
         self.search.scanned = scanned;
         self.search.results.append(&mut found);
         self.sync_search_section();
+        self.settle_return();
     }
 
     /// Record that the walk under `root` has finished.
@@ -2821,6 +2927,7 @@ impl HomeState {
         self.search.scanned = self.search.scanned.max(scanned);
         self.search.limited = limited;
         self.sync_search_section();
+        self.settle_return();
     }
 
     pub fn visible(&self) -> Vec<Row<'_>> {
@@ -3453,6 +3560,7 @@ impl HomeState {
     /// Put the cursor on the first dataset rather than the first header, so the
     /// preview pane has something to show without a keypress.
     pub fn select_first_entry(&mut self) {
+        self.returning = None;
         let rows = self.visible();
         self.selected = rows
             .iter()
@@ -3472,6 +3580,7 @@ impl HomeState {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
+        self.returning = None;
         let n = self.visible().len();
         if n == 0 {
             return;
@@ -3485,6 +3594,7 @@ impl HomeState {
     /// wrapping. A step of one wraps, which is a quick way round; a jump of ten that
     /// wrapped landed somewhere near the top with nothing to say it had gone round.
     pub fn page_selection(&mut self, delta: isize) {
+        self.returning = None;
         let n = self.visible().len();
         if n == 0 {
             return;

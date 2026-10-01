@@ -205,13 +205,14 @@ In Data Quality Setup:
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
 | <kbd>←</kbd> <kbd>→</kbd> | Change Grain, Compare, Values, Latency over or Window by in place; on another row, <kbd>→</kbd> opens it |
-| <kbd>Space</kbd> | Open the row under the cursor: the Sample form, Text as time, the Time roles or Intervals editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
+| <kbd>Space</kbd> | Open the row under the cursor: the Sample form, Text as time, the Time roles, Intervals or Expected editor, or a list of choices (type to narrow, <kbd>Enter</kbd> chooses, <kbd>Esc</kbd> cancels) |
 | <kbd>s</kbd> | Open the Sample form; its <kbd>Enter</kbd> applies the sample to Setup |
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> | Run, from any row: the one key in Setup that reads. A full scan asks first; while a cancelled read finishes, Run waits and Setup says why |
 | <kbd>Esc</kbd> | Discard every staged change and go back to the report, or to the tool list before the first run |
 | In the Time roles editor | <kbd>↑</kbd> <kbd>↓</kbd> pick the role, <kbd>←</kbd> <kbd>→</kbd> its column, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. With no date, time or text column there is nothing to assign, and the row says so |
 | In the Intervals editor | <kbd>↑</kbd> <kbd>↓</kbd> pick a start and end, <kbd>Space</kbd> (or <kbd>←</kbd> <kbd>→</kbd>) measure it or not, <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. Needs two assigned roles |
+| In the Expected editor | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Tab</kbd> move between Windows, From and Before; <kbd>←</kbd> <kbd>→</kbd> (or <kbd>Space</kbd>) choose the windows; typing fills From and Before; <kbd>Enter</kbd> done, <kbd>Esc</kbd> cancel. Needs a time-window grain |
 
 In the Data Quality report:
 
@@ -229,13 +230,16 @@ In the Data Quality report:
 | <kbd>p</kbd> | Show the detailed access plan |
 | <kbd>Enter</kbd> on a column | Open its detail: its findings, then what was measured; <kbd>Enter</kbd> again returns to the list |
 | <kbd>Enter</kbd> on a segment | List its columns' measures beside the compared segment, largest change first |
+| <kbd>Enter</kbd> on a Trends line | Open its bars: <kbd>↑</kbd> <kbd>↓</kbd> walk them, each with its span, segments, rows, rate, 95% interval and the bar it is compared with; <kbd>Enter</kbd> or <kbd>Esc</kbd> returns |
 | <kbd>Enter</kbd> on an interval | Open its detail: ends, rows with both, missing and unread ends, negative and zero durations, percentiles, breaches; <kbd>↑</kbd> <kbd>↓</kbd> move between the counts and <kbd>Enter</kbd> shows the rows behind one (the kept rows', or a Read Rows dialog first when the run kept none) |
 | <kbd>o</kbd> | On Overview, order findings ranked, by rows affected or by rate. In Segments, list the largest change first, or back in order |
-| <kbd>m</kbd> | In Trends, choose the measure the table draws |
+| <kbd>m</kbd> | In Trends and a bar's detail, choose the measure the table draws |
+| <kbd>w</kbd> | In Trends, stage the next coarser window (or row chunk) in Setup; <kbd>Enter</kbd> there runs it, <kbd>Esc</kbd> puts the grain back |
+| <kbd>g</kbd> | In Trends, list the expected windows with no rows; offered once Setup states Expected |
 | <kbd>b</kbd> | In Segments, use the selected segment as baseline |
 | <kbd>r</kbd> | On a sampled report, run again with a new seed, for every tool |
 | <kbd>Tab</kbd> | Move between the result and the Analysis tools |
-| <kbd>Esc</kbd> | Back out one layer: a popup, a column's, a segment's or an interval's detail back to its list, an evidence drill back to the finding or count it came from, a narrowed Overview back to every finding, then Analysis itself. While a run reads, cancel it |
+| <kbd>Esc</kbd> | Back out one layer: a popup, a column's, a segment's, a bar's or an interval's detail and the gaps back to their list, an evidence drill back to the finding or count it came from, a narrowed Overview back to every finding, then Analysis itself. While a run reads, cancel it |
 
 ## Pivot and melt
 

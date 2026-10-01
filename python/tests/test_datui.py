@@ -232,12 +232,12 @@ def test_capture_round_trip_through_the_tui(tmp_path):
         env={**os.environ, "TERM": "xterm-256color"},
     )
     os.close(slave)
-    deadline = time.time() + 60
+    deadline = time.monotonic() + 60
     last_q = 0.0
-    last_output = time.time()
+    last_output = time.monotonic()
     drawn = 0
     try:
-        while proc.poll() is None and time.time() < deadline:
+        while proc.poll() is None and time.monotonic() < deadline:
             # Drain the TUI's output so it never blocks on a full pty buffer, and
             # send q only once a real frame has been drawn (terminal init writes a
             # few bytes long before the TUI is up) and the output has gone quiet
@@ -247,29 +247,39 @@ def test_capture_round_trip_through_the_tui(tmp_path):
             readable, _, _ = select.select([master], [], [], 0.2)
             if readable:
                 try:
-                    drawn += len(os.read(master, 65536))
+                    chunk = os.read(master, 65536)
                 except OSError:
+                    chunk = b""
+                # EIO on Linux, EOF on macOS: the child closed the pty.
+                if not chunk:
                     break
-                last_output = time.time()
+                drawn += len(chunk)
+                last_output = time.monotonic()
                 continue
-            quiet = time.time() - last_output > 1.0
-            if drawn >= 1000 and quiet and time.time() - last_q > 2.0:
+            quiet = time.monotonic() - last_output > 1.0
+            if drawn >= 1000 and quiet and time.monotonic() - last_q > 2.0:
                 try:
                     os.write(master, b"q")
                 except OSError:
                     break
-                last_q = time.time()
-        stderr = b""
-        if proc.poll() is None:
+                last_q = time.monotonic()
+        # The pty closes while the child is still exiting (its fds go before it is
+        # reapable), so wait for the exit rather than polling once. communicate()
+        # also drains stderr so a chatty child cannot block on the pipe.
+        try:
+            _, stderr = proc.communicate(timeout=max(deadline - time.monotonic(), 5.0))
+        except subprocess.TimeoutExpired:
             proc.kill()
-            pytest.fail("the TUI did not quit on q within 60 seconds")
-        else:
-            stderr = proc.stderr.read() if proc.stderr else b""
+            _, stderr = proc.communicate()
+            pytest.fail(
+                f"the child did not exit within 60 seconds (q sent: {last_q > 0}): "
+                f"{stderr.decode(errors='replace')}"
+            )
     finally:
         os.close(master)
         if proc.poll() is None:
             proc.kill()
-        proc.wait()
+            proc.wait()
     assert proc.returncode == 0, f"child failed: {stderr.decode(errors='replace')}"
     rows = json.loads(out.read_text())
     assert rows == [

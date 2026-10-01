@@ -15060,6 +15060,85 @@ fn test_a_look_that_lands_after_the_user_left_is_dropped() {
     );
 }
 
+/// Going home while the paths named at startup are looked at puts the open down: the
+/// look's answer, landing after, opens nothing and does not take the user off the home
+/// screen.
+///
+/// The look is the open's first phase. It used to be quieted rather than put down, so
+/// its answer still carried the open on and pulled the user back from home to the file.
+#[test]
+fn test_going_home_during_the_look_at_named_paths_opens_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = tmp.path().join("named.csv");
+    std::fs::write(&file, "a,b\n1,2\n").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_loading_phase("Scanning input", 10);
+    assert!(
+        app.event(&AppEvent::OpenNamed(vec![file], OpenOptions::default()))
+            .is_none(),
+        "the look goes to a worker"
+    );
+    app.event(&ctrl_o());
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(!app.is_busy(), "going home is immediate");
+
+    let mut landed = false;
+    for _ in ticks() {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            landed |= matches!(ev, AppEvent::JobEnded(t) if t.kind() == JobKind::OpenNamed);
+            let mut next = app.event(&ev);
+            while let Some(ev) = next {
+                next = app.event(&ev);
+            }
+            if landed {
+                break;
+            }
+        }
+    }
+    assert!(landed, "the look reports back");
+    drain_events(&mut app, &rx);
+    assert_eq!(app.input_mode, InputMode::Home, "the user stays home");
+    assert!(app.data_table_state.is_none(), "and nothing was opened");
+    assert!(app.error_message().is_none());
+}
+
+/// A dataset that is up owns the footer pass behind it: going home from it leaves the
+/// pass running, and an open replacing it is what stops it.
+///
+/// The counter used to be the open's, cancelled whenever the user went home while that
+/// open was still marked active — which it stayed after installing, so the first trip
+/// home stopped the pass of the dataset left on screen.
+#[test]
+fn test_going_home_leaves_the_dataset_s_footer_pass_alone() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = tmp.path().join("people.csv");
+    std::fs::write(&file, "name,age\nada,36\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![file.clone()], OpenOptions::default());
+    assert!(app.data_table_state.is_some());
+    let counter = app.footer_progress().clone();
+
+    app.event(&ctrl_o());
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(
+        !counter.is_cancelled(),
+        "the dataset on screen keeps reading what it still has to"
+    );
+
+    pump_open_until_loaded(&mut app, &rx, vec![file], OpenOptions::default());
+    assert!(
+        counter.is_cancelled(),
+        "the dataset that replaced it stopped it"
+    );
+    assert!(
+        !std::sync::Arc::ptr_eq(&counter, app.footer_progress()),
+        "and counts on a counter of its own"
+    );
+}
+
 /// A setting that agrees with what the rule assumed is not a reason to stop asking it.
 ///
 /// `has_header` and the skips reach `OpenOptions` from the config file as well as the

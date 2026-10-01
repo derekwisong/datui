@@ -23,6 +23,8 @@ impl CacheManager {
     /// opening a dataset records it as recent — without the override a test run
     /// writes its fixtures into the developer's own recent-files list.
     pub fn new(app_name: &str) -> Result<Self> {
+        #[cfg(test)]
+        isolate_cache();
         if let Some(dir) = std::env::var_os("DATUI_CACHE_DIR") {
             return Ok(Self {
                 cache_dir: PathBuf::from(dir),
@@ -559,6 +561,54 @@ impl DatasetShape {
     }
 }
 
+/// Point the cache and config at scratch directories of this test process's own.
+///
+/// Library tests need not call this: `CacheManager::new` and `ConfigManager::new`
+/// do, so no unit test reaches either without it, whatever order the tests run in
+/// and however few share the process. Opening a dataset records it in recents and
+/// saving a template writes under the config directory; left alone, both land in
+/// the developer's own. The variables are process-wide, so this runs once.
+///
+/// The directories are named at random, not by process id: ids are reused, and a run
+/// that landed on a finished run's id inherited its recents and templates. They are
+/// removed when the process exits.
+#[cfg(test)]
+pub(crate) fn isolate_cache() {
+    // Held for the life of the process. A static is never dropped, so they are removed
+    // by an exit handler instead.
+    static SCRATCH: std::sync::Mutex<Vec<tempfile::TempDir>> = std::sync::Mutex::new(Vec::new());
+    unsafe extern "C" {
+        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+    }
+    extern "C" fn remove_scratch_dirs() {
+        if let Ok(mut held) = SCRATCH.lock() {
+            held.clear();
+        }
+    }
+    let scratch_dir = |prefix: &str| {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .expect("a scratch directory for the test process")
+    };
+
+    static ISOLATE: std::sync::Once = std::sync::Once::new();
+    ISOLATE.call_once(|| {
+        let dir = scratch_dir("datui-unit-cache-");
+        let config_dir = scratch_dir("datui-unit-config-");
+        // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+        // reading the environment; accepted in tests and never done outside them.
+        unsafe { std::env::set_var("DATUI_CACHE_DIR", dir.path()) };
+        unsafe { std::env::set_var("DATUI_CONFIG_DIR", config_dir.path()) };
+        let mut held = SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
+        held.push(dir);
+        held.push(config_dir);
+        // SAFETY: the C runtime's `atexit`, present on every platform std runs on; the
+        // callback only drops the directories above.
+        unsafe { atexit(remove_scratch_dirs) };
+    });
+}
+
 /// Whether this process is a test binary cargo built, which is where `cargo test`
 /// and `cargo bench` put everything: `target/<profile>/deps/<crate>-<hash>`, or
 /// `target/<triple>/<profile>/deps/` for a cross build. The program itself is
@@ -857,12 +907,26 @@ impl CacheManager {
 #[cfg(test)]
 mod harness_tests {
     /// This test binary is one cargo built into `deps`, so the refusal in
-    /// `CacheManager::new` is armed here. That it is armed is the whole guarantee: a
-    /// test that reaches `new` without `DATUI_CACHE_DIR` set stops instead of writing
-    /// its fixtures into the developer's own recents.
+    /// `CacheManager::new` is armed here. It guards the integration tests, which link
+    /// the library without `cfg(test)`: one that reaches `new` without
+    /// `DATUI_CACHE_DIR` set stops instead of writing its fixtures into the
+    /// developer's own recents.
     #[test]
     fn a_cargo_test_binary_is_recognized() {
         assert!(super::running_as_a_cargo_test());
+    }
+
+    /// A unit test that builds a manager with nothing set up, alone in its process
+    /// as nextest runs it, gets scratch directories: not the developer's own, and not
+    /// the refusal.
+    #[test]
+    fn a_unit_test_needs_no_setup_to_isolate() {
+        let cache = super::CacheManager::new(crate::APP_NAME).unwrap();
+        let config = crate::config::ConfigManager::new(crate::APP_NAME).unwrap();
+        let scratch = std::env::temp_dir();
+        assert!(cache.cache_dir().starts_with(&scratch), "{cache:?}");
+        let config = config.config_dir();
+        assert!(config.starts_with(&scratch), "{config:?}");
     }
 
     /// Only cargo's own layout counts. A program someone installed under a directory

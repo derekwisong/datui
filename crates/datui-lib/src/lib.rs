@@ -1122,7 +1122,6 @@ mod home_worker_panic_tests {
     use std::sync::mpsc;
 
     fn app() -> (App, mpsc::Receiver<AppEvent>, tempfile::TempDir) {
-        crate::text_input_flows::isolate_cache();
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let dir = tempfile::tempdir().unwrap();
@@ -4603,12 +4602,10 @@ pub mod tests {
 
     /// Returns a tokio runtime handle for use in tests.
     ///
-    /// Also points the cache at a directory of the test run's own. Every `App` a test
-    /// builds takes this handle, and an `App` that opens a file records it in recents;
-    /// without the redirect those temp-dir fixtures land in the developer's own home
-    /// screen as dead roots.
+    /// The cache and config need no setup here: `CacheManager::new` and
+    /// `ConfigManager::new` point themselves at scratch directories in a unit test
+    /// (`cache::isolate_cache`).
     pub fn test_runtime() -> tokio::runtime::Handle {
-        crate::text_input_flows::isolate_cache();
         static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
         RT.get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
@@ -5338,8 +5335,6 @@ pub mod tests {
         });
         state.visible_rows = 10;
 
-        // Its own runtime, so `test_runtime` does not isolate the config for it.
-        crate::text_input_flows::isolate_cache();
         let (tx, rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -8284,8 +8279,6 @@ pub mod tests {
             }
         };
 
-        // Its own runtime, so `test_runtime` does not isolate the config for it.
-        crate::text_input_flows::isolate_cache();
         let (tx, rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -27482,7 +27475,6 @@ mod startup_reads_tests {
 
     #[test]
     fn a_stalled_cache_read_holds_up_neither_the_home_screen_nor_its_keys() {
-        crate::text_input_flows::isolate_cache();
         let dir = tempfile::tempdir().unwrap();
         let csv = dir.path().join("recently.csv");
         std::fs::write(&csv, "a\n1\n").unwrap();

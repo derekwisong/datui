@@ -17,69 +17,6 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use crate::widgets::text_input::TextInput;
 use crate::{App, AppEvent, InputMode, OpenOptions};
 
-/// Point the cache at a directory of this test run's own.
-///
-/// These tests drive the real `App`, and opening a dataset records it in recents. Left
-/// alone that writes into the recents of whoever ran `cargo test`, and since the
-/// fixture lives in a temp directory that is deleted afterwards, each run leaves behind
-/// a recent that no longer exists and a dead root derived from it. Fifty runs fills the
-/// list. `DATUI_CACHE_DIR` is process-wide, so this is done once and as early as
-/// possible.
-///
-/// The directories are named at random, not by process id: ids are reused, and a run
-/// that landed on a finished run's id inherited its recents and templates. They are
-/// removed when the process exits.
-pub(crate) fn isolate_cache() {
-    // Held for the life of the process. A static is never dropped, so they are removed
-    // by an exit handler instead.
-    static SCRATCH: std::sync::Mutex<Vec<tempfile::TempDir>> = std::sync::Mutex::new(Vec::new());
-    unsafe extern "C" {
-        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
-    }
-    extern "C" fn remove_scratch_dirs() {
-        if let Ok(mut held) = SCRATCH.lock() {
-            held.clear();
-        }
-    }
-    let scratch_dir = |prefix: &str| {
-        tempfile::Builder::new()
-            .prefix(prefix)
-            .tempdir()
-            .expect("a scratch directory for the test process")
-    };
-
-    static ISOLATE: std::sync::Once = std::sync::Once::new();
-    ISOLATE.call_once(|| {
-        let dir = scratch_dir("datui-flow-cache-");
-        // The config directory holds templates; see `ConfigManager::new` for why a
-        // test must never reach the real one.
-        let config_dir = scratch_dir("datui-flow-config-");
-        // SAFETY: test-only. Tests run on parallel threads, so this can race another test
-        // reading the environment; accepted in tests and never done outside them.
-        unsafe { std::env::set_var("DATUI_CACHE_DIR", dir.path()) };
-        unsafe { std::env::set_var("DATUI_CONFIG_DIR", config_dir.path()) };
-        let mut held = SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
-        held.push(dir);
-        held.push(config_dir);
-        // SAFETY: the C runtime's `atexit`, present on every platform std runs on; the
-        // callback only drops the directories above.
-        unsafe { atexit(remove_scratch_dirs) };
-    });
-}
-
-fn runtime() -> tokio::runtime::Handle {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("test runtime")
-    })
-    .handle()
-    .clone()
-}
-
 /// An app with a small CSV loaded, driven the way the real event loop drives it.
 ///
 /// Keys are delivered one at a time, and every follow-up the app asks for is
@@ -98,7 +35,6 @@ impl Harness {
     }
 
     fn with_csv(contents: &str) -> Self {
-        isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         let mut file = std::fs::File::create(&path).expect("create csv");
@@ -106,7 +42,7 @@ impl Harness {
         drop(file);
 
         let (tx, rx): (Sender<AppEvent>, Receiver<AppEvent>) = mpsc::channel();
-        let app = App::new(tx, runtime());
+        let app = App::new(tx, crate::tests::test_runtime());
         let mut harness = Harness { app, rx, _dir: dir };
         harness.run(AppEvent::Open(vec![path], OpenOptions::default()));
         assert!(

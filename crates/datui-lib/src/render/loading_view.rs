@@ -130,6 +130,7 @@ fn truncate_start(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::test_runtime;
 
     fn cells(buf: &Buffer) -> String {
         buf.content().iter().map(|c| c.symbol()).collect()
@@ -293,18 +294,5 @@ mod tests {
         assert!(text.contains("Caching schema"), "phase missing: {text:?}");
         assert!(text.contains("quarterly.parquet"), "file missing: {text:?}");
         assert!(text.contains("2.0 KB"), "size missing: {text:?}");
-    }
-
-    fn test_runtime() -> tokio::runtime::Handle {
-        static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-        RT.get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .build()
-                .expect("test runtime")
-        })
-        .handle()
-        .clone()
     }
 }

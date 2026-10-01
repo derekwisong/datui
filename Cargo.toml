@@ -119,8 +119,12 @@ files = [
 [profile.dev]
 debug = "line-tables-only"
 
+# Dependencies at opt-level 1: Polars unoptimized makes every test slow and every
+# test executable large. Our own crates stay at 0 so edits rebuild fast; the cost is
+# a slower cold dependency build, paid when the lockfile or toolchain changes.
 [profile.dev.package."*"]
 debug = false
+opt-level = 1
 
 # improve the performance of color-eyre for debug builds
 [profile.dev.package.backtrace]

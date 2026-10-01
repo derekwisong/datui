@@ -87,10 +87,16 @@ values. Locale-based formatting requires the `"system"` preset.
 [performance]
 analysis_sample_rows = 100000    # The analysis sample's starting size; 0 starts at every row
 event_poll_interval_ms = 25      # Lower is more responsive and uses more CPU
+quality_local_copy_mb = 2048     # Most a Data Quality full scan copies from a remote source; 0 never copies
 ```
 
 `--sample-rows N` overrides `analysis_sample_rows` for a run. See
 [Analysis](../user-guide/analysis-features.md#sampling).
+
+`quality_local_copy_mb` bounds the local copy a Data Quality full scan of a
+remote dataset makes in the cache directory, in MiB: within it, and within the
+free disk there, the scan fetches each object once and every pass reads the
+copy. See [Data Quality](data-quality.md#local-copy-of-a-remote-source).
 
 ## Charts
 

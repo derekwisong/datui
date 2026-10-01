@@ -2731,3 +2731,31 @@ fn clipboard_config_defaults_merge_and_validate() {
     let template = config_manager.generate_default_config();
     assert!(template.contains("# [clipboard]"), "{template}");
 }
+
+/// `performance.quality_local_copy_mb`: 2 GiB when omitted, read when set, 0 kept as
+/// "never copy", merged over an earlier layer, and the same in the template.
+#[test]
+fn test_quality_local_copy_mb() {
+    assert_eq!(AppConfig::default().performance.quality_local_copy_mb, 2048);
+    let omitted: AppConfig = toml::from_str("[performance]\n").unwrap();
+    assert_eq!(omitted.performance.quality_local_copy_mb, 2048);
+    let off: AppConfig = toml::from_str("[performance]\nquality_local_copy_mb = 0\n").unwrap();
+    assert_eq!(off.performance.quality_local_copy_mb, 0);
+
+    let mut base = AppConfig::default();
+    let mut layer = AppConfig::default();
+    layer.performance.quality_local_copy_mb = 512;
+    base.merge(layer);
+    assert_eq!(base.performance.quality_local_copy_mb, 512);
+    base.merge(off);
+    assert_eq!(base.performance.quality_local_copy_mb, 0);
+    base.merge(AppConfig::default());
+    assert_eq!(
+        base.performance.quality_local_copy_mb, 0,
+        "a layer that leaves it out changes nothing"
+    );
+
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template: AppConfig = toml::from_str(&config_manager.generate_default_config()).unwrap();
+    assert_eq!(template.performance.quality_local_copy_mb, 2048);
+}

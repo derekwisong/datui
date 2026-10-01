@@ -5881,6 +5881,20 @@ pub mod tests {
         untouched(&app, "an older look");
         assert!(app.classify_inflight.is_some());
 
+        // A newer look at a directory named to open, and the older one's failure.
+        app.looking_at_directory = Some(PathBuf::from("/newer"));
+        fail(
+            &mut app,
+            current,
+            Job::LookAtDirectory(PathBuf::from("/older")),
+        );
+        untouched(&app, "an older look at a directory");
+        assert_eq!(
+            app.looking_at_directory.as_deref(),
+            Some(std::path::Path::new("/newer"))
+        );
+        app.looking_at_directory = None;
+
         // A newer chart export, and the older one's failure.
         app.chart_export_inflight = Some(8);
         fail(

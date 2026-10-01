@@ -7932,6 +7932,27 @@ fn fit_column(
     (side == Side::Scrolling && first && remaining > 0).then_some(remaining)
 }
 
+/// Fitted `spans` as one line of a `width`-cell column, flush right when `right`.
+/// ratatui places a span by its whole string's width, which can differ from the cells
+/// it draws (`لا` draws two, a halfwidth sound mark one): its right alignment then
+/// pushes the last grapheme off the cell, and a span after such a one overwrites it.
+/// So the padding is counted in drawn cells, and spans that disagree are drawn as one.
+fn cell_line(mut spans: Vec<Span<'static>>, width: u16, right: bool) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+    let drawn = |s: &Span| crate::glyphs::cell_width(&s.content);
+    if spans.len() > 1 && spans.iter().any(|s| drawn(s) != s.content.width()) {
+        let style = spans[0].style;
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        spans = vec![Span::styled(joined, style)];
+    }
+    let used: usize = spans.iter().map(drawn).sum();
+    let pad = usize::from(width).saturating_sub(used);
+    if right && pad > 0 {
+        spans.insert(0, Span::raw(" ".repeat(pad)));
+    }
+    Line::from(spans)
+}
+
 /// The rows of `df` on screen: `len` of them from `offset`, or `None` past its end.
 fn visible_slice(df: &DataFrame, offset: usize, len: usize) -> Option<DataFrame> {
     let len = len.min(df.height().saturating_sub(offset));
@@ -8395,21 +8416,14 @@ impl DataTable {
             .map(|row_index| {
                 let cells: Vec<Cell> = columns()
                     .map(|(col, w)| {
-                        let line = match col.cells.get(row_index) {
-                            Some(SliceCell::Null(glyph)) => {
-                                Line::from(Span::styled(fit(glyph, w), null_style))
+                        let span = match col.cells.get(row_index) {
+                            Some(SliceCell::Null(glyph)) => Span::styled(fit(glyph, w), null_style),
+                            Some(SliceCell::Value(text)) => {
+                                Span::styled(fit(text, w), col.cell_style.unwrap_or_default())
                             }
-                            Some(SliceCell::Value(text)) => match col.cell_style {
-                                Some(s) => Line::from(Span::styled(fit(text, w), s)),
-                                None => Line::from(fit(text, w)),
-                            },
-                            None => Line::default(),
+                            None => return Cell::default(),
                         };
-                        Cell::from(if col.right_align {
-                            line.right_aligned()
-                        } else {
-                            line
-                        })
+                        Cell::from(cell_line(vec![span], w, col.right_align))
                     })
                     .collect();
                 let row_style = if row_index % 2 == 1 {
@@ -8461,19 +8475,16 @@ impl DataTable {
                     }
                     None => heading.push(Span::styled(fit(&col.name, w), name_style)),
                 }
-                let mut lines = vec![Line::from(heading)];
+                let mut lines = vec![cell_line(heading, w, col.right_align)];
                 if let Some(label) = &col.type_label {
                     let type_style = match col.colour {
                         Some(c) => Style::default().fg(c),
                         None => Style::default().fg(self.dimmed),
                     };
-                    lines.push(Line::from(Span::styled(fit(label, w), type_style)));
+                    let label = Span::styled(fit(label, w), type_style);
+                    lines.push(cell_line(vec![label], w, col.right_align));
                 }
-                Cell::from(if col.right_align {
-                    Text::from(lines).right_aligned()
-                } else {
-                    Text::from(lines)
-                })
+                Cell::from(Text::from(lines))
             })
             .collect();
 
@@ -13558,6 +13569,34 @@ mod tests {
                 header.ends_with(&format!("{}{}", g.ellipsis, g.sort_desc)),
                 "{}: {header:?}",
                 set_name(g)
+            );
+        }
+    }
+
+    /// A heading whose drawn width is not its string's width (`لا` draws two cells,
+    /// a halfwidth sound mark one) is drawn whole over right-aligned numbers, with its
+    /// sort mark after it. ratatui's own alignment pushed the last letter off the cell,
+    /// and the mark landed on it.
+    #[test]
+    fn a_heading_is_placed_by_the_cells_it_draws() {
+        for name in ["الاسم", "ｶﾞｷﾞ"] {
+            let df = DataFrame::new_infer_height(vec![
+                Series::new(name.into(), &[1i64]).into(),
+                Series::new("tail".into(), &["x"]).into(),
+            ])
+            .unwrap();
+            let table = DataTable::default().with_sort(vec![name.to_string()], vec![false]);
+            let mark = table.glyphs.sort_asc;
+            let area = Rect::new(0, 0, 30, 3);
+            let mut buf = Buffer::empty(area);
+            let mut ts = TableState::default();
+            table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+            let rows: Vec<String> = (0..3).map(|y| drawn_from(&buf, y, 0)).collect();
+            assert!(rows[0].starts_with(&format!("{name}{mark}")), "{rows:#?}");
+            let width = crate::glyphs::cell_width(name) + 1;
+            assert!(
+                rows[1].starts_with(&format!("{:>width$} x", "1")),
+                "{rows:#?}"
             );
         }
     }

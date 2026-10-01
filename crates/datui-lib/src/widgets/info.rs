@@ -393,8 +393,26 @@ pub enum FileFacts {
 
 impl FileFacts {
     /// Stat `path` and, when `parquet`, read its footer. Blocking: call it on a worker.
+    ///
+    /// The reason for a failure is short enough for the panel's one line; the whole
+    /// error goes to the log.
     pub fn read(path: &Path, parquet: bool) -> std::result::Result<Self, String> {
-        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        let io = |e: std::io::Error| {
+            log::warn!(target: "datui", "file size of {}: {e}", path.display());
+            match e.kind() {
+                std::io::ErrorKind::NotFound => "file not found".to_string(),
+                std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+                // The OS's own words, without the errno the log already has.
+                _ => {
+                    let said = e.to_string();
+                    match said.rsplit_once(" (os error") {
+                        Some((words, _)) => words.to_string(),
+                        None => said,
+                    }
+                }
+            }
+        };
+        let meta = std::fs::metadata(path).map_err(io)?;
         if meta.is_dir() {
             return Ok(Self::Read {
                 size: None,
@@ -402,8 +420,11 @@ impl FileFacts {
             });
         }
         let parquet = if parquet {
-            let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-            let footer = read_metadata(&mut file).map_err(|e| format!("Parquet footer: {e}"))?;
+            let mut file = std::fs::File::open(path).map_err(io)?;
+            let footer = read_metadata(&mut file).map_err(|e| {
+                log::warn!(target: "datui", "Parquet footer of {}: {e}", path.display());
+                "unreadable Parquet footer".to_string()
+            })?;
             Some(Arc::new(footer))
         } else {
             None
@@ -413,6 +434,23 @@ impl FileFacts {
             parquet,
         })
     }
+}
+
+/// `text` cut to `room` columns, with the ellipsis glyph saying where.
+fn clip(text: &str, room: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= room {
+        return text.to_string();
+    }
+    let mark = crate::glyphs::get().ellipsis;
+    let mut kept = String::new();
+    for ch in text.chars() {
+        if kept.width() + ch.width().unwrap_or(0) + mark.width() > room {
+            break;
+        }
+        kept.push(ch);
+    }
+    kept + mark
 }
 
 /// Context for the info panel: the format, and what the file says about itself.
@@ -789,9 +827,10 @@ impl<'a> DataTableInfo<'a> {
             Some(FileFacts::Reading) => {
                 Span::styled("reading...", Style::default().fg(self.theme.dimmed))
             }
-            Some(FileFacts::Failed(why)) => {
-                Span::styled(why.as_str(), Style::default().fg(self.theme.error))
-            }
+            Some(FileFacts::Failed(why)) => Span::styled(
+                clip(why, size_chunks[1].width as usize),
+                Style::default().fg(self.theme.error),
+            ),
         };
         Paragraph::new("File size:").render(size_chunks[0], buf);
         Paragraph::new(Line::from(file_size)).render(size_chunks[1], buf);
@@ -1453,9 +1492,15 @@ mod tests {
                 parquet: None
             })
         ));
-        assert!(FileFacts::read(&dir.path().join("gone.parquet"), true).is_err());
-        let not_parquet = FileFacts::read(&csv, true).expect_err("a CSV has no footer");
-        assert!(not_parquet.starts_with("Parquet footer"), "{not_parquet}");
+        // Reasons short enough for the panel's one line.
+        assert_eq!(
+            FileFacts::read(&dir.path().join("gone.parquet"), true).unwrap_err(),
+            "file not found"
+        );
+        assert_eq!(
+            FileFacts::read(&csv, true).expect_err("a CSV has no footer"),
+            "unreadable Parquet footer"
+        );
     }
 
     /// A dataset that has not been counted says so rather than showing how far it got.

@@ -27177,6 +27177,20 @@ mod file_facts_tests {
         );
     }
 
+    /// A reason longer than the panel is cut with a mark, never silently.
+    #[test]
+    fn a_long_reason_is_cut_with_a_mark() {
+        let (mut app, rx, tx) = app();
+        let gate = gated(&mut app);
+        install(&mut app, "/nowhere/facts.csv");
+        open_resources(&mut app);
+        gate.answer.send(Err("word ".repeat(40))).unwrap();
+        crate::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+        let text = screen(&mut app);
+        let line = file_size_line(&text);
+        assert!(line.contains(crate::glyphs::get().ellipsis), "{line}");
+    }
+
     /// Installing a hive dataset takes what the open's worker found and looks at
     /// nothing itself: a directory on the path is not counted by its footers unless the
     /// worker said so.

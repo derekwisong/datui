@@ -82,7 +82,19 @@ pub struct EventPump {
     /// Events that arrived before there was an app to take them — keys typed while
     /// `run` read the settings — handled first, in the order they came.
     backlog: VecDeque<AppEvent>,
+    /// Keys read from the terminal and not yet offered to the app, oldest first. Each
+    /// waits for what has arrived on the channel behind it, as it did when the loop
+    /// read the terminal itself: taken in channel order, a held-down `j` put the
+    /// load-ahead's answer behind every repeat, scrolled off the buffer and folded the
+    /// rest into one press.
+    typed: VecDeque<KeyEvent>,
+    /// Events handled since a key was last offered. Bounded by [`RESULTS_PER_KEY`], so
+    /// a worker reporting faster than it is handled cannot starve the keyboard.
+    since_key: usize,
 }
+
+/// The most channel events handled while a typed key waits; then the key is offered.
+const RESULTS_PER_KEY: usize = 64;
 
 impl EventPump {
     pub fn new(app: App, tx: Sender<AppEvent>, rx: Receiver<AppEvent>) -> Self {
@@ -95,6 +107,8 @@ impl EventPump {
             held_for,
             next_up: VecDeque::new(),
             backlog: VecDeque::new(),
+            typed: VecDeque::new(),
+            since_key: 0,
         }
     }
 
@@ -192,13 +206,16 @@ impl EventPump {
     }
 
     /// The next event to handle: a continuation first, then the backlog, then the
-    /// channel.
+    /// channel. `Empty` once a typed key has waited long enough, so it is offered.
     fn take_next(&mut self) -> Result<(AppEvent, Option<GenerationLease>), TryRecvError> {
         if let Some((event, lease)) = self.next_up.pop_front() {
             return Ok((event, Some(lease)));
         }
         if let Some(event) = self.backlog.pop_front() {
             return Ok((event, None));
+        }
+        if !self.typed.is_empty() && self.since_key >= RESULTS_PER_KEY {
+            return Err(TryRecvError::Empty);
         }
         self.rx.try_recv().map(|event| (event, None))
     }
@@ -216,7 +233,7 @@ impl EventPump {
     pub fn wait_and_drain(&mut self, timeout: Duration) -> Result<Drained> {
         // A continuation is already here; waiting on the channel would sit on it for the
         // whole timeout while the errand it belongs to is halfway through.
-        if !self.next_up.is_empty() || !self.backlog.is_empty() {
+        if !self.next_up.is_empty() || !self.backlog.is_empty() || !self.typed.is_empty() {
             let first = self.take_next();
             return self.drain_from(first);
         }
@@ -248,15 +265,12 @@ impl EventPump {
                 {
                     return Ok(Drained::NotFound(path));
                 }
+                // Offered once what arrived behind it is handled ([`Self::typed`]).
                 Ok((AppEvent::Terminal(Event::Key(key)), _)) => {
-                    // One key per frame, as when the loop read the terminal itself: a
-                    // key that acted is drawn before the next is offered, and a
-                    // continuation it queued gets its frame first.
-                    if self.terminal_key(key)? {
-                        updated = true;
-                        progress_only = false;
-                        break;
+                    if self.typed.is_empty() {
+                        self.since_key = 0;
                     }
+                    self.typed.push_back(key);
                 }
                 Ok((AppEvent::Terminal(Event::Resize(cols, rows)), _)) => {
                     next = Ok((AppEvent::Resize(cols, rows), None));
@@ -266,6 +280,7 @@ impl EventPump {
                 Ok((event, continuation)) => {
                     updated = true;
                     progress_only &= event.is_progress();
+                    self.since_key += 1;
                     let follow_up = match self.app.handle(&event) {
                         Ok(follow_up) => follow_up,
                         Err(deferred) => {
@@ -288,7 +303,20 @@ impl EventPump {
                         break;
                     }
                 }
-                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Empty) => {
+                    let Some(key) = self.typed.pop_front() else {
+                        break;
+                    };
+                    self.since_key = 0;
+                    // One key per frame, as when the loop read the terminal itself: a
+                    // key that acted is drawn before the next is offered, and a
+                    // continuation it queued gets its frame first.
+                    if self.terminal_key(key)? {
+                        updated = true;
+                        progress_only = false;
+                        break;
+                    }
+                }
                 Err(TryRecvError::Disconnected) => return Ok(Drained::Exit),
             }
             next = self.take_next();
@@ -2046,6 +2074,47 @@ mod tests {
             Drained::Continue { updated: true, .. }
         ));
         assert!(matches!(p.drain().unwrap(), Drained::Exit));
+    }
+
+    /// A worker's answer that lands behind keys typed ahead is handled before the next
+    /// of them, as when the loop read the terminal itself. Taken in channel order, a
+    /// held-down key put the load-ahead's answer behind every repeat.
+    #[test]
+    fn an_answer_is_not_held_behind_keys_typed_ahead() {
+        let mut p = pump();
+        p.app.home.listing_in_flight = true;
+        for _ in 0..3 {
+            p.send(terminal(plain(KeyCode::Down))).unwrap();
+        }
+        p.send(AppEvent::HomeListingFailed).unwrap();
+        let keys = p.app.debug.num_key_events;
+        assert!(matches!(
+            p.drain().unwrap(),
+            Drained::Continue { updated: true, .. }
+        ));
+        assert!(!p.app.home.listing_in_flight, "the answer is in");
+        assert_eq!(
+            p.app.debug.num_key_events,
+            keys + 1,
+            "and one key, one frame"
+        );
+        p.drain().unwrap();
+        p.drain().unwrap();
+        assert_eq!(p.app.debug.num_key_events, keys + 3, "the rest, in turn");
+    }
+
+    /// A worker that reports faster than the loop handles it still lets a typed key
+    /// through.
+    #[test]
+    fn a_stream_of_reports_does_not_starve_a_typed_key() {
+        let mut p = pump();
+        p.send(terminal(plain(KeyCode::Down))).unwrap();
+        for _ in 0..RESULTS_PER_KEY * 4 {
+            p.send(AppEvent::Wake).unwrap();
+        }
+        let keys = p.app.debug.num_key_events;
+        p.drain().unwrap();
+        assert_eq!(p.app.debug.num_key_events, keys + 1);
     }
 
     /// A resize read from the terminal reaches the app as the resize event it always

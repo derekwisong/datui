@@ -32,8 +32,8 @@ opt-in. Existing tests may generate missing fixtures; prepare them once with
 scripts/dev/setup-test-data.sh. See docs/for-developers/tests.md for scope policy.
 
 Heavy runs (unit, integration, preflight, features, full, and anything with
---release) take a lock shared by every checkout on the machine and run one at a
-time; a run that has to wait says so once. check and cli do not take it, nor
+--release) take one of DATUI_TEST_HEAVY_SLOTS locks (default 2) shared by every
+checkout on the machine; a run that has to wait says so once. check and cli do not take it, nor
 does --print. Without flock (macOS without util-linux) they run unlocked.
 EOF
 }
@@ -45,7 +45,7 @@ if [[ ${1:-} == --print ]]; then
 fi
 
 # Heavy runs link Polars test executables or build the whole workspace; several at
-# once exhausted the machine's memory (#513), so they wait for one another. The lock
+# once exhausted the machine's memory (#513), so at most a few run together. The lock
 # is per user and outside the checkout and the target dir, which differ per worktree,
 # and not under TMPDIR, which runs often set for themselves.
 heavy=false
@@ -60,20 +60,32 @@ lock_if_heavy() {
         printf 'flock not found; running without the heavy-run lock.\n' >&2
         return 0
     fi
-    local lock
+    local base
     if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
-        lock=$XDG_RUNTIME_DIR/datui-test-heavy.lock
+        base=$XDG_RUNTIME_DIR/datui-test-heavy
     else
-        lock=/tmp/datui-test-heavy-$(id -u).lock
+        base=/tmp/datui-test-heavy-$(id -u)
     fi
+    # DATUI_TEST_HEAVY_SLOTS runs at once (default 2), one lock file per slot. Slot 1
+    # keeps the old name, so a checkout with the one-slot script still counts.
+    local slots=${DATUI_TEST_HEAVY_SLOTS:-2} slot lock waited=false
+    [[ $slots =~ ^[1-9][0-9]*$ ]] || slots=2
     # Held on fd 9 until this script exits, however it exits. Commands run with fd 9
     # closed (run, run_tests): a daemon one starts, such as sccache's server, would
     # otherwise hold the lock after the run.
-    exec 9>>"$lock"
-    if ! flock -n 9; then
-        printf 'Waiting for another heavy test run to finish (%s)...\n' "$lock" >&2
-        flock 9
-    fi
+    while :; do
+        for ((slot = 1; slot <= slots; slot++)); do
+            if ((slot == 1)); then lock=$base.lock; else lock=$base.$slot.lock; fi
+            exec 9>>"$lock"
+            flock -n 9 && break 2
+            exec 9>&-
+        done
+        if ! $waited; then
+            printf 'Waiting for one of %d heavy test runs to finish (%s*.lock)...\n' "$slots" "$base" >&2
+            waited=true
+        fi
+        sleep 2
+    done
     # A test.sh run from inside this one is part of it, and would wait on it forever.
     export DATUI_TEST_LOCK_HELD=1
 }

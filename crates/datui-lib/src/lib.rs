@@ -1256,9 +1256,10 @@ mod classify_batch_tests {
         }
     }
 
-    /// Put the viewport where a frame of twenty rows would put it to show `selected`,
-    /// exactly as `render_list` does. The two move together, so a test that set one
-    /// and not the other would describe a screen that cannot exist.
+    /// Put the viewport where a frame of twenty rows would put it after moving down
+    /// to `selected` from the top, exactly as `render_list` does. The two move
+    /// together, so a test that set one and not the other would describe a screen
+    /// that cannot exist.
     fn looking_at(app: &mut App, selected: usize) {
         app.home.selected = selected;
         app.home.view_height = 20;

@@ -320,8 +320,6 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // Where this frame starts and how many rows it has room for. Settled before
     // anything borrows the listing, because both the scroll below and the decision
     // about what is worth looking into are made from it.
-    //
-    // Keep a little context above the selection rather than pinning it to the edge.
     let height = area.height as usize;
     // With room to spare, a blank line before every header but the first. At most
     // five sections, so at most four lines, and below thirty the list is as dense as
@@ -355,13 +353,21 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
             })
             .collect()
     };
-    let first_line = row_lines
-        .get(app.home.selected)
-        .copied()
-        .unwrap_or(0)
-        .saturating_sub(height.saturating_sub(3).max(1));
-    // As a row index, for the passes that look into what is on screen.
+    // The view stays where the last frame left it unless the cursor would leave it.
+    let total = row_lines.last().map_or(0, |line| line + 1);
+    let first_line = crate::home::settle_top(
+        row_lines.get(app.home.scroll).copied().unwrap_or(total),
+        row_lines.get(app.home.selected).copied().unwrap_or(0),
+        height,
+        total,
+    );
+    // As a row index, for the passes that look into what is on screen and for the
+    // next frame. A view that would open on a spacer opens on the header below it.
     app.home.scroll = row_lines.partition_point(|line| *line < first_line);
+    let first_line = row_lines
+        .get(app.home.scroll)
+        .copied()
+        .unwrap_or(first_line);
 
     // Nothing is read here. Rows carry whatever a worker has measured so far, and
     // the request for more is made after the frame, not during it.

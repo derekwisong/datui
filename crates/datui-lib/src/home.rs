@@ -163,6 +163,32 @@ pub enum CloudLook {
 /// library reads; it names the level above a source's buckets, which no real URL can.
 pub const CLOUD_PLACE: &str = "cloud://";
 
+/// Lines kept between the cursor and the edge of the list while it can scroll.
+const SCROLL_MARGIN: usize = 2;
+
+/// The first line of a list `height` lines tall that keeps line `selected` on
+/// screen, given the list started at `top`.
+///
+/// The view stays put while the cursor moves inside it, and scrolls only as far as
+/// keeps the cursor [`SCROLL_MARGIN`] lines from an edge. It never starts so low
+/// that the last line rises above the bottom: folding, filtering or a taller
+/// terminal shows more rows rather than empty space.
+pub(crate) fn settle_top(top: usize, selected: usize, height: usize, total: usize) -> usize {
+    if height == 0 {
+        return top.min(selected);
+    }
+    // A short list keeps the cursor reachable at every line.
+    let margin = SCROLL_MARGIN.min((height - 1) / 2);
+    let top = if selected < top + margin {
+        selected.saturating_sub(margin)
+    } else if selected + margin >= top + height {
+        selected + margin + 1 - height
+    } else {
+        top
+    };
+    top.min(total.saturating_sub(height))
+}
+
 /// The place for one cloud source.
 pub fn cloud_place(id: &str) -> PathBuf {
     PathBuf::from(format!("{CLOUD_PLACE}{id}"))
@@ -2405,9 +2431,8 @@ impl HomeState {
     /// `scroll` still says four hundred, and the first batch is spent on rows nobody
     /// is looking at.
     fn follow_selection(&mut self) {
-        self.scroll = self
-            .selected
-            .saturating_sub(self.view_height.saturating_sub(3).max(1));
+        let rows = self.visible().len();
+        self.scroll = settle_top(self.scroll, self.selected, self.view_height, rows);
     }
 
     /// Whether a section is folded: what the user last chose for it, else its default.

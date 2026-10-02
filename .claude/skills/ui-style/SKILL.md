@@ -221,7 +221,10 @@ Frozen — users may be retrained on form internals, never on moving and
 leaving:
 
 - Arrows and `h/j/k/l`; `PgUp/PgDn` (and `Ctrl+F/B`, `Ctrl+D/U` at the
-  table); `Home/End` (`G`); `:` go-to-line.
+  table); `Home/End` (`G`); `:` go-to-line. At the table `h/l` and `←/→`
+  move the column cursor, and the columns scroll only when it would leave
+  the screen; `[ ] { }` and `g` move it too (#574 made the change; before,
+  `h/l` scrolled the view a column).
 - Esc's layered back-out; `q` pops to home when the dataset was opened
   from it and quits otherwise (the control bar says which); `Ctrl+Q` quits
   from anywhere and `Ctrl+C` from anywhere outside a text field; `Q` quits

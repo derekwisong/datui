@@ -1,9 +1,11 @@
 Navigation:
-  Arrows, h/j/k/l:  Scroll table
-  [ / ]:            A page of columns left or right (Shift+←/→ too)
-  { / }:            First column, last page of columns
-  g:                Go to a column by name; it becomes the current
-                    column until the columns scroll
+  ↑ / ↓ (j/k):      Move the row cursor
+  ← / → (h/l):      Move the column cursor, frozen columns included; the
+                    columns scroll only when it would leave the screen
+  [ / ]:            A page of columns left or right, the cursor on the
+                    page's first column (Shift+←/→ too)
+  { / }:            First column, last column
+  g:                Go to a column by name; the cursor goes with it
   PgUp/PgDn:        Scroll pages (Ctrl+F down, Ctrl+B up)
   Home/End:         Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:    Half page down/up
@@ -20,15 +22,16 @@ Navigation:
 Data Operations:
   /:                Query: SQL, Search or q-style
   c:                Open charts
-  s:                Open the Sort & Filter sidebar (tabs: Columns, Filters)
-  F:                Value counts of the current column, underlined in
-                    the header: each value's rows, percent and a bar,
-                    with a summary
+  s:                Open the Sort & Filter sidebar (tabs: Columns, Filters),
+                    on the cursor's column
+  F:                Value counts of the cursor's column: each value's
+                    rows, percent and a bar, with a summary
   a:                Open Statistical Analysis. In a Data Quality evidence
                     drill a is disabled; Esc returns to the observation
   p:                Open Pivot & Melt
   e:                Export data to file
-  y:                Copy to the clipboard (cell, row, view or table)
+  y:                Copy to the clipboard (cell, row, view or table); a
+                    cell is the cursor's
   r:                Reverse sort order (sorted columns carry a direction
                     mark in the header); with no sort, reverse the row order
   R:                Reset table: clear the query, filters, sort, column

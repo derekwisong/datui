@@ -156,7 +156,7 @@ errand is between phases, or an open is on its way to its dataset,
 (`event_pump.rs`, owned by
 `run()`) holds the keys typed meanwhile and replays them in order, one per loop
 iteration, once the app is idle. Ctrl-Q, Ctrl-C outside a text field, Ctrl-O and
-confirmation-modal keys act at once; so do `q`, column scroll and help at the
+confirmation-modal keys act at once; so do `q`, the column cursor and help at the
 plain table view when nothing is held. Held keys are dropped when the screen
 they were typed at goes away. Change this through `classify` and its tests, not
 by gating keys in `App::key`.
@@ -189,6 +189,9 @@ work. The short version:
   `alternate_row_color`.
 - The current row is tinted (`table_selected`) and carries a `▎` rail; use the
   theme's `highlight_style` helper, never `Modifier::REVERSED` directly.
+- The column cursor tints its cells (`column_cursor`), its header and the
+  current cell (`cell_cursor`), through the theme's `column_cursor_style` and
+  `cell_cursor_style` helpers.
 - Keys in the control bar are chips: key on the accent, label beside it.
   Section titles sit on a rule with a flat count chip.
 - Column names take their type's color; a second header row names the type.

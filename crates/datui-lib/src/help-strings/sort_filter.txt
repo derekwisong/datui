@@ -1,5 +1,6 @@
 Tabbed sidebar: Columns (sort, order, lock, visibility, width) and Filters
-(row filters).
+(row filters). It opens on the table's column cursor: the Columns tab's
+cursor on that column, and a new filter starts on it.
 
   Tab / Shift+Tab:  Move focus between the tab bar and the body
   ← / →:            Switch Columns / Filters (h/l on the tab bar)

@@ -1,12 +1,12 @@
 # Count values
 
 Press <kbd>F</kbd> at the table to see how many rows hold each value of the
-current column, with a summary of the column above them. <kbd>Esc</kbd> goes
-back.
+column under the column cursor, with a summary of the column above them.
+<kbd>Esc</kbd> goes back.
 
-The current column is the one underlined in the header: the column
-<kbd>g</kbd> went to, or else the first column past any frozen ones.
-<kbd>←</kbd> <kbd>→</kbd> on the counts move to the previous or next column.
+Move the cursor with <kbd>h</kbd> <kbd>l</kbd> or <kbd>g</kbd>. <kbd>←</kbd>
+<kbd>→</kbd> on the counts move to the previous or next column, and the
+table's cursor goes with them.
 
 ## Which carrier flies most
 

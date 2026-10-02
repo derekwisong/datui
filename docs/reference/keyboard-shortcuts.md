@@ -10,10 +10,10 @@ typing. The bottom bar shows the main actions for the current screen.
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move one row |
-| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Scroll one column |
-| <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | [A page of columns](../user-guide/filtering-sorting.md#move-across-a-wide-table) left or right |
-| <kbd>{</kbd> <kbd>}</kbd> | First column; last page of columns |
-| <kbd>g</kbd> | Go to a column by name; it becomes the current column, underlined in the header, until the columns scroll |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Move the [column cursor](../user-guide/filtering-sorting.md#move-across-a-wide-table) one column; the columns scroll only when it would leave the screen |
+| <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | A page of columns left or right, the cursor on the page's first column |
+| <kbd>{</kbd> <kbd>}</kbd> | First column; last column |
+| <kbd>g</kbd> | Go to a column by name, cursor and all |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> or <kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>Ctrl</kbd>+<kbd>F</kbd> | One page |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
@@ -23,15 +23,15 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill into its rows. <kbd>Esc</kbd> comes back. Anywhere else, inspect the row, as <kbd>Space</kbd> does |
 | <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
-| <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md) |
-| <kbd>F</kbd> | [Value counts](../user-guide/value-counts.md) of the current column: the one underlined, which <kbd>g</kbd> went to, or else the first past any frozen columns |
+| <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md), open on the cursor's column |
+| <kbd>F</kbd> | [Value counts](../user-guide/value-counts.md) of the cursor's column |
 | <kbd>r</kbd> | Reverse the sort; with no sort, reverse the row order |
 | <kbd>R</kbd> | Reset: clear query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
 | <kbd>c</kbd> | [Chart](../user-guide/charting.md) |
 | <kbd>a</kbd> | [Analysis](../user-guide/analysis-features.md) |
 | <kbd>p</kbd> | [Pivot and melt](../user-guide/reshaping.md) |
 | <kbd>e</kbd> | [Export](../user-guide/exporting-data.md) |
-| <kbd>y</kbd> | [Copy to the clipboard](../user-guide/copying.md) |
+| <kbd>y</kbd> | [Copy to the clipboard](../user-guide/copying.md); a cell is the cursor's |
 | <kbd>i</kbd> | [Dataset info](../user-guide/dataset-info.md) |
 | <kbd>v</kbd> | [Views](../user-guide/views.md) |
 | <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |
@@ -68,20 +68,20 @@ key, beyond the paging chords above.
 |---|---|
 | type | Narrow the list to the names that contain it |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move |
-| <kbd>Enter</kbd> | Go to the column and make it the current one |
+| <kbd>Enter</kbd> | Go to the column; the column cursor moves to it |
 | <kbd>Backspace</kbd> | Delete a character; <kbd>Ctrl</kbd>+<kbd>W</kbd> a word, <kbd>Ctrl</kbd>+<kbd>U</kbd> all |
 | <kbd>Esc</kbd> | Close without moving |
 
 ## Value counts
 
-<kbd>F</kbd> at the table counts the current column, the one underlined in the header.
+<kbd>F</kbd> at the table counts the column cursor's column.
 
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last line |
-| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous or next column |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous or next column; the table's column cursor moves with it |
 | <kbd>Enter</kbd> | The rows holding the value, as a drill-down; <kbd>Esc</kbd> there comes back |
 | <kbd>s</kbd> | Sort by count or by value |
 | <kbd>a</kbd> | Count every row, when the counts are of a sample |

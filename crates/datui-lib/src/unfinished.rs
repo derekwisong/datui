@@ -33,6 +33,9 @@ struct Files {
     /// the path is not known until the file exists.
     creating: usize,
     swept: bool,
+    /// Set by a sweep as it starts waiting, so a test can tell it is blocked.
+    #[cfg(test)]
+    sweep_waiting: bool,
 }
 
 impl Files {
@@ -84,6 +87,13 @@ impl Unfinished {
             if left.is_zero() {
                 break;
             }
+            // Set under the lock that `wait_timeout` releases, so whoever sees it next
+            // sees a sweep already waiting.
+            #[cfg(test)]
+            {
+                files.sweep_waiting = true;
+                released.notify_all();
+            }
             files = released
                 .wait_timeout(files, left)
                 .unwrap_or_else(|e| e.into_inner())
@@ -93,6 +103,18 @@ impl Unfinished {
         for path in files.claimed.drain(..) {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// Whether a sweep starts waiting on a busy writer within `limit`. Bounded, so a
+    /// sweep that never waits fails the test instead of hanging it.
+    #[cfg(test)]
+    fn a_sweep_waits_within(&self, limit: Duration) -> bool {
+        let (_, released) = &*self.0;
+        released
+            .wait_timeout_while(self.lock(), limit, |files| !files.sweep_waiting)
+            .unwrap_or_else(|e| e.into_inner())
+            .0
+            .sweep_waiting
     }
 
     fn lock(&self) -> MutexGuard<'_, Files> {
@@ -279,13 +301,18 @@ mod tests {
             let unfinished = unfinished.clone();
             std::thread::spawn(move || unfinished.sweep(Instant::now() + Duration::from_secs(30)))
         };
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(!sweeper.is_finished(), "the sweep waits for the file");
+        assert!(
+            unfinished.a_sweep_waits_within(Duration::from_secs(30)),
+            "the sweep waits for the file"
+        );
+        assert!(unfinished.writing());
+        assert!(!sweeper.is_finished());
         go.send(()).unwrap();
         sweeper.join().unwrap();
         // Checked before joining the writer: its thread may still be exiting, but the
         // file it made must already be gone.
         assert_eq!(files_in(dir.path()), 0, "the sweep waited for the file");
+        assert!(!unfinished.writing());
         assert!(worker.join().unwrap(), "a stopped open's file is refused");
     }
 

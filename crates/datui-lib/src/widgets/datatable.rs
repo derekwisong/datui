@@ -347,13 +347,18 @@ pub struct DataTableState {
     format_read: Option<Arc<crate::formats::Read>>,
     /// The fixed records the data as loaded is, while it still is: a window of a
     /// pristine view starts its columns at the window rather than decoding from row 0.
-    fixed_window: Option<Arc<crate::fixed_records::FixedRecords>>,
+    fixed_window: Option<Arc<dyn crate::pushdown::Windowed>>,
     /// The audio file the dataset is, and the root it was opened as: while the view is
     /// that root, untouched, a window is read straight from the file's frames. See
     /// [`crate::OpenOptions::audio`].
     audio: Option<(Arc<crate::audio::AudioSource>, u64)>,
     /// What a MIDI file said besides its events. See [`crate::OpenOptions::midi`].
     midi: Option<Arc<crate::midi::MidiSummary>>,
+    /// A source that runs the sidebar's filters and sort itself (a SQLite table), while
+    /// the data as loaded is the root: see [`Self::pushed_view`].
+    pushdown: Option<Arc<dyn crate::pushdown::Pushdown>>,
+    /// Stops what the source runs when this state goes.
+    source_hold: Option<crate::sqlite::Hold>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -870,6 +875,10 @@ pub struct OpenFacts {
     pub audio: Option<Arc<crate::audio::AudioSource>>,
     /// What a MIDI file said besides its events.
     pub midi: Option<Arc<crate::midi::MidiSummary>>,
+    /// A source that runs the sidebar's filters and sort itself: a SQLite table.
+    pub pushdown: Option<Arc<dyn crate::pushdown::Pushdown>>,
+    /// What stops that source's statements when the dataset goes.
+    pub hold: Option<crate::sqlite::Hold>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1593,50 +1602,22 @@ fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, 
     Some((file_of(start), file_of(end - 1).min(files - 1)))
 }
 
-/// A source that reads a window at its first row, rather than from row 0 up.
-#[derive(Clone, Copy)]
-enum DirectWindow<'a> {
-    /// Polars gives an anonymous scan no row offset, so a slice deep in the view would
-    /// decode every row before it; the records start the window there instead.
-    Records(&'a crate::fixed_records::FixedRecords),
-    /// The in-memory engine builds the plan's frame index from row 0 up to a slice's
-    /// end, so the window at the end of a long recording would cost 4 bytes per frame
-    /// before it.
-    Audio(&'a Arc<crate::audio::AudioSource>),
-}
-
-impl<'a> DirectWindow<'a> {
-    fn of(
-        records: Option<&'a crate::fixed_records::FixedRecords>,
-        audio: Option<&'a Arc<crate::audio::AudioSource>>,
-    ) -> Option<Self> {
-        records.map(Self::Records).or(audio.map(Self::Audio))
-    }
-}
-
 /// Rows `[start, start + len)` of `lf` as `all_columns`. With `files` counted, a scan
 /// of only the files holding them, so a window deep in a remote dataset does not read
-/// every file before it. With `direct`, the rows read straight from the source.
+/// every file before it. With `records`, the rows read straight from the source.
 fn window_of(
     lf: &LazyFrame,
     files: Option<&RemoteFiles>,
-    direct: Option<DirectWindow<'_>>,
+    records: Option<&dyn crate::pushdown::Windowed>,
     read_as_text: &[PlSmallStr],
     start: usize,
     len: usize,
     all_columns: Vec<Expr>,
 ) -> PolarsResult<LazyFrame> {
-    match direct {
-        Some(DirectWindow::Records(records)) => {
-            return Ok(records.window(start, len)?.select(all_columns));
-        }
-        Some(DirectWindow::Audio(audio)) => {
-            return Ok(audio
-                .window(start as u64, len as u64, None)?
-                .lazy()
-                .select(all_columns));
-        }
-        None => {}
+    // Polars gives an anonymous scan no row offset, so a slice deep in the view would
+    // read every row before it; the source starts the window there instead.
+    if let Some(records) = records {
+        return Ok(records.window(start, len)?.select(all_columns));
     }
     if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
         && let Some((first, last)) = files_holding(offsets, start, len)
@@ -1658,10 +1639,8 @@ fn window_of(
 pub(crate) struct ViewRows {
     lf: LazyFrame,
     files: Option<RemoteFiles>,
-    /// See [`DataTableState::fixed_window`].
-    records: Option<Arc<crate::fixed_records::FixedRecords>>,
-    /// The audio file a window reads its frames from. See [`window_of`].
-    audio: Option<Arc<crate::audio::AudioSource>>,
+    /// See [`DataTableState::window_now`].
+    records: Option<Arc<dyn crate::pushdown::Windowed>>,
     read_as_text: Vec<PlSmallStr>,
     /// The buffer on hand and the view row it starts at.
     pub(crate) buffer: Option<(DataFrame, usize)>,
@@ -1712,7 +1691,7 @@ impl ViewRows {
         window_of(
             &self.lf,
             self.files.as_ref(),
-            DirectWindow::of(self.records.as_deref(), self.audio.as_ref()),
+            self.records.as_deref(),
             &self.read_as_text,
             start,
             len,
@@ -1729,7 +1708,6 @@ impl ViewRows {
             lf,
             files: None,
             records: None,
-            audio: None,
             read_as_text: Vec::new(),
             buffer,
             num_rows: None,
@@ -1865,6 +1843,8 @@ impl DataTableState {
             fixed_window: None,
             audio: None,
             midi: None,
+            pushdown: None,
+            source_hold: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2007,6 +1987,8 @@ impl DataTableState {
             fixed_window: None,
             audio: None,
             midi: None,
+            pushdown: None,
+            source_hold: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2065,6 +2047,8 @@ impl DataTableState {
             other_tables,
             audio,
             midi,
+            pushdown,
+            hold,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2102,7 +2086,11 @@ impl DataTableState {
         self.measurements = measurements;
         self.open_notes = open_notes;
         self.not_the_table = not_the_table;
-        self.fixed_window = format_read.as_ref().map(|read| read.records.clone());
+        self.fixed_window = format_read
+            .as_ref()
+            .map(|read| read.records.clone() as Arc<dyn crate::pushdown::Windowed>);
+        self.pushdown = pushdown;
+        self.source_hold = hold;
         self.format_read = format_read;
         self.download = download;
         self.model = model;
@@ -2122,8 +2110,9 @@ impl DataTableState {
     /// read through the old root are dropped, and checkpoints taken over it no longer
     /// apply.
     fn replace_root(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
-        // The records no longer stand for the root.
+        // The records, or the table, no longer stand for the root.
         self.fixed_window = None;
+        self.pushdown = None;
         self.root_generation = next_len_generation();
         self.invalidate_num_rows();
         self.original_schema = schema.clone();
@@ -6480,12 +6469,17 @@ impl DataTableState {
         // than a plain chain, because the open and the footer walk each count the
         // files a mixed directory's read passed over, and this is the one place both
         // tallies are in hand.
-        crate::notes::merged(
+        let mut notes = crate::notes::merged(
             &self.open_notes,
             &self.notes,
             &self.view_notes,
             self.dataset_schema.as_ref(),
-        )
+        );
+        // What reading a table in place has found, which may grow after the open.
+        if let Some(pushdown) = &self.pushdown {
+            notes.extend(pushdown.notes());
+        }
+        notes
     }
 
     /// The audio file the dataset is, when it is one.
@@ -6538,10 +6532,38 @@ impl DataTableState {
         self.format_read.as_ref()
     }
 
-    /// The records a window of the view may start in, while the view is the data as
-    /// loaded.
-    fn fixed_window_now(&self) -> Option<&Arc<crate::fixed_records::FixedRecords>> {
-        self.fixed_window.as_ref().filter(|_| self.is_pristine())
+    /// The source a window of the view is read straight from, when there is one: the
+    /// records or audio frames of the data as loaded, or the view a source runs itself.
+    fn window_now(&self) -> Option<Arc<dyn crate::pushdown::Windowed>> {
+        if let Some(records) = self.fixed_window.as_ref().filter(|_| self.is_pristine()) {
+            return Some(records.clone());
+        }
+        if let Some(audio) = self.audio_window() {
+            return Some(audio.clone());
+        }
+        self.pushed_view().map(|view| view.window)
+    }
+
+    /// The view as the source runs it, when it runs it: the data as loaded is the root
+    /// (no query, reshape or drill), and the source can say the sidebar's filters and
+    /// sort. Derived from them each time, so it never disagrees with them.
+    pub(crate) fn pushed_view(&self) -> Option<crate::pushdown::PushedView> {
+        let pushdown = self.pushdown.as_ref()?;
+        if !self.scan_is_the_root() || self.drift_column_present {
+            return None;
+        }
+        let sort: Vec<(String, bool)> = self
+            .sort_columns
+            .iter()
+            .cloned()
+            .zip(self.sort_descending.iter().copied())
+            .collect();
+        pushdown.view(&self.filters, &sort, !self.sort_ascending)
+    }
+
+    /// The view's own count, from a source that runs the view.
+    pub(crate) fn source_counter(&self) -> Option<crate::pushdown::Counter> {
+        self.pushed_view().map(|view| view.counter)
     }
 
     /// The MIDI file's header, tracks and tempo, when the dataset is MIDI events.
@@ -6560,7 +6582,12 @@ impl DataTableState {
         // The open's own notes count: a directory read as one format with another left
         // out may have nothing else worth saying, and that is exactly the dataset whose
         // reader the user most wants to know about.
-        !self.notes.is_empty() || !self.open_notes.is_empty()
+        !self.notes.is_empty()
+            || !self.open_notes.is_empty()
+            || self
+                .pushdown
+                .as_ref()
+                .is_some_and(|p| !p.notes().is_empty())
     }
 
     /// Whether there is something to say that has not been offered yet.
@@ -6909,10 +6936,7 @@ impl DataTableState {
         window_of(
             &self.lf,
             self.remote_files.as_ref().filter(|_| self.remote_window()),
-            DirectWindow::of(
-                self.fixed_window_now().map(|r| r.as_ref()),
-                self.audio_window(),
-            ),
+            self.window_now().as_deref(),
             &self.read_as_text,
             start,
             len,
@@ -6930,8 +6954,7 @@ impl DataTableState {
                 .as_ref()
                 .filter(|_| self.remote_window())
                 .cloned(),
-            records: self.fixed_window_now().cloned(),
-            audio: self.audio_window().cloned(),
+            records: self.window_now(),
             read_as_text: self.read_as_text.clone(),
             buffer: self
                 .buffered_df
@@ -9281,7 +9304,25 @@ impl DataTableState {
     }
 
     /// Rebuild `lf` as `base_lf` → filters → sort. Column order is applied at collect.
+    /// A source that runs the filters and sort itself gives the frame instead.
     fn apply_transformations(&mut self) {
+        if let Some(view) = self.pushed_view() {
+            let sorted = !self.sort_columns.is_empty() || !self.sort_ascending;
+            self.unsorted_lf = sorted
+                .then(|| {
+                    self.pushdown
+                        .as_ref()
+                        .and_then(|p| p.view(&self.filters, &[], false))
+                        .map(|unsorted| unsorted.lf)
+                })
+                .flatten();
+            self.view_notes = Vec::new();
+            self.invalidate_num_rows();
+            self.lf = view.lf;
+            self.restore_footer_count();
+            self.collect();
+            return;
+        }
         let mut lf = self.base_lf.clone();
         if let Some(e) = crate::python_script::filters_expr(&self.typed_filters()) {
             lf = lf.filter(e);
@@ -9364,6 +9405,11 @@ impl DataTableState {
         self.buffered_end_row = 0;
         self.buffered_df = None;
 
+        // A source that runs the order runs it backward too.
+        if self.pushed_view().is_some() {
+            self.apply_transformations();
+            return;
+        }
         if !self.sort_columns.is_empty() {
             self.invalidate_num_rows();
             self.lf = self.lf.clone().sort_by_exprs(

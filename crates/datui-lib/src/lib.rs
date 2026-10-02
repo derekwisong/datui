@@ -104,6 +104,7 @@ pub mod output_file;
 pub mod past_calendar;
 pub mod pivot_melt_modal;
 pub mod pointer;
+pub mod pushdown;
 pub mod python_script;
 pub mod quality_export;
 pub mod quality_intent;
@@ -276,6 +277,7 @@ mod export_format_tests {
             len_generation: 7,
             count_dir: None,
             files: None,
+            counter: None,
             lf: unreadable,
             streaming: false,
             meter: Arc::new(crate::measurements::Meter::default()),
@@ -8543,6 +8545,8 @@ pub struct OpenOptions {
     /// What a MIDI file said besides its events, for the Info panel; carried as
     /// `model` is. `None` for every other open.
     pub midi: Option<Arc<crate::midi::MidiSummary>>,
+    /// A SQLite table opened in place, carried from the scan to the dataset.
+    pub sqlite: Option<Arc<SqliteOpen>>,
 }
 
 impl OpenOptions {
@@ -8598,6 +8602,7 @@ impl OpenOptions {
             format_read: None,
             normalize: false,
             audio: None,
+            sqlite: None,
         }
     }
 }
@@ -9252,6 +9257,24 @@ pub struct ReadReport {
     pub audio: Option<Arc<crate::audio::AudioSource>>,
     /// What a MIDI file said besides its events. See [`OpenOptions::midi`].
     pub midi: Option<Arc<crate::midi::MidiSummary>>,
+    /// A SQLite table opened in place. See `OpenOptions::sqlite`.
+    pub sqlite: Option<Arc<SqliteOpen>>,
+}
+
+/// A SQLite table opened in place, carried from the scan to the dataset.
+pub struct SqliteOpen {
+    pub pushdown: Arc<dyn crate::pushdown::Pushdown>,
+    /// Taken by the dataset, which stops the table's statements when it goes.
+    pub hold: std::sync::Mutex<Option<crate::sqlite::Hold>>,
+    pub other_tables: Vec<String>,
+}
+
+impl std::fmt::Debug for SqliteOpen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteOpen")
+            .field("other_tables", &self.other_tables)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a scan built: the frame, or what the load has to turn into a file it can scan
@@ -9270,8 +9293,7 @@ pub(crate) enum Scan {
         choice: crate::formats::Choice,
     },
     /// A file read into a table of its own before it is scanned (`Step::ReadInto`): a
-    /// GPS log, or a SQLite table. `total` is what the loading screen's bar counts to:
-    /// the log's bytes, or roughly the table's rows.
+    /// GPS log. `total` is what the loading screen's bar counts to: the log's bytes.
     ReadInto {
         file: PathBuf,
         format: FileFormat,
@@ -10115,6 +10137,8 @@ struct LenCount {
     len_generation: u64,
     count_dir: Option<PathBuf>,
     files: Option<crate::widgets::datatable::FileCounter>,
+    /// The view's own count, from a source that runs the view (a SQLite table).
+    counter: Option<crate::pushdown::Counter>,
     lf: LazyFrame,
     streaming: bool,
     /// The open's meter. Counting a local directory re-reads every footer, which costs
@@ -10159,6 +10183,7 @@ impl LenCount {
             len_generation: state.len_generation(),
             count_dir: state.parquet_count_dir(),
             files: state.remote_files_counter(),
+            counter: state.source_counter(),
             meter: state.measurements().clone(),
             lf: state.lf_clone(),
             streaming: state.polars_streaming_enabled(),
@@ -10200,6 +10225,11 @@ impl LenCount {
     }
 
     fn count(&self) -> Result<Counted, ()> {
+        if let Some(counter) = &self.counter {
+            return counter()
+                .map(Counted::from)
+                .map_err(|e| log::warn!(target: "datui", "row count failed: {e}"));
+        }
         // A dataset's footers, many at once. Should one not read, the scan counts itself.
         if let Some(count) = &self.files
             && let Ok(groups) = count()
@@ -13632,6 +13662,7 @@ impl App {
         self.opened = paths.map(|paths| {
             let options = OpenOptions {
                 format_read: None,
+                sqlite: None,
                 ..options.clone()
             };
             (paths, options)
@@ -17060,7 +17091,6 @@ impl App {
                 };
                 let status = match options.format {
                     Some(FileFormat::Gpx) => "Reading GPX...",
-                    Some(FileFormat::Sqlite) => "Reading SQLite table...",
                     _ => "Reading NMEA...",
                 };
                 self.spawn_job(job, Some(status), move |_| {
@@ -17068,14 +17098,9 @@ impl App {
                         crate::error_display::user_message_from_report(&e, Some(path.as_path()))
                     };
                     let format = options.format.unwrap_or(FileFormat::Nmea);
-                    let (converted, path) = match format {
-                        FileFormat::Sqlite => {
-                            Self::read_sqlite_table(&file, &path, &options, &writer, &read)
-                        }
-                        _ => crate::gps::convert(&file, &path, format, &options, &writer, &read)
-                            .map(|converted| (converted, path.clone())),
-                    }
-                    .map_err(named)?;
+                    let converted =
+                        crate::gps::convert(&file, &path, format, &options, &writer, &read)
+                            .map_err(named)?;
                     // The converted file is an Arrow IPC file, scanned like one.
                     let (state, facts, debug_label) = Self::build_schema_state(
                         converted.lf,
@@ -17131,6 +17156,7 @@ impl App {
                         read_python: Vec::new(),
                         audio: None,
                         midi: None,
+                        sqlite: None,
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
@@ -17158,6 +17184,7 @@ impl App {
                         format,
                         model: report.model,
                         format_read: report.format_read,
+                        sqlite: report.sqlite,
                         spec_choice: None,
                         read_python: report.read_python,
                         audio: report.audio,
@@ -18175,6 +18202,11 @@ impl App {
             facts.open_notes.extend(crate::midi::notes(midi));
         }
         facts.midi = options.midi.clone();
+        if let Some(sqlite) = &options.sqlite {
+            facts.pushdown = Some(sqlite.pushdown.clone());
+            facts.hold = sqlite.hold.lock().ok().and_then(|mut hold| hold.take());
+            facts.other_tables = sqlite.other_tables.clone();
+        }
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         facts.remote_source = path.is_some_and(source::scans_in_place);
@@ -18734,45 +18766,21 @@ impl App {
         Self::build_local_lazyframe(paths, options, report, formats)
     }
 
-    /// Read the table of the SQLite database `file` (named `path`) that the open asked
-    /// for, or its only one, into a table of its own; and the name the dataset goes by:
-    /// a table among others by its path inside the database, as the home screen lists it.
-    fn read_sqlite_table(
-        file: &Path,
-        path: &Path,
-        options: &OpenOptions,
-        writer: &crate::unfinished::Writer,
-        read: &std::sync::atomic::AtomicU64,
-    ) -> Result<(crate::segments::Converted, PathBuf)> {
-        let tables = crate::sqlite::tables(file)?;
-        let own = tables.iter().filter(|t| !t.internal).count();
-        let crate::sqlite::Pick::One(table) =
-            crate::sqlite::pick(tables.clone(), options.table.as_deref(), path)?
-        else {
-            return Err(color_eyre::eyre::eyre!(
-                "{} holds several tables. Open one with --table NAME.",
-                path.display()
-            ));
-        };
-        let converted = crate::sqlite::convert(file, path, &table, &tables, options, writer, read)?;
-        let name = if own > 1 || table.internal {
-            crate::sqlite::table_place(path, &table.name)
-        } else {
-            path.to_path_buf()
-        };
-        Ok((converted, name))
-    }
-
     /// What opening the SQLite database `file` reads: the table `--table` names, or the
-    /// database's only table of its own, or none yet when it has several.
-    fn scan_sqlite(file: &Path, options: &OpenOptions) -> Result<Scan> {
+    /// database's only table of its own, read in place; or none yet when it has several.
+    fn scan_sqlite(file: &Path, options: &OpenOptions, report: &mut ReadReport) -> Result<Scan> {
         let tables = crate::sqlite::tables(file)?;
-        match crate::sqlite::pick(tables, options.table.as_deref(), file)? {
-            crate::sqlite::Pick::One(table) => Ok(Scan::ReadInto {
-                file: file.to_path_buf(),
-                format: FileFormat::Sqlite,
-                total: crate::sqlite::estimate_rows(file, &table),
-            }),
+        match crate::sqlite::pick(tables.clone(), options.table.as_deref(), file)? {
+            crate::sqlite::Pick::One(table) => {
+                let opened = crate::sqlite::open_table(file, file, &table, &tables)?;
+                report.format = Some(FileFormat::Sqlite);
+                report.sqlite = Some(Arc::new(SqliteOpen {
+                    pushdown: opened.pushdown,
+                    hold: std::sync::Mutex::new(Some(opened.hold)),
+                    other_tables: opened.other_tables,
+                }));
+                Ok(opened.lf.into())
+            }
             crate::sqlite::Pick::Several(tables) => Ok(Scan::Tables {
                 file: file.to_path_buf(),
                 tables: tables
@@ -18997,12 +19005,12 @@ impl App {
             });
         }
 
-        // So is a SQLite table, once it is known which: the one named, or the
-        // database's only one. A database of several lands on the home screen.
+        // A SQLite table is read in place, once it is known which: the one named, or
+        // the database's only one. A database of several lands on the home screen.
         if let [file] = paths
             && effective_format == Some(FileFormat::Sqlite)
         {
-            return Self::scan_sqlite(file, options);
+            return Self::scan_sqlite(file, options, report);
         }
 
         // One compressed CSV, TSV or PSV, as a directory of one resolves to: the load
@@ -19214,7 +19222,7 @@ impl App {
                     report.midi = Some(Arc::new(summary));
                     return Ok(lf.into());
                 }
-                Some(FileFormat::Sqlite) => return Self::scan_sqlite(path, options),
+                Some(FileFormat::Sqlite) => return Self::scan_sqlite(path, options, report),
                 Some(FileFormat::Orc) => DataTableState::from_orc(
                     path,
                     options.pages_lookahead,
@@ -26523,6 +26531,7 @@ impl App {
                     spec_file: None,
                     spec_choice: None,
                     format_read: None,
+                    sqlite: None,
                     format: None,
                     ..options
                 };

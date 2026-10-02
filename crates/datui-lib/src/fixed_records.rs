@@ -759,14 +759,20 @@ impl AnonymousScan for FixedRecords {
     }
 }
 
-/// Whether `lf` reads fixed records, and so has to run on the in-memory engine.
+impl crate::pushdown::Windowed for FixedRecords {
+    fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
+        FixedRecords::window(self, start, len)
+    }
+}
+
+/// Whether `lf` reads an anonymous scan (fixed records, a SQLite table), and so has to
+/// run on the in-memory engine.
 pub fn in_plan(lf: &LazyFrame) -> bool {
     use polars::lazy::dsl::{DslPlan, FileScanDsl};
     lf.logical_plan.into_iter().any(|node| match node {
-        DslPlan::Scan { scan_type, .. } => matches!(
-            scan_type.as_ref(),
-            FileScanDsl::Anonymous { options, .. } if options.fmt_str == SCAN_NAME
-        ),
+        DslPlan::Scan { scan_type, .. } => {
+            matches!(scan_type.as_ref(), FileScanDsl::Anonymous { .. })
+        }
         _ => false,
     })
 }

@@ -492,7 +492,7 @@ pub(crate) enum LoadAnswer {
         options: OpenOptions,
     },
     /// The scan found a file to read into a table of its own first: a GPS log of
-    /// `total` bytes (as stored), or a SQLite table of about `total` rows.
+    /// `total` bytes (as stored).
     ReadInto {
         file: PathBuf,
         total: u64,
@@ -905,10 +905,12 @@ impl Loader {
             };
         }
         load.phase = Phase::Scanning { downloaded: false };
+        // A table inside a database goes by its path there, on screen and once open.
+        let display = load.path.clone().filter(|shown| *shown != paths[0]);
         Step::Scan {
             paths,
             options,
-            display: None,
+            display,
             status: "Scanning input...",
         }
     }
@@ -1255,7 +1257,6 @@ impl Drop for Loader {
 fn reading(format: Option<FileFormat>) -> &'static str {
     match format {
         Some(FileFormat::Nmea | FileFormat::Gpx) => "Reading GPS log",
-        Some(FileFormat::Sqlite) => "Reading SQLite table",
         _ => "Reading",
     }
 }

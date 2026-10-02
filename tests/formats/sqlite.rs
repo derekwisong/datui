@@ -25,7 +25,7 @@ fn open_with(path: PathBuf, options: OpenOptions) -> (App, mpsc::Receiver<AppEve
     (app, rx)
 }
 
-/// Converted files go to a scratch directory of the test's own, to be counted.
+/// Temporary files go to a scratch directory of the test's own, to be counted.
 fn scratch() -> (OpenOptions, PathBuf) {
     let dir = common::fixture_dir().join(format!(
         "sqlite-{}",
@@ -299,8 +299,8 @@ fn a_db_file_that_is_not_sqlite_says_so() {
     assert!(message.contains("not a SQLite database"), "{message}");
 }
 
-/// The table read into a temporary file goes when the dataset does; the database is
-/// left exactly as it was, with nothing written beside it.
+/// A table is read in place: nothing is written to the temp directory while it is open,
+/// and the database is left exactly as it was, with nothing written beside it.
 #[test]
 fn reading_a_table_leaves_the_database_alone() {
     let (options, dir) = scratch();
@@ -318,6 +318,7 @@ fn reading_a_table_leaves_the_database_alone() {
     );
     assert_eq!(app.error_message(), None);
     assert_eq!(frame(&app).height(), 200);
+    assert_eq!(files_in(&dir), 1, "no copy of the table");
     drop(app);
     assert_eq!(files_in(&dir), 1, "only the database's directory is left");
     assert_eq!(files_in(&db_dir), 1, "nothing beside the database");
@@ -368,4 +369,42 @@ fn the_home_screen_counts_and_lists_tables() {
     assert_eq!(recent.table.as_ref().map(|t| t.kind.as_str()), Some("view"));
     assert_eq!(recent.path, db.join("big_orders"));
     assert!(discover::table_row(&db.join("nope")).is_none());
+}
+
+/// The sidebar's sort and filters on a table run in SQLite: the frame is the table's
+/// scan with no sort or filter of Polars' own over it, and holds what Polars would give.
+#[test]
+fn the_sidebar_sorts_and_filters_in_sqlite() {
+    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    let db = sqlite().join("shop.db");
+    let (mut app, _rx) = open_with(db, table("orders"));
+    assert_eq!(app.error_message(), None);
+    let whole = frame(&app);
+    let state = app.data_table_state.as_mut().unwrap();
+    state.filter(vec![FilterStatement {
+        column: "amount".to_string(),
+        operator: FilterOperator::Gt,
+        value: "40".to_string(),
+        logical_op: LogicalOperator::And,
+    }]);
+    state.sort_by(vec!["amount".to_string()], vec![true]);
+    let plan = state.lf().describe_plan().unwrap();
+    assert!(
+        !plan.contains("SORT") && !plan.contains("FILTER"),
+        "nothing left to Polars:\n{plan}"
+    );
+    let expected = whole
+        .lazy()
+        .filter(col("amount").gt(lit(40.0)))
+        .sort_by_exprs(
+            [col("amount")],
+            SortMultipleOptions::default()
+                .with_order_descending(true)
+                .with_nulls_last(true)
+                .with_maintain_order(true),
+        )
+        .collect()
+        .unwrap();
+    assert!(expected.height() > 0);
+    assert!(frame(&app).equals_missing(&expected));
 }

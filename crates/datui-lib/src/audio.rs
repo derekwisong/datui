@@ -844,6 +844,14 @@ pub struct AudioSource {
     normalize: bool,
 }
 
+// The in-memory engine builds the plan's frame index from row 0 up to a slice's end, so
+// the window at the end of a long recording would cost 4 bytes per frame before it.
+impl crate::pushdown::Windowed for AudioSource {
+    fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
+        Ok(AudioSource::window(self, start as u64, len as u64, None)?.lazy())
+    }
+}
+
 impl std::fmt::Debug for AudioSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioSource")

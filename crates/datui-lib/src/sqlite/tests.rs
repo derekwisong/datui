@@ -1,13 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use polars::prelude::*;
 use rusqlite::Connection;
 
 use super::*;
-use crate::OpenOptions;
-use crate::unfinished::{Unfinished, Writer};
+use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 
 /// A database at `dir/name` built by `sql`.
 fn database(dir: &Path, name: &str, sql: &str) -> PathBuf {
@@ -17,29 +14,36 @@ fn database(dir: &Path, name: &str, sql: &str) -> PathBuf {
     path
 }
 
-fn writer() -> (Writer, Arc<AtomicBool>) {
-    let stop = Arc::new(AtomicBool::new(false));
-    (Unfinished::default().writer(stop.clone()), stop)
-}
-
 fn table(path: &Path, name: &str) -> (Table, Vec<Table>) {
     let all = tables(path).unwrap();
     let one = all.iter().find(|t| t.name == name).unwrap().clone();
     (one, all)
 }
 
-/// Read `name` of `path` to a frame, with the temp files it scans in `dir`.
-fn read_table(path: &Path, name: &str, dir: &Path) -> (DataFrame, crate::segments::Converted) {
+fn open(path: &Path, name: &str) -> Opened {
     let (one, all) = table(path, name);
-    let (writer, _) = writer();
-    let options = OpenOptions {
-        temp_dir: Some(dir.to_path_buf()),
-        ..OpenOptions::default()
-    };
-    let read = AtomicU64::new(0);
-    let converted = convert(path, path, &one, &all, &options, &writer, &read).unwrap();
-    let df = converted.lf.clone().collect().unwrap();
-    (df, converted)
+    open_table(path, path, &one, &all).unwrap()
+}
+
+/// Read all of `name` of `path` in place.
+fn read_table(path: &Path, name: &str) -> (DataFrame, Opened) {
+    let opened = open(path, name);
+    let df = opened.lf.clone().collect().unwrap();
+    (df, opened)
+}
+
+fn filter(
+    column: &str,
+    operator: FilterOperator,
+    value: &str,
+    logical: LogicalOperator,
+) -> FilterStatement {
+    FilterStatement {
+        column: column.to_string(),
+        operator,
+        value: value.to_string(),
+        logical_op: logical,
+    }
 }
 
 fn temp() -> tempfile::TempDir {
@@ -214,7 +218,7 @@ fn columns_take_their_declared_type_and_mixed_ones_are_read_as_text() {
          INSERT INTO t VALUES (NULL, 2, NULL, NULL, 4.5, NULL, 'two', NULL, NULL);
          INSERT INTO t VALUES (3, NULL, 'c', x'ff', NULL, 'z', 3.5, NULL, NULL);",
     );
-    let (df, converted) = read_table(&db, "t", dir.path());
+    let (df, opened) = read_table(&db, "t");
     let types: Vec<(&str, DataType)> = df
         .schema()
         .iter()
@@ -238,48 +242,74 @@ fn columns_take_their_declared_type_and_mixed_ones_are_read_as_text() {
     assert_eq!(mixed, [Some("1"), Some("two"), Some("3.5")]);
     let r: Vec<Option<f64>> = df.column("r").unwrap().f64().unwrap().iter().collect();
     assert_eq!(r, [Some(1.5), Some(2.0), None]);
-    assert_eq!(converted.notes.len(), 1);
+    let notes = opened.pushdown.notes();
+    assert_eq!(notes.len(), 1);
     assert!(
-        converted.notes[0]
+        notes[0]
             .summary
             .starts_with("mixed holds values of several types"),
         "{}",
-        converted.notes[0].summary
+        notes[0].summary
     );
 }
 
-/// A column that turns out wider after its first batch was written is read as the
-/// wider type throughout: the batches written before are cast to it.
+/// Columns are typed from their declarations and the first rows. A value further on
+/// that does not fit a number column reads as null, and the census, a pass over the
+/// whole table after the open, says how many; one in a text column reads as its text.
 #[test]
-fn a_column_that_widens_late_is_wide_throughout() {
+fn a_value_the_first_rows_did_not_show_is_noted() {
     let dir = temp();
     let db = database(
         dir.path(),
         "late.db",
-        "CREATE TABLE t (id INTEGER, v, w, b BLOB);
-         WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 70000)
-         INSERT INTO t SELECT x, x, NULL, x'FF00' FROM c;
-         UPDATE t SET v = 'late' WHERE id = 70000;
-         UPDATE t SET w = 2.5 WHERE id = 69999;
-         UPDATE t SET b = 'text' WHERE id = 70000;",
+        "CREATE TABLE t (id INTEGER, v, b BLOB, s TEXT);
+         WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000)
+         INSERT INTO t SELECT x, x, x'FF00', 'text' FROM c;
+         UPDATE t SET v = 'late' WHERE id = 5000;
+         UPDATE t SET v = 2.5 WHERE id = 4999;
+         UPDATE t SET b = 'text' WHERE id = 5000;
+         UPDATE t SET s = x'00FF' WHERE id = 5000;",
     );
-    let (df, converted) = read_table(&db, "t", dir.path());
-    assert_eq!(df.height(), 70_000);
-    assert!(converted.files.len() > 1, "more than one segment");
-    let v = df.column("v").unwrap();
-    assert_eq!(v.dtype(), &DataType::String);
-    assert_eq!(v.str().unwrap().get(0), Some("1"));
-    assert_eq!(v.str().unwrap().get(69_999), Some("late"));
-    let w = df.column("w").unwrap();
-    assert_eq!(w.dtype(), &DataType::Float64, "nulls first, then a float");
-    assert_eq!(w.f64().unwrap().get(69_998), Some(2.5));
-    assert_eq!(w.null_count(), 69_999);
-    // Blobs read before the column became text read as their literal, as those after
-    // do, rather than as null for not being UTF-8.
-    let b = df.column("b").unwrap().str().unwrap();
-    assert_eq!(b.get(0), Some("X'FF00'"));
-    assert_eq!(b.get(69_999), Some("text"));
-    assert_eq!(b.null_count(), 0);
+    let opened = open(&db, "t");
+    let df = opened.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 5_000);
+    let v = df.column("v").unwrap().i64().unwrap();
+    assert_eq!(v.get(0), Some(1));
+    assert_eq!(v.get(4_998), None, "a real in a column of whole numbers");
+    assert_eq!(v.get(4_999), None, "text in it");
+    let b = df.column("b").unwrap().binary().unwrap();
+    assert_eq!(b.get(0), Some(&b"\xFF\x00"[..]));
+    assert_eq!(
+        b.get(4_999),
+        Some(&b"text"[..]),
+        "text in a blob column is its bytes"
+    );
+    let s = df.column("s").unwrap().str().unwrap();
+    assert_eq!(
+        s.get(4_999),
+        Some("X'00FF'"),
+        "a blob in a text column is its literal"
+    );
+    // The open has started the census in the background; taken again here, it is done.
+    census_for_tests(&opened);
+    let notes: Vec<String> = opened
+        .pushdown
+        .notes()
+        .into_iter()
+        .map(|n| n.summary)
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            "s holds values of several types and is read as text",
+            "v: 2 values not whole numbers, read as null",
+            "b: 1 value not blobs, read as their bytes",
+        ]
+    );
+    // Read through what the frame shows before the census and as stored after, the
+    // rows are the same.
+    let after = opened.lf.clone().collect().unwrap();
+    assert!(after.equals_missing(&df));
 }
 
 #[test]
@@ -292,7 +322,7 @@ fn a_view_with_repeated_or_empty_names_gets_unique_ones() {
          INSERT INTO a VALUES (1, 'one');
          CREATE VIEW twice AS SELECT a.id, b.id, a.x AS \"\" FROM a, a AS b;",
     );
-    let (df, _) = read_table(&db, "twice", dir.path());
+    let (df, _) = read_table(&db, "twice");
     let names: Vec<&str> = df.get_column_names().iter().map(|n| n.as_str()).collect();
     // SQLite names a repeated column itself; an empty name is given one.
     assert_eq!(names, ["id", "id:1", "column_3"]);
@@ -302,7 +332,7 @@ fn a_view_with_repeated_or_empty_names_gets_unique_ones() {
 fn an_empty_table_keeps_its_columns() {
     let dir = temp();
     let db = database(dir.path(), "e.db", "CREATE TABLE t (a INTEGER, b TEXT);");
-    let (df, _) = read_table(&db, "t", dir.path());
+    let (df, _) = read_table(&db, "t");
     assert_eq!(df.height(), 0);
     assert_eq!(df.schema().get("a"), Some(&DataType::Int64));
     assert_eq!(df.schema().get("b"), Some(&DataType::String));
@@ -326,11 +356,10 @@ fn reading_writes_nothing() {
         names.sort();
         names
     };
-    let scratch = temp();
     let before = std::fs::read(&db).unwrap();
-    let (df, converted) = read_table(&db, "t", scratch.path());
+    let (df, opened) = read_table(&db, "t");
     assert_eq!(df.height(), 2);
-    drop(converted);
+    drop(opened);
     assert_eq!(std::fs::read(&db).unwrap(), before);
     assert_eq!(listing(dir.path()), ["app.db"]);
 
@@ -341,9 +370,9 @@ fn reading_writes_nothing() {
          PRAGMA wal_checkpoint(TRUNCATE);",
     );
     let before = std::fs::read(&wal).unwrap();
-    let (df, converted) = read_table(&wal, "t", scratch.path());
+    let (df, opened) = read_table(&wal, "t");
     assert_eq!(df.height(), 1);
-    drop(converted);
+    drop(opened);
     assert_eq!(std::fs::read(&wal).unwrap(), before);
     assert_eq!(
         listing(dir.path()),
@@ -373,8 +402,7 @@ fn a_wal_database_in_use_is_read_through_its_wal() {
         )
         .unwrap();
     assert!(dir.path().join("live.db-wal").exists());
-    let scratch = temp();
-    let (df, _) = read_table(&path, "t", scratch.path());
+    let (df, _) = read_table(&path, "t");
     assert_eq!(df.height(), 3);
     drop(writer);
 }
@@ -394,8 +422,7 @@ fn a_wal_database_in_a_read_only_directory_still_opens() {
     );
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
     // Root ignores permissions, and then the ordinary open works anyway.
-    let scratch = temp();
-    let (df, _) = read_table(&db, "t", scratch.path());
+    let (df, _) = read_table(&db, "t");
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(df.height(), 1);
 }
@@ -518,46 +545,33 @@ fn a_damaged_database_is_an_error_not_a_crash() {
             let Some(t) = all.iter().find(|t| t.name == "t") else {
                 return Ok(0);
             };
-            let (writer, _) = writer();
-            let options = OpenOptions {
-                temp_dir: Some(dir.path().to_path_buf()),
-                ..OpenOptions::default()
-            };
-            let converted = convert(&path, &path, t, &all, &options, &writer, &AtomicU64::new(0))?;
-            Ok::<_, color_eyre::Report>(converted.lf.collect()?.height())
+            let opened = open_table(&path, &path, t, &all)?;
+            Ok::<_, color_eyre::Report>(opened.lf.collect()?.height())
         });
         assert!(result.is_ok(), "{what}: panicked");
     }
 }
 
-/// A read stopped (Ctrl+O, quitting) gives up, even inside a statement that has not
-/// returned a row: a view that never ends.
+/// A read stops when the dataset lets go of the table (Ctrl+O, quitting), even inside
+/// a statement that has not returned a row: a view that never ends. Its open gives up
+/// typing it after a moment, from what it has.
 #[test]
-fn a_stopped_read_gives_up() {
+fn a_read_stops_when_the_dataset_lets_go() {
     let dir = temp();
     let db = database(
         dir.path(),
         "forever.db",
         "CREATE VIEW forever AS
            WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c)
-           SELECT max(x) FROM c;",
+           SELECT max(x) AS m FROM c;",
     );
-    let (one, all) = table(&db, "forever");
-    let (writer, stop) = writer();
-    let stopper = {
-        let stop = stop.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        })
-    };
-    let options = OpenOptions {
-        temp_dir: Some(dir.path().to_path_buf()),
-        ..OpenOptions::default()
-    };
-    let result = convert(&db, &db, &one, &all, &options, &writer, &AtomicU64::new(0));
-    stopper.join().unwrap();
-    assert!(result.is_err());
+    let Opened { lf, hold, .. } = open(&db, "forever");
+    let reader = std::thread::spawn(move || lf.collect());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    drop(hold);
+    let result = reader.join().unwrap();
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("was stopped"), "{message}");
 }
 
 /// The home screen's preview of a view that never gives a row gives up.
@@ -604,8 +618,8 @@ fn the_other_tables_are_named_for_the_info_panel() {
         "o.db",
         "CREATE TABLE a (x); CREATE TABLE b (x); CREATE TABLE c (x);",
     );
-    let (_, converted) = read_table(&db, "b", dir.path());
-    assert_eq!(converted.other_tables, ["a", "c"]);
+    let (_, opened) = read_table(&db, "b");
+    assert_eq!(opened.other_tables, ["a", "c"]);
 }
 
 /// Names from the file are quoted wherever they go into a statement: each of these
@@ -635,11 +649,11 @@ fn hostile_table_names_read_their_own_table() {
     drop(conn);
     let db = dir.path().join("odd.db");
     for (i, name) in names.iter().enumerate() {
-        let (df, _) = read_table(&db, name, dir.path());
+        let (df, _) = read_table(&db, name);
         let v: Vec<Option<&str>> = df.column("v").unwrap().str().unwrap().iter().collect();
         assert_eq!(v, [Some(i.to_string().as_str())], "{name:?}");
     }
-    let (df, _) = read_table(&db, "t", dir.path());
+    let (df, _) = read_table(&db, "t");
     assert_eq!(df.height(), 1, "t is still there");
     // A name with a NUL in it, which no statement can name, written into the schema:
     // SQLite finds the schema malformed, and says so.
@@ -652,4 +666,303 @@ fn hostile_table_names_read_their_own_table() {
          PRAGMA writable_schema = OFF;",
     );
     assert!(tables(&nul).is_err());
+}
+
+/// A window is read straight from SQLite, deep or shallow, and agrees with the whole
+/// table read in order; once the count is known, a window past the middle is read from
+/// the end backward.
+#[test]
+fn windows_are_read_in_place() {
+    let dir = temp();
+    let db = database(
+        dir.path(),
+        "w.db",
+        "CREATE TABLE t (id INTEGER, label TEXT);
+         WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 10000)
+         INSERT INTO t SELECT x * 3, 'row ' || x FROM c;
+         DELETE FROM t WHERE id % 7 = 0;",
+    );
+    let (whole, opened) = read_table(&db, "t");
+    let view = opened.pushdown.view(&[], &[], false).unwrap();
+    let rows = whole.height();
+    let window =
+        |start: usize, len: usize| view.window.window(start, len).unwrap().collect().unwrap();
+    let expected = |start: usize, len: usize| whole.slice(start as i64, len);
+    // From the top, paging on, a jump, and before the count is known.
+    for (start, len) in [(0, 50), (50, 50), (100, 50), (5_000, 20), (rows - 10, 50)] {
+        assert!(
+            window(start, len).equals_missing(&expected(start, len)),
+            "{start}"
+        );
+    }
+    assert_eq!((view.counter)().unwrap(), rows);
+    // Past the middle with the count known: read backward from the end.
+    for (start, len) in [(rows - 30, 30), (rows - 1, 5), (rows / 2 + 1, 40)] {
+        assert!(
+            window(start, len).equals_missing(&expected(start, len)),
+            "{start}"
+        );
+    }
+    assert_eq!(window(rows, 10).height(), 0, "past the end");
+}
+
+/// The sidebar's filters and sort run in SQLite and give the rows Polars gives for the
+/// same filters and sort over the same data, windows and counts included; mixed
+/// columns, nulls and ties included.
+#[test]
+fn filters_and_sorts_run_in_sqlite_as_polars_would() {
+    let dir = temp();
+    let db = database(
+        dir.path(),
+        "f.db",
+        "CREATE TABLE t (n INTEGER, x REAL, s TEXT COLLATE NOCASE, u);
+         WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 3000)
+         INSERT INTO t SELECT
+           CASE WHEN i % 11 = 0 THEN NULL ELSE i % 97 END,
+           CASE WHEN i % 13 = 0 THEN NULL ELSE (i % 50) / 4.0 END,
+           CASE i % 5 WHEN 0 THEN 'Apple' WHEN 1 THEN 'apple' WHEN 2 THEN 'Banana'
+                      WHEN 3 THEN NULL ELSE 'cherry pie' END,
+           CASE WHEN i % 2 = 0 THEN i ELSE 'v' || i END
+         FROM c;
+         UPDATE t SET n = 'not a number' WHERE rowid = 1500;",
+    );
+    let (whole, opened) = read_table(&db, "t");
+    use FilterOperator::*;
+    use LogicalOperator::*;
+    type Case = (Vec<FilterStatement>, Vec<(String, bool)>);
+    let cases: Vec<Case> = vec![
+        (vec![filter("n", Gt, "50", And)], vec![]),
+        (
+            vec![filter("n", LtEq, "10", And), filter("s", Eq, "apple", Or)],
+            vec![("x".to_string(), true)],
+        ),
+        (
+            vec![
+                filter("s", Contains, "pp", And),
+                filter("x", GtEq, "5.5", And),
+            ],
+            vec![("s".to_string(), false), ("n".to_string(), true)],
+        ),
+        (
+            vec![filter("s", NotContains, "a", And)],
+            vec![("n".to_string(), false)],
+        ),
+        (
+            vec![filter("u", Lt, "v2", And)],
+            vec![("u".to_string(), true)],
+        ),
+        (vec![filter("s", NotEq, "Apple", And)], vec![]),
+        (
+            vec![],
+            vec![("s".to_string(), true), ("x".to_string(), false)],
+        ),
+    ];
+    for (filters, sort) in cases {
+        let view = opened.pushdown.view(&filters, &sort, false).unwrap();
+        // What Polars makes of the same, as the sidebar builds it.
+        let mut predicate: Option<Expr> = None;
+        for f in &filters {
+            let value = match whole.schema().get(f.column.as_str()).unwrap() {
+                DataType::Int64 => lit(f.value.parse::<i64>().unwrap()),
+                DataType::Float64 => lit(f.value.parse::<f64>().unwrap()),
+                _ => lit(f.value.clone()),
+            };
+            let c = col(f.column.as_str());
+            let atom = match f.operator {
+                Eq => c.eq(value),
+                NotEq => c.neq(value),
+                Gt => c.gt(value),
+                Lt => c.lt(value),
+                GtEq => c.gt_eq(value),
+                LtEq => c.lt_eq(value),
+                Contains => c.str().contains_literal(lit(f.value.clone())),
+                NotContains => c.str().contains_literal(lit(f.value.clone())).not(),
+            };
+            predicate = Some(match (predicate, f.logical_op) {
+                (None, _) => atom,
+                (Some(p), And) => p.and(atom),
+                (Some(p), Or) => p.or(atom),
+            });
+        }
+        let mut lf = whole.clone().lazy();
+        if let Some(p) = predicate {
+            lf = lf.filter(p);
+        }
+        if !sort.is_empty() {
+            lf = lf.sort_by_exprs(
+                sort.iter()
+                    .map(|(c, _)| col(c.as_str()))
+                    .collect::<Vec<_>>(),
+                SortMultipleOptions::default()
+                    .with_order_descending_multi(sort.iter().map(|(_, d)| *d))
+                    .with_nulls_last(true)
+                    .with_maintain_order(true),
+            );
+        }
+        let expected = lf.collect().unwrap();
+        let got = view.lf.clone().collect().unwrap();
+        assert!(
+            got.equals_missing(&expected),
+            "{filters:?} {sort:?}\n{got}\n{expected}"
+        );
+        assert_eq!((view.counter)().unwrap(), expected.height());
+        let start = expected.height() / 3;
+        let window = view.window.window(start, 25).unwrap().collect().unwrap();
+        assert!(window.equals_missing(&expected.slice(start as i64, 25)));
+        let start = expected.height().saturating_sub(7);
+        let window = view.window.window(start, 25).unwrap().collect().unwrap();
+        assert!(
+            window.equals_missing(&expected.slice(start as i64, 25)),
+            "the end"
+        );
+    }
+    // The table's order backward.
+    let back = opened.pushdown.view(&[], &[], true).unwrap();
+    let got = back.lf.collect().unwrap();
+    assert!(got.equals_missing(&whole.reverse()));
+    // Polars would refuse these, and so are left to it.
+    assert!(
+        opened
+            .pushdown
+            .view(&[filter("n", Gt, "abc", And)], &[], false)
+            .is_none()
+    );
+    assert!(
+        opened
+            .pushdown
+            .view(&[filter("n", Contains, "1", And)], &[], false)
+            .is_none()
+    );
+}
+
+/// Once the census finds a column clean, a filter or sort on it reads it as stored, so
+/// SQLite uses an index on it rather than sorting the table.
+#[test]
+fn an_index_serves_a_clean_column() {
+    let dir = temp();
+    let db = database(
+        dir.path(),
+        "i.db",
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, price REAL, name TEXT);
+         CREATE INDEX t_price ON t (price);
+         WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 500)
+         INSERT INTO t SELECT i, i * 1.5, 'n' || i FROM c;",
+    );
+    let opened = open(&db, "t");
+    let filters = [filter(
+        "price",
+        FilterOperator::Gt,
+        "100",
+        LogicalOperator::And,
+    )];
+    let sort = [("price".to_string(), false)];
+    let (_, before) = plan_for_tests(&opened, &filters, &sort);
+    assert!(!before.contains("t_price"), "{before}");
+    census_for_tests(&opened);
+    let (sql, after) = plan_for_tests(&opened, &filters, &sort);
+    assert!(after.contains("USING INDEX t_price"), "{sql}\n{after}");
+    assert!(!after.contains("TEMP B-TREE"), "{after}");
+}
+
+/// A filter Polars pushes into the scan (a query's) runs in SQLite where it can, and
+/// what it cannot say is applied by Polars all the same.
+#[test]
+fn a_predicate_polars_pushes_is_kept_whole() {
+    let dir = temp();
+    let db = database(
+        dir.path(),
+        "p.db",
+        "CREATE TABLE t (a INTEGER, b TEXT);
+         WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 1000)
+         INSERT INTO t SELECT i, 'b' || (i % 10) FROM c;",
+    );
+    let (whole, opened) = read_table(&db, "t");
+    let predicates = [
+        col("a").gt(lit(990)),
+        lit(5).gt_eq(col("a")),
+        col("a").lt(lit(100)).and(col("b").eq(lit("b3"))),
+        col("a")
+            .gt(lit(995))
+            .or(col("b").str().contains_literal(lit("b0"))),
+        col("b")
+            .str()
+            .contains_literal(lit("7"))
+            .and(col("a").lt(lit(50))),
+    ];
+    for predicate in predicates {
+        let got = opened
+            .lf
+            .clone()
+            .filter(predicate.clone())
+            .collect()
+            .unwrap();
+        let expected = whole
+            .clone()
+            .lazy()
+            .filter(predicate.clone())
+            .collect()
+            .unwrap();
+        assert!(got.equals_missing(&expected), "{predicate:?}");
+    }
+    let head = opened
+        .lf
+        .clone()
+        .filter(col("a").gt(lit(10)))
+        .limit(3)
+        .collect()
+        .unwrap();
+    assert_eq!(
+        head.column("a").unwrap().i64().unwrap().to_vec(),
+        [Some(11), Some(12), Some(13)]
+    );
+}
+
+/// A table without rowids is paged by its primary key; a view, which has no order of
+/// its own, by offset, and is not read backward; a column named `rowid` does not take
+/// the place of the key.
+#[test]
+fn tables_without_rowids_views_and_a_column_named_rowid() {
+    let dir = temp();
+    let db = database(
+        dir.path(),
+        "k.db",
+        "CREATE TABLE pk (a TEXT, b INTEGER, v, PRIMARY KEY (a, b)) WITHOUT ROWID;
+         WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 400)
+         INSERT INTO pk SELECT 'k' || (i % 4), i, i * 2 FROM c;
+         CREATE VIEW v AS SELECT b, v FROM pk WHERE b % 2 = 0;
+         CREATE TABLE r (rowid TEXT, x INTEGER);
+         INSERT INTO r VALUES ('z', 1), ('a', 2), ('m', 3);",
+    );
+    for name in ["pk", "v"] {
+        let (whole, opened) = read_table(&db, name);
+        let view = opened.pushdown.view(&[], &[], false).unwrap();
+        for (start, len) in [(0, 10), (10, 10), (150, 30), (whole.height() - 3, 10)] {
+            let got = view.window.window(start, len).unwrap().collect().unwrap();
+            assert!(
+                got.equals_missing(&whole.slice(start as i64, len)),
+                "{name} {start}"
+            );
+        }
+        assert_eq!(
+            opened.pushdown.view(&[], &[], true).is_some(),
+            name == "pk",
+            "{name} backward"
+        );
+    }
+    let (whole, _) = read_table(&db, "pk");
+    let a = whole.column("a").unwrap().str().unwrap();
+    assert_eq!(a.get(0), Some("k0"), "in key order");
+    let (r, opened) = read_table(&db, "r");
+    assert_eq!(r.column("rowid").unwrap().str().unwrap().get(0), Some("z"));
+    let back = opened
+        .pushdown
+        .view(&[], &[], true)
+        .unwrap()
+        .lf
+        .collect()
+        .unwrap();
+    assert_eq!(
+        back.column("x").unwrap().i64().unwrap().to_vec(),
+        [Some(3), Some(2), Some(1)]
+    );
 }

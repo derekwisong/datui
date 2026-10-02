@@ -3129,6 +3129,137 @@ mod tests {
         assert_eq!(like_regex("*a?.b*"), "(?s)^.*a.\\.b.*$");
     }
 
+    /// One column of each integer width and signedness, `a_*` the larger and `b_*`
+    /// the smaller, so a difference never wraps an unsigned type.
+    fn integer_widths() -> (DataFrame, Vec<&'static str>) {
+        let names = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"];
+        let types = [
+            DataType::Int8,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Int64,
+            DataType::UInt8,
+            DataType::UInt16,
+            DataType::UInt32,
+            DataType::UInt64,
+        ];
+        let mut columns = Vec::new();
+        for (name, dtype) in names.iter().zip(types) {
+            for (side, vals) in [("a", [10i64, 20, 30]), ("b", [1, 2, 3])] {
+                let c = Column::new(format!("{side}_{name}").into(), vals);
+                columns.push(c.cast(&dtype).unwrap());
+            }
+        }
+        let df = DataFrame::new_infer_height(columns).unwrap();
+        (df, names.to_vec())
+    }
+
+    fn as_f64(df: &DataFrame, name: &str) -> Vec<f64> {
+        df.column(name)
+            .unwrap()
+            .cast(&DataType::Float64)
+            .unwrap()
+            .f64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect()
+    }
+
+    #[test]
+    fn mixed_integer_widths_do_arithmetic() {
+        let (df, names) = integer_widths();
+        // a = 10, 20, 30 and b = 1, 2, 3 in every width.
+        let ops: [(&str, [f64; 3]); 5] = [
+            ("+", [11.0, 22.0, 33.0]),
+            ("-", [9.0, 18.0, 27.0]),
+            ("*", [10.0, 40.0, 90.0]),
+            ("/", [10.0, 10.0, 10.0]),
+            ("%", [10.0, 10.0, 10.0]),
+        ];
+        let mut parts = Vec::new();
+        let mut expected = Vec::new();
+        for (i, (op, want)) in ops.iter().enumerate() {
+            for l in &names {
+                for r in &names {
+                    let alias = format!("r{i}_{l}_{r}");
+                    parts.push(format!("{alias}: a_{l} {op} b_{r}"));
+                    expected.push((alias, *want));
+                }
+            }
+        }
+        for l in &names {
+            for r in &names {
+                let alias = format!("m_{l}_{r}");
+                parts.push(format!("{alias}: a_{l} mod b_{r}"));
+                expected.push((alias, [0.0, 0.0, 0.0]));
+            }
+        }
+        let out = eval(&format!("select {}", parts.join(", ")), &df);
+        for (alias, want) in expected {
+            assert_eq!(as_f64(&out, &alias), want, "{alias}");
+        }
+    }
+
+    #[test]
+    fn mixed_integer_widths_with_literals() {
+        let (df, names) = integer_widths();
+        let mut parts = Vec::new();
+        let mut expected = Vec::new();
+        for name in &names {
+            for (tag, expr, want) in [
+                ("p", format!("b_{name} + 7"), [8.0, 9.0, 10.0]),
+                ("s", format!("a_{name} - 7"), [3.0, 13.0, 23.0]),
+                ("l", format!("7 - b_{name}"), [6.0, 5.0, 4.0]),
+                ("m", format!("b_{name} * 2.5"), [2.5, 5.0, 7.5]),
+                ("d", format!("a_{name} / 2"), [5.0, 10.0, 15.0]),
+                ("q", format!("60 / b_{name}"), [60.0, 30.0, 20.0]),
+                ("r", format!("a_{name} mod 7"), [3.0, 6.0, 2.0]),
+            ] {
+                let alias = format!("{tag}_{name}");
+                parts.push(format!("{alias}: {expr}"));
+                expected.push((alias, want));
+            }
+        }
+        let out = eval(&format!("select {}", parts.join(", ")), &df);
+        for (alias, want) in expected {
+            assert_eq!(as_f64(&out, &alias), want, "{alias}");
+        }
+    }
+
+    #[test]
+    fn mixed_integer_widths_filter_and_group() {
+        let (df, _) = integer_widths();
+        let out = eval("select a_u8 where 10 = a_i64 / b_u8, 8 < b_u16 + 7", &df);
+        assert_eq!(values(&out, "a_u8"), ["20", "30"]);
+        let out = eval(
+            "select t: sum a_u8 * b_i16, n: max a_i64 - b_u32 by k: b_u16 mod 2",
+            &df,
+        );
+        assert_eq!(as_f64(&out, "k"), [0.0, 1.0]);
+        assert_eq!(as_f64(&out, "t"), [40.0, 100.0]);
+        assert_eq!(as_f64(&out, "n"), [18.0, 27.0]);
+    }
+
+    #[cfg(feature = "sql")]
+    #[test]
+    fn mixed_integer_widths_in_sql() {
+        let (df, _) = integer_widths();
+        let mut ctx = polars_sql::SQLContext::new();
+        ctx.register("df", df.lazy());
+        let out = ctx
+            .execute(
+                "SELECT a_i64 / b_u8 AS d, a_u16 % b_u8 AS m, b_u8 + 7 AS p, \
+                 a_i8 * b_u64 AS x FROM df WHERE a_u8 - b_i16 > 9",
+            )
+            .unwrap()
+            .collect()
+            .unwrap();
+        assert_eq!(as_f64(&out, "d"), [10.0, 10.0]);
+        assert_eq!(as_f64(&out, "m"), [0.0, 0.0]);
+        assert_eq!(as_f64(&out, "p"), [9.0, 10.0]);
+        assert_eq!(as_f64(&out, "x"), [40.0, 90.0]);
+    }
+
     #[test]
     fn test_xbar_buckets() {
         let df = df!(

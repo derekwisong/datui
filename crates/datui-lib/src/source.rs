@@ -148,6 +148,49 @@ pub(crate) fn is_prefix_or_glob(url: &str) -> bool {
     url.ends_with('/') || url.contains('*')
 }
 
+/// The characters Polars expands a path on (`polars_io::path_utils::has_glob`).
+fn has_glob_chars(path: &Path) -> bool {
+    path.as_os_str().to_string_lossy().contains(['*', '?', '['])
+}
+
+/// Whether a path is a pattern to expand rather than a name: it carries a glob
+/// character and nothing on disk has that name. An existing `d[1].csv` or `a*b.csv`
+/// is that file; read as a glob, `d[1].csv` is `d1.csv` and `x?.csv` is every
+/// two-letter name. This is the `glob` flag for every Polars scan of a local path.
+pub(crate) fn expands_as_glob(path: &Path) -> bool {
+    has_glob_chars(path) && std::fs::symlink_metadata(path).is_err()
+}
+
+/// A path for a Polars reader that always expands globs (its NDJSON scan has no
+/// `glob` flag): an existing name with a glob character comes back escaped, so the
+/// pattern matches that file alone.
+pub(crate) fn polars_literal_path(
+    path: &Path,
+) -> polars::prelude::PolarsResult<polars::prelude::PlRefPath> {
+    if !has_glob_chars(path) || expands_as_glob(path) {
+        return polars::prelude::PlRefPath::try_from_path(path);
+    }
+    // Escaped as Polars will read it: on Windows that text has `/` separators and no
+    // `\\?\` prefix, so neither a separator nor the prefix's `?` is touched.
+    let text = polars::prelude::PlRefPath::try_from_path(path)?;
+    Ok(polars::prelude::PlRefPath::new(
+        escape_glob(text.as_str()).as_str(),
+    ))
+}
+
+/// `text` as a glob that matches only itself: each glob character in brackets.
+pub(crate) fn escape_glob(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        if matches!(c, '*' | '?' | '[' | ']') {
+            escaped.extend(['[', c, ']']);
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped
+}
+
 /// True when the path names an object-store location datui scans in place, with range
 /// requests, rather than downloads to a temporary file first: Parquet, or a prefix or
 /// glob of it. A downloaded object reaches the schema phase under its display URL, and
@@ -225,6 +268,69 @@ pub(crate) fn cloud_path_should_download(ext: Option<&str>, is_glob: bool) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_existing_name_is_never_a_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("d[1].csv");
+        std::fs::write(&file, "a\n1\n").unwrap();
+        assert!(!expands_as_glob(&file));
+        assert!(expands_as_glob(&dir.path().join("d[2].csv")));
+        assert!(expands_as_glob(&dir.path().join("*.csv")));
+        assert!(!expands_as_glob(&dir.path().join("plain.csv")));
+        assert!(!expands_as_glob(dir.path()));
+
+        let escaped = polars_literal_path(&file).unwrap();
+        assert!(escaped.as_str().ends_with("d[[]1[]].csv"), "{escaped:?}");
+        let pattern = dir.path().join("d[2].csv");
+        let kept = polars_literal_path(&pattern).unwrap();
+        assert_eq!(kept.as_str(), pattern.to_str().unwrap());
+    }
+
+    /// The escaped name reads that one file through the NDJSON scan, which always
+    /// expands, whatever else the name holds: `]` alone, braces (no glob meaning to
+    /// Polars), a backslash (a plain character on Unix), and a directory with `[`.
+    #[test]
+    fn an_escaped_name_reads_that_file_alone() {
+        use polars::prelude::{LazyFileListReader, LazyJsonLineReader};
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("set[1]");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::create_dir(dir.path().join("set1")).unwrap();
+        let mut names = vec!["d[1]", "h]", "i{j,k}", "[!x]", "set[1]/p[a]"];
+        if cfg!(unix) {
+            names.extend(["a*b", "x?", "e\\f", "g[x]*?"]);
+        }
+        // What the unescaped patterns would also match.
+        for decoy in ["d1", "ha", "set1/pa", "ab", "xy", "gx", "y"] {
+            std::fs::write(dir.path().join(format!("{decoy}.jsonl")), "{\"v\": 0}\n").unwrap();
+        }
+        for name in names {
+            let file = dir.path().join(format!("{name}.jsonl"));
+            std::fs::write(
+                &file,
+                format!("{{\"v\": \"{}\"}}\n", name.replace('\\', "/")),
+            )
+            .unwrap();
+            let lf = LazyJsonLineReader::new(polars_literal_path(&file).unwrap())
+                .finish()
+                .unwrap();
+            let df = lf.collect().unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(df.height(), 1, "{name}");
+            let v = df
+                .column("v")
+                .unwrap()
+                .str()
+                .unwrap()
+                .get(0)
+                .map(str::to_string);
+            assert_eq!(
+                v.as_deref(),
+                Some(name.replace('\\', "/").as_str()),
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn every_url_datui_reads_is_remote() {

@@ -20,7 +20,31 @@ pub fn user_message_from_polars(err: &PolarsError) -> String {
     if let Some(differ) = files_columns_differ(&said) {
         return differ;
     }
+    if let Some(none) = nothing_matched(&said) {
+        return none;
+    }
     without_the_query_plan(&said)
+}
+
+/// A scan whose path expanded to no files, said plainly. Polars prints its expansion
+/// input (`paths: [PlRefPath { inner: … }]`, `glob: true`), which reads as internals.
+/// A local path is only handed over as a pattern when no file has its name
+/// (`source::expands_as_glob`), so for a pattern this is the whole story.
+fn nothing_matched(msg: &str) -> Option<String> {
+    let (_, input) = msg.split_once("expanded paths were empty")?;
+    // The paths are Debug-printed, `paths: [PlRefPath { inner: "…" }]`: look inside
+    // the quotes, past the list's own brackets.
+    let pattern = input.contains("glob: true")
+        && input.split("inner: \"").skip(1).any(|p| {
+            p.split('"')
+                .next()
+                .is_some_and(|p| p.contains(['*', '?', '[']))
+        });
+    Some(if pattern {
+        "No files match this pattern.".to_string()
+    } else {
+        "No files found there.".to_string()
+    })
 }
 
 fn polars_words(err: &PolarsError) -> String {
@@ -529,6 +553,24 @@ fn short_csv_parse_error_message(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An expansion that found nothing says so instead of printing Polars' input.
+    #[test]
+    fn a_pattern_that_matched_nothing_says_so() {
+        let csv = "failed to retrieve file schemas (csv): expanded paths were empty \
+                   (path expansion input: 'paths: [PlRefPath { inner: \"/d/x?.csv\" }]', \
+                   glob: true).";
+        let err = PolarsError::ComputeError(csv.into());
+        assert_eq!(
+            user_message_from_polars(&err),
+            "No files match this pattern."
+        );
+        let dir = "failed to retrieve first file schema (parquet): expanded paths were \
+                   empty (path expansion input: 'paths: [PlRefPath { inner: \"/d/empty\" }]', \
+                   glob: true). Hint: passing a schema can allow this scan to succeed.";
+        let err = PolarsError::ComputeError(dir.into());
+        assert_eq!(user_message_from_polars(&err), "No files found there.");
+    }
 
     /// A temp copy is named by what the user opened, wherever the message says it,
     /// and a message that does not mention it is left alone.

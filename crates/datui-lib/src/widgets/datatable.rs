@@ -2277,8 +2277,7 @@ impl DataTableState {
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
-        let path_str = path.as_os_str().to_string_lossy();
-        let is_glob = path_str.contains('*');
+        let is_glob = crate::source::expands_as_glob(path);
         let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             glob: is_glob,
@@ -2358,7 +2357,11 @@ impl DataTableState {
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
             let pl_path = PlRefPath::try_from_path(p.as_ref())?;
-            let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
+            let args = ScanArgsParquet {
+                glob: crate::source::expands_as_glob(p.as_ref()),
+                ..Default::default()
+            };
+            let lf = LazyFrame::scan_parquet(pl_path, args)?;
             lazy_frames.push(lf);
         }
         let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
@@ -2386,7 +2389,11 @@ impl DataTableState {
         row_start_index: usize,
     ) -> Result<Self> {
         let pl_path = PlRefPath::try_from_path(path)?;
-        let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
+        let args = UnifiedScanArgs {
+            glob: crate::source::expands_as_glob(path),
+            ..Default::default()
+        };
+        let lf = LazyFrame::scan_ipc(pl_path, Default::default(), args)?;
         let mut state = Self::new(
             lf,
             pages_lookahead,
@@ -2427,7 +2434,11 @@ impl DataTableState {
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
             let pl_path = PlRefPath::try_from_path(p.as_ref())?;
-            let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
+            let args = UnifiedScanArgs {
+                glob: crate::source::expands_as_glob(p.as_ref()),
+                ..Default::default()
+            };
+            let lf = LazyFrame::scan_ipc(pl_path, Default::default(), args)?;
             lazy_frames.push(lf);
         }
         let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
@@ -3089,8 +3100,7 @@ impl DataTableState {
     /// Build a LazyFrame for hive-partitioned Parquet only (no schema collection, no partition discovery).
     /// Use this for phased loading so "Scanning input" is instant; schema and partition handling are the schema phase's.
     pub fn scan_parquet_hive(path: &Path) -> Result<LazyFrame> {
-        let path_str = path.as_os_str().to_string_lossy();
-        let is_glob = path_str.contains('*');
+        let is_glob = crate::source::expands_as_glob(path);
         let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             hive_options: HiveOptions::new_enabled(),
@@ -3102,8 +3112,7 @@ impl DataTableState {
 
     /// Build a LazyFrame for hive-partitioned Parquet with a pre-computed schema (avoids slow collect_schema across all files).
     pub fn scan_parquet_hive_with_schema(path: &Path, schema: Arc<Schema>) -> Result<LazyFrame> {
-        let path_str = path.as_os_str().to_string_lossy();
-        let is_glob = path_str.contains('*');
+        let is_glob = crate::source::expands_as_glob(path);
         let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             schema: Some(schema),
@@ -3634,8 +3643,7 @@ impl DataTableState {
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
-        let path_str = path.as_os_str().to_string_lossy();
-        let is_glob = path_str.contains('*');
+        let is_glob = crate::source::expands_as_glob(path);
         let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             hive_options: HiveOptions::new_enabled(),
@@ -3937,7 +3945,8 @@ impl DataTableState {
         header: Option<&[String]>,
     ) -> Result<Option<NullValues>> {
         Self::build_null_values_with(options, header, || {
-            let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?);
+            let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?)
+                .with_glob(crate::source::expands_as_glob(path));
             Self::csv_schema_for_null_values(reader, options)
         })
     }
@@ -4719,7 +4728,8 @@ impl DataTableState {
     fn scan_csv_file(path: &Path, options: &OpenOptions) -> Result<Self> {
         let header = Self::csv_header_names_of(options, path, None)?;
         let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
-        let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?);
+        let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?)
+            .with_glob(crate::source::expands_as_glob(path));
         let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
         let mut read = Vec::new();
         let lf = Self::finish_csv_frame(lf, options, header.as_deref(), &mut read)?;
@@ -4749,7 +4759,7 @@ impl DataTableState {
         F: FnOnce(LazyCsvReader) -> LazyCsvReader,
     {
         let pl_path = PlRefPath::try_from_path(path)?;
-        let reader = LazyCsvReader::new(pl_path);
+        let reader = LazyCsvReader::new(pl_path).with_glob(crate::source::expands_as_glob(path));
         let lf = func(reader).finish()?;
         Self::new(
             lf,
@@ -4778,7 +4788,8 @@ impl DataTableState {
             let p = p.as_ref();
             let header = Self::csv_header_names_of(options, p, None)?;
             let nv = Self::build_null_values_for_csv(options, p, header.as_deref())?;
-            let reader = LazyCsvReader::new(PlRefPath::try_from_path(p)?);
+            let reader = LazyCsvReader::new(PlRefPath::try_from_path(p)?)
+                .with_glob(crate::source::expands_as_glob(p));
             let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
             let record = (i == 0).then_some(&mut read);
             lazy_frames.push(Self::name_csv_columns(lf, header.as_deref(), record)?);

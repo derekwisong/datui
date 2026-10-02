@@ -297,6 +297,8 @@ fn redirect_plan(plan: &mut DslPlan, paths: &HashMap<String, PathBuf>) -> bool {
             }
             *sources = ScanSources::Paths(local.into_iter().collect());
             unified_scan_args.cloud_options = None;
+            // Each copy is one named file, and an object key may hold `[` or `*`.
+            unified_scan_args.glob = false;
             // The IR cached for the remote paths would be reused as is.
             *cached_ir = Default::default();
             true

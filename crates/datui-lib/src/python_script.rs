@@ -579,7 +579,8 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<(String, FileFormat
             .options
             .format
             .or_else(|| commonest_format(names.iter().map(String::as_str)));
-        let base = text.trim_end_matches(['/', '\\']);
+        // The directory is there, so its name is no pattern, `[` and all (#625).
+        let base = crate::source::escape_glob(text.trim_end_matches(['/', '\\']));
         // A directory of Parquet with subdirectories, or with no files of its own, is
         // scanned whole for Parquet; otherwise the files of its commonest format.
         return match format {
@@ -594,7 +595,28 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<(String, FileFormat
             None => None,
         };
     }
-    Some((text, file_format(path, record.options)?, false))
+    let format = file_format(path, record.options)?;
+    // Polars' scans read every name as a pattern: an existing `d[1].csv` is that
+    // file, and escaped it matches that file alone (#625).
+    let text = if scans_by_pattern(format) && !crate::source::expands_as_glob(path) {
+        crate::source::escape_glob(&text)
+    } else {
+        text
+    };
+    Some((text, format, false))
+}
+
+/// Whether the script reads `format` with a Polars scan, which expands globs.
+fn scans_by_pattern(format: FileFormat) -> bool {
+    matches!(
+        format,
+        FileFormat::Parquet
+            | FileFormat::Csv
+            | FileFormat::Tsv
+            | FileFormat::Psv
+            | FileFormat::Jsonl
+            | FileFormat::Arrow
+    )
 }
 
 /// The Arrow files the paths name, local and in order, when they are IPC streams

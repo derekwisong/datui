@@ -22118,3 +22118,166 @@ pl.DataFrame({
     );
     assert!(script.contains("when\\nraise SystemExit(3)"), "{script}");
 }
+
+/// Write a one-column frame holding `value` in the format the extension names.
+fn write_marker(path: &Path, value: &str) {
+    let mut df = df!("v" => [value]).unwrap();
+    let file = File::create(path).unwrap();
+    match path.extension().and_then(|e| e.to_str()).unwrap() {
+        "csv" => CsvWriter::new(file).finish(&mut df).unwrap(),
+        "tsv" => CsvWriter::new(file)
+            .with_separator(b'\t')
+            .finish(&mut df)
+            .unwrap(),
+        "parquet" => {
+            ParquetWriter::new(file).finish(&mut df).unwrap();
+        }
+        "arrow" | "feather" | "ipc" => IpcWriter::new(file).finish(&mut df).unwrap(),
+        "jsonl" | "ndjson" => JsonWriter::new(file)
+            .with_json_format(JsonFormat::JsonLines)
+            .finish(&mut df)
+            .unwrap(),
+        other => panic!("no writer for {other}"),
+    }
+}
+
+fn marker_values(df: &DataFrame) -> Vec<String> {
+    let mut values: Vec<String> = df
+        .column("v")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|v| v.unwrap_or("").to_string())
+        .collect();
+    values.sort();
+    values
+}
+
+/// Names that read as globs where the system allows them in a file name.
+fn glob_character_stems() -> Vec<(&'static str, &'static str)> {
+    // (the literal name, a sibling its pattern also matches)
+    let mut stems = vec![("d[1]", "d1"), ("e[ab]", "ea")];
+    if cfg!(unix) {
+        stems.extend([("a*b", "aZZb"), ("x?", "xy")]);
+    }
+    stems
+}
+
+/// A file whose name holds `[`, `*` or `?` opens as that file, in every scanned
+/// format, not as the pattern its name spells (#625).
+#[test]
+fn a_file_named_like_a_glob_opens_as_itself() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut wrong = Vec::new();
+    for ext in ["csv", "tsv", "parquet", "arrow", "jsonl"] {
+        for (stem, sibling) in glob_character_stems() {
+            let literal = tmp.path().join(format!("{stem}.{ext}"));
+            write_marker(&literal, "literal");
+            write_marker(&tmp.path().join(format!("{sibling}.{ext}")), "sibling");
+            let (_, df) = open_and_collect(vec![literal], OpenOptions::default());
+            let read = marker_values(&df);
+            if read != ["literal"] {
+                wrong.push(format!("{stem}.{ext}: {read:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "read as patterns: {wrong:#?}");
+}
+
+/// The same for several files named at once, and for a directory with such a name.
+#[test]
+fn files_and_directories_named_like_globs_open_together() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    for ext in ["csv", "parquet", "arrow"] {
+        let mut paths = Vec::new();
+        for (stem, sibling) in glob_character_stems() {
+            let literal = tmp.path().join(format!("{stem}.{ext}"));
+            write_marker(&literal, stem);
+            write_marker(&tmp.path().join(format!("{sibling}.{ext}")), "sibling");
+            paths.push(literal);
+        }
+        let (_, df) = open_and_collect(paths, OpenOptions::default());
+        let mut want: Vec<String> = glob_character_stems()
+            .into_iter()
+            .map(|(stem, _)| stem.to_string())
+            .collect();
+        want.sort();
+        assert_eq!(marker_values(&df), want, "{ext}");
+    }
+
+    let dir = tmp.path().join("set[1]");
+    std::fs::create_dir(&dir).unwrap();
+    write_marker(&dir.join("part.parquet"), "inside");
+    let decoy = tmp.path().join("set1");
+    std::fs::create_dir(&decoy).unwrap();
+    write_marker(&decoy.join("part.parquet"), "decoy");
+    let (_, df) = open_and_collect(vec![dir.clone()], OpenOptions::default());
+    assert_eq!(marker_values(&df), ["inside"]);
+
+    // `--hive` names a file the same way.
+    let file = tmp.path().join("d[1].parquet");
+    let options = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    let (_, df) = open_and_collect(vec![file], options);
+    assert_eq!(marker_values(&df), ["d[1]"]);
+}
+
+/// A pattern that names no file is still a glob.
+#[test]
+fn a_pattern_that_names_no_file_still_expands() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    for name in ["one.csv", "two.csv"] {
+        write_marker(&tmp.path().join(name), name);
+    }
+    for pattern in ["*.csv", "???.csv", "[ot][nw]*.csv"] {
+        let (_, df) = open_and_collect(vec![tmp.path().join(pattern)], OpenOptions::default());
+        assert_eq!(marker_values(&df), ["one.csv", "two.csv"], "{pattern}");
+    }
+}
+
+/// A pattern that matches nothing says so, not Polars' expansion input. A missing
+/// `x?.csv` reaches the scan as a pattern, as `*.csv` always did.
+#[test]
+fn a_pattern_that_matches_nothing_says_so() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    for name in ["x?.csv", "d[1].parquet", "*.arrow"] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        tx.send(AppEvent::OpenNamed(
+            vec![tmp.path().join(name)],
+            OpenOptions::default(),
+        ))
+        .unwrap();
+        drain_events(&mut app, &rx);
+        let message = app.error_message().expect("an error");
+        assert!(
+            message.ends_with(": No files match this pattern."),
+            "{message}"
+        );
+    }
+}
+
+/// Copy as Python reads a file named like a glob as that file too: the script's
+/// scan matches it alone, in each format the script scans (#625).
+#[test]
+fn copy_as_python_reads_a_file_named_like_a_glob_as_itself() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    for ext in ["csv", "parquet", "arrow", "jsonl"] {
+        let literal = tmp.path().join(format!("d[1].{ext}"));
+        write_marker(&literal, "literal");
+        write_marker(&tmp.path().join(format!("d1.{ext}")), "sibling");
+        let (app, _) = open_and_collect(vec![literal], OpenOptions::default());
+        let Some((rows, script)) = run_python_script(&app) else {
+            return;
+        };
+        assert_eq!(rows, "v\nliteral\n", "{ext}:\n{script}");
+    }
+}

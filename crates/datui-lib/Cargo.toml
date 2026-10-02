@@ -116,7 +116,9 @@ features = [
     "dtype-datetime",
     "dtype-time",
     "dtype-duration",
-    # Fixed-record binary files carry one- and two-byte integers.
+    # One- and two-byte integers: fixed-record binary files carry them, and Parquet,
+    # Arrow and Avro files too. Without these Polars has no supertype or cast for
+    # them, so `u8 + 7` or Int64 / UInt8 failed in a query (#625).
     "dtype-i8",
     "dtype-i16",
     "dtype-u8",

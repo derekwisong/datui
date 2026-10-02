@@ -39,7 +39,10 @@ pub fn run(bytes: &[u8]) {
             .window(from, WINDOW, None)
             .expect("the last frames decode");
         assert_eq!(tail.height() as u64, frames - from);
-        let reports = source.signal_report(&|| false).expect("nothing stops it");
+        let reports = source
+            .signal_report(&|| false)
+            .expect("a map of bytes stays whole")
+            .expect("nothing stops it");
         assert_eq!(reports.len(), channels);
     }
 }

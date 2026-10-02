@@ -5635,7 +5635,7 @@ pub fn add_signal_observations(
 ) -> Result<()> {
     watch.stage(QualityStage::CheckingSignal, true, true)?;
     let reports = audio
-        .signal_report(&|| watch.cancelled())
+        .signal_report(&|| watch.cancelled())?
         .ok_or_else(|| Report::msg(crate::sampling::CANCELLED))?;
     results
         .observations

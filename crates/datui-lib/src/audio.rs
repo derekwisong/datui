@@ -892,6 +892,21 @@ impl AudioSource {
         self.normalize
     }
 
+    /// Fails when the file is now shorter than its map. Reading a map past the end of
+    /// its file ends the process (SIGBUS), and a recording rewritten or cut while it is
+    /// open would do that; checked before each read.
+    fn still_whole(&self) -> PolarsResult<()> {
+        if let Some(file) = &self.file {
+            let len = file.metadata()?.len();
+            polars_ensure!(
+                len >= self.map.len() as u64,
+                ComputeError: "the file is now {len} bytes, shorter than the {} it had when it was opened; open it again",
+                self.map.len()
+            );
+        }
+        Ok(())
+    }
+
     /// Duration of the frames on hand, in seconds.
     pub fn seconds(&self) -> f64 {
         self.header.seconds(self.frames)
@@ -952,6 +967,7 @@ impl AudioSource {
         len: u64,
         columns: Option<&[PlSmallStr]>,
     ) -> PolarsResult<DataFrame> {
+        self.still_whole()?;
         let start = start.min(self.frames);
         let n = len.min(self.frames - start);
         let schema = self.schema();
@@ -1086,6 +1102,7 @@ impl AudioSource {
                     col(INDEX)
                         .map(
                             move |c: Column| {
+                                source.still_whole()?;
                                 let index = c.as_materialized_series().idx()?;
                                 Ok(source.decode(
                                     c.name().clone(),
@@ -1129,7 +1146,10 @@ impl AudioSource {
     /// exact zeros (dropouts and digital silence), and each channel's mean (DC offset).
     /// Memory stays flat however long the file is. `stop` is asked every million frames;
     /// `None` when it says to stop.
-    pub fn signal_report(&self, stop: &dyn Fn() -> bool) -> Option<Vec<SignalReport>> {
+    pub fn signal_report(
+        &self,
+        stop: &dyn Fn() -> bool,
+    ) -> PolarsResult<Option<Vec<SignalReport>>> {
         let h = &self.header;
         let channels = h.channels as usize;
         let (low, high) = self.full_scale_bounds();
@@ -1173,8 +1193,11 @@ impl AudioSource {
                 *len = 0;
             };
         for frame in 0..self.frames {
-            if frame % (1 << 20) == 0 && stop() {
-                return None;
+            if frame % (1 << 20) == 0 {
+                if stop() {
+                    return Ok(None);
+                }
+                self.still_whole()?;
             }
             for c in 0..channels {
                 let Some(bytes) = self.sample_at(frame, c) else {
@@ -1230,7 +1253,7 @@ impl AudioSource {
                 r.mean = sums[c] / self.frames as f64;
             }
         }
-        Some(reports)
+        Ok(Some(reports))
     }
 }
 
@@ -1530,6 +1553,25 @@ mod tests {
             "the finished frame and two more"
         );
         assert_eq!(ints(&source.window(3, 3, None).unwrap(), "ch1"), [4, 5, 6]);
+    }
+
+    /// A file cut short while it is open is an error to read, not a SIGBUS from the
+    /// map's pages past its new end.
+    #[test]
+    fn a_file_cut_short_while_open_is_an_error_to_read() {
+        let samples = i16s(&[1; 4096]);
+        let bytes = wav(&[
+            chunk(b"fmt ", &fmt(1, 1, 8000, 16)),
+            chunk(b"data", &samples),
+        ]);
+        let (file, source) = open(&bytes, false);
+        let source = Arc::new(source);
+        assert!(source.window(4000, 10, None).is_ok());
+        file.as_file().set_len(64).unwrap();
+        let err = source.window(4000, 10, None).unwrap_err().to_string();
+        assert!(err.contains("open it again"), "{err}");
+        assert!(source.lazy().collect().is_err());
+        assert!(source.signal_report(&|| false).is_err());
     }
 
     #[test]
@@ -1870,7 +1912,7 @@ mod tests {
             chunk(b"data", &i16s(&values)),
         ]);
         let (_f, source) = open(&bytes, false);
-        let report = &source.signal_report(&|| false).unwrap()[0];
+        let report = &source.signal_report(&|| false).unwrap().unwrap()[0];
         assert_eq!(report.full_scale, (-32768.0, 32767.0));
         assert_eq!(report.at_full_scale, 5);
         assert_eq!(
@@ -1887,12 +1929,12 @@ mod tests {
 
         // Normalized, the bounds and the mean are in the column's units.
         let (_f, source) = open(&bytes, true);
-        let report = &source.signal_report(&|| false).unwrap()[0];
+        let report = &source.signal_report(&|| false).unwrap().unwrap()[0];
         assert_eq!(report.full_scale.0, -1.0);
         assert_eq!(report.clip_runs, 1);
         assert!(report.mean < 1.0);
 
         // A stop is honored.
-        assert!(source.signal_report(&|| true).is_none());
+        assert!(source.signal_report(&|| true).unwrap().is_none());
     }
 }

@@ -199,6 +199,11 @@ and the sentences that fail their checksum. When the log has sentence types the
 table on screen does not show, such as GSV beside the fixes, the Schema tab
 names the other tables with how many sentences each has.
 
+A time of day is dated by the last RMC or ZDA before it. Rows read before the
+first one are dated back from it when it comes within the first 65,536 rows;
+when it comes later, those rows keep a null `time`. A log with neither sentence
+has no dates, and `time` is null throughout.
+
 `--table` is for any file that holds several tables. NMEA logs are the only
 ones so far; any other file opened with it is refused. Excel workbooks take
 `--sheet`.

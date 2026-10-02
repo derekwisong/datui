@@ -15,8 +15,8 @@ Copy data to the clipboard.
   Esc:              Close a picker, then the dialog, without copying
 
   The last scope, format and header choices are kept, so repeating a copy
-  is y Enter. The Header row disappears for the Cell scope and the
-  Markdown format, where it has no meaning.
+  is y Enter. The Header row disappears for the Cell and Python scopes
+  and the Markdown format, where it has no meaning.
 
 Scopes:
   Cell:   The current row's value in one column, as plain text: the
@@ -27,6 +27,12 @@ Scopes:
           queried, filtered and sorted. Large tables ask first, and so
           does a table whose size is not known yet; above 200 MiB the
           copy is refused with an error — use an export (e) instead.
+  Python (Polars):
+          The view as a Python script: the file read with the same
+          options, then each query, reshape, drill, filter and sort in
+          the order applied, and the columns shown. A step Python cannot
+          repeat is a comment, and what follows it is commented out.
+          It has no Format row.
 
 Formats:
   TSV:       Tab-separated, what spreadsheets expect from a paste

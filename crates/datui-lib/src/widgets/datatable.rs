@@ -18,10 +18,11 @@ use ratatui::{
 };
 
 use crate::error_display::user_message_from_polars;
-use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use crate::filter_modal::FilterStatement;
 use crate::local_copy::RemoteObject;
 use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
+use crate::python_script::{SidebarFilter, Step, py_str};
 use crate::query::{ParsedQuery, parse_query};
 use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
@@ -371,6 +372,14 @@ pub struct DataTableState {
     /// replay before it. `None` while none is in effect, or when it ran over the data as
     /// loaded.
     reshape_source: Option<ReshapeSource>,
+    /// How `base_lf` was built from the data as loaded, step by step, for Copy as
+    /// Python. Set with every new base; empty for the data as loaded.
+    base_steps: Vec<Step>,
+    /// What the open did to the rows its reader gave, as Python method calls: names
+    /// trimmed, text columns typed.
+    read_python: Vec<String>,
+    /// How `reshaped_lf` was built, while there is one: what SQL runs over.
+    reshape_steps: Option<Vec<Step>>,
     /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
     partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
@@ -441,6 +450,8 @@ struct GroupedView {
     selected: Option<usize>,
     /// Drilled into from Value Counts rather than from a grouped row.
     by_value: bool,
+    /// How `base_lf` was built, for Copy as Python.
+    base_steps: Vec<Step>,
 }
 
 /// The rows a grouped result was computed from and how its keys were computed, so a
@@ -458,6 +469,10 @@ struct GroupSource {
     /// Whether the result's list columns are each group's rows, as a `by` query's are.
     /// A SQL result's lists are values it computed, such as `ARRAY_AGG`.
     rows_in_lists: bool,
+    /// The same as Copy as Python steps: how `rows` was built, and each key as
+    /// Python code, aliases undone. None where the script cannot say.
+    python_rows: Option<Vec<Step>>,
+    python_keys: Vec<Option<String>>,
 }
 
 /// One field the row inspector lists: a column of the frame on screen.
@@ -516,6 +531,8 @@ struct GroupRows {
     key_values: Vec<String>,
     /// Columns of `lf` that hold the keys as they stand, to lead the view.
     lead: Vec<String>,
+    /// How `lf` is built, as Copy as Python steps.
+    steps: Vec<Step>,
 }
 
 /// The view as it stood before a query or view replaced it: a checkpoint. A query plans
@@ -561,6 +578,8 @@ pub struct ViewRollback {
     last_pivot_spec: Option<PivotSpec>,
     last_melt_spec: Option<MeltSpec>,
     reshape_source: Option<ReshapeSource>,
+    base_steps: Vec<Step>,
+    reshape_steps: Option<Vec<Step>>,
     group_source: Option<GroupSource>,
     drilled_down_group_index: Option<usize>,
     drilled_down_group_key: Option<Vec<String>>,
@@ -1821,6 +1840,9 @@ impl DataTableState {
             last_pivot_spec: None,
             last_melt_spec: None,
             reshape_source: None,
+            base_steps: Vec::new(),
+            read_python: Vec::new(),
+            reshape_steps: None,
             partition_columns: None,
             decompress_temp_file: None,
             download: None,
@@ -1958,6 +1980,9 @@ impl DataTableState {
             last_pivot_spec: None,
             last_melt_spec: None,
             reshape_source: None,
+            base_steps: Vec::new(),
+            read_python: Vec::new(),
+            reshape_steps: None,
             partition_columns,
             decompress_temp_file: None,
             download: None,
@@ -2054,6 +2079,8 @@ impl DataTableState {
         self.base_lf = lf.clone();
         self.lf = lf;
         self.unsorted_lf = None;
+        self.base_steps = Vec::new();
+        self.reshape_steps = None;
         self.drop_buffer();
     }
 
@@ -2077,6 +2104,11 @@ impl DataTableState {
         self.base_lf = lf.clone();
         self.lf = lf;
         self.unsorted_lf = None;
+        // Every caller says how the base was built; one that does not leaves a script
+        // that says so rather than one that computes something else.
+        self.base_steps = vec![Step::Unreproducible(
+            "datui built the view from here in a way it cannot write as Python".to_string(),
+        )];
         self.schema = schema;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
         self.settle_cursor();
@@ -2126,8 +2158,10 @@ impl DataTableState {
         schema: Arc<Schema>,
         query: ActiveQuery,
         locked_columns_count: usize,
+        steps: Vec<Step>,
     ) {
         self.install_base(lf, schema);
+        self.base_steps = steps;
         self.reset_view_state(locked_columns_count);
         match query {
             ActiveQuery::Dsl(q) => self.active_query = q,
@@ -2140,6 +2174,7 @@ impl DataTableState {
     /// The view no longer shows the pivot or melt, so nothing may run against it.
     fn forget_reshape(&mut self) {
         self.reshaped_lf = None;
+        self.reshape_steps = None;
         self.last_pivot_spec = None;
         self.last_melt_spec = None;
         self.reshape_source = None;
@@ -2155,6 +2190,8 @@ impl DataTableState {
             .collect_schema()
             .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
         self.install_base(self.original_lf.clone(), schema);
+        self.base_steps = Vec::new();
+        self.reshape_steps = None;
         // A reset is a return to the data as opened, so the rows stand for files again
         // and what datui noticed about them applies once more.
         self.drift_column_present = self.drift_at_open;
@@ -3966,24 +4003,54 @@ impl DataTableState {
     /// What every CSV read does once Polars has parsed it: name the columns (trimmed,
     /// or from `--header-rows`), skip the padding after a delimiter, type the text
     /// columns, and drop the footer.
+    /// `read` gets the steps that Python can repeat.
     fn finish_csv_frame(
         lf: LazyFrame,
         options: &OpenOptions,
         header: Option<&[String]>,
+        read: &mut Vec<String>,
     ) -> Result<LazyFrame> {
-        let lf = crate::csv_dialect::name_columns(lf, header)?;
-        Self::finish_csv_values(lf, options)
+        let lf = Self::name_csv_columns(lf, header, Some(read))?;
+        Self::finish_csv_values(lf, options, read)
+    }
+
+    /// [`crate::csv_dialect::name_columns`], with the renames as Python in `read`.
+    /// Names from `--header-rows` are not recorded: Copy as Python does not write that
+    /// read.
+    fn name_csv_columns(
+        mut lf: LazyFrame,
+        header: Option<&[String]>,
+        read: Option<&mut Vec<String>>,
+    ) -> Result<LazyFrame> {
+        if let (None, Some(read)) = (header, read) {
+            let raw: Vec<PlSmallStr> = lf.collect_schema()?.iter_names().cloned().collect();
+            let shown = crate::csv_dialect::shown_names(&raw, None);
+            let renames: Vec<String> = raw
+                .iter()
+                .zip(&shown)
+                .filter(|(raw, shown)| raw.as_str() != shown.as_str())
+                .map(|(raw, shown)| format!("{}: {}", py_str(raw), py_str(shown)))
+                .collect();
+            if !renames.is_empty() {
+                read.push(format!(".rename({{{}}})", renames.join(", ")));
+            }
+        }
+        Ok(crate::csv_dialect::name_columns(lf, header)?)
     }
 
     /// [`Self::finish_csv_frame`] after the names, for frames already named: several
     /// files are named one at a time and stacked first.
-    fn finish_csv_values(mut lf: LazyFrame, options: &OpenOptions) -> Result<LazyFrame> {
+    fn finish_csv_values(
+        mut lf: LazyFrame,
+        options: &OpenOptions,
+        read: &mut Vec<String>,
+    ) -> Result<LazyFrame> {
         if options.skip_initial_space {
             lf = crate::csv_dialect::skip_initial_space(lf, |column| {
                 Self::csv_null_values_for(options, column)
             })?;
         }
-        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options, read)?;
         Self::apply_skip_tail_rows_csv(lf, options)
     }
 
@@ -4093,6 +4160,7 @@ impl DataTableState {
     fn apply_parse_strings_to_csv_lazyframe(
         lf: LazyFrame,
         options: &OpenOptions,
+        read: &mut Vec<String>,
     ) -> Result<LazyFrame> {
         let Some(target) = &options.parse_strings else {
             return Ok(lf);
@@ -4105,6 +4173,7 @@ impl DataTableState {
                 dates: options.parse_dates,
                 numbers: true,
             },
+            read,
         )
     }
 
@@ -4114,6 +4183,7 @@ impl DataTableState {
     pub(crate) fn apply_parse_dates_to_json_lazyframe(
         lf: LazyFrame,
         options: &OpenOptions,
+        read: &mut Vec<String>,
     ) -> Result<LazyFrame> {
         if !options.parse_dates {
             return Ok(lf);
@@ -4126,6 +4196,7 @@ impl DataTableState {
                 dates: true,
                 numbers: false,
             },
+            read,
         )
     }
 
@@ -4190,6 +4261,7 @@ impl DataTableState {
         target: &ParseStringsTarget,
         sample_rows: usize,
         types: StringTypes,
+        read: &mut Vec<String>,
     ) -> Result<LazyFrame> {
         // The scan already inferred the schema; the sample below is the one read.
         let schema = lf.clone().collect_schema()?;
@@ -4221,6 +4293,8 @@ impl DataTableState {
             sample_df.estimated_size()
         );
         let mut exprs = Vec::with_capacity(target_cols.len());
+        // The same typing as Python, for Copy as Python.
+        let mut python = Vec::with_capacity(target_cols.len());
         for col_name in &target_cols {
             let name = PlSmallStr::from(col_name.as_str());
             let s = sample_df.column(col_name.as_str())?;
@@ -4332,6 +4406,40 @@ impl DataTableState {
             let base_with_nulls = when(base.clone().eq(lit(PlSmallStr::from_static(""))))
                 .then(Null {}.lit())
                 .otherwise(base.clone());
+            let trimmed = format!(
+                "pl.col({}).str.strip_chars(\" \\t\\n\\r\")",
+                py_str(col_name)
+            );
+            let blank_null = format!("{trimmed}.replace(\"\", None)");
+            let format_arg = |f: &Option<String>| match f {
+                Some(f) => format!("{}, ", py_str(f)),
+                None => String::new(),
+            };
+            python.push(match &inferred {
+                InferredType::Date => format!(
+                    "{blank_null}.str.to_date({}strict=False, exact=False)",
+                    format_arg(&date_fmt)
+                ),
+                InferredType::Datetime => format!(
+                    "{blank_null}.str.to_datetime({}time_unit=\"us\", strict=False)",
+                    format_arg(&datetime_fmt)
+                ),
+                InferredType::Time => format!(
+                    "{blank_null}.str.to_time({}strict=False)",
+                    format_arg(&time_fmt)
+                ),
+                InferredType::Duration => crate::python_script::py_comment(&format!(
+                    "{col_name}: datui reads these as durations (\"1d2h\"); Polars has no parser for them"
+                )),
+                InferredType::Int64 => {
+                    format!("{blank_null}.cast(pl.Int64, strict=False)")
+                }
+                InferredType::Float64 => {
+                    format!("{blank_null}.cast(pl.Float64, strict=False)")
+                }
+                InferredType::String if types.numbers => trimmed.clone(),
+                InferredType::String => String::new(),
+            });
             let expr = match inferred {
                 InferredType::Date => {
                     let opts = StrptimeOptions {
@@ -4394,6 +4502,18 @@ impl DataTableState {
                 InferredType::String => continue,
             };
             exprs.push(expr);
+        }
+        let python: Vec<String> = python.into_iter().filter(|p| !p.is_empty()).collect();
+        if !python.is_empty() {
+            read.push(".with_columns(".to_string());
+            read.extend(python.into_iter().map(|p| {
+                if p.starts_with('#') {
+                    format!("    {p}")
+                } else {
+                    format!("    {p},")
+                }
+            }));
+            read.push(")".to_string());
         }
         Ok(lf.with_columns(exprs))
     }
@@ -4520,7 +4640,8 @@ impl DataTableState {
                         (df, header)
                     }
                 };
-                let lf = Self::finish_csv_frame(df.lazy(), options, header.as_deref())?;
+                let mut read = Vec::new();
+                let lf = Self::finish_csv_frame(df.lazy(), options, header.as_deref(), &mut read)?;
                 let mut state = Self::new(
                     lf,
                     options.pages_lookahead,
@@ -4531,6 +4652,7 @@ impl DataTableState {
                 )?;
                 state.row_numbers = options.row_numbers;
                 state.row_start_index = options.row_start_index;
+                state.read_python = read;
                 Ok(state)
             } else {
                 // Decompress to temp file, then lazy scan
@@ -4554,7 +4676,8 @@ impl DataTableState {
         let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
         let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?);
         let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
-        let lf = Self::finish_csv_frame(lf, options, header.as_deref())?;
+        let mut read = Vec::new();
+        let lf = Self::finish_csv_frame(lf, options, header.as_deref(), &mut read)?;
         let mut state = Self::new(
             lf,
             options.pages_lookahead,
@@ -4565,6 +4688,7 @@ impl DataTableState {
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
+        state.read_python = read;
         Ok(state)
     }
 
@@ -4603,17 +4727,21 @@ impl DataTableState {
         // Each file is named from its own header, so files whose names are padded
         // differently, or whose header lines say the same thing, stack by name.
         let mut lazy_frames = Vec::with_capacity(paths.len());
-        for p in paths {
+        // Python reads the files as one scan: the first file's renames stand for all.
+        let mut read = Vec::new();
+        for (i, p) in paths.iter().enumerate() {
             let p = p.as_ref();
             let header = Self::csv_header_names_of(options, p, None)?;
             let nv = Self::build_null_values_for_csv(options, p, header.as_deref())?;
             let reader = LazyCsvReader::new(PlRefPath::try_from_path(p)?);
             let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
-            lazy_frames.push(crate::csv_dialect::name_columns(lf, header.as_deref())?);
+            let record = (i == 0).then_some(&mut read);
+            lazy_frames.push(Self::name_csv_columns(lf, header.as_deref(), record)?);
         }
         let lf = Self::finish_csv_values(
             polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?,
             options,
+            &mut read,
         )?;
         let mut state = Self::new(
             lf,
@@ -4625,6 +4753,7 @@ impl DataTableState {
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
+        state.read_python = read;
         Ok(state)
     }
 
@@ -7894,6 +8023,8 @@ impl DataTableState {
             last_pivot_spec: self.last_pivot_spec.clone(),
             last_melt_spec: self.last_melt_spec.clone(),
             reshape_source: self.reshape_source.clone(),
+            base_steps: self.base_steps.clone(),
+            reshape_steps: self.reshape_steps.clone(),
             group_source: self.group_source.clone(),
             drilled_down_group_index: self.drilled_down_group_index,
             drilled_down_group_key: self.drilled_down_group_key.clone(),
@@ -7957,6 +8088,8 @@ impl DataTableState {
         self.last_pivot_spec = saved.last_pivot_spec;
         self.last_melt_spec = saved.last_melt_spec;
         self.reshape_source = saved.reshape_source;
+        self.base_steps = saved.base_steps;
+        self.reshape_steps = saved.reshape_steps;
         self.group_source = saved.group_source;
         self.drilled_down_group_index = saved.drilled_down_group_index;
         self.drilled_down_group_key = saved.drilled_down_group_key;
@@ -8576,12 +8709,23 @@ impl DataTableState {
             .cloned()
             .ok_or_else(|| color_eyre::eyre::eyre!("no column {column}"))?;
         let label = crate::exact::str_value(&value).to_string();
+        let mut steps = self.view_steps();
+        steps.push(match crate::python_script::py_value(&value) {
+            Some(literal) => Step::Matching(vec![(
+                format!("pl.col({})", crate::python_script::py_str(column)),
+                literal,
+            )]),
+            None => Step::Unreproducible(format!(
+                "drilled into the rows where {column} is {label}, a value of a type not written as Python"
+            )),
+        });
         let matches = col(column).eq_missing(lit(Scalar::new(dtype, value)));
         let group = GroupRows {
             lf: self.visible_lf().filter(matches),
             key_columns: vec![column.to_string()],
             key_values: vec![label],
             lead: vec![column.to_string()],
+            steps,
         };
         if !self.is_drilled_down() {
             let index = self.start_row + self.table_state.selected().unwrap_or(0);
@@ -8601,6 +8745,7 @@ impl DataTableState {
         self.sort_descending.clear();
         self.sort_ascending = true;
         self.install_base(group.lf, schema);
+        self.base_steps = group.steps;
         self.column_order = order;
         self.start_row = 0;
         self.termcol_index = 0;
@@ -8643,9 +8788,11 @@ impl DataTableState {
             cursor_column: self.cursor_column.clone(),
             selected: self.table_state.selected(),
             by_value,
+            base_steps: std::mem::take(&mut self.base_steps),
         });
         self.sort_ascending = true;
         self.install_base(group.lf, schema);
+        self.base_steps = group.steps;
         // Led by the keys, as a group drilled from lists is.
         let rest: Vec<String> = std::mem::take(&mut self.column_order)
             .into_iter()
@@ -8691,12 +8838,22 @@ impl DataTableState {
                 columns.push(list_series.with_name(col_name.as_str().into()).into());
             }
         }
+        let group = key_columns
+            .iter()
+            .zip(&key_values)
+            .map(|(c, v)| format!("{c} = {v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         Ok(GroupRows {
             lf: DataFrame::new_infer_height(columns)?.lazy(),
             key_columns,
             key_values,
             // Already first.
             lead: Vec::new(),
+            steps: vec![Step::Unreproducible(format!(
+                "drilled into the group {group}, read from the grouped result's lists: \
+                 not written as Python"
+            ))],
         })
     }
 
@@ -8707,9 +8864,18 @@ impl DataTableState {
         let mut key_columns = Vec::new();
         let mut key_values = Vec::new();
         let mut lead = Vec::new();
-        for (name, expr) in &source.keys {
+        let mut matching = Vec::new();
+        for (i, (name, expr)) in source.keys.iter().enumerate() {
             let column = row.column(name)?;
             let value = column.get(0)?.into_static();
+            matching.push(
+                source
+                    .python_keys
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .zip(crate::python_script::py_value(&value)),
+            );
             key_columns.push(name.to_string());
             key_values.push(crate::exact::str_value(&value).to_string());
             // The key as the query computed it, against the value it produced; the alias
@@ -8734,11 +8900,34 @@ impl DataTableState {
         if !source.scratch.is_empty() {
             lf = lf.drop(by_name(source.scratch.iter().cloned(), true, false));
         }
+        let matching: Option<Vec<(String, String)>> = matching.into_iter().collect();
+        let steps = match (&source.python_rows, matching) {
+            (Some(rows), Some(matching)) => {
+                let mut steps = rows.clone();
+                steps.push(Step::Matching(matching));
+                if !source.scratch.is_empty() {
+                    steps.push(Step::Drop(
+                        source.scratch.iter().map(|c| c.to_string()).collect(),
+                    ));
+                }
+                steps
+            }
+            _ => vec![Step::Unreproducible(format!(
+                "drilled into the group {}: not written as Python",
+                key_columns
+                    .iter()
+                    .zip(&key_values)
+                    .map(|(c, v)| format!("{c} = {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))],
+        };
         Ok(GroupRows {
             lf,
             key_columns,
             key_values,
             lead,
+            steps,
         })
     }
 
@@ -8756,6 +8945,7 @@ impl DataTableState {
         self.lf = view.lf;
         self.unsorted_lf = None;
         self.base_lf = view.base_lf;
+        self.base_steps = view.base_steps;
         self.filters = view.filters;
         self.sort_columns = view.sort_columns;
         self.sort_descending = view.sort_descending;
@@ -8813,9 +9003,29 @@ impl DataTableState {
 
     /// Show `pivoted`, the result of `spec`'s [`PivotJob`], as the new pipeline root.
     pub fn install_pivot(&mut self, spec: &PivotSpec, pivoted: DataFrame) -> Result<()> {
+        let index = if spec.index.is_empty() {
+            // What the pivot itself took as the index: every other column of the view.
+            self.schema
+                .iter_names()
+                .map(|n| n.to_string())
+                .filter(|n| {
+                    n != &spec.pivot_column
+                        && n != &spec.value_column
+                        && n != crate::schema_union::DRIFT_COLUMN
+                })
+                .collect()
+        } else {
+            spec.index.clone()
+        };
+        let step = Step::Pivot {
+            index,
+            on: spec.pivot_column.clone(),
+            values: spec.value_column.clone(),
+            aggregation: spec.aggregation,
+        };
         self.last_pivot_spec = Some(spec.clone());
         self.last_melt_spec = None;
-        self.replace_lf_after_reshape(pivoted.lazy())
+        self.replace_lf_after_reshape(pivoted.lazy(), step)
     }
 
     /// Pivot the view here and now, reading it on this thread. The Pivot & Melt modal
@@ -8836,9 +9046,15 @@ impl DataTableState {
             value_name: Some(PlSmallStr::from(spec.value_name.as_str())),
         };
         let lf = Self::melt_dates_as_text(self.visible_lf(), spec, &args)?.unpivot(args);
+        let step = Step::Melt {
+            index: spec.index.clone(),
+            on: spec.value_columns.clone(),
+            variable_name: spec.variable_name.clone(),
+            value_name: spec.value_name.clone(),
+        };
         self.last_melt_spec = Some(spec.clone());
         self.last_pivot_spec = None;
-        self.replace_lf_after_reshape(lf)?;
+        self.replace_lf_after_reshape(lf, step)?;
         Ok(())
     }
 
@@ -8877,8 +9093,10 @@ impl DataTableState {
         })
     }
 
-    fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
+    fn replace_lf_after_reshape(&mut self, lf: LazyFrame, step: Step) -> Result<()> {
         let schema = lf.clone().collect_schema()?;
+        let mut steps = self.view_steps();
+        steps.push(step);
         // Taken before the view state below is reset. Over an earlier reshape there is
         // no source a view could replay, so none is kept.
         let text = |q: &str| Some(q.trim().to_string()).filter(|q| !q.is_empty());
@@ -8893,12 +9111,69 @@ impl DataTableState {
         self.reshape_source = (self.reshaped_lf.is_none() && !source.is_empty()).then_some(source);
         self.reshaped_lf = Some(lf.clone());
         self.install_base(lf, schema);
+        self.base_steps = steps.clone();
+        self.reshape_steps = Some(steps);
         self.reset_view_state(0);
         self.error = None;
         self.df = None;
         self.locked_df = None;
         self.collect();
         Ok(())
+    }
+
+    /// The sidebar filters with their values typed against the columns they test.
+    fn typed_filters(&self) -> Vec<SidebarFilter> {
+        self.filters
+            .iter()
+            .map(|f| SidebarFilter::typed(f, self.schema.get(&f.column)))
+            .collect()
+    }
+
+    /// What the open did to the rows its reader gave, as Python method calls.
+    pub fn read_python(&self) -> &[String] {
+        &self.read_python
+    }
+
+    /// How `lf` was built: the base's steps, then the filters and the sort.
+    fn view_steps(&self) -> Vec<Step> {
+        let mut steps = self.base_steps.clone();
+        if !self.filters.is_empty() {
+            steps.push(Step::Filter(self.typed_filters()));
+        }
+        // Rows of files that hold a filtered or sorted column as another type: datui
+        // leaves them out by where they were read, which a script cannot know.
+        let left_out: Vec<String> = self
+            .view_exclusions()
+            .into_iter()
+            .map(|(_, note)| note.summary)
+            .collect();
+        if !left_out.is_empty() {
+            steps.push(Step::Unreproducible(left_out.join("; ")));
+        }
+        if !self.sort_columns.is_empty() {
+            steps.push(Step::Sort {
+                columns: self.sort_columns.clone(),
+                descending: self.sort_descending.clone(),
+            });
+        } else if !self.sort_ascending {
+            steps.push(Step::Reverse);
+        }
+        steps
+    }
+
+    /// The view as Copy as Python writes it: every step from the data as loaded to
+    /// the columns shown, in their order.
+    pub fn python_steps(&self) -> Vec<Step> {
+        let mut steps = self.view_steps();
+        let in_order = self.column_order.iter().map(String::as_str).eq(self
+            .schema
+            .iter_names()
+            .map(|s| s.as_str())
+            .filter(|s| *s != crate::schema_union::DRIFT_COLUMN));
+        if !in_order {
+            steps.push(Step::Select(self.column_order.clone()));
+        }
+        steps
     }
 
     pub fn is_drilled_down(&self) -> bool {
@@ -8908,68 +9183,7 @@ impl DataTableState {
     /// Rebuild `lf` as `base_lf` → filters → sort. Column order is applied at collect.
     fn apply_transformations(&mut self) {
         let mut lf = self.base_lf.clone();
-        let mut final_expr: Option<Expr> = None;
-
-        for filter in &self.filters {
-            let col_expr = col(&filter.column);
-            let val_lit = if let Some(dtype) = self.schema.get(&filter.column) {
-                match dtype {
-                    DataType::Float32 | DataType::Float64 => filter
-                        .value
-                        .parse::<f64>()
-                        .map(lit)
-                        .unwrap_or_else(|_| lit(filter.value.as_str())),
-                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => filter
-                        .value
-                        .parse::<i64>()
-                        .map(lit)
-                        .unwrap_or_else(|_| lit(filter.value.as_str())),
-                    DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
-                        filter
-                            .value
-                            .parse::<u64>()
-                            .map(lit)
-                            .unwrap_or_else(|_| lit(filter.value.as_str()))
-                    }
-                    DataType::Boolean => filter
-                        .value
-                        .parse::<bool>()
-                        .map(lit)
-                        .unwrap_or_else(|_| lit(filter.value.as_str())),
-                    _ => lit(filter.value.as_str()),
-                }
-            } else {
-                lit(filter.value.as_str())
-            };
-
-            let op_expr = match filter.operator {
-                FilterOperator::Eq => col_expr.eq(val_lit),
-                FilterOperator::NotEq => col_expr.neq(val_lit),
-                FilterOperator::Gt => col_expr.gt(val_lit),
-                FilterOperator::Lt => col_expr.lt(val_lit),
-                FilterOperator::GtEq => col_expr.gt_eq(val_lit),
-                FilterOperator::LtEq => col_expr.lt_eq(val_lit),
-                FilterOperator::Contains => {
-                    let val = filter.value.clone();
-                    col_expr.str().contains_literal(lit(val))
-                }
-                FilterOperator::NotContains => {
-                    let val = filter.value.clone();
-                    col_expr.str().contains_literal(lit(val)).not()
-                }
-            };
-
-            if let Some(current) = final_expr {
-                final_expr = Some(match filter.logical_op {
-                    LogicalOperator::And => current.and(op_expr),
-                    LogicalOperator::Or => current.or(op_expr),
-                });
-            } else {
-                final_expr = Some(op_expr);
-            }
-        }
-
-        if let Some(e) = final_expr {
+        if let Some(e) = crate::python_script::filters_expr(&self.typed_filters()) {
             lf = lf.filter(e);
         }
 
@@ -9089,10 +9303,9 @@ impl DataTableState {
             return;
         }
 
-        let parsed = parse_query(&query).map(|parsed| {
-            let schema = self.query_source().collect_schema().ok();
-            parsed.past_calendar_safe(schema.as_deref())
-        });
+        let source_schema = self.query_source().collect_schema().ok();
+        let parsed =
+            parse_query(&query).map(|parsed| parsed.past_calendar_safe(source_schema.as_deref()));
         match parsed {
             Ok(ParsedQuery {
                 cols,
@@ -9181,13 +9394,38 @@ impl DataTableState {
                 // The keys lead the result in `by` order, whatever they were named.
                 let keys: Vec<(PlSmallStr, Expr)> =
                     schema.iter_names().cloned().zip(group_by_cols).collect();
-                self.install_query_result(lf, schema, ActiveQuery::Dsl(query), locked);
+                // Python's division depends on the types the query read.
+                let input = source_schema.unwrap_or_default();
+                let steps = vec![Step::Query {
+                    query: query.clone(),
+                    input: input.clone(),
+                    keys: keys.iter().map(|(name, _)| name.to_string()).collect(),
+                }];
+                // The same keys as Python, for a drill into one of the groups.
+                let python_keys: Vec<Option<String>> = match crate::query::parse_nodes(&query) {
+                    Ok(mut nodes) => {
+                        nodes.resolve_division(&input);
+                        nodes
+                            .group_by
+                            .iter()
+                            .map(|key| Some(key.without_aliases().python()))
+                            .collect()
+                    }
+                    Err(_) => vec![None; keys.len()],
+                };
+                let python_rows = Some(vec![Step::QueryRows {
+                    query: query.clone(),
+                    input,
+                }]);
+                self.install_query_result(lf, schema, ActiveQuery::Dsl(query), locked, steps);
                 if !keys.is_empty() {
                     self.group_source = Some(GroupSource {
                         rows: group_rows,
                         keys,
                         scratch: Vec::new(),
                         rows_in_lists: true,
+                        python_rows,
+                        python_keys,
                     });
                 }
                 self.forget_reshape();
@@ -9222,6 +9460,21 @@ impl DataTableState {
         )
     }
 
+    /// How [`Self::query_root`] was built, as Copy as Python steps.
+    #[cfg(feature = "sql")]
+    fn query_root_steps(&self) -> Vec<Step> {
+        if self.grouped.is_some() {
+            return self.base_steps.clone();
+        }
+        match (&self.reshaped_lf, &self.reshape_steps) {
+            (None, _) => Vec::new(),
+            (Some(_), Some(steps)) => steps.clone(),
+            (Some(_), None) => vec![Step::Unreproducible(
+                "datui reshaped the data in a way it cannot write as Python".to_string(),
+            )],
+        }
+    }
+
     /// Execute a SQL query against `query_root` (registered as table "df"): the drilled
     /// group or the reshaped data when one is in effect, otherwise the data as loaded —
     /// never the sidebar filters or a previous SQL result. Running a query starts a
@@ -9241,6 +9494,7 @@ impl DataTableState {
             use polars_sql::SQLContext;
             let mut ctx = SQLContext::new();
             let root = self.query_root();
+            let root_steps = self.query_root_steps();
             ctx.register("df", root.clone());
             match ctx.execute(trimmed) {
                 Ok(mut result_lf) => {
@@ -9268,8 +9522,14 @@ impl DataTableState {
                             strict: true,
                         });
                     }
-                    let group_source =
-                        Self::sql_group_source(&mut ctx, trimmed, root, &mut result_lf, &schema);
+                    let group_source = Self::sql_group_source(
+                        &mut ctx,
+                        trimmed,
+                        root,
+                        &root_steps,
+                        &mut result_lf,
+                        &schema,
+                    );
                     // Groups sorted by their keys have no ties, and a statement simple
                     // enough to trace holds nothing else that gives rows in any order.
                     // Keeping the groups' order too would double the grouping's time.
@@ -9277,7 +9537,20 @@ impl DataTableState {
                         stable_order(&mut result_lf.logical_plan);
                     }
                     count_subquery_values_once(&mut result_lf.logical_plan);
-                    self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql), 0);
+                    let ordered_by = match &group_source {
+                        Some((source, true)) => schema
+                            .iter_names()
+                            .filter(|name| source.keys.iter().any(|(key, _)| key == *name))
+                            .map(|name| name.to_string())
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    let mut steps = root_steps;
+                    steps.push(Step::Sql {
+                        sql: trimmed.to_string(),
+                        ordered_by,
+                    });
+                    self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql), 0, steps);
                     self.install_sql_group_source(group_source.map(|(source, _)| source));
                 }
                 Err(e) => {
@@ -9305,6 +9578,7 @@ impl DataTableState {
         ctx: &mut polars_sql::SQLContext,
         sql: &str,
         root: LazyFrame,
+        root_steps: &[Step],
         result_lf: &mut LazyFrame,
         result: &Schema,
     ) -> Option<(GroupSource, bool)> {
@@ -9317,6 +9591,7 @@ impl DataTableState {
         let source_schema = rows.clone().collect_schema().ok()?;
         let mut scratch = Vec::new();
         let mut keys = Vec::with_capacity(plan.keys.len());
+        let mut python_keys = Vec::with_capacity(plan.keys.len());
         for key in plan.keys {
             let (name, dtype) = result.get_at_index(key.result_index)?;
             let column = match key.source {
@@ -9331,6 +9606,10 @@ impl DataTableState {
             if source_schema.get(&column) != Some(dtype) {
                 return None;
             }
+            python_keys.push(Some(format!(
+                "pl.col({})",
+                crate::python_script::py_str(&column)
+            )));
             keys.push((name.clone(), col(column)));
         }
         if !plan.ordered {
@@ -9343,11 +9622,18 @@ impl DataTableState {
             let options = sort_options(vec![false; by.len()]);
             *result_lf = result_lf.clone().sort_by_exprs(by, options);
         }
+        let mut python_rows = root_steps.to_vec();
+        python_rows.push(Step::Sql {
+            sql: plan.source_sql.clone(),
+            ordered_by: Vec::new(),
+        });
         let source = GroupSource {
             rows,
             keys,
             scratch,
             rows_in_lists: false,
+            python_rows: Some(python_rows),
+            python_keys,
         };
         Some((source, !plan.ordered))
     }
@@ -9415,7 +9701,11 @@ impl DataTableState {
             .collect();
         let combined = token_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
         let lf = self.query_source().filter(combined);
-        self.install_query_result(lf, schema, ActiveQuery::Fuzzy(query), 0);
+        let steps = vec![Step::Search {
+            patterns: tokens.iter().map(|t| fuzzy_token_regex(t)).collect(),
+            columns: string_cols.clone(),
+        }];
+        self.install_query_result(lf, schema, ActiveQuery::Fuzzy(query), 0, steps);
         self.forget_reshape();
         self.collect();
     }
@@ -11501,10 +11791,16 @@ mod tests {
     fn string_inference_keeps_the_whole_frame() {
         let utc = DataType::Datetime(TimeUnit::Microseconds, Some(TimeZone::UTC));
         let typed = |target: &ParseStringsTarget, types: StringTypes| {
-            DataTableState::type_string_columns(mixed_strings(), target, 1_000, types)
-                .unwrap()
-                .collect()
-                .unwrap()
+            DataTableState::type_string_columns(
+                mixed_strings(),
+                target,
+                1_000,
+                types,
+                &mut Vec::new(),
+            )
+            .unwrap()
+            .collect()
+            .unwrap()
         };
         let all = StringTypes {
             dates: true,
@@ -11555,6 +11851,7 @@ mod tests {
         let json = DataTableState::apply_parse_dates_to_json_lazyframe(
             mixed_strings(),
             &crate::OpenOptions::default(),
+            &mut Vec::new(),
         )
         .unwrap()
         .collect()

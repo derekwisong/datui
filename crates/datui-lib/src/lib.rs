@@ -102,6 +102,7 @@ pub mod output_file;
 pub mod past_calendar;
 pub mod pivot_melt_modal;
 pub mod pointer;
+pub mod python_script;
 pub mod quality_export;
 pub mod quality_intent;
 pub mod quality_report;
@@ -8519,6 +8520,10 @@ pub struct OpenOptions {
     pub spec_choice: Option<crate::formats::Choice>,
     /// What a read through a format spec found, carried from the scan to the dataset.
     pub format_read: Option<Arc<crate::formats::Read>>,
+    /// What the open did to the rows its reader gave — CSV column names trimmed, text
+    /// columns typed — as Python method calls for Copy as Python. Found by the scan,
+    /// carried to the dataset as `left_out` is. Empty for every other open.
+    pub read_python: Vec<String>,
 }
 
 impl OpenOptions {
@@ -8531,6 +8536,7 @@ impl OpenOptions {
             skip_tail_rows: None,
             left_out: Vec::new(),
             model: None,
+            read_python: Vec::new(),
             read_as_plain_files_of: None,
             files_disagree: Default::default(),
             compression: None,
@@ -9213,6 +9219,8 @@ pub struct ReadReport {
     pub model: Option<Arc<crate::model_files::ModelSummary>>,
     /// What a read through a format spec found. See `OpenOptions::format_read`.
     pub format_read: Option<Arc<crate::formats::Read>>,
+    /// See [`OpenOptions::read_python`].
+    pub read_python: Vec<String>,
 }
 
 /// What a scan built: the frame, or what the load has to turn into a file it can scan
@@ -16981,6 +16989,7 @@ impl App {
                         format: None,
                         model: None,
                         format_read: None,
+                        read_python: Vec::new(),
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
@@ -17006,6 +17015,7 @@ impl App {
                         model: report.model,
                         format_read: report.format_read,
                         spec_choice: None,
+                        read_python: report.read_python,
                         ..options
                     };
                     Ok(Answer::Load(Box::new(match scan {
@@ -18983,9 +18993,14 @@ impl App {
             effective_format,
             Some(FileFormat::Json) | Some(FileFormat::Jsonl)
         ) {
-            return DataTableState::apply_parse_dates_to_json_lazyframe(lf.into_lf(), options)
-                .map(Scan::from);
+            return DataTableState::apply_parse_dates_to_json_lazyframe(
+                lf.into_lf(),
+                options,
+                &mut report.read_python,
+            )
+            .map(Scan::from);
         }
+        report.read_python = lf.read_python().to_vec();
         Ok(lf.into_lf().into())
     }
 
@@ -25712,6 +25727,10 @@ impl App {
                     ),
                     None => Err("Nothing to copy: no rows are on screen".to_string()),
                 },
+                CopyScope::Python => Ok(Planned::Copy(
+                    clipboard::Payload::text(self.python_script(state)),
+                    "Copied the view as Python".to_string(),
+                )),
                 CopyScope::Table => {
                     // A capped destination's copy is read only as far as its cap, so
                     // what could be held is the smaller of the two.
@@ -25770,6 +25789,41 @@ impl App {
                 None
             }
         }
+    }
+
+    /// The view on screen as a Python Polars script: the open's reader, then every
+    /// step that made the view. See [`python_script`].
+    pub fn python_script(&self, state: &DataTableState) -> String {
+        let (paths, options) = match &self.opened {
+            Some((paths, options)) => (Some(paths.as_slice()), options.clone()),
+            None => (None, OpenOptions::default()),
+        };
+        let cloud = options.effective_cloud(&self.app_config.cloud);
+        let mut options = options;
+        if options.read_python.is_empty() {
+            // A decompressed file is read into its dataset directly, not through a scan.
+            options.read_python = state.read_python().to_vec();
+        }
+        let record = python_script::OpenRecord {
+            paths,
+            options: &options,
+            schema: state.source_schema(),
+            remote_objects: state
+                .remote_objects()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|object| object.url)
+                .collect(),
+            s3_endpoint: cloud.s3_endpoint_url.filter(|s| !s.trim().is_empty()),
+            s3_region: cloud.s3_region.filter(|s| !s.trim().is_empty()),
+            read_as_text: state.read_as_text().iter().map(|c| c.to_string()).collect(),
+            spec: state.format_read().map(|read| read.spec.name.clone()),
+        };
+        python_script::Script {
+            source: python_script::source(&record),
+            steps: state.python_steps(),
+        }
+        .render()
     }
 
     /// Hand a payload to the clipboard destination, building the destination

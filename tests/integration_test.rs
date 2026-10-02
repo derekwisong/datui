@@ -7119,6 +7119,15 @@ fn test_the_rows_left_out_are_the_conflicting_files_own_wherever_they_sit() {
         left_out.summary,
         "n is not read from 3 files, so the 4 rows there are left out of the sort"
     );
+    // Copy as Python cannot leave them out, so it says so and stops there.
+    let script = app.python_script(app.data_table_state.as_ref().unwrap());
+    assert!(
+        script.contains(
+            "    # n is not read from 3 files, so the 4 rows there are left out of the sort\n    \
+             # .sort("
+        ),
+        "{script}"
+    );
 }
 
 /// Clearing the sort brings the rows back and takes the note with it, and a sort on a
@@ -21521,4 +21530,586 @@ fn header_rows_on_a_file_with_no_rows_yet() {
     );
     let message = app.error_message().expect("an error");
     assert!(message.contains("past the end of the file"), "{message}");
+}
+
+/// The sales table the Copy as Python tests build views over.
+fn open_python_fixture() -> (
+    App,
+    mpsc::Receiver<AppEvent>,
+    mpsc::Sender<AppEvent>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sales.csv");
+    let mut csv = String::from("order_id,region,customer,amount,qty,day\n");
+    let regions = ["north", "south", "east", "west"];
+    let customers = ["Ada", "Bo", "Cy", "Di", "Ed"];
+    for i in 0..60 {
+        let amount = if i % 11 == 0 {
+            String::new()
+        } else {
+            format!("{:.2}", (i * 37 % 97) as f64 * 1.25)
+        };
+        csv.push_str(&format!(
+            "{i},{},{},{amount},{},2024-0{}-{:02}\n",
+            regions[i % 4],
+            customers[i % 5],
+            i % 7,
+            1 + i % 3,
+            1 + i % 28
+        ));
+    }
+    std::fs::write(&path, csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx, dir)
+}
+
+fn python_filter(
+    column: &str,
+    operator: datui::filter_modal::FilterOperator,
+    value: &str,
+    logical_op: datui::filter_modal::LogicalOperator,
+) -> datui::filter_modal::FilterStatement {
+    datui::filter_modal::FilterStatement {
+        column: column.to_string(),
+        operator,
+        value: value.to_string(),
+        logical_op,
+    }
+}
+
+/// `y`, the Python scope, Enter: the dialog copies the view's pipeline as a
+/// script, filters, a sort over two columns and the columns shown included.
+#[test]
+fn test_copy_as_python_writes_the_view_as_a_script() {
+    use datui::clipboard::{Destination, Payload};
+    use datui::filter_modal::{FilterOperator, LogicalOperator};
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<Payload>>>);
+    impl Destination for Capture {
+        fn write(&mut self, payload: Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+        fn describe(&self) -> &'static str {
+            "test"
+        }
+    }
+
+    let (mut app, rx, tx, dir) = open_python_fixture();
+    {
+        let state = app.data_table_state.as_mut().unwrap();
+        state.filter(vec![
+            python_filter("region", FilterOperator::Eq, "north", LogicalOperator::And),
+            python_filter("qty", FilterOperator::Gt, "1", LogicalOperator::And),
+        ]);
+        state.sort_by(
+            vec!["amount".to_string(), "order_id".to_string()],
+            vec![true, false],
+        );
+        state.set_column_order(vec![
+            "order_id".to_string(),
+            "customer".to_string(),
+            "amount".to_string(),
+        ]);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+
+    let copies: Arc<Mutex<Vec<Payload>>> = Arc::new(Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(Capture(copies.clone())));
+    let key =
+        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    key(&mut app, KeyCode::Char('y'));
+    key(&mut app, KeyCode::Char(' '));
+    for c in "pyth".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.copy_modal.row_order().len(), 1, "no format or header");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    let path = dir.path().join("sales.csv");
+    let expected = format!(
+        "import polars as pl\n\
+         \n\
+         df = (\n    \
+         pl.scan_csv({:?}, try_parse_dates=True)\n    \
+         .filter((pl.col(\"region\") == \"north\") & (pl.col(\"qty\") > 1))\n    \
+         .sort([\"amount\", \"order_id\"], descending=[True, False], nulls_last=True, maintain_order=True)\n    \
+         .select([\"order_id\", \"customer\", \"amount\"])\n\
+         )\n",
+        path.display().to_string()
+    );
+    assert_eq!(copies.lock().unwrap()[0].text, expected);
+
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains("Copied the view as Python"),
+        "no flash drawn"
+    );
+}
+
+/// The view as datui shows it, every row, as CSV.
+fn view_csv(app: &App) -> String {
+    let state = app.data_table_state.as_ref().unwrap();
+    let columns: Vec<Expr> = state.get_column_order().iter().map(col).collect();
+    let mut df = state.lf().clone().select(columns).collect().unwrap();
+    let mut out = Vec::new();
+    CsvWriter::new(&mut out).finish(&mut df).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+/// Run the script datui writes for the view with the project's Python Polars and
+/// compare its rows with datui's. `None` when there is no `.venv` to run it with.
+fn run_python_script(app: &App) -> Option<(String, String)> {
+    let python = if cfg!(windows) {
+        Path::new(".venv/Scripts/python.exe")
+    } else {
+        Path::new(".venv/bin/python")
+    };
+    if !python.exists() {
+        return None;
+    }
+    let state = app.data_table_state.as_ref().unwrap();
+    let script = app.python_script(state);
+    let program = format!("{script}\nimport sys\nsys.stdout.write(df.collect().write_csv())\n");
+    let output = std::process::Command::new(python)
+        .arg("-c")
+        .arg(&program)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the script failed:\n{program}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some((String::from_utf8(output.stdout).unwrap(), script))
+}
+
+/// Every kind of step the script writes, run in Python: the rows are the ones
+/// datui shows. Skipped where the project's virtualenv is missing.
+#[test]
+fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
+    use datui::filter_modal::{FilterOperator, LogicalOperator};
+    use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+
+    type Build = Box<dyn Fn(&mut datui::widgets::datatable::DataTableState)>;
+    let views: Vec<(&str, Build)> = vec![
+        (
+            "sidebar filters, an OR, a sort and the columns shown",
+            Box::new(|s| {
+                s.filter(vec![
+                    python_filter("region", FilterOperator::Eq, "north", LogicalOperator::And),
+                    python_filter("amount", FilterOperator::GtEq, "40", LogicalOperator::Or),
+                    python_filter(
+                        "customer",
+                        FilterOperator::NotContains,
+                        "d",
+                        LogicalOperator::And,
+                    ),
+                ]);
+                s.sort_by(vec!["qty".into(), "amount".into()], vec![false, true]);
+                s.set_column_order(vec!["amount".into(), "order_id".into(), "qty".into()]);
+            }),
+        ),
+        ("the natural order reversed", Box::new(|s| s.reverse())),
+        (
+            "a grouped query",
+            Box::new(|s| {
+                s.query(
+                    "select total: sum amount, n: count qty, avg amount by region where qty > 1"
+                        .into(),
+                )
+            }),
+        ),
+        (
+            "a query of expressions and accessors",
+            Box::new(|s| {
+                s.query(
+                    "select up: customer.upper, m: day.month, a: amount.round[1], \
+                     b: 5 xbar order_id, w: qty mod 3, c: amount ^ 0 \
+                     where customer like \"*d*\" | region in [\"east\", \"west\"], day >= 2024.02.01"
+                        .into(),
+                )
+            }),
+        ),
+        (
+            "a weighted average by a computed key, distinct",
+            Box::new(|s| s.query("select distinct qty wavg amount by r: region.upper".into())),
+        ),
+        (
+            "SQL grouped without an order",
+            Box::new(|s| {
+                s.sql_query(
+                    "SELECT region, AVG(amount) AS avg_amount, COUNT(*) AS n FROM df GROUP BY region"
+                        .into(),
+                )
+            }),
+        ),
+        (
+            "a search, then a sort",
+            Box::new(|s| {
+                s.fuzzy_search("ad".into());
+                s.sort_by(vec!["order_id".into()], vec![true]);
+            }),
+        ),
+        (
+            "a pivot of a filtered view, then a filter on the pivot",
+            Box::new(|s| {
+                s.filter(vec![python_filter(
+                    "qty",
+                    FilterOperator::Lt,
+                    "5",
+                    LogicalOperator::And,
+                )]);
+                s.pivot(&PivotSpec {
+                    index: vec!["region".into()],
+                    pivot_column: "customer".into(),
+                    value_column: "amount".into(),
+                    aggregation: PivotAggregation::Avg,
+                    sort_columns: None,
+                })
+                .unwrap();
+                s.sort_by(vec!["region".into()], vec![true]);
+            }),
+        ),
+        (
+            "a count pivot, every other column the index",
+            Box::new(|s| {
+                s.set_column_order(vec!["region".into(), "qty".into(), "customer".into()]);
+                s.query("select region, qty, customer".into());
+                s.pivot(&PivotSpec {
+                    index: Vec::new(),
+                    pivot_column: "customer".into(),
+                    value_column: "qty".into(),
+                    aggregation: PivotAggregation::Count,
+                    sort_columns: None,
+                })
+                .unwrap();
+            }),
+        ),
+        (
+            "a melt, then SQL over it",
+            Box::new(|s| {
+                s.melt(&MeltSpec {
+                    index: vec!["order_id".into()],
+                    value_columns: vec!["amount".into(), "qty".into()],
+                    variable_name: "measure".into(),
+                    value_name: "value".into(),
+                })
+                .unwrap();
+                s.sql_query("SELECT * FROM df WHERE value > 3 ORDER BY order_id, measure".into());
+            }),
+        ),
+        (
+            "a drill into one value",
+            Box::new(|s| {
+                s.sort_by(vec!["amount".into()], vec![false]);
+                s.drill_into_value("region", AnyValue::StringOwned("south".into()))
+                    .unwrap();
+            }),
+        ),
+        (
+            "a drill into a group of a grouped query",
+            Box::new(|s| {
+                s.query("select total: sum amount by region, qty where qty > 2".into());
+                s.drill_down_into_group(1).unwrap();
+                s.sort_by(vec!["order_id".into()], vec![true]);
+            }),
+        ),
+        (
+            "a drill into a group of a SQL grouping",
+            Box::new(|s| {
+                s.sql_query("SELECT customer, SUM(qty) AS q FROM df GROUP BY customer".into());
+                s.drill_down_into_group(2).unwrap();
+            }),
+        ),
+    ];
+    for (what, build) in views {
+        let (mut app, rx, tx, _dir) = open_python_fixture();
+        build(app.data_table_state.as_mut().unwrap());
+        pump_until_idle(&mut app, &rx, &tx);
+        assert!(
+            app.data_table_state.as_ref().unwrap().error().is_none(),
+            "{what}: {:?}",
+            app.data_table_state.as_ref().unwrap().error()
+        );
+        let Some((rows, script)) = run_python_script(&app) else {
+            eprintln!("skipped: no .venv to run the scripts with");
+            return;
+        };
+        assert!(
+            !script.contains("# "),
+            "{what}: a step was not written:\n{script}"
+        );
+        assert_eq!(rows, view_csv(&app), "{what}:\n{script}");
+    }
+}
+
+/// A CSV datui reads with `--parse-strings` and stray spaces in its header: the
+/// script trims the names and types the text columns as datui did.
+#[test]
+fn test_copy_as_python_reads_a_csv_as_datui_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("typed.csv");
+    std::fs::write(
+        &path,
+        " id ,when,amount,code,at,stamp,note\n\
+         1,03/15/2024, 12 ,007,10:30,2024-03-15 10:30:00, a \n\
+         2,04/01/2024,3.5,010,11:45,2024-04-01 11:45:00,b\n\
+         3,,  ,,,,\n\
+         4,12/31/2023,-2,100,08:00,2023-12-31 08:00:00,  c\n",
+    )
+    .unwrap();
+    for parse_strings in [true, false] {
+        let options = OpenOptions {
+            parse_strings: parse_strings.then_some(datui::ParseStringsTarget::All),
+            ..OpenOptions::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], options);
+        pump_until_idle(&mut app, &rx, &tx);
+        let Some((rows, script)) = run_python_script(&app) else {
+            eprintln!("skipped: no .venv to run the scripts with");
+            return;
+        };
+        assert!(script.contains(".rename({\" id \": \"id\"})"), "{script}");
+        assert_eq!(script.contains(".with_columns("), parse_strings, "{script}");
+        assert_eq!(
+            rows,
+            view_csv(&app),
+            "parse_strings={parse_strings}:\n{script}"
+        );
+    }
+}
+
+/// NDJSON with dates held as text: the script types them as datui did.
+#[test]
+fn test_copy_as_python_types_json_dates_as_datui_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.jsonl");
+    std::fs::write(
+        &path,
+        "{\"id\": 1, \"day\": \"2024-03-15\", \"at\": \"2024-03-15T10:30:00\", \"what\": \"a\"}\n\
+         {\"id\": 2, \"day\": \"2024-04-01\", \"at\": \"2024-04-01T11:45:00\", \"what\": \"b\"}\n",
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select id, day, at where day > 2024.03.20".into());
+    pump_until_idle(&mut app, &rx, &tx);
+    let Some((rows, script)) = run_python_script(&app) else {
+        eprintln!("skipped: no .venv to run the scripts with");
+        return;
+    };
+    assert!(script.contains("pl.scan_ndjson("), "{script}");
+    assert!(script.contains(".str.to_date("), "{script}");
+    assert_eq!(rows, view_csv(&app), "{script}");
+}
+
+/// An Arrow IPC stream has no footer to scan: the script reads it whole.
+#[test]
+fn test_copy_as_python_reads_an_arrow_stream() {
+    let python = Path::new(".venv/bin/python");
+    if !python.exists() {
+        eprintln!("skipped: no .venv to write the stream with");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data-00000-of-00001.arrow");
+    let written = std::process::Command::new(python)
+        .arg("-c")
+        .arg(format!(
+            "import polars as pl\n\
+             pl.DataFrame({{'k': ['a', 'b', 'a'], 'v': [1, 2, 3]}}).write_ipc_stream({:?})",
+            path.display().to_string()
+        ))
+        .status()
+        .unwrap();
+    assert!(written.success());
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select total: sum v by k".into());
+    pump_until_idle(&mut app, &rx, &tx);
+    let (rows, script) = run_python_script(&app).unwrap();
+    assert!(script.contains("pl.read_ipc_stream("), "{script}");
+    assert_eq!(rows, view_csv(&app), "{script}");
+}
+
+/// The query language's `/` and `%` floor-divide two whole numbers, as Polars' `/`
+/// on two expressions does: the script writes `//` there and `/` where a float
+/// takes part, so its rows are datui's, negatives and a zero divisor included.
+#[test]
+fn test_copy_as_python_divides_integers_as_datui_does() {
+    let python = Path::new(".venv/bin/python");
+    if !python.exists() {
+        eprintln!("skipped: no .venv to write the file with");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ints.parquet");
+    let written = std::process::Command::new(python)
+        .arg("-c")
+        .arg(format!(
+            "import polars as pl\n\
+             pl.DataFrame({{\n\
+             'k': ['x', 'y', 'x', 'y', 'x', 'y', 'x'],\n\
+             'a': pl.Series([7, -7, 7, -7, 5, None, 0], dtype=pl.Int64),\n\
+             'b': pl.Series([2, 2, -2, -2, 0, 3, 4], dtype=pl.Int32),\n\
+             'f': [2.0, 2.0, -2.0, -2.0, 0.5, 3.0, 4.0],\n\
+             }}).write_parquet({:?})",
+            path.display().to_string()
+        ))
+        .status()
+        .unwrap();
+    assert!(written.success());
+    for query in [
+        "select k, q: a / b, r: a % b, m: a mod b, n: -a / b, t: a / f, h: a / 2",
+        "select k, a, b where (a / b) < 0",
+        "select q: sum a / sum b, t: sum a / sum f by k",
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .query(query.to_string());
+        pump_until_idle(&mut app, &rx, &tx);
+        assert!(
+            app.data_table_state.as_ref().unwrap().error().is_none(),
+            "{query}: {:?}",
+            app.data_table_state.as_ref().unwrap().error()
+        );
+        let (rows, script) = run_python_script(&app).unwrap();
+        assert!(
+            script.contains(" // "),
+            "{query}: no floor division\n{script}"
+        );
+        assert_eq!(rows, view_csv(&app), "{query}:\n{script}");
+    }
+}
+
+/// Names and values with quotes, backslashes, line breaks, triple quotes and
+/// non-ASCII text: the script is valid Python that computes datui's rows, and a
+/// name that reads as code in a comment stays in the comment.
+#[test]
+fn test_copy_as_python_escapes_names_and_values() {
+    use datui::filter_modal::{FilterOperator, LogicalOperator};
+    let python = Path::new(".venv/bin/python");
+    if !python.exists() {
+        eprintln!("skipped: no .venv to write the file with");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("odd names.parquet");
+    let written = std::process::Command::new(python)
+        .arg("-c")
+        .arg(
+            r#"import sys, datetime, polars as pl
+pl.DataFrame({
+    'na"me': ['O\'Brien "x"', 'C:\\dir\\', 'line1\nline2', '"""', '日本'],
+    'pa\\th': [1, 2, 3, 4, 5],
+    'multi\nline': ['a', 'b', 'a', 'b', 'a'],
+    'when\nraise SystemExit(3)': [datetime.datetime(2024, 1, d) for d in range(1, 6)],
+}).write_parquet(sys.argv[1])"#,
+        )
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(written.success());
+    type Build = Box<dyn Fn(&mut datui::widgets::datatable::DataTableState)>;
+    let views: Vec<(&str, Build)> = vec![
+        (
+            "filters, a sort and the columns shown",
+            Box::new(|s| {
+                s.filter(vec![python_filter(
+                    "na\"me",
+                    FilterOperator::NotContains,
+                    "\\",
+                    LogicalOperator::And,
+                )]);
+                s.sort_by(vec!["pa\\th".into()], vec![true]);
+                s.set_column_order(vec!["multi\nline".into(), "na\"me".into()]);
+            }),
+        ),
+        (
+            "a drill into a value with a line break and quotes",
+            Box::new(|s| {
+                s.drill_into_value("na\"me", AnyValue::StringOwned("line1\nline2".into()))
+                    .unwrap();
+            }),
+        ),
+        (
+            "SQL over lines, ending in a quoted name",
+            Box::new(|s| {
+                s.sql_query(
+                    "SELECT \"na\"\"me\", \"multi\nline\"\nFROM df\nORDER BY \"na\"\"me\"".into(),
+                );
+            }),
+        ),
+    ];
+    for (what, build) in views {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        build(app.data_table_state.as_mut().unwrap());
+        pump_until_idle(&mut app, &rx, &tx);
+        assert!(
+            app.data_table_state.as_ref().unwrap().error().is_none(),
+            "{what}: {:?}",
+            app.data_table_state.as_ref().unwrap().error()
+        );
+        let (rows, script) = run_python_script(&app).unwrap();
+        assert!(
+            !script.contains("# "),
+            "{what}: a step was not written:\n{script}"
+        );
+        assert_eq!(rows, view_csv(&app), "{what}:\n{script}");
+    }
+
+    // A drill into a timestamp is a comment, and the column's name in it is text.
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let first = 1_704_067_200_000_000; // 2024-01-01 in microseconds
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .drill_into_value(
+            "when\nraise SystemExit(3)",
+            AnyValue::Datetime(first, TimeUnit::Microseconds, None),
+        )
+        .unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    let (_, script) = run_python_script(&app).unwrap();
+    assert!(
+        script.lines().all(|l| !l.trim_start().starts_with("raise")),
+        "{script}"
+    );
+    assert!(script.contains("when\\nraise SystemExit(3)"), "{script}");
 }

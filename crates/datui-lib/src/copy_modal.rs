@@ -1,6 +1,7 @@
 //! Copy dialog state: scope × format, a column for the cell scope, and the
 //! header toggle, with the last choices kept for the session so a repeat copy
-//! is `y` `Enter`.
+//! is `y` `Enter`. The Python scope copies the view's pipeline as code rather
+//! than its rows.
 
 use crate::clipboard::CopyFormat;
 use crate::widgets::ui::PickerState;
@@ -13,10 +14,12 @@ pub enum CopyScope {
     Row,
     View,
     Table,
+    /// The view's pipeline as a Python Polars script.
+    Python,
 }
 
 impl CopyScope {
-    pub const ALL: [Self; 4] = [Self::Cell, Self::Row, Self::View, Self::Table];
+    pub const ALL: [Self; 5] = [Self::Cell, Self::Row, Self::View, Self::Table, Self::Python];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -24,6 +27,7 @@ impl CopyScope {
             Self::Row => "Row",
             Self::View => "View",
             Self::Table => "Table",
+            Self::Python => "Python (Polars)",
         }
     }
 }
@@ -121,6 +125,8 @@ impl CopyModal {
     pub fn row_order(&self) -> Vec<CopyFocus> {
         match self.scope {
             CopyScope::Cell => vec![CopyFocus::Scope, CopyFocus::Column],
+            // Code has no format or header to choose.
+            CopyScope::Python => vec![CopyFocus::Scope],
             _ => {
                 let mut order = vec![CopyFocus::Scope, CopyFocus::Format];
                 if self.format != CopyFormat::Markdown {
@@ -146,7 +152,7 @@ impl CopyModal {
     /// The header setting the chosen scope carries.
     pub fn header(&self) -> bool {
         match self.scope {
-            CopyScope::Cell => false,
+            CopyScope::Cell | CopyScope::Python => false,
             CopyScope::Row => self.header_row,
             CopyScope::View => self.header_view,
             CopyScope::Table => self.header_table,
@@ -155,7 +161,7 @@ impl CopyModal {
 
     pub fn toggle_header(&mut self) {
         match self.scope {
-            CopyScope::Cell => {}
+            CopyScope::Cell | CopyScope::Python => {}
             CopyScope::Row => self.header_row = !self.header_row,
             CopyScope::View => self.header_view = !self.header_view,
             CopyScope::Table => self.header_table = !self.header_table,
@@ -271,6 +277,7 @@ impl CopyModal {
                 )),
                 None => Ok(format!("Copy every row as {}", self.format.as_str())),
             },
+            CopyScope::Python => Ok("Copy the view as a Python (Polars) script".to_string()),
         }
     }
 }
@@ -365,6 +372,21 @@ mod tests {
         modal.picker_choose();
         assert_eq!(modal.scope, CopyScope::Cell);
         assert!(modal.row_order().contains(&modal.focus));
+    }
+
+    #[test]
+    fn the_python_scope_has_no_format_or_header() {
+        let mut modal = CopyModal::new();
+        modal.scope = CopyScope::Python;
+        assert_eq!(modal.row_order(), vec![CopyFocus::Scope]);
+        assert!(!modal.header());
+        assert_eq!(
+            modal.spec_line().unwrap(),
+            "Copy the view as a Python (Polars) script"
+        );
+        modal.focus = CopyFocus::Scope;
+        modal.next_focus();
+        assert_eq!(modal.focus, CopyFocus::Scope, "Tab has nowhere else to go");
     }
 
     #[test]

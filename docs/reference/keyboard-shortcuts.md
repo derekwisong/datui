@@ -32,7 +32,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>a</kbd> | [Analysis](../user-guide/analysis-features.md) |
 | <kbd>p</kbd> | [Pivot and melt](../user-guide/reshaping.md) |
 | <kbd>e</kbd> | [Export](../user-guide/exporting-data.md) |
-| <kbd>y</kbd> | [Copy to the clipboard](../user-guide/copying.md); a cell is the cursor's |
+| <kbd>y</kbd> | [Copy to the clipboard](../user-guide/copying.md); a cell is the cursor's; the Python (Polars) scope copies the view as code |
 | <kbd>i</kbd> | [Dataset info](../user-guide/dataset-info.md) |
 | <kbd>v</kbd> | [Views](../user-guide/views.md) |
 | <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |

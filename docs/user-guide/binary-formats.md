@@ -174,3 +174,7 @@ A file is memory-mapped, and only the columns and rows on screen are decoded.
 Scrolling to the last row of a gigabyte file reads only the rows shown. A sort,
 filter, query, chart or analysis reads every row of the columns it uses, in
 memory.
+
+A file that grows while it is open keeps the rows it had; open it again to read
+the rest. A file cut short by another program is refused at the next read
+rather than read past its end.

@@ -354,15 +354,496 @@ fn infix_op_at(tokens: &[Token], i: usize) -> Option<&str> {
     }
 }
 
+/// A parsed expression, before it is a Polars expression ([`Node::to_expr`]) or
+/// Python Polars code ([`Node::python`]). One parse serves both, so the code
+/// "Copy as Python" writes is the query datui ran.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Node {
+    Col(String),
+    /// A number as typed: a float literal.
+    Num(f64),
+    /// A whole number where the operator keeps integers whole (`mod`, `xbar`).
+    Int(i64),
+    Str(String),
+    Bool(bool),
+    Null,
+    /// A `YYYY.MM.DD` literal, as ISO `YYYY-MM-DD`.
+    Date(String),
+    /// A `YYYY.MM.DDTHH:MM:SS[.fff]` literal.
+    Timestamp {
+        iso: String,
+        format: String,
+        unit: TimeUnit,
+    },
+    Bin(BinOp, Box<Node>, Box<Node>),
+    Coalesce(Box<Node>, Box<Node>),
+    /// The values of the first where the second holds.
+    Filter(Box<Node>, Box<Node>),
+    /// `when(condition).then(value).otherwise(other)`.
+    When(Box<Node>, Box<Node>, Box<Node>),
+    Op(Box<Node>, Op),
+    Alias(Box<Node>, String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    /// Polars' `/` on two expressions.
+    Div,
+    TrueDiv,
+    FloorDiv,
+    Rem,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+    And,
+    Or,
+}
+
+/// A method applied to one expression.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Op {
+    Mean,
+    Min,
+    Max,
+    Count,
+    Std,
+    Var,
+    Median,
+    Sum,
+    First,
+    Last,
+    NUnique,
+    Not,
+    IsNull,
+    IsNotNull,
+    LenChars,
+    Upper,
+    Lower,
+    Abs,
+    Floor,
+    Ceil,
+    Sqrt,
+    Ln,
+    Exp,
+    Date,
+    Time,
+    Year,
+    Quarter,
+    Month,
+    Week,
+    Day,
+    OrdinalDay,
+    Weekday,
+    Hour,
+    Minute,
+    Second,
+    MonthStart,
+    MonthEnd,
+    DtFormat(String),
+    StartsWith(String),
+    EndsWith(String),
+    ContainsLiteral(String),
+    /// A regex match, strict.
+    ContainsRegex(String),
+    /// Split on the text and take the piece at the index, null past the last.
+    Part(String, i64),
+    Slice(i64, Option<u64>),
+    ReplaceAll(String, String),
+    Strip,
+    ToDate(Option<String>),
+    ToDatetime(Option<String>),
+    Round(u32),
+    /// A non-strict cast.
+    Cast(CastTo),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CastTo {
+    Int64,
+    Float64,
+    String,
+}
+
+impl CastTo {
+    fn dtype(self) -> DataType {
+        match self {
+            CastTo::Int64 => DataType::Int64,
+            CastTo::Float64 => DataType::Float64,
+            CastTo::String => DataType::String,
+        }
+    }
+}
+
+impl Node {
+    fn op(self, op: Op) -> Node {
+        Node::Op(Box::new(self), op)
+    }
+
+    fn bin(self, op: BinOp, right: Node) -> Node {
+        Node::Bin(op, Box::new(self), Box::new(right))
+    }
+
+    fn alias(self, name: impl Into<String>) -> Node {
+        Node::Alias(Box::new(self), name.into())
+    }
+
+    fn cast_text(self) -> Node {
+        self.op(Op::Cast(CastTo::String))
+    }
+
+    /// The Polars expression.
+    pub(crate) fn to_expr(&self) -> Expr {
+        match self {
+            Node::Col(name) => col(name),
+            Node::Num(n) => lit(*n),
+            Node::Int(n) => lit(*n),
+            Node::Str(s) => lit(s.as_str()),
+            Node::Bool(b) => lit(*b),
+            Node::Null => lit(NULL),
+            Node::Date(iso) => {
+                let opts = StrptimeOptions {
+                    format: Some("%Y-%m-%d".into()),
+                    ..Default::default()
+                };
+                lit(iso.as_str()).str().to_date(opts)
+            }
+            Node::Timestamp { iso, format, unit } => {
+                let opts = StrptimeOptions {
+                    format: Some(format.as_str().into()),
+                    ..Default::default()
+                };
+                lit(iso.as_str())
+                    .str()
+                    .to_datetime(Some(*unit), None, opts, lit("raise"))
+            }
+            Node::Bin(op, left, right) => {
+                let (left, right) = (left.to_expr(), right.to_expr());
+                match op {
+                    BinOp::Add => left.add(right),
+                    BinOp::Sub => left.sub(right),
+                    BinOp::Mul => left.mul(right),
+                    BinOp::Div => left.div(right),
+                    BinOp::TrueDiv => left.true_div(right),
+                    BinOp::FloorDiv => left.floor_div(right),
+                    BinOp::Rem => left.rem(right),
+                    BinOp::Eq => left.eq(right),
+                    BinOp::Neq => left.neq(right),
+                    BinOp::Lt => left.lt(right),
+                    BinOp::Gt => left.gt(right),
+                    BinOp::LtEq => left.lt_eq(right),
+                    BinOp::GtEq => left.gt_eq(right),
+                    BinOp::And => left.and(right),
+                    BinOp::Or => left.or(right),
+                }
+            }
+            Node::Coalesce(left, right) => coalesce(&[left.to_expr(), right.to_expr()]),
+            Node::Filter(values, predicate) => values.to_expr().filter(predicate.to_expr()),
+            Node::When(condition, then, otherwise) => when(condition.to_expr())
+                .then(then.to_expr())
+                .otherwise(otherwise.to_expr()),
+            Node::Op(inner, op) => apply_op_expr(inner.to_expr(), op),
+            Node::Alias(inner, name) => inner.to_expr().alias(name.as_str()),
+        }
+    }
+
+    /// The same node with every alias inside it taken off, as Polars' `undo_aliases`.
+    pub(crate) fn without_aliases(&self) -> Node {
+        let strip = |n: &Node| Box::new(n.without_aliases());
+        match self {
+            Node::Alias(inner, _) => inner.without_aliases(),
+            Node::Bin(op, l, r) => Node::Bin(*op, strip(l), strip(r)),
+            Node::Coalesce(l, r) => Node::Coalesce(strip(l), strip(r)),
+            Node::Filter(v, p) => Node::Filter(strip(v), strip(p)),
+            Node::When(c, t, o) => Node::When(strip(c), strip(t), strip(o)),
+            Node::Op(inner, op) => Node::Op(strip(inner), op.clone()),
+            leaf => leaf.clone(),
+        }
+    }
+
+    /// The literal as Python, bare: `1.0`, `"a"`, `True`, `None`.
+    fn python_literal(&self) -> Option<String> {
+        Some(match self {
+            Node::Num(n) => crate::python_script::py_float(*n),
+            Node::Int(n) => n.to_string(),
+            Node::Str(s) => crate::python_script::py_str(s),
+            Node::Bool(b) => crate::python_script::py_bool(*b).to_string(),
+            Node::Null => "None".to_string(),
+            _ => return None,
+        })
+    }
+
+    /// Python Polars code for the expression.
+    pub(crate) fn python(&self) -> String {
+        use crate::python_script::py_str;
+        if let Some(literal) = self.python_literal() {
+            return format!("pl.lit({literal})");
+        }
+        match self {
+            Node::Col(name) => format!("pl.col({})", py_str(name)),
+            Node::Date(iso) => {
+                let parts: Vec<String> = iso
+                    .split('-')
+                    .map(|p| p.trim_start_matches('0').to_string())
+                    .map(|p| if p.is_empty() { "0".to_string() } else { p })
+                    .collect();
+                format!("pl.date({})", parts.join(", "))
+            }
+            Node::Timestamp { iso, format, unit } => format!(
+                "pl.lit({}).str.to_datetime({}, time_unit={})",
+                py_str(iso),
+                py_str(format),
+                py_str(time_unit_name(*unit))
+            ),
+            Node::Bin(op, left, right) => {
+                // A literal on the right stays bare (`pl.col("a") > 1.0`); Python's
+                // operators turn it into one.
+                let right = match right.python_literal() {
+                    Some(literal) => literal,
+                    None => right.python_operand(),
+                };
+                format!("{} {} {}", left.python_operand(), op.python(), right)
+            }
+            Node::Coalesce(left, right) => {
+                format!("pl.coalesce({}, {})", left.python(), right.python())
+            }
+            Node::Filter(values, predicate) => {
+                format!("{}.filter({})", values.python_operand(), predicate.python())
+            }
+            Node::When(condition, then, otherwise) => format!(
+                "pl.when({}).then({}).otherwise({})",
+                condition.python(),
+                then.python(),
+                otherwise.python()
+            ),
+            Node::Op(inner, op) => format!("{}{}", inner.python_operand(), op.python()),
+            Node::Alias(inner, name) => {
+                // Only the outer name survives an alias of an alias.
+                let mut inner = inner.as_ref();
+                while let Node::Alias(deeper, _) = inner {
+                    inner = deeper;
+                }
+                format!("{}.alias({})", inner.python_operand(), py_str(name))
+            }
+            _ => unreachable!("literals return above"),
+        }
+    }
+
+    /// As [`Self::python`], parenthesized where an operator or a method after it
+    /// would otherwise bind to part of it.
+    fn python_operand(&self) -> String {
+        match self {
+            Node::Bin(..) => format!("({})", self.python()),
+            _ => self.python(),
+        }
+    }
+}
+
+fn time_unit_name(unit: TimeUnit) -> &'static str {
+    match unit {
+        TimeUnit::Milliseconds => "ms",
+        TimeUnit::Microseconds => "us",
+        TimeUnit::Nanoseconds => "ns",
+    }
+}
+
+impl BinOp {
+    fn python(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div | BinOp::TrueDiv => "/",
+            BinOp::FloorDiv => "//",
+            BinOp::Rem => "%",
+            BinOp::Eq => "==",
+            BinOp::Neq => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::LtEq => "<=",
+            BinOp::GtEq => ">=",
+            BinOp::And => "&",
+            BinOp::Or => "|",
+        }
+    }
+}
+
+impl Op {
+    /// The method call, from its dot: `.str.to_uppercase()`.
+    fn python(&self) -> String {
+        use crate::python_script::py_str;
+        let fixed = match self {
+            Op::Mean => ".mean()",
+            Op::Min => ".min()",
+            Op::Max => ".max()",
+            Op::Count => ".count()",
+            Op::Std => ".std()",
+            Op::Var => ".var()",
+            Op::Median => ".median()",
+            Op::Sum => ".sum()",
+            Op::First => ".first()",
+            Op::Last => ".last()",
+            Op::NUnique => ".n_unique()",
+            Op::Not => ".not_()",
+            Op::IsNull => ".is_null()",
+            Op::IsNotNull => ".is_not_null()",
+            Op::LenChars => ".str.len_chars()",
+            Op::Upper => ".str.to_uppercase()",
+            Op::Lower => ".str.to_lowercase()",
+            Op::Abs => ".abs()",
+            Op::Floor => ".floor()",
+            Op::Ceil => ".ceil()",
+            Op::Sqrt => ".sqrt()",
+            Op::Ln => ".log()",
+            Op::Exp => ".exp()",
+            Op::Date => ".dt.date()",
+            Op::Time => ".dt.time()",
+            Op::Year => ".dt.year()",
+            Op::Quarter => ".dt.quarter()",
+            Op::Month => ".dt.month()",
+            Op::Week => ".dt.week()",
+            Op::Day => ".dt.day()",
+            Op::OrdinalDay => ".dt.ordinal_day()",
+            Op::Weekday => ".dt.weekday()",
+            Op::Hour => ".dt.hour()",
+            Op::Minute => ".dt.minute()",
+            Op::Second => ".dt.second()",
+            Op::MonthStart => ".dt.month_start()",
+            Op::MonthEnd => ".dt.month_end()",
+            Op::Strip => ".str.strip_chars()",
+            Op::Cast(CastTo::Int64) => ".cast(pl.Int64, strict=False)",
+            Op::Cast(CastTo::Float64) => ".cast(pl.Float64, strict=False)",
+            Op::Cast(CastTo::String) => ".cast(pl.String)",
+            _ => "",
+        };
+        if !fixed.is_empty() {
+            return fixed.to_string();
+        }
+        let format_arg = |format: &Option<String>| match format {
+            Some(f) => format!("{}, strict=False", py_str(f)),
+            None => "strict=False".to_string(),
+        };
+        match self {
+            Op::DtFormat(f) => format!(".dt.to_string({})", py_str(f)),
+            Op::StartsWith(s) => format!(".str.starts_with({})", py_str(s)),
+            Op::EndsWith(s) => format!(".str.ends_with({})", py_str(s)),
+            Op::ContainsLiteral(s) => format!(".str.contains({}, literal=True)", py_str(s)),
+            Op::ContainsRegex(r) => format!(".str.contains({})", py_str(r)),
+            Op::Part(sep, i) => format!(
+                ".str.split({}).list.get({i}, null_on_oob=True)",
+                py_str(sep)
+            ),
+            Op::Slice(start, Some(len)) => format!(".str.slice({start}, {len})"),
+            Op::Slice(start, None) => format!(".str.slice({start})"),
+            Op::ReplaceAll(from, to) => format!(
+                ".str.replace_all({}, {}, literal=True)",
+                py_str(from),
+                py_str(to)
+            ),
+            Op::ToDate(format) => format!(".str.to_date({})", format_arg(format)),
+            Op::ToDatetime(format) => format!(".str.to_datetime({})", format_arg(format)),
+            Op::Round(d) => format!(".round({d}, mode=\"half_away_from_zero\")"),
+            _ => unreachable!("fixed calls return above"),
+        }
+    }
+}
+
+fn apply_op_expr(expr: Expr, op: &Op) -> Expr {
+    let strptime = |format: &Option<String>| StrptimeOptions {
+        format: format.as_deref().map(Into::into),
+        // A value that does not match becomes null, as a failed parse does in q,
+        // rather than one stray row failing the whole query.
+        strict: false,
+        ..Default::default()
+    };
+    match op {
+        Op::Mean => expr.mean(),
+        Op::Min => expr.min(),
+        Op::Max => expr.max(),
+        Op::Count => expr.count(),
+        // Sample statistics (n - 1), like `std`; q's own var and dev divide by n.
+        Op::Std => expr.std(1),
+        Op::Var => expr.var(1),
+        Op::Median => expr.median(),
+        Op::Sum => expr.sum(),
+        Op::First => expr.first(),
+        Op::Last => expr.last(),
+        Op::NUnique => expr.n_unique(),
+        Op::Not => expr.not(),
+        Op::IsNull => expr.is_null(),
+        Op::IsNotNull => expr.is_not_null(),
+        Op::LenChars => expr.str().len_chars(),
+        Op::Upper => expr.str().to_uppercase(),
+        Op::Lower => expr.str().to_lowercase(),
+        Op::Abs => expr.abs(),
+        Op::Floor => expr.floor(),
+        Op::Ceil => expr.ceil(),
+        Op::Sqrt => expr.sqrt(),
+        Op::Ln => expr.log(lit(std::f64::consts::E)),
+        Op::Exp => expr.exp(),
+        Op::Date => expr.dt().date(),
+        Op::Time => expr.dt().time(),
+        Op::Year => expr.dt().year(),
+        Op::Quarter => expr.dt().quarter(),
+        Op::Month => expr.dt().month(),
+        Op::Week => expr.dt().week(),
+        Op::Day => expr.dt().day(),
+        Op::OrdinalDay => expr.dt().ordinal_day(),
+        Op::Weekday => expr.dt().weekday(),
+        Op::Hour => expr.dt().hour(),
+        Op::Minute => expr.dt().minute(),
+        Op::Second => expr.dt().second(),
+        Op::MonthStart => expr.dt().month_start(),
+        Op::MonthEnd => expr.dt().month_end(),
+        Op::DtFormat(f) => expr.dt().to_string(f),
+        Op::StartsWith(s) => expr.str().starts_with(lit(s.as_str())),
+        Op::EndsWith(s) => expr.str().ends_with(lit(s.as_str())),
+        Op::ContainsLiteral(s) => expr.str().contains_literal(lit(s.as_str())),
+        Op::ContainsRegex(r) => expr.str().contains(lit(r.as_str()), true),
+        // Past the last piece is null, not an error; a negative index counts from the end.
+        Op::Part(sep, i) => expr
+            .str()
+            .split(lit(sep.as_str()))
+            .list()
+            .get(lit(*i), true),
+        Op::Slice(start, length) => {
+            // No length: to the end of the string.
+            let length = length.map_or_else(|| lit(NULL), lit);
+            expr.str().slice(lit(*start), length)
+        }
+        Op::ReplaceAll(from, to) => {
+            expr.str()
+                .replace_all(lit(from.as_str()), lit(to.as_str()), true)
+        }
+        Op::Strip => expr.str().strip_chars(lit(NULL)),
+        Op::ToDate(format) => expr.str().to_date(strptime(format)),
+        Op::ToDatetime(format) => {
+            expr.str()
+                .to_datetime(None, None, strptime(format), lit("raise"))
+        }
+        // Half away from zero, the rounding people expect from a calculator or SQL.
+        Op::Round(decimals) => expr.round(*decimals, RoundMode::HalfAwayFromZero),
+        // Non-strict casts: a value that does not convert becomes null.
+        Op::Cast(to) => expr.cast(to.dtype()),
+    }
+}
+
 /// An operand of `mod` or `xbar`. A whole number is an integer literal, so an
 /// integer column keeps its type: `5 xbar passenger_count` stays Int64 instead of
 /// becoming 5.0, 10.0.
-fn int_or_expr(tokens: &[Token]) -> Result<Expr, String> {
+fn int_or_node(tokens: &[Token]) -> Result<Node, String> {
     let whole = |n: f64| n.fract() == 0.0 && n.abs() < i64::MAX as f64;
     match tokens {
-        [Token::Number(n)] if whole(*n) => Ok(lit(*n as i64)),
-        [Token::Op(minus), Token::Number(n)] if minus == "-" && whole(*n) => Ok(lit(-(*n as i64))),
-        _ => parse_expr(tokens),
+        [Token::Number(n)] if whole(*n) => Ok(Node::Int(*n as i64)),
+        [Token::Op(minus), Token::Number(n)] if minus == "-" && whole(*n) => {
+            Ok(Node::Int(-(*n as i64)))
+        }
+        _ => parse_node(tokens),
     }
 }
 
@@ -381,12 +862,12 @@ fn brackets_balanced(tokens: &[Token]) -> bool {
 
 /// OR of the conditions as a balanced tree, so a long `in` list nests
 /// logarithmically rather than one level per element.
-fn any_of(mut conditions: Vec<Expr>) -> Expr {
+fn any_of(mut conditions: Vec<Node>) -> Node {
     if conditions.len() <= 1 {
-        return conditions.pop().unwrap_or_else(|| lit(false));
+        return conditions.pop().unwrap_or(Node::Bool(false));
     }
     let right = conditions.split_off(conditions.len() / 2);
-    any_of(conditions).or(any_of(right))
+    any_of(conditions).bin(BinOp::Or, any_of(right))
 }
 
 /// A `like` pattern as an anchored regex: `*` is any run of characters, `?` any
@@ -406,7 +887,7 @@ fn like_regex(pattern: &str) -> String {
 
 /// Operators whose right side is not an ordinary expression, or whose operands
 /// need their tokens (literal checks, names). Everything else goes to `apply_op`.
-fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Result<Expr, String> {
+fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Result<Node, String> {
     match op {
         "in" => {
             let list = match right_tokens {
@@ -425,12 +906,12 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
                     "in needs a list of values, e.g. name in [\"Emma\", \"Olivia\"]".to_string(),
                 );
             }
-            let left = parse_expr(left_tokens)?;
+            let left = parse_node(left_tokens)?;
             // One `=` per value, so each value compares exactly as `x = value` would,
             // with the same literal casting (numbers, dates, timestamps).
             let conditions = items
                 .iter()
-                .map(|item| Ok(left.clone().eq(parse_expr(item)?)))
+                .map(|item| Ok(left.clone().bin(BinOp::Eq, parse_node(item)?)))
                 .collect::<Result<Vec<_>, String>>()?;
             Ok(any_of(conditions))
         }
@@ -441,12 +922,9 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
                         .to_string(),
                 );
             };
-            let left = parse_expr(left_tokens)?;
+            let left = parse_node(left_tokens)?;
             // Cast first so numeric codes (zip, station ids read as numbers) match too.
-            Ok(left
-                .cast(DataType::String)
-                .str()
-                .contains(lit(like_regex(pattern)), true))
+            Ok(left.cast_text().op(Op::ContainsRegex(like_regex(pattern))))
         }
         "xbar" => {
             if let [Token::Number(n)] = left_tokens
@@ -456,60 +934,69 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
                     "xbar needs a positive bucket size, e.g. 5 xbar fare_amount".to_string()
                 );
             }
-            let right = parse_expr(right_tokens)?;
-            let size = int_or_expr(left_tokens)?;
+            let right = parse_node(right_tokens)?;
+            let size = int_or_node(left_tokens)?;
             // floor_div floors toward negative infinity for both ints and floats,
             // which is what makes every value land in the bucket at or below it.
-            Ok(right.floor_div(size.clone()).mul(size))
+            Ok(right
+                .bin(BinOp::FloorDiv, size.clone())
+                .bin(BinOp::Mul, size))
         }
         "mod" => {
-            let right = int_or_expr(right_tokens)?;
-            let left = int_or_expr(left_tokens)?;
-            Ok(left.rem(right))
+            let right = int_or_node(right_tokens)?;
+            let left = int_or_node(left_tokens)?;
+            Ok(left.bin(BinOp::Rem, right))
         }
         "wavg" => {
-            let values = parse_expr(right_tokens)?;
-            let weights = parse_expr(left_tokens)?;
-            let weighted = weights.clone().mul(values);
+            let values = parse_node(right_tokens)?;
+            let weights = parse_node(left_tokens)?;
+            let weighted = weights.clone().bin(BinOp::Mul, values);
             // Only pairs with both a weight and a value count toward the total weight;
             // a null value would otherwise still pull the average toward zero.
-            let total = weights.filter(weighted.clone().is_not_null()).sum();
+            let total = Node::Filter(
+                Box::new(weights),
+                Box::new(weighted.clone().op(Op::IsNotNull)),
+            )
+            .op(Op::Sum);
             // No weight at all (every pair null) is no average, not 0/0 = NaN.
-            let total = when(total.clone().neq(lit(0)))
-                .then(total)
-                .otherwise(lit(NULL));
-            let expr = weighted.sum().true_div(total);
+            let total = Node::When(
+                Box::new(total.clone().bin(BinOp::Neq, Node::Int(0))),
+                Box::new(total),
+                Box::new(Node::Null),
+            );
+            let node = weighted.op(Op::Sum).bin(BinOp::TrueDiv, total);
             Ok(match simple_column_name(right_tokens) {
-                Some(column) => expr.alias(format!("wavg_{}", column)),
-                None => expr,
+                Some(column) => node.alias(format!("wavg_{}", column)),
+                None => node,
             })
         }
         _ => {
             // Parse right side first (right-to-left evaluation): it holds any
             // remaining operators, so c>c%n becomes c > (c%n).
-            let right = parse_expr(right_tokens)?;
-            let left = parse_expr(left_tokens)?;
+            let right = parse_node(right_tokens)?;
+            let left = parse_node(left_tokens)?;
             apply_op(left, op, right)
         }
     }
 }
 
-fn apply_op(left: Expr, op: &str, right: Expr) -> Result<Expr, String> {
-    match op {
-        "+" => Ok(left.add(right)),
-        "-" => Ok(left.sub(right)),
-        "*" => Ok(left.mul(right)),
+fn apply_op(left: Node, op: &str, right: Node) -> Result<Node, String> {
+    let op = match op {
+        "+" => BinOp::Add,
+        "-" => BinOp::Sub,
+        "*" => BinOp::Mul,
         // `%` divides (q heritage); `/` is the alias everyone expects.
-        "%" | "/" => Ok(left.div(right)),
-        "^" => Ok(coalesce(&[left, right])),
-        "=" => Ok(left.eq(right)),
-        "<" => Ok(left.lt(right)),
-        ">" => Ok(left.gt(right)),
-        "<=" => Ok(left.lt_eq(right)),
-        ">=" => Ok(left.gt_eq(right)),
-        "<>" | "!=" => Ok(left.neq(right)),
-        _ => Err(format!("Unknown operator: {}", op)),
-    }
+        "%" | "/" => BinOp::Div,
+        "^" => return Ok(Node::Coalesce(Box::new(left), Box::new(right))),
+        "=" => BinOp::Eq,
+        "<" => BinOp::Lt,
+        ">" => BinOp::Gt,
+        "<=" => BinOp::LtEq,
+        ">=" => BinOp::GtEq,
+        "<>" | "!=" => BinOp::Neq,
+        _ => return Err(format!("Unknown operator: {}", op)),
+    };
+    Ok(left.bin(op, right))
 }
 
 /// The column name when the tokens are a bare column reference: `salary`, or
@@ -555,7 +1042,7 @@ fn is_function_name(name: &str) -> bool {
 /// A function call, `fn[args]` or `fn args`. The name is checked before the
 /// arguments are parsed, so each argument is parsed once; trying aggregates and
 /// then scalars on the same arguments doubled the work at every nesting level.
-fn parse_call(name: &str, args: &[Token]) -> Result<Expr, String> {
+fn parse_call(name: &str, args: &[Token]) -> Result<Node, String> {
     if is_agg_function(name) {
         parse_agg_function(name, args)
     } else {
@@ -564,7 +1051,7 @@ fn parse_call(name: &str, args: &[Token]) -> Result<Expr, String> {
 }
 
 // Parse aggregation function like avg[a], min[b], etc.
-fn parse_agg_function(name: &str, args: &[Token]) -> Result<Expr, String> {
+fn parse_agg_function(name: &str, args: &[Token]) -> Result<Node, String> {
     if args.is_empty() {
         return Err(format!(
             "Aggregation function {} requires an argument",
@@ -575,33 +1062,33 @@ fn parse_agg_function(name: &str, args: &[Token]) -> Result<Expr, String> {
     if fn_name == "wavg" {
         return Err(WAVG_USAGE.to_string());
     }
-    let expr = parse_expr(args)?;
-    let expr = match fn_name.as_str() {
-        "avg" | "mean" => expr.mean(),
-        "min" => expr.min(),
-        "max" => expr.max(),
-        "count" => expr.count(),
-        // Sample statistics (n - 1), like `std`; q's own var and dev divide by n.
-        "std" | "stddev" | "dev" => expr.std(1),
-        "var" => expr.var(1),
-        "med" | "median" => expr.median(),
-        "sum" => expr.sum(),
-        "first" => expr.first(),
-        "last" => expr.last(),
-        "nunique" => expr.n_unique(),
+    let node = parse_node(args)?;
+    let op = match fn_name.as_str() {
+        "avg" | "mean" => Op::Mean,
+        "min" => Op::Min,
+        "max" => Op::Max,
+        "count" => Op::Count,
+        "std" | "stddev" | "dev" => Op::Std,
+        "var" => Op::Var,
+        "med" | "median" => Op::Median,
+        "sum" => Op::Sum,
+        "first" => Op::First,
+        "last" => Op::Last,
+        "nunique" => Op::NUnique,
         _ => return Err(format!("Unknown aggregation function: {}", name)),
     };
+    let node = node.op(op);
     // Left unnamed, two aggregates of one column collide ("avg salary, max salary"),
     // so a bare-column aggregate is named {fn}_{column}, the convention the dot
     // accessors already use. An explicit alias is applied later and overrides this.
     match simple_column_name(args) {
-        Some(column) => Ok(expr.alias(format!("{}_{}", fn_name, column))),
-        None => Ok(expr),
+        Some(column) => Ok(node.alias(format!("{}_{}", fn_name, column))),
+        None => Ok(node),
     }
 }
 
 // Parse function like not[a=b], null[col], len[x], upper[x], etc.
-fn parse_function(name: &str, args: &[Token]) -> Result<Expr, String> {
+fn parse_function(name: &str, args: &[Token]) -> Result<Node, String> {
     if args.is_empty() {
         return Err(format!("Function {} requires an argument", name));
     }
@@ -609,21 +1096,22 @@ fn parse_function(name: &str, args: &[Token]) -> Result<Expr, String> {
     if !SCALAR_FUNCTIONS.contains(&name_lower.as_str()) {
         return Err(format!("Unknown function: {}", name));
     }
-    let expr = parse_expr(args)?;
-    match name_lower.as_str() {
-        "not" => Ok(expr.not()),
-        "null" => Ok(expr.is_null()),
-        "len" | "length" => Ok(expr.str().len_chars()),
-        "upper" => Ok(expr.str().to_uppercase()),
-        "lower" => Ok(expr.str().to_lowercase()),
-        "abs" => Ok(expr.abs()),
-        "floor" => Ok(expr.floor()),
-        "ceil" | "ceiling" => Ok(expr.ceil()),
-        "sqrt" => Ok(expr.sqrt()),
-        "log" => Ok(expr.log(lit(std::f64::consts::E))),
-        "exp" => Ok(expr.exp()),
-        _ => Err(format!("Unknown function: {}", name)),
-    }
+    let node = parse_node(args)?;
+    let op = match name_lower.as_str() {
+        "not" => Op::Not,
+        "null" => Op::IsNull,
+        "len" | "length" => Op::LenChars,
+        "upper" => Op::Upper,
+        "lower" => Op::Lower,
+        "abs" => Op::Abs,
+        "floor" => Op::Floor,
+        "ceil" | "ceiling" => Op::Ceil,
+        "sqrt" => Op::Sqrt,
+        "log" => Op::Ln,
+        "exp" => Op::Exp,
+        _ => return Err(format!("Unknown function: {}", name)),
+    };
+    Ok(node.op(op))
 }
 
 /// An accessor's bracketed argument: `.part["-", 0]` has a string and a number.
@@ -698,7 +1186,7 @@ fn arg_count_text(min: usize, max: usize) -> String {
 }
 
 /// Apply accessor `name` with its bracketed arguments.
-fn apply_accessor(expr: Expr, accessor: &str, args: &[AccessorArg]) -> Result<Expr, String> {
+fn apply_accessor(node: Node, accessor: &str, args: &[AccessorArg]) -> Result<Node, String> {
     let name = accessor.to_lowercase();
     let Some(&(_, min, max, usage)) = ACCESSORS.iter().find(|(n, ..)| *n == name) else {
         return Err(format!(
@@ -735,40 +1223,32 @@ fn apply_accessor(expr: Expr, accessor: &str, args: &[AccessorArg]) -> Result<Ex
             usage
         )),
     };
-    let strptime = |format: Option<String>| StrptimeOptions {
-        format: format.map(Into::into),
-        // A value that does not match becomes null, as a failed parse does in q,
-        // rather than one stray row failing the whole query.
-        strict: false,
-        ..Default::default()
-    };
     // The string pieces cast first, so they also work on numbers and dates read
     // as such (NOAA's DATE, an integer zip code); a cast from String is a no-op.
-    let as_str = || expr.clone().cast(DataType::String).str();
+    let as_str = || node.clone().cast_text();
     Ok(match name.as_str() {
-        "date" => expr.dt().date(),
-        "time" => expr.dt().time(),
-        "year" => expr.dt().year(),
-        "quarter" => expr.dt().quarter(),
-        "month" => expr.dt().month(),
-        "week" => expr.dt().week(),
-        "day" => expr.dt().day(),
-        "doy" => expr.dt().ordinal_day(),
-        "dow" | "weekday" => expr.dt().weekday(),
-        "hour" => expr.dt().hour(),
-        "minute" => expr.dt().minute(),
-        "second" => expr.dt().second(),
-        "month_start" => expr.dt().month_start(),
-        "month_end" => expr.dt().month_end(),
-        "format" => expr.dt().to_string(&text(0)?),
-        "len" | "length" => expr.str().len_chars(),
-        "upper" => expr.str().to_uppercase(),
-        "lower" => expr.str().to_lowercase(),
-        "starts_with" => expr.str().starts_with(lit(text(0)?)),
-        "ends_with" => expr.str().ends_with(lit(text(0)?)),
-        "contains" => expr.str().contains_literal(lit(text(0)?)),
-        // Past the last piece is null, not an error; a negative index counts from the end.
-        "part" => as_str().split(lit(text(0)?)).list().get(lit(int(1)?), true),
+        "date" => node.op(Op::Date),
+        "time" => node.op(Op::Time),
+        "year" => node.op(Op::Year),
+        "quarter" => node.op(Op::Quarter),
+        "month" => node.op(Op::Month),
+        "week" => node.op(Op::Week),
+        "day" => node.op(Op::Day),
+        "doy" => node.op(Op::OrdinalDay),
+        "dow" | "weekday" => node.op(Op::Weekday),
+        "hour" => node.op(Op::Hour),
+        "minute" => node.op(Op::Minute),
+        "second" => node.op(Op::Second),
+        "month_start" => node.op(Op::MonthStart),
+        "month_end" => node.op(Op::MonthEnd),
+        "format" => node.op(Op::DtFormat(text(0)?)),
+        "len" | "length" => node.op(Op::LenChars),
+        "upper" => node.op(Op::Upper),
+        "lower" => node.op(Op::Lower),
+        "starts_with" => node.op(Op::StartsWith(text(0)?)),
+        "ends_with" => node.op(Op::EndsWith(text(0)?)),
+        "contains" => node.op(Op::ContainsLiteral(text(0)?)),
+        "part" => as_str().op(Op::Part(text(0)?, int(1)?)),
         "slice" => {
             let start = int(0)?;
             let length = match args.len() {
@@ -780,33 +1260,26 @@ fn apply_accessor(expr: Expr, accessor: &str, args: &[AccessorArg]) -> Result<Ex
                             usage
                         ));
                     }
-                    lit(n as u64)
+                    Some(n as u64)
                 }
                 // No length: to the end of the string.
-                _ => lit(NULL),
+                _ => None,
             };
-            as_str().slice(lit(start), length)
+            as_str().op(Op::Slice(start, length))
         }
-        "replace" => as_str().replace_all(lit(text(0)?), lit(text(1)?), true),
-        "strip" => as_str().strip_chars(lit(NULL)),
-        "to_date" => as_str().to_date(strptime(args.first().map(|_| text(0)).transpose()?)),
-        "to_datetime" => as_str().to_datetime(
-            None,
-            None,
-            strptime(args.first().map(|_| text(0)).transpose()?),
-            lit("raise"),
-        ),
+        "replace" => as_str().op(Op::ReplaceAll(text(0)?, text(1)?)),
+        "strip" => as_str().op(Op::Strip),
+        "to_date" => as_str().op(Op::ToDate(args.first().map(|_| text(0)).transpose()?)),
+        "to_datetime" => as_str().op(Op::ToDatetime(args.first().map(|_| text(0)).transpose()?)),
         "round" => {
             let decimals = if args.is_empty() { 0 } else { int(0)? };
             let decimals = u32::try_from(decimals)
                 .map_err(|_| format!("round: decimals cannot be negative, e.g. {}", usage))?;
-            // Half away from zero, the rounding people expect from a calculator or SQL.
-            expr.round(decimals, RoundMode::HalfAwayFromZero)
+            node.op(Op::Round(decimals))
         }
-        // Non-strict casts: a value that does not convert becomes null.
-        "int" => expr.cast(DataType::Int64),
-        "float" => expr.cast(DataType::Float64),
-        "str" => expr.cast(DataType::String),
+        "int" => node.op(Op::Cast(CastTo::Int64)),
+        "float" => node.op(Op::Cast(CastTo::Float64)),
+        "str" => node.op(Op::Cast(CastTo::String)),
         _ => {
             return Err(format!(
                 "Unknown accessor: '{}'. {}",
@@ -839,10 +1312,10 @@ fn parse_accessor_args(accessor: &str, tokens: &[Token]) -> Result<Vec<AccessorA
 /// When base_name is Some, each accessor result is aliased to {base}_{accessor} (or {base}_{acc1}_{acc2} for chained)
 /// to avoid duplicate column names.
 fn parse_accessors<'a>(
-    mut expr: Expr,
+    mut expr: Node,
     mut tokens: &'a [Token],
     base_name: Option<&str>,
-) -> Result<(Expr, &'a [Token]), String> {
+) -> Result<(Node, &'a [Token]), String> {
     let mut alias_suffix = String::new();
     while let [Token::Dot, Token::Identifier(accessor), rest @ ..] = tokens {
         let (args, consumed) = if rest.first() == Some(&Token::LBracket) {
@@ -878,12 +1351,12 @@ fn parse_accessors<'a>(
             Some(name) => format!("{}_{}", name, alias_suffix),
             None => alias_suffix,
         };
-        expr = expr.alias(&alias);
+        expr = expr.alias(alias);
     }
     Ok((expr, tokens))
 }
 
-fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
+fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
     if tokens.is_empty() {
         return Err("Unexpected end of expression".to_string());
     }
@@ -915,7 +1388,7 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
                     Token::Identifier(id) => id.clone(),
                     _ => return Err("col[] must contain a string or identifier".to_string()),
                 };
-                let expr = col(&col_name);
+                let expr = Node::Col(col_name.clone());
                 let (expr, remaining) = parse_accessors(expr, &tokens[i..], Some(&col_name))?;
                 Ok((expr, remaining))
             }
@@ -939,37 +1412,27 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
                 parse_accessors(expr, &tokens[i..], None)
             } else {
                 // Regular column reference
-                // (Function calls without brackets are handled in parse_expr)
-                let expr = col(name);
+                // (Function calls without brackets are handled in parse_node)
+                let expr = Node::Col(name.clone());
                 let (expr, remaining) = parse_accessors(expr, &tokens[1..], Some(name))?;
                 Ok((expr, remaining))
             }
         }
-        Token::Number(n) => Ok((lit(*n), &tokens[1..])), // Numbers don't support accessors
-        Token::String(s) => Ok((lit(s.as_str()), &tokens[1..])), // Strings don't support accessors
-        Token::DateLiteral(iso) => {
-            let opts = StrptimeOptions {
-                format: Some("%Y-%m-%d".into()),
-                ..Default::default()
-            };
-            Ok((lit(iso.as_str()).str().to_date(opts), &tokens[1..]))
-        }
+        Token::Number(n) => Ok((Node::Num(*n), &tokens[1..])), // Numbers don't support accessors
+        Token::String(s) => Ok((Node::Str(s.clone()), &tokens[1..])), // Strings don't support accessors
+        Token::DateLiteral(iso) => Ok((Node::Date(iso.clone()), &tokens[1..])),
         Token::TimestampLiteral {
             iso,
             format_str,
             time_unit,
-        } => {
-            let opts = StrptimeOptions {
-                format: Some(format_str.as_str().into()),
-                ..Default::default()
-            };
-            Ok((
-                lit(iso.as_str())
-                    .str()
-                    .to_datetime(Some(*time_unit), None, opts, lit("raise")),
-                &tokens[1..],
-            ))
-        }
+        } => Ok((
+            Node::Timestamp {
+                iso: iso.clone(),
+                format: format_str.clone(),
+                unit: *time_unit,
+            },
+            &tokens[1..],
+        )),
         Token::LParen => {
             let mut depth = 1;
             let mut i = 1;
@@ -984,7 +1447,7 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
             if depth > 0 {
                 return Err("Unmatched parenthesis".to_string());
             }
-            let inner = parse_expr(&tokens[1..i - 1])?;
+            let inner = parse_node(&tokens[1..i - 1])?;
             let (expr, remaining) = parse_accessors(inner, &tokens[i..], None)?;
             Ok((expr, remaining))
         }
@@ -1006,7 +1469,7 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
 /// by the `parse_query` fuzz target.
 ///
 /// The ceiling is set by the smallest stack this runs on, not by what is expressible.
-/// One level of nesting costs a `parse_expr` frame and a `parse_term` frame, and in an
+/// One level of nesting costs a `parse_node` frame and a `parse_term` frame, and in an
 /// unoptimised build those come to roughly 10 KiB together — enough that a 2 MiB worker
 /// thread runs out somewhere around 200. 64 leaves a wide margin there and a far wider
 /// one in a release build, while staying far past any expression written by hand:
@@ -1020,8 +1483,8 @@ thread_local! {
 
 /// Holds the recursion counter up for as long as it is alive.
 ///
-/// Every recursive path in this module passes back through `parse_expr`, so counting
-/// there alone bounds the whole cycle. `parse_expr` returns from a dozen places, most
+/// Every recursive path in this module passes back through `parse_node`, so counting
+/// there alone bounds the whole cycle. `parse_node` returns from a dozen places, most
 /// of them through `?`, so the decrement is tied to the scope rather than written out
 /// at each exit.
 struct DepthGuard;
@@ -1048,7 +1511,7 @@ impl Drop for DepthGuard {
 
 // Parse expression with right-to-left operator precedence
 // This means operators are evaluated from right to left: a+b*c is parsed as a+(b*c)
-fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
+fn parse_node(tokens: &[Token]) -> Result<Node, String> {
     let Some(_depth_guard) = DepthGuard::enter() else {
         return Err(
             "Expression is nested too deeply. Simplify it or split it into steps.".to_string(),
@@ -1113,18 +1576,18 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
                         // them the negative number as one: -7 mod 3 is (-7) mod 3.
                         return apply_infix(&[Token::Number(-n)], bin_op, &right_tokens[2..]);
                     }
-                    let right_expr = parse_expr(&right_tokens[2..])?;
-                    return apply_op(lit(0).sub(lit(n)), bin_op, right_expr);
+                    let right = parse_node(&right_tokens[2..])?;
+                    return apply_op(Node::Int(0).bin(BinOp::Sub, Node::Num(n)), bin_op, right);
                 }
                 if right_tokens.len() == 1 {
-                    return Ok(lit(0).sub(lit(n)));
+                    return Ok(Node::Int(0).bin(BinOp::Sub, Node::Num(n)));
                 }
             }
             // Unary plus/minus when there is no left operand (e.g. -x, +x, -(a+b))
             if left_tokens.is_empty() && (op == "+" || op == "-") {
-                let inner = parse_expr(right_tokens)?;
+                let inner = parse_node(right_tokens)?;
                 return if op == "-" {
-                    Ok(lit(0).sub(inner))
+                    Ok(Node::Int(0).bin(BinOp::Sub, inner))
                 } else {
                     Ok(inner)
                 };
@@ -1208,11 +1671,94 @@ pub fn sanitize_query_error(msg: &str) -> String {
     msg.to_string()
 }
 
+/// A q-style query as parsed, before it becomes Polars expressions: what
+/// [`parse_query`] runs and "Copy as Python" writes out.
+#[derive(Debug, Default)]
+pub(crate) struct QueryNodes {
+    pub cols: Vec<Node>,
+    pub filter: Option<Node>,
+    pub group_by: Vec<Node>,
+    pub group_by_names: Vec<String>,
+    pub distinct: bool,
+}
+
+impl QueryNodes {
+    fn into_parsed(self) -> ParsedQuery {
+        let lower = |nodes: Vec<Node>| nodes.iter().map(Node::to_expr).collect();
+        ParsedQuery {
+            cols: lower(self.cols),
+            filter: self.filter.as_ref().map(Node::to_expr),
+            group_by: lower(self.group_by),
+            group_by_names: self.group_by_names,
+            distinct: self.distinct,
+        }
+    }
+
+    /// The where clause as a Python `.filter(...)` call, if there is one.
+    pub(crate) fn python_filter(&self) -> Option<String> {
+        self.filter
+            .as_ref()
+            .map(|f| format!(".filter({})", f.python()))
+    }
+
+    /// Python method calls doing what `DataTableState::query` does with the query:
+    /// the where clause, then the grouping (its rows ordered by the keys, which the
+    /// result names `key_names`) or the select list, then `distinct`.
+    pub(crate) fn python_steps(&self, key_names: &[String]) -> Vec<String> {
+        let mut steps: Vec<String> = self.python_filter().into_iter().collect();
+        if !self.group_by.is_empty() {
+            let keys = python_list(&self.group_by);
+            let aggs = if !self.cols.is_empty() {
+                python_list(&self.cols)
+            } else if self.group_by_names.is_empty() {
+                "pl.all()".to_string()
+            } else {
+                let names: Vec<String> = self
+                    .group_by_names
+                    .iter()
+                    .map(|n| crate::python_script::py_str(n))
+                    .collect();
+                format!("pl.all().exclude({})", names.join(", "))
+            };
+            steps.push(format!(".group_by({keys})"));
+            steps.push(format!(".agg({aggs})"));
+            steps.push(crate::python_script::sort_call(
+                key_names,
+                &vec![false; key_names.len()],
+            ));
+        } else if !self.cols.is_empty() {
+            steps.push(format!(".select({})", python_list(&self.cols)));
+        }
+        if self.distinct {
+            steps.push(".unique(keep=\"first\", maintain_order=True)".to_string());
+        }
+        steps
+    }
+}
+
+/// Expressions as Python arguments: a plain column by its name, as Polars reads a
+/// string there, anything else as an expression.
+fn python_list(nodes: &[Node]) -> String {
+    nodes
+        .iter()
+        .map(|n| match n {
+            Node::Col(name) => crate::python_script::py_str(name),
+            n => n.python(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
+    parse_nodes(query).map(QueryNodes::into_parsed)
+}
+
+/// Parse a q-style query into nodes. An empty query selects every column.
+pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
     // Empty query is equivalent to "select" - return all columns with no filter or grouping
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return Ok(ParsedQuery::default());
+        return Ok(QueryNodes::default());
     }
 
     let tokens = tokenize(query)?;
@@ -1329,10 +1875,10 @@ pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
                     return Err("Alias must be an identifier or col[]".to_string());
                 };
 
-                let expr = parse_expr(expr_tokens)?;
-                cols.push(expr.alias(&alias_name));
+                let expr = parse_node(expr_tokens)?;
+                cols.push(expr.alias(alias_name));
             } else {
-                cols.push(parse_expr(&chunk)?);
+                cols.push(parse_node(&chunk)?);
             }
         }
     }
@@ -1392,11 +1938,11 @@ pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
                     return Err("Alias must be an identifier or col[] in by clause".to_string());
                 };
 
-                let expr = parse_expr(expr_tokens)?;
-                group_by_cols.push(expr.alias(&alias_name));
+                let expr = parse_node(expr_tokens)?;
+                group_by_cols.push(expr.alias(alias_name.clone()));
                 group_by_col_names.push(alias_name); // Use alias name
             } else {
-                let expr = parse_expr(&chunk)?;
+                let expr = parse_node(&chunk)?;
                 group_by_cols.push(expr.clone());
                 // Try to extract column name from simple Expr
                 // For simple identifiers: [Token::Identifier(name)]
@@ -1426,39 +1972,45 @@ pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
         }
     }
 
-    let mut filter: Option<Expr> = None;
+    let mut filter: Option<Node> = None;
     if let Some(wt) = where_tokens {
         for chunk in split_tokens(&wt, &Token::Comma) {
             if chunk.is_empty() {
                 continue;
             }
-            let mut or_expr: Option<Expr> = None;
+            let mut or_expr: Option<Node> = None;
             for or_chunk in split_tokens(&chunk, &Token::Pipe) {
                 if or_chunk.is_empty() {
                     continue;
                 }
-                let e = parse_expr(&or_chunk)?;
+                let e = parse_node(&or_chunk)?;
                 or_expr = match or_expr {
-                    Some(curr) => Some(curr.or(e)),
+                    Some(curr) => Some(curr.bin(BinOp::Or, e)),
                     None => Some(e),
                 };
             }
             if let Some(e) = or_expr {
                 filter = match filter {
-                    Some(curr) => Some(curr.and(e)),
+                    Some(curr) => Some(curr.bin(BinOp::And, e)),
                     None => Some(e),
                 };
             }
         }
     }
 
-    Ok(ParsedQuery {
+    Ok(QueryNodes {
         cols,
         filter,
         group_by: group_by_cols,
         group_by_names: group_by_col_names,
         distinct,
     })
+}
+
+/// One expression as Polars runs it.
+#[cfg(test)]
+fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
+    parse_node(tokens).map(|n| n.to_expr())
 }
 
 #[cfg(test)]
@@ -2806,5 +3358,116 @@ mod tests {
         assert!(parse_query(&bare).is_ok());
         let bracketed = format!("select {}x{}", "sqrt[".repeat(30), "]".repeat(30));
         assert!(parse_query(&bracketed).is_ok());
+    }
+
+    /// One expression's Python code.
+    fn py(expr: &str) -> String {
+        parse_node(&tokenize(expr).unwrap()).unwrap().python()
+    }
+
+    #[test]
+    fn expressions_read_as_python_polars() {
+        assert_eq!(py("a"), "pl.col(\"a\")");
+        assert_eq!(py("col[\"first name\"]"), "pl.col(\"first name\")");
+        // Python's `&` binds tighter than its comparisons, so operands that are
+        // operations are parenthesized.
+        assert_eq!(py("a > 1"), "pl.col(\"a\") > 1.0");
+        assert_eq!(
+            py("a + b * c"),
+            "pl.col(\"a\") + (pl.col(\"b\") * pl.col(\"c\"))"
+        );
+        assert_eq!(py("-x"), "pl.lit(0) - pl.col(\"x\")");
+        assert_eq!(py("x mod 3"), "pl.col(\"x\") % 3");
+        assert_eq!(py("5 xbar fare"), "(pl.col(\"fare\") // 5) * 5");
+        assert_eq!(py("a ^ 0"), "pl.coalesce(pl.col(\"a\"), pl.lit(0.0))");
+        assert_eq!(
+            py("name in [\"Emma\", \"Olivia\"]"),
+            "(pl.col(\"name\") == \"Emma\") | (pl.col(\"name\") == \"Olivia\")"
+        );
+        assert_eq!(
+            py("item like \"*Chicken*\""),
+            "pl.col(\"item\").cast(pl.String).str.contains(\"(?s)^.*Chicken.*$\")"
+        );
+        assert_eq!(
+            py("d = 2024.01.31"),
+            "pl.col(\"d\") == pl.date(2024, 1, 31)"
+        );
+        assert_eq!(
+            py("t > 2024.01.31T10:00:00.5"),
+            "pl.col(\"t\") > pl.lit(\"2024-01-31T10:00:00.500\").str.to_datetime(\"%Y-%m-%dT%H:%M:%S%.3f\", time_unit=\"ms\")"
+        );
+    }
+
+    #[test]
+    fn functions_and_accessors_read_as_python_polars() {
+        assert_eq!(
+            py("avg salary"),
+            "pl.col(\"salary\").mean().alias(\"avg_salary\")"
+        );
+        assert_eq!(py("not null[x]"), "pl.col(\"x\").is_null().not_()");
+        assert_eq!(py("log x"), "pl.col(\"x\").log()");
+        assert_eq!(py("ts.year"), "pl.col(\"ts\").dt.year().alias(\"ts_year\")");
+        assert_eq!(
+            py("d.format[\"%Y-%m\"]"),
+            "pl.col(\"d\").dt.to_string(\"%Y-%m\").alias(\"d_format_%Y-%m\")"
+        );
+        assert_eq!(
+            py("code.part[\"-\", 0]"),
+            "pl.col(\"code\").cast(pl.String).str.split(\"-\").list.get(0, null_on_oob=True).alias(\"code_part_-_0\")"
+        );
+        assert_eq!(
+            py("s.slice[1]"),
+            "pl.col(\"s\").cast(pl.String).str.slice(1).alias(\"s_slice_1\")"
+        );
+        assert_eq!(
+            py("s.to_date[\"%Y%m%d\"]"),
+            "pl.col(\"s\").cast(pl.String).str.to_date(\"%Y%m%d\", strict=False).alias(\"s_to_date_%Y%m%d\")"
+        );
+        assert_eq!(
+            py("x.round[2]"),
+            "pl.col(\"x\").round(2, mode=\"half_away_from_zero\").alias(\"x_round_2\")"
+        );
+        assert_eq!(
+            py("x.int"),
+            "pl.col(\"x\").cast(pl.Int64, strict=False).alias(\"x_int\")"
+        );
+        assert_eq!(
+            py("w wavg v"),
+            "((pl.col(\"w\") * pl.col(\"v\")).sum() / pl.when(pl.col(\"w\").filter((pl.col(\"w\") * pl.col(\"v\")).is_not_null()).sum() != 0).then(pl.col(\"w\").filter((pl.col(\"w\") * pl.col(\"v\")).is_not_null()).sum()).otherwise(pl.lit(None))).alias(\"wavg_v\")"
+        );
+    }
+
+    #[test]
+    fn a_whole_query_reads_as_python_steps() {
+        let steps = |q: &str, keys: &[&str]| {
+            let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+            parse_nodes(q).unwrap().python_steps(&keys)
+        };
+        assert_eq!(
+            steps(
+                "select name, pay: salary * 1.1 where dept = \"Sales\", age > 30 | senior",
+                &[]
+            ),
+            vec![
+                ".filter((pl.col(\"dept\") == \"Sales\") & ((pl.col(\"age\") > 30.0) | pl.col(\"senior\")))",
+                ".select(\"name\", (pl.col(\"salary\") * 1.1).alias(\"pay\"))",
+            ]
+        );
+        assert_eq!(
+            steps("select by dept", &["dept"]),
+            vec![
+                ".group_by(\"dept\")",
+                ".agg(pl.all().exclude(\"dept\"))",
+                ".sort(\"dept\", nulls_last=True, maintain_order=True)",
+            ]
+        );
+        assert_eq!(
+            steps("select distinct dept", &[]),
+            vec![
+                ".select(\"dept\")",
+                ".unique(keep=\"first\", maintain_order=True)",
+            ]
+        );
+        assert!(steps("", &[]).is_empty());
     }
 }

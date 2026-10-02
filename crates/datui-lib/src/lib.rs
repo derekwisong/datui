@@ -102,6 +102,7 @@ pub mod output_file;
 pub mod past_calendar;
 pub mod pivot_melt_modal;
 pub mod pointer;
+pub mod python_script;
 pub mod quality_export;
 pub mod quality_intent;
 pub mod quality_report;

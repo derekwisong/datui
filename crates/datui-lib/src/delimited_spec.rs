@@ -347,7 +347,8 @@ pub fn read_facts(
     let compression = options
         .compression
         .or_else(|| crate::CompressionFormat::from_extension(file));
-    let source = crate::widgets::datatable::DataTableState::text_source(file, compression)?;
+    let source = crate::widgets::datatable::DataTableState::text_source(file, compression)
+        .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", file.display()))?;
     let separator = options.separator_or(
         options
             .format
@@ -395,7 +396,9 @@ pub fn check(
     let Some(file) = file else {
         return Ok(out);
     };
-    let fail = |out: &str, e: &dyn std::fmt::Display| format!("{out}error: {e}\n");
+    let shown = file.display();
+    // With its causes: the outermost alone may only name the file.
+    let fail = |out: &str, e: &color_eyre::Report| format!("{out}error: {e:#}\n");
     let mut options = crate::OpenOptions {
         format: crate::FileFormat::from_path(file),
         ..Default::default()
@@ -434,13 +437,13 @@ pub fn check(
     let separator = options.separator_or(b',');
     let state =
         crate::widgets::datatable::DataTableState::from_delimited(file, separator, &options)
-            .map_err(|e| fail(&out, &e))?;
+            .map_err(|e| fail(&out, &e.wrap_err(shown.to_string())))?;
     let df = state
         .lf()
         .clone()
         .limit(rows as IdxSize)
         .collect()
-        .map_err(|e| fail(&out, &e))?;
+        .map_err(|e| format!("{out}error: {shown}: {e}\n"))?;
     out.push_str(&crate::formats::text_table(&df));
     Ok(out)
 }
@@ -674,6 +677,25 @@ mod tests {
             facts.units,
             [("Date".to_string(), "yyyy-mm-dd".to_string())]
         );
+    }
+
+    #[test]
+    fn check_names_the_file_and_why_it_could_not_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let short = dir.path().join("short.csv");
+        std::fs::write(&short, "a,b\n1,2\n").unwrap();
+        let text = "name = \"a.log\"\nkind = \"delimited\"\nheader_rows = 3";
+        let spec = Arc::new(Spec::parse(text, None).unwrap());
+        for (file, said) in [
+            (
+                short,
+                "short.csv: header line 3 is past the end of the file",
+            ),
+            (dir.path().join("none.csv"), "none.csv: No such file"),
+        ] {
+            let e = check(&spec, Some(&file), 5).unwrap_err();
+            assert!(e.contains(said), "{e}");
+        }
     }
 
     #[test]

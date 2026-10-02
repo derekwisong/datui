@@ -76,7 +76,7 @@ pub fn named_lines(mut source: impl BufRead, rows: &[usize]) -> color_eyre::Resu
         };
         if read == 0 {
             return Err(color_eyre::eyre::eyre!(
-                "--header-rows names line {last}, past the end of the file"
+                "header line {last} is past the end of the file"
             ));
         }
         if line.len() as u64 > MAX_HEADER_LINE {

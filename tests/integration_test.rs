@@ -19047,8 +19047,14 @@ fn test_inspector_counts_the_lines_of_the_whole_value() {
     rows_at(&mut app, 80, 24);
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    // Not read yet: Enter reads it, and there is nothing for `y` to copy.
+    let footer = rows_at(&mut app, 80, 24)[21].clone();
+    assert!(footer.contains("Enter  Read"), "{footer}");
+    assert!(!footer.contains("Copy"), "{footer}");
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
+    let footer = rows_at(&mut app, 80, 24)[21].clone();
+    assert!(footer.contains("y  Copy"), "{footer}");
     let g = datui::glyphs::get();
     for (width, height) in [(80usize, 24usize), (200, 50)] {
         let rows = rows_at(&mut app, width as u16, height as u16);

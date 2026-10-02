@@ -660,9 +660,14 @@ pub fn render(
         if let Some(label) = enter.or(body.more.then_some("More")) {
             bar = bar.hint_weighted("Enter", label, 9);
         }
+        // A field not read yet has nothing to copy: `y` only says so.
+        if enter.is_none() && row.is_some() && focused.is_some() {
+            bar = bar.hint_weighted("y", "Copy", 8);
+        }
+        if visible.len() > 1 {
+            bar = bar.hint_weighted(g.updown, "Field", 7);
+        }
         bar = bar
-            .hint_weighted("y", "Copy", 8)
-            .hint_weighted(g.updown, "Field", 7)
             .hint_weighted(g.updown_lr, "Row", 6)
             .hint_weighted("/", "Find", 5);
         if overflows {
@@ -1112,6 +1117,83 @@ mod tests {
         );
         assert_eq!(short.rest, Rest::None);
         assert_eq!(overflow_line(&short, 2), more_line(2, "line", "lines"));
+    }
+
+    /// The hex dump's count is exact at the edges: every size is ceil(len / 16) lines,
+    /// formatted or counted, however many chunks were formatted.
+    #[test]
+    fn hex_line_counts_are_exact_at_the_edges() {
+        let f = field("blob", DataType::Binary);
+        for len in [
+            0usize,
+            1,
+            15,
+            16,
+            17,
+            4095,
+            4096,
+            4097,
+            1 << 20,
+            (1 << 20) + 1,
+        ] {
+            for chunks in [1, 2] {
+                let bytes = vec![1u8; len];
+                let b = body(
+                    &f,
+                    &Shown::Value(AnyValue::Binary(&bytes)),
+                    false,
+                    chunks,
+                    80,
+                    None,
+                );
+                let formatted = match b.rest {
+                    // The last line says what was cut; it is not a line of the dump.
+                    Rest::Lines(n) => b.lines.len() - 1 + n,
+                    Rest::None => b.lines.len(),
+                    ref other => panic!("{len}: {other:?}"),
+                };
+                let want = len.div_ceil(16).max(1);
+                assert_eq!(formatted, want, "{len} bytes, {chunks} chunks");
+                // Every line of it hidden but the first: the count is all the rest.
+                if len > 4096 * chunks {
+                    let hidden = b.lines.len() - 1;
+                    assert_eq!(
+                        overflow_line(&b, hidden),
+                        more_line(want - 1, "line", "lines"),
+                        "{len}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A cut text's count is of chars, not bytes, whatever their width.
+    #[test]
+    fn a_cut_text_counts_multi_byte_chars() {
+        let f = field("text", DataType::String);
+        for ch in ["é", "€", "🦀"] {
+            let big = ch.repeat(CHUNK_BYTES);
+            let b = body(
+                &f,
+                &Shown::Value(AnyValue::String(&big)),
+                false,
+                1,
+                100,
+                None,
+            );
+            let shown = exact::prefix(&big, CHUNK_BYTES).chars().count();
+            assert!(shown > 0 && shown < CHUNK_BYTES, "{ch}");
+            assert_eq!(
+                b.rest,
+                Rest::Units(plural(CHUNK_BYTES - shown, "char", "chars")),
+                "{ch}"
+            );
+            assert!(
+                b.facts.contains(&plural(CHUNK_BYTES, "char", "chars")),
+                "{}",
+                b.facts
+            );
+        }
     }
 
     /// D5: empty text and empty bytes are said, in the list and in the pane.

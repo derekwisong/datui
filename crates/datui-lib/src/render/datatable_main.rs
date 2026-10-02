@@ -28,8 +28,11 @@ pub fn render(
     let input_strip_visible = main_view_content == MainViewContent::Datatable
         && app.input_mode == crate::InputMode::Editing;
     let prompt = app.input_type == Some(crate::InputType::Search);
+    let finding = app.input_type == Some(crate::InputType::Find);
     let error = if prompt {
         app.query_prompt_error()
+    } else if finding {
+        app.find.error.clone()
     } else {
         app.data_table_state
             .as_ref()
@@ -44,6 +47,8 @@ pub fn render(
     } else if prompt {
         let room = main_area.height.saturating_sub(TABLE_KEEPS).max(5);
         crate::render::input_strip::plan(app, main_area.width, room, error.as_deref()).total()
+    } else if finding {
+        crate::render::input_strip::find_rows(error.is_some())
     } else if error.is_some() {
         6
     } else {
@@ -70,6 +75,7 @@ pub fn render(
     let evidence_label = app.quality_evidence_label.clone();
     // Asked before the table is borrowed: the job records are the app's.
     let facts_reading = app.file_facts_reading();
+    let find_cell = app.find_hit();
     match &mut app.data_table_state {
         Some(state) => {
             let mut table_area = data_area;
@@ -131,7 +137,8 @@ pub fn render(
                 .with_drift(
                     state.display_drift(table_area.height as usize),
                     state.drift_groups(),
-                );
+                )
+                .with_find_cell(find_cell, ctx.find_match);
             if ctx.column_colors {
                 dt = dt.with_column_type_colors(
                     ctx.str_col,

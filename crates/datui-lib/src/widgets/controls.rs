@@ -58,6 +58,9 @@ pub struct Controls {
     /// Which columns the table shows, while some are off screen. Drawn before the
     /// row count: `cols 41-47 of 300`, or `cols 41-47/300` on a narrow bar.
     pub columns: Option<crate::widgets::column_paging::OnScreen>,
+    /// The find in effect: its pattern, and which match the cursor is on when that is
+    /// known. Plain text beside the chips, since it is state, not an alarm.
+    pub find: Option<String>,
 }
 
 impl Controls {
@@ -170,6 +173,12 @@ impl Controls {
         self
     }
 
+    /// Say which find is in effect. See [`Self::find`].
+    pub fn with_find(mut self, find: Option<String>) -> Self {
+        self.find = find;
+        self
+    }
+
     pub fn with_not_the_table(mut self, format: Option<&'static str>) -> Self {
         self.not_the_table = format;
         self
@@ -203,6 +212,7 @@ impl Controls {
             row_count_unknown: false,
             not_the_table: None,
             columns: None,
+            find: None,
         }
     }
 }
@@ -314,6 +324,7 @@ impl Widget for &Controls {
             .not_the_table
             .map(|format| format!(" not the {format} table "));
         let reshaped = self.reshaped.map(|verb| format!(" {verb} "));
+        let find = self.find.as_ref().map(|mark| format!("{mark} "));
         let chip_width = not_the_table
             .as_ref()
             .map(|text| text.chars().count() as u16)
@@ -321,6 +332,10 @@ impl Widget for &Controls {
             + reshaped
                 .as_ref()
                 .map(|text| text.chars().count() as u16 + 1)
+                .unwrap_or(0)
+            + find
+                .as_ref()
+                .map(|text| crate::glyphs::display_width(text) as u16 + 1)
                 .unwrap_or(0);
 
         // The chip: the bar's accent behind the bar's own colour, the same cut-out a
@@ -330,10 +345,28 @@ impl Widget for &Controls {
             .fg(self.chip_text_color)
             .add_modifier(Modifier::BOLD);
 
+        // What sits left of the count: the find in effect, plain, then the chips.
+        let chip_line = || {
+            let mut spans: Vec<ratatui::text::Span> = Vec::new();
+            if let Some(text) = &find {
+                spans.push(ratatui::text::Span::styled(text.clone(), label_style));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &reshaped {
+                spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &not_the_table {
+                spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+            }
+            ratatui::text::Line::from(spans)
+        };
+
         // The keys this bar would offer, custom or default. Worked out above the
         // status mode too: the way-out subset stays on a busy bar.
-        const DEFAULT_CONTROLS: [(&str, &str); 13] = [
+        const DEFAULT_CONTROLS: [(&str, &str); 14] = [
             ("/", "Query"),
+            ("f", "Find"),
             ("i", "Info"),
             ("a", "Analysis"),
             ("c", "Chart"),
@@ -418,15 +451,7 @@ impl Widget for &Controls {
 
             let mut next = 3;
             if chip_width > 0 {
-                let mut spans: Vec<ratatui::text::Span> = Vec::new();
-                if let Some(text) = &reshaped {
-                    spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
-                    spans.push(ratatui::text::Span::raw(" "));
-                }
-                if let Some(text) = &not_the_table {
-                    spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
-                }
-                Paragraph::new(ratatui::text::Line::from(spans)).render(layout[next], buf);
+                Paragraph::new(chip_line()).render(layout[next], buf);
                 next += 1;
             }
             // Row count (right-aligned, if available)
@@ -465,15 +490,7 @@ impl Widget for &Controls {
             .render(layout[1], buf);
             let mut next = 2;
             if chip_width > 0 {
-                let mut spans: Vec<ratatui::text::Span> = Vec::new();
-                if let Some(text) = &reshaped {
-                    spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
-                    spans.push(ratatui::text::Span::raw(" "));
-                }
-                if let Some(text) = &not_the_table {
-                    spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
-                }
-                Paragraph::new(ratatui::text::Line::from(spans)).render(layout[next], buf);
+                Paragraph::new(chip_line()).render(layout[next], buf);
                 next += 1;
             }
             if let Some(count) = self.row_count {
@@ -542,15 +559,7 @@ impl Widget for &Controls {
 
         let mut next = 2;
         if chip_width > 0 {
-            let mut spans: Vec<ratatui::text::Span> = Vec::new();
-            if let Some(text) = &reshaped {
-                spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
-                spans.push(ratatui::text::Span::raw(" "));
-            }
-            if let Some(text) = &not_the_table {
-                spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
-            }
-            Paragraph::new(ratatui::text::Line::from(spans)).render(layout[next], buf);
+            Paragraph::new(chip_line()).render(layout[next], buf);
             next += 1;
         }
         if let Some(count) = self.row_count {

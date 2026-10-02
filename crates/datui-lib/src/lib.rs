@@ -72,6 +72,7 @@ pub mod exact;
 pub mod export;
 pub mod export_modal;
 pub mod filter_modal;
+pub mod find;
 mod first_rows_trace;
 pub mod fuzzy;
 #[cfg(feature = "cloud")]
@@ -9168,6 +9169,7 @@ pub enum InputMode {
 pub enum InputType {
     Search,
     GoToLine,
+    Find,
 }
 
 /// A query whose first rows are being read. It planned, but can still fail on the
@@ -10302,6 +10304,8 @@ pub struct App {
     query_input: TextInput, // q-style, history id "query"; also borrowed by go-to-line
     sql_input: TextInput,   // SQL, history id "sql"
     fuzzy_input: TextInput, // Search, history id "fuzzy"
+    /// The find prompt (`f`) and the find `n` and `N` repeat; history id "find".
+    pub find: find::Find,
     pub input_mode: InputMode,
     input_type: Option<InputType>,
     query_mode: QueryMode,
@@ -12694,10 +12698,12 @@ impl App {
             && self.input_mode == InputMode::Normal
             && key.code == KeyCode::Esc;
         let cancel_view = key.code == KeyCode::Esc && self.view_applying();
+        let cancel_find = key.code == KeyCode::Esc && self.finding();
         quit || home
             || cancel_analysis
             || cancel_pivot
             || cancel_view
+            || cancel_find
             || leave_quality_evidence
             || self.confirmation_modal.active
             || self.input_mode == InputMode::Home
@@ -14151,6 +14157,12 @@ impl App {
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
                 .with_history("fuzzy".to_string()),
+            find: find::Find::new(
+                TextInput::new()
+                    .with_history_limit(app_config.query.history_limit)
+                    .with_theme(&theme)
+                    .with_history("find".to_string()),
+            ),
             input_mode: InputMode::Normal,
             input_type: None,
             query_mode: QueryMode::default().resolve(),
@@ -14992,6 +15004,7 @@ impl App {
         // dataset opened.
         self.template_modal.close();
         self.inspector_modal.close();
+        self.stop_find();
         self.abandon_load();
         self.home.status = None;
         self.home.folds_owed = true;
@@ -18821,6 +18834,11 @@ impl App {
             self.cancel_view();
             return None;
         }
+        // The same for a find that is reading.
+        if event.code == KeyCode::Esc && self.finding() {
+            self.cancel_find();
+            return None;
+        }
 
         if event.code == KeyCode::Esc
             && self.input_mode == InputMode::Normal
@@ -21559,6 +21577,10 @@ impl App {
                 return None;
             }
 
+            if self.input_type == Some(InputType::Find) {
+                return self.find_prompt_key(event);
+            }
+
             // Line number input (GoToLine): ":" then type line number, Enter to jump, Esc to cancel
             if self.input_type == Some(InputType::GoToLine) {
                 // The prompt borrows `query_input`, whose history is the query
@@ -21657,10 +21679,25 @@ impl App {
                 self.name_what_is_loading(paths[0].clone());
                 Some(AppEvent::Open(paths, options))
             }
-            KeyCode::Char('N') => {
+            KeyCode::Char('#') => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.toggle_row_numbers();
                 }
+                None
+            }
+            // Ctrl+F pages down, below.
+            KeyCode::Char('f')
+                if event.is_press() && !event.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.open_find();
+                None
+            }
+            KeyCode::Char('n') if event.is_press() => {
+                self.find_again(find::Direction::Next);
+                None
+            }
+            KeyCode::Char('N') if event.is_press() => {
+                self.find_again(find::Direction::Previous);
                 None
             }
             KeyCode::Char('D') => {
@@ -24174,6 +24211,7 @@ impl App {
                     progress.interruptible = Some(phase.interruptible);
                 }
             }
+            Progress::Finding { rows } => self.find_progress(*rows),
         }
     }
 
@@ -24499,6 +24537,12 @@ impl App {
                 }
                 None
             }
+            Answer::Found(found) => {
+                if let Job::Find(run) = job {
+                    self.find_answered(run, current, found);
+                }
+                None
+            }
             // What a test's answer carries goes with it.
             #[cfg(test)]
             Answer::Probe(held) => {
@@ -24599,6 +24643,7 @@ impl App {
                     self.finish_chart_export(path, *format, Err(message.to_string()));
                 }
             }
+            Job::Find(_) => self.find_failed(current, message),
             // Judged by the dataset, as its answer is.
             Job::FileFacts { dataset } => {
                 // The panel has one line for it, and a panic's message is an internal
@@ -25725,6 +25770,7 @@ impl App {
             InputMode::Normal => ("Table Help", help_strings::main_view()),
             InputMode::Editing => match self.input_type {
                 Some(InputType::Search) => ("Query Help", help_strings::query()),
+                Some(InputType::Find) => ("Find Help", help_strings::find()),
                 _ => ("Go to Line", help_strings::go_to_line()),
             },
             InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
@@ -25952,6 +25998,7 @@ impl Widget for &mut App {
 
         // Which columns are on screen, beside the rows, while the table is wider.
         if main_view_content == MainViewContent::Datatable {
+            controls = controls.with_find(self.find_mark());
             controls = controls.with_columns(
                 self.data_table_state
                     .as_ref()

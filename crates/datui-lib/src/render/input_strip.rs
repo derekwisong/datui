@@ -1,4 +1,4 @@
-//! The query prompt and go-to-line strip.
+//! The query prompt, the find prompt and the go-to-line strip.
 
 use crate::QueryMode;
 use crate::render::context::RenderContext;
@@ -109,6 +109,7 @@ pub fn render(
     let title = match app.input_type {
         Some(crate::InputType::Search) => "Query",
         Some(crate::InputType::GoToLine) => "Go to line",
+        Some(crate::InputType::Find) => "Find",
         None => "Input",
     };
     let mut surface = Surface::new(title);
@@ -116,6 +117,23 @@ pub fn render(
         surface = surface.border_style(Style::default().fg(ctx.modal_border_error));
     }
     let content = surface.render(input_area, buf, ctx);
+
+    if app.input_type == Some(crate::InputType::Find) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(content);
+        (&app.find.input).render(rows[0], buf);
+        render_find_options(&app.find, rows[1], buf, ctx);
+        if let Some(error) = error {
+            render_error(error, rows[2], buf, ctx);
+        }
+        return;
+    }
 
     if app.input_type != Some(crate::InputType::Search) {
         let chunks = Layout::default()
@@ -205,6 +223,60 @@ pub fn render(
     }
     if plan.columns > 0 {
         render_columns(app, rows[4], rows[5], buf, ctx);
+    }
+}
+
+/// Rows the find prompt takes: the frame, the pattern, its options, and two for why
+/// it cannot be searched.
+pub fn find_rows(error: bool) -> u16 {
+    if error { 6 } else { 4 }
+}
+
+/// The find prompt's options under the pattern, each a checkbox the control bar's
+/// chips switch, and at the right how the pattern treats case. The case note is
+/// dropped whole on a narrow strip.
+fn render_find_options(
+    find: &crate::find::Find,
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    ctx: &RenderContext,
+) {
+    let g = crate::glyphs::get();
+    let check = |on: bool| if on { g.checkbox_on } else { g.checkbox_off };
+    let label = Style::default().fg(ctx.text_secondary);
+    // The keys beside what they switch: the control bar yields its chips to the
+    // count on a narrow terminal, and these are the prompt's own.
+    let key = Style::default().fg(ctx.keybind_hints);
+    let column = find.column.as_deref().unwrap_or("");
+    let line = Line::from(vec![
+        Span::styled(format!("{} Regex ", check(find.regex)), label),
+        Span::styled("^R", key),
+        Span::raw("   "),
+        Span::styled(format!("{} Only {column} ", check(find.in_column)), label),
+        Span::styled("^L", key),
+    ]);
+    let used = line.width() as u16;
+    Paragraph::new(line).render(area, buf);
+    let case = if find.input.value().is_empty() {
+        None
+    } else if (crate::find::FindSpec {
+        pattern: find.input.value().to_string(),
+        regex: find.regex,
+        column: None,
+    })
+    .ignores_case()
+    {
+        Some("Ignoring case")
+    } else {
+        Some("Matching case")
+    };
+    if let Some(case) = case
+        && used + 2 + case.chars().count() as u16 <= area.width
+    {
+        Paragraph::new(case)
+            .style(Style::default().fg(ctx.dimmed))
+            .alignment(Alignment::Right)
+            .render(area, buf);
     }
 }
 

@@ -20,6 +20,7 @@
 # Query and reshape
 
 - [Queries and search](user-guide/querying-data.md)
+- [Find in the table](user-guide/finding.md)
 - [Sort, filter and arrange columns](user-guide/filtering-sorting.md)
 - [Pivot and melt](user-guide/reshaping.md)
 

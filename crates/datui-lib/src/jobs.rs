@@ -74,6 +74,7 @@ pub enum JobKind {
     QualityReport,
     FileFacts,
     ChartExport,
+    Find,
 }
 
 /// One started operation. Issued when it starts, carried by its worker, and handed
@@ -146,6 +147,8 @@ pub(crate) enum Job {
         path: PathBuf,
         format: crate::chart_export::ChartExportFormat,
     },
+    /// A find reading the view for its next match.
+    Find(crate::find::FindRun),
 }
 
 /// A look at a path chosen on the home screen. Every key acts on the home screen even
@@ -194,6 +197,7 @@ impl Job {
             Job::QualityReport => JobKind::QualityReport,
             Job::FileFacts { .. } => JobKind::FileFacts,
             Job::ChartExport { .. } => JobKind::ChartExport,
+            Job::Find(_) => JobKind::Find,
         }
     }
 
@@ -314,6 +318,8 @@ pub(crate) enum Answer {
     ChartExported,
     /// [`Job::FileFacts`]: what the file is.
     FileFacts(crate::widgets::info::FileFacts),
+    /// [`Job::Find`]: the cell found, or `None` when nothing in the view matches.
+    Found(Option<crate::find::Found>),
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),
@@ -369,6 +375,8 @@ pub enum Progress {
     ExportWriting { phase: &'static str, bytes: u64 },
     /// A Data Quality run entered a stage.
     QualityPhase(crate::data_quality::QualityPhase),
+    /// A find has read `rows` of the view.
+    Finding { rows: usize },
 }
 
 /// A job whose outcome has been taken: what it was, whether its answer is still

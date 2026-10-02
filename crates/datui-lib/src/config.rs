@@ -2270,6 +2270,7 @@ fn default_row_numbers_color() -> String {
 /// **Other:**
 /// - `dimmed`: Dimmed elements, axis lines
 /// - `table_selected`: Selected row style (special modifier)
+/// - `find_match`: The cell a find landed on
 pub struct ColorConfig {
     pub keybind_hints: String,
     pub keybind_labels: String,
@@ -2337,6 +2338,10 @@ pub struct ColorConfig {
     pub gradient_start: String,
     #[serde(default = "default_gradient_end")]
     pub gradient_end: String,
+    /// Behind the cell a find landed on; its text takes black or white by contrast.
+    /// Absent from older configs, so it falls back to the palette.
+    #[serde(default = "default_find_match")]
+    pub find_match: String,
 }
 
 fn default_true() -> bool {
@@ -2357,6 +2362,9 @@ fn default_gradient_start() -> String {
 }
 fn default_gradient_end() -> String {
     ColorConfig::default().gradient_end
+}
+fn default_find_match() -> String {
+    ColorConfig::default().find_match
 }
 
 // Field comments for ColorConfig
@@ -2393,6 +2401,10 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ),
     ("column_separator", "Vertical line between columns"),
     ("table_selected", "Selected row style"),
+    (
+        "find_match",
+        "Behind the cell a find (f) landed on; its text is black or white by contrast",
+    ),
     ("sidebar_border", "Sidebar borders"),
     ("modal_border_active", "Active modal elements"),
     ("modal_border_error", "Error modal borders"),
@@ -2755,6 +2767,7 @@ impl ColorConfig {
             accent_bright: "#a4daff".to_string(),
             gradient_start: "#7aa2f7".to_string(),
             gradient_end: "#bb9af7".to_string(),
+            find_match: "#e0af68".to_string(),
         }
     }
 
@@ -2818,6 +2831,7 @@ impl ColorConfig {
             accent_bright: "#1a6cd0".to_string(),
             gradient_start: "#2e7de9".to_string(),
             gradient_end: "#9854f1".to_string(),
+            find_match: "#f0c35a".to_string(),
         }
     }
 }
@@ -3487,6 +3501,7 @@ impl ColorConfig {
         validate_color!(&self.accent_bright, "accent_bright");
         validate_color!(&self.gradient_start, "gradient_start");
         validate_color!(&self.gradient_end, "gradient_end");
+        validate_color!(&self.find_match, "find_match");
 
         Ok(())
     }
@@ -3879,6 +3894,10 @@ impl Theme {
             "gradient_end".to_string(),
             parser.parse(&config.colors.gradient_end)?,
         );
+        colors.insert(
+            "find_match".to_string(),
+            parser.parse(&config.colors.find_match)?,
+        );
 
         Ok(Self { colors })
     }
@@ -3914,6 +3933,16 @@ impl Theme {
                 ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED)
             }
             _ => self.highlight_style(),
+        }
+    }
+
+    /// The cell a find landed on: the `find_match` tint under black or white text,
+    /// whichever reads on it, or reversed bold video where there is no color.
+    pub fn find_match_style(&self) -> ratatui::style::Style {
+        use ratatui::style::{Modifier, Style};
+        match self.get("find_match") {
+            Color::Reset => Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            bg => Style::default().bg(bg).fg(contrasting_text(bg)),
         }
     }
 

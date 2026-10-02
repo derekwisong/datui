@@ -661,7 +661,10 @@ fn is_navigation(key: &KeyEvent) -> bool {
         | KeyCode::Char(']')
         | KeyCode::Char('{')
         | KeyCode::Char('}')
-        | KeyCode::Char('G') => true,
+        | KeyCode::Char('G')
+        // A find's next and previous move the cursor too.
+        | KeyCode::Char('n')
+        | KeyCode::Char('N') => true,
         KeyCode::Char('f') | KeyCode::Char('b') | KeyCode::Char('d') | KeyCode::Char('u') => ctrl,
         _ => false,
     }
@@ -769,6 +772,52 @@ mod tests {
         // A frame sets the visible row count, as it has before any key in `run()`.
         rendered(&mut pump.app);
         (pump, dir)
+    }
+
+    /// While a find reads, an `n` typed meanwhile waits and replays once it lands;
+    /// Esc jumps the queue, stops the find in flight, and the held `n` still runs.
+    #[test]
+    fn keys_typed_while_a_find_reads_wait_and_esc_stops_it() {
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('f'))).unwrap();
+        type_keys(&mut p, "a");
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert!(p.app.finding(), "the find reads in the background");
+        p.terminal_key(plain(KeyCode::Char('n'))).unwrap();
+        assert_eq!(held(&p), [KeyCode::Char('n')]);
+        settle(&mut p);
+        assert!(held(&p).is_empty());
+        assert_eq!(
+            p.app.find_hit(),
+            Some((1, "name".to_string())),
+            "the held n moved on from the first match"
+        );
+
+        p.terminal_key(plain(KeyCode::Char('n'))).unwrap();
+        assert!(p.app.finding());
+        p.terminal_key(plain(KeyCode::Char('n'))).unwrap();
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        assert!(!p.app.finding(), "Esc acted at once");
+        assert_eq!(held(&p), [KeyCode::Char('n')], "and was not held");
+        settle(&mut p);
+        assert_eq!(
+            p.app.find_hit(),
+            Some((2, "name".to_string())),
+            "the cancelled find moved nothing; the held n went on from where it was"
+        );
+    }
+
+    /// Enter held behind `n` waits as Space, as behind any key that moves the cursor.
+    #[test]
+    fn enter_held_behind_n_waits_as_space() {
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('f'))).unwrap();
+        type_keys(&mut p, "a");
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert!(p.app.finding());
+        p.terminal_key(plain(KeyCode::Char('n'))).unwrap();
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert_eq!(held(&p), [KeyCode::Char('n'), KeyCode::Char(' ')]);
     }
 
     /// Keys typed at the inspector while it reads a row's hidden fields wait,

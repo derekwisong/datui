@@ -24,6 +24,10 @@ pub fn go_to_line() -> &'static str {
     include_help!("go_to_line")
 }
 
+pub fn find() -> &'static str {
+    include_help!("find")
+}
+
 pub fn go_to_column() -> &'static str {
     include_help!("go_to_column")
 }
@@ -98,7 +102,7 @@ mod tests {
     #[test]
     fn main_view_help_documents_display_toggles() {
         let help = main_view();
-        assert!(help.contains("N:"), "row numbers toggle missing from help");
+        assert!(help.contains("#:"), "row numbers toggle missing from help");
         assert!(
             help.contains("F:"),
             "number formatting toggle missing from help"

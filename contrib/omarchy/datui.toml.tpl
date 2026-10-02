@@ -53,6 +53,7 @@ alternate_row_color = "{{ mix background foreground 6% }}"
 row_numbers         = "{{ muted }}"
 # A tint under the current row. "reversed" is still accepted and swaps fg/bg.
 table_selected      = "{{ mix background accent 30% }}"
+find_match          = "{{ yellow }}"
 
 # --- Cursor / modals -------------------------------------------------------
 cursor_focused      = "{{ accent }}"

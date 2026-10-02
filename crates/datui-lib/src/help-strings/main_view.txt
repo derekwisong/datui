@@ -7,6 +7,9 @@ Navigation:
   Home/End:         Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:    Half page down/up
   ::                Go to line number (e.g. :0 Enter for top)
+  f:                Find text or a regex in the view; the cursor goes to
+                    the first match at or after it
+  n / N:            Next / previous match, wrapping round the view
   Enter:            On a row of a by query or a SQL GROUP BY, drill into
                     its rows (Esc comes back); elsewhere, inspect the row
   Space:            Inspect the row: every field, each value whole and
@@ -31,7 +34,7 @@ Data Operations:
 
 Display:
   i:                Open Info panel (tabs: Schema, Resources, Partitions, Notes)
-  N:                Toggle row numbers
+  #:                Toggle row numbers
   F:                Toggle number formatting (thousands separators)
   D:                Toggle the type row under the column headers
   H:                CSV, TSV, PSV: read the first row as data, under column_1,
@@ -63,6 +66,7 @@ While busy:
   and held keys die with the screen they were typed at. At the loading
   screen nothing is held: the allowed keys act, the rest are dropped.
   While a view is being applied, Esc stops it and keeps the table as it was.
+  While a find reads, Esc (or Ctrl+O) stops it and the cursor stays put.
 
 Wide tables:
   ] starts the next page at the first column not shown whole, so a column

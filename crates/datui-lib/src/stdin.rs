@@ -63,14 +63,17 @@ fn is_device(stdin: &std::io::Stdin) -> bool {
         .is_none_or(|meta| meta.file_type().is_char_device())
 }
 
-/// Whether standard input is a character device: `NUL`, or a console, which
-/// `is_terminal` has already answered for.
+/// Whether standard input is anything but a file or a pipe: `NUL`, a console, which
+/// `is_terminal` has already answered for, or no handle at all, as a process started
+/// without one has; none of these is read.
 #[cfg(windows)]
 fn is_device(stdin: &std::io::Stdin) -> bool {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
-    // SAFETY: the handle is standard input's, open for the life of the process.
-    unsafe { GetFileType(stdin.as_raw_handle()) == FILE_TYPE_CHAR }
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType};
+    // SAFETY: the handle is standard input's, open for the life of the process; a null
+    // or invalid one makes `GetFileType` answer `FILE_TYPE_UNKNOWN`.
+    let kind = unsafe { GetFileType(stdin.as_raw_handle()) };
+    !matches!(kind, FILE_TYPE_DISK | FILE_TYPE_PIPE)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -267,8 +270,6 @@ mod tests {
         }
     }
 
-    /// `-` is standard input wherever it is named, alone; no paths and a pipe on
-    /// standard input select it, and a terminal there does not.
     /// A terminal is the user and a device (`/dev/null`, `NUL`) holds nothing; only
     /// a pipe or a file is read (#567).
     #[test]
@@ -279,6 +280,8 @@ mod tests {
         assert!(!carries_data(true, true), "a console");
     }
 
+    /// `-` is standard input wherever it is named, alone; no paths and a pipe on
+    /// standard input select it, and a terminal there does not.
     #[test]
     fn stdin_is_chosen_by_a_dash_or_a_pipe() {
         assert_eq!(paths_or_stdin(Vec::new(), true), vec![PathBuf::from("-")]);

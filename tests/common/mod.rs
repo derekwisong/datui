@@ -273,6 +273,7 @@ pub fn ensure_sample_data() {
             "people_stream.arrow",
             "dialect_padded_log.csv",
             "gps/drive.nmea",
+            "audio/loop.aiff",
         ];
 
         let needs_generation = !sample_data_dir.exists()

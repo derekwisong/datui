@@ -15,6 +15,7 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - Correlation matrix demo (100k rows, 10 numeric columns with varying correlations)
 - Tiny SafeTensors and GGUF model files, written by hand with struct and NumPy
 - GPS logs: an NMEA 0183 drive and a GPX ride, written as text
+- Short WAV, Broadcast WAV and AIFF files: the wave module, and struct where it cannot
 
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
@@ -28,7 +29,9 @@ from datetime import date, datetime, timedelta
 import random
 import gzip
 import json
+import math
 import struct
+import wave
 
 # Optional deps for extra formats (fail gracefully if missing)
 try:
@@ -1102,6 +1105,138 @@ def generate_csv_dialect_files():
     print(f"Generated: {mid}")
 
 
+def _riff_chunk(cid, body):
+    """A RIFF chunk: id, little-endian size, body, padded to an even length."""
+    return cid + struct.pack("<I", len(body)) + body + (b"\0" if len(body) % 2 else b"")
+
+
+def _write_riff(path, chunks):
+    body = b"WAVE" + b"".join(chunks)
+    with open(path, "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", len(body)) + body)
+    print(f"Generated: {path}")
+
+
+def _fmt(tag, channels, rate, bits, extensible=None):
+    align = channels * bits // 8
+    body = struct.pack("<HHIIHH", tag, channels, rate, rate * align, align, bits)
+    if extensible is not None:
+        valid_bits, mask, subformat = extensible
+        guid = struct.pack("<H", subformat) + bytes.fromhex("000000001000800000aa00389b71")
+        body += struct.pack("<HHI", 22, valid_bits, mask) + guid
+    return body
+
+
+def _int24(value):
+    return struct.pack("<i", value)[:3]
+
+
+def generate_audio_files():
+    """Short audio files: a 16-bit WAV with a clipped run, a run of silence and a DC
+    offset on its second channel; a 24-bit Broadcast WAV with bext, iXML, markers and
+    INFO; a six-channel float WAV whose mask names its speakers; and an AIFF with a
+    marker."""
+    audio = OUTPUT_DIR / "audio"
+    audio.mkdir(exist_ok=True)
+
+    # tone.wav: 8 kHz stereo, 4,000 frames. ch1 a 440 Hz sine at half scale; ch2 the
+    # same sine plus an offset of 1,000, clipped at full scale for frames 1000-1019
+    # and silent (exact zeros) for frames 2000-2499.
+    rate, frames = 8000, 4000
+    out = bytearray()
+    for i in range(frames):
+        sine = int(16384 * math.sin(2 * math.pi * 440 * i / rate))
+        right = sine + 1000
+        if 1000 <= i < 1020:
+            right = 32767
+        elif 2000 <= i < 2500:
+            right = 0
+        out += struct.pack("<hh", sine, right)
+    with wave.open(str(audio / "tone.wav"), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(bytes(out))
+    print(f"Generated: {audio / 'tone.wav'}")
+
+    # take.wav: a 24-bit Broadcast WAV, 48 kHz stereo, 4,800 frames (0.1 s).
+    rate, frames = 48000, 4800
+    data = bytearray()
+    for i in range(frames):
+        v = int(4_000_000 * math.sin(2 * math.pi * 1000 * i / rate))
+        data += _int24(v) + _int24(-v)
+    bext = bytearray(602)
+    for at, size, text in [
+        (0, 256, b"Scene 12A, take 3"),
+        (256, 32, b"Field recorder"),
+        (288, 32, b"REF-0042"),
+        (320, 10, b"2026-10-02"),
+        (330, 8, b"14:30:00"),
+    ]:
+        bext[at : at + len(text)] = text[:size]
+    # Time reference: one hour past midnight, in samples.
+    struct.pack_into("<II", bext, 338, 3600 * rate, 0)
+    struct.pack_into("<H", bext, 346, 2)
+    bext += b"A=PCM,F=48000,W=24,M=stereo\r\n"
+    ixml = (
+        b"<?xml version=\"1.0\"?><BWFXML><PROJECT>Short film</PROJECT>"
+        b"<SCENE>12A</SCENE><TAKE>3</TAKE><TAPE>Day 2</TAPE></BWFXML>"
+    )
+    cue = struct.pack("<I", 2)
+    for cue_id, at in [(1, 0), (2, 2400)]:
+        cue += struct.pack("<II4sIII", cue_id, at, b"data", 0, 0, at)
+    adtl = b"adtl" + _riff_chunk(b"labl", struct.pack("<I", 1) + b"Slate\0")
+    adtl += _riff_chunk(b"labl", struct.pack("<I", 2) + b"Action\0")
+    adtl += _riff_chunk(b"ltxt", struct.pack("<IIIHHHH", 2, 1200, 0, 0, 0, 0, 0))
+    info = b"INFO" + _riff_chunk(b"INAM", b"Scene 12A take 3\0")
+    info += _riff_chunk(b"ISFT", b"datui fixtures\0")
+    _write_riff(
+        audio / "take.wav",
+        [
+            _riff_chunk(b"bext", bytes(bext)),
+            _riff_chunk(b"iXML", ixml),
+            _riff_chunk(b"fmt ", _fmt(1, 2, rate, 24)),
+            _riff_chunk(b"data", bytes(data)),
+            _riff_chunk(b"cue ", cue),
+            _riff_chunk(b"LIST", adtl),
+            _riff_chunk(b"LIST", info),
+        ],
+    )
+
+    # surround.wav: 32-bit float, extensible, 5.1 (L R C LFE BL BR), 480 frames.
+    rate, frames = 48000, 480
+    data = b"".join(
+        struct.pack("<6f", *[0.1 * (c + 1) * math.sin(2 * math.pi * 100 * i / rate) for c in range(6)])
+        for i in range(frames)
+    )
+    _write_riff(
+        audio / "surround.wav",
+        [
+            _riff_chunk(b"fmt ", _fmt(0xFFFE, 6, rate, 32, extensible=(32, 0x3F, 3))),
+            _riff_chunk(b"data", data),
+        ],
+    )
+
+    # loop.aiff: AIFF, 16-bit mono at 44.1 kHz, 441 frames, one marker.
+    frames = 441
+    samples = b"".join(
+        struct.pack(">h", int(8000 * math.sin(2 * math.pi * 441 * i / 44100))) for i in range(frames)
+    )
+    # 44100 as an 80-bit extended float.
+    rate80 = bytes([0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0])
+    comm = struct.pack(">hIh", 1, frames, 16) + rate80
+    mark = struct.pack(">HHI", 1, 1, 220) + b"\x04Loop\x00"
+    ssnd = struct.pack(">II", 0, 0) + samples
+
+    def be_chunk(cid, body):
+        return cid + struct.pack(">I", len(body)) + body + (b"\0" if len(body) % 2 else b"")
+
+    body = b"AIFF" + be_chunk(b"COMM", comm) + be_chunk(b"MARK", mark) + be_chunk(b"SSND", ssnd)
+    with open(audio / "loop.aiff", "wb") as f:
+        f.write(b"FORM" + struct.pack(">I", len(body)) + body)
+    print(f"Generated: {audio / 'loop.aiff'}")
+
+
 def main():
     print("Generating sample data files...")
     print(f"Output directory: {OUTPUT_DIR}")
@@ -1225,8 +1360,11 @@ def main():
     generate_csv_dialect_files()
 
     # GPS logs: NMEA 0183 and GPX
-    print("\n14. Generating GPS logs...")
+    print("\n15. Generating GPS logs...")
     generate_gps()
+    # Audio: WAV, Broadcast WAV, extensible float and AIFF
+    print("\n16. Generating audio files...")
+    generate_audio_files()
 
     print("\nSample data generation complete!")
 

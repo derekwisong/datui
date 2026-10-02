@@ -838,7 +838,8 @@ pub fn source(record: &OpenRecord) -> Source {
         | FileFormat::Safetensors
         | FileFormat::Gguf
         | FileFormat::Nmea
-        | FileFormat::Gpx => {
+        | FileFormat::Gpx
+        | FileFormat::Audio => {
             return Source::Placeholder {
                 what: format!(
                     "{}: Polars has no reader for this format; load it here.",

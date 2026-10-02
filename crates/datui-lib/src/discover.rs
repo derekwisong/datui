@@ -541,6 +541,9 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     if head.starts_with(b"ORC") {
         return Some(crate::FileFormat::Orc);
     }
+    if crate::audio::looks_like_audio(head) {
+        return Some(crate::FileFormat::Audio);
+    }
     // An Arrow IPC stream has no magic, only its schema message, read whole to be sure.
     if crate::ipc_stream::is_stream_file(path) {
         return Some(crate::FileFormat::Arrow);
@@ -587,6 +590,14 @@ fn model_format_of(head: &[u8]) -> Option<crate::FileFormat> {
 pub fn sniff_model_format(path: &Path) -> Option<crate::FileFormat> {
     let mut head = [0u8; 16];
     model_format_of(read_head(path, &mut head)?)
+}
+
+/// Whether a file whose name says nothing is WAV or AIFF audio, by its first bytes.
+/// Their signatures (`RIFF....WAVE`, `FORM....AIFF`) are specific enough to trust on a
+/// file of any name.
+pub fn sniff_audio_format(path: &Path) -> Option<crate::FileFormat> {
+    let mut head = [0u8; 12];
+    crate::audio::looks_like_audio(read_head(path, &mut head)?).then_some(crate::FileFormat::Audio)
 }
 
 /// How many extension-less files one listing looks inside. A directory of Spark output

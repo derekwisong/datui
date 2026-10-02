@@ -348,6 +348,10 @@ pub struct DataTableState {
     /// The fixed records the data as loaded is, while it still is: a window of a
     /// pristine view starts its columns at the window rather than decoding from row 0.
     fixed_window: Option<Arc<crate::fixed_records::FixedRecords>>,
+    /// The audio file the dataset is, and the root it was opened as: while the view is
+    /// that root, untouched, a window is read straight from the file's frames. See
+    /// [`crate::OpenOptions::audio`].
+    audio: Option<(Arc<crate::audio::AudioSource>, u64)>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -860,6 +864,8 @@ pub struct OpenFacts {
     /// The file's other tables, each as `--table` names it with how many rows it holds
     /// where that is known, for the Info panel's Schema tab. Empty for a file of one.
     pub other_tables: Vec<String>,
+    /// The audio file the frame scans.
+    pub audio: Option<Arc<crate::audio::AudioSource>>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1583,22 +1589,50 @@ fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, 
     Some((file_of(start), file_of(end - 1).min(files - 1)))
 }
 
+/// A source that reads a window at its first row, rather than from row 0 up.
+#[derive(Clone, Copy)]
+enum DirectWindow<'a> {
+    /// Polars gives an anonymous scan no row offset, so a slice deep in the view would
+    /// decode every row before it; the records start the window there instead.
+    Records(&'a crate::fixed_records::FixedRecords),
+    /// The in-memory engine builds the plan's frame index from row 0 up to a slice's
+    /// end, so the window at the end of a long recording would cost 4 bytes per frame
+    /// before it.
+    Audio(&'a Arc<crate::audio::AudioSource>),
+}
+
+impl<'a> DirectWindow<'a> {
+    fn of(
+        records: Option<&'a crate::fixed_records::FixedRecords>,
+        audio: Option<&'a Arc<crate::audio::AudioSource>>,
+    ) -> Option<Self> {
+        records.map(Self::Records).or(audio.map(Self::Audio))
+    }
+}
+
 /// Rows `[start, start + len)` of `lf` as `all_columns`. With `files` counted, a scan
 /// of only the files holding them, so a window deep in a remote dataset does not read
-/// every file before it.
+/// every file before it. With `direct`, the rows read straight from the source.
 fn window_of(
     lf: &LazyFrame,
     files: Option<&RemoteFiles>,
-    records: Option<&crate::fixed_records::FixedRecords>,
+    direct: Option<DirectWindow<'_>>,
     read_as_text: &[PlSmallStr],
     start: usize,
     len: usize,
     all_columns: Vec<Expr>,
 ) -> PolarsResult<LazyFrame> {
-    // Polars gives an anonymous scan no row offset, so a slice deep in the view would
-    // decode every row before it; the records start the window there instead.
-    if let Some(records) = records {
-        return Ok(records.window(start, len)?.select(all_columns));
+    match direct {
+        Some(DirectWindow::Records(records)) => {
+            return Ok(records.window(start, len)?.select(all_columns));
+        }
+        Some(DirectWindow::Audio(audio)) => {
+            return Ok(audio
+                .window(start as u64, len as u64, None)?
+                .lazy()
+                .select(all_columns));
+        }
+        None => {}
     }
     if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
         && let Some((first, last)) = files_holding(offsets, start, len)
@@ -1622,6 +1656,8 @@ pub(crate) struct ViewRows {
     files: Option<RemoteFiles>,
     /// See [`DataTableState::fixed_window`].
     records: Option<Arc<crate::fixed_records::FixedRecords>>,
+    /// The audio file a window reads its frames from. See [`window_of`].
+    audio: Option<Arc<crate::audio::AudioSource>>,
     read_as_text: Vec<PlSmallStr>,
     /// The buffer on hand and the view row it starts at.
     pub(crate) buffer: Option<(DataFrame, usize)>,
@@ -1672,7 +1708,7 @@ impl ViewRows {
         window_of(
             &self.lf,
             self.files.as_ref(),
-            self.records.as_deref(),
+            DirectWindow::of(self.records.as_deref(), self.audio.as_ref()),
             &self.read_as_text,
             start,
             len,
@@ -1689,6 +1725,7 @@ impl ViewRows {
             lf,
             files: None,
             records: None,
+            audio: None,
             read_as_text: Vec::new(),
             buffer,
             num_rows: None,
@@ -1822,6 +1859,7 @@ impl DataTableState {
             model: None,
             format_read: None,
             fixed_window: None,
+            audio: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -1962,6 +2000,7 @@ impl DataTableState {
             model: None,
             format_read: None,
             fixed_window: None,
+            audio: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2018,6 +2057,7 @@ impl DataTableState {
             model,
             converted,
             other_tables,
+            audio,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2061,6 +2101,11 @@ impl DataTableState {
         self.model = model;
         self.converted = converted;
         self.other_tables = other_tables;
+        if let Some(audio) = audio {
+            // The count is arithmetic on the file's size: nothing to scan for it.
+            self.set_num_rows(audio.frames() as usize);
+            self.audio = Some((audio, self.root_generation));
+        }
         self
     }
 
@@ -6424,6 +6469,33 @@ impl DataTableState {
         )
     }
 
+    /// The audio file the dataset is, when it is one.
+    pub fn audio(&self) -> Option<&crate::audio::AudioSource> {
+        self.audio.as_ref().map(|(source, _)| source.as_ref())
+    }
+
+    /// The audio file whose frames a window can read directly: the view is the root
+    /// the file was opened as, with nothing applied.
+    fn audio_window(&self) -> Option<&Arc<crate::audio::AudioSource>> {
+        self.audio
+            .as_ref()
+            .filter(|(_, root)| *root == self.root_generation && self.is_pristine())
+            .map(|(source, _)| source)
+    }
+
+    /// The audio file a data-quality run over `scope` reads every frame of, for the
+    /// checks that read the samples whole (clipping, runs of zeros, DC offset): the
+    /// whole source, or a view with nothing applied.
+    pub(crate) fn audio_for_quality(
+        &self,
+        scope: &crate::data_quality::QualityScope,
+    ) -> Option<Arc<crate::audio::AudioSource>> {
+        use crate::data_quality::QualityScope;
+        matches!(scope, QualityScope::WholeSource | QualityScope::CurrentView)
+            .then(|| self.audio_window().cloned())
+            .flatten()
+    }
+
     /// The lake format whose plain files this dataset is, if it is one.
     ///
     /// For the chip in the control bar. The note says the same at length; this is what
@@ -6813,7 +6885,10 @@ impl DataTableState {
         window_of(
             &self.lf,
             self.remote_files.as_ref().filter(|_| self.remote_window()),
-            self.fixed_window_now().map(|r| r.as_ref()),
+            DirectWindow::of(
+                self.fixed_window_now().map(|r| r.as_ref()),
+                self.audio_window(),
+            ),
             &self.read_as_text,
             start,
             len,
@@ -6832,6 +6907,7 @@ impl DataTableState {
                 .filter(|_| self.remote_window())
                 .cloned(),
             records: self.fixed_window_now().cloned(),
+            audio: self.audio_window().cloned(),
             read_as_text: self.read_as_text.clone(),
             buffer: self
                 .buffered_df

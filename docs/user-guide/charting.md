@@ -118,7 +118,7 @@ Each starts from the dataset of that name under **Public datasets**.
 
 | Option | What it does |
 |---|---|
-| **Sample size** | Rows the chart reads. A larger table is sampled across all of it, and the chart says so under the plot: `sample of 10,000 of 3.5M rows`. **Every row** reads the whole view |
+| **Sample size** | Rows the chart reads. A larger table is sampled across all of it, and the chart says so under the plot: `sample of 10,000 of 3.5M rows`. **Every row** reads the whole view. A **Line** over a larger table is not sampled: see below |
 | **Range** | Histogram, Box Plot and KDE: **All** values, or **p1-p99** (the 1st to 99th percentile) to leave out outliers that squash the rest into a bin or two. The chart counts what it left out: `195 values outside p1-p99` |
 
 The sample is drawn as the [analysis tools](analysis-features.md#sampling)
@@ -128,6 +128,15 @@ already read, draws from the same rows without reading the table again. An
 exported PNG or EPS carries the same notes under the plot. The default size
 comes from `row_limit` in the
 [`[chart]` config section](../reference/settings.md#charts) and is 10,000.
+
+A **Line** chart over more rows than the sample size draws an envelope
+instead: X is cut into half as many steps as the sample size, and each step
+draws its lowest and highest value, so every peak of a waveform or a long time
+series stays on the plot where a sample would miss it. Two streamed passes
+read the view: the rows and X's range, then each step. The chart says so under
+the plot: `min and max of 192M rows in 5,000 steps`. Scatter and Bar keep the
+sample, and so does a Line over Parquet read in place from S3, GCS or Azure,
+which the envelope would download whole twice.
 
 ## Keys
 

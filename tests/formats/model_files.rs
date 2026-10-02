@@ -191,9 +191,9 @@ fn a_gguf_file_opens_with_its_metadata_on_the_model_tab() {
 
     // The arrows scroll the metadata, which fits here, so nothing moves past its end.
     press(&mut app, KeyCode::Down);
-    assert_eq!(app.info_modal.model_scroll, 1);
+    assert_eq!(app.info_modal.detail_scroll, 1);
     let _ = screen(&mut app);
-    assert_eq!(app.info_modal.model_scroll, 0, "clamped to what there is");
+    assert_eq!(app.info_modal.detail_scroll, 0, "clamped to what there is");
 }
 
 #[test]

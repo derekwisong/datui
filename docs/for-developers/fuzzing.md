@@ -14,6 +14,7 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher, checked for hangs and for its wildcard-free fast path agreeing with equality. |
 | `ipc_stream_head` | `ipc_stream::is_stream_head`, `stdin::sniff` | Reads a length from a file's first bytes and checks the flatbuffer it names is an Arrow schema message, on any file being opened and any pipe. Any bytes must give an answer, never a panic (Polars' own schema reader panics on some column types), and a pipe that is a stream must be read as one. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and color strings that get sliced by byte offset after a byte-length check. |
+| `audio_header` | `audio::read_header`, `audio::AudioSource` | The WAV, RF64 and AIFF chunk walker, which slices by sizes, counts and offsets the file states, and the sample decoder, which reads at offsets worked out from the header. A corrupt header must be an error, never a panic or an allocation sized by the file; a header that parses must give frames inside the file, and decoding them must work. |
 | `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Hand-written readers for model file headers that allocate and skip by lengths read from the file. Every input goes to both; a corrupt header must be an error, never a panic or an allocation sized by the file, and a header that parses must build its table. |
 | `format_spec` | `formats::Spec`, `fixed_records` | A binary format spec and a file it reads, split at the first NUL byte. A spec parses or fails with a line and column; a file reads or fails; every row the reader counts decodes, and a window of the rows matches the same rows read from the start. |
 | `gps_parse` | `gps::nmea::NmeaReader`, `gps::gpx::GpxReader` | Hand-written readers for GPS logs that take the file a piece at a time. The first byte picks the NMEA table and the size of the pieces, so every line, tag and entity is cut somewhere. Never a panic, a frame of another schema, or a coordinate off the globe; every length is bounded by the reader. |
@@ -102,6 +103,11 @@ arrays and tensors of several types, and GGUF v2.
 type it reads, a prefixed line, a vendor sentence, out-of-range coordinates) and a GPX
 file (a DOCTYPE, CDATA, entities, namespaced extensions), each behind several first
 bytes, and a nesting past the depth bound.
+
+`audio_header` takes the bytes as they are too. Its seeds are tiny audio files: 16-bit
+PCM, a Broadcast WAV with `bext`, iXML, `cue ` and `LIST` chunks, extensible float with
+a channel mask, RF64 with `ds64`, 8-bit with a placeholder data size, and AIFF and
+AIFF-C (`sowt`, `fl32`) with a marker.
 
 Commit a `regression-*` input for each fixed crash. Keep routine coverage inputs
 in the fuzzing cache. Minimize any additional seeds before committing them:

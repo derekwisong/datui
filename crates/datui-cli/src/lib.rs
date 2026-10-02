@@ -38,6 +38,8 @@ pub enum FileFormat {
     Nmea,
     /// GPX tracks, routes and waypoints (.gpx)
     Gpx,
+    /// Uncompressed audio (.wav, .bwf, .rf64, .aif, .aiff, .aifc): one row per sample frame
+    Audio,
 }
 
 impl FileFormat {
@@ -79,6 +81,7 @@ impl FileFormat {
             Self::Gguf => "gguf",
             Self::Nmea => "nmea",
             Self::Gpx => "gpx",
+            Self::Audio => "audio",
         }
     }
 
@@ -91,7 +94,7 @@ impl FileFormat {
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
     /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -106,6 +109,7 @@ impl FileFormat {
         Self::Gguf,
         Self::Nmea,
         Self::Gpx,
+        Self::Audio,
     ];
 
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
@@ -125,11 +129,12 @@ impl FileFormat {
     /// Tsv and Psv have a single-file reader and no multi-path one; an Excel workbook
     /// is sheets rather than rows, with nothing to concatenate. Reading the first two
     /// as a list is #275 phase 4's ("never refuse"). A GPS log is read into a file of
-    /// its own before it is scanned, one log per open.
+    /// its own before it is scanned, one log per open. Audio files are recordings,
+    /// each with its own channels and rate, not parts of one table.
     pub fn reads_many_files(self) -> bool {
         !matches!(
             self,
-            Self::Tsv | Self::Psv | Self::Excel | Self::Nmea | Self::Gpx
+            Self::Tsv | Self::Psv | Self::Excel | Self::Nmea | Self::Gpx | Self::Audio
         )
     }
 
@@ -171,6 +176,7 @@ impl FileFormat {
             "gguf" => Some(Self::Gguf),
             "nmea" => Some(Self::Nmea),
             "gpx" => Some(Self::Gpx),
+            "wav" | "wave" | "bwf" | "rf64" | "aif" | "aiff" | "aifc" => Some(Self::Audio),
             _ => None,
         }
     }
@@ -354,7 +360,7 @@ pub struct Args {
     #[arg(long = "compression", value_enum, help_heading = "Reading")]
     pub compression: Option<CompressionFormat>,
 
-    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, or the name of a binary format spec such as acme.l2feed
+    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, or the name of a binary format spec such as acme.l2feed
     #[arg(long = "format", value_name = "FORMAT", value_parser = parse_format, help_heading = "Reading")]
     pub format: Option<FormatChoice>,
 
@@ -410,6 +416,9 @@ pub struct Args {
     /// RMC, VTG, GSA, GSV, GLL, ZDA or sentences
     #[arg(long = "table", value_name = "TABLE", help_heading = "Reading")]
     pub table: Option<String>,
+    /// Show integer audio samples as float in [-1, 1] (default: the integers as stored)
+    #[arg(long = "normalize", help_heading = "Reading")]
+    pub normalize: bool,
 
     /// Forget every recently opened dataset and exit; other caches are kept
     #[arg(long = "clear-recents", action, help_heading = "Maintenance")]
@@ -902,6 +911,20 @@ mod tests {
             FileFormat::from_path(Path::new("config.json")),
             Some(FileFormat::Json)
         );
+        for name in [
+            "take.wav",
+            "take.BWF",
+            "mix.rf64",
+            "loop.aif",
+            "loop.aiff",
+            "x.aifc",
+        ] {
+            assert_eq!(
+                FileFormat::from_path(Path::new(name)),
+                Some(FileFormat::Audio),
+                "{name}"
+            );
+        }
     }
 }
 
@@ -930,7 +953,8 @@ mod format_tests {
                 | FileFormat::Safetensors
                 | FileFormat::Gguf
                 | FileFormat::Nmea
-                | FileFormat::Gpx => FileFormat::ALL.contains(&f),
+                | FileFormat::Gpx
+                | FileFormat::Audio => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -960,7 +984,8 @@ mod format_tests {
                 "safetensors",
                 "gguf",
                 "nmea",
-                "gpx"
+                "gpx",
+                "audio"
             ]
         );
     }

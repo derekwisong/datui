@@ -74,8 +74,8 @@ polars-sql = { version = "0.55", optional = true }
 # The parser polars-sql uses, at its version: reads a GROUP BY statement to drill into.
 sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
 ignore = "0.4.33"
-# Fixed-record binary files are read through a memory map. Already in the tree
-# through polars-io.
+# Fixed-record binary files and audio samples are read through a memory map, a
+# window at a time. Already in the tree through polars-io.
 memmap2 = "0.9"
 # The log facade, for the log file. Already in the tree through Polars and ureq.
 log = "0.4"

@@ -38,6 +38,7 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use ratatui::widgets::{Block, Clear};
 
 pub mod analysis_modal;
+pub mod audio;
 pub mod avro_types;
 #[cfg(feature = "cloud")]
 pub mod aws_profiles;
@@ -190,7 +191,8 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         | FileFormat::Safetensors
         | FileFormat::Gguf
         | FileFormat::Nmea
-        | FileFormat::Gpx => None,
+        | FileFormat::Gpx
+        | FileFormat::Audio => None,
     }
 }
 
@@ -2336,6 +2338,7 @@ mod chart_prepare_tests {
             x_column: x.to_string(),
             y_columns: vec!["y".to_string()],
             row_limit: None,
+            envelope: true,
         }
     }
 
@@ -8524,6 +8527,12 @@ pub struct OpenOptions {
     /// columns typed — as Python method calls for Copy as Python. Found by the scan,
     /// carried to the dataset as `left_out` is. Empty for every other open.
     pub read_python: Vec<String>,
+    /// `--normalize`: integer audio samples as float in [-1, 1].
+    pub normalize: bool,
+    /// The audio file the scan opened: its header for the Info panel, and its frames
+    /// for a window read straight from the file. Found by the scan and carried to the
+    /// dataset as `left_out` is. `None` for every other open.
+    pub audio: Option<Arc<crate::audio::AudioSource>>,
 }
 
 impl OpenOptions {
@@ -8576,6 +8585,8 @@ impl OpenOptions {
             spec_name: None,
             spec_choice: None,
             format_read: None,
+            normalize: false,
+            audio: None,
         }
     }
 }
@@ -8778,6 +8789,7 @@ impl OpenOptions {
         // Excel sheet (CLI only)
         opts.excel_sheet = args.excel_sheet.clone();
         opts.table = args.table.clone();
+        opts.normalize = args.normalize;
 
         // S3/compatible flags. The environment is folded in by `effective_cloud`.
         opts.s3_endpoint_url_override = args.s3_endpoint_url.clone();
@@ -9221,6 +9233,8 @@ pub struct ReadReport {
     pub format_read: Option<Arc<crate::formats::Read>>,
     /// See [`OpenOptions::read_python`].
     pub read_python: Vec<String>,
+    /// The audio file the scan opened. See [`OpenOptions::audio`].
+    pub audio: Option<Arc<crate::audio::AudioSource>>,
 }
 
 /// What a scan built: the frame, or what the load has to turn into a file it can scan
@@ -9616,6 +9630,9 @@ pub(crate) enum ChartRequest {
         x_column: String,
         y_columns: Vec<String>,
         row_limit: Option<usize>,
+        /// Draw each step's lowest and highest value: see
+        /// [`chart_data::prepare_chart_data`].
+        envelope: bool,
     },
     /// Only an x column is selected: its range gives the placeholder axis its bounds.
     XRange {
@@ -9691,6 +9708,9 @@ impl ChartRequest {
                         x_column,
                         y_columns,
                         row_limit,
+                        // A line is drawn from each step's lowest and highest value
+                        // rather than a sample; scatter and bar keep the sample.
+                        envelope: modal.chart_type == ChartType::Line,
                     }
                 })
             }
@@ -9737,9 +9757,12 @@ impl ChartRequest {
             Self::XY {
                 x_column,
                 y_columns,
+                envelope,
                 ..
             } => {
-                let r = chart_data::prepare_chart_data(lf, schema, x_column, y_columns, sampling)?;
+                let r = chart_data::prepare_chart_data(
+                    lf, schema, x_column, y_columns, sampling, *envelope,
+                )?;
                 ChartPrepared::XY(ChartCacheXY {
                     x_column: x_column.clone(),
                     y_columns: y_columns.clone(),
@@ -16990,6 +17013,7 @@ impl App {
                         model: None,
                         format_read: None,
                         read_python: Vec::new(),
+                        audio: None,
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
@@ -17016,6 +17040,7 @@ impl App {
                         format_read: report.format_read,
                         spec_choice: None,
                         read_python: report.read_python,
+                        audio: report.audio,
                         ..options
                     };
                     Ok(Answer::Load(Box::new(match scan {
@@ -18016,6 +18041,7 @@ impl App {
             facts.open_notes.extend(read.notes());
             facts.format_read = Some(read.clone());
         }
+        facts.audio = options.audio.clone();
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         facts.remote_source = path.is_some_and(source::scans_in_place);
@@ -18735,10 +18761,13 @@ impl App {
                         || (path.is_file() && crate::discover::has_parquet_magic(path))))
                 .then_some(FileFormat::Parquet)
             })
-            // A model file is known by its first bytes whatever it is called.
+            // A model file or audio is known by its first bytes whatever it is called.
             .or_else(|| {
                 path.is_file()
-                    .then(|| crate::discover::sniff_model_format(path))
+                    .then(|| {
+                        crate::discover::sniff_model_format(path)
+                            .or_else(|| crate::discover::sniff_audio_format(path))
+                    })
                     .flatten()
             })
             .or_else(|| {
@@ -18866,6 +18895,7 @@ impl App {
                 | Some(FileFormat::Excel)
                 | Some(FileFormat::Nmea)
                 | Some(FileFormat::Gpx)
+                | Some(FileFormat::Audio)
                 | None => {
                     // The home screen asks `reads_many_files` before it offers a
                     // directory as one dataset, so a format that is refused here and
@@ -18966,6 +18996,13 @@ impl App {
                         file: path.clone(),
                         format,
                     });
+                }
+                Some(FileFormat::Audio) => {
+                    let source =
+                        Arc::new(crate::audio::AudioSource::open(path, options.normalize)?);
+                    let lf = source.lazy();
+                    report.audio = Some(source);
+                    return Ok(lf.into());
                 }
                 Some(FileFormat::Orc) => DataTableState::from_orc(
                     path,
@@ -20434,7 +20471,8 @@ impl App {
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
-            let model_tab = self.info_modal.active_tab == InfoTab::Model;
+            // The Model and Audio tabs scroll their metadata the same way.
+            let detail_tab = matches!(self.info_modal.active_tab, InfoTab::Model | InfoTab::Audio);
             let notes = self
                 .data_table_state
                 .as_ref()
@@ -20484,24 +20522,24 @@ impl App {
                 KeyCode::Enter if event.is_press() && notes_tab => {
                     self.read_the_selected_note_s_column_as_text();
                 }
-                KeyCode::Down | KeyCode::Char('j') if event.is_press() && model_tab => {
-                    self.info_modal.model_scroll_by(1);
+                KeyCode::Down | KeyCode::Char('j') if event.is_press() && detail_tab => {
+                    self.info_modal.detail_scroll_by(1);
                 }
-                KeyCode::Up | KeyCode::Char('k') if event.is_press() && model_tab => {
-                    self.info_modal.model_scroll_by(-1);
+                KeyCode::Up | KeyCode::Char('k') if event.is_press() && detail_tab => {
+                    self.info_modal.detail_scroll_by(-1);
                 }
-                KeyCode::PageDown if event.is_press() && model_tab => {
-                    self.info_modal.model_page(true);
+                KeyCode::PageDown if event.is_press() && detail_tab => {
+                    self.info_modal.detail_page(true);
                 }
-                KeyCode::PageUp if event.is_press() && model_tab => {
-                    self.info_modal.model_page(false);
+                KeyCode::PageUp if event.is_press() && detail_tab => {
+                    self.info_modal.detail_page(false);
                 }
-                KeyCode::Home if event.is_press() && model_tab => {
-                    self.info_modal.model_scroll = 0;
+                KeyCode::Home if event.is_press() && detail_tab => {
+                    self.info_modal.detail_scroll = 0;
                 }
-                KeyCode::End if event.is_press() && model_tab => {
+                KeyCode::End if event.is_press() && detail_tab => {
                     // The render clamps it to the last page.
-                    self.info_modal.model_scroll = usize::MAX;
+                    self.info_modal.detail_scroll = usize::MAX;
                 }
                 _ => {}
             }
@@ -22503,6 +22541,11 @@ impl App {
                     if unseen {
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Notes);
+                    } else if state.audio().is_some() {
+                        // An audio file's columns are the frame, the time and one per
+                        // channel; what is particular to it is on the Audio tab.
+                        self.info_modal
+                            .open_on(crate::widgets::info::InfoTab::Audio);
                     } else if state.model().is_some() {
                         // A model's schema is the same seven columns every time; what
                         // is particular to it is on the Model tab.
@@ -22893,6 +22936,7 @@ impl App {
             known_total: state.num_rows_if_valid(),
             seed: self.analysis_modal.sample.seed,
             streaming: self.app_config.performance.polars_streaming,
+            full_passes: !state.is_remote_source(),
             held: self.chart_cache.held_rows(dataset),
             cancel: Arc::default(),
         };
@@ -23408,6 +23452,10 @@ impl App {
                         (lf, source, rows)
                     };
                     let streaming = state.polars_streaming();
+                    // An audio file's signal checks read its samples whole: a full run's.
+                    let audio = (plan.compute == data_quality::QualityCompute::Full)
+                        .then(|| state.audio_for_quality(&plan.scope))
+                        .flatten();
                     let view_generation = state.len_generation();
                     let dataset_generation = self.dataset_generation;
                     let kept_entry = self.kept_quality_entry(&plan.sample());
@@ -23515,6 +23563,17 @@ impl App {
                             kept.as_deref(),
                             &watch,
                         );
+                        let results = match (results, audio) {
+                            (Ok(mut results), Some(audio)) => {
+                                crate::data_quality::add_signal_observations(
+                                    &mut results,
+                                    &audio,
+                                    &watch,
+                                )
+                                .map(|()| results)
+                            }
+                            (results, _) => results,
+                        };
                         // Let go before the answer goes out: a `d` handled as soon
                         // as it lands must find the app's handle the last one.
                         drop(held);

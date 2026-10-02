@@ -127,9 +127,10 @@ impl Finding {
             ObservationKind::ParseableText => self.failures(results),
             // Rows beyond one per value are the count; the rows sharing a value are
             // what opens, and always more.
-            ObservationKind::KeyLike | ObservationKind::Absent | ObservationKind::TypeConflict => {
-                None
-            }
+            ObservationKind::KeyLike
+            | ObservationKind::Absent
+            | ObservationKind::TypeConflict
+            | ObservationKind::DcOffset => None,
             ObservationKind::CategoryVariants => Some(self.affected_rows),
             // One fact about rows, named once per key column: the same rows each time.
             ObservationKind::KeyRepeated | ObservationKind::KeyMissing => Some(self.affected_rows),
@@ -166,6 +167,9 @@ impl Finding {
             ObservationKind::KeyLike => "Nearly unique",
             ObservationKind::Constant => "Single value",
             ObservationKind::UnparsedTime => "Unparsed times",
+            ObservationKind::Clipping => "Clipping",
+            ObservationKind::ZeroRuns => "Runs of zeros",
+            ObservationKind::DcOffset => "DC offset",
             ObservationKind::KeyRepeated
             | ObservationKind::KeyMissing
             | ObservationKind::RequiredMissing
@@ -544,6 +548,9 @@ fn rank(finding: &Finding) -> u8 {
         Some(ObservationKind::Nulls) if finding.severity == Severity::Problem => 3,
         Some(ObservationKind::Nulls) if finding.title == "Mostly missing" => 9,
         Some(ObservationKind::NonFinite) => 4,
+        Some(ObservationKind::Clipping) => 4,
+        Some(ObservationKind::ZeroRuns) => 8,
+        Some(ObservationKind::DcOffset) => 12,
         Some(ObservationKind::CategoryVariants) => 5,
         Some(ObservationKind::Whitespace) => 6,
         Some(ObservationKind::Empty) => 7,
@@ -587,7 +594,9 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         ObservationKind::Nulls
         | ObservationKind::Constant
         | ObservationKind::ParseableText
-        | ObservationKind::KeyLike => Severity::Note,
+        | ObservationKind::KeyLike
+        | ObservationKind::ZeroRuns
+        | ObservationKind::DcOffset => Severity::Note,
         ObservationKind::Empty
         | ObservationKind::Whitespace
         | ObservationKind::NonFinite
@@ -601,7 +610,8 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         | ObservationKind::RequiredMissing
         | ObservationKind::NotAllowed
         | ObservationKind::OutOfRange
-        | ObservationKind::UnparsedNumber => Severity::Problem,
+        | ObservationKind::UnparsedNumber
+        | ObservationKind::Clipping => Severity::Problem,
     };
     let profile = results
         .columns
@@ -643,6 +653,9 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
         ObservationKind::NotAllowed => "Not allowed",
         ObservationKind::OutOfRange => "Out of range",
         ObservationKind::UnparsedNumber => "Unparsed numbers",
+        ObservationKind::Clipping => "Clipping",
+        ObservationKind::ZeroRuns => "Runs of zeros",
+        ObservationKind::DcOffset => "DC offset",
     };
     let affected_rows = match kind {
         // One group per normalized value; the column's cost is all of them.
@@ -754,6 +767,11 @@ fn finding(results: &DataQualityResults, indices: &[usize]) -> Finding {
             )
         }
         ObservationKind::Absent | ObservationKind::TypeConflict => first.fact.clone(),
+        // An audio measurement says its runs or its mean itself; across channels, the
+        // worst channel's.
+        ObservationKind::Clipping | ObservationKind::ZeroRuns | ObservationKind::DcOffset => {
+            first.fact.clone()
+        }
         ObservationKind::KeyRepeated => {
             match results.intent.as_ref().and_then(|i| i.key.as_ref()) {
                 Some(key) => format!(
@@ -1417,6 +1435,15 @@ pub fn advice(finding: &Finding) -> Vec<String> {
         (Some(ObservationKind::UnparsedNumber), _) => {
             &["A cast makes them null; check the values or the reading (Setup, e)"]
         }
+        (Some(ObservationKind::Clipping), _) => {
+            &["Cut flat at the limit; lower the gain at the source, nothing restores it"]
+        }
+        (Some(ObservationKind::ZeroRuns), _) => {
+            &["Dropouts mid-recording; digital silence if at the start or end"]
+        }
+        (Some(ObservationKind::DcOffset), _) => {
+            &["A constant bias that eats headroom; a high-pass filter removes it"]
+        }
         (None, _) => &[],
     };
     lines.iter().map(|line| line.to_string()).collect()
@@ -1666,6 +1693,21 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
             | ObservationKind::OutOfRange
             | ObservationKind::UnparsedNumber),
         ) => describe_intent(kind, finding, results, &mut evidence),
+        Some(
+            kind @ (ObservationKind::Clipping
+            | ObservationKind::ZeroRuns
+            | ObservationKind::DcOffset),
+        ) => {
+            for index in &finding.observations {
+                let observation = observation(index);
+                evidence.push(format!("{}: {}", observation.column, observation.fact));
+            }
+            match kind {
+                ObservationKind::Clipping => format!("{of} in runs at full scale"),
+                ObservationKind::ZeroRuns => format!("{of} in runs of exact zeros"),
+                _ => "Mean away from zero".to_string(),
+            }
+        }
         Some(ObservationKind::Absent | ObservationKind::TypeConflict) => {
             let observation = observation(&finding.observations[0]);
             // Read from the footers, so the denominator is the whole loaded source
@@ -1947,6 +1989,7 @@ mod tests {
             normalized_category: None,
             files: Vec::new(),
             time_format: None,
+            full_scale: None,
         }
     }
 

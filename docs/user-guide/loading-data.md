@@ -92,6 +92,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | GGUF | `.gguf` | header only | |
 | NMEA 0183 | `.nmea` | read once to a temporary file | |
 | GPX | `.gpx` | read once to a temporary file | |
+| WAV, BWF, RF64, AIFF | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | yes | |
 | [Binary records](binary-formats.md) | any, through a format spec | yes | |
 
 **Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
@@ -243,6 +244,46 @@ To look at a track:
 | A rough map | Chart, XY, Scatter, X axis `lon`, Y series `lat` |
 | Dropouts | Sort by `gap`, largest first; or in [Data Quality](data-quality.md#declare-what-a-column-must-hold) declare a range for `gap`, such as at most 2, and each dropout is **Out of range** |
 | Speed spikes | The same for `speed`; Analysis also counts its outliers |
+
+### Audio files
+
+```bash
+datui take.wav
+datui take.wav --normalize      # integer samples as float in [-1, 1]
+```
+
+An uncompressed audio file opens as a table with one row per sample frame:
+`frame`, `seconds` from the start, and one column per channel.
+The file is mapped and only the frames on screen are decoded, so a recording
+of many gigabytes opens at once and scrolls to any point as fast as to the
+first. The row count comes from the file's size.
+
+| Containers | Samples |
+|---|---|
+| WAV, Broadcast WAV, RF64/BW64, `WAVE_FORMAT_EXTENSIBLE` | 8-, 16-, 24- and 32-bit integer; 32- and 64-bit float |
+| AIFF, AIFF-C (`NONE`, `twos`, `sowt`, `fl32`, `fl64`, `in24`, `in32`) | The same |
+
+- Channels are `ch1`, `ch2`, ... An extensible file's channel mask names them
+  instead: `L`, `R`, `C`, `LFE`, `BL`, `BR`, `SL`, `SR`, and so on.
+- Integer samples stay integer: 24-bit is `i32`, and 8-bit WAV, stored
+  unsigned, is shown signed. `--normalize` shows them as `f32` in [-1, 1];
+  float samples are never rescaled.
+- A data size of 0 or a placeholder, as a recorder writes until it stops, is
+  read as everything to the end of the file. A size past the end of the file
+  is cut to what the file holds, and the Audio tab says so. A plain WAV past
+  4 GiB, whose 32-bit data size wrapped, is read to its whole length.
+- Files are recognized by their first bytes too, so a WAV or AIFF with any
+  name opens.
+- Compressed audio (A-law, mu-law, ADPCM, MP3, FLAC) is refused with its name.
+
+Press <kbd>i</kbd> for the [Audio tab](dataset-info.md#audio): the format,
+sample rate, length, the Broadcast WAV (`bext`), iXML and `LIST INFO`
+fields, and the `cue `/`MARK` markers with their labels.
+
+A line chart of a long recording draws each step's lowest and highest sample
+([Charting](charting.md#large-tables)), and a full
+[Data Quality](data-quality.md) run reports clipping, runs of zeros and DC
+offset.
 
 ### CSV options
 

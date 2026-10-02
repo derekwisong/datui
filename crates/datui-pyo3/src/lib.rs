@@ -36,7 +36,7 @@ fn parse_compression(s: &str) -> PyResult<CompressionFormat> {
 fn parse_format(s: &str) -> PyResult<FileFormat> {
     FileFormat::from_extension(s).ok_or_else(|| {
         PyValueError::new_err(format!(
-            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx (got {:?})",
+            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, wav, aiff (got {:?})",
             s
         ))
     })
@@ -58,6 +58,7 @@ fn format_to_str(f: FileFormat) -> &'static str {
         FileFormat::Gguf => "gguf",
         FileFormat::Nmea => "nmea",
         FileFormat::Gpx => "gpx",
+        FileFormat::Audio => "audio",
     }
 }
 

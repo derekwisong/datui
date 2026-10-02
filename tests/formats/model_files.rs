@@ -282,7 +282,15 @@ fn a_model_file_is_known_by_its_bytes_whatever_it_is_named() {
 #[test]
 fn a_corrupt_header_is_an_error_not_a_crash() {
     let dir = common::fixture_dir();
-    let cases: [(&str, Vec<u8>); 3] = [
+    // A real file with its last bytes missing, as a download cut short leaves it.
+    let cut = |name: &str| {
+        let mut bytes = std::fs::read(models().join(name)).unwrap();
+        bytes.truncate(bytes.len() - 1);
+        bytes
+    };
+    let cases: [(&str, Vec<u8>); 5] = [
+        ("cut.safetensors", cut("tiny.safetensors")),
+        ("cut.gguf", cut("tiny.gguf")),
         // A header length of nearly 2^64.
         ("huge.safetensors", {
             let mut b = u64::MAX.to_le_bytes().to_vec();

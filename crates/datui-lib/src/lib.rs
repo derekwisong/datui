@@ -16900,6 +16900,7 @@ impl App {
                 path,
                 options,
                 writer,
+                read,
                 progress,
                 download,
             } => {
@@ -16919,8 +16920,9 @@ impl App {
                         crate::error_display::user_message_from_report(&e, Some(path.as_path()))
                     };
                     let format = options.format.unwrap_or(FileFormat::Nmea);
-                    let converted = crate::gps::convert(&file, &path, format, &options, &writer)
-                        .map_err(named)?;
+                    let converted =
+                        crate::gps::convert(&file, &path, format, &options, &writer, &read)
+                            .map_err(named)?;
                     // The converted file is an Arrow IPC file, scanned like one.
                     let (state, facts, debug_label) = Self::build_schema_state(
                         converted.lf,
@@ -17025,6 +17027,7 @@ impl App {
                             },
                         },
                         Scan::Gps { file, .. } => LoadAnswer::Gps {
+                            bytes: std::fs::metadata(&file).map_or(0, |m| m.len()),
                             file,
                             path,
                             options,

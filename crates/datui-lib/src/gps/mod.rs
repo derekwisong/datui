@@ -21,6 +21,7 @@ pub mod table;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -180,9 +181,31 @@ fn ipc_fields(schema: &Schema) -> Vec<polars_arrow::io::ipc::IpcField> {
     polars_arrow::io::ipc::write::default_ipc_fields(arrow.iter_values())
 }
 
-/// The file, decompressed as it is read when its name or `--compression` says so.
-fn open_reader(file: &Path, options: &OpenOptions) -> Result<Box<dyn Read>> {
-    let f = BufReader::new(File::open(file)?);
+/// A reader that counts the bytes read through it, for the loading screen.
+struct Counted<'a, R> {
+    inner: R,
+    read: &'a AtomicU64,
+}
+
+impl<R: Read> Read for Counted<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+/// The file, decompressed as it is read when its name or `--compression` says so;
+/// `read` counts the bytes of the file as stored.
+fn open_reader<'a>(
+    file: &Path,
+    options: &OpenOptions,
+    read: &'a AtomicU64,
+) -> Result<Box<dyn Read + 'a>> {
+    let f = BufReader::new(Counted {
+        inner: File::open(file)?,
+        read,
+    });
     Ok(
         match options
             .compression
@@ -198,15 +221,16 @@ fn open_reader(file: &Path, options: &OpenOptions) -> Result<Box<dyn Read>> {
 }
 
 /// Read `file` (named `display` to the user) as `format` into temporary IPC files,
-/// written through `writer`.
+/// written through `writer`, counting the bytes of `file` read in `read`.
 pub(crate) fn convert(
     file: &Path,
     display: &Path,
     format: FileFormat,
     options: &OpenOptions,
     writer: &Writer,
+    read: &AtomicU64,
 ) -> Result<Converted> {
-    let mut reader = open_reader(file, options)?;
+    let mut reader = open_reader(file, options, read)?;
     let mut segments = Segments::new(options, writer);
     let mut chunk = vec![0u8; CHUNK];
     let mut next = |chunk: &mut [u8]| -> Result<usize> {
@@ -449,6 +473,7 @@ mod tests {
             FileFormat::Gpx,
             &options(out_dir.path()),
             &writer,
+            &AtomicU64::default(),
         )
         .unwrap();
         assert_eq!(converted.files.len(), 2);
@@ -471,15 +496,22 @@ mod tests {
         std::io::Write::write_all(&mut enc, log.as_bytes()).unwrap();
         std::fs::write(&path, enc.finish().unwrap()).unwrap();
         let writer = Writer::default();
+        let read = AtomicU64::default();
         let converted = convert(
             &path,
             &path,
             FileFormat::Nmea,
             &options(dir.path()),
             &writer,
+            &read,
         )
         .unwrap();
         assert_eq!(converted.lf.clone().collect().unwrap().height(), 1);
+        assert_eq!(
+            read.load(Ordering::Relaxed),
+            std::fs::metadata(&path).unwrap().len(),
+            "the bytes read are counted as stored, compressed"
+        );
         let summaries: Vec<_> = converted.notes.iter().map(|n| n.summary.as_str()).collect();
         assert!(
             summaries[0].starts_with("1 line is not NMEA"),
@@ -495,6 +527,7 @@ mod tests {
                 ..options(dir.path())
             },
             &writer,
+            &AtomicU64::default(),
         )
         .unwrap();
         assert_eq!(gsv.lf.collect().unwrap().height(), 1);
@@ -507,6 +540,7 @@ mod tests {
                 ..options(dir.path())
             },
             &writer,
+            &AtomicU64::default(),
         );
         assert!(none.err().unwrap().to_string().contains("GSV"));
         let text = dir.path().join("t.txt");
@@ -517,7 +551,8 @@ mod tests {
                 &text,
                 FileFormat::Nmea,
                 &options(dir.path()),
-                &writer
+                &writer,
+                &AtomicU64::default()
             )
             .is_err()
         );

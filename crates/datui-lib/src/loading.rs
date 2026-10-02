@@ -187,13 +187,13 @@ pub(crate) enum Phase {
         read: Arc<AtomicU64>,
     },
     Decompressing,
-    /// Arrow IPC streams being converted to one IPC file: `read` of their `total` bytes.
+    /// A file being converted to one the dataset scans, `read` of its `total` bytes:
+    /// Arrow IPC streams to one IPC file, or a GPS log to its table. `what` says which.
     Converting {
+        what: &'static str,
         read: Arc<AtomicU64>,
         total: u64,
     },
-    /// A GPS log being read into a file the dataset scans.
-    ReadingGps,
     /// A CSV read with its string columns parsed.
     ScanningStrings,
     /// The scan; `downloaded` when it reads a download rather than what was named.
@@ -221,13 +221,12 @@ impl Phase {
             Phase::Downloading => ("Downloading", 20),
             Phase::Spooling { .. } => ("Reading stdin", 5),
             Phase::Decompressing => ("Decompressing", 30),
-            Phase::Converting { read, total } => {
+            Phase::Converting { what, read, total } => {
                 let done = read.load(Ordering::Relaxed).min(*total);
                 // Up to the scan of the converted file that follows.
                 let share = (done * 20).checked_div(*total).unwrap_or(0);
-                ("Converting Arrow stream", 10 + share as u16)
+                (what, 10 + share as u16)
             }
-            Phase::ReadingGps => ("Reading GPS log", 30),
             Phase::ScanningStrings => ("Scanning string columns", 55),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
@@ -341,13 +340,15 @@ pub(crate) enum Step {
         writer: Writer,
         read: Arc<AtomicU64>,
     },
-    /// Read the GPS log in `file` into a file of its own through `writer`, then its
-    /// schema, reporting to `progress`; `path` names it on screen and in errors.
+    /// Read the GPS log in `file` into a file of its own through `writer`, counting
+    /// its bytes in `read`, then its schema, reporting to `progress`; `path` names it
+    /// on screen and in errors.
     ReadGps {
         file: PathBuf,
         path: PathBuf,
         options: OpenOptions,
         writer: Writer,
+        read: Arc<AtomicU64>,
         progress: Arc<FooterProgress>,
         /// The download `file` is, given to the dataset built from it.
         download: Option<TempDownload>,
@@ -426,9 +427,11 @@ pub(crate) enum LoadAnswer {
         path: Option<PathBuf>,
         options: OpenOptions,
     },
-    /// The scan found a GPS log, `file`, to read into a file of its own first.
+    /// The scan found a GPS log, `file` of `bytes` (as stored), to read into a file of
+    /// its own first.
     Gps {
         file: PathBuf,
+        bytes: u64,
         path: Option<PathBuf>,
         options: OpenOptions,
     },
@@ -892,6 +895,7 @@ impl Loader {
             ) if load.converted.is_none() => {
                 let read = Arc::<AtomicU64>::default();
                 load.phase = Phase::Converting {
+                    what: "Converting Arrow stream",
                     read: read.clone(),
                     total: bytes,
                 };
@@ -951,17 +955,24 @@ impl Loader {
             (
                 LoadAnswer::Gps {
                     file,
+                    bytes,
                     path,
                     options,
                 },
                 Phase::Scanning { .. } | Phase::ScanningStrings,
             ) => {
-                load.phase = Phase::ReadingGps;
+                let read = Arc::<AtomicU64>::default();
+                load.phase = Phase::Converting {
+                    what: "Reading GPS log",
+                    read: read.clone(),
+                    total: bytes,
+                };
                 Step::ReadGps {
                     path: path.unwrap_or_else(|| file.clone()),
                     file,
                     options,
                     writer: load.writer.clone(),
+                    read,
                     progress: load.progress.clone(),
                     download: load.download.as_ref().map(|fetched| fetched.file.clone()),
                 }
@@ -973,7 +984,7 @@ impl Loader {
                     options,
                     debug_label,
                 },
-                Phase::ReadingSchema | Phase::Decompressing | Phase::ReadingGps,
+                Phase::ReadingSchema | Phase::Decompressing | Phase::Converting { .. },
             ) => {
                 load.phase = Phase::FirstRows;
                 // The dataset was built holding its download (`Step::ReadSchema`); the
@@ -1639,6 +1650,7 @@ mod tests {
     fn a_gps_log_the_scan_found_is_converted() {
         let convert = || LoadAnswer::Gps {
             file: PathBuf::from("drive.nmea"),
+            bytes: 200,
             path: Some(PathBuf::from("drive.nmea")),
             options: OpenOptions {
                 format: Some(FileFormat::Nmea),
@@ -1648,13 +1660,22 @@ mod tests {
         let mut loader = Loader::default();
         let _ = loader.open(request("drive.nmea"));
         let id = loader.id().unwrap();
-        let Step::ReadGps { file, writer, .. } = answer(&mut loader, id, convert()) else {
+        let Step::ReadGps {
+            file, writer, read, ..
+        } = answer(&mut loader, id, convert())
+        else {
             panic!("the log is converted");
         };
         assert_eq!(file, Path::new("drive.nmea"));
         assert_eq!(
             loader.current().unwrap().phase().label(),
-            ("Reading GPS log", 30)
+            ("Reading GPS log", 10)
+        );
+        read.store(100, Ordering::Relaxed);
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Reading GPS log", 20),
+            "the bar moves with the bytes read"
         );
         assert!(loader.waits());
         assert!(matches!(answer(&mut loader, id, convert()), Step::Nothing));

@@ -53,20 +53,24 @@ pub fn is_stream_head(head: &[u8]) -> bool {
     let Some(message) = rest.get(4..4 + length) else {
         return marked;
     };
-    matches!(
-        MessageRef::read_as_root(message).and_then(|m| m.header()),
-        Ok(Some(MessageHeaderRef::Schema(_)))
-    )
+    begins_schema(message)
 }
+
+/// How much of a long schema message is read to see that it begins like one before the
+/// rest is: the schema table is near the front, its fields and metadata after it.
+const SCHEMA_PREFIX: usize = 64 << 10;
 
 /// Whether the file at `path` is an Arrow IPC stream, by its contents.
 pub fn is_stream_file(path: &Path) -> bool {
-    let Ok(mut file) = File::open(path) else {
-        return false;
-    };
+    File::open(path).is_ok_and(is_stream)
+}
+
+/// Whether `source` holds an Arrow IPC stream. A file that only happens to start with
+/// a small number, as many binary files do, is read no further than [`SCHEMA_PREFIX`].
+fn is_stream(mut source: impl Read) -> bool {
     let mut head = Vec::new();
     // The marker and the length, then the message the length names.
-    if (&mut file).take(8).read_to_end(&mut head).is_err() {
+    if (&mut source).take(8).read_to_end(&mut head).is_err() {
         return false;
     }
     let at = if head.starts_with(&CONTINUATION) {
@@ -82,11 +86,25 @@ pub fn is_stream_file(path: &Path) -> bool {
     else {
         return false;
     };
-    let rest = (at + 4 + length).saturating_sub(head.len());
-    if file.take(rest as u64).read_to_end(&mut head).is_err() {
+    let mut read_to = |end: usize, head: &mut Vec<u8>| {
+        let more = end.saturating_sub(head.len()) as u64;
+        (&mut source).take(more).read_to_end(head).is_ok()
+    };
+    let start = at + 4;
+    if length > SCHEMA_PREFIX
+        && !(read_to(start + SCHEMA_PREFIX, &mut head) && begins_schema(&head[start..]))
+    {
         return false;
     }
-    is_stream_head(&head)
+    read_to(start + length, &mut head) && is_stream_head(&head)
+}
+
+/// Whether `message`, all or the front of one, is a schema message as far as it goes.
+fn begins_schema(message: &[u8]) -> bool {
+    matches!(
+        MessageRef::read_as_root(message).and_then(|m| m.header()),
+        Ok(Some(MessageHeaderRef::Schema(_)))
+    )
 }
 
 /// The Arrow `paths` that are streams, when they all are, or the reason a mix of
@@ -345,6 +363,45 @@ mod tests {
         ] {
             assert!(!is_stream_head(not), "{not:?}");
         }
+    }
+
+    /// A schema message too long to read whole at a glance is still told by its bytes,
+    /// with or without the marker; a file that only starts with a small number, as
+    /// many binary files do, is read no further than its front.
+    #[test]
+    fn a_long_schema_is_read_but_a_lookalike_is_not() {
+        let names: Vec<String> = (0..3000)
+            .map(|i| format!("a_long_column_name_{i:05}"))
+            .collect();
+        let df = DataFrame::new(
+            1,
+            names
+                .iter()
+                .map(|n| Column::new(n.as_str().into(), [1i32]))
+                .collect(),
+        )
+        .unwrap();
+        for legacy in [false, true] {
+            let bytes = stream(&df, None, legacy);
+            let at = if legacy { 0 } else { 4 };
+            let length = i32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+            assert!(length > SCHEMA_PREFIX, "{length}");
+            assert!(is_stream(&bytes[..]), "legacy: {legacy}");
+        }
+
+        struct Counted<'a>(&'a [u8], usize);
+        impl Read for Counted<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.0.read(buf)?;
+                self.1 += n;
+                Ok(n)
+            }
+        }
+        let mut lookalike = vec![7u8; 12 << 20];
+        lookalike[..4].copy_from_slice(&(10i32 << 20).to_le_bytes());
+        let mut source = Counted(&lookalike, 0);
+        assert!(!is_stream(&mut source));
+        assert!(source.1 <= 4 + SCHEMA_PREFIX, "read {}", source.1);
     }
 
     /// Streams of every kind, compressed or not, with or without the markers, become

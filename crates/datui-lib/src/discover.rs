@@ -463,6 +463,10 @@ pub fn how_read(entry: &Entry) -> Option<HowRead> {
     };
     let choice = match &entry.format_spec {
         Some(name) => crate::cli::FormatChoice::Spec(name.clone()),
+        // A table inside a database, at its path inside it (`shop.db/orders`).
+        None if entry.table.is_some() => {
+            crate::cli::FormatChoice::Builtin(crate::FileFormat::Sqlite)
+        }
         None => crate::cli::FormatChoice::Builtin(data_format(&entry.path)?),
     };
     let mode = choice.read_mode(stored)?;
@@ -2506,6 +2510,14 @@ mod classification_tests {
         let mut spec = Entry::for_test(Path::new("/d/day.l2.zst"), "day.l2.zst");
         spec.format_spec = Some("acme.l2feed".into());
         assert_eq!(how_read(&spec).map(|h| h.mode), Some(Converted));
+        at("/d/shop.db", Lazy, false);
+        at("s3://b/shop.sqlite", Lazy, true);
+        let mut table = Entry::for_test(Path::new("/d/shop.db/orders"), "orders");
+        table.table = Some(TableOf {
+            kind: "table".into(),
+            internal: false,
+        });
+        assert_eq!(how_read(&table).map(|h| h.mode), Some(Lazy));
         assert_eq!(how_read(&Entry::directory(Path::new("/d/x"))), None);
     }
 

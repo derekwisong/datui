@@ -55,6 +55,9 @@ toml = "1.1"
 flate2 = "1.0"
 # Reading an Avro file's schema back. Also `datui-lib`'s.
 serde_json = "1.0"
+# Decodes fuzz corpus inputs in tests/fuzz_corpus_test.rs as libfuzzer-sys does.
+# Already in fuzz/Cargo.lock; the test checks both lockfiles agree on its version.
+arbitrary = { version = "1", features = ["derive"] }
 
 # A pseudo-terminal for tests/startup_test.rs. Also `datui-lib`'s.
 [target.'cfg(unix)'.dev-dependencies]
@@ -116,8 +119,12 @@ files = [
 [profile.dev]
 debug = "line-tables-only"
 
+# Dependencies at opt-level 1: Polars unoptimized makes every test slow and every
+# test executable large. Our own crates stay at 0 so edits rebuild fast; the cost is
+# a slower cold dependency build, paid when the lockfile or toolchain changes.
 [profile.dev.package."*"]
 debug = false
+opt-level = 1
 
 # improve the performance of color-eyre for debug builds
 [profile.dev.package.backtrace]

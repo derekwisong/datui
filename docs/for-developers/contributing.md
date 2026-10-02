@@ -53,7 +53,7 @@ The hooks also check trailing whitespace and unexpectedly large files.
 cargo fmt
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ./scripts/dev/test.sh integration TARGET FILTER  # select the changed behavior's tests
-./scripts/code/fuzz.sh replay    # if you touched a parser or matcher
+./scripts/dev/test.sh integration fuzz_corpus_test  # if you touched a parser or matcher
 ```
 
 Use the [test selection policy](tests.md#select-the-checks) to broaden related

@@ -123,22 +123,20 @@ jobs:
       - name: Run clippy without default features
         run: ./scripts/dev/test.sh features none
 
-  # Replay the committed fuzz corpus. This does not look for new bugs — that is the
-  # Nightly workflow's job — it re-runs every input already known to be interesting and
-  # fails if one of them starts crashing again. Deterministic and quick, so it can gate
-  # every pull request.
+  # The fuzz crate is its own workspace, so nothing else here compiles it. A check
+  # keeps the targets building; the corpus itself replays in the test suite
+  # (tests/fuzz_corpus_test.rs), and the Nightly workflow does the fuzzing.
   fuzz:
-    name: Fuzz corpus replay
+    name: Fuzz targets
     runs-on: ubuntu-latest
-    # A cold cache builds Polars with coverage instrumentation: about 20 minutes.
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: stable
 
@@ -149,26 +147,16 @@ jobs:
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
-      # Its own cache key: the fuzz crate is a separate workspace built with coverage
-      # instrumentation, so none of its artifacts are shareable with the ordinary build.
-      # This job runs without a sanitizer (the default in scripts/code/fuzz.sh), which
-      # is what keeps fuzz/target small enough to cache at all.
+      # Its own key: fuzz/Cargo.lock is a separate lockfile.
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: fuzz
+          shared-key: fuzz-check
           workspaces: fuzz
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Installed from source rather than via a marketplace action: every action in
-      # this repository is SHA-pinned, and adding one more third party to the supply
-      # chain for a tool `cargo install` provides is a poor trade. rust-cache restores
-      # ~/.cargo/bin, so this is a no-op on all but the first run.
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
-
-      - name: Replay corpus
-        run: ./scripts/code/fuzz.sh replay
+      - name: Check
+        run: cargo check --manifest-path fuzz/Cargo.toml --locked
 
   # Build with the oldest Rust the manifests declare, so a newer language feature or
   # std API cannot creep in unnoticed. A check is enough: stable runs clippy and the
@@ -244,6 +232,13 @@ jobs:
           shared-key: tests
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # A prebuilt binary, checksum-verified by the action, rather than minutes of
+      # `cargo install` on a cold cache.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-nextest
+
       # The fixtures are cached under a key holding every input to the generator:
       #   - scripts/generate_sample_data.py, which reads no other file
       #   - scripts/requirements-fixtures.txt: every package it imports, and what
@@ -302,13 +297,18 @@ jobs:
           key: ${{ steps.sample-data.outputs.cache-primary-key }}
 
       - name: Build
-        run: cargo build --workspace --tests --locked
+        run: cargo nextest run --workspace --locked --no-run
 
+      # nextest runs each test in its own process, every binary at once. The
+      # fixtures are in place by now: a test that generated them itself would
+      # rewrite files other processes have mapped. --no-fail-fast so one failure
+      # does not hide the others; no retries, so a flaky test fails.
       - name: Run tests
-        # --no-fail-fast so one failing test binary does not hide the others. The
-        # macOS and Windows jobs only run on a release version, so a round trip here
-        # costs a re-tag, not a re-push -- finding every failure in one run matters.
-        run: cargo test --workspace --locked --no-fail-fast
+        run: cargo nextest run --workspace --locked --no-fail-fast
+
+      # nextest does not run doctests.
+      - name: Run doctests
+        run: cargo test --doc --workspace --locked
 
       - name: Verify binary exists
         run: test -f target/debug/datui || (echo "Binary not found" && exit 1)

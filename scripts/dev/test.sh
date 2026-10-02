@@ -19,7 +19,7 @@ Usage: scripts/dev/test.sh [--print] COMMAND [ARGS...]
                           Lint datui and datui-lib with no default features, then
                           each feature alone (default: none cloud http sql streaming);
                           --test also runs datui-lib's library tests in each
-  full                    Run the full workspace suite, as CI does
+  full                    Run the full workspace suite (CI runs it under nextest)
 
 Examples:
   scripts/dev/test.sh unit data_quality::

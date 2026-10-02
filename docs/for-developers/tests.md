@@ -2,12 +2,14 @@
 
 ```bash
 ./scripts/dev/setup-test-data.sh   # once: creates .venv and generates the fixtures
-./scripts/dev/test.sh full         # cargo test --workspace --locked --no-fail-fast, as CI runs it
+./scripts/dev/test.sh full         # cargo test --workspace --locked --no-fail-fast
 ./scripts/dev/test.sh --help       # the scoped commands
 ```
 
 `cargo test` alone runs only the root package. `--workspace` adds `datui-lib`
-and `datui-cli`, which is what CI runs. The Python bindings are tested
+and `datui-cli`. CI runs the same tests with
+`cargo nextest run --workspace --locked --no-fail-fast`, one process per test,
+then `cargo test --doc --workspace --locked`. The Python bindings are tested
 separately; see [Python Bindings](python-bindings.md#testing).
 
 ## Select the checks
@@ -51,7 +53,8 @@ changes. Run the full suite for cross-cutting App/event-loop, LazyFrame,
 loading/schema, shared configuration, dependency/feature, and harness/layout
 changes. For isolated changes, CI supplies full-workspace coverage; report
 which checks were local. Documentation-only changes do not require Rust tests.
-Replay the fuzz corpus for parser or matcher changes. Do not rerun an unchanged
+Replay the fuzz corpus for parser or matcher changes
+(`./scripts/dev/test.sh integration fuzz_corpus_test`). Do not rerun an unchanged
 broad check merely because another small scoped check finished.
 
 Select multiple affected targets explicitly when needed:
@@ -173,6 +176,7 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | `tests/home_test.rs`, `tests/search_test.rs`, `tests/locality_test.rs` | Home screen, recursive search, filesystem detection |
 | `tests/config_test.rs`, `tests/config_integration_test.rs`, `tests/theme_application_test.rs` | Configuration and themes |
 | `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |
+| `tests/fuzz_corpus_test.rs` | Every committed fuzz corpus input through its target's body in `fuzz/src/`; see [Fuzzing](fuzzing.md) |
 | `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
 | `tests/common/` | Shared helpers |
 

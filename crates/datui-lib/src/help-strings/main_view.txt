@@ -14,7 +14,7 @@ Navigation:
                     its rows (Esc comes back); elsewhere, inspect the row
   Space:            Inspect the row: every field, each value whole and
                     exact (Esc or Space closes). The bar's first chip
-                    names the key: Enter, or Space where Enter drills
+                    says what Enter does: Inspect, or Drill
 
 Data Operations:
   /:                Query: SQL, Search or q-style

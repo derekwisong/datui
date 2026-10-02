@@ -56,8 +56,8 @@ pub enum ControlBarSpec {
         query_active: bool,
         /// True when `q` pops to the home screen instead of quitting.
         q_pops: bool,
-        /// True when Enter inspects the row: there is nothing to drill into.
-        enter_inspects: bool,
+        /// True when Enter drills into the row's group rather than inspecting it.
+        enter_drills: bool,
     },
     /// Custom keybinding list for this view (e.g. analysis or chart).
     Custom(Vec<(&'static str, &'static str)>),
@@ -161,10 +161,10 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
                 query_active,
                 q_pops: app.opened_from_home,
                 // From the table alone, so the chip holds still under a dimming sidebar.
-                enter_inspects: app
+                enter_drills: app
                     .data_table_state
                     .as_ref()
-                    .is_some_and(|state| !state.can_drill_down()),
+                    .is_some_and(|state| state.can_drill_down()),
             }
         }
         MainViewContent::Analysis => ControlBarSpec::Custom(analysis_control_keys(app)),

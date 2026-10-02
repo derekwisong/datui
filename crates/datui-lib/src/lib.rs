@@ -26041,13 +26041,13 @@ impl Widget for &mut App {
                 dimmed,
                 query_active,
                 q_pops,
-                enter_inspects,
+                enter_drills,
             } => {
                 controls = controls
                     .with_dimmed(dimmed)
                     .with_query_active(query_active)
                     .with_q_pops(q_pops)
-                    .with_enter_inspects(enter_inspects);
+                    .with_enter_drills(enter_drills);
             }
             crate::render::main_view::ControlBarSpec::Custom(pairs) => {
                 controls = controls.with_custom_controls(pairs);

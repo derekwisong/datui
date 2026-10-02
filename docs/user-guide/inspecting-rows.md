@@ -7,7 +7,9 @@ closes it.
 <kbd>Enter</kbd> opens it too, except on a row of a `by` query or a SQL
 `GROUP BY`, where <kbd>Enter</kbd>
 [drills into the group](querying-data.md#drill-into-a-group-by) and <kbd>Space</kbd> inspects.
-The bottom bar's first chip names the key: `Enter Inspect` or `Space Inspect`.
+The bottom bar's first chip says what <kbd>Enter</kbd> does: `Enter Inspect`,
+or `Enter Drill` where it drills. On a narrow terminal it yields to
+`? Help`.
 
 The title counts the rows: `Row 3 of 60`. Inside a drill-down it counts the
 group's rows and names the group, `Row 3 of 20 · region=north`, since the

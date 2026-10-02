@@ -11225,8 +11225,9 @@ fn test_drill_from_lists_keeps_a_null_key_and_names_only_keys() {
 }
 
 /// Enter where there is nothing to drill into opens the row inspector, as Space does,
-/// and the control bar's inspect chip names it; on a `by` view Enter still drills, and
-/// inside the group, where there is nothing further, it inspects again. Esc closes.
+/// and the control bar's first chip says `Enter Inspect`; on a `by` view Enter still
+/// drills and the chip says `Enter Drill`; inside the group, where there is nothing
+/// further, it inspects again. Esc closes.
 #[test]
 fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_nothing.csv");
@@ -11250,13 +11251,19 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     app.event(&AppEvent::Search("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let grouped = painted(&mut app, &rx, &tx, area);
-    assert_eq!(inspect_key(&grouped), "Space", "Enter drills here");
+    assert!(
+        grouped.contains(" Enter  Drill "),
+        "Enter drills here: {grouped}"
+    );
+    assert!(!grouped.contains("Inspect"), "{grouped}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(app.input_mode, InputMode::Normal, "Enter drilled");
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
 
-    painted(&mut app, &rx, &tx, area);
+    let inside = painted(&mut app, &rx, &tx, area);
+    assert_eq!(inspect_key(&inside), "Enter");
+    assert!(!inside.contains("Drill"), "{inside}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
     assert_eq!(app.input_mode, InputMode::Inspect);
     press_and_send(&mut app, &tx, KeyCode::Esc);
@@ -18941,8 +18948,8 @@ fn open_orders_fixture(dir: &Path) -> (App, mpsc::Receiver<AppEvent>, mpsc::Send
     (app, rx, tx)
 }
 
-/// #548 M1: the inspect chip is on the bar at 60 and 80 columns, and a binary
-/// column's type row says binary (D2, D10).
+/// #548 M1: the inspect chip leads the bar from 80 columns up; at 60×20 Help keeps
+/// its place and Inspect yields. A binary column's type row says binary (D2, D10).
 #[test]
 fn test_inspect_chip_and_binary_type_at_narrow_and_wide_sizes() {
     let dir = tempfile::tempdir().unwrap();
@@ -18951,7 +18958,15 @@ fn test_inspect_chip_and_binary_type_at_narrow_and_wide_sizes() {
         let text = painted(&mut app, &rx, &tx, Rect::new(0, 0, width, height));
         let rows = rows_at(&mut app, width, height);
         let bar = rows.last().unwrap();
-        assert!(bar.contains("Enter  Inspect"), "{width}x{height}: {bar}");
+        assert!(bar.contains("?  Help"), "{width}x{height}: {bar}");
+        if width >= 80 {
+            assert!(
+                bar.trim_start().starts_with("Enter  Inspect"),
+                "{width}x{height}: {bar}"
+            );
+        } else {
+            assert!(!bar.contains("Inspect"), "{width}x{height}: {bar}");
+        }
         if width == 200 {
             // The type row, not the `‹binary›` stub in the cells.
             assert!(text.contains(" binary"), "{text}");

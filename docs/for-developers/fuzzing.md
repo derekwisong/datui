@@ -23,8 +23,8 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `tests/fuzz_corpus_test.rs` | Replays `fuzz/corpus/<target>/` through the same `run`, as an ordinary test |
 
 The test decodes each input as libfuzzer-sys does (`Arbitrary::arbitrary_take_rest`
-over `Unstructured`), runs the empty input as libFuzzer does, and fails on a panic. Its
-decoding matches the fuzzer's only while `Cargo.lock` and `fuzz/Cargo.lock` resolve the
+over `Unstructured`), runs the empty input as libFuzzer does, and fails on any panic,
+even one the code catches, as the fuzzer's panic hook does. Its decoding matches the fuzzer's only while `Cargo.lock` and `fuzz/Cargo.lock` resolve the
 same `arbitrary`; the test checks that too. Put new checks in `run`. A new target needs
 a line in the test, which fails until its corpus is replayed.
 

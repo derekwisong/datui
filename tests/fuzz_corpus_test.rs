@@ -2,7 +2,8 @@
 //!
 //! The same check as `scripts/code/fuzz.sh replay`, without the instrumented build:
 //! the bodies in `fuzz/src/` are included as they are, and each input is decoded the
-//! way libfuzzer-sys decodes it. A panic fails the test, as it would crash the fuzzer.
+//! way libfuzzer-sys decodes it. A panic fails the test, as it would crash the fuzzer,
+//! even one the target catches itself.
 //! Its own target: `config_parse` removes `NO_COLOR` from the environment.
 
 // The bodies name the library as the fuzz crate does.
@@ -26,6 +27,8 @@ use arbitrary::{Arbitrary, Unstructured};
 use std::collections::BTreeSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
+use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const FUZZ_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fuzz");
 
@@ -40,9 +43,26 @@ fn fuzz<'a, T: Arbitrary<'a>>(bytes: &'a [u8], run: fn(T)) {
     }
 }
 
+static PANICS: AtomicUsize = AtomicUsize::new(0);
+
+/// libfuzzer-sys's panic hook aborts on any panic, so one caught inside the code under
+/// test, or raised on a Polars thread and handed back, still crashes the fuzzer. Count
+/// every panic for the same verdict.
+fn count_panics() {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let default = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            PANICS.fetch_add(1, Ordering::SeqCst);
+            default(info);
+        }));
+    });
+}
+
 /// What libFuzzer runs with `-runs=0`: the empty input, then every corpus file. A
 /// `&[u8]` target would take each one as it is, without `fuzz`.
 fn replay(target: &str, failures: &mut Vec<String>, run: impl Fn(&[u8])) {
+    count_panics();
     let dir = Path::new(FUZZ_DIR).join("corpus").join(target);
     let mut inputs = vec![("<empty>".to_string(), Vec::new())];
     for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
@@ -52,13 +72,22 @@ fn replay(target: &str, failures: &mut Vec<String>, run: impl Fn(&[u8])) {
     }
     assert!(inputs.len() > 1, "{} holds no inputs", dir.display());
     for (name, bytes) in inputs {
-        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| run(&bytes))) {
-            let message = payload
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_default();
-            failures.push(format!("{target}/{name}: {message}"));
+        let before = PANICS.load(Ordering::SeqCst);
+        match panic::catch_unwind(AssertUnwindSafe(|| run(&bytes))) {
+            Err(payload) => {
+                let message = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                failures.push(format!("{target}/{name}: {message}"));
+            }
+            Ok(()) if PANICS.load(Ordering::SeqCst) != before => {
+                failures.push(format!(
+                    "{target}/{name}: a panic was caught inside the target"
+                ));
+            }
+            Ok(()) => {}
         }
     }
 }

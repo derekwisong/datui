@@ -358,7 +358,6 @@ pub struct DataTableState {
     /// Shared with any view that scans it, and removed with the last.
     decompress_temp_file: Option<Arc<Decompressed>>,
     /// The downloaded remote file this dataset was opened from, held while it is scanned.
-    #[cfg(any(feature = "http", feature = "cloud"))]
     download: Option<crate::download::TempDownload>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     polars_streaming: bool,
@@ -804,7 +803,6 @@ pub struct OpenFacts {
     /// [`DataTableState::not_the_table`].
     pub not_the_table: Option<&'static str>,
     /// The downloaded file the frame scans, held for as long as the state lives.
-    #[cfg(any(feature = "http", feature = "cloud"))]
     pub download: Option<crate::download::TempDownload>,
 }
 
@@ -1660,7 +1658,6 @@ impl DataTableState {
             reshape_source: None,
             partition_columns: None,
             decompress_temp_file: None,
-            #[cfg(any(feature = "http", feature = "cloud"))]
             download: None,
             polars_streaming,
             defer_collect: false,
@@ -1789,7 +1786,6 @@ impl DataTableState {
             reshape_source: None,
             partition_columns,
             decompress_temp_file: None,
-            #[cfg(any(feature = "http", feature = "cloud"))]
             download: None,
             polars_streaming: options.polars_streaming,
             defer_collect: false,
@@ -1816,7 +1812,6 @@ impl DataTableState {
             measurements,
             open_notes,
             not_the_table,
-            #[cfg(any(feature = "http", feature = "cloud"))]
             download,
         } = facts;
         debug_assert!(
@@ -1855,10 +1850,7 @@ impl DataTableState {
         self.measurements = measurements;
         self.open_notes = open_notes;
         self.not_the_table = not_the_table;
-        #[cfg(any(feature = "http", feature = "cloud"))]
-        {
-            self.download = download;
-        }
+        self.download = download;
         self
     }
 
@@ -5111,10 +5103,7 @@ impl DataTableState {
         view.remote_source = self.remote_source;
         // It scans the same file, and a view captured from it must be refused too.
         view.decompress_temp_file = self.decompress_temp_file.clone();
-        #[cfg(any(feature = "http", feature = "cloud"))]
-        {
-            view.download = self.download.clone();
-        }
+        view.download = self.download.clone();
         Ok(view)
     }
 
@@ -5932,7 +5921,6 @@ impl DataTableState {
 
     /// Whether the frame scans a downloaded remote file, removed when datui lets go of
     /// it; see [`Self::scans_a_temp_file`].
-    #[cfg(any(feature = "http", feature = "cloud"))]
     pub fn scans_a_download(&self) -> bool {
         self.download.is_some()
     }
@@ -5941,7 +5929,6 @@ impl DataTableState {
     /// a decompressed copy, a download.
     pub(crate) fn temp_files(&self) -> Vec<&Path> {
         let files = self.decompress_temp_file.iter().map(|file| file.path());
-        #[cfg(any(feature = "http", feature = "cloud"))]
         let files = files.chain(self.download.iter().map(|download| download.path()));
         files.collect()
     }
@@ -10782,7 +10769,6 @@ mod tests {
 
     /// Data Quality's evidence rows read the downloaded file the dataset scans, so
     /// they hold it too: a view captured there is refused like the dataset's own.
-    #[cfg(any(feature = "http", feature = "cloud"))]
     #[test]
     fn evidence_rows_hold_the_download_they_scan() {
         let dir = tempfile::tempdir().unwrap();

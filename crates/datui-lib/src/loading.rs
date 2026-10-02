@@ -26,16 +26,16 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use polars::prelude::LazyFrame;
 
+use crate::download::TempDownload;
 use crate::schema_union::FooterProgress;
 use crate::unfinished::{Unfinished, Writer};
 use crate::widgets::datatable::DataTableState;
-use crate::{CompressionFormat, FileFormat, OpenOptions, source};
+use crate::{CompressionFormat, FileFormat, OpenOptions, source, stdin};
 
-#[cfg(any(feature = "http", feature = "cloud"))]
-use crate::download::TempDownload;
 #[cfg(any(feature = "http", feature = "cloud"))]
 use crate::jobs::{Hold, Jobs};
 
@@ -138,13 +138,15 @@ impl OpenRequest {
     /// Kept as named, since what is installed may be a download's temporary copy.
     pub(crate) fn named(paths: Vec<PathBuf>, options: OpenOptions) -> Self {
         let first = &paths[0];
-        let local = matches!(source::input_source(first), source::InputSource::Local(_));
+        let piped = stdin::is_stdin(first);
+        let local = !piped && matches!(source::input_source(first), source::InputSource::Local(_));
         let size = if local {
             std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
         } else {
             0
         };
-        let recent = (!local || first.exists()).then(|| first.clone());
+        // Standard input cannot be opened again from a list.
+        let recent = (!piped && (!local || first.exists())).then(|| first.clone());
         Self {
             paths,
             options,
@@ -179,6 +181,10 @@ pub(crate) enum Phase {
     },
     #[cfg(any(feature = "http", feature = "cloud"))]
     Downloading,
+    /// Standard input being read to a file; `read` counts its bytes.
+    Spooling {
+        read: Arc<AtomicU64>,
+    },
     Decompressing,
     /// A CSV read with its string columns parsed.
     ScanningStrings,
@@ -205,6 +211,7 @@ impl Phase {
             Phase::CheckingSize | Phase::Confirming { .. } => ("Checking size", 0),
             #[cfg(any(feature = "http", feature = "cloud"))]
             Phase::Downloading => ("Downloading", 20),
+            Phase::Spooling { .. } => ("Reading stdin", 5),
             Phase::Decompressing => ("Decompressing", 30),
             Phase::ScanningStrings => ("Scanning string columns", 55),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
@@ -224,8 +231,8 @@ impl Phase {
     }
 }
 
-/// A download a load fetched, and the URL it was fetched from.
-#[cfg(any(feature = "http", feature = "cloud"))]
+/// A download a load fetched, and the URL it was fetched from: standard input's `-`
+/// for what was piped in.
 #[derive(Clone)]
 struct Fetched {
     url: PathBuf,
@@ -250,7 +257,6 @@ pub(crate) struct Load {
     progress: Arc<FooterProgress>,
     /// The stop flag again, for the workers that write files, and where they claim them.
     writer: Writer,
-    #[cfg(any(feature = "http", feature = "cloud"))]
     download: Option<Fetched>,
 }
 
@@ -264,9 +270,13 @@ impl Load {
         self.path.as_deref()
     }
 
-    /// The size the screen shows beside the path.
+    /// The size the screen shows beside the path: while standard input is read, what
+    /// has come in so far.
     pub(crate) fn size(&self) -> u64 {
-        self.size
+        match &self.phase {
+            Phase::Spooling { read } => read.load(Ordering::Relaxed),
+            _ => self.size,
+        }
     }
 }
 
@@ -289,6 +299,12 @@ pub(crate) enum Step {
         pending: PendingDownload,
         writer: Writer,
     },
+    /// Read standard input to a file through `writer`, counting its bytes in `read`.
+    Spool {
+        options: OpenOptions,
+        writer: Writer,
+        read: Arc<AtomicU64>,
+    },
     /// Decompress the CSV in `file`, writing through `writer`; `path` names it on screen
     /// and in errors.
     Decompress {
@@ -297,7 +313,6 @@ pub(crate) enum Step {
         options: OpenOptions,
         writer: Writer,
         /// The download `file` is, given to the dataset built from it.
-        #[cfg(any(feature = "http", feature = "cloud"))]
         download: Option<TempDownload>,
     },
     /// Scan `paths`, saying `status` on the control bar; `display` names the dataset when
@@ -315,7 +330,6 @@ pub(crate) enum Step {
         options: OpenOptions,
         progress: Arc<FooterProgress>,
         /// The download the scan reads, given to the dataset built from it.
-        #[cfg(any(feature = "http", feature = "cloud"))]
         download: Option<TempDownload>,
     },
     /// Install the dataset, then read its first rows.
@@ -371,6 +385,11 @@ pub(crate) enum LoadAnswer {
         download: TempDownload,
         options: OpenOptions,
     },
+    /// Standard input, read to a file, and `options` with the format it holds.
+    Spooled {
+        download: TempDownload,
+        options: OpenOptions,
+    },
 }
 
 /// A load put down before it finished: which, and what of it the app has to put down.
@@ -389,8 +408,8 @@ pub(crate) struct Loader {
     /// The last remote file downloaded by an open that installed, kept so opening the
     /// same URL again reads it rather than downloading it again: how `H` re-reads a
     /// download. Let go when different data is opened; the dataset scanning it holds
-    /// the file too, so it is removed once both have let go.
-    #[cfg(any(feature = "http", feature = "cloud"))]
+    /// the file too, so it is removed once both have let go. Standard input, read once,
+    /// is kept the same way.
     kept: Option<Fetched>,
     /// The files every load's workers have written and not yet let go, for quitting to
     /// remove. See [`crate::unfinished`].
@@ -525,7 +544,6 @@ impl Loader {
                 recent: None,
                 writer: self.unfinished.writer(progress.cancel_flag()),
                 progress,
-                #[cfg(any(feature = "http", feature = "cloud"))]
                 download: None,
             });
         }
@@ -565,7 +583,7 @@ impl Loader {
             .as_mut()
             .filter(|load| !matches!(load.phase, Phase::FirstRows))
         {
-            load.path = Some(path);
+            load.path = Some(stdin::named(&path));
         }
     }
 
@@ -587,7 +605,6 @@ impl Loader {
     /// Open `request`: carry on the starting load, or begin one. The last download is
     /// let go unless this opens it again.
     pub(crate) fn open(&mut self, request: OpenRequest) -> Step {
-        #[cfg(any(feature = "http", feature = "cloud"))]
         if !(request.paths.len() == 1
             && self
                 .kept
@@ -603,7 +620,7 @@ impl Loader {
             recent,
         } = request;
         let load = self.start(false);
-        load.path = Some(paths[0].clone());
+        load.path = Some(stdin::named(&paths[0]));
         load.size = size;
         load.recent = recent;
         load.paths = Some(paths.clone());
@@ -623,12 +640,12 @@ impl Loader {
             path: None,
             options,
             progress: load.progress.clone(),
-            #[cfg(any(feature = "http", feature = "cloud"))]
             download: None,
         }
     }
 
-    /// What the open of `paths` does first: decompress, download, or scan.
+    /// What the open of `paths` does first: read standard input, decompress, download,
+    /// or scan.
     fn first_step(&mut self, paths: Vec<PathBuf>, options: OpenOptions) -> Step {
         let first = paths[0].clone();
         let src = source::input_source(&first);
@@ -653,6 +670,28 @@ impl Loader {
                 return Step::Crash(message.to_string());
             }
         }
+        if let Some(message) = stdin::refuse(&paths, true) {
+            self.load = None;
+            return Step::Crash(message.to_string());
+        }
+        if stdin::is_stdin(&first) {
+            // Read once: opened again (`H`), the copy on hand is read.
+            if let Some(kept) = self
+                .kept
+                .clone()
+                .filter(|kept| kept.url == first && kept.file.path().exists())
+            {
+                return self.read_download(kept, options);
+            }
+            let load = self.load.as_mut().expect("an open has a load");
+            let read = Arc::<AtomicU64>::default();
+            load.phase = Phase::Spooling { read: read.clone() };
+            return Step::Spool {
+                options,
+                writer: load.writer.clone(),
+                read,
+            };
+        }
         let load = self.load.as_mut().expect("an open has a load");
         let compression = options
             .compression
@@ -669,7 +708,6 @@ impl Loader {
                 path: first,
                 options,
                 writer: load.writer.clone(),
-                #[cfg(any(feature = "http", feature = "cloud"))]
                 download: None,
             };
         }
@@ -708,12 +746,12 @@ impl Loader {
     }
 
     /// Read a download: decompress it first if it is a compressed CSV, else scan it.
-    /// Either way the dataset is named by the URL, not the temporary file.
-    #[cfg(any(feature = "http", feature = "cloud"))]
+    /// Either way the dataset is named by the URL, not the temporary file, and what
+    /// was piped in by `stdin`.
     fn read_download(&mut self, fetched: Fetched, options: OpenOptions) -> Step {
         let load = self.load.as_mut().expect("a download read has a load");
         let file = fetched.file.path().to_path_buf();
-        let url = fetched.url.clone();
+        let url = stdin::named(&fetched.url);
         let download = fetched.file.clone();
         load.download = Some(fetched);
         // A compressed CSV has to be decompressed before it can be scanned, as it is
@@ -769,7 +807,6 @@ impl Loader {
                     path,
                     options,
                     progress: load.progress.clone(),
-                    #[cfg(any(feature = "http", feature = "cloud"))]
                     download: load.download.as_ref().map(|fetched| fetched.file.clone()),
                 }
             }
@@ -785,7 +822,6 @@ impl Loader {
                 load.phase = Phase::FirstRows;
                 // The dataset was built holding its download (`Step::ReadSchema`); the
                 // loader keeps it too, to be read again.
-                #[cfg(any(feature = "http", feature = "cloud"))]
                 if let Some(fetched) = load.download.take() {
                     self.kept = Some(fetched);
                 }
@@ -819,6 +855,14 @@ impl Loader {
                 };
                 self.read_download(fetched, options)
             }
+            (LoadAnswer::Spooled { download, options }, Phase::Spooling { read }) => {
+                load.size = read.load(Ordering::Relaxed);
+                let fetched = Fetched {
+                    url: PathBuf::from(stdin::PATH),
+                    file: download,
+                };
+                self.read_download(fetched, options)
+            }
             _ => Step::Nothing,
         }
     }
@@ -834,16 +878,15 @@ impl Loader {
         }
         let from_home = load.from_home;
         // A download is read from a temp file the user never typed: the reason names
-        // the URL they did.
-        #[cfg(any(feature = "http", feature = "cloud"))]
+        // the URL they did, or `stdin`.
         let message = match &load.download {
-            Some(fetched) => {
-                crate::error_display::named_by_source(message, fetched.file.path(), &fetched.url)
-            }
+            Some(fetched) => crate::error_display::named_by_source(
+                message,
+                fetched.file.path(),
+                &stdin::named(&fetched.url),
+            ),
             None => message.to_string(),
         };
-        #[cfg(not(any(feature = "http", feature = "cloud")))]
-        let message = message.to_string();
         self.retire();
         Step::Failed(Failed { message, from_home })
     }
@@ -1532,5 +1575,120 @@ mod tests {
             &jobs,
         );
         assert!(matches!(step, Step::Decompress { ref path, .. } if path == Path::new(url)));
+    }
+
+    /// Standard input is read to a file first, its bytes counted on the loading
+    /// screen, then scanned or decompressed as `stdin`; it is no recent, and opened
+    /// again the copy on hand is read rather than the spent pipe.
+    #[test]
+    fn stdin_is_spooled_then_read_as_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut loader = Loader::default();
+        let request = OpenRequest::named(vec![PathBuf::from("-")], OpenOptions::default());
+        assert_eq!(request.recent, None, "not recorded in recents");
+        let Step::Spool { writer, read, .. } = loader.open(request) else {
+            panic!("standard input is read first");
+        };
+        let id = loader.id().unwrap();
+        let load = loader.current().unwrap();
+        assert_eq!(load.phase().label(), ("Reading stdin", 5));
+        assert_eq!(load.path(), Some(Path::new("stdin")));
+        read.store(1234, Ordering::Relaxed);
+        assert_eq!(loader.current().unwrap().size(), 1234, "what has come in");
+        assert!(loader.waits());
+
+        let file = {
+            use std::io::Write;
+            let mut file = TempDownload::create(Some(dir.path()), None).unwrap();
+            file.write_all(b"a\n1\n").unwrap();
+            TempDownload::keep(file)
+        };
+        let at = file.path().to_path_buf();
+        let options = OpenOptions {
+            format: Some(FileFormat::Csv),
+            ..Default::default()
+        };
+        let Step::Scan { paths, display, .. } = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Spooled {
+                download: file,
+                options: options.clone(),
+            },
+        ) else {
+            panic!("the file is scanned");
+        };
+        assert_eq!(paths, vec![at.clone()]);
+        assert_eq!(display.as_deref(), Some(Path::new("stdin")));
+        let Step::ReadSchema {
+            download: Some(_), ..
+        } = answer(&mut loader, id, scanned("stdin"))
+        else {
+            panic!("the dataset holds the file");
+        };
+        let Step::Install(loaded) = answer(&mut loader, id, schema_read("stdin")) else {
+            panic!("installs");
+        };
+        assert_eq!(loaded.recent, None);
+        assert_eq!(loaded.paths.as_deref(), Some(&[PathBuf::from("-")][..]));
+        loader.first_rows_settled();
+        drop(writer);
+
+        let Step::Scan { paths, display, .. } =
+            loader.open(OpenRequest::named(vec![PathBuf::from("-")], options))
+        else {
+            panic!("the copy on hand is read again");
+        };
+        assert_eq!(paths, vec![at]);
+        assert_eq!(display.as_deref(), Some(Path::new("stdin")));
+
+        // Standard input with another path cannot be read.
+        assert!(loader.make_way().is_some());
+        let step = loader.open(OpenRequest::named(
+            vec![PathBuf::from("-"), PathBuf::from("a.csv")],
+            OpenOptions::default(),
+        ));
+        assert!(matches!(step, Step::Crash(_)));
+    }
+
+    /// A compressed CSV piped in is decompressed as `stdin`; putting the read down
+    /// stops its writer, which removes the partial file.
+    #[test]
+    fn piped_compressed_csv_is_decompressed_and_a_stop_reaches_the_spool() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut loader = Loader::default();
+        let Step::Spool { writer, .. } = loader.open(OpenRequest::named(
+            vec![PathBuf::from("-")],
+            OpenOptions::default(),
+        )) else {
+            panic!("spool");
+        };
+        assert!(loader.make_way().is_some(), "Ctrl+O puts it down");
+        assert!(writer.stopped(), "and the spool stops at its next chunk");
+
+        let Step::Spool { .. } = loader.open(OpenRequest::named(
+            vec![PathBuf::from("-")],
+            OpenOptions::default(),
+        )) else {
+            panic!("spool");
+        };
+        let id = loader.id().unwrap();
+        let file = TempDownload::keep(TempDownload::create(Some(dir.path()), None).unwrap());
+        let step = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Spooled {
+                download: file,
+                options: OpenOptions {
+                    format: Some(FileFormat::Csv),
+                    compression: Some(CompressionFormat::Gzip),
+                    ..Default::default()
+                },
+            },
+        );
+        assert!(matches!(
+            step,
+            Step::Decompress { ref path, download: Some(_), .. } if path == Path::new("stdin")
+        ));
     }
 }

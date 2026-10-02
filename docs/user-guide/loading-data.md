@@ -8,7 +8,39 @@ datui --hive "/data/events/**/*.parquet"       # a glob (quote it)
 datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/   # public S3; gs:// and abfss:// too
 datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
 datui --format csv https://example.com/export  # force the format when the name gives no hint
+cat data.csv | datui                           # data piped in
+datui - < events.parquet                       # `-` reads standard input
 ```
+
+## Standard input
+
+`datui -` reads the data piped to it, and so does `datui` with no path when
+something is piped in. Keys still come from the terminal.
+
+```bash
+xsv select id,amount sales.csv | datui
+curl -s https://example.com/export.csv.gz | datui
+datui --no-header - < raw.txt
+```
+
+The data is written to a temporary file as it arrives, in `--temp-dir` or the
+`temp_dir` setting when given, then read like any file. The loading screen counts the bytes read;
+<kbd>Ctrl</kbd>+<kbd>O</kbd> stops the read and removes the file. The file is
+removed when datui exits.
+
+The format comes from the first bytes, unless `--format` or `--compression`
+names it:
+
+| First bytes | Read as |
+|---|---|
+| Parquet, Arrow IPC or Avro magic number | that format |
+| gzip, zstd, bzip2 or xz magic number | compressed CSV |
+| `[` | JSON |
+| `{` | NDJSON |
+| anything else | CSV |
+
+The CSV options below apply. The dataset is named `stdin`. It is not added to
+recent datasets, and [views](views.md) match it by its columns only.
 
 ## Directories
 

@@ -44,7 +44,14 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
             let mut config = config;
             apply_args(&mut config, &args);
             let opts = OpenOptions::from_args_and_config(&args, &config);
-            (RunInput::Paths(args.paths, opts), config)
+            // Only the command line reads standard input: a host such as Python has
+            // its own, and it is not data.
+            let piped = crate::stdin::piped();
+            let paths = crate::stdin::paths_or_stdin(args.paths, piped);
+            if let Some(refused) = crate::stdin::refuse(&paths, piped) {
+                return Err(color_eyre::eyre::eyre!(refused));
+            }
+            (RunInput::Paths(paths, opts), config)
         }
         input => (input, config),
     };
@@ -151,7 +158,9 @@ pub(crate) fn named_paths(input: &RunInput) -> &[PathBuf] {
 
 /// The path to name on the screen drawn while the settings are read.
 pub(crate) fn named(input: &RunInput) -> Option<PathBuf> {
-    named_paths(input).first().cloned()
+    named_paths(input)
+        .first()
+        .map(|path| crate::stdin::named(path))
 }
 
 /// The screen while the settings are slow to read. The theme and the glyph set are

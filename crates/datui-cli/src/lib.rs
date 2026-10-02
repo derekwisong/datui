@@ -244,7 +244,8 @@ pub fn examples() -> Vec<Example> {
 pub struct Args {
     /// Path(s) to the data file(s) to open.
     /// Multiple files of the same format are concatenated into one table.
-    /// With no PATH, datui opens its home screen so you can pick a dataset.
+    /// `-` reads data piped to standard input, as does no PATH when something is piped in.
+    /// With no PATH and nothing piped in, datui opens its home screen so you can pick a dataset.
     #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
@@ -577,14 +578,31 @@ mod tests {
         let examples = examples();
         assert!(examples.len() >= 4);
         for example in &examples {
-            assert!(example.command.starts_with("datui"), "{example:?}");
+            // A pipe into datui is a command too.
+            assert!(
+                example.command.starts_with("datui") || example.command.contains("| datui"),
+                "{example:?}"
+            );
             assert!(!example.description.is_empty(), "{example:?}");
         }
         let listed = EXAMPLES
             .lines()
-            .filter(|l| l.trim_start().starts_with("datui"))
+            .filter(|l| l.starts_with("  ") && !l.starts_with("   "))
             .count();
         assert_eq!(listed, examples.len());
+    }
+
+    /// `-` is a path like any other to the parser: standard input, with the reading
+    /// flags beside it.
+    #[test]
+    fn a_dash_names_standard_input() {
+        let args = Args::try_parse_from(["datui", "-", "--format", "jsonl"]).unwrap();
+        assert_eq!(args.paths, vec![std::path::PathBuf::from("-")]);
+        assert_eq!(args.format, Some(FileFormat::Jsonl));
+        let args = Args::try_parse_from(["datui", "--delimiter", "59", "-"]).unwrap();
+        assert_eq!(args.paths, vec![std::path::PathBuf::from("-")]);
+        assert_eq!(args.delimiter, Some(b';'));
+        assert!(EXAMPLES.contains("| datui"), "the help shows a pipe");
     }
 
     #[test]

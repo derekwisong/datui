@@ -65,7 +65,6 @@ pub mod copy_modal;
 pub mod data_quality;
 pub mod discover;
 pub mod distribution_fit;
-#[cfg(any(feature = "http", feature = "cloud"))]
 pub mod download;
 pub mod error_display;
 pub mod event_pump;
@@ -118,6 +117,7 @@ mod sql_assist;
 pub mod sql_group;
 pub mod startup;
 pub mod statistics;
+pub mod stdin;
 pub mod template;
 pub mod terminal_input;
 mod unfinished;
@@ -10953,8 +10953,9 @@ impl App {
         let remote = state.is_remote_source();
         // A local path made whole, so the report names the file wherever it is read;
         // no file system access.
+        let piped = self.reads_stdin();
         let location = self.path.as_ref().map(|path| {
-            match std::path::absolute(path).ok().filter(|_| !remote) {
+            match std::path::absolute(path).ok().filter(|_| !remote && !piped) {
                 Some(path) => path.display().to_string(),
                 None => path.display().to_string(),
             }
@@ -11823,6 +11824,24 @@ impl App {
     /// assert an abandoned load did not swap a dataset in after the fact.
     pub fn open_path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Whether the dataset on screen was piped in: named `stdin`, with no file behind
+    /// that name.
+    fn reads_stdin(&self) -> bool {
+        self.opened
+            .as_ref()
+            .is_some_and(|(paths, _)| matches!(paths.as_slice(), [path] if stdin::is_stdin(path)))
+    }
+
+    /// What views are matched against: the dataset's path, or for what was piped in
+    /// `-`, which no path criterion fits, so it matches by its columns alone.
+    fn view_path(&self) -> Option<&Path> {
+        if self.reads_stdin() {
+            Some(Path::new(stdin::PATH))
+        } else {
+            self.path.as_deref()
+        }
     }
 
     /// Whether any leased background work, current or abandoned, has yet to report
@@ -13440,10 +13459,10 @@ impl App {
                     None
                 }
             },
-            None if self.app_config.templates.auto_apply => self.path.clone().and_then(|path| {
+            None if self.app_config.templates.auto_apply => self.view_path().and_then(|path| {
                 self.data_table_state.as_ref().and_then(|state| {
                     self.template_manager
-                        .get_most_relevant(&path, state.source_schema())
+                        .get_most_relevant(path, state.source_schema())
                 })
             }),
             None => None,
@@ -15765,12 +15784,13 @@ impl App {
     }
 
     /// The first named local path that is not there. A URL or a glob is left to the
-    /// open, which says what it found.
+    /// open, which says what it found, and standard input is no path.
     pub fn missing_named_path(paths: &[PathBuf]) -> Option<PathBuf> {
         paths
             .iter()
             .find(|path| {
                 !source::is_remote_url(path)
+                    && !crate::stdin::is_stdin(path)
                     && !path.to_string_lossy().contains('*')
                     && !path.exists()
             })
@@ -16541,12 +16561,31 @@ impl App {
                     })))
                 });
             }
+            Step::Spool {
+                options,
+                writer,
+                read,
+            } => {
+                // The read is a thread of its own, so a producer gone quiet does not hold
+                // up the stop: Ctrl+O and quitting remove the partial file at once.
+                self.spawn_job(job, Some("Reading stdin..."), move |_| {
+                    let (download, options) = crate::stdin::spool(
+                        || Ok((std::io::stdin(), None)),
+                        options,
+                        &writer,
+                        &read,
+                    )?;
+                    Ok(Answer::Load(Box::new(LoadAnswer::Spooled {
+                        download,
+                        options,
+                    })))
+                });
+            }
             Step::Decompress {
                 file,
                 path,
                 options,
                 writer,
-                #[cfg(any(feature = "http", feature = "cloud"))]
                 download,
             } => {
                 // Only a CSV comes this way; said, so it can have its header turned off.
@@ -16560,7 +16599,6 @@ impl App {
                             crate::error_display::user_message_from_report(&e, Some(path.as_path()))
                         })?
                         .with_open(OpenFacts {
-                            #[cfg(any(feature = "http", feature = "cloud"))]
                             download,
                             ..Default::default()
                         });
@@ -16623,7 +16661,6 @@ impl App {
                 path,
                 options,
                 progress,
-                #[cfg(any(feature = "http", feature = "cloud"))]
                 download,
             } => {
                 self.debug.schema_load = None;
@@ -16647,11 +16684,7 @@ impl App {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
                     })?;
                     // Everything the open found, given to the dataset as it is built.
-                    let state = state.with_open(OpenFacts {
-                        #[cfg(any(feature = "http", feature = "cloud"))]
-                        download,
-                        ..facts
-                    });
+                    let state = state.with_open(OpenFacts { download, ..facts });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
                         state: Box::new(state),
                         path,
@@ -18418,7 +18451,7 @@ impl App {
     /// Rebuild the list's rows from the store, scored and annotated against
     /// the open dataset; the selection stays near where it was.
     fn refresh_view_list(&mut self) {
-        let (Some(state), Some(path)) = (&self.data_table_state, &self.path) else {
+        let (Some(state), Some(path)) = (&self.data_table_state, self.view_path()) else {
             return;
         };
         let rows: Vec<ViewRow> = self
@@ -18465,7 +18498,8 @@ impl App {
                 .suggest_name(self.path.as_deref(), query.as_deref()),
         );
 
-        if let Some(ref path) = self.path {
+        // Data piped in has no file to pin; its columns are what match it.
+        if let Some(path) = self.path.as_ref().filter(|_| !self.reads_stdin()) {
             // Pin this file: its absolute path or URL, its path relative to the
             // working directory when it is local and under it, and glob suggestions.
             let absolute_path = template::exact_location(path);
@@ -18638,7 +18672,7 @@ impl App {
     /// The selected view's score breakdown, for the list's `i` popup.
     fn view_score_details(&self) -> Option<(String, String)> {
         let state = self.data_table_state.as_ref()?;
-        let path = self.path.as_ref()?;
+        let path = self.view_path()?;
         let idx = self.template_modal.table_state.selected()?;
         let row = self.template_modal.rows.get(idx)?;
         let template = &row.template;
@@ -21918,7 +21952,7 @@ impl App {
                 // does, the answer is not silence and not the best-scored stranger: the
                 // list opens, so the user sees what exists and picks — or saves one.
                 if let Some(ref state) = self.data_table_state
-                    && let Some(ref path) = self.path
+                    && let Some(path) = self.view_path()
                 {
                     match self
                         .template_manager
@@ -24580,8 +24614,10 @@ impl App {
             .opened
             .as_ref()
             .is_some_and(|(paths, _)| paths.len() > 1);
+        let piped = self.reads_stdin();
         let Some(path) = self.path.clone().filter(|path| {
             !several
+                && !piped
                 && !source::is_remote_url(path)
                 && !source::is_prefix_or_glob(&path.to_string_lossy())
         }) else {
@@ -26006,7 +26042,6 @@ impl App {
         let Some(state) = &self.data_table_state else {
             return Ok(None);
         };
-        #[cfg(any(feature = "http", feature = "cloud"))]
         if state.scans_a_download() {
             return Err(color_eyre::eyre::eyre!(
                 "cannot return this view: the data was downloaded to a temporary file \

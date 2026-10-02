@@ -37,7 +37,7 @@ struct Dirs {
 impl Dirs {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        for dir in ["config/datui", "cache", "home", "data"] {
+        for dir in ["config/datui", "cache", "home", "data", "tmp"] {
             std::fs::create_dir_all(root.path().join(dir)).unwrap();
         }
         Self { root }
@@ -64,6 +64,24 @@ impl Dirs {
     }
 
     fn spawn(&self, args: &[&Path]) -> Session {
+        self.spawn_with(args, None)
+    }
+
+    /// As [`Self::spawn`], with standard input a pipe the test writes and the
+    /// pseudo-terminal the binary's controlling terminal, so keys still reach it through
+    /// `/dev/tty`. Its temporary files go to `tmp`.
+    fn spawn_piped(&self, args: &[&Path]) -> (Session, std::io::PipeWriter) {
+        let (reader, writer) = std::io::pipe().unwrap();
+        (self.spawn_with(args, Some(reader)), writer)
+    }
+
+    /// Where a piped run spools standard input.
+    fn tmp(&self) -> PathBuf {
+        self.root.path().join("tmp")
+    }
+
+    fn spawn_with(&self, args: &[&Path], piped: Option<std::io::PipeReader>) -> Session {
+        use std::os::unix::process::CommandExt;
         let mut master = 0;
         let mut slave = 0;
         let size = libc::winsize {
@@ -87,7 +105,8 @@ impl Dirs {
         let (master, slave) =
             unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
         let root = self.root.path();
-        let child = Command::new(env!("CARGO_BIN_EXE_datui"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_datui"));
+        command
             .args(args)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -98,12 +117,31 @@ impl Dirs {
             .env("XDG_CACHE_HOME", root.join("cache"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("DATUI_CACHE_DIR", root.join("cache/datui"))
-            .current_dir(root.join("data"))
-            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .env("TMPDIR", self.tmp())
+            .current_dir(root.join("data"));
+        match piped {
+            Some(reader) => {
+                command.stdin(Stdio::from(reader));
+                // SAFETY: setsid and ioctl are async-signal-safe. A session of its own,
+                // with the pseudo-terminal (its stdout) as the controlling terminal: what
+                // `/dev/tty` opens when standard input is not a terminal.
+                unsafe {
+                    command.pre_exec(|| {
+                        if libc::setsid() < 0 || libc::ioctl(1, libc::TIOCSCTTY, 0) < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
+            None => {
+                command.stdin(Stdio::from(slave.try_clone().unwrap()));
+            }
+        }
+        command
             .stdout(Stdio::from(slave.try_clone().unwrap()))
-            .stderr(Stdio::from(slave))
-            .spawn()
-            .expect("the binary starts");
+            .stderr(Stdio::from(slave));
+        let child = command.spawn().expect("the binary starts");
         Session {
             child,
             master: std::fs::File::from(master),
@@ -374,4 +412,99 @@ fn an_unusable_config_ends_the_run_with_its_error() {
     let out = String::from_utf8_lossy(&session.out);
     assert!(out.contains("Unsupported config version"), "{out}");
     assert!(out.contains("Fix the configuration"), "{out}");
+}
+
+/// The files in `dir`.
+fn files_in(dir: &Path) -> usize {
+    std::fs::read_dir(dir).unwrap().count()
+}
+
+/// `bytes` gzipped.
+fn gzipped(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+/// A one-row Parquet file whose label is `ROWMARK`.
+fn parquet() -> Vec<u8> {
+    use polars::prelude::*;
+    let mut df = df!("id" => [0i64], "label" => ["ROWMARK"]).unwrap();
+    let mut out = Vec::new();
+    ParquetWriter::new(&mut out).finish(&mut df).unwrap();
+    out
+}
+
+/// CSV, gzipped CSV, NDJSON and Parquet piped to `datui -` each open, their format
+/// read from their first bytes; keys reach the app through the terminal meanwhile,
+/// and the spooled file is gone once it quits.
+#[test]
+fn data_piped_in_opens_in_its_format() {
+    let csv = b"id,label\n0,ROWMARK\n1,second\n".to_vec();
+    let cases = [
+        ("csv", csv.clone()),
+        ("gzip csv", gzipped(&csv)),
+        (
+            "ndjson",
+            b"{\"id\": 0, \"label\": \"ROWMARK\"}\n{\"id\": 1, \"label\": \"x\"}\n".to_vec(),
+        ),
+        ("parquet", parquet()),
+    ];
+    for (name, body) in cases {
+        let dirs = Dirs::new();
+        let (mut session, mut pipe) = dirs.spawn_piped(&[Path::new("-")]);
+        pipe.write_all(&body).unwrap();
+        drop(pipe);
+        session.wait_for_screen("ROWMARK");
+        let drawn = screen(&session.out).join("\n");
+        // Read as text, a JSON line or a binary file would show its quotes and braces.
+        assert!(
+            !drawn.contains('"') && !drawn.contains('{'),
+            "{name}:\n{drawn}"
+        );
+        session.type_keys(CTRL_Q);
+        assert!(session.wait_exit().success(), "{name}");
+        assert_eq!(
+            files_in(&dirs.tmp()),
+            0,
+            "{name}: the spooled file is removed"
+        );
+    }
+}
+
+/// No path and data piped in reads it. A producer that is slow shows what has come
+/// in so far, and Ctrl+O while it is read puts the read down and removes the partial
+/// file, though the producer has not finished.
+#[test]
+fn a_slow_producer_shows_progress_and_ctrl_o_removes_the_partial_file() {
+    const CTRL_O: &[u8] = b"\x0f";
+    let dirs = Dirs::new();
+    let (mut session, mut pipe) = dirs.spawn_piped(&[]);
+    pipe.write_all(b"id,label\n0,ROWMARK\n").unwrap();
+    session.wait_for_screen("Reading stdin");
+    session.wait_for_screen("19 B");
+    assert_eq!(files_in(&dirs.tmp()), 1, "the partial file is there");
+    session.type_keys(CTRL_O);
+    let deadline = Instant::now() + HANG_GUARD;
+    while files_in(&dirs.tmp()) > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the partial file was never removed"
+        );
+        session.read_some();
+    }
+    session.type_keys(CTRL_Q);
+    assert!(session.wait_exit().success());
+    drop(pipe);
+}
+
+/// `datui -` with nothing piped in says so, rather than reading the keyboard as data.
+#[test]
+fn a_dash_with_a_terminal_on_stdin_says_nothing_is_piped() {
+    let dirs = Dirs::new();
+    let mut session = dirs.spawn(&[Path::new("-")]);
+    let status = session.wait_exit();
+    assert_eq!(status.code(), Some(1));
+    let out = String::from_utf8_lossy(&session.out);
+    assert!(out.contains("Nothing is piped"), "{out}");
 }

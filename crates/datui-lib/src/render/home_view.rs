@@ -838,7 +838,9 @@ fn section_header<'a>(
     // The title gives way to the note only down to three cells; below that the note
     // goes instead, since a heading that is all note and no title says nothing. The
     // origin chip goes before the note does: it is the shorter word and the one that
-    // says what the section is.
+    // says what the section is. A cell of rule always stays: its weight is how
+    // the cursor shows on a heading, and a long path would otherwise take it all.
+    const MIN_RULE: usize = 1;
     let mut note = note;
     let mut origin = origin;
     let mut origin_cells = origin_cells;
@@ -848,18 +850,19 @@ fn section_header<'a>(
         + 1
         + origin_cells
         + note.chars().count()
-        + 2;
+        + 2
+        + MIN_RULE;
     if width.saturating_sub(fixed) < 3 {
         note = String::new();
-        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + origin_cells + 2;
+        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + origin_cells + 2 + MIN_RULE;
     }
     if width.saturating_sub(fixed) < 3 {
         origin = String::new();
         origin_cells = 0;
-        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + 2;
+        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + 2 + MIN_RULE;
     }
     title = truncate_start(&title, width.saturating_sub(fixed));
-    let rule_w = width.saturating_sub(fixed + title.chars().count());
+    let rule_w = width.saturating_sub(fixed + title.chars().count()) + MIN_RULE;
 
     // A title on a rule, not a filled bar: the accent carries the title, the count
     // sits in a flat chip, and the rule runs out to the provenance note. The section
@@ -2846,6 +2849,38 @@ mod tests {
             !bare.contains("configured") && !bare.contains("nfs4"),
             "{bare:?}"
         );
+    }
+
+    /// A path longer than the line still leaves the rule a cell, so the cursor on the
+    /// heading shows (#575).
+    #[test]
+    fn a_long_path_leaves_the_focused_heading_its_rule() {
+        let ctx = RenderContext::for_test();
+        let g = glyphs::get();
+        let section = Section {
+            door: None,
+            title: format!("/var/folders/{}", "x".repeat(120)),
+            subtitle: None,
+            origin: Some("configured"),
+            rows: Vec::new(),
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+            grouped_by_place: false,
+            place_labels: Default::default(),
+            root: None,
+        };
+        for width in [40usize, 80, 120] {
+            let text: String = section_header(&section, 60, false, true, width, 0, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(text.chars().count(), width, "{text:?}");
+            assert!(text.contains(g.rule_h_focused), "{width}: {text:?}");
+        }
     }
 
     #[test]

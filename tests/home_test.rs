@@ -5923,6 +5923,9 @@ fn test_esc_back_through_a_cloud_source_puts_the_cursor_on_each_row_entered() {
 // ---------------------------------------------------------------------------
 
 /// The home screen at 80×24 over one directory of `files` CSVs, its listing landed.
+///
+/// The directory's name is longer than its heading has room for, so the heading is
+/// cut on every platform rather than only where the temp path is long (#575).
 fn home_at_80x24(
     files: usize,
 ) -> (
@@ -5931,7 +5934,8 @@ fn home_at_80x24(
     std::sync::mpsc::Receiver<datui::AppEvent>,
 ) {
     common::isolate_cache();
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::with_prefix("a-directory-name-longer-than-its-heading-has-room-for-at-80-")
+        .unwrap();
     for i in 0..files {
         touch(tmp.path(), &format!("f{i:02}.csv"));
     }
@@ -6446,6 +6450,7 @@ mod landing {
 /// Footers read after the cursor landed on a door turn it down as one table: the cursor
 /// goes to the first file, as it would have had they been read first. Once the user has
 /// moved, the cursor stays where they put it.
+#[cfg(feature = "cloud")]
 #[test]
 fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
     use datui::discover::{Entry, EntryKind};
@@ -6516,6 +6521,7 @@ fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
 
 /// A prefix in an object store is scanned whole, so the pane does not claim its
 /// subdirectories are skipped.
+#[cfg(feature = "cloud")]
 #[test]
 fn test_a_mixed_prefix_says_it_reads_below() {
     use datui::discover::{Entry, EntryKind};

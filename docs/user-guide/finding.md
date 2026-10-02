@@ -20,7 +20,7 @@ Past the last match <kbd>n</kbd> comes round to the first, and the bar says
 | Key | Action |
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Regex on or off |
-| <kbd>Ctrl</kbd>+<kbd>L</kbd> | Only the current column, or every column shown. The current column is the found cell's, or the first one on screen |
+| <kbd>Ctrl</kbd>+<kbd>L</kbd> | Only the current column, or every column shown. The current column is the one underlined in the header: the found cell's, or the one <kbd>g</kbd> went to, until the columns scroll; otherwise the first past any frozen columns |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Earlier patterns |
 | <kbd>Enter</kbd> | Find |
 | <kbd>Esc</kbd> | Cancel |

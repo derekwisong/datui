@@ -740,6 +740,21 @@ def save_ipc_streams(df):
     )
     print(f"Generated: {cache_dir}")
 
+    # A DatasetDict as `save_to_disk` writes it: `dataset_dict.json` naming a
+    # subdirectory per split, each of `data-*` shards beside its own JSON.
+    # Rows 0-699 are train, 700-999 test.
+    dict_dir = OUTPUT_DIR / "hf_dict"
+    for split, rows in [("train", table.slice(0, 700)), ("test", table.slice(700))]:
+        split_dir = dict_dir / split
+        split_dir.mkdir(parents=True, exist_ok=True)
+        _write_stream(rows, split_dir / "data-00000-of-00001.arrow")
+        (split_dir / "dataset_info.json").write_text(json.dumps({"builder_name": "people"}))
+        (split_dir / "state.json").write_text(
+            json.dumps({"_data_files": [{"filename": "data-00000-of-00001.arrow"}]})
+        )
+    (dict_dir / "dataset_dict.json").write_text(json.dumps({"splits": ["train", "test"]}))
+    print(f"Generated: {dict_dir}")
+
     # IPC files with a stream among them, which is not first.
     import pyarrow as pa
 

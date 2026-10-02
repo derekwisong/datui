@@ -18611,6 +18611,32 @@ impl App {
         Ok(chosen.into_iter().map(|i| files[i].clone()).collect())
     }
 
+    /// One split of a `save_to_disk` DatasetDict, `dir`, whose `dataset_dict.json` names
+    /// `splits`: the subdirectory `--table` names, else the first offered, read as any
+    /// directory is. The others are listed, as a cache directory's are.
+    fn dataset_dict_split(
+        dir: &Path,
+        splits: &[String],
+        options: &OpenOptions,
+        report: &mut ReadReport,
+        formats: &crate::formats::Registry,
+    ) -> Result<Scan> {
+        let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
+        let mut picked = crate::hf_splits::pick(&listed, options.table.as_deref())
+            .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", dir.display()))?;
+        let split = dir.join(picked.split.as_deref().unwrap_or_default());
+        let inner = OpenOptions {
+            table: None,
+            splits: None,
+            ..options.clone()
+        };
+        let scan = Self::build_local_lazyframe(&[split], &inner, report, formats)?;
+        // The split's own directory names no splits; its `map()` files are still counted.
+        picked.caches = report.splits.as_ref().map_or(0, |inner| inner.caches);
+        report.splits = Some(Arc::new(picked));
+        Ok(scan)
+    }
+
     /// Build the LazyFrame for `paths`.
     ///
     /// Takes the cloud config by reference rather than reading `self`, so the same
@@ -18949,6 +18975,11 @@ impl App {
                 // `.json.gz` was opened by seeking each file's last four bytes for a
                 // `PAR1` that was never going to be there — the files were fine, the
                 // reader was never asked to be the right one.
+                if path.is_dir()
+                    && let Some(splits) = crate::hf_splits::dataset_dict(path)
+                {
+                    return Self::dataset_dict_split(path, &splits, options, report, formats);
+                }
                 if path.is_dir() {
                     match crate::discover::directory_format(path) {
                         // Flat and Parquet: the scan below is already right for it.

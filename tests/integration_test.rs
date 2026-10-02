@@ -21194,7 +21194,7 @@ fn a_hugging_face_cache_opens_one_split() {
         AnyValue::Int64(1),
         "shard 0 first"
     );
-    assert_eq!(state.other_tables(), ["test", "validation"]);
+    assert_eq!(state.other_tables(), ["validation", "test"]);
     let notes: Vec<String> = state.notes().into_iter().map(|n| n.summary).collect();
     assert!(
         notes
@@ -21211,14 +21211,47 @@ fn a_hugging_face_cache_opens_one_split() {
     assert_eq!(app.error_message(), None);
     let state = app.data_table_state.as_ref().expect("validation opens");
     assert_eq!(state.num_rows(), 200);
-    assert_eq!(state.other_tables(), ["test", "train"]);
+    assert_eq!(state.other_tables(), ["train", "test"]);
 
     let (app, _scratch) = open(Some("dev"));
     let message = app.error_message().expect("no split named dev");
     assert!(
-        message.contains("No split named dev; this directory holds test, train, validation"),
+        message.contains("No split named dev; this directory holds train, validation, test"),
         "{message}"
     );
+}
+
+/// A DatasetDict saved with `save_to_disk` opens one split's directory, train first,
+/// and names the others; `--table` opens another.
+#[test]
+fn a_saved_dataset_dict_opens_one_split() {
+    common::ensure_sample_data();
+    let open = |table: Option<&str>| {
+        let scratch = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        let options = OpenOptions {
+            temp_dir: Some(scratch.path().to_path_buf()),
+            table: table.map(str::to_string),
+            ..OpenOptions::default()
+        };
+        let dict = PathBuf::from("tests/sample-data/hf_dict");
+        settle_from(&mut app, &rx, AppEvent::Open(vec![dict], options));
+        (app, scratch)
+    };
+    let (app, _scratch) = open(None);
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("train opens");
+    assert_eq!(state.num_rows(), 700);
+    assert_eq!(state.other_tables(), ["test"]);
+    let (app, _scratch) = open(Some("test"));
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("test opens");
+    assert_eq!(state.num_rows(), 300);
+    assert_eq!(state.other_tables(), ["train"]);
+    let (app, _scratch) = open(Some("dev"));
+    let message = app.error_message().expect("no split named dev");
+    assert!(message.contains("No split named dev"), "{message}");
 }
 
 /// A stream among IPC files, not first, is found when the scan fails on it, and the
@@ -22043,30 +22076,36 @@ fn test_copy_as_python_reads_an_arrow_stream() {
     assert_eq!(rows, view_csv(&app), "{script}");
 }
 
-/// A Hugging Face cache's script reads the split on screen, not every file.
+/// A Hugging Face cache's script reads the split on screen, not every file; so does
+/// a saved DatasetDict's.
 #[test]
 fn test_copy_as_python_reads_one_hugging_face_split() {
     common::ensure_sample_data();
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx.clone(), common::test_runtime());
-    let options = OpenOptions {
-        table: Some("test".to_string()),
-        ..OpenOptions::default()
-    };
-    pump_open_until_loaded(
-        &mut app,
-        &rx,
-        vec![PathBuf::from("tests/sample-data/hf_cache")],
-        options,
-    );
-    pump_until_idle(&mut app, &rx, &tx);
-    let Some((rows, script)) = run_python_script(&app) else {
-        eprintln!("skipped: no .venv to run the scripts with");
-        return;
-    };
-    assert!(script.contains("people-test.arrow"), "{script}");
-    assert!(!script.contains("people-train"), "{script}");
-    assert_eq!(rows, view_csv(&app), "{script}");
+    for (dir, read, not) in [
+        ("hf_cache", "people-test.arrow", "people-train"),
+        ("hf_dict", "test/data-00000", "train/"),
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        let options = OpenOptions {
+            table: Some("test".to_string()),
+            ..OpenOptions::default()
+        };
+        pump_open_until_loaded(
+            &mut app,
+            &rx,
+            vec![PathBuf::from(format!("tests/sample-data/{dir}"))],
+            options,
+        );
+        pump_until_idle(&mut app, &rx, &tx);
+        let Some((rows, script)) = run_python_script(&app) else {
+            eprintln!("skipped: no .venv to run the scripts with");
+            return;
+        };
+        assert!(script.contains(read), "{script}");
+        assert!(!script.contains(not), "{script}");
+        assert_eq!(rows, view_csv(&app), "{script}");
+    }
 }
 
 /// The query language's `/` and `%` floor-divide two whole numbers, as Polars' `/`

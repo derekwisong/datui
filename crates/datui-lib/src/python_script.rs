@@ -628,6 +628,13 @@ fn ipc_streams(paths: &[PathBuf], table: Option<&str>) -> Option<Vec<String>> {
             return None;
         }
         if path.is_dir() {
+            // A DatasetDict's split is a directory of its own.
+            let dict_split = crate::hf_splits::dataset_dict(path).and_then(|splits| {
+                let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
+                crate::hf_splits::pick(&listed, table).ok()?.split
+            });
+            let table = if dict_split.is_some() { None } else { table };
+            let path = &dict_split.map_or_else(|| path.clone(), |split| path.join(split));
             let mut inside: Vec<PathBuf> = std::fs::read_dir(path)
                 .ok()?
                 .flatten()

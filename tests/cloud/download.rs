@@ -510,7 +510,7 @@ fn a_prefix_of_hugging_face_splits_opens_one() {
         .as_ref()
         .expect("the train split opens");
     assert_eq!(state.num_rows(), 600);
-    assert_eq!(state.other_tables(), ["test", "validation"]);
+    assert_eq!(state.other_tables(), ["validation", "test"]);
     let notes: Vec<String> = state.notes().into_iter().map(|n| n.summary).collect();
     assert!(
         notes.contains(&"1 cache file written by map() not read".to_string()),

@@ -3453,6 +3453,7 @@ mod tests {
             Field::new("j".into(), DataType::Int32),
             Field::new("u".into(), DataType::UInt8),
             Field::new("f".into(), DataType::Float64),
+            Field::new("s".into(), DataType::String),
         ]);
         let py = |expr: &str| {
             let mut node = parse_node(&tokenize(expr).unwrap()).unwrap();
@@ -3462,9 +3463,10 @@ mod tests {
         // Two whole numbers floor-divide, as Polars' `/` on two expressions does.
         assert_eq!(py("i / j"), "pl.col(\"i\") // pl.col(\"j\")");
         assert_eq!(py("j % i"), "pl.col(\"j\") // pl.col(\"i\")");
+        assert_eq!(py("i / u"), "pl.col(\"i\") // pl.col(\"u\")");
         // A pair Polars has no type for, which fails the query in datui too, and an
         // unknown column stay Python's `/`.
-        assert_eq!(py("i / u"), "pl.col(\"i\") / pl.col(\"u\")");
+        assert_eq!(py("i / s"), "pl.col(\"i\") / pl.col(\"s\")");
         assert_eq!(py("(i mod 3) / j"), "(pl.col(\"i\") % 3) // pl.col(\"j\")");
         // A float on either side, or a number as typed, divides.
         assert_eq!(py("i / f"), "pl.col(\"i\") / pl.col(\"f\")");

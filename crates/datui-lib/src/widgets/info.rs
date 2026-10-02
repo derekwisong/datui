@@ -210,8 +210,14 @@ pub(crate) fn meta_text(value: &crate::model_files::MetaValue) -> String {
     }
 }
 
+/// The most of one metadata value the Model tab draws. A chat template is a few KB and
+/// is shown whole; a GGUF can carry a whole `tokenizer.json` as one string, megabytes
+/// that would be wrapped again on every frame.
+pub(crate) const VALUE_SHOWN_BYTES: usize = 64 * 1024;
+
 /// The metadata as drawn lines: the key on a value's first line, blank under it, and
-/// each value cut at its own newlines and wrapped to what is left of `width`.
+/// each value cut at its own newlines and wrapped to what is left of `width`. A value
+/// past [`VALUE_SHOWN_BYTES`] ends with a line saying how much more there is.
 pub(crate) fn metadata_lines(
     metadata: &[(String, crate::model_files::MetaValue)],
     width: usize,
@@ -225,7 +231,17 @@ pub(crate) fn metadata_lines(
     for (key, value) in metadata {
         let key_cell = format!("{:<w$}  ", clip(key, key_width), w = key_width);
         let blank = " ".repeat(key_width + 2);
-        let text = meta_text(value);
+        // Borrowed, not copied: this runs every frame.
+        let listed;
+        let text = match value {
+            crate::model_files::MetaValue::Text(text) => text.as_str(),
+            other => {
+                listed = meta_text(other);
+                listed.as_str()
+            }
+        };
+        let cut = text.floor_char_boundary(VALUE_SHOWN_BYTES);
+        let (text, more) = (&text[..cut], text.len() - cut);
         let mut first = true;
         for raw in text.split('\n') {
             // Tabs as a space and other control characters dropped, so the widths
@@ -259,6 +275,13 @@ pub(crate) fn metadata_lines(
                 line_width += w;
             }
             push(&mut line, &mut out);
+        }
+        if more > 0 {
+            let g = crate::glyphs::get();
+            out.push((
+                blank,
+                format!("{} {} more", g.ellipsis, format_bytes(more as u64)),
+            ));
         }
     }
     out
@@ -2337,6 +2360,16 @@ mod tests {
                 (key("tags"), "[\"x\", \"y\"]".to_string()),
             ]
         );
+        // A value of megabytes is drawn to its first 64 KiB, and says what is left.
+        let huge = vec![(
+            "tokenizer.huggingface.json".to_string(),
+            MetaValue::Text("x".repeat(VALUE_SHOWN_BYTES + 2048)),
+        )];
+        let lines = metadata_lines(&huge, 80);
+        let last = &lines.last().unwrap().1;
+        assert!(last.ends_with("2.0 KiB more"), "{last}");
+        let drawn: usize = lines[..lines.len() - 1].iter().map(|(_, v)| v.len()).sum();
+        assert_eq!(drawn, VALUE_SHOWN_BYTES);
         assert_eq!(short_count(8_030_261_248), "8.0B");
         assert_eq!(short_count(950), "950");
     }

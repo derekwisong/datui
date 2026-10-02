@@ -21,8 +21,8 @@ for anything else.
 Tabs:
   Schema:      Every column, its type, and which footers the schema came from
   Model:       A SafeTensors or GGUF file's parameter count, size, dtype or
-               quantization mix, and its header metadata, every value whole.
-               Only for model files
+               quantization mix, and its header metadata, each value whole up
+               to 64 KiB. Only for model files
   Resources:   What the data costs to hold and to read
   Partitions:  The layout of a partitioned dataset. Only when it has one
   Notes:       What datui noticed about the data while reading it. Only when

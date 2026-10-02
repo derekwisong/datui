@@ -45,7 +45,9 @@ opens on the Model tab:
 | Types | Each dtype or quantization type's share of the parameters, largest first |
 | Metadata | Key and value: SafeTensors `__metadata__` and the index's `metadata`, or GGUF's key/value pairs |
 
-Values are shown whole; a chat template wraps over as many lines as it takes.
+Values are shown whole up to 64 KiB, so a chat template wraps over as many
+lines as it takes; a longer value, such as a whole `tokenizer.json`, ends with
+how much more there is.
 Arrays of up to 16 items are listed; longer ones, such as a tokenizer's
 vocabulary, show their length (`[128,256 strings]`). Across several files, the
 first file to name a key gives its value.

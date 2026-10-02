@@ -272,6 +272,9 @@ impl PartialEq for Spec {
     }
 }
 
+/// The byte-order mark a text file may start with.
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
+
 /// What a spec's `match` says files of it look like.
 #[derive(Default)]
 struct MatchRules {
@@ -1732,8 +1735,14 @@ impl Spec {
         name.is_some_and(|n| set.is_match(n)) || set.is_match(path)
     }
 
-    /// Whether `head`, the first bytes of a file, carries the spec's magic.
+    /// Whether `head`, the first bytes of a file, carries the spec's magic. A delimited
+    /// spec's magic is the start of the first line, after any byte-order mark.
     pub fn magic_matches(&self, head: &[u8]) -> bool {
+        let head = if self.is_delimited() {
+            head.strip_prefix(UTF8_BOM).unwrap_or(head)
+        } else {
+            head
+        };
         let start = self.magic_offset as usize;
         !self.magic.is_empty() && head.get(start..start + self.magic.len()) == Some(&self.magic)
     }
@@ -1757,7 +1766,12 @@ impl Spec {
         let magic = if self.magic.is_empty() {
             0
         } else {
-            self.magic_offset + self.magic.len() as u64
+            let bom = if self.is_delimited() {
+                UTF8_BOM.len() as u64
+            } else {
+                0
+            };
+            bom + self.magic_offset + self.magic.len() as u64
         };
         let header = if self.expect.is_empty() {
             0
@@ -3729,6 +3743,13 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             panic!("a binary spec does not read several files");
         };
         assert!(e.contains("reads one file"), "{e}");
+        // The magic is the start of the first line, after a byte-order mark.
+        let bom = dir.path().join("bom.csv");
+        std::fs::write(&bom, format!("\u{feff}{LOG_TEXT}")).unwrap();
+        assert!(matches!(
+            route(&bom, &asked, &registry).unwrap(),
+            Route::Delimited(_)
+        ));
         // A CSV whose first line is not the magic is read as it always was.
         let plain = dir.path().join("plain.csv");
         std::fs::write(&plain, "a,b\n1,2\n").unwrap();

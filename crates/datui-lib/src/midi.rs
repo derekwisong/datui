@@ -923,20 +923,15 @@ fn frame(cols: Columns<'_>, many: bool) -> Result<LazyFrame> {
             .with_name(name.into())
             .into())
     };
-    // Polars here has no 8- or 16-bit integers; these widen to u32.
-    let wide = |v: Vec<Option<u8>>| -> Vec<Option<u32>> {
-        v.into_iter().map(|x| x.map(u32::from)).collect()
-    };
-    let track: Vec<u32> = cols.track.into_iter().map(u32::from).collect();
-    columns.push(Series::new("track".into(), track).into());
+    columns.push(Series::new("track".into(), cols.track).into());
     columns.push(Series::new("tick".into(), cols.tick).into());
     columns.push(micros("time", Series::new("time".into(), cols.time))?);
     columns.push(Series::new("kind".into(), cols.kind).into());
-    columns.push(Series::new("channel".into(), wide(cols.channel)).into());
-    columns.push(Series::new("note".into(), wide(cols.note)).into());
+    columns.push(Series::new("channel".into(), cols.channel).into());
+    columns.push(Series::new("note".into(), cols.note).into());
     columns.push(Series::new("note_name".into(), cols.note_name).into());
-    columns.push(Series::new("velocity".into(), wide(cols.velocity)).into());
-    columns.push(Series::new("controller".into(), wide(cols.controller)).into());
+    columns.push(Series::new("velocity".into(), cols.velocity).into());
+    columns.push(Series::new("controller".into(), cols.controller).into());
     columns.push(Series::new("value".into(), cols.value).into());
     columns.push(micros("length", Series::new("length".into(), cols.length))?);
     columns.push(Series::new("text".into(), cols.text).into());
@@ -1135,7 +1130,18 @@ pub(crate) mod tests {
         );
         let names: Vec<_> = col(&df, "note_name").str().unwrap().iter().collect();
         assert_eq!(names[..4], [Some("C4"), Some("E4"), Some("G4"), Some("C4")]);
-        assert_eq!(col(&df, "channel").u32().unwrap().get(0), Some(1));
+        assert_eq!(col(&df, "channel").u8().unwrap().get(0), Some(1));
+        // The narrowest type each holds: a track number past 255 is rare but legal.
+        for (name, dtype) in [
+            ("track", DataType::UInt16),
+            ("channel", DataType::UInt8),
+            ("note", DataType::UInt8),
+            ("velocity", DataType::UInt8),
+            ("controller", DataType::UInt8),
+            ("value", DataType::Int32),
+        ] {
+            assert_eq!(df.column(name).unwrap().dtype(), &dtype, "{name}");
+        }
         assert_eq!(summary.notes, 3);
         assert_eq!(summary.unended, 2, "E4 and G4 never end");
         // 96 ticks at 120 bpm and 96 per quarter is half a second.
@@ -1299,9 +1305,9 @@ pub(crate) mod tests {
         assert_eq!(value.get(2), Some(-3));
         assert_eq!(text.get(3), Some("éa"));
         assert_eq!(kind.get(4), Some("cc"));
-        assert_eq!(col(&df, "controller").u32().unwrap().get(4), Some(64));
+        assert_eq!(col(&df, "controller").u8().unwrap().get(4), Some(64));
         assert_eq!(value.get(4), Some(127));
-        assert_eq!(col(&df, "channel").u32().unwrap().get(4), Some(4));
+        assert_eq!(col(&df, "channel").u8().unwrap().get(4), Some(4));
         assert_eq!(value.get(5), Some(5));
         assert_eq!(value.get(6), Some(-8192));
         assert_eq!(kind.get(7), Some("sysex"));

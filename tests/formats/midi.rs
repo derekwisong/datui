@@ -135,7 +135,7 @@ fn a_midi_file_opens_as_its_events() {
     // The bass's note on at velocity 0 is a note off, ending a note of a second.
     let bass = at("note_on", 4);
     assert_eq!(length[bass], Some(1_000_000));
-    let channel = df.column("channel").unwrap().u32().unwrap();
+    let channel = df.column("channel").unwrap().u8().unwrap();
     assert_eq!(channel.get(bass), Some(2), "channels count from 1");
 
     let state = app.data_table_state.as_ref().unwrap();
@@ -190,7 +190,7 @@ fn format_0_and_smpte_files_keep_their_own_time() {
         micros(&df, "time"),
         [Some(0), Some(0), Some(600_000), Some(600_000)]
     );
-    let channel = df.column("channel").unwrap().u32().unwrap();
+    let channel = df.column("channel").unwrap().u8().unwrap();
     assert_eq!(channel.get(1), Some(10), "the drum channel");
 
     let (app, _rx) = open(midi().join("smpte.mid"));

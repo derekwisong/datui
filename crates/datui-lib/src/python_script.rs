@@ -501,11 +501,18 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<(String, FileFormat
     }
     if path.is_dir() {
         let entries: Vec<std::fs::DirEntry> = std::fs::read_dir(path).ok()?.flatten().collect();
-        let names: Vec<String> = entries
+        let mut names: Vec<String> = entries
             .iter()
             .filter(|e| e.path().is_file())
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
+        // Hugging Face's metadata beside Arrow shards is not data.
+        if names
+            .iter()
+            .any(|n| FileFormat::from_path(Path::new(n)) == Some(FileFormat::Arrow))
+        {
+            names.retain(|n| !crate::discover::is_hugging_face_metadata(n));
+        }
         let has_dirs = entries.iter().any(|e| e.path().is_dir());
         let format = record
             .options
@@ -527,6 +534,36 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<(String, FileFormat
         };
     }
     Some((text, file_format(path, record.options)?, false))
+}
+
+/// The Arrow files the paths name, local and in order, when they are IPC streams
+/// rather than IPC files.
+fn ipc_streams(paths: &[PathBuf]) -> Option<Vec<String>> {
+    let mut files = Vec::new();
+    for path in paths {
+        if is_url(path) {
+            return None;
+        }
+        if path.is_dir() {
+            let mut inside: Vec<PathBuf> = std::fs::read_dir(path)
+                .ok()?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && FileFormat::from_path(p) == Some(FileFormat::Arrow))
+                .collect();
+            inside.sort();
+            files.extend(inside);
+        } else {
+            files.push(path.clone());
+        }
+    }
+    let streams = crate::ipc_stream::streams_among(&files)?.ok()?;
+    Some(
+        streams
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
+    )
 }
 
 /// The extension a glob matches for `format`, for the formats datui reads as many
@@ -662,7 +699,21 @@ pub fn source(record: &OpenRecord) -> Source {
         }
         FileFormat::Jsonl => "pl.scan_ndjson",
         FileFormat::Json => "pl.read_json",
-        FileFormat::Arrow => "pl.scan_ipc",
+        FileFormat::Arrow => match ipc_streams(paths) {
+            // A stream has no footer to scan: read it whole, as datui converts it.
+            Some(streams) => {
+                let call = match streams.as_slice() {
+                    [one] => format!("pl.read_ipc_stream({}).lazy()", py_str(one)),
+                    many => format!(
+                        "pl.concat([pl.read_ipc_stream(f) for f in {}]).lazy()",
+                        py_names(many)
+                    ),
+                };
+                after.extend(skip_tail);
+                return Source::Read { call, after, notes };
+            }
+            None => "pl.scan_ipc",
+        },
         FileFormat::Avro => "pl.read_avro",
         FileFormat::Excel => {
             if let Some(sheet) = &options.excel_sheet {

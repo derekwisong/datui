@@ -21913,3 +21913,37 @@ fn test_copy_as_python_types_json_dates_as_datui_does() {
     assert!(script.contains(".str.to_date("), "{script}");
     assert_eq!(rows, view_csv(&app), "{script}");
 }
+
+/// An Arrow IPC stream has no footer to scan: the script reads it whole.
+#[test]
+fn test_copy_as_python_reads_an_arrow_stream() {
+    let python = Path::new(".venv/bin/python");
+    if !python.exists() {
+        eprintln!("skipped: no .venv to write the stream with");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data-00000-of-00001.arrow");
+    let written = std::process::Command::new(python)
+        .arg("-c")
+        .arg(format!(
+            "import polars as pl\n\
+             pl.DataFrame({{'k': ['a', 'b', 'a'], 'v': [1, 2, 3]}}).write_ipc_stream({:?})",
+            path.display().to_string()
+        ))
+        .status()
+        .unwrap();
+    assert!(written.success());
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select total: sum v by k".into());
+    pump_until_idle(&mut app, &rx, &tx);
+    let (rows, script) = run_python_script(&app).unwrap();
+    assert!(script.contains("pl.read_ipc_stream("), "{script}");
+    assert_eq!(rows, view_csv(&app), "{script}");
+}

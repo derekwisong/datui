@@ -72,6 +72,7 @@ pub mod exact;
 pub mod export;
 pub mod export_modal;
 pub mod filter_modal;
+mod first_rows_trace;
 pub mod fuzzy;
 #[cfg(feature = "cloud")]
 pub mod gcloud;

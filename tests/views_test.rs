@@ -261,4 +261,89 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Enter);
     assert!(app.template_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
+
+    // A view saved on a logger export read with its dialect carries the names as
+    // shown, joined from the header lines and trimmed, so it matches the next export
+    // however that one pads them.
+    let dialect = OpenOptions {
+        comment_char: Some("#".into()),
+        header_rows: vec![3, 2],
+        skip_initial_space: true,
+        parse_strings: Some(datui::ParseStringsTarget::All),
+        ..OpenOptions::default()
+    };
+    let log = |name: &str, header: &str, rows: &[&str]| {
+        let path = test_data_dir.join(name);
+        let mut text = format!("#device_info\n#yyyy-mm-dd, degrees\n{header}\n");
+        for row in rows {
+            text.push_str(row);
+            text.push('\n');
+        }
+        std::fs::write(&path, text).unwrap();
+        path.canonicalize().unwrap()
+    };
+    let first = log(
+        "views_log_a.csv",
+        "  Lcl Date,     Latitude",
+        &["2024-03-01,    40.100000", "2024-03-02,    40.300000"],
+    );
+    let second = log(
+        "views_log_b.csv",
+        "Lcl Date ,Latitude",
+        &["2024-04-01, 41.5", "2024-04-02, 41.9", "2024-04-03, 41.7"],
+    );
+    pump_open_until_loaded(&mut app, &rx, vec![first], dialect.clone());
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["Latitude degrees".to_string()], vec![true]);
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.template_modal.rows[0]
+            .template
+            .match_criteria
+            .schema_columns
+            .as_deref(),
+        Some(
+            &[
+                "Lcl Date yyyy-mm-dd".to_string(),
+                "Latitude degrees".to_string()
+            ][..]
+        ),
+    );
+    press(&mut app, KeyCode::Esc);
+
+    pump_open_until_loaded(&mut app, &rx, vec![second], dialect);
+    press(&mut app, KeyCode::Char('v'));
+    assert_eq!(app.template_modal.rows.len(), 1);
+    assert_eq!(
+        app.template_modal.rows[0].reason,
+        Some(MatchReason::SameColumns)
+    );
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    let df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf()
+        .clone()
+        .collect()
+        .unwrap();
+    let latitudes: Vec<Option<f64>> = df
+        .column("Latitude degrees")
+        .unwrap()
+        .f64()
+        .unwrap()
+        .iter()
+        .collect();
+    assert_eq!(latitudes, [Some(41.9), Some(41.7), Some(41.5)], "applied");
+
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.template_modal.rows.is_empty());
+    press(&mut app, KeyCode::Esc);
 }

@@ -160,7 +160,8 @@ A header that is corrupt, or a tensor that reaches past the end of the file
 ### CSV options
 
 They apply to `.tsv` and `.psv` files too. A directory of CSVs in a bucket takes
-all of them except `--parse-strings` and `--parse-dates`.
+all of them except `--parse-strings`, `--parse-dates` and `--header-rows`, and
+`--skip-initial-space` only removes the padding there: values stay text.
 
 | Option | Config key | What it does |
 |---|---|---|
@@ -168,11 +169,45 @@ all of them except `--parse-strings` and `--parse-dates`.
 | `--no-header` | | The first row is data, not names. <kbd>H</kbd> does the same, or undoes it, on the file on screen |
 | `--skip-lines N`, `--skip-rows N` | | Ignore a preamble |
 | `--skip-tail-rows N` | | Ignore a footer. Counts every row first: on a directory in a bucket, that downloads every file before the table opens |
-| `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`). Repeatable |
+| `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`, the name as shown). Repeatable |
+| `--comment-char '#'` | `comment_char` | Skip lines that start with it, before the header and among the data. The header is the first line that is not a comment |
+| `--header-rows 3`, `--header-rows 3,2` | `header_join` | The line or lines holding the header, counted from 1 at the top of the file. Several are joined per column, in the order given, with `header_join` (default a space) |
+| `--skip-initial-space` | `skip_initial_space` | Ignore the spaces after a delimiter: padded numbers are numbers and a cell of spaces is null |
 | `--infer-schema-length 10000` | `infer_schema_length` | Rows used to infer column types (default 1000). Raise it when a column turns from integer to text late in the file |
 | `--ignore-errors` | `ignore_errors` | Skip rows that fail to parse instead of failing the load |
 | `--parse-dates=false` | `parse_dates` | Stop parsing date-looking strings as Date and Datetime |
 | `--parse-strings=COL`, `--no-parse-strings` | | Trim and type-infer string columns; limit it to named columns, or turn it off |
+
+Column names are always trimmed: `"     Latitude"` reads as `Latitude`. A blank
+name reads as `column_N`, and a repeated one gets `_duplicated_0`.
+
+### Instrument and logger exports
+
+Loggers often write comments and a units line above a padded header:
+
+```
+#device_info, log_version="1.03", model="X", serial="123"
+#yyyy-mm-dd, hh:mm:ss, hh:mm, degrees, volts, deg F
+  Lcl Date, Lcl Time, UTCOfst,     Latitude, bus1volts, E1 CHT1
+          ,         ,        ,             ,      25.1,   187.2
+```
+
+| Command | Columns |
+|---|---|
+| `datui --comment-char '#' log.csv` | `Lcl Date`, `Latitude`, …; `#` lines anywhere are skipped |
+| `datui --comment-char '#' --header-rows 3,2 log.csv` | `Lcl Date yyyy-mm-dd`, `Latitude degrees`, … |
+| `datui --header-rows 3 log.csv` | `Lcl Date`, `Latitude`, …; lines 1 and 2 are passed over |
+
+`--header-rows` counts lines before anything is skipped, and a named line that
+starts with the comment character loses it. `--skip-lines` counts from the same
+top; `--skip-rows` counts data rows after the header. <kbd>H</kbd> reads the
+named lines as data.
+
+Padded numbers become numbers with or without `--skip-initial-space`, as long
+as string parsing is on (the default). With the flag, cells of spaces are null
+in text columns too, `--null-value` matches the value without its padding, and
+every text column is typed as `--parse-strings` types it, even with
+`--no-parse-strings`.
 
 ### Dates and timestamps
 

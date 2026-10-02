@@ -498,6 +498,35 @@ fn an_arrow_stream_piped_in_opens() {
     assert_eq!(files_in(&dirs.tmp()), 0, "both temp files are removed");
 }
 
+/// A padded logger export piped in, gzipped, reads with its dialect: the header from
+/// the lines `--header-rows` names past the comments, the padding skipped.
+#[test]
+fn a_dialect_reaches_data_piped_in() {
+    let log = b"#device_info, model=\"X\"\n#yyyy-mm-dd, degrees\n  Lcl Date,     Latitude\n          ,             \n2024-03-01,    40.100000\n#reset\n2024-03-02,    40.200000\n".to_vec();
+    let args: &[&Path] = &[
+        Path::new("--comment-char"),
+        Path::new("#"),
+        Path::new("--header-rows"),
+        Path::new("3,2"),
+        Path::new("--skip-initial-space"),
+        Path::new("-"),
+    ];
+    let dirs = Dirs::new();
+    let (mut session, mut pipe) = dirs.spawn_piped(args);
+    pipe.write_all(&gzipped(&log)).unwrap();
+    drop(pipe);
+    session.wait_for_screen("Latitude degrees");
+    session.wait_for_screen("3 rows");
+    let drawn = screen(&session.out).join("\n");
+    assert!(
+        drawn.contains("Lcl Date yyyy-mm-dd") && drawn.contains("f64"),
+        "{drawn}"
+    );
+    assert!(!drawn.contains("reset"), "{drawn}");
+    session.type_keys(CTRL_Q);
+    assert!(session.wait_exit().success());
+}
+
 /// No path and data piped in reads it. A producer that is slow shows what has come
 /// in so far, and Ctrl+O while it is read puts the read down and removes the partial
 /// file, though the producer has not finished.

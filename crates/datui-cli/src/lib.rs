@@ -281,6 +281,29 @@ pub struct Args {
     #[arg(long = "skip-tail-rows", value_name = "N", help_heading = "Reading")]
     pub skip_tail_rows: Option<usize>,
 
+    /// Lines that start with this are comments and are skipped, before the header and among the data; the header is the first line that is not one. Frictionless `commentChar`
+    #[arg(
+        long = "comment-char",
+        value_name = "C",
+        value_parser = parse_comment_char,
+        help_heading = "CSV and delimited text"
+    )]
+    pub comment_char: Option<String>,
+
+    /// The line, or comma-separated lines, that hold the header, counted from 1 at the top of the file before anything is skipped. Several are joined per column with [file_loading] header_join (default a space); the data starts after the last. Frictionless `headerRows`
+    #[arg(
+        long = "header-rows",
+        value_name = "N[,M...]",
+        value_delimiter = ',',
+        value_parser = clap::value_parser!(u64).range(1..),
+        help_heading = "CSV and delimited text"
+    )]
+    pub header_rows: Vec<u64>,
+
+    /// Ignore the spaces after a delimiter, so padded numbers read as numbers and a cell of spaces is null. Frictionless `skipInitialSpace`
+    #[arg(long = "skip-initial-space", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
+    pub skip_initial_space: Option<bool>,
+
     /// Read the first row as data, not column names; columns are named column_1, column_2, …
     #[arg(long = "no-header", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
     pub no_header: Option<bool>,
@@ -489,6 +512,18 @@ fn parse_cloud_discover(text: &str) -> Result<String, String> {
         }
     }
     Ok(text)
+}
+
+/// Something to start a comment line with, on one line, as `[file_loading]
+/// comment_char` is checked.
+fn parse_comment_char(text: &str) -> Result<String, String> {
+    if text.is_empty() {
+        return Err("must not be empty".into());
+    }
+    if text.contains(['\n', '\r']) {
+        return Err("must not contain a line break".into());
+    }
+    Ok(text.to_string())
 }
 
 /// Escape `|` and newlines for use in markdown table cells.

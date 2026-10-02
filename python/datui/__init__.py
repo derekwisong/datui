@@ -46,6 +46,10 @@ _DATUI_OPTIONS_KEYS = frozenset({
     "polars_streaming",
     "workaround_pivot_date_index",
     "null_values",
+    "comment_char",
+    "header_rows",
+    "header_join",
+    "skip_initial_space",
     "debug",
 })
 
@@ -194,7 +198,8 @@ def view(
     also remains the way to write rows out without capture.
 
     Options (path-based viewing): delimiter, has_header, skip_lines, skip_rows, skip_tail_rows,
-    compression, null_values, parse_strings (default: all CSV string columns; use False to
+    compression, null_values, comment_char, header_rows, header_join, skip_initial_space,
+    parse_strings (default: all CSV string columns; use False to
     disable or a list of column names to limit), parse_strings_sample_rows, hive, debug,
     etc. (see DatuiOptions). For frame-based viewing only display/buffer options apply.
     Pass options as a DatuiOptions instance or as keyword arguments.

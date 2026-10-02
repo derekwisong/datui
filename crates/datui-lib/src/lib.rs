@@ -62,6 +62,7 @@ mod cloud_hive;
 pub mod cloud_sources;
 pub mod config;
 pub mod copy_modal;
+pub mod csv_dialect;
 pub mod data_quality;
 pub mod discover;
 pub mod distribution_fit;
@@ -8482,6 +8483,15 @@ pub struct OpenOptions {
     pub infer_schema_length: Option<usize>,
     /// When true, CSV reader ignores parse errors and continues with the next batch.
     pub ignore_errors: bool,
+    /// CSV lines starting with this are comments, wherever they are (`commentChar`).
+    pub comment_char: Option<String>,
+    /// The 1-based lines, counted from the top of the file, that hold a CSV's header
+    /// (`headerRows`). Empty = Polars' own header. A layout flag, like `skip_lines`.
+    pub header_rows: Vec<usize>,
+    /// What joins a column's pieces when `header_rows` names several lines.
+    pub header_join: String,
+    /// Ignore the spaces after a CSV delimiter (`skipInitialSpace`).
+    pub skip_initial_space: bool,
     /// When true, show the debug overlay (session info, performance, query, etc.).
     pub debug: bool,
     /// What a SafeTensors or GGUF header said besides its tensors: its metadata and
@@ -8529,6 +8539,10 @@ impl OpenOptions {
             null_values: None,
             infer_schema_length: None,
             ignore_errors: false,
+            comment_char: None,
+            header_rows: Vec::new(),
+            header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
+            skip_initial_space: false,
             debug: false,
         }
     }
@@ -8577,11 +8591,29 @@ impl OpenOptions {
         self
     }
 
+    /// The lines `--header-rows` named, unless the file is being read without a
+    /// header (`--no-header`, or `H`), which reads them as data.
+    pub fn header_rows(&self) -> Option<&[usize]> {
+        (!self.header_rows.is_empty() && self.has_header != Some(false))
+            .then_some(self.header_rows.as_slice())
+    }
+
+    /// Which CSV text columns are typed after the read: `--parse-strings`' own, or
+    /// every one when padding is skipped, since a value without its padding is one
+    /// Polars would have typed itself.
+    pub fn csv_string_types(&self) -> Option<ParseStringsTarget> {
+        if self.skip_initial_space {
+            Some(ParseStringsTarget::All)
+        } else {
+            self.parse_strings.clone()
+        }
+    }
+
     /// When loading CSV: use Polars try_parse_dates only if parse_strings is not set.
     /// When parse_strings is set we do our own date parsing (with strict: false), so we disable
     /// Polars' try_parse_dates to avoid "could not find an appropriate format" errors.
     pub fn csv_try_parse_dates(&self) -> bool {
-        self.parse_strings.is_none() && self.parse_dates
+        self.csv_string_types().is_none() && self.parse_dates
     }
 
     /// The S3 settings every cloud path uses: the command line over the environment
@@ -8620,6 +8652,7 @@ impl OpenOptions {
         opts.skip_rows = args.skip_rows;
         opts.skip_tail_rows = args.skip_tail_rows;
         opts.has_header = args.no_header.map(|no_header| !no_header);
+        opts.header_rows = args.header_rows.iter().map(|&n| n as usize).collect();
         opts.template = args.template.clone();
 
         // Compression: CLI only (auto-detect from extension when not specified)
@@ -8682,6 +8715,19 @@ impl OpenOptions {
         } else {
             opts.parse_strings = Some(ParseStringsTarget::All);
         }
+        // CSV dialect: CLI overrides config.
+        opts.comment_char = args
+            .comment_char
+            .clone()
+            .or_else(|| config.file_loading.comment_char.clone());
+        if let Some(join) = &config.file_loading.header_join {
+            opts.header_join = join.clone();
+        }
+        opts.skip_initial_space = args
+            .skip_initial_space
+            .or(config.file_loading.skip_initial_space)
+            .unwrap_or(false);
+
         opts.parse_strings_sample_rows = config
             .file_loading
             .parse_strings_sample_rows
@@ -17804,7 +17850,14 @@ impl App {
                         .with_cloud_options(Some(cloud_opts.clone()))
                         .with_glob(glob)
                 };
-                let nv = match DataTableState::build_null_values_with(options, || {
+                // Each object has its own header lines, and the scan reads them all as
+                // one; the names cannot come from one of them.
+                if options.header_rows().is_some() {
+                    return Some(Err(color_eyre::eyre::eyre!(
+                        "--header-rows reads a file's own lines, so it cannot read {url} in place. Download the files, or name the header with --skip-lines"
+                    )));
+                }
+                let nv = match DataTableState::build_null_values_with(options, None, || {
                     DataTableState::csv_schema_for_null_values(reader(), options)
                 }) {
                     Ok(nv) => nv,
@@ -17813,9 +17866,19 @@ impl App {
                 // No `--parse-strings` here: its sample would be a second read of
                 // the bucket. Nor Polars' `try_parse_dates`, which fails the whole
                 // read on a value it cannot parse, even one like those it inferred
-                // the type from. Timestamps stay text.
+                // the type from. Timestamps stay text, and so do padded numbers:
+                // `--skip-initial-space` only takes their padding off.
                 DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
                     .finish()
+                    .and_then(|lf| crate::csv_dialect::name_columns(lf, None))
+                    .and_then(|lf| {
+                        if !options.skip_initial_space {
+                            return Ok(lf);
+                        }
+                        crate::csv_dialect::skip_initial_space(lf, |column| {
+                            DataTableState::csv_null_values_for(options, column)
+                        })
+                    })
                     .map_err(named)
                     .and_then(|lf| {
                         DataTableState::apply_skip_tail_rows_csv(lf, options).map_err(|e| {
@@ -18091,6 +18154,9 @@ impl App {
             infer_schema_length: options.infer_schema_length,
             ignore_errors: options.ignore_errors,
             try_parse_dates: options.csv_try_parse_dates(),
+            comment_char: options.comment_char.clone(),
+            header_rows: options.header_rows.clone(),
+            header_join: options.header_join.clone(),
         }
     }
 

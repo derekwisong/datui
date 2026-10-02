@@ -3217,3 +3217,32 @@ fn cell_padding_takes_a_density_or_a_count() {
             .is_err()
     );
 }
+
+/// The CSV dialect keys: unset by default, layered by presence, and a comment marker
+/// that could not mark a line is refused at load time.
+#[test]
+fn test_csv_dialect_keys() {
+    let config = layered(&[]);
+    assert_eq!(config.file_loading.comment_char, None);
+    assert_eq!(config.file_loading.header_join, None);
+    assert_eq!(config.file_loading.skip_initial_space, None);
+
+    let config = layered(&[
+        "[file_loading]\ncomment_char = \"#\"\nheader_join = \"_\"\nskip_initial_space = true\n",
+        "[file_loading]\nskip_initial_space = false\n",
+    ]);
+    assert_eq!(config.file_loading.comment_char.as_deref(), Some("#"));
+    assert_eq!(config.file_loading.header_join.as_deref(), Some("_"));
+    assert_eq!(
+        config.file_loading.skip_initial_space,
+        Some(false),
+        "an explicit default over an import wins"
+    );
+    assert!(config.validate().is_ok());
+
+    for bad in ["\"\"", "\"#\\n\""] {
+        let config = layered(&[&format!("[file_loading]\ncomment_char = {bad}\n")]);
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("comment_char"), "{bad}: {err}");
+    }
+}

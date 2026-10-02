@@ -8,7 +8,7 @@ for file locations, a minimal example and precedence.
 Defaults for the CSV options; the [command-line flags](../reference/command-line-options.md)
 of the same name override them per run.
 
-Delimiter, header and skip options are per-file CLI flags. Older config keys
+Delimiter, header, header-rows and skip options are per-file CLI flags. Older config keys
 `delimiter`, `has_header`, `skip_lines`, `skip_rows` and `skip_tail_rows` are
 ignored with a warning on stderr.
 
@@ -20,6 +20,9 @@ parse_strings = true          # Trim and type-infer string columns
 parse_strings_sample_rows = 1000  # Rows sampled for that inference
 infer_schema_length = 1000    # Rows used to infer column types
 ignore_errors = false         # Skip unparseable rows instead of failing
+comment_char = "#"            # Skip lines starting with this. Omit for none
+header_join = " "             # Joins a column's names when --header-rows names several lines
+skip_initial_space = false    # Ignore the spaces after a delimiter
 decompress_in_memory = false  # Compressed CSV/TSV/PSV: decompress to a temp file (false) or into memory (true)
 temp_dir = "/tmp"             # Where that temp file goes. Omit for the system default
 single_spine_schema = true    # Partitioned Parquet: every column any file has, from the footers

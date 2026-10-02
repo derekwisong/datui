@@ -20933,3 +20933,301 @@ fn a_directory_of_arrow_ipc_stream_shards_opens_as_one_table() {
     assert!(state.headers().contains(&"first_name".to_string()));
     assert_eq!(files_in(scratch.path()), 1, "one copy of all three");
 }
+
+/// The table a CSV opens as, collected, with `options`.
+fn open_dialect(paths: Vec<PathBuf>, options: OpenOptions) -> DataFrame {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    settle_from(&mut app, &rx, AppEvent::Open(paths, options));
+    if let Some(message) = app.error_message() {
+        panic!("the open failed: {message}");
+    }
+    app.data_table_state
+        .as_ref()
+        .expect("a dataset")
+        .lf()
+        .clone()
+        .collect()
+        .unwrap()
+}
+
+fn dialect_fixture(name: &str) -> PathBuf {
+    PathBuf::from("tests/sample-data").join(name)
+}
+
+/// The options the binary builds from `flags`, as for `datui FLAGS file.csv`.
+fn options_from_flags(flags: &[&str]) -> OpenOptions {
+    use clap::Parser;
+    let args = datui::Args::parse_from(std::iter::once("datui").chain(flags.iter().copied()));
+    OpenOptions::from_args_and_config(&args, &datui::config::AppConfig::default())
+}
+
+fn names_of(df: &DataFrame) -> Vec<String> {
+    df.get_column_names()
+        .iter()
+        .map(|n| n.to_string())
+        .collect()
+}
+
+/// A padded logger export: `--comment-char` finds the header past two comment lines,
+/// the names lose their padding, and padded numbers are numbers with the blank cells
+/// null — by default, and with `--skip-initial-space` when string parsing is off.
+#[test]
+fn a_padded_log_reads_with_comment_char() {
+    let log = dialect_fixture("dialect_padded_log.csv");
+    let names = [
+        "Lcl Date",
+        "Lcl Time",
+        "UTCOfst",
+        "Latitude",
+        "bus1volts",
+        "E1 CHT1",
+    ];
+    for flags in [
+        &["--comment-char", "#"][..],
+        &["--comment-char", "#", "--skip-initial-space"],
+        &[
+            "--comment-char",
+            "#",
+            "--skip-initial-space",
+            "--no-parse-strings",
+        ],
+    ] {
+        let df = open_dialect(vec![log.clone()], options_from_flags(flags));
+        assert_eq!(names_of(&df), names, "{flags:?}");
+        assert_eq!(df.height(), 21, "{flags:?}");
+        let latitude = df.column("Latitude").unwrap();
+        assert_eq!(latitude.dtype(), &DataType::Float64, "{flags:?}");
+        assert_eq!(
+            latitude.null_count(),
+            1,
+            "the blank cell is null: {flags:?}"
+        );
+        assert_eq!(
+            df.column("bus1volts").unwrap().f64().unwrap().get(0),
+            Some(25.1),
+            "{flags:?}"
+        );
+        assert_eq!(df.column("Lcl Date").unwrap().dtype(), &DataType::Date);
+    }
+
+    // A cell of spaces in a text column is empty text as read, and null once the
+    // padding is skipped.
+    let plain = open_dialect(
+        vec![log.clone()],
+        options_from_flags(&["--comment-char", "#"]),
+    );
+    let skipped = open_dialect(
+        vec![log],
+        options_from_flags(&["--comment-char", "#", "--skip-initial-space"]),
+    );
+    assert_eq!(plain.column("UTCOfst").unwrap().null_count(), 0);
+    let utc = skipped.column("UTCOfst").unwrap();
+    assert_eq!(utc.null_count(), 1);
+    assert_eq!(utc.str().unwrap().get(1), Some("-05:00"));
+}
+
+/// Header names are trimmed whatever the flags: with the header found by
+/// `--skip-lines`, and with string parsing off.
+#[test]
+fn header_names_are_always_trimmed() {
+    let log = dialect_fixture("dialect_padded_log.csv");
+    let df = open_dialect(
+        vec![log],
+        options_from_flags(&["--skip-lines", "2", "--no-parse-strings"]),
+    );
+    assert_eq!(names_of(&df)[3], "Latitude");
+    // Without parsing or skipping, the value keeps its padding: nothing asked for less.
+    assert_eq!(
+        df.column("Latitude").unwrap().str().unwrap().get(1),
+        Some("    40.100000")
+    );
+}
+
+/// `--header-rows` takes the header from the lines it names and joins several with
+/// `header_join`, with or without `--comment-char`; the data starts after the last.
+#[test]
+fn header_rows_name_and_join_the_columns() {
+    let two = dialect_fixture("dialect_two_header_rows.csv");
+    let df = open_dialect(
+        vec![two.clone()],
+        options_from_flags(&["--header-rows", "1,2"]),
+    );
+    assert_eq!(names_of(&df), ["station", "temp degC", "pressure hPa"]);
+    assert_eq!(df.height(), 3);
+    assert_eq!(df.column("temp degC").unwrap().dtype(), &DataType::Float64);
+
+    let joined = OpenOptions {
+        header_join: "_".into(),
+        ..options_from_flags(&["--header-rows", "1,2"])
+    };
+    assert_eq!(
+        names_of(&open_dialect(vec![two.clone()], joined)),
+        ["station", "temp_degC", "pressure_hPa"]
+    );
+
+    // --skip-rows counts rows after the header.
+    let df = open_dialect(
+        vec![two.clone()],
+        options_from_flags(&["--header-rows", "1,2", "--skip-rows", "1"]),
+    );
+    assert_eq!(df.height(), 2);
+    assert_eq!(
+        df.column("station").unwrap().str().unwrap().get(0),
+        Some("B")
+    );
+
+    // A per-column null value names the column as it is shown.
+    let df = open_dialect(
+        vec![two],
+        options_from_flags(&["--header-rows", "1,2", "--null-value", "station=B"]),
+    );
+    assert_eq!(df.column("station").unwrap().null_count(), 1);
+
+    // The units line is a comment, and a header line all the same when it is named.
+    let log = dialect_fixture("dialect_padded_log.csv");
+    let df = open_dialect(
+        vec![log.clone()],
+        options_from_flags(&["--comment-char", "#", "--header-rows", "3,2"]),
+    );
+    assert_eq!(
+        names_of(&df),
+        [
+            "Lcl Date yyyy-mm-dd",
+            "Lcl Time hh:mm:ss",
+            "UTCOfst hh:mm",
+            "Latitude degrees",
+            "bus1volts volts",
+            "E1 CHT1 deg F"
+        ]
+    );
+    assert_eq!(df.height(), 21);
+
+    // Without --comment-char the lines above the header are passed over all the same.
+    let df = open_dialect(vec![log], options_from_flags(&["--header-rows", "3"]));
+    assert_eq!(names_of(&df)[3], "Latitude");
+    assert_eq!(df.height(), 21);
+    assert_eq!(df.column("Latitude").unwrap().dtype(), &DataType::Float64);
+}
+
+/// Comment lines among the data are skipped, not read as rows.
+#[test]
+fn comment_lines_among_the_data_are_skipped() {
+    let mid = dialect_fixture("dialect_mid_comments.csv");
+    let df = open_dialect(
+        vec![mid.clone()],
+        options_from_flags(&["--comment-char", "#"]),
+    );
+    assert_eq!(names_of(&df), ["id", "value"]);
+    assert_eq!(df.height(), 3);
+    assert_eq!(df.column("value").unwrap().dtype(), &DataType::Int64);
+    let df = open_dialect(
+        vec![mid],
+        options_from_flags(&["--comment-char", "#", "--header-rows", "2"]),
+    );
+    assert_eq!(names_of(&df), ["id", "value"]);
+    assert_eq!(df.height(), 3);
+}
+
+/// Compressed, the file reads the same: decompressed to a scanned copy, and in memory.
+#[test]
+fn the_dialect_reads_a_compressed_log_the_same() {
+    let gz = dialect_fixture("dialect_padded_log.csv.gz");
+    let flags = [
+        "--comment-char",
+        "#",
+        "--header-rows",
+        "3,2",
+        "--skip-initial-space",
+    ];
+    for in_memory in [false, true] {
+        let options = OpenOptions {
+            decompress_in_memory: in_memory,
+            ..options_from_flags(&flags)
+        };
+        let df = open_dialect(vec![gz.clone()], options);
+        assert_eq!(
+            names_of(&df)[3],
+            "Latitude degrees",
+            "in memory: {in_memory}"
+        );
+        assert_eq!(df.height(), 21);
+        assert_eq!(df.column("UTCOfst hh:mm").unwrap().null_count(), 1);
+        assert_eq!(
+            df.column("Latitude degrees").unwrap().dtype(),
+            &DataType::Float64
+        );
+    }
+}
+
+/// A directory of such logs is one table, each file named from its own header lines,
+/// and a single file's padding does not split it.
+#[test]
+fn a_directory_of_padded_logs_is_one_table() {
+    common::ensure_sample_data();
+    let dir = common::fixture_dir().join("logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = std::fs::read_to_string(dialect_fixture("dialect_padded_log.csv")).unwrap();
+    std::fs::write(dir.join("a.csv"), &text).unwrap();
+    // The same columns, padded to other widths.
+    std::fs::write(
+        dir.join("b.csv"),
+        text.replacen("  Lcl Date, Lcl Time,", "Lcl Date,Lcl Time   ,", 1),
+    )
+    .unwrap();
+    for flags in [
+        &["--comment-char", "#"][..],
+        &[
+            "--comment-char",
+            "#",
+            "--header-rows",
+            "3,2",
+            "--skip-initial-space",
+        ],
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        settle_from(
+            &mut app,
+            &rx,
+            AppEvent::OpenNamed(vec![dir.clone()], options_from_flags(flags)),
+        );
+        assert!(
+            app.home.browsing.is_none(),
+            "one table, not a listing: {flags:?}"
+        );
+        let df = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
+            .unwrap();
+        assert_eq!(df.height(), 42, "{flags:?}");
+        assert_eq!(df.width(), 6, "{flags:?}");
+    }
+}
+
+/// `H` reads the lines `--header-rows` named as data, and back as the header.
+#[test]
+fn h_reads_header_rows_as_data_and_back() {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(
+            vec![dialect_fixture("dialect_two_header_rows.csv")],
+            options_from_flags(&["--header-rows", "1,2"]),
+        ),
+    );
+    assert_eq!(column_names(&app), ["station", "temp degC", "pressure hPa"]);
+    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    assert_eq!(column_names(&app), ["column_1", "column_2", "column_3"]);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 5);
+    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    assert_eq!(column_names(&app), ["station", "temp degC", "pressure hPa"]);
+}

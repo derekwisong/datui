@@ -269,6 +269,7 @@ pub fn ensure_sample_data() {
             "melt_wide.parquet",
             "models/tiny.gguf",
             "people_stream.arrow",
+            "dialect_padded_log.csv",
         ];
 
         let needs_generation = !sample_data_dir.exists()

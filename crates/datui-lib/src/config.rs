@@ -1341,6 +1341,9 @@ const UNSET_EXAMPLES: &[(&str, &str)] = &[
     ("file_loading.parse_strings_sample_rows", "1000"),
     ("file_loading.infer_schema_length", "1000"),
     ("file_loading.ignore_errors", "false"),
+    ("file_loading.comment_char", "\"#\""),
+    ("file_loading.header_join", "\" \""),
+    ("file_loading.skip_initial_space", "false"),
     ("file_loading.decompress_in_memory", "false"),
     ("file_loading.temp_dir", "\"/tmp\""),
     ("file_loading.single_spine_schema", "true"),
@@ -1480,6 +1483,12 @@ pub struct FileLoadingConfig {
     pub infer_schema_length: Option<usize>,
     /// When true, CSV reader ignores parse errors and continues with the next batch. Default false.
     pub ignore_errors: Option<bool>,
+    /// CSV: lines starting with this are comments, skipped before the header and in the data (Frictionless `commentChar`). Unset = none.
+    pub comment_char: Option<String>,
+    /// CSV: what joins a column's pieces when `--header-rows` names several lines (Frictionless `headerJoin`). Default " ".
+    pub header_join: Option<String>,
+    /// CSV: ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null (Frictionless `skipInitialSpace`). Default false.
+    pub skip_initial_space: Option<bool>,
 }
 
 /// `[file_loading]` keys that described one file's layout rather than a preference,
@@ -1543,6 +1552,18 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "ignore_errors",
         "When true, CSV reader ignores parse errors and continues with the next batch (default false).",
+    ),
+    (
+        "comment_char",
+        "CSV: lines starting with this are comments, skipped before the header and among the data. Unset = none",
+    ),
+    (
+        "header_join",
+        "CSV: joins a column's names when --header-rows names several lines (default \" \")",
+    ),
+    (
+        "skip_initial_space",
+        "CSV: when true, ignore the spaces after a delimiter; padded numbers are numbers and a cell of spaces is null (default false)",
     ),
 ];
 
@@ -3423,6 +3444,11 @@ impl AppConfig {
         self.display
             .number_format
             .resolve(self.display.align_numeric_right)?;
+
+        if let Some(c) = &self.file_loading.comment_char {
+            crate::csv_dialect::check_comment_char(c)
+                .map_err(|e| eyre!("file_loading.comment_char: {e}"))?;
+        }
 
         self.cloud.validate()?;
         check_source_names(&self.sources)?;

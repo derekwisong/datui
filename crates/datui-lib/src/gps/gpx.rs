@@ -176,7 +176,8 @@ fn unescape(raw: &[u8]) -> String {
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         rest = &rest[amp..];
-        let Some(semi) = rest[..rest.len().min(12)].find(';') else {
+        // A reference is short; the window ends on a character, not inside one.
+        let Some(semi) = rest[..rest.floor_char_boundary(12)].find(';') else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -843,5 +844,10 @@ mod tests {
         let mut reader = GpxReader::new();
         assert!(reader.push(format!("<gpx>{deep}").as_bytes()).is_err());
         assert_eq!(unescape(b"&#x41;&#66;&bogus;&"), "AB&bogus;&");
+        // Not a reference, with a character of several bytes where its end would be.
+        assert_eq!(
+            unescape("a &\u{fffd}\u{fffd}\u{fffd}\u{fffd};".as_bytes()),
+            "a &\u{fffd}\u{fffd}\u{fffd}\u{fffd};"
+        );
     }
 }

@@ -504,7 +504,7 @@ pub(crate) fn midi_facts(midi: &crate::midi::MidiSummary, sep: &str) -> Vec<Stri
     lines
 }
 
-/// Each track as a key and a value: `2 Piano` and `2,000 events · 600 notes · ch 1`.
+/// Each track as a key and a value: `2 Piano` and `2,000 events · 600 notes · channel 1`.
 pub(crate) fn midi_track_rows(
     midi: &crate::midi::MidiSummary,
     sep: &str,
@@ -523,7 +523,12 @@ pub(crate) fn midi_track_rows(
             }
             if !t.channels.is_empty() {
                 let channels: Vec<String> = t.channels.iter().map(u8::to_string).collect();
-                parts.push(format!("ch {}", channels.join(", ")));
+                let label = if channels.len() == 1 {
+                    "channel"
+                } else {
+                    "channels"
+                };
+                parts.push(format!("{label} {}", channels.join(", ")));
             }
             if let Some(instrument) = t.instrument.as_deref().filter(|i| !i.trim().is_empty()) {
                 parts.push(instrument.trim().to_string());

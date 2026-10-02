@@ -169,7 +169,7 @@ fn a_midi_file_opens_as_its_events() {
         "2 Piano",
         "Acoustic Grand",
         "3 Bass",
-        "ch 2",
+        "channel 2",
     ] {
         assert!(text.contains(expected), "{expected:?} on screen:\n{text}");
     }

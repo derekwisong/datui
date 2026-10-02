@@ -1087,8 +1087,11 @@ impl<'a> DataTableInfo<'a> {
         let dataset = self.state.dataset_schema();
         let src = match dataset {
             Some(dataset) => dataset.origin.to_string(),
-            // A model's or an audio file's columns are datui's own, from the header.
-            None if self.state.model().is_some() || self.state.audio().is_some() => {
+            // A model's, an audio file's or MIDI's columns are datui's own.
+            None if self.state.model().is_some()
+                || self.state.audio().is_some()
+                || self.state.midi().is_some() =>
+            {
                 "Known".to_string()
             }
             None => self.ctx.schema_source().to_string(),
@@ -2727,6 +2730,19 @@ mod tests {
             [InfoTab::Schema, InfoTab::Audio, InfoTab::Resources]
         );
         assert_eq!(InfoTab::Audio.prev(offered), InfoTab::Schema);
+    }
+
+    #[test]
+    fn the_midi_tab_sits_beside_the_schema() {
+        let offered = TabsOffered {
+            midi: true,
+            ..offer(false, false)
+        };
+        assert_eq!(
+            InfoTab::visible(offered),
+            [InfoTab::Schema, InfoTab::Midi, InfoTab::Resources]
+        );
+        assert_eq!(InfoTab::Midi.prev(offered), InfoTab::Schema);
     }
 
     #[test]

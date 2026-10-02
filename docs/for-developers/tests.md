@@ -74,14 +74,14 @@ structural changes proposed to reduce linking and harness overhead.
 ## Heavy runs queue
 
 ```text
-Waiting for another heavy test run to finish (/run/user/1000/datui-test-heavy.lock)...
+Waiting for one of 2 heavy test runs to finish (/run/user/1000/datui-test-heavy*.lock)...
 ```
 
 `unit`, `integration`, `preflight`, `features`, `full`, and any command given
-`--release` take one lock, shared by all of the user's checkouts and worktrees
-on the machine, so they run one at a time instead of exhausting memory
-together. A run that has to wait prints the line above once, then starts when
-the other finishes. `check`, `cli` and `--print` do not take it.
+`--release` take one of `DATUI_TEST_HEAVY_SLOTS` locks (default 2), shared by
+all of the user's checkouts and worktrees on the machine, so only that many run
+at once instead of exhausting memory together. A run that has to wait prints a
+line once, then starts when a slot frees. `check`, `cli` and `--print` do not take it.
 
 | Case | Behavior |
 |---|---|

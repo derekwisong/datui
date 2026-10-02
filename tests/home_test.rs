@@ -5965,6 +5965,11 @@ fn home_at_80x24(
         },
         config,
     );
+    // Inside the directory, so the list is its files alone. The top level lists the
+    // working directory and the recents above it, which other tests in this binary
+    // change while they run: one recent of theirs put f05 off an 80x24 screen, and a
+    // few put it on f57's line at 200x50, so that one click there was a double click.
+    app.home.browsing = Some(tmp.path().to_path_buf());
     app.enter_home();
     listed(&mut app, &rx, |app| {
         visible_names(&app.home).contains(&"f00.csv".to_string())
@@ -5979,21 +5984,14 @@ fn listed(
     done: impl Fn(&datui::App) -> bool,
 ) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        while let Ok(event) = rx.try_recv() {
-            let mut next = Some(event);
-            while let Some(event) = next {
-                next = app.event(&event);
-            }
+    while app.home.listing_in_flight || !done(app) {
+        // The listing's answer comes on the channel: wait for it, not for time.
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let event = rx.recv_timeout(left).expect("the listing never landed");
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
         }
-        if !app.home.listing_in_flight && done(app) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the listing never landed"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     cursor_line(app);
 }
@@ -6098,6 +6096,8 @@ fn test_a_click_selects_a_home_row_and_the_wheel_stops_at_the_ends() {
 
         let buf = draw(&mut pump.app);
         let f57 = at(&buf, "f57.csv");
+        // On f05's cell, this click would finish a double click.
+        assert_ne!(f57, f05, "{width}x{height}");
         pump.terminal_mouse(click(f57)).unwrap();
         assert_eq!(
             pump.app.input_mode,
@@ -6251,7 +6251,6 @@ fn test_the_view_never_leaves_blank_lines_below_the_last_row() {
     });
     let line = cursor_line(&mut app);
     assert_eq!(app.home.selected_entry().map(|e| e.path), Some(f44));
-    // By line, not by `scroll`: other tests here add recents above the cursor.
     assert!(line > before, "the view came up: line {line}, was {before}");
     let rows = app.home.visible().len();
     assert_eq!(

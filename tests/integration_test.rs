@@ -16095,6 +16095,43 @@ fn a_compressed_csv_over_http_is_its_url() {
     assert_eq!(app.template_modal.exact_path_input.value(), url);
 }
 
+/// An Arrow IPC stream over HTTP is downloaded, then converted, and the dataset is
+/// the URL. Only the converted copy is kept, and read again: the download goes once it
+/// is converted.
+#[cfg(feature = "http")]
+#[test]
+fn an_arrow_stream_over_http_is_converted_and_named_by_its_url() {
+    common::isolate_cache();
+    common::ensure_sample_data();
+    let body = std::fs::read("tests/sample-data/people_stream.arrow").unwrap();
+    let (url, fetched) = serve_over_http("people_stream.arrow", body);
+    let scratch = tempfile::tempdir().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let options = OpenOptions {
+        temp_dir: Some(scratch.path().to_path_buf()),
+        ..OpenOptions::default()
+    };
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![PathBuf::from(&url)], options),
+    );
+    let state = app.data_table_state.as_ref().expect("the stream opens");
+    assert_eq!(state.num_rows(), 1000);
+    assert_eq!(app.open_path(), Some(Path::new(&url)));
+    assert_eq!(files_in(scratch.path()), 1, "the converted copy alone");
+
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![PathBuf::from(&url)], OpenOptions::default()),
+    );
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1000);
+    assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(files_in(scratch.path()), 1, "the copy, not converted again");
+}
+
 /// A download that will not read is named by the URL in the error, not by the temp
 /// file it landed in: a Parquet that is not one, which fails its scan, and JSON that
 /// is not JSON (#511).
@@ -20848,6 +20885,11 @@ fn arrow_ipc_streams_open() {
         assert_eq!(state.num_rows(), people.height(), "{name}");
         assert_eq!(state.headers(), columns, "{name}");
         assert_eq!(files_in(scratch.path()), 1, "{name}: the converted copy");
+        assert_eq!(
+            app.open_path(),
+            Some(sample.join(name).as_path()),
+            "{name}: named by the stream, not the copy"
+        );
 
         pump_open_until_loaded(
             &mut app,

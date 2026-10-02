@@ -892,6 +892,12 @@ impl Loader {
                 Phase::Converting { .. },
             ) => {
                 let paths = vec![file.path().to_path_buf()];
+                // A download or a pipe's spool converted is kept as its copy, to be read
+                // again without converting, and the stream is let go rather than held
+                // beside the copy for the session.
+                if let Some(fetched) = load.download.as_mut() {
+                    fetched.file = file.clone();
+                }
                 load.converted = Some(file);
                 load.phase = Phase::Scanning { downloaded: true };
                 Step::Scan {
@@ -1642,7 +1648,6 @@ mod tests {
         assert!(loaded.paths.is_none() && loaded.recent.is_none());
     }
 
-    #[cfg(feature = "http")]
     fn downloaded(dir: &Path, body: &str, extension: &str) -> TempDownload {
         use std::io::Write;
         let mut file = TempDownload::create(Some(dir), Some(extension)).unwrap();
@@ -1994,6 +1999,84 @@ mod tests {
             OpenOptions::default(),
         ));
         assert!(matches!(step, Step::Crash(_)));
+    }
+
+    /// A stream piped in is converted, and the copy, not the spool, is what is kept:
+    /// the spool goes once converted, and opened again the copy is scanned as it is.
+    #[test]
+    fn a_converted_pipe_keeps_the_copy_not_the_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut loader = Loader::default();
+        let options = OpenOptions {
+            format: Some(FileFormat::Arrow),
+            ..Default::default()
+        };
+        let Step::Spool { .. } = loader.open(OpenRequest::named(
+            vec![PathBuf::from("-")],
+            OpenOptions::default(),
+        )) else {
+            panic!("standard input is read first");
+        };
+        let id = loader.id().unwrap();
+        let spool = downloaded(dir.path(), "stream", "tmp");
+        let spooled = spool.path().to_path_buf();
+        let Step::Scan { paths, .. } = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Spooled {
+                download: spool,
+                options: options.clone(),
+            },
+        ) else {
+            panic!("the spool is scanned");
+        };
+        let Step::Convert { .. } = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Streams {
+                files: paths,
+                bytes: 6,
+                path: Some(PathBuf::from("stdin")),
+                options: options.clone(),
+            },
+        ) else {
+            panic!("the stream is converted");
+        };
+        let copy = downloaded(dir.path(), "ipc file", "arrow");
+        let converted = copy.path().to_path_buf();
+        let Step::Scan { paths, display, .. } = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Converted {
+                file: copy,
+                path: Some(PathBuf::from("stdin")),
+                options: options.clone(),
+            },
+        ) else {
+            panic!("the copy is scanned");
+        };
+        assert_eq!(paths, std::slice::from_ref(&converted));
+        assert_eq!(display.as_deref(), Some(Path::new("stdin")));
+        assert!(!spooled.exists(), "the spool goes once converted");
+
+        let Step::ReadSchema {
+            download: Some(_), ..
+        } = answer(&mut loader, id, scanned("stdin"))
+        else {
+            panic!("the dataset holds the copy");
+        };
+        let Step::Install(loaded) = answer(&mut loader, id, schema_read("stdin")) else {
+            panic!("installs");
+        };
+        loader.first_rows_settled();
+        drop(loaded);
+        assert!(converted.exists(), "kept to read again");
+        let Step::Scan { paths, .. } =
+            loader.open(OpenRequest::named(vec![PathBuf::from("-")], options))
+        else {
+            panic!("the copy on hand is read again");
+        };
+        assert_eq!(paths, [converted]);
     }
 
     /// A compressed CSV piped in is decompressed as `stdin`; putting the read down

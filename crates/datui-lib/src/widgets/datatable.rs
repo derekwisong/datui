@@ -4385,8 +4385,6 @@ impl DataTableState {
         Self::from_delimited(path, b',', options)
     }
 
-    /// As [`Self::from_delimited`], for an open: a compressed file is decompressed
-    /// through `writer`, so the open's stop and quitting reach the copy.
     /// A compressed file a format spec reads: decompressed to a temporary file the
     /// state holds, then read through the spec chosen for it (`options.spec_choice`).
     pub(crate) fn from_compressed_spec(
@@ -4423,6 +4421,8 @@ impl DataTableState {
         Ok((state, read))
     }
 
+    /// As [`Self::from_delimited`], for an open: a compressed file is decompressed
+    /// through `writer`, so the open's stop and quitting reach the copy.
     pub(crate) fn from_delimited_for_open(
         path: &Path,
         delimiter: u8,

@@ -563,12 +563,6 @@ pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
     Some((reads, (!skips.is_empty()).then(|| skips.join(", "))))
 }
 
-/// Whether a directory holds nothing a `(all files)` row could read.
-///
-/// The door's own test, named so the details pane can ask it too: the pane tells the user
-/// where the whole of a directory can be read, and on a directory with no door that is a
-/// promise nothing keeps. One function, or the two drift and the sentence outlives the
-/// row it points at.
 /// List a file a format spec's glob names as data, under the spec's name. Its name is
 /// all that is asked: the listing reads nothing more for it.
 pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
@@ -592,6 +586,12 @@ pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
     }
 }
 
+/// Whether a directory holds nothing a `(all files)` row could read.
+///
+/// The door's own test, named so the details pane can ask it too: the pane tells the user
+/// where the whole of a directory can be read, and on a directory with no door that is a
+/// promise nothing keeps. One function, or the two drift and the sentence outlives the
+/// row it points at.
 pub fn holds_nothing_to_open(holds: &discover::Holds) -> bool {
     holds.formats.is_empty() && holds.directories == 0 && holds.unnamed == 0
 }

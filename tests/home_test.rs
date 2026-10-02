@@ -5683,7 +5683,7 @@ mod coming_back {
         go_into(&mut app, &rx, KeyCode::Enter, &d30);
         go_back(&mut app, &rx, None);
         assert_eq!(on(&app), Some(d30));
-        assert_eq!((on_screen(&app), app.home.scroll), (offset, scroll));
+        assert_eq!(on_screen(&app), offset);
     }
 
     /// Backspace goes up whether or not the user came that way; where they did not,
@@ -6091,6 +6091,33 @@ fn test_paging_scrolls_only_as_far_as_the_cursor_needs() {
     assert_eq!(line, top + app.home.selected as u16);
 }
 
+/// Rows arriving above the cursor push the list down, not the cursor: it stays on
+/// its row and on its line.
+#[test]
+fn test_rows_arriving_above_the_cursor_leave_it_on_its_line() {
+    use crossterm::event::KeyCode;
+    let (tmp, mut app, rx) = home_at_80x24(60);
+    // Up from the end, so the cursor is mid-screen rather than held at a margin.
+    press_and_draw(&mut app, KeyCode::End);
+    let f50 = tmp.path().join("f50.csv");
+    let mut line = 0;
+    while app.home.selected_entry().map(|e| e.path) != Some(f50.clone()) {
+        line = press_and_draw(&mut app, KeyCode::Up);
+    }
+    for i in 0..5 {
+        touch(tmp.path(), &format!("e{i}.csv"));
+    }
+    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Char('r'),
+        crossterm::event::KeyModifiers::CONTROL,
+    )));
+    listed(&mut app, &rx, |app| {
+        visible_names(&app.home).contains(&"e4.csv".to_string())
+    });
+    assert_eq!(app.home.selected_entry().map(|e| e.path), Some(f50));
+    assert_eq!(cursor_line(&mut app), line);
+}
+
 /// The view does not open past the end: rows going away below the cursor bring the
 /// view up rather than leaving blank lines under the last row.
 #[test]
@@ -6099,10 +6126,10 @@ fn test_the_view_never_leaves_blank_lines_below_the_last_row() {
     let (tmp, mut app, rx) = home_at_80x24(60);
     let bottom = press_and_draw(&mut app, KeyCode::End);
     let f44 = tmp.path().join("f44.csv");
+    let mut before = bottom;
     while app.home.selected_entry().map(|e| e.path) != Some(f44.clone()) {
-        press_and_draw(&mut app, KeyCode::Up);
+        before = press_and_draw(&mut app, KeyCode::Up);
     }
-    let scroll = app.home.scroll;
     for i in 45..60 {
         fs::remove_file(tmp.path().join(format!("f{i:02}.csv"))).unwrap();
     }
@@ -6116,7 +6143,8 @@ fn test_the_view_never_leaves_blank_lines_below_the_last_row() {
     });
     let line = cursor_line(&mut app);
     assert_eq!(app.home.selected_entry().map(|e| e.path), Some(f44));
-    assert!(app.home.scroll < scroll, "{} < {scroll}", app.home.scroll);
+    // By line, not by `scroll`: other tests here add recents above the cursor.
+    assert!(line > before, "the view came up: line {line}, was {before}");
     let rows = app.home.visible().len();
     assert_eq!(
         line as usize + (rows - 1 - app.home.selected),

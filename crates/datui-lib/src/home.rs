@@ -2243,6 +2243,8 @@ impl HomeState {
     pub fn apply_listing(&mut self, listing: Listing) {
         let returning = self.returning.take();
         let previous = returning.clone().or_else(|| self.selected_key());
+        // Rows landing above the cursor move the list, not the cursor.
+        let line = self.selected.saturating_sub(self.scroll);
         self.sections = listing.sections;
         self.missing = listing.missing;
         // Browsing, the first section is the directory browsed.
@@ -2276,6 +2278,8 @@ impl HomeState {
             }
         } else if returning.is_some() {
             self.scroll_to_returning_line();
+        } else {
+            self.scroll = self.selected.saturating_sub(line);
         }
         self.follow_selection();
     }

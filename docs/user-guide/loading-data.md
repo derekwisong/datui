@@ -402,6 +402,9 @@ Notes that never end are counted on the Notes tab.
 
 ### SQLite databases
 
+Read: [lazy, in place](#how-each-format-is-read); a database in a bucket or over
+HTTP(S) is downloaded first.
+
 ```bash
 datui shop.db                        # its one table, or the list of its tables
 datui shop.db --table orders         # a table or view by name

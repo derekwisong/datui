@@ -2144,6 +2144,8 @@ fn table_entry(
         internal: table.internal,
     });
     entry
+}
+
 /// Whether an Arrow file is an IPC stream: an IPC file starts `ARROW1`, a stream with
 /// its schema message. Eight bytes, so a listing can say which will be converted.
 fn enrich_arrow(entry: &mut Entry) {

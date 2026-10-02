@@ -29381,6 +29381,15 @@ mod read_mode_tests {
         let track = b"\0\x90\x3c\x40\x10\x80\x3c\0\0\xff\x2f\0";
         let midi = crate::midi::tests::smf(0, 96, &[track]);
         files.push((write("t.mid", &midi), FileFormat::Midi, Stored::Plain));
+        #[cfg(feature = "sqlite")]
+        {
+            let path = dir.path().join("t.db");
+            rusqlite::Connection::open(&path)
+                .unwrap()
+                .execute_batch("CREATE TABLE t (a INTEGER, b TEXT); INSERT INTO t VALUES (1, 'x');")
+                .unwrap();
+            files.push((path, FileFormat::Sqlite, Stored::Plain));
+        }
 
         for (path, format, stored) in files {
             let expected = format.read_mode(stored);

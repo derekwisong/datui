@@ -1480,6 +1480,7 @@ mod tests {
             "gpx",
             "wav",
             "mid",
+            "db",
         ] {
             let format = FileFormat::from_extension(ext).expect(ext);
             seen.push(format);

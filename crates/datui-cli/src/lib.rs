@@ -162,14 +162,19 @@ impl FileFormat {
     ///
     /// JSON, Avro, ORC and Excel have readers that take the whole file, and a model
     /// file's tensor list is small by nature: one row per tensor, from the header. A
-    /// MIDI file is decoded whole, and is refused over 64 MiB.
+    /// MIDI file is decoded whole, and is refused over 64 MiB. A SQLite table is read
+    /// in place, a page at a time, with sort and filters run in SQLite.
     /// Arrow streams and GPS logs cannot be scanned where they are, so they are read
     /// once into an IPC file that is; compressed text is decompressed once to a file.
     pub fn read_mode(self, stored: Stored) -> Option<ReadMode> {
         let plain = match self {
-            Self::Parquet | Self::Csv | Self::Tsv | Self::Psv | Self::Arrow | Self::Audio => {
-                ReadMode::Lazy
-            }
+            Self::Parquet
+            | Self::Csv
+            | Self::Tsv
+            | Self::Psv
+            | Self::Arrow
+            | Self::Audio
+            | Self::Sqlite => ReadMode::Lazy,
             Self::Nmea | Self::Gpx => ReadMode::Converted,
             Self::Json
             | Self::Jsonl
@@ -1193,6 +1198,7 @@ mod format_tests {
         assert_eq!(plain(FileFormat::Csv), Some(Lazy));
         assert_eq!(plain(FileFormat::Arrow), Some(Lazy));
         assert_eq!(plain(FileFormat::Audio), Some(Lazy));
+        assert_eq!(plain(FileFormat::Sqlite), Some(Lazy));
         assert_eq!(plain(FileFormat::Nmea), Some(Converted));
         assert_eq!(plain(FileFormat::Gpx), Some(Converted));
         for f in [
@@ -1225,6 +1231,7 @@ mod format_tests {
         assert_eq!(compressed(FileFormat::Nmea, true), Some(Converted));
         assert_eq!(compressed(FileFormat::Parquet, false), None);
         assert_eq!(compressed(FileFormat::Json, false), None);
+        assert_eq!(compressed(FileFormat::Sqlite, false), None);
 
         // A spec maps its file, or the decompressed copy of it.
         let spec = FormatChoice::Spec("acme.l2feed".into());

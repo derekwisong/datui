@@ -1292,6 +1292,22 @@ fn entry_line<'a>(
         (kind_cell, kind_is_chip)
     };
 
+    // How Enter will read a file that is not scanned where it is, in the cell a file's
+    // empty label leaves. Lazy rows, most of them, stay quiet. It gives way before the
+    // name is cut at all: the pane beside it says the same.
+    let kind_cell = match discover::how_read(entry).and_then(read_marker) {
+        Some(marker) if matched_column.is_none() && kind_cell.is_empty() => {
+            let cell = format!(" {marker}");
+            let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1);
+            if name.chars().count() + cell.chars().count() <= room {
+                cell
+            } else {
+                kind_cell
+            }
+        }
+        _ => kind_cell,
+    };
+
     // Positions are taken from the untruncated name, because that is what matched.
     // Truncation then shifts them, and dropping the ones that fall outside is exactly
     // right: a character no longer on screen cannot be highlighted.
@@ -1473,6 +1489,31 @@ fn entry_line<'a>(
     // Carry the reverse to the edge, so the bar is a bar and not a ragged highlight.
     spans.push(Span::styled(" ", base));
     Line::from(spans)
+}
+
+/// The word a file row carries for how opening it reads it: `converts` or `in memory`,
+/// or `downloads` for a remote file copied whole first. `None` for a file scanned where
+/// it is, which is most of them.
+fn read_marker(how: discover::HowRead) -> Option<&'static str> {
+    if how.download {
+        return Some("downloads");
+    }
+    match how.mode {
+        crate::ReadMode::Lazy => None,
+        crate::ReadMode::Converted => Some("converts"),
+        crate::ReadMode::InMemory => Some("in memory"),
+    }
+}
+
+/// The pane's `read` line: [`crate::ReadMode::label`], after the download when there
+/// is one.
+fn read_words(how: discover::HowRead) -> String {
+    let mode = how.mode.label();
+    if how.download {
+        format!("downloaded, then {mode}")
+    } else {
+        mode.to_string()
+    }
 }
 
 /// A filled heading inside the preview pane.
@@ -1695,6 +1736,9 @@ fn preview_head(
     let kind = kind_words(entry, place_kind, looking);
     if !kind.is_empty() {
         facts.push(("kind", kind, plain));
+    }
+    if let Some(how) = discover::how_read(entry) {
+        facts.push(("read", read_words(how), plain));
     }
     if let Some(source) = entry
         .cost
@@ -3602,6 +3646,7 @@ mod tests {
                     more: true,
                 }),
                 tables: None,
+                ipc_stream: false,
             },
             Some(400_000_000),
         );

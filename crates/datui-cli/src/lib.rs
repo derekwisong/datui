@@ -153,6 +153,77 @@ impl FileFormat {
         )
     }
 
+    /// How a file of this format is read when it is opened, as `stored` on disk.
+    ///
+    /// The one answer to "does this read only what it shows": the loading-data docs'
+    /// format table, the home screen's marker and the Info panel's `Read:` line all
+    /// ask here. `None` when a file stored that way does not open: a compressed
+    /// Parquet file, or an IPC stream of anything but Arrow.
+    ///
+    /// JSON, Avro, ORC and Excel have readers that take the whole file, and a model
+    /// file's tensor list is small by nature: one row per tensor, from the header. A
+    /// MIDI file is decoded whole, and is refused over 64 MiB.
+    /// Arrow streams and GPS logs cannot be scanned where they are, so they are read
+    /// once into an IPC file that is; compressed text is decompressed once to a file.
+    pub fn read_mode(self, stored: Stored) -> Option<ReadMode> {
+        let plain = match self {
+            Self::Parquet | Self::Csv | Self::Tsv | Self::Psv | Self::Arrow | Self::Audio => {
+                ReadMode::Lazy
+            }
+            Self::Nmea | Self::Gpx => ReadMode::Converted,
+            Self::Json
+            | Self::Jsonl
+            | Self::Avro
+            | Self::Orc
+            | Self::Excel
+            | Self::Safetensors
+            | Self::Gguf
+            | Self::Midi => ReadMode::InMemory,
+        };
+        match stored {
+            Stored::Plain => Some(plain),
+            Stored::Stream => (self == Self::Arrow).then_some(ReadMode::Converted),
+            // A GPS log is decompressed as it is read, into the file it is read into.
+            Stored::Compressed { .. } if matches!(self, Self::Nmea | Self::Gpx) => {
+                Some(ReadMode::Converted)
+            }
+            Stored::Compressed { in_memory } => self.separator().map(|_| match in_memory {
+                true => ReadMode::InMemory,
+                false => ReadMode::Converted,
+            }),
+        }
+    }
+
+    /// How one object of this format in a bucket (S3, GCS, Azure) is read: in place
+    /// with ranged reads, or downloaded first and then read as [`Self::read_mode`] says.
+    /// Polars reads Parquet objects in place; a model file's header is fetched by range.
+    pub fn bucket_object(self) -> RemoteRead {
+        match self {
+            Self::Parquet | Self::Safetensors | Self::Gguf => RemoteRead::InPlace,
+            _ => RemoteRead::Downloaded,
+        }
+    }
+
+    /// How one HTTP(S) file of this format is read. Only a model file's header is
+    /// fetched by range; a server that sends no ranges gets the download question.
+    pub fn http_file(self) -> RemoteRead {
+        match self {
+            Self::Safetensors | Self::Gguf => RemoteRead::InPlace,
+            _ => RemoteRead::Downloaded,
+        }
+    }
+
+    /// Whether a bucket prefix or glob of files of this format is read in place as one
+    /// table. Parquet (with hive partitions), CSV and NDJSON have Polars cloud scans,
+    /// and the model files under a prefix are read by their headers; a prefix of
+    /// anything else is browsed into and opened an object at a time.
+    pub fn reads_bucket_prefix(self) -> bool {
+        matches!(
+            self,
+            Self::Parquet | Self::Csv | Self::Jsonl | Self::Safetensors | Self::Gguf
+        )
+    }
+
     /// The column separator a delimited format is read with when `--delimiter` is not
     /// given. `None` for the formats that are not delimited text.
     pub fn separator(self) -> Option<u8> {
@@ -195,6 +266,59 @@ impl FileFormat {
             "mid" | "midi" | "smf" | "kar" | "rmi" => Some(Self::Midi),
             "db" | "db3" | "sqlite" | "sqlite3" => Some(Self::Sqlite),
             _ => None,
+        }
+    }
+}
+
+/// How an open reads a file. See [`FileFormat::read_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadMode {
+    /// Scanned where it is: only the rows shown, and what a query needs, are read.
+    Lazy,
+    /// Read through once into a temporary file, which is then scanned lazily.
+    Converted,
+    /// Read whole into memory before the table appears.
+    InMemory,
+}
+
+impl ReadMode {
+    /// The words for it, as the docs' table and the Info panel say them.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Lazy => "lazy",
+            Self::Converted => "converted once",
+            Self::InMemory => "in memory",
+        }
+    }
+}
+
+/// How a file sits on disk, where that changes how it is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Stored {
+    /// As its format's extension says.
+    #[default]
+    Plain,
+    /// Under gzip, zstd, bzip2 or xz. `in_memory` is `--decompress-in-memory`.
+    Compressed { in_memory: bool },
+    /// An Arrow IPC stream rather than an IPC file: no footer to find the rows by.
+    Stream,
+}
+
+/// How a remote object is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteRead {
+    /// With ranged reads, where it is.
+    InPlace,
+    /// Downloaded whole to a temporary file first.
+    Downloaded,
+}
+
+impl RemoteRead {
+    /// The words for it, as the docs' table says them.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::InPlace => "in place",
+            Self::Downloaded => "downloaded",
         }
     }
 }
@@ -561,6 +685,45 @@ impl FormatChoice {
         match self {
             Self::Builtin(format) => Some(*format),
             Self::Spec(_) => None,
+        }
+    }
+
+    /// How a file read this way is read when opened: a built-in format's
+    /// [`FileFormat::read_mode`], or a spec's, whose records are decoded from a map of
+    /// the file (or of its decompressed copy) only where they are shown.
+    pub fn read_mode(&self, stored: Stored) -> Option<ReadMode> {
+        match self {
+            Self::Builtin(format) => format.read_mode(stored),
+            Self::Spec(_) => match stored {
+                Stored::Plain => Some(ReadMode::Lazy),
+                Stored::Compressed { .. } => Some(ReadMode::Converted),
+                Stored::Stream => None,
+            },
+        }
+    }
+
+    /// How one object read this way in a bucket is read. A spec reads local files, so
+    /// a spec's object is downloaded first.
+    pub fn bucket_object(&self) -> RemoteRead {
+        match self {
+            Self::Builtin(format) => format.bucket_object(),
+            Self::Spec(_) => RemoteRead::Downloaded,
+        }
+    }
+
+    /// How one HTTP(S) file read this way is read; a spec's is downloaded first.
+    pub fn http_file(&self) -> RemoteRead {
+        match self {
+            Self::Builtin(format) => format.http_file(),
+            Self::Spec(_) => RemoteRead::Downloaded,
+        }
+    }
+
+    /// Whether a bucket prefix read this way is read in place as one table.
+    pub fn reads_bucket_prefix(&self) -> bool {
+        match self {
+            Self::Builtin(format) => format.reads_bucket_prefix(),
+            Self::Spec(_) => false,
         }
     }
 
@@ -956,7 +1119,7 @@ mod tests {
 
 #[cfg(test)]
 mod format_tests {
-    use super::FileFormat;
+    use super::{FileFormat, FormatChoice, ReadMode, RemoteRead, Stored};
 
     /// `ALL` is the list `from_name` searches, so a format missing from it cannot be
     /// read back from a stored name. The match below is exhaustive, so a new variant
@@ -1018,5 +1181,173 @@ mod format_tests {
                 "sqlite"
             ]
         );
+    }
+
+    /// Each way a file can sit on disk reads as the format says, and the formats that
+    /// take the whole file into memory are the ones whose readers do.
+    #[test]
+    fn read_mode_by_format_and_storage() {
+        use ReadMode::*;
+        let plain = |f: FileFormat| f.read_mode(Stored::Plain);
+        assert_eq!(plain(FileFormat::Parquet), Some(Lazy));
+        assert_eq!(plain(FileFormat::Csv), Some(Lazy));
+        assert_eq!(plain(FileFormat::Arrow), Some(Lazy));
+        assert_eq!(plain(FileFormat::Audio), Some(Lazy));
+        assert_eq!(plain(FileFormat::Nmea), Some(Converted));
+        assert_eq!(plain(FileFormat::Gpx), Some(Converted));
+        for f in [
+            FileFormat::Json,
+            FileFormat::Jsonl,
+            FileFormat::Avro,
+            FileFormat::Orc,
+            FileFormat::Excel,
+            FileFormat::Safetensors,
+            FileFormat::Gguf,
+            FileFormat::Midi,
+        ] {
+            assert_eq!(plain(f), Some(InMemory), "{}", f.name());
+        }
+        for f in FileFormat::ALL {
+            assert!(plain(f).is_some(), "every format opens: {}", f.name());
+        }
+
+        // An IPC stream is converted; nothing else is one.
+        assert_eq!(FileFormat::Arrow.read_mode(Stored::Stream), Some(Converted));
+        assert_eq!(FileFormat::Parquet.read_mode(Stored::Stream), None);
+
+        // Compressed text is decompressed once to a file, or read in memory when asked;
+        // a GPS log is decompressed as it is converted; nothing else opens compressed.
+        let compressed = |f: FileFormat, in_memory| f.read_mode(Stored::Compressed { in_memory });
+        for f in [FileFormat::Csv, FileFormat::Tsv, FileFormat::Psv] {
+            assert_eq!(compressed(f, false), Some(Converted));
+            assert_eq!(compressed(f, true), Some(InMemory));
+        }
+        assert_eq!(compressed(FileFormat::Nmea, true), Some(Converted));
+        assert_eq!(compressed(FileFormat::Parquet, false), None);
+        assert_eq!(compressed(FileFormat::Json, false), None);
+
+        // A spec maps its file, or the decompressed copy of it.
+        let spec = FormatChoice::Spec("acme.l2feed".into());
+        assert_eq!(spec.read_mode(Stored::Plain), Some(Lazy));
+        assert_eq!(
+            spec.read_mode(Stored::Compressed { in_memory: true }),
+            Some(Converted)
+        );
+        assert_eq!(spec.bucket_object(), RemoteRead::Downloaded);
+
+        // Parquet objects and model headers are read in place; CSV and NDJSON prefixes
+        // are too. Over HTTP only a model's header is.
+        let model = |f: FileFormat| matches!(f, FileFormat::Safetensors | FileFormat::Gguf);
+        for f in FileFormat::ALL {
+            let in_place = f.bucket_object() == RemoteRead::InPlace;
+            assert_eq!(
+                in_place,
+                f == FileFormat::Parquet || model(f),
+                "{}",
+                f.name()
+            );
+            assert_eq!(
+                f.http_file() == RemoteRead::InPlace,
+                model(f),
+                "{}",
+                f.name()
+            );
+        }
+        assert_eq!(spec.http_file(), RemoteRead::Downloaded);
+        let prefixes: Vec<_> = FileFormat::ALL
+            .into_iter()
+            .filter(|f| f.reads_bucket_prefix())
+            .collect();
+        assert_eq!(
+            prefixes,
+            [
+                FileFormat::Parquet,
+                FileFormat::Csv,
+                FileFormat::Jsonl,
+                FileFormat::Safetensors,
+                FileFormat::Gguf
+            ]
+        );
+    }
+
+    /// The loading-data page's format table says what `read_mode` and the remote
+    /// methods say, for every format, and names every format. A row is matched to its
+    /// formats by the extensions it lists, so the extensions are checked too.
+    #[test]
+    fn the_docs_format_table_agrees_with_the_code() {
+        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/user-guide/loading-data.md");
+        let text = std::fs::read_to_string(&page).expect("the loading-data page");
+        let header =
+            "| Format | Extensions | Read | Compressed | HTTP(S) | In a bucket | Bucket prefix |";
+        let start = text.find(header).expect("the format table");
+        let rows: Vec<Vec<String>> = text[start..]
+            .lines()
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .map(|l| {
+                l.trim_matches('|')
+                    .split(" | ")
+                    .map(|c| c.trim().to_string())
+                    .collect()
+            })
+            .collect();
+        let said = |mode: Option<ReadMode>| mode.map_or("no", ReadMode::label);
+        let mut seen: Vec<FileFormat> = Vec::new();
+        let (mut stream_row, mut spec_row) = (false, false);
+        for row in &rows {
+            let [format, extensions, read, compressed, http, bucket, prefix] = &row[..] else {
+                panic!("seven cells: {row:?}");
+            };
+            let choices: Vec<FormatChoice> = if extensions.contains("format spec") {
+                spec_row = true;
+                vec![FormatChoice::Spec("any.spec".into())]
+            } else {
+                extensions
+                    .split(", ")
+                    .map(|e| {
+                        let name = e.trim_matches('`');
+                        let found = match name.strip_prefix('.') {
+                            Some(ext) => FileFormat::from_extension(ext),
+                            None => FileFormat::from_path(std::path::Path::new(name)),
+                        };
+                        FormatChoice::Builtin(found.unwrap_or_else(|| panic!("{name} is read")))
+                    })
+                    .collect()
+            };
+            let stored = if format.contains("stream") {
+                stream_row = true;
+                Stored::Stream
+            } else {
+                Stored::Plain
+            };
+            for choice in choices {
+                if let (FormatChoice::Builtin(f), Stored::Plain) = (&choice, stored) {
+                    seen.push(*f);
+                }
+                assert_eq!(read, said(choice.read_mode(stored)), "{format}: Read");
+                assert_eq!(
+                    compressed,
+                    said(choice.read_mode(Stored::Compressed { in_memory: false })),
+                    "{format}: Compressed"
+                );
+                assert_eq!(http, choice.http_file().label(), "{format}: HTTP(S)");
+                assert_eq!(
+                    bucket,
+                    choice.bucket_object().label(),
+                    "{format}: In a bucket"
+                );
+                let in_place = if choice.reads_bucket_prefix() {
+                    "in place"
+                } else {
+                    "no"
+                };
+                assert_eq!(prefix, in_place, "{format}: Bucket prefix");
+            }
+        }
+        for f in FileFormat::ALL {
+            assert!(seen.contains(&f), "{} has a row", f.name());
+        }
+        assert!(stream_row && spec_row, "streams and specs have rows");
     }
 }

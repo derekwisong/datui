@@ -186,7 +186,7 @@ use widgets::text_input::{TextInput, TextInputEvent};
 pub const APP_NAME: &str = "datui";
 
 /// Re-export compression format and file format from CLI module
-pub use cli::{CompressionFormat, FileFormat};
+pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored};
 
 /// Map FileFormat to ExportFormat for default export. Tsv/Psv map to Csv; Orc/Excel have no export variant.
 fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
@@ -8563,6 +8563,9 @@ pub struct OpenOptions {
     /// The delimited spec the file is read through, once chosen: its dialect is in
     /// these options, and the read's units and metadata ride with it to the dataset.
     pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
+    /// How the scan found the data is read: lazily, through a copy, or into memory.
+    /// Found by the scan and carried to the dataset for the Info panel's `Read:` line.
+    pub read_mode: Option<crate::ReadMode>,
 }
 
 impl OpenOptions {
@@ -8622,6 +8625,7 @@ impl OpenOptions {
             splits: None,
             arrow_parts: None,
             delimited: None,
+            read_mode: None,
         }
     }
 }
@@ -9328,6 +9332,44 @@ pub(crate) enum Scan {
         file: PathBuf,
         tables: Vec<String>,
     },
+}
+
+impl Scan {
+    /// The reader the scan chose: `found` (what the read reported, else what was
+    /// asked for) for a frame, else the format of what is to be converted.
+    fn format(&self, found: Option<FileFormat>) -> Option<FileFormat> {
+        match self {
+            Scan::Frame(_) => found,
+            Scan::Decompress { format, .. } | Scan::ReadInto { format, .. } => Some(*format),
+            Scan::Streams(_) => Some(FileFormat::Arrow),
+            Scan::DecompressSpec { .. } => None,
+            Scan::Tables { .. } => Some(FileFormat::Sqlite),
+        }
+    }
+
+    /// How the open reads what this scan found, as [`FileFormat::read_mode`] says for
+    /// its format and how it is stored. `format` is the reader the scan chose; a frame
+    /// with none is a Parquet scan of a directory, a glob or a bucket.
+    fn read_mode(
+        &self,
+        format: Option<FileFormat>,
+        spec: bool,
+        decompress_in_memory: bool,
+    ) -> Option<crate::ReadMode> {
+        use crate::{ReadMode, Stored};
+        let spec_read = |stored| cli::FormatChoice::Spec(String::new()).read_mode(stored);
+        match self {
+            Scan::Frame(_) if spec => spec_read(Stored::Plain),
+            Scan::Frame(_) => format.map_or(Some(ReadMode::Lazy), |f| f.read_mode(Stored::Plain)),
+            Scan::Decompress { format, .. } => format.read_mode(Stored::Compressed {
+                in_memory: decompress_in_memory,
+            }),
+            Scan::Streams(_) => FileFormat::Arrow.read_mode(Stored::Stream),
+            Scan::ReadInto { format, .. } => format.read_mode(Stored::Plain),
+            Scan::DecompressSpec { .. } => spec_read(Stored::Compressed { in_memory: false }),
+            Scan::Tables { .. } => FileFormat::Sqlite.read_mode(Stored::Plain),
+        }
+    }
 }
 
 impl From<LazyFrame> for Scan {
@@ -17285,15 +17327,12 @@ impl App {
                     .map_err(|e| {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
                     })?;
-                    let format = match &scan {
-                        Scan::Frame(_) => report.format.or(options.format),
-                        Scan::Decompress { format, .. } | Scan::ReadInto { format, .. } => {
-                            Some(*format)
-                        }
-                        Scan::Streams(_) => Some(FileFormat::Arrow),
-                        Scan::DecompressSpec { .. } => None,
-                        Scan::Tables { .. } => Some(FileFormat::Sqlite),
-                    };
+                    let format = scan.format(report.format.or(options.format));
+                    let read_mode = scan.read_mode(
+                        format,
+                        report.format_read.is_some(),
+                        options.decompress_in_memory,
+                    );
                     let mut options = OpenOptions {
                         left_out: report.left_out,
                         files_disagree: report.files_disagree,
@@ -17306,6 +17345,7 @@ impl App {
                         read_python: report.read_python,
                         audio: report.audio,
                         midi: report.midi,
+                        read_mode,
                         ..options
                     };
                     // The spec's dialect stays with the dataset, so a read again (`H`,
@@ -18360,6 +18400,7 @@ impl App {
             facts.open_notes.extend(read.notes());
             facts.delimited = Some(read.clone());
         }
+        facts.read_mode = options.read_mode;
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         // Arrow in a store reads its IPC files in place, and its streams from their
@@ -18406,6 +18447,11 @@ impl App {
         options: &OpenOptions,
     ) -> Option<Result<LazyFrame>> {
         use polars::prelude::{LazyCsvReader, LazyFileListReader};
+        // The formats the docs say a prefix reads in place. Parquet takes the caller's
+        // own scan, and a prefix of model files is read by its headers before this.
+        if !format.reads_bucket_prefix() {
+            return None;
+        }
         // A plain prefix is narrowed to the keys with an extension. A console's folder
         // marker comes back from the listing as `data` for `data/`, which Polars reads
         // as a file of a different kind from the rest and refuses the whole prefix.
@@ -29183,6 +29229,179 @@ mod background_read_tests {
             .map(|name| name.to_string())
             .collect();
         assert_eq!(shown, ["b", "a"]);
+    }
+}
+
+#[cfg(test)]
+mod read_mode_tests {
+    use super::*;
+    use polars::prelude::*;
+    use std::io::Write;
+
+    /// What an open of `path` reads it as, by the route the scan takes, beside whether
+    /// the frame it built holds its rows in memory.
+    fn opened(path: &Path) -> (Option<crate::ReadMode>, Option<bool>) {
+        let options = OpenOptions::default();
+        let mut report = ReadReport::default();
+        let scan = App::build_local_lazyframe(
+            &[path.to_path_buf()],
+            &options,
+            &mut report,
+            &crate::formats::Registry::default(),
+        )
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let format = scan.format(report.format.or(options.format));
+        let mode = scan.read_mode(format, report.format_read.is_some(), false);
+        // A frame of rows already in memory is a `DF` node in the plan. Audio's frame
+        // is one too: an empty frame of its row count, mapped to the file's samples.
+        let in_memory = match &scan {
+            Scan::Frame(lf) if report.audio.is_none() => {
+                Some(lf.describe_plan().unwrap().contains("DF ["))
+            }
+            _ => None,
+        };
+        (mode, in_memory)
+    }
+
+    /// Each reader does what `FileFormat::read_mode` says of its format: a frame of
+    /// rows in memory for the in-memory formats and never for the lazy ones, and a
+    /// copy for the converted ones. Excel and ORC are left out for want of a writer
+    /// here; both readers collect the whole sheet or file into a frame.
+    #[test]
+    fn every_reader_reads_as_its_format_says() {
+        use crate::{ReadMode, Stored};
+        let dir = tempfile::tempdir().unwrap();
+        let mut df = df!("a" => [1i64, 2, 3], "b" => ["x", "y", "z"]).unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let mut files: Vec<(PathBuf, FileFormat, Stored)> = Vec::new();
+
+        let path = dir.path().join("t.parquet");
+        ParquetWriter::new(std::fs::File::create(&path).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        files.push((path, FileFormat::Parquet, Stored::Plain));
+        let path = dir.path().join("t.arrow");
+        IpcWriter::new(std::fs::File::create(&path).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        files.push((path, FileFormat::Arrow, Stored::Plain));
+        let path = dir.path().join("t.avro");
+        polars::io::avro::AvroWriter::new(std::fs::File::create(&path).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        files.push((path, FileFormat::Avro, Stored::Plain));
+        let stream = crate::ipc_stream::tests::stream(&df, None, false);
+        files.push((
+            write("stream.arrow", &stream),
+            FileFormat::Arrow,
+            Stored::Stream,
+        ));
+        files.push((
+            write("t.csv", b"a,b\n1,x\n2,y\n"),
+            FileFormat::Csv,
+            Stored::Plain,
+        ));
+        files.push((
+            write("t.tsv", b"a\tb\n1\tx\n"),
+            FileFormat::Tsv,
+            Stored::Plain,
+        ));
+        files.push((
+            write("t.psv", b"a|b\n1|x\n"),
+            FileFormat::Psv,
+            Stored::Plain,
+        ));
+        files.push((
+            write("t.json", br#"[{"a": 1, "b": "x"}]"#),
+            FileFormat::Json,
+            Stored::Plain,
+        ));
+        files.push((
+            write("t.jsonl", b"{\"a\": 1}\n{\"a\": 2}\n"),
+            FileFormat::Jsonl,
+            Stored::Plain,
+        ));
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(b"a,b\n1,x\n").unwrap();
+        files.push((
+            write("t.csv.gz", &gz.finish().unwrap()),
+            FileFormat::Csv,
+            Stored::Compressed { in_memory: false },
+        ));
+        files.push((
+            write(
+                "t.nmea",
+                b"$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\r\n",
+            ),
+            FileFormat::Nmea,
+            Stored::Plain,
+        ));
+        files.push((
+            write(
+                "t.gpx",
+                br#"<?xml version="1.0"?><gpx version="1.1"><wpt lat="1" lon="2"></wpt></gpx>"#,
+            ),
+            FileFormat::Gpx,
+            Stored::Plain,
+        ));
+        let header = r#"{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        files.push((
+            write(
+                "t.safetensors",
+                &crate::model_files::tests::safetensors_bytes(header, 4),
+            ),
+            FileFormat::Safetensors,
+            Stored::Plain,
+        ));
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
+        // PCM, one channel, 8 kHz, 16 bits; then two frames.
+        for field in [
+            &1u16.to_le_bytes()[..],
+            &1u16.to_le_bytes(),
+            &8000u32.to_le_bytes(),
+        ] {
+            wav.extend_from_slice(field);
+        }
+        for field in [
+            &16000u32.to_le_bytes()[..],
+            &2u16.to_le_bytes(),
+            &16u16.to_le_bytes(),
+        ] {
+            wav.extend_from_slice(field);
+        }
+        wav.extend_from_slice(b"data\x04\0\0\0\x01\0\x02\0");
+        let size = (wav.len() - 8) as u32;
+        wav[4..8].copy_from_slice(&size.to_le_bytes());
+        files.push((write("t.wav", &wav), FileFormat::Audio, Stored::Plain));
+        // One note on and off, then the end of the track.
+        let track = b"\0\x90\x3c\x40\x10\x80\x3c\0\0\xff\x2f\0";
+        let midi = crate::midi::tests::smf(0, 96, &[track]);
+        files.push((write("t.mid", &midi), FileFormat::Midi, Stored::Plain));
+
+        for (path, format, stored) in files {
+            let expected = format.read_mode(stored);
+            let (mode, in_memory) = opened(&path);
+            assert_eq!(mode, expected, "{}", path.display());
+            if let Some(in_memory) = in_memory {
+                assert_eq!(
+                    in_memory,
+                    expected == Some(ReadMode::InMemory),
+                    "{}: a frame in memory is what the format says",
+                    path.display()
+                );
+            } else {
+                assert_ne!(
+                    expected,
+                    Some(ReadMode::InMemory),
+                    "{}: read through a copy",
+                    path.display()
+                );
+            }
+        }
     }
 }
 

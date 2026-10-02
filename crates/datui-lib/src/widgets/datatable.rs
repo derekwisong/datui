@@ -361,6 +361,8 @@ pub struct DataTableState {
     pushdown: Option<Arc<dyn crate::pushdown::Pushdown>>,
     /// Stops what the source runs when this state goes.
     source_hold: Option<crate::sqlite::Hold>,
+    /// How the open reads the data. See [`crate::OpenOptions::read_mode`].
+    read_mode: Option<crate::ReadMode>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -932,6 +934,8 @@ pub struct OpenFacts {
     pub pushdown: Option<Arc<dyn crate::pushdown::Pushdown>>,
     /// What stops that source's statements when the dataset goes.
     pub hold: Option<crate::sqlite::Hold>,
+    /// How the open reads the data. See [`crate::OpenOptions::read_mode`].
+    pub read_mode: Option<crate::ReadMode>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1899,6 +1903,7 @@ impl DataTableState {
             midi: None,
             pushdown: None,
             source_hold: None,
+            read_mode: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2046,6 +2051,7 @@ impl DataTableState {
             midi: None,
             pushdown: None,
             source_hold: None,
+            read_mode: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2109,6 +2115,7 @@ impl DataTableState {
             midi,
             pushdown,
             hold,
+            read_mode,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2162,6 +2169,7 @@ impl DataTableState {
         self.model = model;
         self.converted = converted;
         self.other_tables = other_tables;
+        self.read_mode = read_mode;
         if let Some(audio) = audio {
             // The count is arithmetic on the file's size: nothing to scan for it.
             self.set_num_rows(audio.frames() as usize);
@@ -6473,6 +6481,12 @@ impl DataTableState {
     /// it; see [`Self::scans_a_temp_file`].
     pub fn scans_a_download(&self) -> bool {
         self.download.is_some()
+    }
+
+    /// How the open reads the data, when an open found it; `None` for a frame handed
+    /// in whole, such as one from Python.
+    pub fn read_mode(&self) -> Option<crate::ReadMode> {
+        self.read_mode
     }
 
     /// The temporary files this state holds, which an error from reading it may name:

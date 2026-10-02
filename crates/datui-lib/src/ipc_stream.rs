@@ -457,7 +457,7 @@ impl<R: BufRead> Seek for Forward<R> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::unfinished::Unfinished;
     use polars::prelude::*;
@@ -473,7 +473,11 @@ mod tests {
     }
 
     /// `df` as a stream of batches of three rows, as pyarrow and Hugging Face write it.
-    fn stream(df: &DataFrame, compression: Option<Compression>, legacy: bool) -> Vec<u8> {
+    pub(crate) fn stream(
+        df: &DataFrame,
+        compression: Option<Compression>,
+        legacy: bool,
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         let mut writer = StreamWriter::new(&mut out, WriteOptions { compression });
         writer

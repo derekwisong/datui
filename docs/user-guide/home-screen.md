@@ -117,6 +117,7 @@ crossing onto network shares or triggering automounts during a search.
 | Field | Meaning |
 |---|---|
 | Kind / storage | File or dataset format, and the filesystem or object store |
+| Read | How a file opens: `lazy`, `converted once`, `in memory`, or `downloaded, then` one of those ([formats](loading-data.md#how-each-format-is-read)) |
 | Contains | Files by format, directories and partitions |
 | Rows × columns | Known counts; blank when they would require scanning data |
 | On disk | Stored size |
@@ -147,6 +148,19 @@ The details pane's `contains` lines list the directory's contents.
 Job markers and names beginning with `_` or `.` are skipped, except partition
 names such as `_date=2025-01-01`. Folder markers ending in `_$folder$` are
 also skipped. A capped listing says so, for example `5000+ parquet`.
+
+### How a file will be read
+
+A file row that is not read lazily where it is says how it is read, dim,
+beside its name. It gives way before the name is shortened.
+
+| Label | Opening the file |
+|---|---|
+| `converts` | Reads it once into a temporary file: an Arrow stream, a GPS log, compressed text |
+| `in memory` | Reads it whole into memory: JSON, NDJSON, Avro, ORC, Excel, model files, MIDI |
+| `downloads` | Downloads it whole first: a remote file other than a Parquet object or a model file |
+
+See [how each format is read](loading-data.md#how-each-format-is-read).
 
 Select the `… files datui can't open` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>,
 to reveal unreadable files such as `README.md`.

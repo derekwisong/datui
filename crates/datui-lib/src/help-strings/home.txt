@@ -79,6 +79,9 @@ Reading a row:
   read had to decide. In a collection, "dataset" marks a remote directory
   not listed until you enter it, and "missing" a local path with nothing
   there.
+  A file row that is not read lazily says how opening it reads it, dim
+  beside its name: "converts" (read once into a temporary file), "in
+  memory" (read whole), or "downloads" (a remote file copied first).
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)

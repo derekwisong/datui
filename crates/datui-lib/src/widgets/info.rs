@@ -1065,6 +1065,17 @@ pub struct DataTableInfo<'a> {
     pub theme: &'a RenderContext,
 }
 
+/// The Resources tab's `Read:` value: how the open reads the data, and that a remote
+/// file was downloaded first. `None` for a frame no open found, such as Python's.
+fn read_line(state: &DataTableState) -> Option<String> {
+    let mode = state.read_mode()?.label();
+    Some(if state.scans_a_download() {
+        format!("downloaded, then {mode}")
+    } else {
+        mode.to_string()
+    })
+}
+
 /// The first line of the Schema tab: the dataset's size, or that it does not know yet.
 ///
 /// Told `None` rather than a number, because what a state holds before it has been
@@ -1401,6 +1412,26 @@ impl<'a> DataTableInfo<'a> {
             LABEL_WIDTH,
         );
         y += 1;
+
+        // How the open reads it: whether scrolling reads the file or memory.
+        if let Some(read) = read_line(self.state) {
+            if y >= area.y + h {
+                return;
+            }
+            label_value_row(
+                "Read:",
+                &read,
+                Rect {
+                    y,
+                    width: w,
+                    height: 1,
+                    ..area
+                },
+                buf,
+                LABEL_WIDTH,
+            );
+            y += 1;
+        }
 
         if y >= area.y + h {
             return;
@@ -2448,6 +2479,60 @@ mod tests {
                 "{took:?} should read as {expected}"
             );
         }
+    }
+
+    /// The Resources tab says how the open reads the data, and nothing for a frame no
+    /// open found.
+    #[test]
+    fn the_resources_tab_says_how_the_data_is_read() {
+        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        let painted = |read_mode: Option<crate::ReadMode>| {
+            let rows = || df!("id" => [1i64, 2]).unwrap().lazy();
+            let schema = Arc::new((*rows().collect_schema().unwrap()).clone());
+            let state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                rows(),
+                &crate::OpenOptions::default(),
+                None,
+            )
+            .unwrap()
+            .with_open(OpenFacts {
+                read_mode,
+                ..Default::default()
+            });
+            let theme = RenderContext::for_test();
+            let area = Rect::new(0, 0, 60, 12);
+            let mut buf = Buffer::empty(area);
+            let mut modal = InfoModal::default();
+            DataTableInfo::new(
+                &state,
+                InfoContext {
+                    format: None,
+                    facts: None,
+                    parquet_file: false,
+                },
+                &mut modal,
+                &theme,
+            )
+            .render_resources_tab(area, &mut buf);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let lines = painted(Some(crate::ReadMode::InMemory));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.trim_end() == format!("{:<17}in memory", "Read:")),
+            "{lines:#?}"
+        );
+        let converted = painted(Some(crate::ReadMode::Converted));
+        assert!(converted.iter().any(|l| l.contains("converted once")));
+        assert!(!painted(None).iter().any(|l| l.starts_with("Read:")));
     }
 
     /// The Resources tab shows what the open cost, and shows only what was measured.

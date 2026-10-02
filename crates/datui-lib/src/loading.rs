@@ -1455,6 +1455,56 @@ mod tests {
     use super::*;
     use polars::prelude::IntoLazy;
 
+    /// An open routes a remote file as `FileFormat::bucket_object` and `http_file` say,
+    /// which the loading-data page's table and the home screen's marker read: read in
+    /// place, or downloaded first.
+    #[cfg(all(feature = "http", feature = "cloud"))]
+    #[test]
+    fn remote_files_are_routed_as_their_format_says() {
+        use crate::{FileFormat, RemoteRead};
+        let mut seen = Vec::new();
+        for ext in [
+            "parquet",
+            "csv",
+            "tsv",
+            "psv",
+            "json",
+            "jsonl",
+            "arrow",
+            "avro",
+            "orc",
+            "xlsx",
+            "safetensors",
+            "gguf",
+            "nmea",
+            "gpx",
+            "wav",
+            "mid",
+        ] {
+            let format = FileFormat::from_extension(ext).expect(ext);
+            seen.push(format);
+            for url in [
+                format!("https://example.com/d/x.{ext}"),
+                format!("s3://b/d/x.{ext}"),
+                format!("gs://b/d/x.{ext}"),
+            ] {
+                let path = Path::new(&url);
+                let in_place = crate::remote_model::model_format(path, None).is_some()
+                    || remote_download(&source::input_source(path), &OpenOptions::default())
+                        .is_none();
+                let said = if url.starts_with("https") {
+                    format.http_file()
+                } else {
+                    format.bucket_object()
+                };
+                assert_eq!(in_place, said == RemoteRead::InPlace, "{url}");
+            }
+        }
+        for f in FileFormat::ALL {
+            assert!(seen.contains(&f), "{} is checked", f.name());
+        }
+    }
+
     fn frame() -> LazyFrame {
         polars::df!("a" => [1i32, 2, 3]).unwrap().lazy()
     }

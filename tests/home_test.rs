@@ -3839,6 +3839,7 @@ fn test_measuring_a_row_keeps_what_the_footer_said_beyond_the_row_count() {
             more: false,
         }),
         tables: None,
+        ipc_stream: false,
     };
     let original = datui::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");
 
@@ -6707,4 +6708,131 @@ fn a_csv_a_delimited_spec_names_is_listed_under_the_spec() {
     assert_eq!(log.label(), "acme.instrument-log");
     let other = rows.iter().find(|r| r.name == "other.csv").unwrap();
     assert_eq!(other.format_spec, None);
+}
+
+/// A file row that is not read lazily where it is says how it is read, dim, beside
+/// its name: `in memory`, `converts`. Lazy rows say nothing. At 80 columns the word
+/// gives way before a long name is cut, and the details pane at 200 says it in full.
+#[test]
+fn test_a_file_row_says_how_it_will_be_read() {
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    common::isolate_cache();
+    let tmp = TempDir::new().unwrap();
+    for name in [
+        "events.json",
+        "log.csv.gz",
+        "ride.gpx",
+        "notes.csv",
+        "sales.parquet",
+        "stream.arrow",
+        "a_json_export_with_a_long_descriptive_name.json",
+    ] {
+        touch(tmp.path(), name);
+    }
+    fs::write(tmp.path().join("file.arrow"), b"ARROW1\0\0").unwrap();
+    let mut config = datui::config::AppConfig::default();
+    config.data.directories = vec![tmp.path().to_string_lossy().into_owned()];
+    config.data.use_desktop_recents = false;
+    config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+    // The stream is told from the file by its first bytes, which measuring reads.
+    listed(&mut app, &rx, |app| {
+        app.home.visible().iter().any(|r| match r {
+            Row::Entry { entry, .. } => entry.name == "stream.arrow" && entry.cost.ipc_stream,
+            _ => false,
+        })
+    });
+
+    // Tall enough for the checkout's own directory, listed first as the current one.
+    for (width, height) in [(80u16, 60u16), (200, 60)] {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut app, area, &mut buf);
+        let screen: Vec<String> = (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let row = |name: &str| {
+            screen
+                .iter()
+                .find(|l| l.contains(name))
+                .unwrap_or_else(|| panic!("{name} at {width}x{height}:\n{}", screen.join("\n")))
+                .clone()
+        };
+        for (name, marker) in [
+            ("events.json", Some("in memory")),
+            ("log.csv.gz", Some("converts")),
+            ("ride.gpx", Some("converts")),
+            ("stream.arrow", Some("converts")),
+            ("notes.csv", None),
+            ("sales.parquet", None),
+            ("file.arrow", None),
+        ] {
+            let line = row(name);
+            // The list's half of the line: the pane beside it at 200 is not the row.
+            let list: String = line.chars().take(width as usize * 5 / 8).collect();
+            for word in ["in memory", "converts", "downloads"] {
+                assert_eq!(
+                    list.contains(word),
+                    marker == Some(word),
+                    "{name} at {width}x{height}: {line}"
+                );
+            }
+        }
+        let long = "a_json_export_with_a_long_descriptive_name";
+        // The list's half again at 200: the pane beside it names the row under the cursor.
+        let list_width = if width == 80 {
+            80
+        } else {
+            width as usize * 5 / 8
+        };
+        let line: String = screen
+            .iter()
+            .map(|l| l.chars().take(list_width).collect::<String>())
+            .find(|l| l.contains("a_json_export"))
+            .expect("the long row");
+        if width == 80 {
+            assert!(
+                !line.contains("in memory"),
+                "the word gives way first at 80: {line}"
+            );
+        } else {
+            assert!(
+                line.contains(&format!("{long}.json")) && line.contains("in memory"),
+                "{line}"
+            );
+        }
+    }
+
+    // The pane, which draws at 200, says it in words for the row under the cursor.
+    for c in "events".chars() {
+        let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    }
+    let area = Rect::new(0, 0, 200, 60);
+    let mut buf = Buffer::empty(area);
+    Widget::render(&mut app, area, &mut buf);
+    let screen: Vec<String> = (0..60)
+        .map(|y| (0..200).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+    assert!(
+        screen.iter().any(|l| l
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .ends_with(&["read", "in", "memory"])),
+        "the pane's read line:\n{}",
+        screen.join("\n")
+    );
 }

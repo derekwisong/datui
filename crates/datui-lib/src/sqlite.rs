@@ -250,7 +250,7 @@ mod read {
     use crate::OpenOptions;
     use crate::notes::Note;
     use crate::numfmt::group_chrome;
-    use crate::segments::{Converted, Segments};
+    use crate::segments::{Converted, Segments, blob_text};
     use crate::unfinished::Writer;
 
     /// How long a read waits on a writer's lock before it gives up.
@@ -877,17 +877,6 @@ mod read {
         } else {
             f.to_string()
         }
-    }
-
-    /// A blob as an SQL literal, `X'0A1B'`.
-    fn blob_text(b: &[u8]) -> String {
-        let mut text = String::with_capacity(3 + 2 * b.len());
-        text.push_str("X'");
-        for byte in b {
-            text.push_str(&format!("{byte:02X}"));
-        }
-        text.push('\'');
-        text
     }
 
     #[cfg(test)]

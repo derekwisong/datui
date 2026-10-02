@@ -109,6 +109,16 @@ impl<'a> Segments<'a> {
                 .iter()
                 .map(|(name, dtype)| match schema.get(name) {
                     Some(had) if had == dtype => col(name.clone()),
+                    // Polars would cast a blob that is not UTF-8 to null; a blob read
+                    // as text is its literal, in every segment alike.
+                    Some(DataType::Binary) if *dtype == DataType::String => col(name.clone()).map(
+                        |c| {
+                            let text: StringChunked =
+                                c.binary()?.iter().map(|b| b.map(blob_text)).collect();
+                            Ok(text.into_series().into())
+                        },
+                        |_, field| Ok(Field::new(field.name().clone(), DataType::String)),
+                    ),
                     Some(_) => col(name.clone()).cast(dtype.clone()),
                     None => lit(NULL).cast(dtype.clone()).alias(name.clone()),
                 })
@@ -121,6 +131,18 @@ impl<'a> Segments<'a> {
         };
         Ok((lf, self.done.into_iter().map(|(file, _)| file).collect()))
     }
+}
+
+/// A blob as an SQL literal, `X'0A1B'`: how a blob reads in a column of text.
+pub(crate) fn blob_text(b: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::with_capacity(3 + 2 * b.len());
+    text.push_str("X'");
+    for byte in b {
+        let _ = write!(text, "{byte:02X}");
+    }
+    text.push('\'');
+    text
 }
 
 /// The IPC fields of a schema with no dictionaries, which is every schema here.

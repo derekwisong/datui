@@ -233,11 +233,12 @@ fn a_column_that_widens_late_is_wide_throughout() {
     let db = database(
         dir.path(),
         "late.db",
-        "CREATE TABLE t (id INTEGER, v, w);
+        "CREATE TABLE t (id INTEGER, v, w, b BLOB);
          WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 70000)
-         INSERT INTO t SELECT x, x, NULL FROM c;
+         INSERT INTO t SELECT x, x, NULL, x'FF00' FROM c;
          UPDATE t SET v = 'late' WHERE id = 70000;
-         UPDATE t SET w = 2.5 WHERE id = 69999;",
+         UPDATE t SET w = 2.5 WHERE id = 69999;
+         UPDATE t SET b = 'text' WHERE id = 70000;",
     );
     let (df, converted) = read_table(&db, "t", dir.path());
     assert_eq!(df.height(), 70_000);
@@ -250,6 +251,12 @@ fn a_column_that_widens_late_is_wide_throughout() {
     assert_eq!(w.dtype(), &DataType::Float64, "nulls first, then a float");
     assert_eq!(w.f64().unwrap().get(69_998), Some(2.5));
     assert_eq!(w.null_count(), 69_999);
+    // Blobs read before the column became text read as their literal, as those after
+    // do, rather than as null for not being UTF-8.
+    let b = df.column("b").unwrap().str().unwrap();
+    assert_eq!(b.get(0), Some("X'FF00'"));
+    assert_eq!(b.get(69_999), Some("text"));
+    assert_eq!(b.null_count(), 0);
 }
 
 #[test]

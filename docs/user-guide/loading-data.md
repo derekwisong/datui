@@ -206,9 +206,9 @@ columns and no rows.
 
 Padded numbers become numbers with or without `--skip-initial-space`, as long
 as string parsing is on (the default). With the flag, cells of spaces are null
-in text columns too, `--null-value` matches the value without its padding, and
-every text column is typed as `--parse-strings` types it, even with
-`--no-parse-strings`.
+in text columns too, and `--null-value` matches the value without its padding.
+Typing follows `--parse-strings`: with `--no-parse-strings` the padding goes but
+the columns stay text, and `--parse-strings=COL` types only the columns named.
 
 ### Dates and timestamps
 

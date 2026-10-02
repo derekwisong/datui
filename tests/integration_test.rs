@@ -20972,7 +20972,9 @@ fn names_of(df: &DataFrame) -> Vec<String> {
 
 /// A padded logger export: `--comment-char` finds the header past two comment lines,
 /// the names lose their padding, and padded numbers are numbers with the blank cells
-/// null — by default, and with `--skip-initial-space` when string parsing is off.
+/// null, with or without `--skip-initial-space`. That flag leaves the typing to
+/// `--parse-strings`: off, the values lose their padding and stay text; limited to a
+/// column, only that column is typed.
 #[test]
 fn a_padded_log_reads_with_comment_char() {
     let log = dialect_fixture("dialect_padded_log.csv");
@@ -20987,12 +20989,6 @@ fn a_padded_log_reads_with_comment_char() {
     for flags in [
         &["--comment-char", "#"][..],
         &["--comment-char", "#", "--skip-initial-space"],
-        &[
-            "--comment-char",
-            "#",
-            "--skip-initial-space",
-            "--no-parse-strings",
-        ],
     ] {
         let df = open_dialect(vec![log.clone()], options_from_flags(flags));
         assert_eq!(names_of(&df), names, "{flags:?}");
@@ -21011,6 +21007,35 @@ fn a_padded_log_reads_with_comment_char() {
         );
         assert_eq!(df.column("Lcl Date").unwrap().dtype(), &DataType::Date);
     }
+
+    let df = open_dialect(
+        vec![log.clone()],
+        options_from_flags(&[
+            "--comment-char",
+            "#",
+            "--skip-initial-space",
+            "--no-parse-strings",
+        ]),
+    );
+    let latitude = df.column("Latitude").unwrap();
+    assert_eq!(latitude.dtype(), &DataType::String);
+    assert_eq!(latitude.null_count(), 1);
+    assert_eq!(latitude.str().unwrap().get(1), Some("40.100000"));
+    assert_eq!(df.column("bus1volts").unwrap().dtype(), &DataType::String);
+
+    let df = open_dialect(
+        vec![log.clone()],
+        options_from_flags(&[
+            "--comment-char",
+            "#",
+            "--skip-initial-space",
+            "--parse-strings=Latitude",
+        ]),
+    );
+    assert_eq!(df.column("Latitude").unwrap().dtype(), &DataType::Float64);
+    let volts = df.column("bus1volts").unwrap();
+    assert_eq!(volts.dtype(), &DataType::String);
+    assert_eq!(volts.str().unwrap().get(0), Some("25.1"));
 
     // A cell of spaces in a text column is empty text as read, and null once the
     // padding is skipped.

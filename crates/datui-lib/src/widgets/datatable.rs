@@ -4051,12 +4051,12 @@ impl DataTableState {
         lf: LazyFrame,
         options: &OpenOptions,
     ) -> Result<LazyFrame> {
-        let Some(target) = options.csv_string_types() else {
+        let Some(target) = &options.parse_strings else {
             return Ok(lf);
         };
         Self::type_string_columns(
             lf,
-            &target,
+            target,
             options.parse_strings_sample_rows,
             StringTypes {
                 dates: options.parse_dates,

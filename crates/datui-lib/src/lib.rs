@@ -8598,22 +8598,11 @@ impl OpenOptions {
             .then_some(self.header_rows.as_slice())
     }
 
-    /// Which CSV text columns are typed after the read: `--parse-strings`' own, or
-    /// every one when padding is skipped, since a value without its padding is one
-    /// Polars would have typed itself.
-    pub fn csv_string_types(&self) -> Option<ParseStringsTarget> {
-        if self.skip_initial_space {
-            Some(ParseStringsTarget::All)
-        } else {
-            self.parse_strings.clone()
-        }
-    }
-
     /// When loading CSV: use Polars try_parse_dates only if parse_strings is not set.
     /// When parse_strings is set we do our own date parsing (with strict: false), so we disable
     /// Polars' try_parse_dates to avoid "could not find an appropriate format" errors.
     pub fn csv_try_parse_dates(&self) -> bool {
-        self.csv_string_types().is_none() && self.parse_dates
+        self.parse_strings.is_none() && self.parse_dates
     }
 
     /// The S3 settings every cloud path uses: the command line over the environment

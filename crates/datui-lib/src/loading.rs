@@ -774,7 +774,7 @@ impl Loader {
             return Step::Probe(pending);
         }
         let load = self.load.as_mut().expect("an open has a load");
-        if paths.len() == 1 && delimited.is_some() && options.csv_string_types().is_some() {
+        if paths.len() == 1 && delimited.is_some() && options.parse_strings.is_some() {
             load.phase = Phase::ScanningStrings;
             return Step::Scan {
                 paths,

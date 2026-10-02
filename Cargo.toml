@@ -23,10 +23,11 @@ name = "datui"
 path = "src/main.rs"
 
 [features]
-default = ["cloud", "http", "sql", "streaming"]
+default = ["cloud", "http", "sql", "sqlite", "streaming"]
 cloud = ["datui/cloud"]
 http = ["datui/http"]
 sql = ["datui/sql"]
+sqlite = ["datui/sqlite"]
 streaming = ["datui/streaming"]
 
 [dependencies]

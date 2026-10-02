@@ -29,6 +29,9 @@ mod model_files;
 #[cfg(feature = "cloud")]
 #[path = "quality/remote.rs"]
 mod remote_quality;
+#[cfg(feature = "sqlite")]
+#[path = "formats/sqlite.rs"]
+mod sqlite;
 
 use common::{drain_events, next_event, pump_open_until_loaded, work_pending};
 

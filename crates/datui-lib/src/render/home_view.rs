@@ -593,8 +593,11 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     *hidden, *places, selected, name_width, show_meta, ctx,
                 ));
             }
-            crate::home::Row::Hidden { count, .. } => {
-                lines.push(hidden_line(*count, selected, name_width, show_meta, ctx));
+            crate::home::Row::Hidden { section, count } => {
+                let tables = holds_tables(&app.home.sections[*section]);
+                lines.push(hidden_line(
+                    *count, tables, selected, name_width, show_meta, ctx,
+                ));
             }
         }
     }
@@ -670,7 +673,9 @@ fn place_line(
         _ => ctx.dimmed,
     });
     let mut name = crate::home::display_path(path);
-    if !name.ends_with('/') {
+    // A SQLite database is a place, and a file.
+    if !name.ends_with('/') && crate::discover::data_format(path) != Some(crate::FileFormat::Sqlite)
+    {
         name.push('/');
     }
     // What the place itself is, when the dataset index remembers it: `hive`, `12
@@ -726,17 +731,25 @@ fn more_line(
 /// The row that stands for files datui cannot open, hidden inside a browsed directory.
 fn hidden_line(
     count: usize,
+    tables: bool,
     selected: bool,
     name_width: usize,
     show_meta: bool,
     ctx: &RenderContext,
 ) -> Line<'static> {
-    let text = format!(
-        "{} {count} {} datui can't open",
-        glyphs::get().ellipsis,
-        if count == 1 { "file" } else { "files" }
-    );
+    let ellipsis = glyphs::get().ellipsis;
+    let text = match (tables, count) {
+        (true, 1) => format!("{ellipsis} 1 internal table"),
+        (true, _) => format!("{ellipsis} {count} internal tables"),
+        (false, 1) => format!("{ellipsis} 1 file datui can't open"),
+        (false, _) => format!("{ellipsis} {count} files datui can't open"),
+    };
     note_row(text, selected, name_width, show_meta, ctx)
+}
+
+/// Whether a section lists a database's tables rather than files.
+fn holds_tables(section: &crate::home::Section) -> bool {
+    section.rows.iter().any(|row| row.table.is_some())
 }
 
 /// A dimmed row that stands for rows not drawn, to the same edge as the entries.
@@ -1611,6 +1624,9 @@ fn kind_words(
     if entry.opens_whole_directory {
         return String::new();
     }
+    if let Some(table) = &entry.table {
+        return format!("sqlite {}", table.kind);
+    }
     match entry.kind {
         EntryKind::File => match crate::FileFormat::from_path(&entry.path) {
             _ if entry.format_spec.is_some() => {
@@ -1721,6 +1737,10 @@ fn preview_head(
             facts.push(("contains", "no data files".to_string(), plain));
         }
         None => {}
+    }
+    if let Some(n) = entry.cost.tables {
+        let what = if n == 1 { "table" } else { "tables" };
+        facts.push(("contains", format!("{n} {what}"), plain));
     }
     // A door that is not one table reads part of the directory: which part, and what it
     // leaves out, where the user decides whether to press Enter.
@@ -1887,10 +1907,18 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         let names: Vec<&str> = app.home.sections[section]
             .rows
             .iter()
-            .filter(|row| row.kind == EntryKind::Other)
+            .filter(|row| row.hidden_by_default())
             .map(|row| row.name.as_str())
             .collect();
-        Paragraph::new(hidden_details(&names, count, area.height as usize, ctx)).render(area, buf);
+        let tables = holds_tables(&app.home.sections[section]);
+        Paragraph::new(hidden_details(
+            &names,
+            count,
+            tables,
+            area.height as usize,
+            ctx,
+        ))
+        .render(area, buf);
         return;
     }
     let Some(entry) = app.home.selected_entry() else {
@@ -2003,6 +2031,9 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 EntryKind::Unknown if app.home.missing.contains(&entry.path) => "",
                 EntryKind::Unknown => "Not read yet.",
                 EntryKind::Other => "datui has no reader for this file.",
+                EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => {
+                    "Enter lists its tables."
+                }
                 // The log says which files are live, and datui does not read it.
                 k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
                 k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
@@ -2070,24 +2101,34 @@ fn guidance_notes() -> [&'static str; 7] {
 fn hidden_details(
     names: &[&str],
     count: usize,
+    tables: bool,
     height: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
     let g = glyphs::get();
+    let (title, what) = match (tables, count) {
+        (true, 1) => (
+            "Hidden tables",
+            "1 table SQLite keeps for itself".to_string(),
+        ),
+        (true, _) => (
+            "Hidden tables",
+            format!("{count} tables SQLite keeps for itself"),
+        ),
+        (false, 1) => ("Hidden files", "1 file datui has no reader for".to_string()),
+        (false, _) => (
+            "Hidden files",
+            format!("{count} files datui has no reader for"),
+        ),
+    };
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
-            "Hidden files".to_string(),
+            title.to_string(),
             Style::default()
                 .fg(ctx.text_primary)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(
-            format!(
-                "{count} {} datui has no reader for",
-                if count == 1 { "file" } else { "files" }
-            ),
-            Style::default().fg(ctx.dimmed),
-        )),
+        Line::from(Span::styled(what, Style::default().fg(ctx.dimmed))),
         Line::from(""),
     ];
     // The rows left, less one for the `… N more` line when not all of them fit.
@@ -2235,6 +2276,7 @@ mod tests {
             holds: Default::default(),
             opens_whole_directory: false,
             format_spec: None,
+            table: None,
         }
     }
 
@@ -3559,6 +3601,7 @@ mod tests {
                     count: 9999,
                     more: true,
                 }),
+                tables: None,
             },
             Some(400_000_000),
         );

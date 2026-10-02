@@ -17,7 +17,7 @@ Usage: scripts/dev/test.sh [--print] COMMAND [ARGS...]
   preflight               Check formatting and lint all workspace targets
   features [--test] [FEATURE...]
                           Lint datui and datui-lib with no default features, then
-                          each feature alone (default: none cloud http sql streaming);
+                          each feature alone (default: none cloud http sql sqlite streaming);
                           --test also runs datui-lib's library tests in each
   full                    Run the full workspace suite (CI runs it under nextest)
 
@@ -180,7 +180,7 @@ case "$command" in
         fi
         features=("$@")
         if (( ${#features[@]} == 0 )); then
-            features=(none cloud http sql streaming)
+            features=(none cloud http sql sqlite streaming)
         fi
         # Every combination runs, so one failure does not hide the next.
         failed=0

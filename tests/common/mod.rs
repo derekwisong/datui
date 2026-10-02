@@ -275,6 +275,7 @@ pub fn ensure_sample_data() {
             "gps/drive.nmea",
             "audio/loop.aiff",
             "midi/song.mid",
+            "sqlite/shop.db",
         ];
 
         let needs_generation = !sample_data_dir.exists()

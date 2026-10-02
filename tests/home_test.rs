@@ -1563,6 +1563,7 @@ fn entry_with_columns(name: &str, columns: &[&str]) -> datui::discover::Entry {
         holds: Default::default(),
         opens_whole_directory: false,
         format_spec: None,
+        table: None,
     }
 }
 
@@ -2172,6 +2173,7 @@ fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
         holds: Default::default(),
         opens_whole_directory: false,
         format_spec: None,
+        table: None,
     }
 }
 
@@ -3836,6 +3838,7 @@ fn test_measuring_a_row_keeps_what_the_footer_said_beyond_the_row_count() {
             count: 1,
             more: false,
         }),
+        tables: None,
     };
     let original = datui::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");
 

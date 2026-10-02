@@ -402,7 +402,16 @@ impl CacheManager {
         let stored = if looks_like_url {
             path.to_path_buf()
         } else {
-            crate::canonical::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+            // A table inside a SQLite database is no file of its own: its database is
+            // made absolute and the name kept.
+            crate::canonical::canonicalize(path)
+                .or_else(|e| match (path.parent(), path.file_name()) {
+                    (Some(db), Some(table)) if !db.as_os_str().is_empty() => {
+                        crate::canonical::canonicalize(db).map(|db| db.join(table))
+                    }
+                    _ => Err(e),
+                })
+                .unwrap_or_else(|_| path.to_path_buf())
         };
         let entry = stored.to_string_lossy().into_owned();
 

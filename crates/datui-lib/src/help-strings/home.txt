@@ -7,7 +7,8 @@ Navigation:
   Ctrl+↑ / Ctrl+↓:  Previous or next section
   PgUp/PgDn:        Move a screenful, stopping at the first and last
   Home / End:       The first or last row
-  ← / →:            Fold or unfold a section; → on a directory goes inside it
+  ← / →:            Fold or unfold a section; → on a directory or a SQLite
+                    database goes inside it
   Enter:            What the control bar says on this row: "Open all" reads a
                     whole directory as one table, "Inside" steps into it,
                     "Open" loads a file, "Look" finds out first. On a section
@@ -36,7 +37,8 @@ Finding:
                     typed, ~ types into it
   Ctrl+U:           Clear the filter or path input
   Ctrl+R:           List again what is on screen
-  Ctrl+A:           Show or hide files datui cannot read
+  Ctrl+A:           Show or hide files datui cannot read; inside a SQLite
+                    database, its internal tables
   Ctrl+D:           Remember the directory under the cursor, so it stays
                     listed; again to forget it. A file stands for the
                     directory it is in, a heading for the one it lists
@@ -72,7 +74,8 @@ Reading a row:
   inside otherwise. The row hides while a filter is typed, and is absent
   when nothing inside is openable. Inside a
   directory, the last row counts the files datui can't open; Enter on it
-  shows them. The Notes tab says what a read had to decide. In a
+  shows them. A SQLite database's label counts its tables ("3 tables");
+  one of several lists them inside, a row each, and Enter opens one. The Notes tab says what a read had to decide. In a
   collection, "dataset" marks a remote directory not listed until you
   enter it, and "missing" a local path with nothing there.
 

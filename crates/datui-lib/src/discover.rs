@@ -64,6 +64,8 @@ pub enum EntryKind {
 /// does. Everything else in the record — rows, columns, cost — is a measurement rather
 /// than a judgement, and survives.
 ///
+/// 7: a file with no extension is a SQLite database when its first bytes say so.
+///
 /// 6: on a local disk, a file with no extension is data when its first bytes carry a
 /// Parquet, Arrow, Avro or ORC signature, so a directory of Spark part files a 5 called
 /// `dir` is one dataset. Unidentified ones are `unnamed` rather than `not_read`.
@@ -82,7 +84,7 @@ pub enum EntryKind {
 /// extension strings, and one bookkeeping predicate. A directory of `.arrow` beside
 /// `.ipc` was `dir` and is now one dataset; a directory whose ninth entry decided it was
 /// answered by whatever the filesystem returned first (#275, phase 1).
-pub const CLASSIFIER_VERSION: u32 = 6;
+pub const CLASSIFIER_VERSION: u32 = 7;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -310,6 +312,12 @@ impl Holds {
 }
 
 impl Entry {
+    /// Whether the home screen leaves this row out until Ctrl+A: a file datui cannot
+    /// open, or a database's own table.
+    pub fn hidden_by_default(&self) -> bool {
+        self.kind == EntryKind::Other || self.table.as_ref().is_some_and(|t| t.internal)
+    }
+
     /// The short label beside a row's name: what it holds, rather than what `Enter`
     /// will do with it.
     ///
@@ -326,6 +334,10 @@ impl Entry {
             }
             EntryKind::File if self.format_spec.is_some() => {
                 self.format_spec.clone().unwrap_or_default().into()
+            }
+            EntryKind::File if self.cost.tables.is_some() => {
+                let n = self.cost.tables.unwrap_or_default();
+                format!("{n} {}", if n == 1 { "table" } else { "tables" }).into()
             }
             kind => kind.label().into(),
         }
@@ -373,6 +385,19 @@ pub struct Entry {
     pub opens_whole_directory: bool,
     /// The format spec whose glob names this file, which reads it.
     pub format_spec: Option<String>,
+    /// A table inside a SQLite database, for the rows listed inside one: its path is the
+    /// database's with the table's name after it, which nothing on disk has.
+    pub table: Option<TableOf>,
+}
+
+/// What a row inside a database says about its table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableOf {
+    /// What SQLite calls it: `table`, `view`, `virtual` or `shadow`.
+    pub kind: String,
+    /// SQLite's own (its schema, its statistics, a virtual table's shadows): hidden
+    /// like a file datui cannot open until Ctrl+A shows it, and opened like any other.
+    pub internal: bool,
 }
 
 /// What pressing Enter on a dataset will actually cost.
@@ -404,6 +429,9 @@ pub struct Cost {
     /// Partition layout, for a hive dataset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partitions: Option<Partitions>,
+    /// Tables of its own, for a SQLite database: one opens, several are listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tables: Option<usize>,
 }
 
 /// How a hive dataset is laid out on disk.
@@ -456,6 +484,7 @@ impl Entry {
             holds: Default::default(),
             opens_whole_directory: false,
             format_spec: None,
+            table: None,
         }
     }
 
@@ -526,6 +555,9 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     let head = read_head(path, &mut head)?;
     if let Some(signed) = signed_format_of(head) {
         return Some(signed);
+    }
+    if crate::sqlite::looks_like(head) {
+        return Some(crate::FileFormat::Sqlite);
     }
     if head.starts_with(b"PAR1") {
         // Both ends, because `PAR1` at the front alone is a truncated write — the
@@ -1500,7 +1532,10 @@ pub fn enrich(entry: &mut Entry) {
 /// reads perfectly as one table.
 pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     match entry.kind {
-        EntryKind::File => enrich_parquet(entry),
+        EntryKind::File => {
+            enrich_parquet(entry);
+            enrich_sqlite(entry);
+        }
         EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry, as_read),
         // Nothing to read for a plain directory, and nothing that *may* be read for
         // one that has not been looked at. Nor for a lake table: summing the footers
@@ -1996,6 +2031,80 @@ pub fn enrich_parquet(entry: &mut Entry) {
     }
 }
 
+/// A SQLite database's tables, from its schema: how many of its own, and the columns of
+/// the one when there is one. A `.db` file that is not a SQLite database is one datui
+/// cannot open.
+pub fn enrich_sqlite(entry: &mut Entry) {
+    if entry.kind != EntryKind::File || entry.table.is_some() {
+        return;
+    }
+    let named = data_format(&entry.path) == Some(crate::FileFormat::Sqlite);
+    if !is_regular_file(&entry.path) {
+        return;
+    }
+    if !crate::sqlite::is_sqlite_file(&entry.path) {
+        if named {
+            entry.kind = EntryKind::Other;
+        }
+        return;
+    }
+    let Ok(tables) = crate::sqlite::tables(&entry.path) else {
+        return;
+    };
+    let own: Vec<&crate::sqlite::Table> = tables.iter().filter(|t| !t.internal).collect();
+    entry.cost.tables = Some(own.len());
+    if let [one] = own.as_slice() {
+        entry.columns = one.columns.iter().map(|(name, _)| name.clone()).collect();
+        entry.cols = Some(entry.columns.len());
+    }
+}
+
+/// The rows of a SQLite database's listing on the home screen: its tables and views by
+/// name, as a directory lists its files, SQLite's own marked to be hidden, each at its
+/// path inside the database.
+pub fn database_rows(db: &Path) -> Vec<Entry> {
+    let Ok(mut tables) = crate::sqlite::tables(db) else {
+        return Vec::new();
+    };
+    tables.sort_by_cached_key(|t| t.name.to_lowercase());
+    let modified = std::fs::metadata(db).and_then(|m| m.modified()).ok();
+    tables
+        .into_iter()
+        .map(|table| table_entry(db, table, modified))
+        .collect()
+}
+
+/// The row of a table inside a database named by its path (`app.db/users`), as a
+/// recent is listed: `None` when the path names no table of a database.
+pub fn table_row(path: &Path) -> Option<Entry> {
+    let (db, name) = crate::sqlite::table_path(path)?;
+    let table = crate::sqlite::tables(&db)
+        .ok()?
+        .into_iter()
+        .find(|t| t.name == name)?;
+    let modified = std::fs::metadata(&db).and_then(|m| m.modified()).ok();
+    let mut entry = table_entry(&db, table, modified);
+    entry.path = path.to_path_buf();
+    Some(entry)
+}
+
+fn table_entry(
+    db: &Path,
+    table: crate::sqlite::Table,
+    modified: Option<std::time::SystemTime>,
+) -> Entry {
+    let mut entry = Entry::new(db.join(&table.name), EntryKind::File);
+    entry.name = table.name;
+    entry.modified = modified;
+    entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
+    entry.cols = (!entry.columns.is_empty()).then_some(entry.columns.len());
+    entry.table = Some(TableOf {
+        kind: table.kind,
+        internal: table.internal,
+    });
+    entry
+}
+
 /// Pull layout and compression out of a footer that has already been read.
 ///
 /// Every one of these was being parsed and thrown away. They are the difference
@@ -2172,6 +2281,29 @@ pub fn format_age(t: std::time::SystemTime) -> String {
 /// Column name and type, for the home screen's preview pane.
 pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 
+/// The preview of a SQLite table: a row inside a database, or a database of one table.
+/// `None` when the entry is neither, `Some(None)` when it is and has nothing to show.
+fn sqlite_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
+    let (db, name) = match &entry.table {
+        Some(_) => (
+            entry.path.parent()?.to_path_buf(),
+            Some(entry.name.as_str()),
+        ),
+        None if is_regular_file(&entry.path) && crate::sqlite::is_sqlite_file(&entry.path) => {
+            (entry.path.clone(), None)
+        }
+        None => return None,
+    };
+    let preview = crate::sqlite::tables(&db)
+        .ok()
+        .and_then(|tables| crate::sqlite::pick(tables, name, &db).ok())
+        .and_then(|pick| match pick {
+            crate::sqlite::Pick::One(table) => crate::sqlite::schema_preview(&db, &table),
+            crate::sqlite::Pick::Several(_) => None,
+        });
+    Some(preview)
+}
+
 /// Find the first Parquet file at or under `dir`, without walking the whole tree.
 ///
 /// Bounded on both breadth and depth so a hive dataset with thousands of partitions
@@ -2229,6 +2361,9 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
 
     let file_path = match entry.kind {
         EntryKind::File => {
+            if let Some(preview) = sqlite_preview(entry) {
+                return preview;
+            }
             if !is_parquet_path(&entry.path) {
                 return None;
             }
@@ -3054,6 +3189,7 @@ mod classification_tests {
             holds: Default::default(),
             opens_whole_directory: false,
             format_spec: None,
+            table: None,
         };
         enrich(&mut entry);
         assert_eq!(entry.rows, Some(1), "its footer was read");
@@ -3496,6 +3632,7 @@ mod classification_tests {
             holds,
             opens_whole_directory: false,
             format_spec: None,
+            table: None,
         };
         enrich(&mut entry);
         entry

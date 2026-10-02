@@ -122,6 +122,7 @@ mod render;
 pub mod sanitize;
 pub mod schema_union;
 pub mod search;
+pub(crate) mod segments;
 pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod source;

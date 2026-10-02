@@ -49,6 +49,7 @@ rows; **View** includes only the rows on screen.
 | Row | The current row |
 | View | The rows on screen, with every displayed column |
 | Table | Everything the view holds, as an export would: rows and columns as queried, filtered and sorted |
+| Python (Polars) | The view as a Python script that rebuilds it; see [below](#copy-the-view-as-python) |
 
 | Format | Details |
 |---|---|
@@ -80,6 +81,43 @@ binary column's size, as for a single local file.
 Above 200 MiB the copy is refused with a pointer to
 [export](exporting-data.md). An `osc52` copy asks only when its cap is over
 10 MiB, since it never holds more than the cap.
+
+## Copy the view as Python
+
+Press <kbd>y</kbd>, choose **Python (Polars)** on **Scope** and press
+<kbd>Enter</kbd>. The clipboard gets a script that builds the view with
+[Polars](https://pola.rs):
+
+```python
+import polars as pl
+
+df = (
+    pl.scan_csv("sales.csv", try_parse_dates=True)
+    .filter((pl.col("region") == "north") & (pl.col("qty") > 1))
+    .sort(["amount", "order_id"], descending=[True, False], nulls_last=True, maintain_order=True)
+    .select(["order_id", "customer", "amount"])
+)
+```
+
+`df` is a LazyFrame; `df.collect()` reads it. The steps come in the order
+they were applied:
+
+| In datui | In the script |
+|---|---|
+| The file | `pl.scan_*`, or `pl.read_*(...).lazy()` for JSON, Avro and Excel, with the reader options datui used (delimiter, header, skipped lines and rows, null values); a directory or bucket prefix as a glob |
+| Query | `.filter`, `.group_by().agg()` ordered by the keys, `.select`, `.unique` |
+| SQL | `.sql(..., table_name="df")` |
+| Search | `.filter` with a case-insensitive pattern per word |
+| Pivot, Melt | `.group_by().agg()` then `.pivot()`; `.unpivot()` |
+| Drill-down | `.filter` on the grouped rows with `eq_missing` |
+| Filters, sort, <kbd>r</kbd> | `.filter`, `.sort(..., nulls_last=True, maintain_order=True)`, `.reverse()` |
+| Hidden and moved columns | `.select([...])` |
+
+Data piped in on standard input, or in a format Polars has no reader for
+(ORC, SafeTensors, GGUF, bzip2 or xz), starts from `df = ...` for you to
+fill in. A step the script cannot repeat, such as a drill into a group whose
+rows are lists, is a comment, and the steps after it are commented out.
+An S3 endpoint and region go into `storage_options`; credentials never do.
 
 ## Keys
 

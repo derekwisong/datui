@@ -25713,6 +25713,10 @@ impl App {
                     ),
                     None => Err("Nothing to copy: no rows are on screen".to_string()),
                 },
+                CopyScope::Python => Ok(Planned::Copy(
+                    clipboard::Payload::text(self.python_script(state)),
+                    "Copied the view as Python".to_string(),
+                )),
                 CopyScope::Table => {
                     // A capped destination's copy is read only as far as its cap, so
                     // what could be held is the smaller of the two.
@@ -25771,6 +25775,35 @@ impl App {
                 None
             }
         }
+    }
+
+    /// The view on screen as a Python Polars script: the open's reader, then every
+    /// step that made the view. See [`python_script`].
+    pub fn python_script(&self, state: &DataTableState) -> String {
+        let (paths, options) = match &self.opened {
+            Some((paths, options)) => (Some(paths.as_slice()), options.clone()),
+            None => (None, OpenOptions::default()),
+        };
+        let cloud = options.effective_cloud(&self.app_config.cloud);
+        let record = python_script::OpenRecord {
+            paths,
+            options: &options,
+            schema: state.source_schema(),
+            remote_objects: state
+                .remote_objects()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|object| object.url)
+                .collect(),
+            s3_endpoint: cloud.s3_endpoint_url.filter(|s| !s.trim().is_empty()),
+            s3_region: cloud.s3_region.filter(|s| !s.trim().is_empty()),
+            read_as_text: state.read_as_text().iter().map(|c| c.to_string()).collect(),
+        };
+        python_script::Script {
+            source: python_script::source(&record),
+            steps: state.python_steps(),
+        }
+        .render()
     }
 
     /// Hand a payload to the clipboard destination, building the destination

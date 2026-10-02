@@ -21522,3 +21522,327 @@ fn header_rows_on_a_file_with_no_rows_yet() {
     let message = app.error_message().expect("an error");
     assert!(message.contains("past the end of the file"), "{message}");
 }
+
+/// The sales table the Copy as Python tests build views over.
+fn open_python_fixture() -> (
+    App,
+    mpsc::Receiver<AppEvent>,
+    mpsc::Sender<AppEvent>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sales.csv");
+    let mut csv = String::from("order_id,region,customer,amount,qty,day\n");
+    let regions = ["north", "south", "east", "west"];
+    let customers = ["Ada", "Bo", "Cy", "Di", "Ed"];
+    for i in 0..60 {
+        let amount = if i % 11 == 0 {
+            String::new()
+        } else {
+            format!("{:.2}", (i * 37 % 97) as f64 * 1.25)
+        };
+        csv.push_str(&format!(
+            "{i},{},{},{amount},{},2024-0{}-{:02}\n",
+            regions[i % 4],
+            customers[i % 5],
+            i % 7,
+            1 + i % 3,
+            1 + i % 28
+        ));
+    }
+    std::fs::write(&path, csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx, dir)
+}
+
+fn python_filter(
+    column: &str,
+    operator: datui::filter_modal::FilterOperator,
+    value: &str,
+    logical_op: datui::filter_modal::LogicalOperator,
+) -> datui::filter_modal::FilterStatement {
+    datui::filter_modal::FilterStatement {
+        column: column.to_string(),
+        operator,
+        value: value.to_string(),
+        logical_op,
+    }
+}
+
+/// `y`, the Python scope, Enter: the dialog copies the view's pipeline as a
+/// script, filters, a sort over two columns and the columns shown included.
+#[test]
+fn test_copy_as_python_writes_the_view_as_a_script() {
+    use datui::clipboard::{Destination, Payload};
+    use datui::filter_modal::{FilterOperator, LogicalOperator};
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<Payload>>>);
+    impl Destination for Capture {
+        fn write(&mut self, payload: Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+        fn describe(&self) -> &'static str {
+            "test"
+        }
+    }
+
+    let (mut app, rx, tx, dir) = open_python_fixture();
+    {
+        let state = app.data_table_state.as_mut().unwrap();
+        state.filter(vec![
+            python_filter("region", FilterOperator::Eq, "north", LogicalOperator::And),
+            python_filter("qty", FilterOperator::Gt, "1", LogicalOperator::And),
+        ]);
+        state.sort_by(
+            vec!["amount".to_string(), "order_id".to_string()],
+            vec![true, false],
+        );
+        state.set_column_order(vec![
+            "order_id".to_string(),
+            "customer".to_string(),
+            "amount".to_string(),
+        ]);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+
+    let copies: Arc<Mutex<Vec<Payload>>> = Arc::new(Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(Capture(copies.clone())));
+    let key =
+        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    key(&mut app, KeyCode::Char('y'));
+    key(&mut app, KeyCode::Char(' '));
+    for c in "pyth".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.copy_modal.row_order().len(), 1, "no format or header");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    let path = dir.path().join("sales.csv");
+    let expected = format!(
+        "import polars as pl\n\
+         \n\
+         df = (\n    \
+         pl.scan_csv({:?}, try_parse_dates=True)\n    \
+         .filter((pl.col(\"region\") == \"north\") & (pl.col(\"qty\") > 1))\n    \
+         .sort([\"amount\", \"order_id\"], descending=[True, False], nulls_last=True, maintain_order=True)\n    \
+         .select([\"order_id\", \"customer\", \"amount\"])\n\
+         )\n",
+        path.display().to_string()
+    );
+    assert_eq!(copies.lock().unwrap()[0].text, expected);
+
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains("Copied the view as Python"),
+        "no flash drawn"
+    );
+}
+
+/// The view as datui shows it, every row, as CSV.
+fn view_csv(app: &App) -> String {
+    let state = app.data_table_state.as_ref().unwrap();
+    let columns: Vec<Expr> = state.get_column_order().iter().map(col).collect();
+    let mut df = state.lf().clone().select(columns).collect().unwrap();
+    let mut out = Vec::new();
+    CsvWriter::new(&mut out).finish(&mut df).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+/// Run the script datui writes for the view with the project's Python Polars and
+/// compare its rows with datui's. `None` when there is no `.venv` to run it with.
+fn run_python_script(app: &App) -> Option<(String, String)> {
+    let python = if cfg!(windows) {
+        Path::new(".venv/Scripts/python.exe")
+    } else {
+        Path::new(".venv/bin/python")
+    };
+    if !python.exists() {
+        return None;
+    }
+    let state = app.data_table_state.as_ref().unwrap();
+    let script = app.python_script(state);
+    let program = format!("{script}\nimport sys\nsys.stdout.write(df.collect().write_csv())\n");
+    let output = std::process::Command::new(python)
+        .arg("-c")
+        .arg(&program)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the script failed:\n{program}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some((String::from_utf8(output.stdout).unwrap(), script))
+}
+
+/// Every kind of step the script writes, run in Python: the rows are the ones
+/// datui shows. Skipped where the project's virtualenv is missing.
+#[test]
+fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
+    use datui::filter_modal::{FilterOperator, LogicalOperator};
+    use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+
+    type Build = Box<dyn Fn(&mut datui::widgets::datatable::DataTableState)>;
+    let views: Vec<(&str, Build)> = vec![
+        (
+            "sidebar filters, an OR, a sort and the columns shown",
+            Box::new(|s| {
+                s.filter(vec![
+                    python_filter("region", FilterOperator::Eq, "north", LogicalOperator::And),
+                    python_filter("amount", FilterOperator::GtEq, "40", LogicalOperator::Or),
+                    python_filter(
+                        "customer",
+                        FilterOperator::NotContains,
+                        "d",
+                        LogicalOperator::And,
+                    ),
+                ]);
+                s.sort_by(vec!["qty".into(), "amount".into()], vec![false, true]);
+                s.set_column_order(vec!["amount".into(), "order_id".into(), "qty".into()]);
+            }),
+        ),
+        ("the natural order reversed", Box::new(|s| s.reverse())),
+        (
+            "a grouped query",
+            Box::new(|s| {
+                s.query(
+                    "select total: sum amount, n: count qty, avg amount by region where qty > 1"
+                        .into(),
+                )
+            }),
+        ),
+        (
+            "a query of expressions and accessors",
+            Box::new(|s| {
+                s.query(
+                    "select up: customer.upper, m: day.month, a: amount.round[1], \
+                     b: 5 xbar order_id, w: qty mod 3, c: amount ^ 0 \
+                     where customer like \"*d*\" | region in [\"east\", \"west\"], day >= 2024.02.01"
+                        .into(),
+                )
+            }),
+        ),
+        (
+            "a weighted average by a computed key, distinct",
+            Box::new(|s| s.query("select distinct qty wavg amount by r: region.upper".into())),
+        ),
+        (
+            "SQL grouped without an order",
+            Box::new(|s| {
+                s.sql_query(
+                    "SELECT region, AVG(amount) AS avg_amount, COUNT(*) AS n FROM df GROUP BY region"
+                        .into(),
+                )
+            }),
+        ),
+        (
+            "a search, then a sort",
+            Box::new(|s| {
+                s.fuzzy_search("ad".into());
+                s.sort_by(vec!["order_id".into()], vec![true]);
+            }),
+        ),
+        (
+            "a pivot of a filtered view, then a filter on the pivot",
+            Box::new(|s| {
+                s.filter(vec![python_filter(
+                    "qty",
+                    FilterOperator::Lt,
+                    "5",
+                    LogicalOperator::And,
+                )]);
+                s.pivot(&PivotSpec {
+                    index: vec!["region".into()],
+                    pivot_column: "customer".into(),
+                    value_column: "amount".into(),
+                    aggregation: PivotAggregation::Avg,
+                    sort_columns: None,
+                })
+                .unwrap();
+                s.sort_by(vec!["region".into()], vec![true]);
+            }),
+        ),
+        (
+            "a count pivot, every other column the index",
+            Box::new(|s| {
+                s.set_column_order(vec!["region".into(), "qty".into(), "customer".into()]);
+                s.query("select region, qty, customer".into());
+                s.pivot(&PivotSpec {
+                    index: Vec::new(),
+                    pivot_column: "customer".into(),
+                    value_column: "qty".into(),
+                    aggregation: PivotAggregation::Count,
+                    sort_columns: None,
+                })
+                .unwrap();
+            }),
+        ),
+        (
+            "a melt, then SQL over it",
+            Box::new(|s| {
+                s.melt(&MeltSpec {
+                    index: vec!["order_id".into()],
+                    value_columns: vec!["amount".into(), "qty".into()],
+                    variable_name: "measure".into(),
+                    value_name: "value".into(),
+                })
+                .unwrap();
+                s.sql_query("SELECT * FROM df WHERE value > 3 ORDER BY order_id, measure".into());
+            }),
+        ),
+        (
+            "a drill into one value",
+            Box::new(|s| {
+                s.sort_by(vec!["amount".into()], vec![false]);
+                s.drill_into_value("region", AnyValue::StringOwned("south".into()))
+                    .unwrap();
+            }),
+        ),
+        (
+            "a drill into a group of a grouped query",
+            Box::new(|s| {
+                s.query("select total: sum amount by region, qty where qty > 2".into());
+                s.drill_down_into_group(1).unwrap();
+                s.sort_by(vec!["order_id".into()], vec![true]);
+            }),
+        ),
+        (
+            "a drill into a group of a SQL grouping",
+            Box::new(|s| {
+                s.sql_query("SELECT customer, SUM(qty) AS q FROM df GROUP BY customer".into());
+                s.drill_down_into_group(2).unwrap();
+            }),
+        ),
+    ];
+    for (what, build) in views {
+        let (mut app, rx, tx, _dir) = open_python_fixture();
+        build(app.data_table_state.as_mut().unwrap());
+        pump_until_idle(&mut app, &rx, &tx);
+        assert!(
+            app.data_table_state.as_ref().unwrap().error().is_none(),
+            "{what}: {:?}",
+            app.data_table_state.as_ref().unwrap().error()
+        );
+        let Some((rows, script)) = run_python_script(&app) else {
+            eprintln!("skipped: no .venv to run the scripts with");
+            return;
+        };
+        assert!(
+            !script.contains("# "),
+            "{what}: a step was not written:\n{script}"
+        );
+        assert_eq!(rows, view_csv(&app), "{what}:\n{script}");
+    }
+}

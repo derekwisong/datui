@@ -151,6 +151,21 @@ mod tests {
     }
 
     #[test]
+    fn the_python_scope_shows_only_the_scope_row() {
+        let mut modal = CopyModal::new();
+        modal.open(vec!["city".into()], None, CopyContext::default());
+        modal.scope = CopyScope::Python;
+        let text = render_to_text(&mut modal);
+        assert!(text.contains("Python (Polars)"), "{text}");
+        assert!(!text.contains("Format:"), "{text}");
+        assert!(!text.contains("Header:"), "{text}");
+        assert!(
+            text.contains("Copy the view as a Python (Polars) script"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_open_picker_lists_and_narrows() {
         let mut modal = CopyModal::new();
         modal.open(

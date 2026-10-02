@@ -1438,8 +1438,8 @@ fn enrich_dataset(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
             // dataset that grew is narrowest. Still a sample and not a total: the
             // count beside it is already `?`.
             entry.columns = union_of(&names);
-            entry.cols =
-                Some(union_of(&sampled.iter().map(top_level_names).collect::<Vec<_>>()).len());
+            let top = union_of(&sampled.iter().map(top_level_names).collect::<Vec<_>>());
+            entry.cols = Some(top.len() + partition_columns_beyond(entry, &top));
             entry.cols_sampled = true;
             // From one file, so it describes how the dataset is written rather
             // than its total: codec and row-group sizing are a property of the
@@ -1544,13 +1544,26 @@ fn enrich_dataset(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     }
 
     entry.rows = Some(rows);
-    entry.cols = Some(top_level.len());
+    entry.cols = Some(top_level.len() + partition_columns_beyond(entry, &top_level));
     entry.size = Some(bytes);
     entry.columns = columns;
     cost.uncompressed = (uncompressed > 0).then_some(uncompressed);
     cost.row_groups = (row_groups > 0).then_some(row_groups);
     cost.partitions = entry.cost.partitions.take();
     entry.cost = cost;
+}
+
+/// Partition keys the files do not carry themselves. The open hoists them in as
+/// columns, so a hive table's width counts them: `12 × 4`, not the `12 × 2` its footers
+/// say.
+fn partition_columns_beyond(entry: &Entry, top_level: &[String]) -> usize {
+    entry.cost.partitions.as_ref().map_or(0, |layout| {
+        layout
+            .keys
+            .iter()
+            .filter(|key| !top_level.contains(key))
+            .count()
+    })
 }
 
 /// The files of `dir` itself, out of a walk that went below it.
@@ -2062,12 +2075,36 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
     let mut reader = ParquetReader::new(file);
     let arrow_schema = reader.schema().ok()?;
     let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
-    Some(
+    let mut preview: SchemaPreview = Vec::new();
+    // A hive table opens with its partition keys hoisted to the front, so the pane lists
+    // them there too, typed from the one path already in hand the way the scan infers
+    // them.
+    if entry.kind == EntryKind::Hive
+        && let Ok(below) = file_path.strip_prefix(&entry.path)
+    {
+        for part in below.parent().into_iter().flat_map(Path::components) {
+            let part = part.as_os_str().to_string_lossy();
+            if let Some((key, value)) = part.split_once('=')
+                && !key.is_empty()
+                && schema.get(key).is_none()
+            {
+                let dtype = if value.parse::<i64>().is_ok() {
+                    polars::prelude::DataType::Int64
+                } else if value.parse::<f64>().is_ok() {
+                    polars::prelude::DataType::Float64
+                } else {
+                    polars::prelude::DataType::String
+                };
+                preview.push((key.to_string(), dtype));
+            }
+        }
+    }
+    preview.extend(
         schema
             .iter()
-            .map(|(name, dtype)| (name.to_string(), dtype.clone()))
-            .collect(),
-    )
+            .map(|(name, dtype)| (name.to_string(), dtype.clone())),
+    );
+    Some(preview)
 }
 
 #[cfg(test)]
@@ -2699,7 +2736,7 @@ mod classification_tests {
         assert_eq!(entry.kind, EntryKind::Hive);
         assert_eq!(entry.holds.one_format(), Some("json"), "its own only file");
         assert_eq!(entry.rows, Some(2), "and the dataset is still counted");
-        assert_eq!(entry.cols, Some(1));
+        assert_eq!(entry.cols, Some(2), "`id` and the partition column `year`");
     }
 
     /// A hive dataset is described whatever odd file is lying in a partition. One
@@ -3300,7 +3337,7 @@ mod classification_tests {
         let entry = measured(dir.path());
         assert_eq!(entry.kind, EntryKind::Hive);
         assert_eq!(entry.columns, vec!["id", "ts", "address"]);
-        assert_eq!(entry.cols, Some(3));
+        assert_eq!(entry.cols, Some(4), "and the partition column `year`");
     }
 
     /// Past the counting limit the columns come from a spread of the directory rather

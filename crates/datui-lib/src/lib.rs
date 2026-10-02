@@ -15677,12 +15677,18 @@ impl App {
             go_inside(self, path);
             return None;
         }
-        // A cloud directory that is a dataset opens as one: its URL as a prefix, which is
-        // what makes the open a scan of every file under it.
         let directory = matches!(
             kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
         );
+        // A directory typed at `~` is a place to go, as → makes it, whatever it holds:
+        // its door is one row in, and naming a directory never starts a read of all of it.
+        if directory && jump {
+            go_inside(self, path);
+            return None;
+        }
+        // A cloud directory that is a dataset opens as one: its URL as a prefix, which is
+        // what makes the open a scan of every file under it.
         if directory && home::is_object_store_url(&path) {
             // A prefix, not a directory: the scan is what walks it.
             return Some(self.home_open_path(home::directory_dataset_url(&path), false));

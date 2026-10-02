@@ -4291,13 +4291,17 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     home.browsing = Some(blocks.clone());
     home.rebuild(&[], &[]);
     let first = door_of(&home).expect("the directory carries the door");
-    assert_eq!(first.name, "blocks (all partitions)");
+    assert_eq!(first.name, "blocks (hive table: date)");
     assert_eq!(first.kind, EntryKind::Hive);
     assert_eq!(
         first.path,
         PathBuf::from("s3://aws-public-blockchain/v1.0/btc/blocks/")
     );
     assert_eq!(home.sections[0].rows.len(), 2, "the door is not among them");
+    assert!(
+        home.selection_is_the_door(),
+        "a hive table is one dataset, so the cursor lands on the row that opens it"
+    );
 
     // A directory of plain subdirectories gets one too. Its files are a level down, which
     // is what `Enter` on the row reads — and which directory holds them is the question
@@ -4318,7 +4322,14 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     assert_eq!(home.sections[0].rows.len(), 2, "the door is not among them");
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("parquet (all files)")
+        Some("parquet (all files, mixed)")
+    );
+    // Not a dataset: the cursor lands on the first thing in it, so the first Enter never
+    // reads `by_year` and `by_station` together.
+    assert!(!home.selection_is_the_door());
+    assert_eq!(
+        home.selected_entry().map(|e| e.path),
+        Some(PathBuf::from("s3://noaa-ghcn-pds/parquet/by_year"))
     );
     assert_eq!(
         datui::home::directory_dataset_url(Path::new("gs://b/x")),
@@ -4686,7 +4697,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     home.rebuild(&[], &[]);
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("exports (all files)"),
+        Some("exports (3 Parquet files, one schema)"),
         "unpeeked, the listing offers it"
     );
 
@@ -4699,7 +4710,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     home.rebuild(&[], &[]);
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
-        Some("exports (all files)"),
+        Some("exports (3 Parquet files, one schema)"),
         "the second door does not close on a verdict"
     );
     assert_eq!(
@@ -4740,7 +4751,7 @@ fn test_the_whole_directory_row_says_what_the_listing_holds() {
     home.rebuild(&[], &[]);
 
     let row = door_of(&home).expect("the directory carries the door");
-    assert_eq!(row.name, "exports (all files)");
+    assert_eq!(row.name, "exports (12 Parquet files, one schema)");
     assert_eq!(row.holds.data_files(), 12, "the tally the pane reports");
     // And no label. Every other label counts what is directly inside a directory; this
     // row reads the whole of it, so a count beside it would be about a different set of
@@ -4930,7 +4941,7 @@ fn test_the_whole_directory_row_is_a_door_not_a_search_result() {
 
     let first = |home: &HomeState| visible_names(home).first().cloned();
     assert!(
-        first(&home).is_some_and(|n| n.ends_with("(all files)")),
+        first(&home).is_some_and(|n| n.ends_with("(2 Parquet files, one schema)")),
         "got {:?}",
         visible_names(&home)
     );
@@ -4943,13 +4954,13 @@ fn test_the_whole_directory_row_is_a_door_not_a_search_result() {
     );
 
     home.filter.clear();
-    assert!(first(&home).is_some_and(|n| n.ends_with("(all files)")));
+    assert!(first(&home).is_some_and(|n| n.ends_with("(2 Parquet files, one schema)")));
 
     // And it is not one of the things being ordered.
     for sort in [SortMode::Size, SortMode::Rows, SortMode::Modified] {
         home.sort = sort;
         assert!(
-            first(&home).is_some_and(|n| n.ends_with("(all files)")),
+            first(&home).is_some_and(|n| n.ends_with("(2 Parquet files, one schema)")),
             "under {sort:?} the first row was {:?}",
             visible_names(&home)
         );
@@ -5072,7 +5083,7 @@ fn test_the_door_is_named_after_the_directory_even_at_the_root() {
     };
     home.rebuild(&[], &[]);
     let door = door_of(&home).expect("the root is a directory like any other");
-    assert_eq!(door.name, "/ (all files)", "got {:?}", door.name);
+    assert_eq!(door.name, "/ (all files, mixed)", "got {:?}", door.name);
 }
 
 /// Stepping into a directory and back out leaves its label alone.
@@ -5205,17 +5216,17 @@ fn test_the_door_is_named_the_way_the_title_is() {
             .expect("the place carries the row")
     };
 
-    assert_eq!(named("s3://bucket"), "bucket (all files)");
-    assert_eq!(named("s3://lab@bucket"), "bucket (all files)");
-    assert_eq!(named("s3://lab@bucket/exports"), "exports (all files)");
-    assert_eq!(named("gs://bucket/exports/"), "exports (all files)");
+    assert_eq!(named("s3://bucket"), "bucket (1 Parquet file)");
+    assert_eq!(named("s3://lab@bucket"), "bucket (1 Parquet file)");
+    assert_eq!(named("s3://lab@bucket/exports"), "exports (1 Parquet file)");
+    assert_eq!(named("gs://bucket/exports/"), "exports (1 Parquet file)");
     assert_eq!(
         named("abfss://raw@acct.dfs.core.windows.net"),
-        "raw (all files)"
+        "raw (1 Parquet file)"
     );
     assert_eq!(
         named("abfss://raw@acct.dfs.core.windows.net/tbl"),
-        "tbl (all files)"
+        "tbl (1 Parquet file)"
     );
 }
 
@@ -6151,4 +6162,283 @@ fn test_the_view_never_leaves_blank_lines_below_the_last_row() {
         bottom as usize,
         "the last row is on the bottom line"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Landing: the open-all row says what it opens, and the cursor lands on it only when
+// that is one dataset
+// ---------------------------------------------------------------------------
+
+mod landing {
+    use super::coming_back::{draw, go_into, home_app, press, select, settle};
+    use super::touch;
+    use crossterm::event::KeyCode;
+    use datui::discover::EntryKind;
+    use datui::{App, AppEvent};
+    use polars::prelude::*;
+    use std::path::Path;
+    use std::sync::mpsc::Receiver;
+    use tempfile::TempDir;
+
+    fn parquet(path: &Path, columns: &[(&str, &[i64])]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let height = columns[0].1.len();
+        let columns: Vec<Column> = columns
+            .iter()
+            .map(|(name, values)| Column::new((*name).into(), *values))
+            .collect();
+        let mut frame = DataFrame::new(height, columns).unwrap();
+        let file = std::fs::File::create(path).unwrap();
+        ParquetWriter::new(file).finish(&mut frame).unwrap();
+    }
+
+    fn csv(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// One directory of each kind the issue names (#547).
+    fn fixtures(root: &Path) {
+        for year in [2023, 2024] {
+            for month in [1, 2] {
+                parquet(
+                    &root.join(format!("sales_hive/year={year}/month={month}/part.parquet")),
+                    &[("id", &[1, 2, 3]), ("amount", &[10, 20, 30])],
+                );
+            }
+        }
+        for name in ["a", "b", "c"] {
+            parquet(
+                &root.join(format!("same_schema/{name}.parquet")),
+                &[("id", &[1, 2]), ("v", &[3, 4])],
+            );
+        }
+        parquet(&root.join("diff_schema/a.parquet"), &[("id", &[1])]);
+        parquet(
+            &root.join("diff_schema/b.parquet"),
+            &[("name", &[1]), ("z", &[2])],
+        );
+        parquet(&root.join("mixed/a.parquet"), &[("id", &[1, 2])]);
+        csv(&root.join("mixed/b.csv"), "id\n3\n");
+        parquet(&root.join("mixed/sub/c.parquet"), &[("id", &[5])]);
+        touch(
+            &root.join("delta_tbl/_delta_log"),
+            "00000000000000000000.json",
+        );
+        parquet(&root.join("delta_tbl/part-0.parquet"), &[("id", &[1, 2])]);
+        // A directory of datasets: a hive table, two Parquet files, a directory of CSV.
+        parquet(
+            &root.join("data/events/day=1/part.parquet"),
+            &[("id", &[1])],
+        );
+        parquet(&root.join("data/processed/a.parquet"), &[("id", &[1])]);
+        parquet(&root.join("data/processed/b.parquet"), &[("id", &[2])]);
+        csv(&root.join("data/raw/a.csv"), "id\n1\n");
+        csv(&root.join("data/raw/b.csv"), "id\n2\n");
+    }
+
+    /// The home screen over `root`, with every row on it measured, as it is by the time
+    /// anyone has read the listing.
+    fn home_over(root: &Path) -> (App, Receiver<AppEvent>) {
+        let mut config = datui::config::AppConfig::default();
+        config.data.directories = vec![root.to_string_lossy().into_owned()];
+        config.data.search.enabled = false;
+        let (mut app, rx) = home_app(config);
+        let measured = ["sales_hive", "same_schema", "diff_schema"].map(|d| root.join(d));
+        settle(&mut app, &rx, |app| {
+            measured.iter().all(|d| app.home.enriched.contains_key(d))
+        });
+        (app, rx)
+    }
+
+    fn door(app: &App) -> datui::discover::Entry {
+        app.home
+            .sections
+            .iter()
+            .find_map(|s| s.door.clone())
+            .expect("the directory carries the open-all row")
+    }
+
+    fn step_in(app: &mut App, rx: &Receiver<AppEvent>, dir: &Path) {
+        select(app, dir);
+        go_into(app, rx, KeyCode::Right, dir);
+    }
+
+    fn row_kind(app: &App, path: &Path) -> EntryKind {
+        app.home
+            .sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .find(|r| r.path == path)
+            .map(|r| r.kind)
+            .expect("the row is listed")
+    }
+
+    /// Open what Enter on the highlighted row opens, and wait for it.
+    fn enter_and_load(app: &mut App, rx: &Receiver<AppEvent>) {
+        match press(app, KeyCode::Enter) {
+            Some(AppEvent::Open(paths, options)) => {
+                crate::common::pump_open_until_loaded(app, rx, paths, options)
+            }
+            _ => panic!("Enter should open the directory"),
+        }
+        assert!(app.data_table_state.is_some(), "the directory opened");
+    }
+
+    #[test]
+    fn a_hive_table_lands_on_its_row_and_opens_with_its_partition_columns() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let hive = tmp.path().join("sales_hive");
+        let (mut app, rx) = home_over(tmp.path());
+        step_in(&mut app, &rx, &hive);
+
+        let row = door(&app);
+        assert_eq!(row.name, "sales_hive (hive table: year, month)");
+        assert!(
+            app.home.selection_is_the_door(),
+            "one dataset: the cursor is on it"
+        );
+        // The width the open will have, partition columns counted.
+        assert_eq!((row.rows, row.cols), (Some(12), Some(4)));
+
+        enter_and_load(&mut app, &rx);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.headers()[..2], ["year", "month"]);
+        // Partitions are pruned: with the 2024 files no longer Parquet, a filter on 2023
+        // still reads, because it never opens them.
+        for month in [1, 2] {
+            std::fs::write(
+                hive.join(format!("year=2024/month={month}/part.parquet")),
+                b"x",
+            )
+            .unwrap();
+        }
+        let pruned = state
+            .lf()
+            .clone()
+            .filter(col("year").eq(lit(2023)))
+            .collect()
+            .expect("the 2024 partition is never read");
+        assert_eq!(pruned.height(), 6);
+    }
+
+    #[test]
+    fn files_with_one_schema_land_on_their_row_and_open_as_one_table() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let same = tmp.path().join("same_schema");
+        let (mut app, rx) = home_over(tmp.path());
+        assert_eq!(row_kind(&app, &same), EntryKind::MultiFile);
+        step_in(&mut app, &rx, &same);
+
+        assert_eq!(door(&app).name, "same_schema (3 Parquet files, one schema)");
+        assert!(app.home.selection_is_the_door());
+        enter_and_load(&mut app, &rx);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!((state.num_rows(), state.headers().len()), (6, 2));
+    }
+
+    /// The root row and the open-all row inside agree: the footers that made
+    /// `diff_schema/` a place to look into upstairs make its row inside a union.
+    #[test]
+    fn files_whose_schemas_differ_land_on_the_first_file() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let diff = tmp.path().join("diff_schema");
+        let (mut app, rx) = home_over(tmp.path());
+        assert_eq!(row_kind(&app, &diff), EntryKind::Directory);
+        step_in(&mut app, &rx, &diff);
+
+        assert_eq!(
+            door(&app).name,
+            "diff_schema (2 Parquet files, schemas differ)"
+        );
+        assert!(!app.home.selection_is_the_door());
+        assert_eq!(
+            app.home.selected_entry().map(|e| e.path),
+            Some(diff.join("a.parquet"))
+        );
+    }
+
+    #[test]
+    fn a_mixed_directory_lands_on_its_first_child_and_says_what_is_read() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let mixed = tmp.path().join("mixed");
+        let (mut app, rx) = home_over(tmp.path());
+        step_in(&mut app, &rx, &mixed);
+
+        let row = door(&app);
+        assert_eq!(row.name, "mixed (all files, mixed)");
+        assert_eq!(
+            datui::home::door_reads(&row),
+            Some((
+                "1 parquet".to_string(),
+                Some("1 csv, 1 directory".to_string())
+            ))
+        );
+        assert!(!app.home.selection_is_the_door());
+        assert!(app.home.selected_entry().is_some(), "on a row inside");
+    }
+
+    #[test]
+    fn a_directory_of_datasets_lands_on_its_first_child() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let data = tmp.path().join("data");
+        let (mut app, rx) = home_over(tmp.path());
+        step_in(&mut app, &rx, &data);
+
+        let row = door(&app);
+        assert_eq!(row.name, "data (all files, mixed)");
+        assert_eq!(
+            datui::home::door_reads(&row),
+            Some(("every Parquet file below".to_string(), None))
+        );
+        assert!(!app.home.selection_is_the_door());
+        let on = app.home.selected_entry().expect("a row inside").path;
+        assert!(on.starts_with(&data) && on != data, "got {on:?}");
+    }
+
+    /// A lake table's files are not its rows, so its open-all row says so and the cursor
+    /// starts on the first thing in it.
+    #[test]
+    fn a_lake_table_lands_on_its_first_child() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let delta = tmp.path().join("delta_tbl");
+        let (mut app, rx) = home_over(tmp.path());
+        select(&mut app, &delta);
+        go_into(&mut app, &rx, KeyCode::Enter, &delta);
+
+        assert_eq!(door(&app).name, "delta_tbl (Delta files, not the table)");
+        assert!(!app.home.selection_is_the_door());
+        assert_eq!(
+            app.home.selected_entry().map(|e| e.path),
+            Some(delta.join("part-0.parquet"))
+        );
+    }
+
+    /// `~` and Enter on a directory goes inside it, as → does, rather than reading all of
+    /// it as one table.
+    #[test]
+    fn a_directory_typed_at_the_path_prompt_is_browsed() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let (mut app, rx) = home_over(tmp.path());
+        for (dir, lands) in [("same_schema", true), ("data", false)] {
+            let dir = tmp.path().join(dir);
+            press(&mut app, KeyCode::Char('~'));
+            for c in dir.to_string_lossy().chars() {
+                press(&mut app, KeyCode::Char(c));
+            }
+            go_into(&mut app, &rx, KeyCode::Enter, &dir);
+            assert!(app.data_table_state.is_none(), "nothing was opened");
+            assert_eq!(app.home.selection_is_the_door(), lands, "{dir:?}");
+            press(&mut app, KeyCode::Esc);
+            settle(&mut app, &rx, |app| app.home.browsing.is_none());
+        }
+        draw(&mut app);
+    }
 }

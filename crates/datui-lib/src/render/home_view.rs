@@ -1289,7 +1289,22 @@ fn entry_line<'a>(
     // an ordinary filename keeps its head, where the distinguishing part usually is.
     let budget =
         name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1);
-    if name.chars().count() > budget && budget > 1 {
+    // The door's name is the directory, which the section title already says, and what
+    // Enter opens, which nothing else does: the directory gives way first.
+    let door_cut = name
+        .rfind(" (")
+        .filter(|_| entry.opens_whole_directory)
+        .map(|at| name.split_at(at))
+        .map(|(base, what)| (base.to_string(), what.to_string()))
+        .filter(|(_, what)| budget > what.chars().count() + ellipsis_len);
+    if name.chars().count() > budget
+        && let Some((base, what)) = door_cut
+    {
+        let room = budget - what.chars().count() - ellipsis_len;
+        let kept: String = base.chars().take(room).collect();
+        name = format!("{kept}{}{what}", g.ellipsis);
+        name_positions.clear();
+    } else if name.chars().count() > budget && budget > 1 {
         let original_len = name.chars().count();
         if name.starts_with('/') || name.starts_with('~') {
             name = truncate_start(&name, budget);
@@ -1684,6 +1699,16 @@ fn preview_head(
         }
         None => {}
     }
+    // A door that is not one table reads part of the directory: which part, and what it
+    // leaves out, where the user decides whether to press Enter.
+    if entry.opens_whole_directory
+        && let Some((reads, skips)) = crate::home::door_reads(entry)
+    {
+        facts.push(("reads", reads, plain));
+        if let Some(skips) = skips {
+            facts.push(("skips", skips, plain));
+        }
+    }
     if let Some(rows) = entry.rows {
         facts.push(("rows", discover::format_rows(rows), plain));
     }
@@ -1938,9 +1963,13 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             let note = match entry.kind {
                 // The door itself. It is the row the other notes point at, so it says
                 // what it does rather than where to find it.
-                k if entry.opens_whole_directory && k.is_lake_table() => DOOR_OF_A_LAKE_TABLE,
-                EntryKind::Hive if entry.opens_whole_directory => DOOR_OF_A_HIVE_TABLE,
-                _ if entry.opens_whole_directory => THE_DOOR,
+                _ if entry.opens_whole_directory => match crate::home::door_kind(&entry) {
+                    crate::home::DoorKind::Lake => DOOR_OF_A_LAKE_TABLE,
+                    crate::home::DoorKind::Hive => DOOR_OF_A_HIVE_TABLE,
+                    crate::home::DoorKind::SchemasDiffer => DOOR_OF_FILES_THAT_DIFFER,
+                    crate::home::DoorKind::Mixed | crate::home::DoorKind::Single => DOOR_OF_A_MIX,
+                    crate::home::DoorKind::OneSchema | crate::home::DoorKind::Unknown => THE_DOOR,
+                },
                 // Where the other door is. A directory datui will not read as one table
                 // is the row a new user is most likely to be stuck on — the label says
                 // what is in there, Enter steps into it, and nothing until now said that
@@ -1993,15 +2022,23 @@ const DOOR_OF_A_HIVE_TABLE: &str = "Enter reads every partition as one table.";
 /// The same, in a lake table, whose log decides which files are live.
 const DOOR_OF_A_LAKE_TABLE: &str = "Enter reads the files, ignoring the table's log.";
 
+/// The same, where the files' columns disagree.
+const DOOR_OF_FILES_THAT_DIFFER: &str = "Enter stacks the files, matching columns by name.";
+
+/// The same, where only part of the directory is read: the `reads` line says which.
+const DOOR_OF_A_MIX: &str = "Enter reads only what the reads line names.";
+
 /// Every sentence the pane offers as guidance, for the test that reads them.
 #[cfg(test)]
-fn guidance_notes() -> [&'static str; 5] {
+fn guidance_notes() -> [&'static str; 7] {
     [
         INSIDE_AND_THE_DOOR,
         INSIDE_A_LAKE_TABLE,
         THE_DOOR,
         DOOR_OF_A_HIVE_TABLE,
         DOOR_OF_A_LAKE_TABLE,
+        DOOR_OF_FILES_THAT_DIFFER,
+        DOOR_OF_A_MIX,
     ]
 }
 
@@ -3565,6 +3602,58 @@ mod tests {
         assert!(
             text.contains("FOUND"),
             "the title should still be readable, got {text:?}"
+        );
+    }
+
+    /// At 80 columns the open-all row keeps what it opens and cuts the directory's
+    /// name, which the section title above it already carries; at 200 it is whole.
+    #[test]
+    fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
+        let ctx = RenderContext::for_test();
+        let mut door = row("/data/same_schema/", EntryKind::MultiFile);
+        door.name = "same_schema (3 Parquet files, one schema)".to_string();
+        door.opens_whole_directory = true;
+        door.rows = Some(6);
+        door.cols = Some(2);
+        let drawn = |width: usize| -> String {
+            entry_line(
+                &door,
+                true,
+                width.saturating_sub(META_WIDTH as usize),
+                true,
+                None,
+                "",
+                None,
+                None,
+                None,
+                0,
+                &ctx,
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+        };
+        // An 80-column terminal leaves the list 78.
+        let narrow = drawn(78);
+        assert!(
+            narrow.contains("(3 Parquet files, one schema)"),
+            "{narrow:?}"
+        );
+        assert!(!narrow.contains("same_schema ("), "{narrow:?}");
+        assert!(
+            narrow.contains("6 × 2") || narrow.contains("6 x 2"),
+            "{narrow:?}"
+        );
+        assert_eq!(
+            narrow.chars().count(),
+            row_width(78 - META_WIDTH as usize, true),
+            "the columns stay where they are: {narrow:?}"
+        );
+        let wide = drawn(200);
+        assert!(
+            wide.contains("same_schema (3 Parquet files, one schema)"),
+            "{wide:?}"
         );
     }
 }

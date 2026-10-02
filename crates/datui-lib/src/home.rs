@@ -343,23 +343,29 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
     if !openable_row && holds_nothing_to_open(&holds) {
         return None;
     }
-    // What the row says it opens, not whether it opens: a hive directory is read through
-    // its partitions and everything else through its files.
-    let what = if kind == EntryKind::Hive {
-        "all partitions"
-    } else {
-        "all files"
-    };
-    // Named the way the section title above it names the same place, or the two
-    // disagree about the directory you are standing in. A source id is not part of the
-    // name — `s3://lab@bucket` is titled `bucket` — and an Azure container is named by
-    // container, not by the long URL its last component happens to be.
-    //
-    // `file_name` rather than splitting on `/` for the rest: at the filesystem root
-    // there is no last component and the row was named `" (all files)"`, and on Windows
-    // the separator is not the one a split would look for.
+    let mut entry = Entry::directory(&directory_dataset_url(dir));
+    entry.kind = kind;
+    // What the listing you are looking at holds. Not the same tally as the directory's
+    // own row upstairs: that one was counted from one page of a peek and may say `100+`,
+    // and this one is counted from rows a listing has already dropped its markers from,
+    // so it reports fewer skipped. Two views of one directory, each true of what it saw.
+    entry.holds = holds;
+    entry.opens_whole_directory = true;
+    entry.name = door_name(&entry, rows);
+    Some(entry)
+}
+
+/// The directory a door opens, named the way the section title above it names the
+/// same place, or the two disagree about the directory you are standing in. A source id
+/// is not part of the name — `s3://lab@bucket` is titled `bucket` — and an Azure
+/// container is named by container, not by the long URL its last component happens to be.
+///
+/// `file_name` rather than splitting on `/` for the rest: at the filesystem root there
+/// is no last component and the row was named `" (all files)"`, and on Windows the
+/// separator is not the one a split would look for.
+fn door_base_name(dir: &Path) -> String {
     let text = dir.to_string_lossy();
-    let name = if let Some((_, container, key)) = crate::source::azure_parts(&text) {
+    if let Some((_, container, key)) = crate::source::azure_parts(&text) {
         let leaf = key.trim_matches('/').rsplit('/').next().unwrap_or("");
         if leaf.is_empty() {
             container
@@ -372,17 +378,178 @@ fn whole_directory_row(dir: &Path, rows: &[Entry], remote: bool) -> Option<Entry
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| plain.into_owned())
+    }
+}
+
+/// What a directory's door opens, from the kind and the tally already in hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoorKind {
+    /// `key=value` partitions: one table, read with its partition columns.
+    Hive,
+    /// Files of one format that read as one table.
+    OneSchema,
+    /// Files of one format whose footers or headers disagree: the read is a union.
+    SchemasDiffer,
+    /// One data file, beside whatever else.
+    Single,
+    /// A Delta, Iceberg or Hudi root, whose files are not its rows.
+    Lake,
+    /// More than one format, files beside subdirectories, or only subdirectories.
+    Mixed,
+    /// Nothing has said what is here.
+    Unknown,
+}
+
+/// Which [`DoorKind`] a door is.
+///
+/// A directory the footers or headers turned down as one table is `Directory` with one
+/// format left in its tally, and that is the only route to one: the listing alone calls
+/// such a directory `MultiFile`.
+pub fn door_kind(door: &Entry) -> DoorKind {
+    let holds = &door.holds;
+    match door.kind {
+        EntryKind::Hive => DoorKind::Hive,
+        EntryKind::MultiFile => DoorKind::OneSchema,
+        k if k.is_lake_table() => DoorKind::Lake,
+        EntryKind::Unknown => DoorKind::Unknown,
+        _ => {
+            let Some(format) = holds.one_format() else {
+                return DoorKind::Mixed;
+            };
+            if holds.directories > 0 {
+                return DoorKind::Mixed;
+            }
+            let files = holds.data_files();
+            if files == 1 {
+                return DoorKind::Single;
+            }
+            let mostly_data = files * 2 >= files + holds.not_read + holds.unnamed;
+            let reads_many = crate::FileFormat::from_name(format)
+                .is_some_and(crate::FileFormat::reads_many_files);
+            if mostly_data && reads_many {
+                DoorKind::SchemasDiffer
+            } else {
+                DoorKind::Mixed
+            }
+        }
+    }
+}
+
+/// Whether stepping into a directory puts the cursor on its door: only when the door
+/// opens the directory as the one dataset its name says, which is what `Enter` on the
+/// directory's own row one level up opens too. Anywhere else the first `Enter` would
+/// start a combined read nobody asked for.
+pub fn door_lands(door: &Entry) -> bool {
+    matches!(door_kind(door), DoorKind::Hive | DoorKind::OneSchema)
+}
+
+/// A format as prose names it: `Parquet`, `CSV`.
+fn format_title(name: &str) -> String {
+    match name {
+        "parquet" => "Parquet".to_string(),
+        "arrow" => "Arrow".to_string(),
+        "avro" => "Avro".to_string(),
+        "excel" => "Excel".to_string(),
+        other => other.to_ascii_uppercase(),
+    }
+}
+
+/// The partition keys a hive door names: the layout the footers pass found, else the
+/// `key=value` names in the listing on screen, which in a bucket are the levels seen so
+/// far.
+fn door_keys(door: &Entry, rows: &[Entry]) -> Vec<String> {
+    if let Some(layout) = door.cost.partitions.as_ref()
+        && !layout.keys.is_empty()
+    {
+        return layout.keys.clone();
+    }
+    let mut keys: Vec<String> = Vec::new();
+    for row in rows {
+        if let Some((key, _)) = row.name.split_once('=')
+            && !key.is_empty()
+            && !keys.iter().any(|k| k == key)
+        {
+            keys.push(key.to_string());
+        }
+    }
+    keys
+}
+
+/// The door's name: the directory, and what `Enter` on it opens.
+pub fn door_name(door: &Entry, rows: &[Entry]) -> String {
+    let name = door_base_name(&door.path);
+    let holds = &door.holds;
+    let more = if holds.truncated { "+" } else { "" };
+    let files = |format: &str| {
+        let count = holds.data_files();
+        let word = if count == 1 { "file" } else { "files" };
+        format!("{count}{more} {} {word}", format_title(format))
     };
-    let mut entry = Entry::directory(&directory_dataset_url(dir));
-    entry.kind = kind;
-    // What the listing you are looking at holds. Not the same tally as the directory's
-    // own row upstairs: that one was counted from one page of a peek and may say `100+`,
-    // and this one is counted from rows a listing has already dropped its markers from,
-    // so it reports fewer skipped. Two views of one directory, each true of what it saw.
-    entry.holds = holds;
-    entry.name = format!("{name} ({what})");
-    entry.opens_whole_directory = true;
-    Some(entry)
+    let what = match door_kind(door) {
+        DoorKind::Hive => {
+            let keys = door_keys(door, rows);
+            if keys.is_empty() {
+                "hive table".to_string()
+            } else {
+                format!("hive table: {}", keys.join(", "))
+            }
+        }
+        DoorKind::OneSchema => match holds.one_format() {
+            Some(format) => format!("{}, one schema", files(format)),
+            None => "one table".to_string(),
+        },
+        DoorKind::SchemasDiffer => {
+            format!(
+                "{}, schemas differ",
+                files(holds.one_format().unwrap_or(""))
+            )
+        }
+        DoorKind::Single => files(holds.one_format().unwrap_or("")),
+        DoorKind::Lake => format!(
+            "{} files, not the table",
+            door.kind.lake_name().unwrap_or_default()
+        ),
+        DoorKind::Mixed => "all files, mixed".to_string(),
+        DoorKind::Unknown => "all files".to_string(),
+    };
+    format!("{name} ({what})")
+}
+
+/// What `Enter` on a door that is not one table reads, and what it leaves out, for the
+/// details pane. The local open reads the commonest format's files directly inside; a
+/// directory of Parquet with subdirectories, or with no files of its own, is scanned
+/// whole for Parquet instead.
+pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
+    if !matches!(door_kind(door), DoorKind::Mixed | DoorKind::Single) {
+        return None;
+    }
+    let holds = &door.holds;
+    let more = if holds.truncated { "+" } else { "" };
+    let plain = holds.directories.saturating_sub(holds.partitions);
+    let directories = |n: usize| {
+        let word = if n == 1 { "directory" } else { "directories" };
+        format!("{n}{more} {word}")
+    };
+    let Some((format, count)) = holds.formats.first() else {
+        return (holds.directories > 0).then(|| ("every Parquet file below".to_string(), None));
+    };
+    let below = holds.partitions > 0 || (holds.formats.len() == 1 && format == "parquet");
+    let below = below && holds.directories > 0;
+    let reads = if below {
+        "every Parquet file below".to_string()
+    } else {
+        format!("{count}{more} {format}")
+    };
+    let mut skips: Vec<String> = holds
+        .formats
+        .iter()
+        .skip(1)
+        .map(|(name, n)| format!("{n}{more} {name}"))
+        .collect();
+    if !below && plain > 0 {
+        skips.push(directories(plain));
+    }
+    Some((reads, (!skips.is_empty()).then(|| skips.join(", "))))
 }
 
 /// Whether a directory holds nothing a `(all files)` row could read.
@@ -1100,6 +1267,9 @@ pub struct HomeState {
     /// How far down the list the row being returned to was when the user left it, so
     /// it comes back on the same line rather than wherever the scroll falls.
     pub returning_line: Option<usize>,
+    /// The cursor is where [`HomeState::select_first_entry`] put it, and the user has not
+    /// moved it since: a door the footers turn down afterwards takes it to the first row.
+    pub landing: bool,
 }
 
 /// Where the cursor was in a listing the user went inside from.
@@ -1193,6 +1363,7 @@ impl Default for HomeState {
             trail: Vec::new(),
             returning: None,
             returning_line: None,
+            landing: false,
         }
     }
 }
@@ -1446,7 +1617,19 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         let unavailable = remote && unreachable.contains(&dir);
         // The first row inside any directory opens the whole of it, since `Enter` on the
         // rows below opens one file. The other door.
-        let door = whole_directory_row(&dir, &rows, remote);
+        let mut door = whole_directory_row(&dir, &rows, remote);
+        // What an earlier run's footers made of this directory, as its row upstairs is
+        // given: without it a directory of separate tables is a dataset inside and a
+        // place to look into one level up. Its own mtime is the fingerprint, as there.
+        if !remote
+            && let Some(door) = door.as_mut()
+            && let Ok(meta) = std::fs::metadata(&dir)
+        {
+            door.modified = meta.modified().ok();
+            apply_known_facts(door, known, false);
+            door.modified = None;
+            door.name = door_name(door, &rows);
+        }
         sections.push(Section {
             // The URL without a source ID: the title bar's trail already says which
             // source, and `s3://lab@data` is not a name anyone would write. An Azure
@@ -2346,6 +2529,7 @@ impl HomeState {
         if let Some(idx) = self.row_of(&key) {
             self.selected = idx;
             self.returning = None;
+            self.landing = false;
             self.scroll_to_returning_line();
             self.follow_selection();
         } else if !self.rows_still_arriving() {
@@ -2507,6 +2691,7 @@ impl HomeState {
     /// wrapping. The way past a long section to the one you came for.
     pub fn jump_section(&mut self, delta: isize) {
         self.returning = None;
+        self.landing = false;
         let rows = self.visible();
         let headers: Vec<usize> = rows
             .iter()
@@ -3602,20 +3787,50 @@ impl HomeState {
                     row.cost.source = source;
                 }
             }
+            // The door's name says what it opens, and a measurement can change that: the
+            // footers turn a directory of files down as one table, or name its keys.
+            if let Some(door) = section.door.as_mut() {
+                door.name = door_name(door, &section.rows);
+            }
+        }
+        // Landed on a door the footers have since turned down, and not moved: the cursor
+        // goes where it would have landed had they been read first.
+        if self.landing
+            && let Some(Row::Door { entry, .. }) = self.visible().get(self.selected)
+            && !door_lands(entry)
+        {
+            self.selected = self.landing_row();
         }
     }
 
     /// Put the cursor on the first dataset rather than the first header, so the
     /// preview pane has something to show without a keypress.
+    ///
+    /// Inside a directory that is the door when the door opens the directory as one
+    /// dataset (see [`door_lands`]), and the first thing in it otherwise.
     pub fn select_first_entry(&mut self) {
         self.returning = None;
+        self.landing = true;
+        self.selected = self.landing_row();
+    }
+
+    /// Where [`HomeState::select_first_entry`] puts the cursor.
+    fn landing_row(&self) -> usize {
         let rows = self.visible();
-        self.selected = rows
+        let first = rows
             .iter()
-            .position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }))
-            // A directory of files datui cannot open: the row that says so.
+            .position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }));
+        let first = match first.and_then(|i| rows.get(i)) {
+            Some(Row::Door { entry, .. }) if !door_lands(entry) => rows
+                .iter()
+                .position(|r| matches!(r, Row::Entry { .. } | Row::Hidden { .. }))
+                .or(first),
+            _ => first,
+        };
+        // A directory of files datui cannot open: the row that says so.
+        first
             .or_else(|| rows.iter().position(|r| matches!(r, Row::Hidden { .. })))
-            .unwrap_or(0);
+            .unwrap_or(0)
     }
 
     pub fn clamp_selection(&mut self) {
@@ -3629,6 +3844,7 @@ impl HomeState {
 
     pub fn move_selection(&mut self, delta: isize) {
         self.returning = None;
+        self.landing = false;
         let n = self.visible().len();
         if n == 0 {
             return;
@@ -3643,6 +3859,7 @@ impl HomeState {
     /// wrapped landed somewhere near the top with nothing to say it had gone round.
     pub fn page_selection(&mut self, delta: isize) {
         self.returning = None;
+        self.landing = false;
         let n = self.visible().len();
         if n == 0 {
             return;

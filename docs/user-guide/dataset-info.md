@@ -73,12 +73,12 @@ frames are counted from the file's size.
 ## MIDI
 
 For a [MIDI file](loading-data.md#midi-files), <kbd>i</kbd> opens on the MIDI
-tab, or on Notes first when a note never ends:
+tab, or on Notes first when a note never ends or a file could not be read:
 
 | Line | Shows |
 |---|---|
 | Format | `MIDI format 1`, the timing (`480 ticks per quarter`, or SMPTE frames), and the track count |
-| Length | The time of the last event, the event count, and the notes, with how many never end |
+| Length | The time of the last event (`2:05.250`), the event count, and the notes, with how many never end |
 | Tempo | The first tempo, and the range and number of changes when it changes; the first time and key signatures |
 | Copyright | The first copyright notice, when there is one |
 | Tracks | Each track's number and name, its events, notes, channels and instrument name |

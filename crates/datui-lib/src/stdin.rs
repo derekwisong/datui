@@ -58,6 +58,16 @@ pub fn piped() -> bool {
     }
 }
 
+/// `path` as a host other than the command line means it: `-` is a file of that name,
+/// since only the command line reads standard input.
+pub fn as_file(path: PathBuf) -> PathBuf {
+    if is_stdin(&path) {
+        Path::new(".").join(path)
+    } else {
+        path
+    }
+}
+
 /// The paths to open: those named, or standard input when none are and something is
 /// piped in.
 pub fn paths_or_stdin(paths: Vec<PathBuf>, piped: bool) -> Vec<PathBuf> {
@@ -82,8 +92,10 @@ pub fn refuse(paths: &[PathBuf], piped: bool) -> Option<&'static str> {
 }
 
 /// The format and compression the first bytes of a file say it is. Columnar formats
-/// and compression have magic numbers; text starting with `[` is a JSON array, with
-/// `{` one object per line; anything else is read as CSV.
+/// and compression have magic numbers. Text starting with `[` is a JSON array; with
+/// `{`, one object per line, unless the first line leaves the object open, as a
+/// pretty-printed object does, which is read as JSON. A first line with tabs and no
+/// commas is TSV; anything else is CSV.
 pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     const COMPRESSED: [(&[u8], CompressionFormat); 4] = [
         (b"\x1f\x8b", CompressionFormat::Gzip),
@@ -105,9 +117,19 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
         return (FileFormat::Avro, None);
     }
     let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
-    match text.iter().find(|b| !b.is_ascii_whitespace()) {
+    let text = &text[text
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(text.len())..];
+    // Up to the first newline; a line longer than the head is taken as it stands.
+    let line = text.split(|&b| b == b'\n').next().unwrap_or_default();
+    match text.first() {
         Some(b'[') => (FileFormat::Json, None),
+        Some(b'{') if !line.trim_ascii_end().ends_with(b"}") && line.len() < text.len() => {
+            (FileFormat::Json, None)
+        }
         Some(b'{') => (FileFormat::Jsonl, None),
+        _ if line.contains(&b'\t') && !line.contains(&b',') => (FileFormat::Tsv, None),
         _ => (FileFormat::Csv, None),
     }
 }
@@ -146,6 +168,12 @@ pub(crate) fn spool<R: Read>(
     }
     let (format, compression) = sniff(&head);
     let options = match (options.format, options.compression) {
+        // A delimited format named and compression not: the bytes say whether it is
+        // compressed, as a file's extension would.
+        (Some(named), None) if named.separator().is_some() => OpenOptions {
+            compression,
+            ..options
+        },
         // Named by the user: theirs, compression and all.
         (Some(_), _) | (None, Some(_)) => OpenOptions {
             format: options.format.or(Some(FileFormat::Csv)),
@@ -182,7 +210,7 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 11] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 17] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
             (b"ARROW1\x00\x00", FileFormat::Arrow, None),
             (b"Obj\x01\x04", FileFormat::Avro, None),
@@ -206,6 +234,13 @@ mod tests {
             (b"\xef\xbb\xbf{\"a\": 1}\n", FileFormat::Jsonl, None),
             (b"a,b\n1,2\n", FileFormat::Csv, None),
             (b"1\n2\n3\n", FileFormat::Csv, None),
+            // A pretty-printed object, as `curl` gets from an API, is not one per line.
+            (b"{\n  \"a\": 1\n}\n", FileFormat::Json, None),
+            (b"{\"a\": 1}  \r\n{\"a\": 2}", FileFormat::Jsonl, None),
+            (b"{\"a\": 1}", FileFormat::Jsonl, None),
+            (b"id\tname\n1\tx\n", FileFormat::Tsv, None),
+            (b"id\tname,first\n", FileFormat::Csv, None),
+            (b"id,name\n1,a\tb\n", FileFormat::Csv, None),
         ];
         for (head, format, compression) in cases {
             assert_eq!(sniff(head), (format, compression), "{head:?}");
@@ -227,6 +262,8 @@ mod tests {
         assert!(refuse(&[PathBuf::from("-"), PathBuf::from("a.csv")], true).is_some());
         assert_eq!(named(Path::new("-")), PathBuf::from("stdin"));
         assert_eq!(named(Path::new("./-")), PathBuf::from("./-"));
+        assert!(!is_stdin(&as_file(PathBuf::from("-"))));
+        assert_eq!(as_file(PathBuf::from("a.csv")), PathBuf::from("a.csv"));
     }
 
     /// Spooled whole, counted, and its format read off the file; what the user named
@@ -261,6 +298,21 @@ mod tests {
         .unwrap();
         assert_eq!(options.format, Some(FileFormat::Csv));
         assert_eq!(options.compression, Some(CompressionFormat::Zstd));
+
+        // A delimited format named alone: its compression still comes from the bytes.
+        let named = OpenOptions {
+            format: Some(FileFormat::Tsv),
+            ..options_in(dir.path())
+        };
+        let (_, options) = spool(
+            || Ok((std::io::Cursor::new(b"\x1f\x8b".to_vec()), None)),
+            named,
+            &Writer::default(),
+            &AtomicU64::new(0),
+        )
+        .unwrap();
+        assert_eq!(options.format, Some(FileFormat::Tsv));
+        assert_eq!(options.compression, Some(CompressionFormat::Gzip));
 
         let empty = spool(
             || Ok((std::io::empty(), None)),

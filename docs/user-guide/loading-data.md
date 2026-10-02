@@ -36,8 +36,13 @@ names it:
 | Parquet, Arrow IPC or Avro magic number | that format |
 | gzip, zstd, bzip2 or xz magic number | compressed CSV |
 | `[` | JSON |
-| `{` | NDJSON |
+| `{`, the first line a whole object | NDJSON |
+| `{`, the object open past the first line | JSON |
+| a first line with tabs and no commas | TSV |
 | anything else | CSV |
+
+With `--format csv`, `tsv` or `psv` and no `--compression`, compression still
+comes from the first bytes.
 
 The CSV options below apply. The dataset is named `stdin`. It is not added to
 recent datasets, and [views](views.md) match it by its columns only.

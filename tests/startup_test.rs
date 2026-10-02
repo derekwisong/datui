@@ -72,7 +72,7 @@ impl Dirs {
     /// `/dev/tty`. Its temporary files go to `tmp`.
     fn spawn_piped(&self, args: &[&Path]) -> (Session, std::io::PipeWriter) {
         let (reader, writer) = std::io::pipe().unwrap();
-        (self.spawn_with(args, Some(reader)), writer)
+        (self.spawn_with(args, Some(Stdio::from(reader))), writer)
     }
 
     /// Where a piped run spools standard input.
@@ -80,7 +80,9 @@ impl Dirs {
         self.root.path().join("tmp")
     }
 
-    fn spawn_with(&self, args: &[&Path], piped: Option<std::io::PipeReader>) -> Session {
+    /// `stdin`, when given, in place of the pseudo-terminal, which stays the
+    /// controlling terminal.
+    fn spawn_with(&self, args: &[&Path], stdin: Option<Stdio>) -> Session {
         use std::os::unix::process::CommandExt;
         let mut master = 0;
         let mut slave = 0;
@@ -119,9 +121,9 @@ impl Dirs {
             .env("DATUI_CACHE_DIR", root.join("cache/datui"))
             .env("TMPDIR", self.tmp())
             .current_dir(root.join("data"));
-        match piped {
-            Some(reader) => {
-                command.stdin(Stdio::from(reader));
+        match stdin {
+            Some(stdin) => {
+                command.stdin(stdin);
                 // SAFETY: setsid and ioctl are async-signal-safe. A session of its own,
                 // with the pseudo-terminal (its stdout) as the controlling terminal: what
                 // `/dev/tty` opens when standard input is not a terminal.
@@ -505,6 +507,22 @@ fn a_dash_with_a_terminal_on_stdin_says_nothing_is_piped() {
     let mut session = dirs.spawn(&[Path::new("-")]);
     let status = session.wait_exit();
     assert_eq!(status.code(), Some(1));
+    let out = String::from_utf8_lossy(&session.out);
+    assert!(out.contains("Nothing is piped"), "{out}");
+}
+
+/// `/dev/null` on standard input, where a launcher points it, is nothing piped in:
+/// no path opens the home screen, and `-` says nothing is piped.
+#[test]
+fn dev_null_on_stdin_is_nothing_piped_in() {
+    let dirs = Dirs::new();
+    let mut session = dirs.spawn_with(&[], Some(Stdio::null()));
+    session.wait_for_screen("filter and search");
+    session.type_keys(CTRL_Q);
+    assert!(session.wait_exit().success());
+
+    let mut session = dirs.spawn_with(&[Path::new("-")], Some(Stdio::null()));
+    assert_eq!(session.wait_exit().code(), Some(1));
     let out = String::from_utf8_lossy(&session.out);
     assert!(out.contains("Nothing is piped"), "{out}");
 }

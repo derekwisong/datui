@@ -53,6 +53,10 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
             }
             (RunInput::Paths(paths, opts), config)
         }
+        RunInput::Paths(paths, opts) => {
+            let paths = paths.into_iter().map(crate::stdin::as_file).collect();
+            (RunInput::Paths(paths, opts), config)
+        }
         input => (input, config),
     };
     let opts = match &input {

@@ -26,14 +26,15 @@ Usage:
     scripts/bench/startup.py table --datui BIN --data DIR [--rows 1M,10M,30M]
         [--runs N] [--remote] [--compare] [--json FILE]
     scripts/bench/startup.py guard --baseline BIN --candidate BIN --data DIR
-        [--rows 5M] [--runs N] [--ratio 2.0]
+        [--rows 5M] [--runs N] [--ratio 2.0] [--accept]
 
 `table` prints the markdown table in docs/reference/performance.md. `guard`
 compares two builds on the same generated files, runs interleaved in
 alternating order, and exits
 non-zero when the candidate's median time to first rows, or its median peak
 RSS, is RATIO times the baseline's or more and past an absolute floor, so noise
-on a small number cannot fail it.
+on a small number cannot fail it. With --accept, a regression is reported but
+passes: the candidate is taken as the new baseline by hand.
 """
 
 from __future__ import annotations
@@ -482,6 +483,8 @@ def cmd_guard(opts) -> int:
     # The same clock for both: the terminal output. The baseline may predate the hook.
     base.trace = cand.trace = False
     failures = []
+    # Slower or larger: what --accept passes. A candidate that shows no rows never does.
+    regressions = []
     report = [
         f"Baseline: {base.version}; candidate: {cand.version}; {opts.runs} interleaved runs, warm cache.",
         "",
@@ -506,9 +509,9 @@ def cmd_guard(opts) -> int:
             print(f"::warning::{path.name}: the baseline never showed rows; nothing to compare", file=sys.stderr)
             continue
         if c_ms >= opts.ratio * b_ms and c_ms - b_ms >= opts.floor_ms:
-            failures.append(f"{path.name}: first rows {fmt_ms(c_ms)} vs {fmt_ms(b_ms)}, {c_ms / b_ms:.1f}x")
+            regressions.append(f"{path.name}: first rows {fmt_ms(c_ms)} vs {fmt_ms(b_ms)}, {c_ms / b_ms:.1f}x")
         if c_mib >= opts.ratio * b_mib and c_mib - b_mib >= opts.floor_mib:
-            failures.append(f"{path.name}: peak RSS {fmt_mib(c_mib)} vs {fmt_mib(b_mib)}, {c_mib / b_mib:.1f}x")
+            regressions.append(f"{path.name}: peak RSS {fmt_mib(c_mib)} vs {fmt_mib(b_mib)}, {c_mib / b_mib:.1f}x")
     # The hook itself: the candidate must report its first rows.
     hooked = datui(opts.candidate, "candidate")
     r = run_once(hooked, str(files["parquet"]), scratch, 0, opts.timeout)
@@ -516,11 +519,27 @@ def cmd_guard(opts) -> int:
     report.append(f"DATUI_TRACE_FIRST_ROWS on the candidate: {fmt_ms(r.first_rows_ms)}")
     if r.first_rows_ms is None:
         failures.append("the candidate never wrote DATUI_TRACE_FIRST_ROWS")
+    # Accepting passes a regression, never a candidate that fails outright.
+    accepted = opts.accept and not failures
+    if accepted:
+        report.append("")
+        report.append(
+            "Accepted by hand: this candidate is the new baseline"
+            + (f" despite {len(regressions)} regression(s)." if regressions else ".")
+        )
+    else:
+        if opts.accept:
+            report.append("")
+            report.append("Not accepted: the candidate fails a check that accepting does not pass.")
+        failures += regressions
     text = "\n".join(report)
     print(text)
     if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(summary_path, "a") as f:
             f.write("## Startup guard\n\n" + text + "\n")
+    if accepted:
+        for regression in regressions:
+            print(f"::warning::accepted by hand: {regression}", file=sys.stderr)
     for failure in failures:
         print(f"::error::{failure}", file=sys.stderr)
     return 1 if failures else 0
@@ -554,6 +573,11 @@ def main() -> int:
     # finished it inside the window while a slower one had not would read as bigger.
     g.add_argument("--settle", type=float, default=3.0, help="seconds kept open after the first rows (default 3)")
     g.add_argument("--timeout", type=float, default=60.0)
+    g.add_argument(
+        "--accept",
+        action="store_true",
+        help="report a regression but pass, taking the candidate as the new baseline",
+    )
     gen = sub.add_parser("generate", help=argparse.SUPPRESS)
     gen.add_argument("data")
     gen.add_argument("rows", type=int)

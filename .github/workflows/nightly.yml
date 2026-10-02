@@ -5,6 +5,11 @@ on:
     # Run daily at 02:00 UTC
     - cron: '0 2 * * *'
   workflow_dispatch:
+    inputs:
+      accept_baseline:
+        description: 'Startup guard: pass even if slower, so this build becomes the baseline'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -130,8 +135,10 @@ jobs:
   # The baseline is the last passing night rather than the release: a release can be
   # far slower than main (0.3.2 took 30 times as long to first rows), which would hide
   # a doubling until the next one. A failing night is never a baseline, so a
-  # regression keeps failing until it is fixed. Nightly rather than on pull requests:
-  # it needs a release build.
+  # regression keeps failing until it is fixed. An intended one is accepted by
+  # running Nightly by hand on main with `accept_baseline`: it measures as usual,
+  # passes, and so becomes the next baseline; its log says it was accepted by hand.
+  # Nightly rather than on pull requests: it needs a release build.
   startup-guard:
     name: Startup guard
     needs: linux
@@ -195,11 +202,20 @@ jobs:
           chmod +x baseline/datui candidate/target/release/datui
 
       - name: Compare startup
+        env:
+          # Empty on a scheduled run.
+          ACCEPT_BASELINE: ${{ inputs.accept_baseline }}
         run: |
+          accept=()
+          if [ "$ACCEPT_BASELINE" = true ]; then
+            echo "::notice::accept_baseline: $GITHUB_ACTOR accepted this build as the startup baseline by hand"
+            accept=(--accept)
+          fi
           .venv/bin/python scripts/bench/startup.py guard \
             --baseline baseline/datui \
             --candidate candidate/target/release/datui \
-            --data "$RUNNER_TEMP/bench"
+            --data "$RUNNER_TEMP/bench" \
+            "${accept[@]}"
 
   windows:
     runs-on: windows-latest

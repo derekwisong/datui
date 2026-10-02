@@ -104,3 +104,19 @@ The Nightly workflow's **Startup guard** job runs:
 Both builds run on the same runner in the same job, so runner speed cancels out.
 Both are timed from the terminal output, because the baseline may predate the
 hook.
+
+### Accept a new baseline
+
+A failing night is never a baseline, so an intended slowdown keeps the guard
+failing. Accept it by hand: run Nightly on `main` with `accept_baseline` set.
+
+```bash
+gh workflow run nightly.yml --ref main -f accept_baseline=true
+```
+
+| | |
+|---|---|
+| Measures | As usual; the table is in the run's summary |
+| Passes | Despite a slower or larger candidate, which is reported as a warning. A candidate that shows no rows, or whose hook writes nothing, still fails |
+| Becomes | The baseline for the following nights |
+| Record | The run's log: a notice naming who accepted it, and the summary's last line. Nothing is checked in |

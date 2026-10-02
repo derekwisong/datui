@@ -30,7 +30,8 @@ const ROWS: &str = "__datui_find_rows";
 /// read, while a match a page past the buffer costs one small read. A view that sees
 /// every row before its first (a sort) is read in one window instead, and so is the
 /// range behind the cursor on a view that cannot skip: its first window back would
-/// read all of it anyway.
+/// read all of it anyway. Forward on such a view, a window is never smaller than the
+/// rows above it, which it reads too.
 const FIRST_WINDOW: usize = 65_536;
 /// The most rows one window reads: a slice's length is a `u32`.
 const LARGEST_WINDOW: usize = u32::MAX as usize;
@@ -442,14 +443,20 @@ impl Search {
         {
             return (stop.min(end) - at, true);
         }
-        let window = self.window_for(last);
+        let mut window = self.window_for(last);
+        // A view that cannot skip reads the rows above a window with it: a window no
+        // smaller than them keeps a find from deep in the view from reading them
+        // again for every doubling.
+        if self.rows.reads_up_to {
+            window = window.max(at);
+        }
         let mut stop = at.saturating_add(window).min(end);
         if let Some((start, _)) = self.buffered()
             && at < start
         {
             stop = stop.min(start);
         }
-        self.window = self.window.saturating_mul(2).min(LARGEST_WINDOW);
+        self.window = window.saturating_mul(2).min(LARGEST_WINDOW);
         (stop - at, false)
     }
 
@@ -1383,6 +1390,53 @@ mod tests {
             (2, true, vec![2, 150_000]),
             "nothing behind; round from the bottom in one read too"
         );
+    }
+
+    /// `n` from deep in a view that cannot skip reads a first window as large as the
+    /// rows above it, rather than doubling up from a small one and reading those
+    /// rows again for each window.
+    #[test]
+    fn next_from_deep_in_a_filtered_view_reads_the_rows_above_once() {
+        let n = 600_000usize;
+        let values: Vec<String> = (0..n)
+            .map(|i| {
+                if i == 598_000 {
+                    "needle".to_string()
+                } else {
+                    format!("hay{i}")
+                }
+            })
+            .collect();
+        let df = df!("k" => (0..n as i64).collect::<Vec<_>>(), "v" => values).unwrap();
+        // Even k only: the needle (k = 598,000) is view row 299,000, of 300,000.
+        let lf = df.lazy().filter((col("k") % lit(2)).eq(lit(0)));
+        let columns = searched_columns(
+            &["k".to_string(), "v".to_string()],
+            &lf.clone().collect_schema().unwrap(),
+            &spec("needle", false),
+        );
+        let buffer = lf.clone().slice(200_000, 100).collect().unwrap();
+        let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = reads.clone();
+        let rows = ViewRows::of(lf, Some((buffer, 200_000)));
+        assert!(rows.reads_up_to && !rows.whole);
+        let search = Search::new(rows, columns, Arc::default(), move |read| {
+            seen.lock().unwrap().push(read)
+        });
+        let found = search
+            .run(
+                Start {
+                    row: 200_050,
+                    column: None,
+                },
+                Direction::Next,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.row, found.wrapped), (299_000, false));
+        // The buffer's rest, then the rest of the view in one window: not 65,536
+        // rows and then 131,072, each reading the 200,000 above it again.
+        assert_eq!(reads.lock().unwrap().as_slice(), [50, 99_950]);
     }
 
     #[test]

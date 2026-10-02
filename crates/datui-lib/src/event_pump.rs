@@ -36,6 +36,9 @@ enum Act {
     HoldAs(KeyEvent),
     /// Discard it: a bare Enter/Esc at a busy table confirms nothing.
     Drop,
+    /// Handle it now, and drop the `n` and `N` held behind it: Esc stopping a find
+    /// stops the finds typed after it too, or each would need an Esc of its own.
+    StopFind,
 }
 
 /// Something read from the terminal for the app: a key or the mouse. Kept in the
@@ -176,6 +179,11 @@ impl EventPump {
                 self.dispatch(key)?;
                 Ok(true)
             }
+            Act::StopFind => {
+                self.drop_held_finds();
+                self.dispatch(key)?;
+                Ok(true)
+            }
             Act::Drop => Ok(false),
             Act::Hold => {
                 self.hold(key);
@@ -219,8 +227,10 @@ impl EventPump {
     fn press_now(&mut self, keys: impl IntoIterator<Item = KeyEvent>) -> Result<bool> {
         let mut acted = false;
         for key in keys {
-            if !matches!(self.classify(&key), Act::Now) {
-                break;
+            match self.classify(&key) {
+                Act::Now => {}
+                Act::StopFind => self.drop_held_finds(),
+                _ => break,
             }
             self.dispatch(key)?;
             acted = true;
@@ -234,6 +244,9 @@ impl EventPump {
         // Ctrl-C typed during replay is not appended behind the held keys, where a
         // modal opening could discard it.
         if self.app.hard_escape_while_busy(key) {
+            if key.code == KeyCode::Esc && self.app.finding() {
+                return Act::StopFind;
+            }
             return Act::Now;
         }
         let queued = !self.held.is_empty();
@@ -573,6 +586,19 @@ impl EventPump {
         self.held.push_back(key);
     }
 
+    /// Drop the `n` and `N` held at the front, among the keys that move the cursor.
+    /// Past any other key they are text, or meant for what that key opens.
+    fn drop_held_finds(&mut self) {
+        let run = self.held.iter().take_while(|k| is_navigation(k)).count();
+        let rest = self.held.split_off(run);
+        self.held
+            .retain(|k| !matches!(k.code, KeyCode::Char('n' | 'N')));
+        self.held.extend(rest);
+        if self.held.is_empty() {
+            self.app.set_input_dropped(false);
+        }
+    }
+
     /// Drop the held keys if the screen they were typed at has gone: the view was
     /// abandoned (a bumped generation), or a modal appeared that they were not answers
     /// to. A modal that a held key opens itself is re-baselined in `dispatch`, so this
@@ -871,7 +897,7 @@ mod tests {
     }
 
     /// While a find reads, an `n` typed meanwhile waits and replays once it lands;
-    /// Esc jumps the queue, stops the find in flight, and the held `n` still runs.
+    /// Esc jumps the queue, stops the find in flight, and drops the `n` held behind it.
     #[test]
     fn keys_typed_while_a_find_reads_wait_and_esc_stops_it() {
         let (mut p, _dir) = loaded_pump();
@@ -894,12 +920,41 @@ mod tests {
         p.terminal_key(plain(KeyCode::Char('n'))).unwrap();
         p.terminal_key(plain(KeyCode::Esc)).unwrap();
         assert!(!p.app.finding(), "Esc acted at once");
-        assert_eq!(held(&p), [KeyCode::Char('n')], "and was not held");
+        assert!(held(&p).is_empty(), "and dropped the held n");
         settle(&mut p);
+        assert!(!p.app.finding(), "no held find started");
         assert_eq!(
             p.app.find_hit(),
-            Some((2, "name".to_string())),
-            "the cancelled find moved nothing; the held n went on from where it was"
+            Some((1, "name".to_string())),
+            "the cancelled find moved nothing"
+        );
+    }
+
+    /// Esc stopping a find drops only the `n` and `N` among the cursor keys held at
+    /// the front; the other keys keep their place, and an `n` typed after `/` is text.
+    #[test]
+    fn esc_stopping_a_find_keeps_the_other_held_keys() {
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('f'))).unwrap();
+        type_keys(&mut p, "a");
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert!(p.app.finding());
+        type_keys(&mut p, "njN/n");
+        assert_eq!(
+            held(&p),
+            [
+                KeyCode::Char('n'),
+                KeyCode::Char('j'),
+                KeyCode::Char('N'),
+                KeyCode::Char('/'),
+                KeyCode::Char('n'),
+            ]
+        );
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        assert!(!p.app.finding());
+        assert_eq!(
+            held(&p),
+            [KeyCode::Char('j'), KeyCode::Char('/'), KeyCode::Char('n')]
         );
     }
 

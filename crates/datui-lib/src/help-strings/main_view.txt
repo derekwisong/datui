@@ -88,7 +88,8 @@ While busy:
   and held keys die with the screen they were typed at. At the loading
   screen nothing is held: the allowed keys act, the rest are dropped.
   While a view is being applied, Esc stops it and keeps the table as it was.
-  While a find reads, Esc (or Ctrl+O) stops it and the cursor stays put.
+  While a find reads, Esc (or Ctrl+O) stops it, and the n / N typed
+  behind it, and the cursor stays put.
   The mouse is never queued: the wheel across and the busy bar's chips act
   as their keys do; the wheel down and a click on the table are dropped.
 

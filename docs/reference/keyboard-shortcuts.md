@@ -20,7 +20,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
 | <kbd>:</kbd> | Go to a row number: type it, <kbd>Enter</kbd>. <kbd>Esc</kbd> cancels; <kbd>F1</kbd> opens help |
 | <kbd>f</kbd> | [Find](../user-guide/finding.md) text or a regex; the cursor, column cursor and all, goes to the first match at or after its row |
-| <kbd>n</kbd> <kbd>N</kbd> | Next and previous match from the cursor's cell, wrapping round the view; each one typed while a find reads runs in turn. <kbd>Esc</kbd> stops a find still reading |
+| <kbd>n</kbd> <kbd>N</kbd> | Next and previous match from the cursor's cell, wrapping round the view; each one typed while a find reads runs in turn. <kbd>Esc</kbd> stops a find still reading, and those typed behind it |
 | <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill into its rows. <kbd>Esc</kbd> comes back. Anywhere else, inspect the row, as <kbd>Space</kbd> does |
 | <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |

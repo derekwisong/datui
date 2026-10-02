@@ -89,9 +89,28 @@ pub struct Pointing {
     /// The home list: its area and the row on each of its lines.
     home_list: Option<(Rect, Vec<Option<usize>>)>,
     last_click: Option<(u16, u16, Instant)>,
+    /// Something was handled after the last frame was painted, so what it shows may
+    /// not be what a click there would now land on.
+    changed: bool,
 }
 
 impl Pointing {
+    /// Something was handled: the frame on screen may be out of date.
+    pub fn changed(&mut self) {
+        self.changed = true;
+    }
+
+    /// A frame was painted: the screen shows the app as it is.
+    pub fn painted(&mut self) {
+        self.changed = false;
+    }
+
+    /// Whether the frame on screen shows the app as it is, so the regions recorded
+    /// while drawing it are where a click lands.
+    pub fn on_screen(&self) -> bool {
+        !self.changed
+    }
+
     /// A frame begins: what it does not draw cannot be clicked.
     pub fn forget_drawn(&mut self) {
         self.chips.clear();

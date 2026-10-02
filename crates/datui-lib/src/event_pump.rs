@@ -375,6 +375,7 @@ impl EventPump {
                     updated = true;
                     progress_only &= event.is_progress();
                     self.since_key += 1;
+                    self.app.pointer.changed();
                     let follow_up = match self.app.handle(&event) {
                         Ok(follow_up) => follow_up,
                         Err(deferred) => {
@@ -405,6 +406,16 @@ impl EventPump {
                     }
                 }
                 Err(TryRecvError::Empty) => {
+                    // The pointer was aimed at the frame on screen. When something has
+                    // been handled since (a resize, a list that arrived, rows read), it
+                    // waits for the frame that shows it, which this asks for now.
+                    if matches!(self.typed.front(), Some(Input::Mouse(_)))
+                        && !self.app.pointer.on_screen()
+                    {
+                        updated = true;
+                        progress_only = false;
+                        break;
+                    }
                     let Some(input) = self.typed.pop_front() else {
                         break;
                     };
@@ -1127,6 +1138,34 @@ mod tests {
         assert!(p.terminal_mouse(click(alan)).unwrap());
         assert_eq!(cell(&p).0, Some(2));
         assert_eq!(p.app.input_mode, InputMode::Normal, "one click, no Enter");
+    }
+
+    /// A click read behind an event that may have changed the screen waits for the
+    /// frame that shows the change, so it lands on what the user sees.
+    #[test]
+    fn a_click_waits_for_the_frame_after_a_change() {
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        p.app.frame_painted();
+        p.send(AppEvent::Terminal(Event::Resize(100, 20))).unwrap();
+        p.send(AppEvent::Terminal(Event::Mouse(click(alan))))
+            .unwrap();
+        let drained = p.drain().unwrap();
+        assert!(
+            matches!(
+                drained,
+                Drained::Continue {
+                    updated: true,
+                    progress_only: false
+                }
+            ),
+            "a frame is asked for: {drained:?}"
+        );
+        assert_eq!(cell(&p).0, Some(0), "not yet");
+        rendered(&mut p.app);
+        p.app.frame_painted();
+        p.drain().unwrap();
+        assert_eq!(cell(&p).0, Some(2), "on the frame that shows the resize");
     }
 
     /// A chip on the control bar presses its key, as typed: Help opens help, and

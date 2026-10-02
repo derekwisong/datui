@@ -13749,6 +13749,7 @@ impl App {
     /// screen, unless they are still being read; retire it if the frame it was for has
     /// gone or its rows already said how many there are.
     pub fn frame_painted(&mut self) {
+        self.pointer.painted();
         let Some(generation) = self.count_after_paint else {
             return;
         };

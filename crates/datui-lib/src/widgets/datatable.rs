@@ -1585,6 +1585,8 @@ pub(crate) struct ViewRows {
     pub(crate) streaming: bool,
     /// Any window of the view reads all of it: see [`sees_every_row_first`].
     pub(crate) whole: bool,
+    /// A window of the view reads every row before it: see [`reads_up_to_a_window`].
+    pub(crate) reads_up_to: bool,
 }
 
 /// Whether `lf` has to see every row before it gives its first: a sort, a group by or a
@@ -1596,6 +1598,21 @@ pub(crate) fn sees_every_row_first(lf: &LazyFrame) -> bool {
             node,
             DslPlan::Sort { .. } | DslPlan::GroupBy { .. } | DslPlan::Pivot { .. }
         )
+    })
+}
+
+/// Whether a window of `lf` reads every row before it: a filter, which has to test
+/// them to know which row is the window's first, or a scan with no row index to skip
+/// by, such as a CSV. Parquet and IPC skip to a window.
+pub(crate) fn reads_up_to_a_window(lf: &LazyFrame) -> bool {
+    use polars::lazy::dsl::{DslPlan, FileScanDsl};
+    lf.logical_plan.into_iter().any(|node| match node {
+        DslPlan::Filter { .. } => true,
+        DslPlan::Scan { scan_type, .. } => !matches!(
+            **scan_type,
+            FileScanDsl::Parquet { .. } | FileScanDsl::Ipc { .. }
+        ),
+        _ => false,
     })
 }
 
@@ -1622,6 +1639,7 @@ impl ViewRows {
     pub(crate) fn of(lf: LazyFrame, buffer: Option<(DataFrame, usize)>) -> Self {
         Self {
             whole: sees_every_row_first(&lf),
+            reads_up_to: reads_up_to_a_window(&lf),
             lf,
             files: None,
             read_as_text: Vec::new(),
@@ -6540,6 +6558,7 @@ impl DataTableState {
             num_rows: self.num_rows_valid.then_some(self.num_rows),
             streaming: self.polars_streaming,
             whole: sees_every_row_first(&self.lf),
+            reads_up_to: reads_up_to_a_window(&self.lf),
         }
     }
 

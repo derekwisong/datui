@@ -28,7 +28,9 @@ const ROWS: &str = "__datui_find_rows";
 /// one before: a view that cannot skip to a window (a filter, a CSV) reads up to it
 /// every time, and doubling keeps that within twice the rows a single pass would
 /// read, while a match a page past the buffer costs one small read. A view that sees
-/// every row before its first (a sort) is read in one window instead.
+/// every row before its first (a sort) is read in one window instead, and so is the
+/// range behind the cursor on a view that cannot skip: its first window back would
+/// read all of it anyway.
 const FIRST_WINDOW: usize = 65_536;
 /// The most rows one window reads: a slice's length is a `u32`.
 const LARGEST_WINDOW: usize = u32::MAX as usize;
@@ -376,7 +378,7 @@ impl Search {
         let mut best = None;
         while end.is_none_or(|end| at < end) {
             self.check_stop()?;
-            let (len, buffered) = self.plan_forward(at, end);
+            let (len, buffered) = self.plan_forward(at, end, last);
             if len == 0 {
                 break;
             }
@@ -431,15 +433,17 @@ impl Search {
     }
 
     /// The next window from `at`: the rest of the buffer when `at` is in it, else
-    /// rows read from the view, stopping short of the buffer.
-    fn plan_forward(&mut self, at: usize, end: Option<usize>) -> (usize, bool) {
+    /// rows read from the view, stopping short of the buffer. For the `last` match,
+    /// every row to the end is read, so a view that cannot skip reads them at once.
+    fn plan_forward(&mut self, at: usize, end: Option<usize>, last: bool) -> (usize, bool) {
         let end = end.unwrap_or(usize::MAX);
         if let Some((start, stop)) = self.buffered()
             && (start..stop).contains(&at)
         {
             return (stop.min(end) - at, true);
         }
-        let mut stop = at.saturating_add(self.window).min(end);
+        let window = self.window_for(last);
+        let mut stop = at.saturating_add(window).min(end);
         if let Some((start, _)) = self.buffered()
             && at < start
         {
@@ -447,6 +451,16 @@ impl Search {
         }
         self.window = self.window.saturating_mul(2).min(LARGEST_WINDOW);
         (stop - at, false)
+    }
+
+    /// Rows in the next window read from the view. Read backwards, or to the end, a
+    /// view that cannot skip to a window takes the whole range in one.
+    fn window_for(&self, whole_range: bool) -> usize {
+        if whole_range && self.rows.reads_up_to {
+            LARGEST_WINDOW
+        } else {
+            self.window
+        }
     }
 
     /// The window that ends at `end`, no lower than `from`: the buffer's rows when
@@ -457,7 +471,7 @@ impl Search {
         {
             return (start.max(from), true);
         }
-        let mut start = end.saturating_sub(self.window).max(from);
+        let mut start = end.saturating_sub(self.window_for(true)).max(from);
         if let Some((_, stop)) = self.buffered()
             && end > stop
         {
@@ -1317,6 +1331,84 @@ mod tests {
             .unwrap();
         assert_eq!((found.row, found.column.as_str()), (n - 8, "v"));
         assert_eq!(reads.lock().unwrap().as_slice(), [100, n]);
+    }
+
+    /// `N` on a view that cannot skip to a window reads the range behind the cursor
+    /// in one pass, and so does its way round from the bottom.
+    #[test]
+    fn previous_on_a_filtered_view_reads_the_range_once() {
+        let n = 300_000usize;
+        let values: Vec<String> = (0..n)
+            .map(|i| {
+                if i == 4 {
+                    "needle".to_string()
+                } else {
+                    format!("hay{i}")
+                }
+            })
+            .collect();
+        let df = df!("k" => (0..n as i64).collect::<Vec<_>>(), "v" => values).unwrap();
+        // Even k only: the needle (k = 4) is view row 2, of 150,000.
+        let lf = df.lazy().filter((col("k") % lit(2)).eq(lit(0)));
+        let columns = || {
+            searched_columns(
+                &["k".to_string(), "v".to_string()],
+                &lf.clone().collect_schema().unwrap(),
+                &spec("needle", false),
+            )
+        };
+        let previous = |row: usize, buffer: Option<(DataFrame, usize)>| {
+            let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = reads.clone();
+            let rows = ViewRows::of(lf.clone(), buffer);
+            assert!(rows.reads_up_to && !rows.whole);
+            let search = Search::new(rows, columns(), Arc::default(), move |read| {
+                seen.lock().unwrap().push(read)
+            });
+            let found = search
+                .run(Start { row, column: None }, Direction::Previous)
+                .unwrap()
+                .unwrap();
+            let reads = reads.lock().unwrap().clone();
+            (found.row, found.wrapped, reads)
+        };
+        let buffer = lf.clone().slice(140_000, 100).collect().unwrap();
+        assert_eq!(
+            previous(140_050, Some((buffer, 140_000))),
+            (2, false, vec![51, 140_051]),
+            "the buffer, then every row before it at once"
+        );
+        assert_eq!(
+            previous(1, None),
+            (2, true, vec![2, 150_000]),
+            "nothing behind; round from the bottom in one read too"
+        );
+    }
+
+    #[test]
+    fn a_view_skips_to_a_window_only_unfiltered_over_parquet_or_ipc() {
+        use crate::widgets::datatable::reads_up_to_a_window;
+        let dir = tempfile::tempdir().unwrap();
+        let mut df = df!("k" => [1i64, 2, 3]).unwrap();
+        let csv = dir.path().join("t.csv");
+        CsvWriter::new(std::fs::File::create(&csv).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        let parquet = dir.path().join("t.parquet");
+        ParquetWriter::new(std::fs::File::create(&parquet).unwrap())
+            .finish(&mut df)
+            .unwrap();
+        let csv = LazyCsvReader::new(PlRefPath::try_from_path(&csv).unwrap())
+            .finish()
+            .unwrap();
+        let parquet = LazyFrame::scan_parquet(
+            PlRefPath::try_from_path(&parquet).unwrap(),
+            Default::default(),
+        )
+        .unwrap();
+        assert!(reads_up_to_a_window(&csv));
+        assert!(!reads_up_to_a_window(&parquet));
+        assert!(reads_up_to_a_window(&parquet.filter(col("k").gt(lit(1)))));
     }
 
     #[test]

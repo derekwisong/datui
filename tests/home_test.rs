@@ -6446,6 +6446,7 @@ mod landing {
 /// Footers read after the cursor landed on a door turn it down as one table: the cursor
 /// goes to the first file, as it would have had they been read first. Once the user has
 /// moved, the cursor stays where they put it.
+#[cfg(feature = "cloud")]
 #[test]
 fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
     use datui::discover::{Entry, EntryKind};
@@ -6516,6 +6517,7 @@ fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
 
 /// A prefix in an object store is scanned whole, so the pane does not claim its
 /// subdirectories are skipped.
+#[cfg(feature = "cloud")]
 #[test]
 fn test_a_mixed_prefix_says_it_reads_below() {
     use datui::discover::{Entry, EntryKind};

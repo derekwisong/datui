@@ -989,6 +989,38 @@ mod tests {
         );
     }
 
+    /// #615: keys typed while the inspector parses long JSON text wait, then
+    /// replay inside the level it opens.
+    #[test]
+    fn keys_typed_while_json_parses_replay_inside_the_level() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("docs.csv");
+        // Over the 64 KB parsed on the key.
+        let doc = format!("[{}0]", "0, ".repeat(30_000));
+        std::fs::write(&path, format!("doc\n\"{doc}\"\n")).expect("write csv");
+        let mut p = pump();
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        settle(&mut p);
+        rendered(&mut p.app);
+        p.terminal_key(plain(KeyCode::Char(' '))).unwrap();
+        rendered(&mut p.app);
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert!(p.app.is_busy(), "the text is parsed in the background");
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        assert_eq!(held(&p), [KeyCode::Char('j'), KeyCode::Char('j')]);
+        settle(&mut p);
+        let drill = p
+            .app
+            .inspector_modal
+            .drill
+            .as_ref()
+            .expect("the array opened");
+        assert_eq!(drill.level().node.len(), 30_001);
+        assert_eq!(drill.level().selected, 2, "both j moved inside it");
+    }
+
     fn rendered(app: &mut App) -> String {
         let area = Rect::new(0, 0, 100, 20);
         let mut buf = Buffer::empty(area);

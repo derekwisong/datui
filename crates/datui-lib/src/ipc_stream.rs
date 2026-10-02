@@ -137,6 +137,15 @@ pub(crate) fn convert(
     read: &AtomicU64,
 ) -> Result<TempDownload> {
     let stopped = || eyre!("Converting the Arrow stream was stopped.");
+    let dir = temp_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    let size = paths
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+    room(size, crate::local_copy::free_space(&dir), &dir)?;
     let Some((file, claim)) = writer.create(|| TempDownload::create(temp_dir, Some("arrow")))?
     else {
         return Err(stopped());
@@ -147,8 +156,45 @@ pub(crate) fn convert(
             // The file before the claim, so a sweep never finds it let go but there.
             drop(file);
             drop(claim);
-            Err(unfinished.err().unwrap_or_else(stopped))
+            Err(unfinished
+                .err()
+                .map(|e| out_of_room(e, &dir))
+                .unwrap_or_else(stopped))
         }
+    }
+}
+
+/// What to do about a temp directory too small for the copy.
+const ELSEWHERE: &str = "Choose another place with --temp-dir or the temp_dir setting.";
+
+/// The copy is about the size of the streams, larger where their buffers are
+/// compressed: refused before any of it is written where `dir` has less free.
+fn room(needs: u64, free: Option<u64>, dir: &Path) -> Result<()> {
+    match free {
+        Some(free) if free < needs => Err(eyre!(
+            "Converting the Arrow stream needs {} free in {}, which has {}. {ELSEWHERE}",
+            crate::discover::format_size(needs),
+            dir.display(),
+            crate::discover::format_size(free),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// A write that ran out of space, said so with where and what to do.
+fn out_of_room(error: color_eyre::Report, dir: &Path) -> color_eyre::Report {
+    let full = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::StorageFull)
+    });
+    if full {
+        eyre!(
+            "{} ran out of space for the converted Arrow stream, which is written uncompressed. {ELSEWHERE}",
+            dir.display()
+        )
+    } else {
+        error
     }
 }
 
@@ -581,6 +627,29 @@ mod tests {
             "{error}"
         );
         assert!(std::fs::read_dir(out.path()).unwrap().next().is_none());
+    }
+
+    /// A temp directory with less free than the streams refuses the conversion before
+    /// writing, and one that fills up says where, both with what to do.
+    #[test]
+    fn a_full_temp_directory_says_so() {
+        let dir = Path::new("/scratch");
+        assert!(room(10, Some(10), dir).is_ok());
+        assert!(room(10, None, dir).is_ok(), "free space unknown");
+        let error = room(2 << 30, Some(1 << 30), dir).unwrap_err().to_string();
+        assert!(
+            error.contains("needs 2.0 GB free in /scratch, which has 1.0 GB"),
+            "{error}"
+        );
+        assert!(error.contains("--temp-dir"), "{error}");
+
+        let full =
+            polars::error::PolarsError::from(std::io::Error::from(std::io::ErrorKind::StorageFull));
+        let error = out_of_room(full.into(), dir).to_string();
+        assert!(error.starts_with("/scratch ran out of space"), "{error}");
+        assert!(error.contains("--temp-dir"), "{error}");
+        let other = out_of_room(eyre!("something else"), dir).to_string();
+        assert_eq!(other, "something else");
     }
 
     /// Streams mixed with IPC files are not one table; IPC files alone are not streams.

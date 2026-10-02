@@ -114,7 +114,8 @@ datui my_dataset/                 # save_to_disk shards: data-00000-of-00004.arr
 
 The loading screen shows how far the conversion has got;
 <kbd>Ctrl</kbd>+<kbd>O</kbd> stops it and removes the partial file. `--temp-dir`
-chooses where the copy goes, and it is removed with the dataset.
+chooses where the copy goes, and it is removed with the dataset. A temp directory
+with less free space than the streams take is refused before anything is written.
 
 **Excel** opens the first sheet unless `--sheet` names another, by index
 (`--sheet 0`) or name (`--sheet Sales`).

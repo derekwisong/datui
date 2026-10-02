@@ -30,8 +30,9 @@ const MAX_GGUF_HEADER: u64 = 1024 * 1024 * 1024;
 const MAX_GGUF_STRING: u64 = 16 * 1024 * 1024;
 /// The most dimensions a tensor may have. GGML uses four.
 const MAX_DIMS: usize = 8;
-/// The most tensors or key/value pairs one GGUF file may declare.
-const MAX_GGUF_COUNT: u64 = 1 << 24;
+/// The most tensors or key/value pairs one GGUF file may declare. Real files have a
+/// few thousand tensors and a few dozen pairs; each kept tensor costs about 150 bytes.
+const MAX_GGUF_COUNT: u64 = 1 << 20;
 /// How deep arrays of arrays are followed.
 const MAX_ARRAY_DEPTH: u32 = 4;
 /// An array is listed in full up to this many items, and summarized by length after.
@@ -414,9 +415,7 @@ impl<'de> serde::Deserialize<'de> for StMetadata {
                 while let Some((key, StMetaValue(value))) =
                     map.next_entry::<String, StMetaValue>()?
                 {
-                    if !out.iter().any(|(k, _)| *k == key) {
-                        out.push((key, MetaValue::Text(value)));
-                    }
+                    out.push((key, MetaValue::Text(value)));
                 }
                 Ok(StMetadata(out))
             }
@@ -780,6 +779,15 @@ fn read_file(path: &Path, format: FileFormat) -> Result<Header> {
     }
 }
 
+/// A `model.safetensors.index.json`: the shard each tensor is in, and metadata. Any
+/// other field is skipped, not kept.
+#[derive(serde::Deserialize)]
+struct StIndex {
+    #[serde(default)]
+    metadata: Option<StMetadata>,
+    weight_map: std::collections::BTreeMap<String, String>,
+}
+
 /// Whether `path` is a SafeTensors index: `model.safetensors.index.json`.
 pub fn is_safetensors_index(path: &Path) -> bool {
     path.file_name()
@@ -800,50 +808,26 @@ fn read_index(path: &Path) -> Result<(Vec<PathBuf>, Metadata)> {
     }
     let mut text = Vec::new();
     file.take(MAX_INDEX_JSON).read_to_end(&mut text)?;
-    let index: serde_json::Value = serde_json::from_slice(&text)
+    let index: StIndex = serde_json::from_slice(&text)
         .map_err(|e| eyre!("{}: not a SafeTensors index: {e}", path.display()))?;
-    let weight_map = index
-        .get("weight_map")
-        .and_then(|m| m.as_object())
-        .ok_or_else(|| eyre!("{}: the index has no weight_map", path.display()))?;
     let dir = path.parent().unwrap_or(Path::new(""));
-    let mut shards: Vec<PathBuf> = Vec::new();
-    for shard in weight_map.values() {
-        let name = shard
-            .as_str()
-            .ok_or_else(|| eyre!("{}: a weight_map entry is not a file name", path.display()))?;
+    let names: std::collections::BTreeSet<String> = index.weight_map.into_values().collect();
+    if names.len() > MAX_SHARDS {
+        return Err(eyre!("{}: the index names too many shards", path.display()));
+    }
+    let mut shards: Vec<PathBuf> = Vec::with_capacity(names.len());
+    for name in names {
         // A shard is a file beside its index, never a path out of the directory.
-        let named = Path::new(name);
+        let named = Path::new(&name);
         if named.components().count() != 1 || named.file_name().is_none() {
             return Err(eyre!(
                 "{}: the index names {name:?}, which is not a file beside it",
                 path.display()
             ));
         }
-        let shard = dir.join(named);
-        if !shards.contains(&shard) {
-            if shards.len() >= MAX_SHARDS {
-                return Err(eyre!("{}: the index names too many shards", path.display()));
-            }
-            shards.push(shard);
-        }
+        shards.push(dir.join(named));
     }
-    shards.sort();
-    let metadata = index
-        .get("metadata")
-        .and_then(|m| m.as_object())
-        .map(|m| {
-            m.iter()
-                .map(|(k, v)| {
-                    let text = match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    (k.clone(), MetaValue::Text(text))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let metadata = index.metadata.map(|StMetadata(m)| m).unwrap_or_default();
     Ok((shards, metadata))
 }
 
@@ -851,17 +835,19 @@ fn read_index(path: &Path) -> Result<(Vec<PathBuf>, Metadata)> {
 /// tensors, with a `file` column when there is more than one file.
 pub fn read_model(paths: &[PathBuf], format: FileFormat) -> Result<(LazyFrame, ModelSummary)> {
     let mut files: Vec<PathBuf> = Vec::new();
+    // Each file once, however many indexes and names reach it.
+    let mut seen = std::collections::HashSet::new();
     let mut metadata: Vec<(String, MetaValue)> = Vec::new();
     for path in paths {
         if format == FileFormat::Safetensors && is_safetensors_index(path) {
             let (shards, index_meta) = read_index(path)?;
             merge_metadata(&mut metadata, index_meta);
             for shard in shards {
-                if !files.contains(&shard) {
+                if seen.insert(shard.clone()) {
                     files.push(shard);
                 }
             }
-        } else if !files.contains(path) {
+        } else if seen.insert(path.clone()) {
             files.push(path.clone());
         }
     }
@@ -890,11 +876,8 @@ pub fn read_model(paths: &[PathBuf], format: FileFormat) -> Result<(LazyFrame, M
 
 /// Keep each key's first value.
 fn merge_metadata(into: &mut Vec<(String, MetaValue)>, from: Vec<(String, MetaValue)>) {
-    for (key, value) in from {
-        if !into.iter().any(|(k, _)| *k == key) {
-            into.push((key, value));
-        }
-    }
+    let mut seen: std::collections::HashSet<String> = into.iter().map(|(k, _)| k.clone()).collect();
+    into.extend(from.into_iter().filter(|(key, _)| seen.insert(key.clone())));
 }
 
 /// The table and the summary for headers already read; `names` are their files.
@@ -914,22 +897,36 @@ pub fn build(
     let mut file_col = Vec::with_capacity(if many { rows } else { 0 });
     let mut name = Vec::with_capacity(rows);
     let mut dtype = Vec::with_capacity(rows);
-    let mut shape = Vec::with_capacity(rows);
+    let values: usize = headers
+        .iter()
+        .flat_map(|h| &h.tensors)
+        .map(|t| t.shape.len())
+        .sum();
+    let mut shape = ListPrimitiveChunkedBuilder::<UInt64Type>::new(
+        "shape".into(),
+        rows,
+        values,
+        DataType::UInt64,
+    );
     let mut params = Vec::with_capacity(rows);
     let mut bytes = Vec::with_capacity(rows);
     let mut start = Vec::with_capacity(rows);
     let mut end = Vec::with_capacity(rows);
-    let mut types: Vec<TypeShare> = Vec::new();
+    // By name, then into a list: a hostile header can name a type per tensor.
+    let mut types: std::collections::HashMap<&str, TypeShare> = Default::default();
     let (mut total_params, mut total_bytes) = (0u64, 0u64);
+    merge_metadata(
+        &mut metadata,
+        headers.iter().flat_map(|h| h.metadata.clone()).collect(),
+    );
     for (header, file) in headers.iter().zip(names) {
-        merge_metadata(&mut metadata, header.metadata.clone());
         for t in &header.tensors {
             if many {
                 file_col.push(file.as_str());
             }
             name.push(t.name.as_str());
             dtype.push(t.dtype.as_str());
-            shape.push(Series::new(PlSmallStr::EMPTY, t.shape.as_slice()));
+            shape.append_slice(&t.shape);
             params.push(t.params);
             bytes.push(t.bytes);
             start.push(t.offset);
@@ -937,23 +934,19 @@ pub fn build(
             let p = t.params.unwrap_or(0);
             total_params = total_params.saturating_add(p);
             total_bytes = total_bytes.saturating_add(t.bytes.unwrap_or(0));
-            match types.iter_mut().find(|s| s.name == t.dtype) {
-                Some(share) => {
-                    share.tensors += 1;
-                    share.params = share.params.saturating_add(p);
-                }
-                None => types.push(TypeShare {
-                    name: t.dtype.clone(),
-                    tensors: 1,
-                    params: p,
-                }),
-            }
+            let share = types.entry(t.dtype.as_str()).or_insert_with(|| TypeShare {
+                name: t.dtype.clone(),
+                tensors: 0,
+                params: 0,
+            });
+            share.tensors += 1;
+            share.params = share.params.saturating_add(p);
         }
     }
+    let mut types: Vec<TypeShare> = types.into_values().collect();
     types.sort_by(|a, b| b.params.cmp(&a.params).then_with(|| a.name.cmp(&b.name)));
 
-    let list_u64 = DataType::List(Box::new(DataType::UInt64));
-    let shape = Series::new("shape".into(), shape).cast(&list_u64)?;
+    let shape = shape.finish().into_series();
     let mut columns: Vec<Column> = Vec::new();
     if many {
         columns.push(Series::new("file".into(), file_col).into());
@@ -1250,6 +1243,38 @@ pub(crate) mod tests {
         assert!(parse_header(&w.out).is_err(), "measured from 256");
         w.out.resize(header_end.next_multiple_of(256) + 16, 0);
         assert!(parse_header(&w.out).is_ok());
+    }
+
+    /// A header can name a type per tensor and repeat a key many times over; the
+    /// totals and the merge stay linear rather than comparing each against all.
+    #[test]
+    fn many_types_and_keys_build_in_one_pass() {
+        let n = 50_000;
+        let header = Header {
+            kind: ModelKind::SafeTensors,
+            tensors: (0..n)
+                .map(|i| Tensor {
+                    name: format!("t{i}"),
+                    dtype: format!("X{i}"),
+                    shape: vec![2],
+                    params: Some(2),
+                    bytes: Some(0),
+                    offset: 0,
+                    offset_end: Some(0),
+                })
+                .collect(),
+            metadata: (0..n)
+                .map(|i| (format!("k{}", i % 7), MetaValue::Text(i.to_string())))
+                .collect(),
+        };
+        let (_, summary) = build(&[header], &["a".into()], vec![]).unwrap();
+        assert_eq!(summary.types.len(), n);
+        assert_eq!(summary.metadata.len(), 7, "each key once");
+        assert_eq!(
+            summary.metadata[0].1,
+            MetaValue::Text("0".into()),
+            "the first"
+        );
     }
 
     #[test]

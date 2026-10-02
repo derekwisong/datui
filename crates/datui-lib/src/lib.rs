@@ -18660,6 +18660,14 @@ impl App {
         Ok(chosen.into_iter().map(|i| files[i].clone()).collect())
     }
 
+    /// Why `--table` was refused for a file of `format`, which holds one table.
+    fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
+        let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
+        color_eyre::eyre::eyre!(
+            "{what} holds one table; --table picks one of a SQLite database's or an NMEA log's, or a Hugging Face dataset's split."
+        )
+    }
+
     /// The inputs of an Arrow read as one table, in order: each IPC file scanned where
     /// it is, in a bucket or on disk, and each run of streams as its rows of
     /// `converted`, the IPC file they were converted to. Stacked as the files of a
@@ -18857,6 +18865,9 @@ impl App {
         // Arrow streams converted, or a bucket's Arrow listed: the load says where
         // each input's rows are.
         if let Some(parts) = &options.arrow_parts {
+            if options.table.is_some() && options.splits.is_none() {
+                return Err(Self::one_table(Some(FileFormat::Arrow)));
+            }
             return Self::scan_arrow_parts(cloud, paths.first(), parts).map(Scan::from);
         }
         // Only the cloud readers below take the settings.
@@ -19261,11 +19272,7 @@ impl App {
             )
             && options.splits.is_none()
         {
-            let what = effective_format
-                .map_or("This file".to_string(), |f| format!("A {} file", f.name()));
-            return Err(color_eyre::eyre::eyre!(
-                "{what} holds one table; --table picks one of a SQLite database's or an NMEA log's."
-            ));
+            return Err(Self::one_table(effective_format));
         }
 
         // A GPS log is read into a file of its own first: the load converts it

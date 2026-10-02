@@ -72,6 +72,12 @@ pub(crate) fn list(
             .map_err(|e| eyre!("Could not read {url}: {e}"))?;
         (vec![(full.clone(), meta.size)], options.clone())
     };
+    // Refused before anything is asked or fetched, as it is on disk.
+    if let (Some(table), None) = (&options.table, &options.splits) {
+        return Err(eyre!(
+            "{url} holds one table, not splits; --table {table} picks a Hugging Face dataset's split"
+        ));
+    }
     Ok((peek(&store, objects, runtime)?, options))
 }
 

@@ -646,9 +646,15 @@ fn ipc_files_in_a_bucket_are_read_in_place() {
         assert!(files_in(dir.path()).is_empty(), "{url}: nothing written");
     }
 
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    open_prefix(&mut app, &rx, "s3://lake/t/", dir.path(), Some("train"));
+    let message = app.error_message().expect("no splits to pick from");
+    assert!(message.contains("holds one table"), "{message}");
+
     let stream = std::fs::read("tests/sample-data/people_stream.arrow").unwrap();
     let s3 = FakeS3::serve("lake", BTreeMap::from([("s/s.arrow".to_string(), stream)]));
-    let (mut app, rx) = app(&s3);
+    let (mut app, rx) = self::app(&s3);
     let dir = tempfile::tempdir().unwrap();
     let asked = open_prefix(&mut app, &rx, "s3://lake/s/", dir.path(), None);
     let asked = asked.expect("the stream is put to the user");

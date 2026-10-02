@@ -86,9 +86,10 @@ libc = "0.2"
 # turns on, is already in the tree through crossterm.
 tokio = { version = "1", features = ["signal"] }
 
-# The console output code page, for choosing glyphs. Already in the tree.
+# The console output code page, for choosing glyphs, and the file type of standard
+# input, to tell `NUL` from a pipe. Already in the tree.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console"] }
 
 [dependencies.polars]
 version = "0.55"

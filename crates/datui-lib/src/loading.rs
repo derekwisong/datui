@@ -696,17 +696,20 @@ impl Loader {
         let compression = options
             .compression
             .or_else(|| CompressionFormat::from_extension(&first));
-        let csv = is_csv(&first, &options);
+        let delimited = delimited_format(&first, &options);
         if matches!(src, source::InputSource::Local(_))
             && paths.len() == 1
             && compression.is_some()
-            && csv
+            && let Some(format) = delimited
         {
             load.phase = Phase::Decompressing;
             return Step::Decompress {
                 file: first.clone(),
                 path: first,
-                options,
+                options: OpenOptions {
+                    format: Some(format),
+                    ..options
+                },
                 writer: load.writer.clone(),
                 download: None,
             };
@@ -727,7 +730,7 @@ impl Loader {
             return Step::Probe(pending);
         }
         let load = self.load.as_mut().expect("an open has a load");
-        if paths.len() == 1 && csv && options.parse_strings.is_some() {
+        if paths.len() == 1 && delimited.is_some() && options.parse_strings.is_some() {
             load.phase = Phase::ScanningStrings;
             return Step::Scan {
                 paths,
@@ -745,7 +748,8 @@ impl Loader {
         }
     }
 
-    /// Read a download: decompress it first if it is a compressed CSV, else scan it.
+    /// Read a download: decompress it first if it is compressed CSV, TSV or PSV, else
+    /// scan it.
     /// Either way the dataset is named by the URL, not the temporary file, and what
     /// was piped in by `stdin`.
     fn read_download(&mut self, fetched: Fetched, options: OpenOptions) -> Step {
@@ -754,24 +758,22 @@ impl Loader {
         let url = stdin::named(&fetched.url);
         let download = fetched.file.clone();
         load.download = Some(fetched);
-        // A compressed CSV has to be decompressed before it can be scanned, as it is
-        // when opened from disk; scanning the download directly read `.gz` as a format
-        // and refused it.
-        let compressed_csv = options
+        // A compressed CSV, TSV or PSV has to be decompressed before it can be scanned,
+        // as it is when opened from disk; scanning the download directly read `.gz` as
+        // a format and refused it.
+        let compressed = options
             .compression
             .or_else(|| CompressionFormat::from_extension(&file))
-            .is_some()
-            && (options.format == Some(FileFormat::Csv)
-                || file
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .is_some_and(|stem| stem.to_ascii_lowercase().ends_with(".csv")));
-        if compressed_csv {
+            .is_some();
+        if compressed && let Some(format) = delimited_format(&file, &options) {
             load.phase = Phase::Decompressing;
             return Step::Decompress {
                 file,
                 path: url,
-                options,
+                options: OpenOptions {
+                    format: Some(format),
+                    ..options
+                },
                 writer: load.writer.clone(),
                 download: Some(download),
             };
@@ -934,19 +936,17 @@ impl Drop for Loader {
     }
 }
 
-/// Whether `path` is read as CSV.
-fn is_csv(path: &Path, options: &OpenOptions) -> bool {
-    options.format == Some(FileFormat::Csv)
-        || path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| {
-                stem.ends_with(".csv")
-                    || path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .is_some_and(|e| e.eq_ignore_ascii_case("csv"))
-            })
+/// The delimited format (CSV, TSV or PSV) `path` is read as, if it is one: `--format`
+/// when given, else the extension, looking through a compression suffix
+/// (`x.tsv.gz` is TSV).
+fn delimited_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
+    let format = options.format.or_else(|| {
+        FileFormat::from_path(path).or_else(|| {
+            CompressionFormat::from_extension(path)?;
+            FileFormat::from_path(Path::new(path.file_stem()?))
+        })
+    })?;
+    format.separator().is_some().then_some(format)
 }
 
 /// The download a remote source needs before it can be read, if it needs one: an HTTP
@@ -1256,6 +1256,40 @@ mod tests {
         assert!(loader.current().is_none());
     }
 
+    /// A compressed TSV or PSV is decompressed as a CSV is, told its format so it is
+    /// split on its own separator (#567); the format comes from `--format`, else the
+    /// name under the compression suffix.
+    #[test]
+    fn a_compressed_delimited_file_is_decompressed_as_its_format() {
+        let opts = |format: Option<FileFormat>| OpenOptions {
+            format,
+            ..OpenOptions::default()
+        };
+        for (name, format, expected) in [
+            ("x.tsv.gz", None, Some(FileFormat::Tsv)),
+            ("x.PSV.xz", None, Some(FileFormat::Psv)),
+            ("x.csv.zst", None, Some(FileFormat::Csv)),
+            ("x.tsv", None, Some(FileFormat::Tsv)),
+            ("x.gz", Some(FileFormat::Tsv), Some(FileFormat::Tsv)),
+            ("x.csv.gz", Some(FileFormat::Psv), Some(FileFormat::Psv)),
+            ("x.json.gz", None, None),
+            ("x.gz", None, None),
+            ("x.tsv.gz", Some(FileFormat::Parquet), None),
+        ] {
+            assert_eq!(
+                delimited_format(Path::new(name), &opts(format)),
+                expected,
+                "{name} {format:?}"
+            );
+        }
+
+        let mut loader = Loader::default();
+        assert!(matches!(
+            loader.open(request("logs.tsv.gz")),
+            Step::Decompress { ref options, .. } if options.format == Some(FileFormat::Tsv)
+        ));
+    }
+
     /// A local compressed CSV is decompressed rather than scanned; a CSV read with its
     /// strings parsed scans saying so; a frame handed over goes straight to its schema
     /// and has no path to open again.
@@ -1550,31 +1584,44 @@ mod tests {
         assert!(!at.exists(), "a failed open keeps no download");
     }
 
-    /// A compressed CSV downloaded is decompressed under its URL, as one opened from
-    /// disk is.
+    /// A compressed CSV, TSV or PSV downloaded is decompressed under its URL as its
+    /// format, as one opened from disk is (#567).
     #[cfg(feature = "http")]
     #[test]
     fn a_downloaded_compressed_csv_is_decompressed() {
-        let url = "https://example.com/data.csv.gz";
-        let dir = tempfile::tempdir().unwrap();
-        let jobs = jobs();
-        let mut loader = Loader::default();
-        let Step::Probe(pending) = loader.open(request(url)) else {
-            panic!("probe");
-        };
-        let id = loader.id().unwrap();
-        let _ = loader.answered(id, LoadAnswer::Sized(pending), &jobs);
-        let _ = loader.confirmed();
-        let file = downloaded(dir.path(), "", "csv.gz");
-        let step = loader.answered(
-            id,
-            LoadAnswer::Downloaded {
-                download: file,
-                options: OpenOptions::default(),
-            },
-            &jobs,
-        );
-        assert!(matches!(step, Step::Decompress { ref path, .. } if path == Path::new(url)));
+        for (ext, format) in [
+            ("csv.gz", FileFormat::Csv),
+            ("tsv.zst", FileFormat::Tsv),
+            ("psv.xz", FileFormat::Psv),
+        ] {
+            let url = format!("https://example.com/data.{ext}");
+            let dir = tempfile::tempdir().unwrap();
+            let jobs = jobs();
+            let mut loader = Loader::default();
+            let Step::Probe(pending) = loader.open(request(&url)) else {
+                panic!("probe");
+            };
+            let id = loader.id().unwrap();
+            let _ = loader.answered(id, LoadAnswer::Sized(pending), &jobs);
+            let _ = loader.confirmed();
+            let file = downloaded(dir.path(), "", ext);
+            let step = loader.answered(
+                id,
+                LoadAnswer::Downloaded {
+                    download: file,
+                    options: OpenOptions::default(),
+                },
+                &jobs,
+            );
+            assert!(
+                matches!(
+                    step,
+                    Step::Decompress { ref path, ref options, .. }
+                        if path == Path::new(&url) && options.format == Some(format)
+                ),
+                "{ext}"
+            );
+        }
     }
 
     /// Standard input is read to a file first, its bytes counted on the loading

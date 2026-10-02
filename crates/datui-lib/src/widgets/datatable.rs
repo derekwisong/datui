@@ -4107,14 +4107,15 @@ impl DataTableState {
         Self::from_delimited(path, b',', options)
     }
 
-    /// As [`Self::from_csv`], for an open: a compressed file is decompressed through
-    /// `writer`, so the open's stop and quitting reach the copy.
-    pub(crate) fn from_csv_for_open(
+    /// As [`Self::from_delimited`], for an open: a compressed file is decompressed
+    /// through `writer`, so the open's stop and quitting reach the copy.
+    pub(crate) fn from_delimited_for_open(
         path: &Path,
+        delimiter: u8,
         options: &OpenOptions,
         writer: &Writer,
     ) -> Result<Self> {
-        Self::read_delimited(path, b',', options, writer)
+        Self::read_delimited(path, delimiter, options, writer)
     }
 
     /// A delimited text file, split on `delimiter` (its format's separator) unless

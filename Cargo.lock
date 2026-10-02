@@ -1353,6 +1353,7 @@ name = "datui"
 version = "0.4.0-dev"
 dependencies = [
  "arbitrary",
+ "bzip2",
  "clap",
  "clap_mangen",
  "color-eyre",
@@ -1368,6 +1369,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "xz2",
+ "zstd 0.14.0",
 ]
 
 [[package]]

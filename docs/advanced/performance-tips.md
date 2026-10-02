@@ -11,7 +11,7 @@ the full input. Lazy loading does not make every operation fit in memory.
 | Pivot a large table | Filter first; pivot reads all affected rows to discover the output columns |
 | Analyze many rows | Use the sample-size setting for Describe, Distribution and Correlation |
 | Chart many rows | Charts sample 10,000 rows across the table; raise **Sample size** for more |
-| Open compressed CSV | Put `--temp-dir` on a disk with room for the uncompressed file |
+| Open compressed CSV, TSV or PSV | Put `--temp-dir` on a disk with room for the uncompressed file |
 
 ## Sample deliberately
 

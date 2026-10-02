@@ -34,7 +34,7 @@ names it:
 | First bytes | Read as |
 |---|---|
 | Parquet, Arrow IPC or Avro magic number | that format |
-| gzip, zstd, bzip2 or xz magic number | compressed CSV |
+| gzip, zstd, bzip2 or xz magic number | compressed CSV, or TSV or PSV with `--format` |
 | `[` | JSON |
 | `{`, the first line a whole object | NDJSON |
 | `{`, the object open past the first line | JSON |
@@ -137,13 +137,13 @@ in a bucket keeps them as text.
 Files ending in `.gz`, `.zst`, `.bz2` or `.xz` are decompressed before loading.
 Use `--compression gzip|zstd|bzip2|xz` when the extension is missing or wrong.
 
-Compressed CSV is decompressed to a temporary file so it can still be scanned
-lazily. `--temp-dir` chooses where; `--decompress-in-memory` skips the
-file and reads the whole thing into memory instead.
+Compressed CSV, TSV or PSV is decompressed to a temporary file so it can still
+be scanned lazily. `--temp-dir` chooses where; `--decompress-in-memory` skips
+the file and reads the whole thing into memory instead.
 
 ### Temporary files
 
-A decompressed CSV or a downloaded file lives in the temp directory while datui
+A decompressed text file or a downloaded file lives in the temp directory while datui
 uses it.
 
 | Exit | Temporary files |

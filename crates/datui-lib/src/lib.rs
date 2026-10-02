@@ -8450,7 +8450,7 @@ pub struct OpenOptions {
     pub parse_strings: Option<ParseStringsTarget>,
     /// Sample size (rows) for inferring types when parse_strings is enabled; single file or multiple/partitioned.
     pub parse_strings_sample_rows: usize,
-    /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
+    /// When true, decompress a compressed CSV, TSV or PSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
     pub decompress_in_memory: bool,
     /// Directory for decompression temp files. None = system default (e.g. TMPDIR).
     pub temp_dir: Option<std::path::PathBuf>,
@@ -16235,17 +16235,22 @@ impl App {
             })
     }
 
-    /// Read a compressed CSV into a table state.
+    /// Read a compressed CSV, TSV or PSV into a table state, split on its format's
+    /// separator.
     ///
     /// This is the one input datui cannot scan lazily: the file has to be
     /// decompressed and parsed before anything can be shown, which for a large export
     /// is minutes. It takes no `&self` so it can run on a background thread.
-    fn decompressed_csv_state(
+    fn decompressed_delimited_state(
         path: &Path,
         options: &OpenOptions,
         writer: &crate::unfinished::Writer,
     ) -> Result<DataTableState> {
-        DataTableState::from_csv_for_open(path, options, writer)
+        let separator = options
+            .format
+            .and_then(FileFormat::separator)
+            .unwrap_or(b',');
+        DataTableState::from_delimited_for_open(path, separator, options, writer)
     }
 
     /// Polars' view of one source's S3 settings, for `scan_parquet`.
@@ -16604,13 +16609,14 @@ impl App {
                 writer,
                 download,
             } => {
-                // Only a CSV comes this way; said, so it can have its header turned off.
+                // Only delimited text comes this way, its format said by the loader;
+                // CSV when not, so it can have its header turned off.
                 let options = OpenOptions {
                     format: options.format.or(Some(FileFormat::Csv)),
                     ..options
                 };
                 self.spawn_job(job, Some("Decompressing..."), move |_| {
-                    let state = Self::decompressed_csv_state(&file, &options, &writer)
+                    let state = Self::decompressed_delimited_state(&file, &options, &writer)
                         .map_err(|e| {
                             crate::error_display::user_message_from_report(&e, Some(path.as_path()))
                         })?
@@ -16622,7 +16628,7 @@ impl App {
                         state: Box::new(state),
                         path: Some(path),
                         options,
-                        debug_label: Some("decompressed csv".to_string()),
+                        debug_label: Some("decompressed delimited".to_string()),
                     })))
                 });
             }

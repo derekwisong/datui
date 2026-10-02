@@ -4,7 +4,7 @@ Press <kbd>Space</kbd> at the table to see every field of the current row,
 and the focused field's whole value. It opens on the field of the column
 cursor's column. <kbd>Esc</kbd> or <kbd>Space</kbd> closes it.
 
-<kbd>Enter</kbd> opens it too, except on a row of a `by` query or a SQL
+<kbd>Enter</kbd>, or a double-click on the row, opens it too, except on a row of a `by` query or a SQL
 `GROUP BY`, where <kbd>Enter</kbd>
 [drills into the group](querying-data.md#drill-into-a-group-by) and <kbd>Space</kbd> inspects.
 The bottom bar's first chip says what <kbd>Enter</kbd> does: `Enter Inspect`,

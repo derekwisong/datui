@@ -63,6 +63,27 @@ A setting you write wins over an import, even when it equals the built-in
 default; one you leave out keeps the imported value. See
 [import precedence](../reference/settings.md#importing-other-config-files).
 
+## Mouse and text selection
+
+datui takes the mouse by default: the wheel scrolls and a click selects (see
+[Mouse](../reference/keyboard-shortcuts.md#mouse)). To select text with the
+terminal while it does, hold the terminal's bypass modifier as you drag:
+
+| Terminal | Select text |
+|---|---|
+| Most (GNOME Terminal, Konsole, kitty, Alacritty, WezTerm, Windows Terminal, xterm) | <kbd>Shift</kbd>+drag |
+| iTerm2 | <kbd>Option</kbd>+drag |
+| tmux with `set -g mouse on` | <kbd>Shift</kbd>+drag, or tmux's own copy mode |
+
+To leave the mouse to the terminal:
+
+```toml
+[display]
+mouse = false
+```
+
+or run `datui --mouse=false`.
+
 ## Fix a config problem
 
 Check the [troubleshooting entries](../reference/settings.md#troubleshooting)

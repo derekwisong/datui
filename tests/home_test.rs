@@ -6021,6 +6021,88 @@ fn press_and_draw(app: &mut datui::App, code: crossterm::event::KeyCode) -> u16 
     cursor_line(app)
 }
 
+/// The mouse on the home list, at 80×24 and on a wide screen: a click puts the
+/// cursor on the row under it, the wheel moves it three rows and stops at the ends
+/// rather than going round, and a double click opens the row, as Enter does.
+#[test]
+fn test_a_click_selects_a_home_row_and_the_wheel_stops_at_the_ends() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    for (width, height) in [(80, 24), (200, 50)] {
+        let (_tmp, app, rx) = home_at_80x24(60);
+        let (tx, _) = std::sync::mpsc::channel();
+        let mut pump = datui::event_pump::EventPump::new(app, tx, rx);
+        let area = Rect::new(0, 0, width, height);
+        let draw = |app: &mut datui::App| {
+            let mut buf = Buffer::empty(area);
+            Widget::render(&mut *app, area, &mut buf);
+            buf
+        };
+        let at = |buf: &Buffer, text: &str| {
+            (0..area.height)
+                .find_map(|y| {
+                    let line: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+                    line.find(text)
+                        .map(|i| (line[..i].chars().count() as u16, y))
+                })
+                .unwrap_or_else(|| panic!("{text} on screen"))
+        };
+        let mouse = |kind, (column, row): (u16, u16)| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let click = |at| mouse(MouseEventKind::Down(MouseButton::Left), at);
+        let on = |pump: &datui::event_pump::EventPump| {
+            pump.app
+                .home
+                .selected_entry()
+                .and_then(|e| e.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+        };
+
+        let buf = draw(&mut pump.app);
+        let f05 = at(&buf, "f05.csv");
+        assert!(pump.terminal_mouse(click(f05)).unwrap());
+        assert_eq!(on(&pump).as_deref(), Some("f05.csv"), "{width}x{height}");
+
+        draw(&mut pump.app);
+        let wheel = |kind| mouse(kind, (2, 2));
+        pump.terminal_mouse(wheel(MouseEventKind::ScrollDown))
+            .unwrap();
+        assert_eq!(on(&pump).as_deref(), Some("f08.csv"));
+        let last = pump.app.home.visible().len() - 1;
+        for _ in 0..last {
+            pump.terminal_mouse(wheel(MouseEventKind::ScrollDown))
+                .unwrap();
+        }
+        assert_eq!(pump.app.home.selected, last, "stops at the last");
+        // The table's sideways wheel means nothing here.
+        pump.terminal_mouse(wheel(MouseEventKind::ScrollRight))
+            .unwrap();
+        assert_eq!(pump.app.home.selected, last);
+        pump.terminal_mouse(wheel(MouseEventKind::ScrollUp))
+            .unwrap();
+        assert_eq!(pump.app.home.selected, last - 3);
+
+        let buf = draw(&mut pump.app);
+        let f57 = at(&buf, "f57.csv");
+        pump.terminal_mouse(click(f57)).unwrap();
+        assert_eq!(
+            pump.app.input_mode,
+            datui::InputMode::Home,
+            "one click selects"
+        );
+        pump.terminal_mouse(click(f57)).unwrap();
+        pump.drain().unwrap();
+        assert_ne!(
+            pump.app.input_mode,
+            datui::InputMode::Home,
+            "a double click opens f57.csv"
+        );
+    }
+}
+
 /// Up from the bottom moves the cursor up the screen; the list scrolls only once the
 /// cursor is two lines from the top (#551).
 #[test]

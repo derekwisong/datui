@@ -157,6 +157,7 @@ mod tests {
             column_colors: None,
             number_format: None,
             align_numeric_right: None,
+            mouse: None,
             parse_dates: None,
             parse_strings: vec![],
             no_parse_strings: false,

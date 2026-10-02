@@ -61,9 +61,17 @@ pub struct Controls {
     /// The find in effect: its pattern, and which match the cursor is on when that is
     /// known. Plain text beside the chips, since it is state, not an alarm.
     pub find: Option<String>,
+    /// The chips the last render drew and where, for a click: see [`Self::drawn_chips`].
+    drawn: std::cell::RefCell<Vec<(Rect, &'static str)>>,
 }
 
 impl Controls {
+    /// The chips the bar was drawn with, each with where it landed. Empty before it
+    /// is rendered, and while a flash has the row.
+    pub fn drawn_chips(&self) -> Vec<(Rect, &'static str)> {
+        self.drawn.take()
+    }
+
     pub fn with_busy(mut self, busy: bool, throbber_frame: u8) -> Self {
         self.busy = busy;
         self.throbber_frame = throbber_frame;
@@ -213,6 +221,7 @@ impl Controls {
             not_the_table: None,
             columns: None,
             find: None,
+            drawn: Default::default(),
         }
     }
 }
@@ -408,7 +417,7 @@ impl Widget for &Controls {
                 label_style,
                 Style::default().fg(self.key_color),
             );
-            for (key, label) in controls
+            for &(key, label) in controls
                 .iter()
                 .filter(|(key, _)| matches!(*key, "Esc" | "^C" | "^Q" | "^O" | "q" | "Q" | "?"))
             {
@@ -449,6 +458,7 @@ impl Widget for &Controls {
             .render(layout[1], buf);
 
             escapes.render(layout[2], buf);
+            self.drawn.replace(escapes.chips_in(layout[2]));
 
             let mut next = 3;
             if chip_width > 0 {
@@ -518,9 +528,9 @@ impl Widget for &Controls {
         // chip on a narrow terminal. Help yields second to last: nothing a
         // first session needs may live only behind a key the bar never shows.
         let n = controls.len() as i32;
-        for (i, (key, label)) in controls.iter().enumerate() {
-            let way_out = matches!(*key, "Esc" | "^C" | "^Q" | "q") || *label == "Quit";
-            let help = matches!(*key, "?" | "F1");
+        for (i, &(key, label)) in controls.iter().enumerate() {
+            let way_out = matches!(key, "Esc" | "^C" | "^Q" | "q") || label == "Quit";
+            let help = matches!(key, "?" | "F1");
             let weight = if way_out {
                 n + 2
             } else if help {
@@ -557,6 +567,7 @@ impl Widget for &Controls {
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
 
         bar.render(layout[0], buf);
+        self.drawn.replace(bar.chips_in(layout[0]));
 
         let mut next = 2;
         if chip_width > 0 {

@@ -7,7 +7,8 @@ selected row. The details pane previews its schema when available.
 ## Open a file or directory
 
 1. Type part of a name to filter the list.
-2. Select the file with <kbd>↑</kbd> / <kbd>↓</kbd> and press <kbd>Enter</kbd>.
+2. Select the file with <kbd>↑</kbd> / <kbd>↓</kbd> and press <kbd>Enter</kbd>,
+   or double-click it. The wheel moves the selection; see [Mouse](../reference/keyboard-shortcuts.md#mouse).
 3. To browse inside a directory instead of combining its files, press <kbd>→</kbd>.
 
 To enter a path, clear the filter and press <kbd>~</kbd>. Type the path, use

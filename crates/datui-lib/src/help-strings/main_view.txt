@@ -67,6 +67,16 @@ Exit:
                     from it; otherwise quit (the control bar says which)
   Q:                Quit
 
+Mouse:
+  Click:            Put the cursor on the cell; on a header, its column
+  Double-click:     Enter on the row
+  Wheel:            ↑ / ↓, three rows a notch; the same in help, the
+                    inspector and the sidebars
+  Shift+wheel:      ← / →, the column cursor (a sideways wheel too)
+  Click a chip:     Press its key
+  Shift+drag selects text in most terminals. mouse = false under [display],
+  or --mouse=false, leaves the mouse to the terminal.
+
 While busy:
   At the plain table, q, Q, column scroll (←/→, h/l, [ ], { }), ? and F1
   act at once; Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load at once.
@@ -77,6 +87,8 @@ While busy:
   screen nothing is held: the allowed keys act, the rest are dropped.
   While a view is being applied, Esc stops it and keeps the table as it was.
   While a find reads, Esc (or Ctrl+O) stops it and the cursor stays put.
+  The mouse is never queued: the wheel across and the busy bar's chips act
+  as their keys do; the wheel down and a click on the table are dropped.
 
 Wide tables:
   ] starts the next page at the first column not shown whole, so a column

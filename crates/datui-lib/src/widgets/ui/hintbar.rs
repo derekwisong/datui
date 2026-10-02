@@ -159,6 +159,25 @@ impl<'a> HintBar<'a> {
         self.draw(area, buf, true);
     }
 
+    /// Where each chip [`Widget::render`] draws in `area` lands, key and label without
+    /// the gap after it, with its key: what a click on the bar presses.
+    pub fn chips_in(&self, area: Rect) -> Vec<(Rect, &'a str)> {
+        let mut x = area.x;
+        let mut chips = Vec::new();
+        for (hint, keep) in self.hints.iter().zip(self.kept(area.width, false)) {
+            if !keep {
+                continue;
+            }
+            let width = Self::chip_width(hint);
+            let shown = (width - GAP).min(area.right().saturating_sub(x));
+            if shown > 0 {
+                chips.push((Rect::new(x, area.y, shown, area.height.min(1)), hint.key));
+            }
+            x = x.saturating_add(width);
+        }
+        chips
+    }
+
     fn draw(&self, area: Rect, buf: &mut Buffer, flush: bool) {
         let kept = self.kept(area.width, flush);
         let mut spans = Vec::new();
@@ -188,6 +207,26 @@ impl Widget for &HintBar<'_> {
 mod tests {
     use super::*;
     use crate::render::context::RenderContext;
+
+    /// Each chip's place is where its key is drawn, and ends with its label.
+    #[test]
+    fn chips_are_found_where_they_are_drawn() {
+        let bar = HintBar::from_ctx(&RenderContext::for_test())
+            .hints(&[("Enter", "Inspect"), ("^Q", "Quit")]);
+        let drawn = render_to_string(&bar, 40);
+        let chips = bar.chips_in(Rect::new(0, 0, 40, 1));
+        assert_eq!(chips.len(), 2);
+        for ((rect, key), label) in chips.iter().zip(["Inspect", "Quit"]) {
+            let text: String = drawn
+                .chars()
+                .skip(rect.x as usize)
+                .take(rect.width as usize)
+                .collect();
+            assert_eq!(text, format!(" {key}  {label}"));
+        }
+        // A bar too narrow for the second chip offers only the first.
+        assert_eq!(bar.chips_in(Rect::new(0, 0, 18, 1)).len(), 1);
+    }
 
     fn render_to_string(bar: &HintBar, width: u16) -> String {
         let area = Rect::new(0, 0, width, 1);

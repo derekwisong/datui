@@ -22,6 +22,8 @@ Navigation:
   Esc:              Back out one layer: the path prompt, the filter, the
                     directory (back to the row it was entered from), then
                     to the open data
+  Click:            Select the row; double-click is Enter
+  Wheel:            Move the selection three rows, stopping at the ends
 
 Finding:
   (type):           Filter by name or column; fuzzy, so "sal" finds "sales".

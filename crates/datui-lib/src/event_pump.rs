@@ -15,9 +15,10 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use color_eyre::Result;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use crate::jobs::Hold;
+use crate::pointer::Pointer;
 use crate::{App, AppEvent};
 
 /// Keys held while busy. Beyond this the newest is dropped, and the user told: the
@@ -35,6 +36,14 @@ enum Act {
     HoldAs(KeyEvent),
     /// Discard it: a bare Enter/Esc at a busy table confirms nothing.
     Drop,
+}
+
+/// Something read from the terminal for the app: a key or the mouse. Kept in the
+/// order it arrived.
+#[derive(Debug, Clone, Copy)]
+enum Input {
+    Key(KeyEvent),
+    Mouse(MouseEvent),
 }
 
 /// What a pass over the channel found.
@@ -89,7 +98,7 @@ pub struct EventPump {
     /// read the terminal itself: taken in channel order, a held-down `j` put the
     /// load-ahead's answer behind every repeat, scrolled off the buffer and folded the
     /// rest into one press.
-    typed: VecDeque<KeyEvent>,
+    typed: VecDeque<Input>,
     /// Events handled since a key was last offered. Bounded by [`RESULTS_PER_KEY`], so
     /// a worker reporting faster than it is handled cannot starve the keyboard.
     since_key: usize,
@@ -127,7 +136,11 @@ impl EventPump {
         for event in events {
             match event {
                 AppEvent::Terminal(Event::Key(key)) => {
-                    self.typed.push_back(key);
+                    self.typed.push_back(Input::Key(key));
+                    self.early += 1;
+                }
+                AppEvent::Terminal(Event::Mouse(mouse)) => {
+                    self.typed.push_back(Input::Mouse(mouse));
                     self.early += 1;
                 }
                 event => self.backlog.push_back(event),
@@ -173,6 +186,46 @@ impl EventPump {
                 Ok(false)
             }
         }
+    }
+
+    /// A mouse event read from the terminal, which means what it lands on in the last
+    /// frame ([`App::pointer`]). It is never held: aimed at what is on screen now, it
+    /// would land on something else later. The wheel's arrows and a chip's key act
+    /// where a typed key would act at once and are dropped where it would wait, so the
+    /// wheel across moves the column cursor at a busy table, as ←→ do, and the wheel
+    /// down waits for nothing. A click moves the cursor where ↓ would act at once: at
+    /// an idle table with nothing held, and on the home screen, which keeps its keys.
+    /// Returns whether the app changed.
+    pub fn terminal_mouse(&mut self, mouse: MouseEvent) -> Result<bool> {
+        self.discard_stale();
+        match self.app.pointer(&mouse, std::time::Instant::now()) {
+            Pointer::Nothing => Ok(false),
+            Pointer::Keys(keys) => self.press_now(keys),
+            Pointer::Point(target, then) => {
+                let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+                if !matches!(self.classify(&down), Act::Now) {
+                    // Not a click the next one can make a double click of.
+                    self.app.forget_click();
+                    return Ok(false);
+                }
+                self.app.point(&target);
+                self.press_now(then)?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Press `keys` in order while each would act at once; the rest are dropped.
+    fn press_now(&mut self, keys: impl IntoIterator<Item = KeyEvent>) -> Result<bool> {
+        let mut acted = false;
+        for key in keys {
+            if !matches!(self.classify(&key), Act::Now) {
+                break;
+            }
+            self.dispatch(key)?;
+            acted = true;
+        }
+        Ok(acted)
     }
 
     fn classify(&self, key: &KeyEvent) -> Act {
@@ -305,7 +358,13 @@ impl EventPump {
                     if self.typed.is_empty() {
                         self.since_key = 0;
                     }
-                    self.typed.push_back(key);
+                    self.typed.push_back(Input::Key(key));
+                }
+                Ok((AppEvent::Terminal(Event::Mouse(mouse)), _)) => {
+                    if self.typed.is_empty() {
+                        self.since_key = 0;
+                    }
+                    self.typed.push_back(Input::Mouse(mouse));
                 }
                 Ok((AppEvent::Terminal(Event::Resize(cols, rows)), _)) => {
                     next = Ok((AppEvent::Resize(cols, rows), None));
@@ -316,6 +375,7 @@ impl EventPump {
                     updated = true;
                     progress_only &= event.is_progress();
                     self.since_key += 1;
+                    self.app.pointer.changed();
                     let follow_up = match self.app.handle(&event) {
                         Ok(follow_up) => follow_up,
                         Err(deferred) => {
@@ -346,7 +406,17 @@ impl EventPump {
                     }
                 }
                 Err(TryRecvError::Empty) => {
-                    let Some(key) = self.typed.pop_front() else {
+                    // The pointer was aimed at the frame on screen. When something has
+                    // been handled since (a resize, a list that arrived, rows read), it
+                    // waits for the frame that shows it, which this asks for now.
+                    if matches!(self.typed.front(), Some(Input::Mouse(_)))
+                        && !self.app.pointer.on_screen()
+                    {
+                        updated = true;
+                        progress_only = false;
+                        break;
+                    }
+                    let Some(input) = self.typed.pop_front() else {
                         break;
                     };
                     self.since_key = 0;
@@ -354,7 +424,11 @@ impl EventPump {
                     // One key per frame, as when the loop read the terminal itself: a
                     // key that acted is drawn before the next is offered, and a
                     // continuation it queued gets its frame first.
-                    if self.terminal_key(key)? {
+                    let acted = match input {
+                        Input::Key(key) => self.terminal_key(key)?,
+                        Input::Mouse(mouse) => self.terminal_mouse(mouse)?,
+                    };
+                    if acted {
                         updated = true;
                         progress_only = false;
                         break;
@@ -920,6 +994,214 @@ mod tests {
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
         buf.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    fn mouse(kind: crossterm::event::MouseEventKind, (x, y): (u16, u16)) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn click(at: (u16, u16)) -> MouseEvent {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        mouse(MouseEventKind::Down(MouseButton::Left), at)
+    }
+
+    /// Where `text` is drawn in a 100×20 frame, in cells.
+    fn on_screen(app: &mut App, text: &str) -> (u16, u16) {
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        for y in 0..area.height {
+            let line: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(at) = line.find(text) {
+                return (line[..at].chars().count() as u16, y);
+            }
+        }
+        panic!("{text:?} is not on screen");
+    }
+
+    /// The table's cursor: the row on screen and the column.
+    fn cell(pump: &EventPump) -> (Option<usize>, Option<String>) {
+        let state = pump.app.data_table_state.as_ref().expect("a dataset");
+        (
+            state.table_state.selected(),
+            state.current_column().map(str::to_string),
+        )
+    }
+
+    /// A click on a cell puts the cursor on its row and column; a second click there
+    /// is a double click, which presses Enter and inspects the row.
+    #[test]
+    fn a_click_moves_the_cursor_and_a_double_click_inspects() {
+        let (mut p, _dir) = loaded_pump();
+        assert_eq!(cell(&p), (Some(0), Some("name".to_string())));
+        let at = on_screen(&mut p.app, "45");
+        assert!(p.terminal_mouse(click(at)).unwrap());
+        assert_eq!(cell(&p), (Some(1), Some("age".to_string())));
+        assert_eq!(p.app.input_mode, InputMode::Normal, "one click only moves");
+
+        // A click on the other row, then twice on it.
+        let at = on_screen(&mut p.app, "alan");
+        p.terminal_mouse(click(at)).unwrap();
+        assert_eq!(cell(&p), (Some(2), Some("name".to_string())));
+        assert_eq!(p.app.input_mode, InputMode::Normal);
+        p.terminal_mouse(click(at)).unwrap();
+        assert_eq!(p.app.input_mode, InputMode::Inspect, "Enter inspects");
+
+        // In the inspector the table is not under the pointer: nothing to click.
+        let before = cell(&p);
+        p.terminal_mouse(click((3, 3))).unwrap();
+        assert_eq!(cell(&p), before);
+    }
+
+    /// The wheel presses the arrows: down three rows at a time, stopping at the last,
+    /// and across, or with Shift, the column cursor.
+    #[test]
+    fn the_wheel_scrolls_rows_and_across_moves_the_column() {
+        use crossterm::event::MouseEventKind;
+        let (mut p, _dir) = numbered_pump(50);
+        let (mut p2, _dir2) = loaded_pump();
+        let rows = |p: &EventPump| cell(p).0;
+        assert!(
+            p.terminal_mouse(mouse(MouseEventKind::ScrollDown, (5, 5)))
+                .unwrap()
+        );
+        assert_eq!(rows(&p), Some(3));
+        p.terminal_mouse(mouse(MouseEventKind::ScrollUp, (5, 5)))
+            .unwrap();
+        assert_eq!(rows(&p), Some(0));
+
+        let mut shift = mouse(MouseEventKind::ScrollDown, (5, 5));
+        shift.modifiers = KeyModifiers::SHIFT;
+        p2.terminal_mouse(shift).unwrap();
+        assert_eq!(cell(&p2), (Some(0), Some("age".to_string())));
+        p2.terminal_mouse(mouse(MouseEventKind::ScrollLeft, (5, 5)))
+            .unwrap();
+        assert_eq!(cell(&p2), (Some(0), Some("name".to_string())));
+        p2.terminal_mouse(mouse(MouseEventKind::ScrollRight, (5, 5)))
+            .unwrap();
+        assert_eq!(cell(&p2).1.as_deref(), Some("age"));
+        // Three rows down from the first, of three: the last, as ↓ stops there.
+        p2.terminal_mouse(mouse(MouseEventKind::ScrollDown, (5, 5)))
+            .unwrap();
+        rendered(&mut p2.app);
+        assert_eq!(rows(&p2), Some(2));
+    }
+
+    /// Mouse input is never held. At a busy table the wheel across moves the column
+    /// cursor at once, as ←→ do; the wheel down, which waits as a typed ↓ would, and a
+    /// click, aimed at a screen that may be gone by the time it could act, are dropped.
+    /// Behind held keys a click is dropped too, so it cannot overtake them.
+    #[test]
+    fn mouse_input_is_never_held() {
+        use crossterm::event::MouseEventKind;
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        p.app.busy = true;
+        assert!(
+            !p.terminal_mouse(mouse(MouseEventKind::ScrollDown, (5, 5)))
+                .unwrap()
+        );
+        assert!(!p.terminal_mouse(click(alan)).unwrap());
+        assert!(held(&p).is_empty(), "nothing held");
+        assert_eq!(cell(&p), (Some(0), Some("name".to_string())));
+        assert!(
+            p.terminal_mouse(mouse(MouseEventKind::ScrollRight, (5, 5)))
+                .unwrap()
+        );
+        assert_eq!(cell(&p), (Some(0), Some("age".to_string())), "at once");
+
+        // Idle again with a key held: the key goes first, the click is dropped.
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        assert_eq!(held(&p), [KeyCode::Char('j')]);
+        p.app.busy = false;
+        assert!(!p.terminal_mouse(click(alan)).unwrap());
+        settle(&mut p);
+        assert_eq!(cell(&p).0, Some(1), "the held j, and no click");
+        assert!(p.terminal_mouse(click(alan)).unwrap());
+        assert_eq!(cell(&p).0, Some(2));
+    }
+
+    /// A click dropped while busy is not the first of a double click: the next click
+    /// on the same cell only moves the cursor, and does not inspect.
+    #[test]
+    fn a_dropped_click_does_not_make_the_next_a_double_click() {
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        p.app.busy = true;
+        assert!(!p.terminal_mouse(click(alan)).unwrap());
+        p.app.busy = false;
+        assert!(p.terminal_mouse(click(alan)).unwrap());
+        assert_eq!(cell(&p).0, Some(2));
+        assert_eq!(p.app.input_mode, InputMode::Normal, "one click, no Enter");
+    }
+
+    /// A click read behind an event that may have changed the screen waits for the
+    /// frame that shows the change, so it lands on what the user sees.
+    #[test]
+    fn a_click_waits_for_the_frame_after_a_change() {
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        p.app.frame_painted();
+        p.send(AppEvent::Terminal(Event::Resize(100, 20))).unwrap();
+        p.send(AppEvent::Terminal(Event::Mouse(click(alan))))
+            .unwrap();
+        let drained = p.drain().unwrap();
+        assert!(
+            matches!(
+                drained,
+                Drained::Continue {
+                    updated: true,
+                    progress_only: false
+                }
+            ),
+            "a frame is asked for: {drained:?}"
+        );
+        assert_eq!(cell(&p).0, Some(0), "not yet");
+        rendered(&mut p.app);
+        p.app.frame_painted();
+        p.drain().unwrap();
+        assert_eq!(cell(&p).0, Some(2), "on the frame that shows the resize");
+    }
+
+    /// A chip on the control bar presses its key, as typed: Help opens help, and
+    /// while the help is up the wheel scrolls it.
+    #[test]
+    fn a_chip_presses_its_key() {
+        use crossterm::event::MouseEventKind;
+        let (mut p, _dir) = loaded_pump();
+        let help = on_screen(&mut p.app, "Help");
+        assert!(p.terminal_mouse(click(help)).unwrap());
+        assert!(p.app.show_help, "the Help chip opened help");
+        rendered(&mut p.app);
+        p.terminal_mouse(mouse(MouseEventKind::ScrollDown, (5, 5)))
+            .unwrap();
+        assert_eq!(p.app.help_scroll, 3);
+        // No table under the help: a click there moves nothing.
+        p.terminal_mouse(click((5, 5))).unwrap();
+        assert_eq!(cell(&p), (Some(0), Some("name".to_string())));
+    }
+
+    /// Mouse events reach the app through the channel, in order with the keys typed
+    /// around them, as `run()` reads them.
+    #[test]
+    fn mouse_events_keep_their_place_among_the_keys() {
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        p.send(AppEvent::Terminal(Event::Key(plain(KeyCode::Char('l')))))
+            .unwrap();
+        p.send(AppEvent::Terminal(Event::Mouse(click(alan))))
+            .unwrap();
+        settle(&mut p);
+        assert_eq!(
+            cell(&p),
+            (Some(2), Some("name".to_string())),
+            "the l moved to age, then the click came back to name"
+        );
     }
 
     /// A continuation never goes to the back of the channel.

@@ -429,6 +429,10 @@ pub struct Args {
     #[arg(long = "align-numeric-right", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
     pub align_numeric_right: Option<bool>,
 
+    /// Take the mouse: wheel scrolls, click selects (default: true). --mouse=false leaves it to the terminal
+    #[arg(long = "mouse", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
+    pub mouse: Option<bool>,
+
     /// Write the default configuration to ~/.config/datui/config.toml and exit
     #[arg(long = "generate-config", action, help_heading = "Maintenance")]
     pub generate_config: bool,

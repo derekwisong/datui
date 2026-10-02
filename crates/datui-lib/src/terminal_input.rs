@@ -103,10 +103,12 @@ fn read(tx: Sender<AppEvent>, stop: &AtomicBool) {
 
 /// Hand one event to the loop. Only presses are keys: a terminal speaking the kitty
 /// protocol may report releases and repeats too, and the app acts on presses alone.
+/// Of the mouse, only what the app acts on: a left press and the wheel.
 fn forward(tx: &Sender<AppEvent>, event: Event) -> Result<(), ()> {
     let event = match event {
         Event::Key(key) if !key.is_press() => return Ok(()),
         Event::Key(_) | Event::Resize(..) => event,
+        Event::Mouse(mouse) if crate::pointer::wanted(&mouse) => event,
         _ => return Ok(()),
     };
     tx.send(AppEvent::Terminal(event)).map_err(|_| ())
@@ -115,23 +117,40 @@ fn forward(tx: &Sender<AppEvent>, event: Event) -> Result<(), ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use std::sync::mpsc;
 
-    /// Releases and repeats never reach the app; presses and resizes do, in order.
+    /// Releases and repeats never reach the app; presses, resizes, left clicks and the
+    /// wheel do, in order. Motion, drags, releases and other buttons do not.
     #[test]
-    fn only_presses_and_resizes_are_forwarded() {
+    fn only_presses_resizes_clicks_and_the_wheel_are_forwarded() {
         let (tx, rx) = mpsc::channel();
         let press = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         let mut release = press;
         release.kind = KeyEventKind::Release;
         let mut repeat = press;
         repeat.kind = KeyEventKind::Repeat;
+        let mouse = |kind| MouseEvent {
+            kind,
+            column: 3,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        };
+        let click = mouse(MouseEventKind::Down(MouseButton::Left));
+        let wheel = mouse(MouseEventKind::ScrollDown);
         for event in [
             Event::Key(release),
             Event::Key(press),
             Event::Key(repeat),
             Event::FocusGained,
+            Event::Mouse(mouse(MouseEventKind::Moved)),
+            Event::Mouse(mouse(MouseEventKind::Drag(MouseButton::Left))),
+            Event::Mouse(mouse(MouseEventKind::Up(MouseButton::Left))),
+            Event::Mouse(mouse(MouseEventKind::Down(MouseButton::Right))),
+            Event::Mouse(click),
+            Event::Mouse(wheel),
             Event::Resize(80, 24),
         ] {
             forward(&tx, event).unwrap();
@@ -144,6 +163,14 @@ mod tests {
                 _ => panic!("only terminal events are sent"),
             })
             .collect();
-        assert_eq!(got, vec![Event::Key(press), Event::Resize(80, 24)]);
+        assert_eq!(
+            got,
+            vec![
+                Event::Key(press),
+                Event::Mouse(click),
+                Event::Mouse(wheel),
+                Event::Resize(80, 24)
+            ]
+        );
     }
 }

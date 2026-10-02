@@ -72,6 +72,9 @@ The same script is used in GitHub Actions:
 - **CI** (`ci.yml`): Builds and uploads dev packages (`.deb`, `.rpm`, `.tar.gz`) on push to `main`
 - **Release** (`release.yml`): Attaches `.deb`, `.rpm`, and Arch `.tar.gz` to GitHub releases
 
+Release publishing requires every committed fuzz corpus to pass an AddressSanitizer
+replay on the tagged commit, regardless of the latest Nightly result.
+
 ### Release notes
 
 `release.yml` composes the release body before creating the release. It uses

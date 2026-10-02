@@ -1,11 +1,15 @@
 Dataset technical info. While a dataset has unread notes, i opens this
-panel on the Notes tab; after that, on Schema.
+panel on the Notes tab; after that, on Model for a model file and on Schema
+for anything else.
 
   Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
                     On other tabs: focus stays on tab bar.
   ← / → (h/l):      Switch tabs. Afterward focus rests on the tab bar, so
                     Tab returns to the body before ↑/↓ scroll
-  ↑ / ↓ (j/k):      Schema tab (when focused) or Notes tab: move the cursor
+  ↑ / ↓ (j/k):      Schema tab (when focused) or Notes tab: move the cursor.
+                    Model tab: scroll the metadata
+  PgUp / PgDn:      Model tab: scroll the metadata a page
+  Home / End:       Model tab: the top or the end of the metadata
   Enter:            Notes tab: take the offer on the note, where it has one
   ? / F1:           Show this help
   Esc / i:          Close info panel
@@ -16,6 +20,9 @@ panel on the Notes tab; after that, on Schema.
 
 Tabs:
   Schema:      Every column, its type, and which footers the schema came from
+  Model:       A SafeTensors or GGUF file's parameter count, size, dtype or
+               quantization mix, and its header metadata, every value whole.
+               Only for model files
   Resources:   What the data costs to hold and to read
   Partitions:  The layout of a partitioned dataset. Only when it has one
   Notes:       What datui noticed about the data while reading it. Only when

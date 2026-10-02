@@ -135,6 +135,7 @@ count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts
 | `hive` | `key=value` subdirectories, at least as numerous as direct data files |
 | `delta`, `iceberg`, `hudi` | A lake-table marker |
 | `12 parquet`, `3 csv` | Direct data files of one format |
+| `3 safetensors`, `2 gguf` | A model: weight files of one format, with only JSON (config, tokenizer) beside them. Opens as one table |
 | `mixed` | Several formats |
 | `dir` | No direct data files; `dir+` means the listing was cut short |
 | `bucket`, `container` | The top of an object store |
@@ -173,6 +174,7 @@ opens:
 | Hive partitions | `sales (hive table: year, month)` | this row |
 | Files of one format and one schema | `same (3 Parquet files, one schema)` | this row |
 | Files of one format whose columns differ | `diff (2 Parquet files, schemas differ)` | the first file |
+| Model weights, with only JSON beside them | `llama (model, 3 SafeTensors files)` | this row |
 | One data file | `notes (1 CSV file)` | the first file |
 | Several formats, files beside subdirectories, or only subdirectories | `data (all files, mixed)` | the first row inside |
 | Delta, Iceberg or Hudi | `tbl (Delta files, not the table)` | the first row inside |

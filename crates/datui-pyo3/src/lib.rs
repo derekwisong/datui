@@ -36,7 +36,7 @@ fn parse_compression(s: &str) -> PyResult<CompressionFormat> {
 fn parse_format(s: &str) -> PyResult<FileFormat> {
     FileFormat::from_extension(s).ok_or_else(|| {
         PyValueError::new_err(format!(
-            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel (got {:?})",
+            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf (got {:?})",
             s
         ))
     })
@@ -54,6 +54,8 @@ fn format_to_str(f: FileFormat) -> &'static str {
         FileFormat::Avro => "avro",
         FileFormat::Orc => "orc",
         FileFormat::Excel => "excel",
+        FileFormat::Safetensors => "safetensors",
+        FileFormat::Gguf => "gguf",
     }
 }
 

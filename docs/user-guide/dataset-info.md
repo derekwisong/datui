@@ -8,6 +8,7 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 | Tab | Shows |
 |---|---|
 | **Schema** | Row and column counts, column types, schema source, file coverage, and Parquet codecs/compression |
+| **Model** | A SafeTensors or GGUF model's totals and header metadata; appears for model files |
 | **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
@@ -23,13 +24,31 @@ directories, globs and datasets of several files have no file size.
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch tabs |
 | <kbd>Tab</kbd> | Move between the Schema tab bar and its column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table or notes |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, or the model's metadata |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's metadata |
 | <kbd>Enter</kbd> | Apply a note's offered action, when available |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
 
 The row count covers the dataset, not just the visible page. Column types also
 appear in the table's second header row; <kbd>D</kbd> toggles that row.
+
+## Model
+
+For a [SafeTensors or GGUF file](loading-data.md#model-files), <kbd>i</kbd>
+opens on the Model tab:
+
+| Line | Shows |
+|---|---|
+| Format | `SafeTensors` or `GGUF v3`, the tensor count, and the file count for a sharded checkpoint |
+| Parameters | The sum of every tensor's parameters, in full and abbreviated (`8.0B`), and the size of the tensor data |
+| Types | Each dtype or quantization type's share of the parameters, largest first |
+| Metadata | Key and value: SafeTensors `__metadata__` and the index's `metadata`, or GGUF's key/value pairs |
+
+Values are shown whole; a chat template wraps over as many lines as it takes.
+Arrays of up to 16 items are listed; longer ones, such as a tokenizer's
+vocabulary, show their length (`[128,256 strings]`). Across several files, the
+first file to name a key gives its value.
 
 ## Notes
 

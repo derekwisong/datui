@@ -88,6 +88,7 @@ pub mod local_copy;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
+pub mod model_files;
 pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
@@ -176,7 +177,7 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         FileFormat::Jsonl => Some(ExportFormat::Ndjson),
         FileFormat::Arrow => Some(ExportFormat::Ipc),
         FileFormat::Avro => Some(ExportFormat::Avro),
-        FileFormat::Orc | FileFormat::Excel => None,
+        FileFormat::Orc | FileFormat::Excel | FileFormat::Safetensors | FileFormat::Gguf => None,
     }
 }
 
@@ -8481,6 +8482,10 @@ pub struct OpenOptions {
     pub ignore_errors: bool,
     /// When true, show the debug overlay (session info, performance, query, etc.).
     pub debug: bool,
+    /// What a SafeTensors or GGUF header said besides its tensors: its metadata and
+    /// totals, for the Info panel. Found by the scan, which reads the header once, and
+    /// carried to the dataset as `left_out` is. `None` for every other open.
+    pub model: Option<Arc<crate::model_files::ModelSummary>>,
 }
 
 impl OpenOptions {
@@ -8492,6 +8497,7 @@ impl OpenOptions {
             skip_rows: None,
             skip_tail_rows: None,
             left_out: Vec::new(),
+            model: None,
             read_as_plain_files_of: None,
             files_disagree: Default::default(),
             compression: None,
@@ -9133,6 +9139,8 @@ pub struct ReadReport {
     /// commonest format, or a file's extension. Carried back as `OpenOptions::format`,
     /// so what is on screen knows whether it has a header row to turn off.
     pub format: Option<FileFormat>,
+    /// What a model file's header said besides its tensors. See [`OpenOptions::model`].
+    pub model: Option<Arc<crate::model_files::ModelSummary>>,
 }
 
 /// What a scan built: the frame, or one compressed delimited file for the load to
@@ -16695,6 +16703,7 @@ impl App {
                         left_out: options.left_out.clone(),
                         files_disagree: options.files_disagree,
                         format: None,
+                        model: None,
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
@@ -16714,6 +16723,7 @@ impl App {
                         left_out: report.left_out,
                         files_disagree: report.files_disagree,
                         format,
+                        model: report.model,
                         ..options
                     };
                     Ok(Answer::Load(Box::new(match scan {
@@ -17685,6 +17695,7 @@ impl App {
         // And the half of it that cannot be missed: the row count on screen is a true
         // count of the files and a wrong one of the table.
         facts.not_the_table = options.read_as_plain_files_of;
+        facts.model = options.model.clone();
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         facts.remote_source = path.is_some_and(source::scans_in_place);
@@ -18296,8 +18307,13 @@ impl App {
                             };
                             let lf = Self::build_local_lazyframe(&files, &nested, report)?;
                             // After the call, which reads a flat directory of one format
-                            // and leaves nothing out of its own.
-                            report.left_out = passed_over;
+                            // and leaves nothing out of its own. A model's config and
+                            // tokenizer JSON are not data the read passed over, and the
+                            // weights are not the commonest format there, so neither is
+                            // said.
+                            if !matches!(found, FileFormat::Safetensors | FileFormat::Gguf) {
+                                report.left_out = passed_over;
+                            }
                             return Ok(lf);
                         }
                     }
@@ -18327,6 +18343,12 @@ impl App {
                     && (crate::discover::is_parquet_key(&path.to_string_lossy())
                         || (path.is_file() && crate::discover::has_parquet_magic(path))))
                 .then_some(FileFormat::Parquet)
+            })
+            // A model file is known by its first bytes whatever it is called.
+            .or_else(|| {
+                path.is_file()
+                    .then(|| crate::discover::sniff_model_format(path))
+                    .flatten()
             });
         report.format = effective_format;
 
@@ -18403,6 +18425,11 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
+                Some(format @ (FileFormat::Safetensors | FileFormat::Gguf)) => {
+                    let (lf, summary) = crate::model_files::read_model(paths, format)?;
+                    report.model = Some(Arc::new(summary));
+                    return Ok(lf.into());
+                }
                 Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
                     // The home screen asks `reads_many_files` before it offers a
                     // directory as one dataset, so a format that is refused here and
@@ -18487,6 +18514,11 @@ impl App {
                     options.row_start_index,
                     options.excel_sheet.as_deref(),
                 )?,
+                Some(format @ (FileFormat::Safetensors | FileFormat::Gguf)) => {
+                    let (lf, summary) = crate::model_files::read_model(paths, format)?;
+                    report.model = Some(Arc::new(summary));
+                    return Ok(lf.into());
+                }
                 Some(FileFormat::Orc) => DataTableState::from_orc(
                     path,
                     options.pages_lookahead,
@@ -19945,6 +19977,7 @@ impl App {
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
+            let model_tab = self.info_modal.active_tab == InfoTab::Model;
             let notes = self
                 .data_table_state
                 .as_ref()
@@ -19972,12 +20005,12 @@ impl App {
                 // body, and the panel opens with the body focused, so gating them on
                 // tab-bar focus made a fresh `i` then `→` do nothing.
                 KeyCode::Left | KeyCode::Char('h') if event.is_press() => {
-                    let (has_partitions, has_notes) = self.info_tabs_on_offer();
-                    self.info_modal.switch_tab_prev(has_partitions, has_notes);
+                    let offered = self.info_tabs_on_offer();
+                    self.info_modal.switch_tab_prev(offered);
                 }
                 KeyCode::Right | KeyCode::Char('l') if event.is_press() => {
-                    let (has_partitions, has_notes) = self.info_tabs_on_offer();
-                    self.info_modal.switch_tab(has_partitions, has_notes);
+                    let offered = self.info_tabs_on_offer();
+                    self.info_modal.switch_tab(offered);
                 }
                 KeyCode::Down | KeyCode::Char('j') if event.is_press() && on_body && schema_tab => {
                     self.info_modal.schema_table_down(total_rows, visible);
@@ -19993,6 +20026,25 @@ impl App {
                 }
                 KeyCode::Enter if event.is_press() && notes_tab => {
                     self.read_the_selected_note_s_column_as_text();
+                }
+                KeyCode::Down | KeyCode::Char('j') if event.is_press() && model_tab => {
+                    self.info_modal.model_scroll_by(1);
+                }
+                KeyCode::Up | KeyCode::Char('k') if event.is_press() && model_tab => {
+                    self.info_modal.model_scroll_by(-1);
+                }
+                KeyCode::PageDown if event.is_press() && model_tab => {
+                    self.info_modal.model_page(true);
+                }
+                KeyCode::PageUp if event.is_press() && model_tab => {
+                    self.info_modal.model_page(false);
+                }
+                KeyCode::Home if event.is_press() && model_tab => {
+                    self.info_modal.model_scroll = 0;
+                }
+                KeyCode::End if event.is_press() && model_tab => {
+                    // The render clamps it to the last page.
+                    self.info_modal.model_scroll = usize::MAX;
                 }
                 _ => {}
             }
@@ -21994,6 +22046,11 @@ impl App {
                     if unseen {
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Notes);
+                    } else if state.model().is_some() {
+                        // A model's schema is the same seven columns every time; what
+                        // is particular to it is on the Model tab.
+                        self.info_modal
+                            .open_on(crate::widgets::info::InfoTab::Model);
                     } else {
                         self.info_modal.open();
                     }
@@ -24075,14 +24132,11 @@ impl App {
     }
 
     /// Which of the Info panel's optional tabs the current dataset offers.
-    fn info_tabs_on_offer(&self) -> (bool, bool) {
-        let state = self.data_table_state.as_ref();
-        let has_partitions = state
-            .and_then(|s| s.partition_columns())
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        let has_notes = state.is_some_and(|s| s.has_notes());
-        (has_partitions, has_notes)
+    fn info_tabs_on_offer(&self) -> crate::widgets::info::TabsOffered {
+        self.data_table_state
+            .as_ref()
+            .map(crate::widgets::info::TabsOffered::of)
+            .unwrap_or_default()
     }
 
     /// Start applying `template`. Its steps are planned here, which reads nothing; a

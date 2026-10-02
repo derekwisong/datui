@@ -21254,20 +21254,42 @@ fn a_saved_dataset_dict_opens_one_split() {
     assert!(message.contains("No split named dev"), "{message}");
 }
 
-/// A stream among IPC files, not first, is found when the scan fails on it, and the
-/// files are converted together.
+/// A stream among IPC files, not first, is found when the scan fails on it. Only the
+/// stream is converted; the IPC file is read where it is, and the rows keep the order
+/// of the names.
 #[test]
 fn a_stream_behind_an_ipc_file_opens_with_it() {
     common::ensure_sample_data();
     let scratch = tempfile::tempdir().unwrap();
-    let (app, _rx, _tx) = open_with_scratch(
-        vec![PathBuf::from("tests/sample-data/arrow_mixed")],
-        scratch.path(),
-    );
+    let dir = PathBuf::from("tests/sample-data/arrow_mixed");
+    let (app, _rx, _tx) = open_with_scratch(vec![dir.clone()], scratch.path());
     assert_eq!(app.error_message(), None);
     let state = app.data_table_state.as_ref().expect("the files open");
     assert_eq!(state.num_rows(), 1000);
-    assert_eq!(files_in(scratch.path()), 1, "one copy of both");
+    let ids: Vec<i64> = state
+        .lf()
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(ids, (1..=1000).collect::<Vec<_>>(), "in name order");
+    assert_eq!(files_in(scratch.path()), 1, "a copy of the stream");
+    let copy: u64 = std::fs::read_dir(scratch.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.metadata().unwrap().len())
+        .sum();
+    let file = std::fs::metadata(dir.join("a.arrow")).unwrap().len();
+    let stream = std::fs::metadata(dir.join("b.arrow")).unwrap().len();
+    assert!(
+        copy < file + stream / 2 && copy >= stream / 2,
+        "the stream only: {copy}"
+    );
 }
 
 /// The table a CSV opens as, collected, with `options`.
@@ -22106,6 +22128,35 @@ fn test_copy_as_python_reads_one_hugging_face_split() {
         assert!(!script.contains(not), "{script}");
         assert_eq!(rows, view_csv(&app), "{script}");
     }
+}
+
+/// IPC files and streams together: the script reads each as datui did, scanning the
+/// file and reading the stream whole, and stacks them as datui does.
+#[test]
+fn test_copy_as_python_reads_streams_beside_ipc_files() {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/arrow_mixed")],
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    let Some((rows, script)) = run_python_script(&app) else {
+        eprintln!("skipped: no .venv to run the scripts with");
+        return;
+    };
+    assert!(
+        script.contains("pl.scan_ipc(\"tests/sample-data/arrow_mixed/a.arrow\")"),
+        "{script}"
+    );
+    assert!(
+        script.contains("pl.read_ipc_stream(\"tests/sample-data/arrow_mixed/b.arrow\")"),
+        "{script}"
+    );
+    assert_eq!(rows, view_csv(&app), "{script}");
 }
 
 /// The query language's `/` and `%` floor-divide two whole numbers, as Polars' `/`

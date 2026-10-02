@@ -2319,8 +2319,10 @@ impl DataTableState {
     /// exists to remove, not something to spread further.
     ///
     /// Identical schemas stack exactly as before: diagonal over one schema is vertical,
-    /// and nothing is widened where nothing differs.
-    fn union_of_files() -> polars::prelude::UnionArgs {
+    /// and nothing is widened where nothing differs. Arrow streams converted beside IPC
+    /// files read in place stack with it too: the streams and the files are one
+    /// directory's table, read two ways (`App::scan_arrow_parts`).
+    pub(crate) fn union_of_files() -> polars::prelude::UnionArgs {
         polars::prelude::UnionArgs {
             diagonal: true,
             to_supertypes: true,

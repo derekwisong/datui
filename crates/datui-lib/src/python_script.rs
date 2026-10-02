@@ -619,53 +619,83 @@ fn scans_by_pattern(format: FileFormat) -> bool {
     )
 }
 
-/// The Arrow files the paths name, local and in order, when they are IPC streams
-/// rather than IPC files: of a Hugging Face cache directory, the split the open read.
-fn ipc_streams(paths: &[PathBuf], table: Option<&str>) -> Option<Vec<String>> {
-    let mut files = Vec::new();
-    for path in paths {
-        if is_url(path) {
-            return None;
-        }
-        if path.is_dir() {
-            // A DatasetDict's split is a directory of its own.
-            let dict_split = crate::hf_splits::dataset_dict(path).and_then(|splits| {
-                let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
-                crate::hf_splits::pick(&listed, table).ok()?.split
-            });
-            let table = if dict_split.is_some() { None } else { table };
-            let path = &dict_split.map_or_else(|| path.clone(), |split| path.join(split));
-            let mut inside: Vec<PathBuf> = std::fs::read_dir(path)
-                .ok()?
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_file() && FileFormat::from_path(p) == Some(FileFormat::Arrow))
-                .collect();
-            inside.sort();
-            let cache = ["dataset_info.json", "state.json"]
-                .iter()
-                .any(|name| path.join(name).is_file());
-            if cache {
-                let names: Vec<&str> = inside
-                    .iter()
-                    .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or_default())
-                    .collect();
-                let (chosen, _) = crate::hf_splits::choose(&names, table).ok()?;
-                inside = chosen.into_iter().map(|i| inside[i].clone()).collect();
-            }
-            files.extend(inside);
-        } else {
-            files.push(path.clone());
-        }
-    }
-    if files.is_empty() || !files.iter().all(|f| crate::ipc_stream::is_stream_file(f)) {
+/// The Arrow files of a Hugging Face directory the paths name, local and in order:
+/// the split the open read. `None` for any other paths.
+fn hugging_face_files(paths: &[PathBuf], table: Option<&str>) -> Option<Vec<String>> {
+    let [path] = paths else {
+        return None;
+    };
+    if is_url(path) || !path.is_dir() {
         return None;
     }
+    // A DatasetDict's split is a directory of its own.
+    let dict_split = crate::hf_splits::dataset_dict(path).and_then(|splits| {
+        let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
+        crate::hf_splits::pick(&listed, table).ok()?.split
+    });
+    let dict = dict_split.is_some();
+    let table = if dict { None } else { table };
+    let path = &dict_split.map_or_else(|| path.clone(), |split| path.join(split));
+    let mut inside: Vec<PathBuf> = std::fs::read_dir(path)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && FileFormat::from_path(p) == Some(FileFormat::Arrow))
+        .collect();
+    inside.sort();
+    let cache = ["dataset_info.json", "state.json"]
+        .iter()
+        .any(|name| path.join(name).is_file());
+    if !cache && !dict {
+        return None;
+    }
+    if cache {
+        let names: Vec<&str> = inside
+            .iter()
+            .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or_default())
+            .collect();
+        let (chosen, _) = crate::hf_splits::choose(&names, table).ok()?;
+        inside = chosen.into_iter().map(|i| inside[i].clone()).collect();
+    }
     Some(
-        files
+        inside
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
+    )
+}
+
+/// The read of Arrow `inputs`, each a file or URL and whether it is a stream, in
+/// order: a stream has no footer to scan, so it is read whole, as datui converts it,
+/// and the inputs are stacked as datui stacks them. `extra` goes to every call.
+fn arrow_read(inputs: &[(String, bool)], extra: Option<&str>) -> String {
+    let extra = extra.map(|e| format!(", {e}")).unwrap_or_default();
+    let names: Vec<String> = inputs.iter().map(|(name, _)| name.clone()).collect();
+    if inputs.iter().all(|(_, stream)| *stream) {
+        return match names.as_slice() {
+            [one] => format!("pl.read_ipc_stream({}{extra}).lazy()", py_str(one)),
+            many => format!(
+                "pl.concat([pl.read_ipc_stream(f{extra}) for f in {}]).lazy()",
+                py_names(many)
+            ),
+        };
+    }
+    if inputs.iter().all(|(_, stream)| !*stream) {
+        return match names.as_slice() {
+            [one] => format!("pl.scan_ipc({}{extra})", py_str(one)),
+            many => format!("pl.scan_ipc({}{extra})", py_names(many)),
+        };
+    }
+    let reads: Vec<String> = inputs
+        .iter()
+        .map(|(name, stream)| match stream {
+            true => format!("pl.read_ipc_stream({}{extra}).lazy()", py_str(name)),
+            false => format!("pl.scan_ipc({}{extra})", py_str(name)),
+        })
+        .collect();
+    format!(
+        "pl.concat([{}], how=\"diagonal_relaxed\")",
+        reads.join(", ")
     )
 }
 
@@ -846,21 +876,39 @@ pub fn source(record: &OpenRecord) -> Source {
         }
         FileFormat::Jsonl => "pl.scan_ndjson",
         FileFormat::Json => "pl.read_json",
-        FileFormat::Arrow => match ipc_streams(paths, options.table.as_deref()) {
-            // A stream has no footer to scan: read it whole, as datui converts it.
-            Some(streams) => {
-                let call = match streams.as_slice() {
-                    [one] => format!("pl.read_ipc_stream({}).lazy()", py_str(one)),
-                    many => format!(
-                        "pl.concat([pl.read_ipc_stream(f) for f in {}]).lazy()",
-                        py_names(many)
-                    ),
-                };
-                after.extend(skip_tail);
-                return Source::Read { call, after, notes };
+        FileFormat::Arrow => {
+            // What the open read: each input's kind, after a conversion or a bucket's
+            // listing, or the split of a Hugging Face directory of IPC files.
+            let inputs: Option<Vec<(String, bool)>> = match &options.arrow_parts {
+                Some(parts) => Some(
+                    parts
+                        .iter()
+                        .map(|part| match part {
+                            crate::ipc_stream::Part::InPlace(p) => (p, false),
+                            crate::ipc_stream::Part::Converted { source, .. } => (source, true),
+                        })
+                        .map(|(p, stream)| (without_secrets(&p.to_string_lossy()).0, stream))
+                        .collect(),
+                ),
+                None => hugging_face_files(paths, options.table.as_deref())
+                    .map(|files| files.into_iter().map(|f| (f, false)).collect()),
+            };
+            match inputs {
+                Some(inputs) => {
+                    let in_s3 = inputs.iter().any(|(name, _)| name.starts_with("s3://"));
+                    let extra = if in_s3 { storage() } else { None };
+                    let call = arrow_read(&inputs, extra.as_deref());
+                    after.extend(skip_tail);
+                    return Source::Read { call, after, notes };
+                }
+                None => {
+                    if remote_s3 && let Some(s) = storage() {
+                        args.push(s);
+                    }
+                    "pl.scan_ipc"
+                }
             }
-            None => "pl.scan_ipc",
-        },
+        }
         FileFormat::Avro => "pl.read_avro",
         FileFormat::Excel => {
             if let Some(sheet) = &options.excel_sheet {

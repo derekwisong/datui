@@ -2,26 +2,23 @@
 //!
 //! A stream is the IPC file format without the `ARROW1` magic and the footer that says
 //! where each record batch is, so Polars cannot scan it. An open converts the stream,
-//! or every shard of a directory of them, once into one IPC file in the temp
-//! directory and scans that, holding one record batch at a time: 0.2 GiB at its peak
+//! or every stream shard of a directory, once into one IPC file in the temp directory
+//! and scans that; IPC files among the shards are scanned where they are, not copied
+//! ([`Part`]). The conversion holds one record batch at a time: 0.2 GiB at its peak
 //! for a 3.0 GiB stream. Read eagerly instead, that stream held 3.6 GiB for as long as
 //! it was open, and the same rows with ZSTD buffers, 1.3 GiB on disk, the same 3.6 GiB.
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use color_eyre::{Result, eyre::eyre};
-use polars_arrow::array::Array;
 use polars_arrow::io::ipc::format::ipc::planus::ReadAsRoot;
 use polars_arrow::io::ipc::format::ipc::{MessageHeaderRef, MessageRef};
-use polars_arrow::io::ipc::read::{
-    FileReader, StreamReader, StreamState, read_file_metadata, read_stream_metadata,
-};
+use polars_arrow::io::ipc::read::{StreamReader, StreamState, read_stream_metadata};
 use polars_arrow::io::ipc::write::{FileWriter, WriteOptions};
-use polars_arrow::record_batch::RecordBatchT;
 
 use crate::download::TempDownload;
 use crate::unfinished::Writer;
@@ -111,10 +108,10 @@ fn begins_schema(message: &[u8]) -> bool {
     )
 }
 
-/// Whether the Arrow `paths` are read by converting them to one IPC file: when the
-/// first is a stream. Only the first is opened. The conversion reads the rest, IPC files
-/// among them; a stream behind an IPC file is found by [`any_stream`] once the scan,
-/// which reads every IPC file's footer, has failed on it.
+/// Whether the Arrow `paths` are read by converting their streams: when the first is a
+/// stream. Only the first is opened. The conversion opens the rest, and leaves the IPC
+/// files among them where they are; a stream behind an IPC file is found by
+/// [`any_stream`] once the scan, which reads every IPC file's footer, has failed on it.
 pub fn starts_with_stream(paths: &[PathBuf]) -> bool {
     paths.first().is_some_and(|p| is_stream_file(p))
 }
@@ -124,10 +121,36 @@ pub fn any_stream(paths: &[PathBuf]) -> bool {
     paths.iter().any(|p| is_stream_file(p))
 }
 
-/// Convert the Arrow streams at `paths`, and any IPC files among them, in order, into
-/// one IPC file in `temp_dir` (the system temp directory when `None`), created and
-/// claimed through `writer` and removed if the open stops or this fails. `read` counts
-/// the bytes read so far.
+/// Where one input's rows are read from once its streams are converted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Part {
+    /// An IPC file, scanned where it is: a local path or an object's URL.
+    InPlace(PathBuf),
+    /// A stream, `source`, converted: `rows` rows of the converted file from `offset`.
+    Converted {
+        source: PathBuf,
+        offset: u64,
+        rows: u64,
+    },
+}
+
+/// What a conversion wrote: the IPC file of the streams, and each input's place.
+#[derive(Debug)]
+pub(crate) struct Converted {
+    pub file: TempDownload,
+    pub parts: Vec<Part>,
+}
+
+/// Whether an Arrow file starts as an IPC file does, with its footer at the end.
+pub(crate) fn is_ipc_file_head(head: &[u8]) -> bool {
+    head.starts_with(b"ARROW1")
+}
+
+/// Convert the Arrow streams at `paths`, in order, into one IPC file in `temp_dir` (the
+/// system temp directory when `None`), created and claimed through `writer` and
+/// removed if the open stops or this fails. The IPC files among them are not copied:
+/// they are scanned where they are, in their place among the streams. `read` counts
+/// the bytes looked at so far.
 ///
 /// One record batch is in memory at a time. Buffers compressed with LZ4 or ZSTD are
 /// written out uncompressed, so the file maps and scans like any other.
@@ -136,23 +159,34 @@ pub(crate) fn convert(
     temp_dir: Option<&Path>,
     writer: &Writer,
     read: &AtomicU64,
-) -> Result<TempDownload> {
-    let size = paths
-        .iter()
-        .filter_map(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len())
-        .sum();
-    has_room(size, temp_dir)?;
+) -> Result<Converted> {
     let mut merge = Merge::create(temp_dir, writer)?;
+    let mut parts = Vec::with_capacity(paths.len());
+    let mut before = 0;
     for path in paths {
-        merge.append(path, path, read)?;
+        let mut source = File::open(path)?;
+        let size = source.metadata()?.len();
+        let mut head = Vec::with_capacity(6);
+        (&mut source).take(6).read_to_end(&mut head)?;
+        if is_ipc_file_head(&head) {
+            parts.push(Part::InPlace(path.clone()));
+        } else {
+            source.seek(SeekFrom::Start(0))?;
+            has_room(size, temp_dir)?;
+            parts.push(merge.append(source, path, before, read)?);
+        }
+        before += size;
+        read.store(before, Ordering::Relaxed);
     }
-    merge.finish()
+    Ok(Converted {
+        file: merge.finish()?,
+        parts,
+    })
 }
 
-/// One IPC file being written from the batches of Arrow streams and IPC files,
-/// appended one at a time: what a conversion writes, and what a bucket's Arrow files
-/// are gathered into as each is downloaded. Dropped unfinished, the file goes.
+/// One IPC file being written from the batches of Arrow streams, appended one at a
+/// time: what a conversion writes, and what a bucket's streams are read into as they
+/// download. Dropped unfinished, the file goes.
 pub(crate) struct Merge<'a> {
     /// The writer, the first input's name and its columns, once one is appended. Its
     /// handle on the file is let go before the file is removed.
@@ -162,8 +196,8 @@ pub(crate) struct Merge<'a> {
     claim: crate::unfinished::Claim,
     dir: PathBuf,
     writer: &'a Writer,
-    /// The bytes of the inputs appended so far.
-    before: u64,
+    /// The rows written so far.
+    rows: u64,
 }
 
 type Columns = Vec<(
@@ -194,16 +228,27 @@ impl<'a> Merge<'a> {
                 .unwrap_or_else(std::env::temp_dir),
             writer,
             out: None,
-            before: 0,
+            rows: 0,
         })
     }
 
-    /// Append the batches of the stream or IPC file at `path`, which errors call
-    /// `name`, counting its bytes into `read` after those of the inputs before it.
-    pub(crate) fn append(&mut self, path: &Path, name: &Path, read: &AtomicU64) -> Result<()> {
-        let appended = self.batches(path, name, read);
-        match appended {
-            Ok(true) => Ok(()),
+    /// Append the batches of the stream `source` reads, which errors call `name`,
+    /// counting its bytes into `read` after the `before` read ahead of it. Its place
+    /// in the file is returned.
+    pub(crate) fn append(
+        &mut self,
+        source: impl Read,
+        name: &Path,
+        before: u64,
+        read: &AtomicU64,
+    ) -> Result<Part> {
+        let offset = self.rows;
+        match self.batches(source, name, before, read) {
+            Ok(true) => Ok(Part::Converted {
+                source: name.to_path_buf(),
+                offset,
+                rows: self.rows - offset,
+            }),
             Ok(false) => Err(stopped()),
             Err(e) => Err(out_of_room(e, &self.dir)),
         }
@@ -225,76 +270,57 @@ impl<'a> Merge<'a> {
     }
 
     /// `false` when the open was stopped first.
-    fn batches(&mut self, path: &Path, name: &Path, read: &AtomicU64) -> Result<bool> {
-        let source = File::open(path)?;
-        let size = source.metadata()?.len();
-        let mut reader = BufReader::with_capacity(
-            1 << 20,
-            Counting {
-                inner: source,
-                at: 0,
-                before: self.before,
-                read,
-            },
-        );
-        let mut magic = [0u8; 6];
-        let file = reader.read_exact(&mut magic).is_ok() && magic == *b"ARROW1";
-        reader.seek(SeekFrom::Start(0))?;
-        let what = if file { "file" } else { "stream" };
+    fn batches(
+        &mut self,
+        source: impl Read,
+        name: &Path,
+        before: u64,
+        read: &AtomicU64,
+    ) -> Result<bool> {
+        let mut reader = Forward {
+            inner: BufReader::with_capacity(
+                1 << 20,
+                Counting {
+                    inner: source,
+                    at: 0,
+                    before,
+                    read,
+                },
+            ),
+            at: 0,
+        };
         let unreadable = move |e: &dyn std::fmt::Display| {
-            eyre!("{} is not a readable Arrow IPC {what}: {e}", name.display())
+            eyre!("{} is not a readable Arrow IPC stream: {e}", name.display())
         };
         // Polars panics on a column type it has not implemented, such as run-end
         // encoding: that is a stream it cannot read, not a crash.
-        let cannot = |_| unreadable(&"it has a column type Polars cannot read");
-        let mut batches: Box<dyn Iterator<Item = Result<RecordBatchT<Box<dyn Array>>>> + '_> =
-            if file {
-                let metadata = crate::logging::catch_panic(|| read_file_metadata(&mut reader))
-                    .map_err(cannot)?
-                    .map_err(|e| unreadable(&e))?;
-                self.start(
-                    name,
-                    &metadata.schema,
-                    &metadata.ipc_schema.fields,
-                    metadata.custom_schema_metadata.as_deref(),
-                )?;
-                let reader = FileReader::new(reader, metadata, None, None);
-                Box::new(reader.map(move |batch| batch.map_err(|e| unreadable(&e))))
-            } else {
-                let metadata = crate::logging::catch_panic(|| read_stream_metadata(&mut reader))
-                    .map_err(cannot)?
-                    .map_err(|e| unreadable(&e))?;
-                self.start(
-                    name,
-                    &metadata.schema,
-                    &metadata.ipc_schema.fields,
-                    metadata.custom_schema_metadata.as_ref(),
-                )?;
-                let mut reader = StreamReader::new(reader, metadata, None);
-                Box::new(std::iter::from_fn(move || {
-                    match reader.next()? {
-                        Ok(StreamState::Some(batch)) => Some(Ok(batch)),
-                        // The end of a stream written without its end-of-stream marker.
-                        Ok(StreamState::Waiting) => None,
-                        Err(e) => Some(Err(unreadable(&e))),
-                    }
-                }))
-            };
+        let metadata = crate::logging::catch_panic(|| read_stream_metadata(&mut reader))
+            .map_err(|_| unreadable(&"it has a column type Polars cannot read"))?
+            .map_err(|e| unreadable(&e))?;
+        self.start(
+            name,
+            &metadata.schema,
+            &metadata.ipc_schema.fields,
+            metadata.custom_schema_metadata.as_ref(),
+        )?;
+        let mut batches = StreamReader::new(reader, metadata, None);
         let (out, _, _) = self.out.as_mut().expect("started just above");
         loop {
             if self.writer.stopped() {
                 return Ok(false);
             }
             // Polars also panics on some malformed record batches, rather than erring.
-            let Some(batch) = crate::logging::catch_panic(|| batches.next())
-                .map_err(|_| unreadable(&"a record batch in it is damaged"))?
-            else {
-                break;
+            let next = crate::logging::catch_panic(|| batches.next())
+                .map_err(|_| unreadable(&"a record batch in it is damaged"))?;
+            let batch = match next {
+                Some(Ok(StreamState::Some(batch))) => batch,
+                // The end of a stream written without its end-of-stream marker.
+                Some(Ok(StreamState::Waiting)) | None => break,
+                Some(Err(e)) => return Err(unreadable(&e)),
             };
-            out.write(&batch?, None)?;
+            self.rows += batch.len() as u64;
+            out.write(&batch, None)?;
         }
-        self.before += size;
-        read.store(self.before, Ordering::Relaxed);
         Ok(true)
     }
 
@@ -382,15 +408,15 @@ fn out_of_room(error: color_eyre::Report, dir: &Path) -> color_eyre::Report {
 }
 
 /// A stream being read, counting its bytes into the open's progress.
-struct Counting<'a> {
-    inner: File,
+struct Counting<'a, R> {
+    inner: R,
     at: u64,
-    /// The bytes of the streams before this one.
+    /// The bytes of the inputs before this one.
     before: u64,
     read: &'a AtomicU64,
 }
 
-impl Read for Counting<'_> {
+impl<R: Read> Read for Counting<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
         self.at += n as u64;
@@ -399,9 +425,33 @@ impl Read for Counting<'_> {
     }
 }
 
-impl Seek for Counting<'_> {
+/// A stream read front to back, by the stream reader that seeks: only forward, over
+/// the padding after a message, so a download can be read as it arrives.
+struct Forward<R> {
+    inner: R,
+    at: u64,
+}
+
+impl<R: BufRead> Read for Forward<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.at += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R: BufRead> Seek for Forward<R> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        self.at = self.inner.seek(pos)?;
+        let to = match pos {
+            SeekFrom::Start(to) => Some(to),
+            SeekFrom::Current(by) => self.at.checked_add_signed(by),
+            SeekFrom::End(_) => None,
+        };
+        let skip = to
+            .and_then(|to| to.checked_sub(self.at))
+            .ok_or_else(|| std::io::Error::other("an Arrow stream is read front to back"))?;
+        let skipped = std::io::copy(&mut (&mut self.inner).take(skip), &mut std::io::sink())?;
+        self.at += skipped;
         Ok(self.at)
     }
 }
@@ -568,8 +618,17 @@ mod tests {
         }
         let out = tempfile::tempdir().unwrap();
         let read = AtomicU64::new(0);
-        let file = convert(&paths, Some(out.path()), &writer(false), &read).unwrap();
+        let converted = convert(&paths, Some(out.path()), &writer(false), &read).unwrap();
+        let file = converted.file;
         assert!(!is_stream_file(file.path()), "an IPC file now");
+        assert_eq!(
+            converted.parts[1],
+            Part::Converted {
+                source: paths[1].clone(),
+                offset: 10,
+                rows: 10
+            }
+        );
         let df = rows(file.path());
         assert_eq!(df.height(), 40);
         assert_eq!(
@@ -747,9 +806,10 @@ mod tests {
     }
 
     /// Only the first file says whether a list of Arrow files is converted. The
-    /// conversion takes IPC files among the streams, in order, whichever comes first.
+    /// conversion copies only the streams; an IPC file among them keeps its place and
+    /// is read where it is.
     #[test]
-    fn streams_and_ipc_files_convert_together() {
+    fn only_the_streams_among_ipc_files_are_converted() {
         let dir = tempfile::tempdir().unwrap();
         let streamed = dir.path().join("s.arrow");
         std::fs::write(&streamed, stream(&frame(0, 3), None, false)).unwrap();
@@ -763,15 +823,26 @@ mod tests {
         assert!(any_stream(&[file.clone(), streamed.clone()]));
         assert!(!any_stream(std::slice::from_ref(&file)));
         let out = tempfile::tempdir().unwrap();
-        for (paths, first) in [
-            ([streamed.clone(), file.clone()], 0),
-            ([file.clone(), streamed.clone()], 3),
+        let converted_part = Part::Converted {
+            source: streamed.clone(),
+            offset: 0,
+            rows: 3,
+        };
+        for (paths, parts) in [
+            (
+                [streamed.clone(), file.clone()],
+                [converted_part.clone(), Part::InPlace(file.clone())],
+            ),
+            (
+                [file.clone(), streamed.clone()],
+                [Part::InPlace(file.clone()), converted_part.clone()],
+            ),
         ] {
             let read = AtomicU64::new(0);
             let converted = convert(&paths, Some(out.path()), &writer(false), &read).unwrap();
-            let df = rows(converted.path());
-            assert_eq!(df.height(), 7);
-            assert_eq!(df.column("id").unwrap().i64().unwrap().get(0), Some(first));
+            assert_eq!(converted.parts, parts);
+            let df = rows(converted.file.path());
+            assert_eq!(df.height(), 3, "the stream's rows only");
             let total: u64 = paths
                 .iter()
                 .map(|p| std::fs::metadata(p).unwrap().len())

@@ -16785,8 +16785,9 @@ impl App {
                         Err(crate::model_files::RangeError::NoRanges) => {
                             return Ok(Answer::Load(Box::new(LoadAnswer::NoRanges { options })));
                         }
+                        // The URL in the message may carry a password or a signature.
                         Err(crate::model_files::RangeError::Failed(message)) => {
-                            return Err(message);
+                            return Err(crate::logging::redact(&message, &[]));
                         }
                     };
                     let model = Some(Arc::new(summary));

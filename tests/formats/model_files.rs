@@ -603,4 +603,24 @@ mod remote {
             );
         }
     }
+
+    /// A failed read names the URL without its password or signature.
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_failed_remote_read_does_not_show_credentials() {
+        let s3 = serve(&[("other.safetensors", padded("tiny.safetensors"))]);
+        let (mut app, rx) = app(&s3);
+        let url = s3.endpoint.replacen("://", "://alice:hunter2@", 1)
+            + "/lake/missing.safetensors?X-Amz-Signature=s3cr3tsig";
+        let message = super::super::pump_open_until_error(
+            &mut app,
+            &rx,
+            vec![PathBuf::from(&url)],
+            OpenOptions::default(),
+        )
+        .expect("a missing file is an error");
+        assert!(message.contains("missing.safetensors"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
+        assert!(!message.contains("s3cr3tsig"), "{message}");
+    }
 }

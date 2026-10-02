@@ -1,9 +1,10 @@
 Find a cell in the view.
 
   (text):           What to find. Plain text, or a regex with Ctrl+R
-  Enter:            Find: the cursor goes to the first match at or after it
+  Enter:            Find: the cursor, column cursor and all, goes to the
+                    first match at or after its row
   Ctrl+R:           Regex on or off
-  Ctrl+L:           Only the current column, or every column shown
+  Ctrl+L:           Only the column cursor's column, or every column shown
   ↑↓:               Earlier patterns (Ctrl+P / Ctrl+N too)
   Esc:              Cancel
   F1:               Show this help

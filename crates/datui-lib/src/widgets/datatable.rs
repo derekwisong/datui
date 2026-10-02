@@ -9772,7 +9772,8 @@ impl DataTable {
         self
     }
 
-    /// Mark the cell a find landed on, drawn in `style` while the cursor is on its row.
+    /// Mark the cell a find landed on, drawn in `style` in place of the current cell's
+    /// style while the cursor is on it.
     pub fn with_find_cell(mut self, cell: Option<(usize, String)>, style: Style) -> Self {
         self.find_cell = cell;
         self.find_style = style;
@@ -10436,8 +10437,8 @@ impl StatefulWidget for DataTable {
 
         let start_row = state.start_to_draw();
         state.on_screen = None;
-        // Only on the cursor's row: the cursor is what a find moves, and a mark left
-        // behind on a row scrolled past would read as a second match.
+        // Only on the cursor's row (and, when drawn, its column): the cursor is what a
+        // find moves, and a mark left behind would read as a second match.
         let selected = state.table_state.selected();
         self.find_column = self.find_cell.take().and_then(|(row, name)| {
             (row.checked_sub(start_row) == selected && selected.is_some()).then_some(name)

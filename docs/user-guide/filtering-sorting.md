@@ -147,6 +147,7 @@ The keys that act on one column act on the cursor's:
 | <kbd>s</kbd> | The sidebar opens with its Columns cursor there, and a new filter starts on it |
 | <kbd>y</kbd> | The Cell scope [copies](copying.md) its value in the current row |
 | <kbd>Space</kbd> | The [inspector](inspecting-rows.md) opens on its field |
+| <kbd>f</kbd> | <kbd>Ctrl</kbd>+<kbd>L</kbd> in the prompt [finds](finding.md) in it alone; a match moves the cursor to its column |
 
 The bottom bar says where the cursor is: `col 43 of 300` (`col 43/300` on a
 bar under 100 cells). It counts the columns the table shows, frozen first;

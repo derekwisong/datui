@@ -508,7 +508,7 @@ pub struct Find {
     pub regex: bool,
     /// The prompt limits the find to `column`.
     pub in_column: bool,
-    /// The column the prompt opened on: the current column.
+    /// The column the prompt opened on: the column cursor's.
     pub column: Option<String>,
     /// Why the pattern typed cannot be searched.
     pub error: Option<String>,
@@ -601,8 +601,8 @@ impl App {
         self.input_type = Some(InputType::Find);
     }
 
-    /// The column a find limited to one column searches: the current column, which a
-    /// find makes the found cell's.
+    /// The column a find limited to one column searches: the column cursor's, which a
+    /// find moves to the cell it lands on.
     pub(crate) fn find_column(&self) -> Option<String> {
         self.data_table_state
             .as_ref()?
@@ -842,7 +842,8 @@ impl App {
         };
         active.hit = Some((found.row, found.column.clone()));
         let needs_rows = state.go_to_found_row(found.row);
-        state.go_to_column(&found.column);
+        // The cursor takes the found cell's column, scrolling as little as it takes.
+        state.set_current_column(&found.column);
         if found.wrapped {
             self.flash_note(match run.direction {
                 Direction::Next => "Wrapped to the top".to_string(),
@@ -1492,10 +1493,10 @@ mod app_tests {
         );
     }
 
-    /// Ctrl+L limits a find to the current column, the column cursor's, and a match
-    /// moves it to the found cell's.
+    /// Ctrl+L limits a find to the column cursor's column, and a match moves the
+    /// column cursor to the found cell's column.
     #[test]
-    fn the_find_column_is_the_current_column() {
+    fn the_column_cursor_is_the_find_column_and_a_match_moves_it() {
         let df = df!(
             "id" => (0..20i64).collect::<Vec<_>>(),
             "v" => (0..20).map(|i| format!("hay {i}")).collect::<Vec<_>>(),
@@ -1510,17 +1511,25 @@ mod app_tests {
                 .current_column()
                 .map(str::to_string)
         };
-        app.data_table_state
-            .as_mut()
-            .unwrap()
-            .set_current_column("v");
+        key(&mut app, KeyCode::Char('l'));
+        assert_eq!(current(&app).as_deref(), Some("v"));
         key(&mut app, KeyCode::Char('f'));
+        key_with(&mut app, KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(app.find.column.as_deref(), Some("v"));
         type_text(&mut app, "needle");
         key(&mut app, KeyCode::Enter);
         settle(&mut app, &rx);
+        assert_eq!(app.find_hit(), None, "not in v");
+
+        // Every column: the match is in `w`, and the column cursor goes there.
+        key(&mut app, KeyCode::Char('f'));
+        key_with(&mut app, KeyCode::Char('l'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Enter);
+        settle(&mut app, &rx);
         assert_eq!(app.find_hit(), Some((7, "w".to_string())));
+        assert_eq!(cursor(&app), 7);
         assert_eq!(current(&app).as_deref(), Some("w"));
+        // The next limited find opens on it.
         key(&mut app, KeyCode::Char('f'));
         assert_eq!(app.find.column.as_deref(), Some("w"));
     }
@@ -1617,6 +1626,44 @@ mod app_tests {
         assert!(
             text.contains("needle 4"),
             "the mark is on the value: {text:?}"
+        );
+
+        // The found cell is the current cell, drawn as found rather than as the cell
+        // cursor; the header keeps the cell cursor's mark.
+        // The cell cursor's look on this terminal: its tint, or reversed where the
+        // tint cannot show.
+        let cell_cursor = app.theme.cell_cursor_style();
+        let is_cell_cursor = |cell: &ratatui::buffer::Cell| match cell_cursor.bg {
+            Some(bg) => cell.bg == bg,
+            None => cell.modifier.contains(ratatui::style::Modifier::REVERSED),
+        };
+        assert!(
+            marked.iter().all(|&(x, y)| !is_cell_cursor(&buf[(x, y)])),
+            "one style on the found cell"
+        );
+        assert!(
+            (0..80).any(|x| is_cell_cursor(&buf[(x, 0)])),
+            "the header carries the cursor"
+        );
+
+        // The column cursor off it: the cell is plain, and the new current cell is the
+        // cell cursor's.
+        key(&mut app, KeyCode::Char('h'));
+        let buf = draw(&mut app);
+        assert!(
+            !buf.content()
+                .iter()
+                .any(|cell| cell.bg == style.bg.unwrap()),
+            "off its column, the cell is plain"
+        );
+        assert!((0..80).any(|x| is_cell_cursor(&buf[(x, y)])));
+        key(&mut app, KeyCode::Char('l'));
+        assert!(
+            draw(&mut app)
+                .content()
+                .iter()
+                .any(|cell| cell.bg == style.bg.unwrap()),
+            "back on it, marked again"
         );
 
         key(&mut app, KeyCode::Char('j'));

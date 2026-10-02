@@ -1,8 +1,8 @@
 # Find in the table
 
 Press <kbd>f</kbd>, type what to find, press <kbd>Enter</kbd>. The cursor goes
-to the first cell at or after it that holds the text, and that cell is
-highlighted. The view is searched as it stands — query, filters, sort, the
+to the first cell at or after its row that holds the text, the column cursor
+with it, and that cell is highlighted until the cursor leaves it. The view is searched as it stands — query, filters, sort, the
 columns shown — and is never changed.
 
 | Key | Action |
@@ -20,7 +20,7 @@ Past the last match <kbd>n</kbd> comes round to the first, and the bar says
 | Key | Action |
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Regex on or off |
-| <kbd>Ctrl</kbd>+<kbd>L</kbd> | Only the current column, or every column shown. The current column is the one underlined in the header: the found cell's, or the one <kbd>g</kbd> went to, until the columns scroll; otherwise the first past any frozen columns |
+| <kbd>Ctrl</kbd>+<kbd>L</kbd> | Only the [column cursor](filtering-sorting.md#move-across-a-wide-table)'s column, or every column shown |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Earlier patterns |
 | <kbd>Enter</kbd> | Find |
 | <kbd>Esc</kbd> | Cancel |

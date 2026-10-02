@@ -18,7 +18,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
 | <kbd>:</kbd> | Go to a row number: type it, <kbd>Enter</kbd>. <kbd>Esc</kbd> cancels; <kbd>F1</kbd> opens help |
-| <kbd>f</kbd> | [Find](../user-guide/finding.md) text or a regex; the cursor goes to the first match at or after it |
+| <kbd>f</kbd> | [Find](../user-guide/finding.md) text or a regex; the cursor, column cursor and all, goes to the first match at or after its row |
 | <kbd>n</kbd> <kbd>N</kbd> | Next and previous match, wrapping round the view. <kbd>Esc</kbd> stops a find still reading |
 | <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill into its rows. <kbd>Esc</kbd> comes back. Anywhere else, inspect the row, as <kbd>Space</kbd> does |
 | <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
@@ -55,7 +55,7 @@ key, beyond the paging chords above.
 | Key | Action |
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Regex on or off |
-| <kbd>Ctrl</kbd>+<kbd>L</kbd> | Only the current column, or every column shown |
+| <kbd>Ctrl</kbd>+<kbd>L</kbd> | Only the column cursor's column, or every column shown |
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | History |
 | <kbd>Enter</kbd> | Find |
 | <kbd>Esc</kbd> | Cancel |

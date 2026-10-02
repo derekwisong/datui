@@ -10,8 +10,9 @@ Navigation:
   Home/End:         Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:    Half page down/up
   ::                Go to line number (e.g. :0 Enter for top)
-  f:                Find text or a regex in the view; the cursor goes to
-                    the first match at or after it
+  f:                Find text or a regex in the view; the cursor, column
+                    cursor and all, goes to the first match at or after
+                    its row
   n / N:            Next / previous match, wrapping round the view
   Enter:            On a row of a by query or a SQL GROUP BY, drill into
                     its rows (Esc comes back); elsewhere, inspect the row

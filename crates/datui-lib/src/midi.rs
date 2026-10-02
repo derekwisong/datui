@@ -505,15 +505,17 @@ impl TempoMap {
         }
     }
 
-    fn micros(&self, tick: u64) -> i64 {
+    fn seconds(&self, tick: u64) -> f64 {
         let i = self.segments.partition_point(|(t, _, _)| *t <= tick) - 1;
         let (t, base, tempo) = self.segments[i];
+        // Exact in integers to here; one division at the end, so long songs do not
+        // gather rounding error from each tempo change.
         let num = base + u128::from(tick - t) * u128::from(tempo);
-        i64::try_from(num / self.ppq).unwrap_or(i64::MAX)
+        num as f64 / (self.ppq as f64 * 1e6)
     }
 }
 
-/// Ticks to microseconds for one track.
+/// Ticks to seconds for one track.
 enum Clock<'m> {
     Tempo(&'m TempoMap),
     /// Microseconds per tick as a fraction: SMPTE time ignores tempo.
@@ -524,12 +526,10 @@ enum Clock<'m> {
 }
 
 impl Clock<'_> {
-    fn micros(&self, tick: u64) -> i64 {
+    fn seconds(&self, tick: u64) -> f64 {
         match self {
-            Clock::Tempo(map) => map.micros(tick),
-            Clock::Smpte { num, den } => {
-                i64::try_from(u128::from(tick) * num / den).unwrap_or(i64::MAX)
-            }
+            Clock::Tempo(map) => map.seconds(tick),
+            Clock::Smpte { num, den } => (u128::from(tick) * num) as f64 / (*den as f64 * 1e6),
         }
     }
 }
@@ -582,7 +582,7 @@ pub struct MidiSummary {
     /// Notes that start and never end: no note-off for them in their track.
     pub unended: usize,
     /// The time of the last event, the longest file's.
-    pub length_micros: i64,
+    pub length_seconds: f64,
     /// The first tempo, then the fewest and most microseconds per quarter: the fastest
     /// and the slowest.
     pub tempo: Option<(u32, u32, u32)>,
@@ -605,7 +605,7 @@ struct Columns<'a> {
     file: Vec<&'a str>,
     track: Vec<u16>,
     tick: Vec<u64>,
-    time: Vec<i64>,
+    seconds: Vec<f64>,
     kind: Vec<&'static str>,
     channel: Vec<Option<u8>>,
     note: Vec<Option<u8>>,
@@ -613,15 +613,15 @@ struct Columns<'a> {
     velocity: Vec<Option<u8>>,
     controller: Vec<Option<u8>>,
     value: Vec<Option<i32>>,
-    length: Vec<Option<i64>>,
+    length: Vec<Option<f64>>,
     text: Vec<Option<String>>,
 }
 
 impl Columns<'_> {
-    fn push(&mut self, track: u16, tick: u64, time: i64, kind: &'static str) {
+    fn push(&mut self, track: u16, tick: u64, seconds: f64, kind: &'static str) {
         self.track.push(track);
         self.tick.push(tick);
-        self.time.push(time);
+        self.seconds.push(seconds);
         self.kind.push(kind);
         self.channel.push(None);
         self.note.push(None);
@@ -690,8 +690,8 @@ fn add_file<'a>(
         // earliest of its note's starts.
         let mut sounding: HashMap<(u8, u8), VecDeque<usize>> = HashMap::new();
         for event in events {
-            let time = clock.micros(event.tick);
-            summary.length_micros = summary.length_micros.max(time);
+            let time = clock.seconds(event.tick);
+            summary.length_seconds = summary.length_seconds.max(time);
             let row = cols.rows();
             match event.body {
                 Body::Channel { status, a, b } => {
@@ -731,7 +731,7 @@ fn add_file<'a>(
                     } else if kind == "note_off"
                         && let Some(start) = sounding.get_mut(&(ch, a)).and_then(|q| q.pop_front())
                     {
-                        cols.length[start] = Some(time.saturating_sub(cols.time[start]));
+                        cols.length[start] = Some(time - cols.seconds[start]);
                     }
                 }
                 Body::Sysex { escape, data } => {
@@ -918,14 +918,9 @@ fn frame(cols: Columns<'_>, many: bool) -> Result<LazyFrame> {
     if many {
         columns.push(Series::new("file".into(), cols.file).into());
     }
-    let micros = |name: &str, v: Series| -> Result<Column> {
-        Ok(v.cast(&DataType::Duration(TimeUnit::Microseconds))?
-            .with_name(name.into())
-            .into())
-    };
     columns.push(Series::new("track".into(), cols.track).into());
     columns.push(Series::new("tick".into(), cols.tick).into());
-    columns.push(micros("time", Series::new("time".into(), cols.time))?);
+    columns.push(Series::new("seconds".into(), cols.seconds).into());
     columns.push(Series::new("kind".into(), cols.kind).into());
     columns.push(Series::new("channel".into(), cols.channel).into());
     columns.push(Series::new("note".into(), cols.note).into());
@@ -933,7 +928,7 @@ fn frame(cols: Columns<'_>, many: bool) -> Result<LazyFrame> {
     columns.push(Series::new("velocity".into(), cols.velocity).into());
     columns.push(Series::new("controller".into(), cols.controller).into());
     columns.push(Series::new("value".into(), cols.value).into());
-    columns.push(micros("length", Series::new("length".into(), cols.length))?);
+    columns.push(Series::new("length".into(), cols.length).into());
     columns.push(Series::new("text".into(), cols.text).into());
     Ok(DataFrame::new(rows, columns)?.lazy())
 }
@@ -1145,8 +1140,7 @@ pub(crate) mod tests {
         assert_eq!(summary.notes, 3);
         assert_eq!(summary.unended, 2, "E4 and G4 never end");
         // 96 ticks at 120 bpm and 96 per quarter is half a second.
-        let length = col(&df, "length").duration().unwrap().physical().get(0);
-        assert_eq!(length, Some(500_000));
+        assert_eq!(col(&df, "length").f64().unwrap().get(0), Some(0.5));
         assert_eq!(col(&df, "length").null_count(), 4);
     }
 
@@ -1233,16 +1227,15 @@ pub(crate) mod tests {
         notes.extend(vlq(480));
         notes.extend([64, 100]);
         let (df, summary) = table(&smf(1, 480, &[&tempo, &notes]));
-        let times: Vec<_> = col(&df, "time")
-            .duration()
+        let times: Vec<_> = col(&df, "seconds")
+            .f64()
             .unwrap()
-            .physical()
             .into_no_null_iter()
             .collect();
         // Tempo track: 0, 0.5 s, 0.5 s (end of track); notes: 0, 0.5 s, 1.5 s.
-        assert_eq!(times, [0, 500_000, 500_000, 0, 500_000, 1_500_000]);
+        assert_eq!(times, [0.0, 0.5, 0.5, 0.0, 0.5, 1.5]);
         assert_eq!(summary.tempo, Some((500_000, 500_000, 1_000_000)));
-        assert_eq!(summary.length_micros, 1_500_000);
+        assert_eq!(summary.length_seconds, 1.5);
         let text = col(&df, "text").str().unwrap();
         assert_eq!(text.get(0), Some("120 bpm"));
         assert_eq!(text.get(1), Some("60 bpm"));
@@ -1258,8 +1251,7 @@ pub(crate) mod tests {
         track.extend(vlq(1500));
         track.extend([0x90, 60, 1]);
         let (df, summary) = table(&smf(0, division, &[&track]));
-        let time = col(&df, "time").duration().unwrap().physical().get(1);
-        assert_eq!(time, Some(1_500_000));
+        assert_eq!(col(&df, "seconds").f64().unwrap().get(1), Some(1.5));
         assert_eq!(
             summary.division.map(Division::label).as_deref(),
             Some("25 fps, 40 ticks per frame")
@@ -1274,13 +1266,12 @@ pub(crate) mod tests {
         let mut plain = vlq(96);
         plain.extend([0x90, 60, 1]);
         let (df, _) = table(&smf(2, 96, &[&slow, &plain]));
-        let times: Vec<_> = col(&df, "time")
-            .duration()
+        let times: Vec<_> = col(&df, "seconds")
+            .f64()
             .unwrap()
-            .physical()
             .into_no_null_iter()
             .collect();
-        assert_eq!(times, [0, 1_000_000, 500_000]);
+        assert_eq!(times, [0.0, 1.0, 0.5]);
     }
 
     #[test]

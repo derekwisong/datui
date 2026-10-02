@@ -454,7 +454,7 @@ pub(crate) fn midi_facts(midi: &crate::midi::MidiSummary, sep: &str) -> Vec<Stri
     head.push_str(&count_of(midi.track_count as u64, "track", "tracks"));
     let mut counts = format!(
         "Length: {}{sep}{}{sep}{}",
-        clock(midi.length_micros as f64 / 1e6),
+        clock(midi.length_seconds),
         count_of(midi.events as u64, "event", "events"),
         count_of(midi.notes as u64, "note", "notes"),
     );

@@ -47,14 +47,8 @@ fn strings(df: &DataFrame, column: &str) -> Vec<Option<String>> {
         .collect()
 }
 
-fn micros(df: &DataFrame, column: &str) -> Vec<Option<i64>> {
-    df.column(column)
-        .unwrap()
-        .duration()
-        .unwrap()
-        .physical()
-        .iter()
-        .collect()
+fn floats(df: &DataFrame, column: &str) -> Vec<Option<f64>> {
+    df.column(column).unwrap().f64().unwrap().iter().collect()
 }
 
 fn press(app: &mut App, code: KeyCode) {
@@ -87,7 +81,7 @@ fn a_midi_file_opens_as_its_events() {
         [
             "track",
             "tick",
-            "time",
+            "seconds",
             "kind",
             "channel",
             "note",
@@ -102,8 +96,8 @@ fn a_midi_file_opens_as_its_events() {
     assert_eq!(df.height(), 30, "9 + 15 + 6 events in three tracks");
     let kind = strings(&df, "kind");
     let text = strings(&df, "text");
-    let time = micros(&df, "time");
-    let length = micros(&df, "length");
+    let time = floats(&df, "seconds");
+    let length = floats(&df, "length");
     let at = |k: &str, n: usize| {
         kind.iter()
             .enumerate()
@@ -119,7 +113,7 @@ fn a_midi_file_opens_as_its_events() {
     assert_eq!(text[at("tempo", 1)].as_deref(), Some("90 bpm"));
     assert_eq!(text[at("sysex", 0)].as_deref(), Some("F0 7E 7F 09 01 F7"));
     // Two bars of 4/4 at 120 bpm.
-    assert_eq!(time[at("marker", 0)], Some(4_000_000));
+    assert_eq!(time[at("marker", 0)], Some(4.0));
     // Running status: C4, E4 and G4 from one status byte, each half a second long.
     let names = strings(&df, "note_name");
     let first = at("note_on", 0);
@@ -127,14 +121,14 @@ fn a_midi_file_opens_as_its_events() {
         names[first..first + 3],
         [Some("C4".into()), Some("E4".into()), Some("G4".into())]
     );
-    assert_eq!(length[first], Some(500_000));
+    assert_eq!(length[first], Some(0.5));
     // The C5 at the end is never released: its length is null, and a note says so.
     let c5 = at("note_on", 3);
     assert_eq!(names[c5].as_deref(), Some("C5"));
     assert_eq!(length[c5], None);
     // The bass's note on at velocity 0 is a note off, ending a note of a second.
     let bass = at("note_on", 4);
-    assert_eq!(length[bass], Some(1_000_000));
+    assert_eq!(length[bass], Some(1.0));
     let channel = df.column("channel").unwrap().u8().unwrap();
     assert_eq!(channel.get(bass), Some(2), "channels count from 1");
 
@@ -164,7 +158,7 @@ fn a_midi_file_opens_as_its_events() {
         "MIDI format 1",
         "480 ticks per quarter",
         "3 tracks",
-        "Length: 0:04.0",
+        "Length: 0:04.000",
         "30 events",
         "6 notes (1 never ends)",
         "Tempo: 120 bpm (90-120, 1 change)",
@@ -187,15 +181,15 @@ fn format_0_and_smpte_files_keep_their_own_time() {
     let df = frame(&app);
     // 96 ticks at 100 bpm and 96 a quarter: 0.6 s.
     assert_eq!(
-        micros(&df, "time"),
-        [Some(0), Some(0), Some(600_000), Some(600_000)]
+        floats(&df, "seconds"),
+        [Some(0.0), Some(0.0), Some(0.6), Some(0.6)]
     );
     let channel = df.column("channel").unwrap().u8().unwrap();
     assert_eq!(channel.get(1), Some(10), "the drum channel");
 
     let (app, _rx) = open(midi().join("smpte.mid"));
     let df = frame(&app);
-    assert_eq!(micros(&df, "time")[1], Some(1_000_000));
+    assert_eq!(floats(&df, "seconds")[1], Some(1.0));
     let summary = app.data_table_state.as_ref().unwrap().midi().unwrap();
     assert_eq!(
         summary.division.map(|d| d.label()).as_deref(),

@@ -300,19 +300,19 @@ file order.
 |---|---|
 | `track` | The track, from 1 |
 | `tick` | Ticks from the start of the track |
-| `time` | The same as a duration, through the tempo map |
+| `seconds` | Seconds from the start, through the tempo map |
 | `kind` | `note_on`, `note_off`, `cc`, `program`, `pitch_bend`, `poly_aftertouch`, `channel_aftertouch`, `sysex`, `sysex_escape`, or a meta event: `tempo`, `time_signature`, `key_signature`, `track_name`, `instrument`, `lyric`, `marker`, `cue`, `text`, `copyright`, `end_of_track`, ... |
 | `channel` | 1-16, as a sequencer numbers them |
 | `note`, `note_name` | The note number and its name, middle C (60) as `C4` |
 | `velocity` | For `note_on` and `note_off` |
 | `controller` | The controller number of a `cc` |
 | `value` | The `cc` value, program, pressure, pitch bend (-8192 to 8191), tempo in microseconds per quarter, key signature in sharps (negative for flats), or a sysex's length |
-| `length` | On a `note_on`, the time until its `note_off`; null for a note that never ends |
+| `length` | On a `note_on`, the seconds until its `note_off`; null for a note that never ends |
 | `text` | Meta text, tempo as `120 bpm`, `6/8`, `D major`, or sysex bytes in hex |
 
 - A `note_on` at velocity 0 is a `note_off`, as the specification says.
 - Formats 0 and 1 share one tempo map, from tempo events in any track; each
-  format 2 track keeps its own. With SMPTE timing, `time` follows the frame
+  format 2 track keeps its own. With SMPTE timing, `seconds` follows the frame
   rate and tempo events do not change it.
 - Meta text is read as UTF-8, or as Latin-1 when it is not.
 - Files are recognized by their first bytes too, so a MIDI file with any name

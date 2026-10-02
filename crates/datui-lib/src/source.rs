@@ -149,7 +149,7 @@ pub(crate) fn is_prefix_or_glob(url: &str) -> bool {
 }
 
 /// The characters Polars expands a path on (`polars_io::path_utils::has_glob`).
-fn has_glob_chars(path: &Path) -> bool {
+pub(crate) fn has_glob_chars(path: &Path) -> bool {
     path.as_os_str().to_string_lossy().contains(['*', '?', '['])
 }
 

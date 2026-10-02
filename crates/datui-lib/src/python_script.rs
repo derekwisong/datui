@@ -542,14 +542,34 @@ fn commonest_format<'a>(names: impl Iterator<Item = &'a str>) -> Option<FileForm
     counts.into_iter().max_by_key(|(_, n)| *n).map(|(f, _)| f)
 }
 
-/// What a path names for the reader: the path itself for a file, or a glob over
-/// the files of the format datui read in a directory or a prefix.
-fn reader_target(path: &Path, record: &OpenRecord) -> Option<(String, FileFormat, bool)> {
+/// What a path names for the reader.
+struct Target {
+    /// The path itself for a file, or a glob over the files of the format datui read
+    /// in a directory or a prefix.
+    text: String,
+    format: FileFormat,
+    /// Read from below a prefix or directory, as Hive partitions may be.
+    below: bool,
+    /// The text is a pattern for the scan to expand.
+    pattern: bool,
+    /// The text names one file, with a glob character the scan must not expand.
+    literal: bool,
+}
+
+/// What `path` names for the reader.
+fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
     let text = path.to_string_lossy().to_string();
     if is_url(path) {
         let (text, _) = without_secrets(&text);
         if let Some(format) = file_format(Path::new(&text), record.options) {
-            return Some((text, format, false));
+            let pattern = crate::source::has_glob_chars(Path::new(&text));
+            return Some(Target {
+                text,
+                format,
+                below: false,
+                pattern,
+                literal: false,
+            });
         }
         // A prefix: scanned whole, in the format of what it holds.
         let format = record
@@ -558,7 +578,13 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<(String, FileFormat
             .or_else(|| commonest_format(record.remote_objects.iter().map(String::as_str)))?;
         let base = text.trim_end_matches('/');
         let ext = format_extension(format)?;
-        return Some((format!("{base}/**/*.{ext}"), format, true));
+        return Some(Target {
+            text: format!("{base}/**/*.{ext}"),
+            format,
+            below: true,
+            pattern: true,
+            literal: false,
+        });
     }
     if path.is_dir() {
         let entries: Vec<std::fs::DirEntry> = std::fs::read_dir(path).ok()?.flatten().collect();
@@ -583,27 +609,36 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<(String, FileFormat
         let base = crate::source::escape_glob(text.trim_end_matches(['/', '\\']));
         // A directory of Parquet with subdirectories, or with no files of its own, is
         // scanned whole for Parquet; otherwise the files of its commonest format.
-        return match format {
-            Some(FileFormat::Parquet) if has_dirs => {
-                Some((format!("{base}/**/*.parquet"), FileFormat::Parquet, true))
+        let (text, format, below) = match format {
+            Some(FileFormat::Parquet) | None if has_dirs => {
+                (format!("{base}/**/*.parquet"), FileFormat::Parquet, true)
             }
-            None if has_dirs => Some((format!("{base}/**/*.parquet"), FileFormat::Parquet, true)),
-            Some(format) => {
-                let ext = format_extension(format)?;
-                Some((format!("{base}/*.{ext}"), format, false))
-            }
-            None => None,
+            Some(format) => (
+                format!("{base}/*.{}", format_extension(format)?),
+                format,
+                false,
+            ),
+            None => return None,
         };
+        return Some(Target {
+            text,
+            format,
+            below,
+            pattern: true,
+            literal: false,
+        });
     }
     let format = file_format(path, record.options)?;
-    // Polars' scans read every name as a pattern: an existing `d[1].csv` is that
-    // file, and escaped it matches that file alone (#625).
-    let text = if scans_by_pattern(format) && !crate::source::expands_as_glob(path) {
-        crate::source::escape_glob(&text)
-    } else {
-        text
-    };
-    Some((text, format, false))
+    let pattern = crate::source::expands_as_glob(path);
+    Some(Target {
+        // Polars' scans read every name as a pattern: an existing `d[1].csv` is that
+        // file alone (#625).
+        literal: !pattern && scans_by_pattern(format) && crate::source::has_glob_chars(path),
+        text,
+        format,
+        below: false,
+        pattern,
+    })
 }
 
 /// Whether the script reads `format` with a Polars scan, which expands globs.
@@ -743,27 +778,42 @@ pub fn source(record: &OpenRecord) -> Source {
             ),
         };
     }
-    let targets: Option<Vec<(String, FileFormat, bool)>> =
-        paths.iter().map(|p| reader_target(p, record)).collect();
+    let targets: Option<Vec<Target>> = paths.iter().map(|p| reader_target(p, record)).collect();
     let Some(targets) = targets.filter(|t| !t.is_empty()) else {
         return Source::Placeholder {
             what: "datui could not name a Polars reader for this data: load it here.".to_string(),
         };
     };
-    let format = targets[0].1;
-    if targets.iter().any(|t| t.1 != format) {
+    let format = targets[0].format;
+    if targets.iter().any(|t| t.format != format) {
         return Source::Placeholder {
             what: "The files are of more than one format: load them here.".to_string(),
         };
     }
-    let below = targets.iter().any(|t| t.2);
-    let names: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
+    let below = targets.iter().any(|t| t.below);
+    // A file named like a glob is read with `glob=False`, unless the scan has no such
+    // flag (NDJSON) or another name is a pattern; then its name is escaped instead.
+    let literal = targets.iter().any(|t| t.literal);
+    let no_glob = literal && format != FileFormat::Jsonl && !targets.iter().any(|t| t.pattern);
+    let names: Vec<String> = targets
+        .into_iter()
+        .map(|t| {
+            if t.literal && !no_glob {
+                crate::source::escape_glob(&t.text)
+            } else {
+                t.text
+            }
+        })
+        .collect();
     let target = match names.as_slice() {
         [one] => py_str(one),
         many => py_names(many),
     };
     let options = record.options;
     let mut args: Vec<String> = vec![target];
+    if no_glob {
+        args.push("glob=False".to_string());
+    }
     // What the open did to the rows read, as datui recorded it, then the footer.
     let mut after = options.read_python.clone();
     let mut skip_tail = None;

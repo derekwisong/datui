@@ -22476,5 +22476,37 @@ fn copy_as_python_reads_a_file_named_like_a_glob_as_itself() {
             return;
         };
         assert_eq!(rows, "v\nliteral\n", "{ext}:\n{script}");
+        // Read with `glob=False` where the scan has the flag; NDJSON's has not, so
+        // its name is escaped instead.
+        let (plain, escaped) = (format!("d[1].{ext}\""), format!("d[[]1[]].{ext}\""));
+        if ext == "jsonl" {
+            assert!(script.contains(&escaped), "{ext}:\n{script}");
+            assert!(!script.contains("glob=False"), "{ext}:\n{script}");
+        } else {
+            assert!(script.contains(&plain), "{ext}:\n{script}");
+            assert!(script.contains(", glob=False"), "{ext}:\n{script}");
+        }
     }
+}
+
+/// A directory named like a glob is read through a pattern over its files, with its
+/// own name escaped: the script reads it, not the directory its name matches (#632).
+#[test]
+fn copy_as_python_reads_a_directory_named_like_a_glob() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let literal = tmp.path().join("d[1]");
+    let sibling = tmp.path().join("d1");
+    std::fs::create_dir(&literal).unwrap();
+    std::fs::create_dir(&sibling).unwrap();
+    write_marker(&literal.join("a.csv"), "literal");
+    write_marker(&sibling.join("a.csv"), "sibling");
+    let (app, df) = open_and_collect(vec![literal], OpenOptions::default());
+    assert_eq!(marker_values(&df), ["literal"]);
+    let Some((rows, script)) = run_python_script(&app) else {
+        return;
+    };
+    assert_eq!(rows, "v\nliteral\n", "{script}");
+    assert!(script.contains("d[[]1[]]/*.csv\""), "{script}");
+    assert!(!script.contains("glob=False"), "{script}");
 }

@@ -12,6 +12,7 @@
 
 - [Browse files](user-guide/home-screen.md)
 - [Files and formats](user-guide/loading-data.md)
+- [Binary formats](user-guide/binary-formats.md)
 - [Connect to cloud storage](user-guide/remote-data.md)
 - [Browse cloud data](user-guide/cloud-browser.md)
 - [Inspect a dataset](user-guide/dataset-info.md)

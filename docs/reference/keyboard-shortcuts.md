@@ -14,6 +14,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | A page of columns left or right, the cursor on the page's first column |
 | <kbd>{</kbd> <kbd>}</kbd> | First column; last column |
 | <kbd>g</kbd> | Go to a column by name, cursor and all |
+| <kbd>b</kbd> | A binary file read through a [format spec](../user-guide/binary-formats.md): read it again with another spec |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> or <kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>Ctrl</kbd>+<kbd>F</kbd> | One page |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
@@ -89,6 +90,15 @@ key, beyond the paging chords above.
 | <kbd>e</kbd> | Export the counts |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
 | <kbd>Esc</kbd> | Back to the table; while every row is being counted, stop and keep the sample |
+
+## Format picker
+
+| Key | Action |
+|---|---|
+| Type | Narrow the list of specs |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move |
+| <kbd>Enter</kbd> | Read the file again with that spec, clearing the query, filters and sort |
+| <kbd>Esc</kbd> | Close and keep the format |
 
 ## Home screen
 

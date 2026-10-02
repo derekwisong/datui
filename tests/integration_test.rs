@@ -22240,3 +22240,26 @@ fn a_pattern_that_names_no_file_still_expands() {
         assert_eq!(marker_values(&df), ["one.csv", "two.csv"], "{pattern}");
     }
 }
+
+/// A pattern that matches nothing says so, not Polars' expansion input. A missing
+/// `x?.csv` reaches the scan as a pattern, as `*.csv` always did.
+#[test]
+fn a_pattern_that_matches_nothing_says_so() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    for name in ["x?.csv", "d[1].parquet", "*.arrow"] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        tx.send(AppEvent::OpenNamed(
+            vec![tmp.path().join(name)],
+            OpenOptions::default(),
+        ))
+        .unwrap();
+        drain_events(&mut app, &rx);
+        let message = app.error_message().expect("an error");
+        assert!(
+            message.ends_with(": No files match this pattern."),
+            "{message}"
+        );
+    }
+}

@@ -26,6 +26,7 @@
 
 # Charts and analysis
 
+- [Count values](user-guide/value-counts.md)
 - [Make a chart](user-guide/charting.md)
 - [Statistics and distributions](user-guide/analysis-features.md)
 - [Check data quality](user-guide/data-quality.md)

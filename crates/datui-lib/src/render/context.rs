@@ -56,7 +56,7 @@ pub struct RenderContext {
 
     pub table_cell_padding: u16,
     pub column_colors: bool,
-    /// Resolved number formatting, including the runtime `F` toggle state.
+    /// Resolved number formatting, including the runtime `,` toggle state.
     pub number_format: NumberFormatSettings,
 }
 

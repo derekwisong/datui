@@ -32,6 +32,10 @@ pub fn go_to_column() -> &'static str {
     include_help!("go_to_column")
 }
 
+pub fn value_counts() -> &'static str {
+    include_help!("value_counts")
+}
+
 pub fn sort_filter() -> &'static str {
     include_help!("sort_filter")
 }
@@ -104,12 +108,12 @@ mod tests {
         let help = main_view();
         assert!(help.contains("#:"), "row numbers toggle missing from help");
         assert!(
-            help.contains("F:"),
+            help.contains(",:"),
             "number formatting toggle missing from help"
         );
         assert!(
             help.contains("number formatting"),
-            "the F toggle needs a description a user can search for"
+            "the `,` toggle needs a description a user can search for"
         );
     }
 

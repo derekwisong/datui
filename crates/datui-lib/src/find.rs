@@ -508,7 +508,7 @@ pub struct Find {
     pub regex: bool,
     /// The prompt limits the find to `column`.
     pub in_column: bool,
-    /// The column the prompt opened on: the found cell's, or the first on screen.
+    /// The column the prompt opened on: the current column.
     pub column: Option<String>,
     /// Why the pattern typed cannot be searched.
     pub error: Option<String>,
@@ -601,19 +601,13 @@ impl App {
         self.input_type = Some(InputType::Find);
     }
 
-    /// The column a find limited to one column searches: the found cell's while the
-    /// cursor is on its row, else the first scrolling column on screen. The one place
-    /// that decides, so a column cursor can answer here instead.
+    /// The column a find limited to one column searches: the current column, which a
+    /// find makes the found cell's.
     pub(crate) fn find_column(&self) -> Option<String> {
-        let state = self.data_table_state.as_ref()?;
-        let on_hit = self
-            .find_hit()
-            .filter(|(row, _)| *row == state.cursor_row());
-        on_hit.map(|(_, name)| name).or_else(|| {
-            let names = state.get_column_order();
-            let at = state.frozen_shown() + state.termcol_index;
-            names.get(at.min(names.len().saturating_sub(1))).cloned()
-        })
+        self.data_table_state
+            .as_ref()?
+            .current_column()
+            .map(str::to_string)
     }
 
     fn close_find_prompt(&mut self) {
@@ -849,6 +843,7 @@ impl App {
         active.hit = Some((found.row, found.column.clone()));
         let needs_rows = state.go_to_found_row(found.row);
         state.reveal_column(&found.column);
+        state.choose_column(&found.column);
         if found.wrapped {
             self.flash_note(match run.direction {
                 Direction::Next => "Wrapped to the top".to_string(),
@@ -1496,6 +1491,36 @@ mod app_tests {
             app.find_mark().as_deref(),
             Some("find /^12$/ in id · match 1")
         );
+    }
+
+    /// Ctrl+L limits a find to the current column, the one underlined: `g` chooses
+    /// it, and a match makes it the found cell's.
+    #[test]
+    fn the_find_column_is_the_current_column() {
+        let df = df!(
+            "id" => (0..20i64).collect::<Vec<_>>(),
+            "v" => (0..20).map(|i| format!("hay {i}")).collect::<Vec<_>>(),
+            "w" => (0..20).map(|i| if i == 7 { "needle".to_string() } else { format!("w {i}") }).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let (mut app, rx) = app_over(df);
+        let current = |app: &App| {
+            app.data_table_state
+                .as_ref()
+                .unwrap()
+                .current_column()
+                .map(str::to_string)
+        };
+        app.data_table_state.as_mut().unwrap().choose_column("v");
+        key(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.find.column.as_deref(), Some("v"));
+        type_text(&mut app, "needle");
+        key(&mut app, KeyCode::Enter);
+        settle(&mut app, &rx);
+        assert_eq!(app.find_hit(), Some((7, "w".to_string())));
+        assert_eq!(current(&app).as_deref(), Some("w"));
+        key(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.find.column.as_deref(), Some("w"));
     }
 
     #[test]

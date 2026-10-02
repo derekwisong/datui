@@ -125,6 +125,9 @@ columns and widths, frozen columns, pivot/melt, drill-down and the applied view.
 - <kbd>g</kbd> leaves a column already whole on screen where it is; another
   becomes the first after the frozen ones, or lands on the last page.
 - Frozen columns stay put; hidden ones are not listed by <kbd>g</kbd>.
+- The current column is underlined in the header: the one <kbd>g</kbd> went
+  to, until the columns scroll, and otherwise the first column past any
+  frozen ones. [Value counts](value-counts.md) (<kbd>F</kbd>) count it.
 
 While some columns are off screen, the bottom bar names the ones on it:
 `cols 41-47 of 300` (`cols 41-47/300` on a bar under 100 cells). It counts

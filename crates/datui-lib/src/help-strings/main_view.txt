@@ -2,7 +2,8 @@ Navigation:
   Arrows, h/j/k/l:  Scroll table
   [ / ]:            A page of columns left or right (Shift+←/→ too)
   { / }:            First column, last page of columns
-  g:                Go to a column by name
+  g:                Go to a column by name; it becomes the current
+                    column until the columns scroll
   PgUp/PgDn:        Scroll pages (Ctrl+F down, Ctrl+B up)
   Home/End:         Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:    Half page down/up
@@ -20,6 +21,9 @@ Data Operations:
   /:                Query: SQL, Search or q-style
   c:                Open charts
   s:                Open the Sort & Filter sidebar (tabs: Columns, Filters)
+  F:                Value counts of the current column, underlined in
+                    the header: each value's rows, percent and a bar,
+                    with a summary
   a:                Open Statistical Analysis. In a Data Quality evidence
                     drill a is disabled; Esc returns to the observation
   p:                Open Pivot & Melt
@@ -36,7 +40,7 @@ Data Operations:
 Display:
   i:                Open Info panel (tabs: Schema, Resources, Partitions, Notes)
   #:                Toggle row numbers
-  F:                Toggle number formatting (thousands separators)
+  ,:                Toggle number formatting (digit grouping)
   D:                Toggle the type row under the column headers
   H:                CSV, TSV, PSV: read the first row as data, under column_1,
                     column_2, …; again to read it as column names. Reads the

@@ -4,7 +4,9 @@ Go to a column by name.
   ↑ / ↓:            Move
   Enter:            Go. A column already whole on screen stays where it
                     is; another becomes the first after the frozen ones,
-                    or lands on the last page when it is there
+                    or lands on the last page when it is there. Either
+                    way it becomes the current column, underlined, which
+                    F counts
   Backspace:        Delete a character (Ctrl+W a word, Ctrl+U all)
   Esc:              Close without moving
   F1:               Show this help

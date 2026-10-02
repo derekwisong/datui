@@ -81,12 +81,14 @@ pub fn render(
             let mut table_area = data_area;
             let breadcrumb_text = if state.is_drilled_down() {
                 state.drilled_group_key().map(|(key_columns, key_values)| {
+                    let g = crate::glyphs::get();
+                    // A tab or line break in a key would cut the line: marked, as
+                    // in a cell.
                     let parts: Vec<String> = key_columns
                         .iter()
                         .zip(key_values.iter())
-                        .map(|(col, val)| format!("{col}={val}"))
+                        .map(|(col, val)| format!("{col}={}", crate::exact::cell_preview(val, g)))
                         .collect();
-                    let g = crate::glyphs::get();
                     format!(
                         "{} Group: {}",
                         g.arrow_left,

@@ -349,7 +349,7 @@ impl NumberFormat {
 /// row count, info-panel totals, and similar labels.
 ///
 /// Deliberately unconditional: these are datui's labels, not the user's data,
-/// so they stay readable regardless of `display.number_format` or the `F`
+/// so they stay readable regardless of `display.number_format` or the `,`
 /// toggle. Keeping the distinction means turning formatting off to read exact
 /// data values never makes the surrounding UI harder to read.
 pub fn group_chrome(n: usize) -> String {
@@ -411,7 +411,7 @@ pub fn is_right_aligned_dtype(dtype: &DataType) -> bool {
 pub struct NumberFormatSettings {
     /// The configured format.
     pub format: NumberFormat,
-    /// Runtime `F` toggle. When false every column is `Passthrough`.
+    /// Runtime `,` toggle. When false every column is `Passthrough`.
     pub enabled: bool,
     /// Columns never formatted (precompiled globs).
     pub exclude: Vec<Glob>,

@@ -20200,3 +20200,396 @@ fn nanosecond_date_math_at_the_ends_of_the_range_is_null_in_sql() {
         assert_eq!(view_text(&app, "x"), expected, "{sql}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Value Counts (`F`)
+// ---------------------------------------------------------------------------
+
+/// `pay` (two nulls), `amount`, `id`: 10 rows.
+const COUNTS_CSV: &str = "pay,amount,id\n\
+card,10,1\ncash,5,2\ncard,10,3\n,7,4\ncard,2,5\ncash,10,6\n,1,7\ncard,3,8\ncheck,10,9\ncard,2,10\n";
+
+fn count_values_done(app: &App) -> bool {
+    app.value_counts.computing.is_none() && !app.is_busy()
+}
+
+/// Press `code` on Value Counts and wait for any count it starts.
+fn counts_key(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    code: KeyCode,
+) {
+    press_and_send(app, tx, code);
+    pump_until(app, rx, tx, count_values_done);
+}
+
+/// Each listed line as `(label, rows)`.
+fn counted_lines(app: &App) -> Vec<(String, u64)> {
+    use datui::value_counts::LineKind;
+    let modal = &app.value_counts;
+    let counts = modal.current().expect("counts on screen");
+    counts
+        .lines(modal.order)
+        .iter()
+        .map(|line| {
+            let label = match line.kind {
+                LineKind::Value(at) => counts.value(at).unwrap().str_value().into_owned(),
+                LineKind::Null => "null".to_string(),
+                LineKind::Other(n) => format!("other {n}"),
+            };
+            (label, line.rows)
+        })
+        .collect()
+}
+
+fn counts_screen(app: &mut App, width: u16, height: u16) -> String {
+    let area = Rect::new(0, 0, width, height);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// F counts the current column: by count, nulls on their own line, the summary
+/// over them; ← → step columns, s sorts by value, Esc goes back.
+#[test]
+fn test_value_counts_count_the_column_and_step_columns() {
+    let (mut app, rx, tx) =
+        open_csv_with("value_counts_keys.csv", COUNTS_CSV, OpenOptions::default());
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert_eq!(app.input_mode, InputMode::ValueCounts);
+    assert_eq!(app.value_counts.column(), Some("pay"));
+    let line = |s: &str, n| (s.to_string(), n);
+    assert_eq!(
+        counted_lines(&app),
+        [
+            line("card", 5),
+            line("cash", 2),
+            line("null", 2),
+            line("check", 1)
+        ]
+    );
+    let counts = app.value_counts.current().unwrap();
+    assert!(!counts.is_sample());
+    assert_eq!(
+        (
+            counts.summary.rows,
+            counts.summary.distinct,
+            counts.summary.nulls
+        ),
+        (10, 3, 2)
+    );
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(screen.contains("Value Counts"), "{screen}");
+    assert!(screen.contains("all 10 rows"), "{screen}");
+    assert!(screen.contains("Distinct 3"), "{screen}");
+    assert!(
+        screen.contains("Enter  Rows") && screen.contains("Esc  Back"),
+        "the bar names the keys: {screen}"
+    );
+
+    counts_key(&mut app, &rx, &tx, KeyCode::Right);
+    assert_eq!(app.value_counts.column(), Some("amount"));
+    let summary = &app.value_counts.current().unwrap().summary;
+    assert_eq!(summary.sum, Some(datui::value_counts::Number::Int(60)));
+    assert_eq!(summary.mean, Some(6.0));
+    assert_eq!(summary.min, Some(AnyValue::Int64(1)));
+    assert_eq!(summary.max, Some(AnyValue::Int64(10)));
+    assert_eq!(counted_lines(&app)[0], line("10", 4));
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(
+        screen.contains("Sum 60") && screen.contains("Mean 6"),
+        "{screen}"
+    );
+
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('s'));
+    let by_value: Vec<String> = counted_lines(&app).into_iter().map(|(v, _)| v).collect();
+    assert_eq!(by_value, ["1", "2", "3", "5", "7", "10"]);
+
+    // Back to a column already counted reads nothing.
+    press_and_send(&mut app, &tx, KeyCode::Left);
+    assert!(app.value_counts.computing.is_none());
+    assert_eq!(app.value_counts.column(), Some("pay"));
+
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+/// Enter drills into the rows holding the value, null included, the way a `by`
+/// group does; Esc comes back to the counts, and Esc again to the table.
+#[test]
+fn test_value_counts_enter_drills_and_esc_comes_back() {
+    let (mut app, rx, tx) =
+        open_csv_with("value_counts_drill.csv", COUNTS_CSV, OpenOptions::default());
+    let area = Rect::new(0, 0, 100, 30);
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    press_and_send(&mut app, &tx, KeyCode::Down);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.is_drilled_down());
+    assert_eq!(
+        state.drilled_group_key(),
+        Some((&["pay".to_string()][..], &["cash".to_string()][..]))
+    );
+    assert_eq!(on_screen(&app, "id"), ["2", "6"]);
+
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::ValueCounts, "back to the counts");
+    assert!(
+        app.value_counts.computing.is_none(),
+        "nothing counted again"
+    );
+    assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
+
+    // The nulls' line, ranked by its rows after cash's as many.
+    press_and_send(&mut app, &tx, KeyCode::Down);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "id"), ["4", "7"]);
+    assert_eq!(on_screen(&app, "pay"), ["null", "null"]);
+
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    pump_until_idle(&mut app, &rx, &tx);
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "id").len(), 10);
+}
+
+/// A tab in the value drilled into is marked in the breadcrumb, not printed raw.
+#[test]
+fn test_value_counts_drill_breadcrumb_marks_a_tab() {
+    let (mut app, rx, tx) = open_csv_with(
+        "value_counts_tab.csv",
+        "k,n\n\"a\tb\",1\n\"a\tb\",2\nc,3\n",
+        OpenOptions::default(),
+    );
+    let area = Rect::new(0, 0, 80, 12);
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert_eq!(counted_lines(&app)[0], ("a\tb".to_string(), 2));
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "n"), ["1", "2"]);
+    let screen = counts_screen(&mut app, 80, 12);
+    let crumb = screen.lines().next().unwrap();
+    let g = datui::glyphs::get();
+    let marked = datui::exact::cell_preview("a\tb", g);
+    assert!(crumb.contains(&format!("k={marked}")), "{crumb:?}");
+}
+
+/// The counts are of the view: a query's rows, not the file's.
+#[test]
+fn test_value_counts_count_the_queried_view() {
+    let (mut app, rx, tx) = open_query_filter_fixture("value_counts_query.csv");
+    app.event(&AppEvent::Search("select where a < 10".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    press_and_send(&mut app, &tx, KeyCode::Right);
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert_eq!(app.value_counts.column(), Some("c"));
+    let line = |s: &str, n| (s.to_string(), n);
+    assert_eq!(
+        counted_lines(&app),
+        [line("0", 4), line("1", 3), line("2", 3)]
+    );
+}
+
+/// Past the top values the rest are one `other` line; Enter there drills into
+/// nothing.
+#[test]
+fn test_value_counts_top_values_then_other() {
+    let top = datui::value_counts::TOP_N;
+    let mut csv = String::from("id\n");
+    for i in 0..top + 5 {
+        csv.push_str(&format!("{i}\n"));
+    }
+    csv.push_str("0\n0\n1\n");
+    let (mut app, rx, tx) = open_csv_with("value_counts_other.csv", &csv, OpenOptions::default());
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    let lines = counted_lines(&app);
+    assert_eq!(lines.len(), top + 1);
+    assert_eq!(lines[0], ("0".to_string(), 3));
+    assert_eq!(lines[top], ("other 5".to_string(), 5));
+    assert_eq!(
+        app.value_counts.current().unwrap().summary.distinct,
+        top + 5
+    );
+    press_and_send(&mut app, &tx, KeyCode::End);
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(screen.contains("other (5 values)"), "{screen}");
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(app.input_mode, InputMode::ValueCounts);
+    assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
+}
+
+/// A Parquet file over 100 samples' worth of rows is counted from a sample first,
+/// and the header says so; `a` counts every row, and the header says that.
+#[test]
+fn test_value_counts_sample_first_then_every_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("counts.parquet");
+    let mut df = df!("k" => (0..30_000i64).map(|i| i % 4).collect::<Vec<_>>()).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .with_row_group_size(Some(1_000))
+        .finish(&mut df)
+        .unwrap();
+    let mut config = datui::AppConfig::default();
+    config.performance.analysis_sample_rows = 200;
+    let (tx, rx) = mpsc::channel();
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    let counts = app.value_counts.current().unwrap();
+    assert_eq!(counts.sampled_of, Some(30_000));
+    assert_eq!(counts.summary.rows, 200);
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(screen.contains("sample of 200 of 30,000 rows"), "{screen}");
+    assert!(screen.contains("a  All rows"), "{screen}");
+
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('a'));
+    let counts = app.value_counts.current().unwrap();
+    assert!(!counts.is_sample());
+    assert_eq!(counts.summary.rows, 30_000);
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(screen.contains("all 30,000 rows"), "{screen}");
+    assert!(!screen.contains("All rows"), "{screen}");
+}
+
+/// `y` copies every value with its count and percentages; `e` exports them.
+#[test]
+fn test_value_counts_copy_and_export() {
+    let (mut app, rx, tx) =
+        open_csv_with("value_counts_copy.csv", COUNTS_CSV, OpenOptions::default());
+    let copies: Copies = Default::default();
+    app.set_clipboard_destination(Box::new(KeptCopies(copies.clone())));
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    press_and_send(&mut app, &tx, KeyCode::Char('y'));
+    pump_until_idle(&mut app, &rx, &tx);
+    let text = copies.lock().unwrap().last().cloned().unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "pay\tcount\tpercent\tcumulative_percent");
+    assert!(lines[1].starts_with("card\t5\t50"), "{text}");
+    assert_eq!(lines.len(), 5, "every value and the nulls: {text}");
+
+    let out = tempfile::tempdir().unwrap();
+    let csv = out.path().join("counts.csv");
+    press_and_send(&mut app, &tx, KeyCode::Char('e'));
+    assert_eq!(app.input_mode, InputMode::Export);
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(
+        screen.contains("Value Counts"),
+        "the counts stay behind the dialog"
+    );
+    app.export_modal
+        .path_input
+        .set_value(csv.display().to_string());
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::ValueCounts);
+    let written = std::fs::read_to_string(&csv).unwrap();
+    assert!(
+        written.starts_with("pay,count,percent,cumulative_percent\ncard,5,"),
+        "{written}"
+    );
+}
+
+/// `,` toggles digit grouping, which was `F`; `F` opens Value Counts.
+#[test]
+fn test_comma_toggles_digit_grouping() {
+    let mut config = datui::AppConfig::default();
+    config.display.number_format =
+        datui::config::NumberFormatConfig::Preset("thousands".to_string());
+    let path = common::fixture_dir().join("comma_grouping.csv");
+    std::fs::write(&path, "n\n1234567\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 80, 24);
+    assert!(painted(&mut app, &rx, &tx, area).contains("1,234,567"));
+    press_and_send(&mut app, &tx, KeyCode::Char(','));
+    let plain = painted(&mut app, &rx, &tx, area);
+    assert!(
+        plain.contains("1234567") && !plain.contains("1,234,567"),
+        "{plain}"
+    );
+    press_and_send(&mut app, &tx, KeyCode::Char(','));
+    assert!(painted(&mut app, &rx, &tx, area).contains("1,234,567"));
+
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert_eq!(app.input_mode, InputMode::ValueCounts);
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(
+        screen.contains("1,234,567"),
+        "counts follow the grouping: {screen}"
+    );
+}
+
+/// The current column is the one `g` chose, underlined in the header, until the
+/// columns scroll; then it is the first column on screen again.
+#[test]
+fn test_value_counts_follow_the_column_g_chose() {
+    let (mut app, rx, tx) = open_csv_with(
+        "value_counts_current.csv",
+        COUNTS_CSV,
+        OpenOptions::default(),
+    );
+    let area = Rect::new(0, 0, 80, 24);
+    painted(&mut app, &rx, &tx, area);
+    let current = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .current_column()
+            .map(str::to_string)
+    };
+    assert_eq!(current(&app).as_deref(), Some("pay"));
+    press_and_send(&mut app, &tx, KeyCode::Char('g'));
+    for c in "id".chars() {
+        press_and_send(&mut app, &tx, KeyCode::Char(c));
+    }
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(
+        current(&app).as_deref(),
+        Some("id"),
+        "on screen already, and chosen"
+    );
+    // The header says which: the name is underlined.
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let underlined: String = (0..area.width)
+        .map(|x| &buffer[(x, 0)])
+        .filter(|cell| cell.modifier.contains(ratatui::style::Modifier::UNDERLINED))
+        .map(|cell| cell.symbol().to_string())
+        .collect();
+    assert_eq!(underlined, "id");
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert_eq!(app.value_counts.column(), Some("id"));
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+
+    press_and_send(&mut app, &tx, KeyCode::Right);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(
+        current(&app).as_deref(),
+        Some("amount"),
+        "a scroll lets go of it"
+    );
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert_eq!(app.value_counts.column(), Some("amount"));
+}

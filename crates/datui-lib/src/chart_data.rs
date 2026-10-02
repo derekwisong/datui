@@ -1512,7 +1512,11 @@ fn hold_counts(sampling: &ChartSampling, category: &str, counted: &Counted) {
 }
 
 /// Count the categories of rows already in memory.
-fn count_frame(df: &DataFrame, category: &str, max_categories: usize) -> Result<Counted> {
+pub(crate) fn count_frame(
+    df: &DataFrame,
+    category: &str,
+    max_categories: usize,
+) -> Result<Counted> {
     let mut tally = Tally::new(category, max_categories);
     tally.observe(&df.select([category])?)?;
     Ok(tally.finish()?)
@@ -1521,7 +1525,7 @@ fn count_frame(df: &DataFrame, category: &str, max_categories: usize) -> Result<
 /// What a count found: one row per category with its rows in [`COUNT_COLUMN`] (none
 /// when the view has no rows), and the rows counted; or more categories than it keeps.
 #[derive(Clone)]
-enum Counted {
+pub(crate) enum Counted {
     All {
         counts: Option<DataFrame>,
         rows: usize,
@@ -1529,7 +1533,7 @@ enum Counted {
     TooMany,
 }
 
-const COUNT_COLUMN: &str = "__datui_bar_count";
+pub(crate) const COUNT_COLUMN: &str = "__datui_bar_count";
 
 /// Counts held per view: enough to go back and forth between a few categories, each
 /// up to [`COUNT_CATEGORY_CAP`] rows.
@@ -1541,7 +1545,7 @@ const MERGE_AFTER: usize = 1 << 16;
 
 /// Rows per category, added up batch by batch. Holds one row per category and the
 /// batches since the last merge, never the rows themselves.
-struct Tally {
+pub(crate) struct Tally {
     category: PlSmallStr,
     max: usize,
     counts: Option<DataFrame>,
@@ -1554,7 +1558,7 @@ struct Tally {
 }
 
 impl Tally {
-    fn new(category: &str, max: usize) -> Self {
+    pub(crate) fn new(category: &str, max: usize) -> Self {
         Self {
             category: category.into(),
             max,
@@ -1568,7 +1572,7 @@ impl Tally {
 
     /// Count a batch of the category column. True once there are more categories than
     /// the count keeps, which stops the read.
-    fn observe(&mut self, batch: &DataFrame) -> PolarsResult<bool> {
+    pub(crate) fn observe(&mut self, batch: &DataFrame) -> PolarsResult<bool> {
         if self.too_many {
             return Ok(true);
         }
@@ -1590,7 +1594,7 @@ impl Tally {
         Ok(self.too_many)
     }
 
-    fn finish(self) -> PolarsResult<Counted> {
+    pub(crate) fn finish(self) -> PolarsResult<Counted> {
         let counts = match self.counts {
             Some(counts) => Some(group_counts(&counts, &self.category, true)?),
             None => None,

@@ -748,7 +748,8 @@ impl Loader {
         }
     }
 
-    /// Read a download: decompress it first if it is a compressed CSV, else scan it.
+    /// Read a download: decompress it first if it is compressed CSV, TSV or PSV, else
+    /// scan it.
     /// Either way the dataset is named by the URL, not the temporary file, and what
     /// was piped in by `stdin`.
     fn read_download(&mut self, fetched: Fetched, options: OpenOptions) -> Step {
@@ -935,7 +936,6 @@ impl Drop for Loader {
     }
 }
 
-/// Whether `path` is read as CSV.
 /// The delimited format (CSV, TSV or PSV) `path` is read as, if it is one: `--format`
 /// when given, else the extension, looking through a compression suffix
 /// (`x.tsv.gz` is TSV).
@@ -1584,31 +1584,44 @@ mod tests {
         assert!(!at.exists(), "a failed open keeps no download");
     }
 
-    /// A compressed CSV downloaded is decompressed under its URL, as one opened from
-    /// disk is.
+    /// A compressed CSV, TSV or PSV downloaded is decompressed under its URL as its
+    /// format, as one opened from disk is (#567).
     #[cfg(feature = "http")]
     #[test]
     fn a_downloaded_compressed_csv_is_decompressed() {
-        let url = "https://example.com/data.csv.gz";
-        let dir = tempfile::tempdir().unwrap();
-        let jobs = jobs();
-        let mut loader = Loader::default();
-        let Step::Probe(pending) = loader.open(request(url)) else {
-            panic!("probe");
-        };
-        let id = loader.id().unwrap();
-        let _ = loader.answered(id, LoadAnswer::Sized(pending), &jobs);
-        let _ = loader.confirmed();
-        let file = downloaded(dir.path(), "", "csv.gz");
-        let step = loader.answered(
-            id,
-            LoadAnswer::Downloaded {
-                download: file,
-                options: OpenOptions::default(),
-            },
-            &jobs,
-        );
-        assert!(matches!(step, Step::Decompress { ref path, .. } if path == Path::new(url)));
+        for (ext, format) in [
+            ("csv.gz", FileFormat::Csv),
+            ("tsv.zst", FileFormat::Tsv),
+            ("psv.xz", FileFormat::Psv),
+        ] {
+            let url = format!("https://example.com/data.{ext}");
+            let dir = tempfile::tempdir().unwrap();
+            let jobs = jobs();
+            let mut loader = Loader::default();
+            let Step::Probe(pending) = loader.open(request(&url)) else {
+                panic!("probe");
+            };
+            let id = loader.id().unwrap();
+            let _ = loader.answered(id, LoadAnswer::Sized(pending), &jobs);
+            let _ = loader.confirmed();
+            let file = downloaded(dir.path(), "", ext);
+            let step = loader.answered(
+                id,
+                LoadAnswer::Downloaded {
+                    download: file,
+                    options: OpenOptions::default(),
+                },
+                &jobs,
+            );
+            assert!(
+                matches!(
+                    step,
+                    Step::Decompress { ref path, ref options, .. }
+                        if path == Path::new(&url) && options.format == Some(format)
+                ),
+                "{ext}"
+            );
+        }
     }
 
     /// Standard input is read to a file first, its bytes counted on the loading

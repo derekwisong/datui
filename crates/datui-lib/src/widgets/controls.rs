@@ -10,9 +10,9 @@ pub struct Controls {
     pub row_count: Option<usize>,
     /// True when `q` pops to the home screen instead of quitting; the bar says so.
     pub q_pops: bool,
-    /// True when Enter inspects the row, there being nothing to drill into; the
-    /// inspect chip then names Enter rather than Space.
-    pub enter_inspects: bool,
+    /// True when Enter drills into the row's group (a `by` view, a SQL GROUP BY);
+    /// the first chip then names the drill rather than the inspector.
+    pub enter_drills: bool,
     /// The dataset's full row count, when `row_count` is a filtered or queried subset
     /// of it. The bar then reads "417 of 1,000" instead of a bare number that
     /// hides the filter. Only ever a count something already resolved.
@@ -146,8 +146,8 @@ impl Controls {
         self
     }
 
-    pub fn with_enter_inspects(mut self, enter_inspects: bool) -> Self {
-        self.enter_inspects = enter_inspects;
+    pub fn with_enter_drills(mut self, enter_drills: bool) -> Self {
+        self.enter_drills = enter_drills;
         self
     }
 
@@ -191,7 +191,7 @@ impl Controls {
             caption: None,
             row_count: Some(row_count),
             q_pops: false,
-            enter_inspects: false,
+            enter_drills: false,
             total_row_count: None,
             dimmed: false,
             query_active: false,
@@ -365,6 +365,9 @@ impl Widget for &Controls {
         // The keys this bar would offer, custom or default. Worked out above the
         // status mode too: the way-out subset stays on a busy bar.
         const DEFAULT_CONTROLS: [(&str, &str); 14] = [
+            // First: Enter on a row is the primary action, how a first session
+            // reads one record. It yields to Help at 60 columns by position alone.
+            ("Enter", "Inspect"),
             ("/", "Query"),
             ("f", "Find"),
             ("i", "Info"),
@@ -375,7 +378,6 @@ impl Widget for &Controls {
             ("e", "Export"),
             ("y", "Copy"),
             ("^O", "Home"),
-            ("Space", "Inspect"),
             ("g", "Column"),
             ("?", "Help"),
             ("q", "Quit"),
@@ -388,11 +390,10 @@ impl Widget for &Controls {
                 // The bar says which meaning q carries right now.
                 defaults.last_mut().expect("q is the last chip").1 = "Home";
             }
-            if self.enter_inspects {
-                // Enter is the key people reach for; where it drills, Space inspects.
-                if let Some(chip) = defaults.iter_mut().find(|(_, label)| *label == "Inspect") {
-                    chip.0 = "Enter";
-                }
+            if self.enter_drills {
+                // Where Enter drills, the bar names what Enter does; Space still
+                // inspects, and help says so.
+                defaults[0].1 = "Drill";
             }
             defaults
         };
@@ -751,7 +752,7 @@ mod tests {
         // Room for it comes out of the keys, which the bar drops from the tail as it
         // always has, rather than out of the count.
         assert!(
-            labelled.contains("Query"),
+            labelled.contains("Inspect"),
             "the first keys are still offered: {labelled:?}"
         );
     }
@@ -851,6 +852,60 @@ mod tests {
             };
             assert_eq!(at(1, 6), at(295, 300), "at {width}");
             assert_eq!(at(1, 6), at(41, 47), "at {width}");
+        }
+    }
+
+    /// The first chip names what Enter does: Inspect, or Drill where Enter drills.
+    /// It leads from 80 columns up; at 60 beside the column range Help keeps its
+    /// place and Inspect yields.
+    #[test]
+    fn the_enter_chip_leads_and_yields_to_help_at_60() {
+        use crate::widgets::column_paging::OnScreen;
+        let on = Some(OnScreen {
+            first: 1,
+            last: 5,
+            total: 14,
+        });
+        for width in [60, 80, 120] {
+            for (drills, chip, other) in [
+                (false, "Enter  Inspect", "Drill"),
+                (true, "Enter  Drill", "Inspect"),
+            ] {
+                let bar = render_to_string(
+                    &with_row_count(60)
+                        .with_columns(on)
+                        .with_enter_drills(drills),
+                    width,
+                );
+                assert!(bar.contains("?  Help"), "at {width}: {bar:?}");
+                assert!(bar.contains("q  Quit"), "at {width}: {bar:?}");
+                assert!(!bar.contains(other), "at {width}: {bar:?}");
+                // The shorter Drill chip still fits beside Help at 60.
+                if width >= 80 || drills {
+                    assert!(bar.trim_start().starts_with(chip), "at {width}: {bar:?}");
+                } else {
+                    assert!(!bar.contains(chip), "at {width}: {bar:?}");
+                }
+            }
+        }
+    }
+
+    /// The weighting that keeps Help is by key, not label: a custom bar with an
+    /// Inspect chip cuts it from the right like any other.
+    #[test]
+    fn a_custom_inspect_chip_gets_no_weight() {
+        let controls = with_row_count(0).with_custom_controls(vec![
+            ("/", "Query"),
+            ("x", "Something long"),
+            ("z", "Inspect"),
+            ("?", "Help"),
+            ("q", "Quit"),
+        ]);
+        for width in 30..=70u16 {
+            let bar = render_to_string(&controls, width);
+            if bar.contains("Inspect") {
+                assert!(bar.contains("Something long"), "at {width}: {bar:?}");
+            }
         }
     }
 

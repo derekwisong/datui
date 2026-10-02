@@ -9751,7 +9751,14 @@ impl DataTable {
             + crate::glyphs::cell_width(sort_mark);
         // The type row is part of the header, so a column is at least as wide as its
         // type name; "datetime" under a column called "ts" would otherwise clip.
-        let type_label = self.dtype_row.then(|| dtype_label(dtype));
+        // A binary column's buffer holds the stub text; the type is the source's.
+        let type_label = self.dtype_row.then(|| {
+            if is_binary {
+                dtype_label(&DataType::Binary)
+            } else {
+                dtype_label(dtype)
+            }
+        });
         let type_width = type_label
             .as_deref()
             .map(crate::glyphs::cell_width)
@@ -13875,6 +13882,24 @@ mod tests {
         let mut ts = TableState::default();
         table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
         assert!(row_string(&buf, area, 1).starts_with(binary_stub()));
+    }
+
+    /// The buffer holds a binary column as stub text; the type row still says binary.
+    #[test]
+    fn a_binary_column_s_type_row_says_binary() {
+        let table = DataTable {
+            binary_cols: std::collections::HashSet::from(["blob".to_string()]),
+            dtype_row: true,
+            ..table_with_format("thousands", true)
+        };
+        let df = df!("blob" => &[binary_stub()], "s" => &["x"]).unwrap();
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let types = row_string(&buf, area, 1);
+        assert!(types.contains("binary"), "{types:?}");
+        assert_eq!(types.matches("str").count(), 1, "{types:?}");
     }
 
     /// A line break or a tab in a value is marked in the one-line cell; drawn as

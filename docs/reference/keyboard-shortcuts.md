@@ -328,10 +328,10 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move between fields |
 | <kbd>Home</kbd> <kbd>End</kbd> | First and last field |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Scroll a long value |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Scroll a long value; on the footer when the value runs past the pane |
 | <kbd>Enter</kbd> | Show more of a long value, or read the row's hidden and binary fields |
 | <kbd>y</kbd> | Copy the focused field's exact value |
-| <kbd>e</kbd> | Show text escaped, or as itself |
+| <kbd>e</kbd> | Show text or bytes escaped, or as itself; offered only on text and bytes |
 | <kbd>/</kbd> | Find a field: type to narrow, <kbd>Enter</kbd> or <kbd>↓</kbd> keeps the list narrowed, <kbd>Esc</kbd> clears it |
 | <kbd>Esc</kbd> <kbd>Space</kbd> | Close; <kbd>Esc</kbd> clears a find first |
 

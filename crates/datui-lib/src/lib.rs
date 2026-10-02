@@ -25365,7 +25365,7 @@ impl App {
             KeyCode::PageDown => modal.scroll_by(modal.page.saturating_sub(1).max(1) as isize),
             KeyCode::PageUp => modal.scroll_by(-(modal.page.saturating_sub(1).max(1) as isize)),
             KeyCode::Char('/') => modal.finding = true,
-            KeyCode::Char('e') => modal.toggle_escaped(),
+            KeyCode::Char('e') => self.inspector_escape(),
             KeyCode::Right | KeyCode::Char('l') => return self.step_row(1),
             KeyCode::Left | KeyCode::Char('h') => return self.step_row(-1),
             KeyCode::Char('y') => self.copy_inspected_field(),
@@ -25373,6 +25373,27 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// `e` in the inspector: escaped text or as itself, only where the focused
+    /// value has an escaped form, so a number never flips the mode a text field
+    /// is then shown in.
+    fn inspector_escape(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let (Some(row), Some(field)) = (state.inspect_row(), self.inspector_modal.focused()) else {
+            return;
+        };
+        let shown = crate::widgets::inspector::shown(
+            field,
+            &row,
+            self.inspector_modal.read.as_ref(),
+            state,
+        );
+        if crate::widgets::inspector::escapable(&shown) {
+            self.inspector_modal.toggle_escaped();
+        }
     }
 
     /// Enter in the inspector: read the row's fields the buffer does not hold,
@@ -26020,13 +26041,13 @@ impl Widget for &mut App {
                 dimmed,
                 query_active,
                 q_pops,
-                enter_inspects,
+                enter_drills,
             } => {
                 controls = controls
                     .with_dimmed(dimmed)
                     .with_query_active(query_active)
                     .with_q_pops(q_pops)
-                    .with_enter_inspects(enter_inspects);
+                    .with_enter_drills(enter_drills);
             }
             crate::render::main_view::ControlBarSpec::Custom(pairs) => {
                 controls = controls.with_custom_controls(pairs);
@@ -27921,6 +27942,31 @@ mod inspector_layout_tests {
             );
             // The list scrolls to the focused field and the rule counts them all.
             assert!(rows[1].contains(" 13 "), "{width}x{height}:\n{text}");
+        }
+    }
+
+    /// #548 M1: the title counts the rows; the thirteen fields are all listed
+    /// where they fit beside a short value (D11), and half the rows hold the list
+    /// where they do not.
+    #[test]
+    fn the_list_takes_what_the_value_does_not_need() {
+        for (width, height, whole) in [(80, 24, true), (120, 30, true), (60, 20, false)] {
+            let rows = inspecting(width, height);
+            let text = rows.join("\n");
+            assert!(rows[0].contains("Row 2 of 2"), "{width}x{height}:\n{text}");
+            let listed = rows
+                .iter()
+                .filter(|r| r.contains(" column_") && r.contains(" str "))
+                .count();
+            if whole {
+                assert_eq!(listed, 12, "{width}x{height}:\n{text}");
+                assert!(!text.contains(" more"), "{width}x{height}:\n{text}");
+            } else {
+                assert_eq!(listed, 6, "half of 14 rows: {width}x{height}:\n{text}");
+            }
+            // The value keeps its lines under the list, and its rule follows the list.
+            let rule = rows.iter().position(|r| r.contains("note  str")).unwrap();
+            assert!(rows.len() - 3 - rule > 3, "{width}x{height}:\n{text}");
         }
     }
 }

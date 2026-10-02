@@ -199,7 +199,8 @@ ORDER BY pickup_hour
 | Computed keys: `EXTRACT(HOUR FROM ts) AS h` | A key that is not selected, or written differently in `SELECT` |
 
 Where a statement does not drill, <kbd>Enter</kbd>
-[inspects the row](inspecting-rows.md) instead. A result that drills has the
+[inspects the row](inspecting-rows.md) instead. The bar's first chip says
+which: `Enter Drill` or `Enter Inspect`. A result that drills has the
 keys that lead it frozen, as a q-style `by` does. Without `ORDER BY` or `LIMIT` it comes back sorted by its keys,
 since Polars returns groups in no fixed order.
 

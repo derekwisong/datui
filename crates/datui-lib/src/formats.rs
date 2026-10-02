@@ -22,6 +22,9 @@ use toml::de::{DeTable, DeValue};
 /// rather than believed.
 pub const MAX_SIZE: u64 = 64 << 20;
 
+/// The most columns one field may be flattened into.
+pub const MAX_FLATTEN: u64 = 1024;
+
 /// The most bytes at the front of a file read to match it: its magic and the header
 /// values `match.where` compares.
 const MAX_MATCH_READ: u64 = 64 << 10;
@@ -523,14 +526,11 @@ impl Reader<'_> {
             ));
         };
         let mut fields: Vec<Field> = Vec::new();
+        let mut names = std::collections::HashSet::new();
         for item in items {
             let field = self.field(item, part, layout, &fields, header)?;
             for name in output_names(&field) {
-                let clash = fields
-                    .iter()
-                    .flat_map(output_names)
-                    .any(|other| other == name);
-                if clash {
+                if !names.insert(name.clone()) {
                     return Err(self.error(&item.span(), format!("a second field named `{name}`")));
                 }
             }
@@ -628,12 +628,25 @@ impl Reader<'_> {
             .map(|v| self.boolean(v, "flatten"))
             .transpose()?
             .unwrap_or(false);
-        if flatten && !matches!(count, Some(Amount::Given(_))) {
+        if flatten {
             let v = keys["flatten"];
-            return Err(self.error(
-                &v.span(),
-                "flatten: goes with a count written in the spec, such as count = 10",
-            ));
+            match &count {
+                Some(Amount::Given(n)) if *n > MAX_FLATTEN => {
+                    return Err(self.error(
+                        &v.span(),
+                        format!(
+                            "flatten: at most {MAX_FLATTEN} columns; leave {n} values an Array"
+                        ),
+                    ));
+                }
+                Some(Amount::Given(_)) => {}
+                _ => {
+                    return Err(self.error(
+                        &v.span(),
+                        "flatten: goes with a count written in the spec, such as count = 10",
+                    ));
+                }
+            }
         }
 
         let null =
@@ -668,6 +681,18 @@ impl Reader<'_> {
                         return Err(self
                             .error(&v.span(), format!("null: does not fit a {}", type_name(ty))));
                     }
+                    // A sentinel the type cannot hold would never match.
+                    if let (Null::Value(value), Some((low, high))) = (null, integer_range(ty))
+                        && !(low..=high).contains(&value)
+                    {
+                        return Err(self.error(
+                            &v.span(),
+                            format!(
+                                "null: a {} holds {low} to {high}, not {value}",
+                                type_name(ty)
+                            ),
+                        ));
+                    }
                     Ok(null)
                 })
                 .transpose()?;
@@ -682,9 +707,28 @@ impl Reader<'_> {
                         "file: only a record field of layout = \"columns\" has a file of its own",
                     ));
                 }
-                self.string(v, "file")
+                let file = self.string(v, "file")?;
+                if !is_file_name(&file) {
+                    return Err(self.error(
+                        &v.span(),
+                        "file: expected the name of a file in the directory, such as px.dat",
+                    ));
+                }
+                Ok(file)
             })
             .transpose()?;
+        // Its name names its file.
+        if layout == Layout::Columns
+            && part == Part::Records
+            && file.is_none()
+            && let Some(name) = &name
+            && !is_file_name(name)
+        {
+            return Err(self.error(
+                &keys["name"].span(),
+                "name: names the column's file, so it cannot hold a path; give the file with file = \"...\"",
+            ));
+        }
         Ok(Field {
             name,
             ty,
@@ -905,6 +949,28 @@ fn output_names(field: &Field) -> Vec<String> {
         (Some(Amount::Given(n)), true) => (0..*n).map(|i| format!("{name}_{i}")).collect(),
         _ => vec![name.clone()],
     }
+}
+
+/// The smallest and largest value an integer (or bool) type holds.
+fn integer_range(ty: Type) -> Option<(i128, i128)> {
+    let bits = match ty {
+        Type::Unsigned(n) | Type::Signed(n) => u32::from(n) * 8,
+        Type::Bool => 8,
+        _ => return None,
+    };
+    Some(match ty {
+        Type::Signed(_) => (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1),
+        _ => (0, (1i128 << bits) - 1),
+    })
+}
+
+/// Whether `name` is one file's name, with no directory in it.
+fn is_file_name(name: &str) -> bool {
+    let mut parts = Path::new(name).components();
+    matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) && !name.contains(['/', '\\'])
 }
 
 /// A type name and the byte order its suffix asks for.
@@ -2693,6 +2759,11 @@ fields = [
             (record("{ name = \"x\", type = \"u4\", date = \"ddmmyy\" }"), "yyyymmdd"),
             (record("{ name = \"x\", type = \"u4\", time = \"ns\", of_day = true, date = \"trade\" }"), "header field"),
             (record("{ type = \"pad\", size = 2, name = \"p\" }"), "only a size"),
+            (record("{ name = \"x\", type = \"u1\", count = 67108864, flatten = true }"), "at most 1024"),
+            (record("{ name = \"x\", type = \"u4\", null = -1 }"), "holds 0 to 4294967295"),
+            (record("{ name = \"x\", type = \"s1\", null = 128 }"), "holds -128 to 127"),
+            ("name = \"a.b\"\nlayout = \"columns\"\n[records]\nfields = [{ name = \"x\", type = \"u1\", file = \"../x\" }]".to_string(), "name of a file"),
+            ("name = \"a.b\"\nlayout = \"columns\"\n[records]\nfields = [{ name = \"/etc/x\", type = \"u1\" }]".to_string(), "cannot hold a path"),
         ] {
             let e = Spec::parse(&text, None).unwrap_err();
             assert!(e.message.contains(said), "{text}: {e}");

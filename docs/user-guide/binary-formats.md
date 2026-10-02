@@ -74,8 +74,8 @@ A `le` or `be` suffix (`u4be`, `s2le`) overrides the spec's `endian`.
 | `size` | `8`, `"header.len"` | Bytes of a `str`, `bytes` or `pad`: a number or a header field |
 | `size_adjust` | `-4` | Added to a size read from a field |
 | `count` | `10` | That many values side by side: one Array column |
-| `flatten` | `true` | With `count`, columns `name_0` to `name_9` instead of an Array |
-| `null` | `"min"`, `"max"`, `"nan"`, `-1` | A stored value that means no value: the type's smallest or largest value, a NaN, or this number |
+| `flatten` | `true` | With `count` (up to 1024), columns `name_0` to `name_9` instead of an Array |
+| `null` | `"min"`, `"max"`, `"nan"`, `-1` | A stored value that means no value: the type's smallest or largest value, a NaN, or this number, which the type must be able to hold |
 | `scale` | `4` | Implied decimal places: the integer becomes a Decimal |
 | `factor`, `offset` | `0.1`, `-40.0` | `value * factor + offset`, as a float |
 | `enum` | `{ 1 = "BUY", 2 = "SELL" }` | Codes and labels; an unlisted code reads as its number |
@@ -84,7 +84,7 @@ A `le` or `be` suffix (`u4be`, `s2le`) overrides the spec's `endian`.
 | `date` | `"yyyymmdd"` | An integer such as 20240102, as a date |
 | `of_day` | `true` | With `time`, a count since midnight: a time of day |
 | `date` with `of_day` | `"header.trade_date"` | The day those times are on, from a header field: a datetime |
-| `file` | `"px.dat"` | In the columns layout, the file holding the field. Default: its name |
+| `file` | `"px.dat"` | In the columns layout, the file in the directory holding the field. Default: its name |
 
 A field takes at most one of `time` (or `date`), `scale`, `factor` and `enum`.
 

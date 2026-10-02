@@ -405,6 +405,10 @@ pub struct ChartSampling {
     /// The shared analysis seed, so a chart and Describe draw alike.
     pub seed: u64,
     pub streaming: bool,
+    /// Whether the view may be read whole, twice, for a line's envelope: not a scan
+    /// of an object store in place, where the sample reads a few row groups and the
+    /// envelope would download everything twice. See [`prepare_chart_data`].
+    pub full_passes: bool,
     /// The rows already read from this view.
     pub held: HeldRows,
     /// Set once nobody wants the result: a streamed count stops at its next batch.
@@ -419,6 +423,7 @@ impl ChartSampling {
             known_total: None,
             seed: crate::sampling::Sample::default().seed,
             streaming: false,
+            full_passes: true,
             held: HeldRows::default(),
             cancel: Arc::default(),
         }
@@ -764,7 +769,9 @@ pub struct HeatmapData {
 /// With `envelope`, a view of more rows than the sample size is not sampled: X is cut
 /// into half that many steps and each step draws its lowest and highest Y. A random
 /// sample of a waveform or any long series joins points far apart and misses its peaks;
-/// the envelope keeps every peak, as many steps as a plot has columns.
+/// the envelope keeps every peak, as many steps as a plot has columns. It reads the
+/// view twice, so only where [`ChartSampling::full_passes`] allows; both passes stop
+/// when [`ChartSampling::cancel`] is set.
 pub fn prepare_chart_data(
     lf: &LazyFrame,
     schema: &Schema,
@@ -787,34 +794,45 @@ pub fn prepare_chart_data(
         .ok_or_else(|| color_eyre::eyre::eyre!("x column '{}' not in schema", x_column))?;
     let x_axis_kind = x_axis_temporal_kind(x_dtype);
 
-    if envelope && let Some(limit) = sampling.limit.filter(|&n| n > 0) {
-        let total = match sampling.known_total {
-            Some(n) => n,
-            None => {
-                crate::statistics::collect_lazy(lf.clone().select([len()]), sampling.streaming)?
-                    .column("len")?
-                    .cast(&DataType::UInt64)?
-                    .u64()?
-                    .get(0)
-                    .unwrap_or(0) as usize
-            }
-        };
-        if total > limit {
-            let steps = (limit / 2).max(1);
-            let (series, breaks) =
-                envelope_series(lf, x_column, x_dtype, y_columns, steps, sampling.streaming)?;
-            return Ok(ChartDataResult {
+    let mut counted = None;
+    if envelope
+        && sampling.full_passes
+        && let Some(limit) = sampling.limit.filter(|&n| n > 0)
+        && sampling.known_total.is_none_or(|n| n > limit)
+    {
+        match envelope_series(lf, x_column, x_dtype, y_columns, limit, sampling)? {
+            Envelope::Drawn {
                 series,
                 breaks,
-                x_axis_kind,
-                rows: RowsRead {
-                    total_rows: total,
-                    sample_size: None,
-                    envelope_steps: Some(steps),
-                },
-            });
+                rows,
+                steps,
+            } => {
+                return Ok(ChartDataResult {
+                    series,
+                    breaks,
+                    x_axis_kind,
+                    rows: RowsRead {
+                        total_rows: rows,
+                        sample_size: None,
+                        envelope_steps: Some(steps),
+                    },
+                });
+            }
+            // The first pass counted the view: the sample takes it whole.
+            Envelope::Fits(rows) => counted = Some(rows),
         }
     }
+    let counted_sampling;
+    let sampling = match counted {
+        Some(rows) => {
+            counted_sampling = ChartSampling {
+                known_total: Some(rows),
+                ..sampling.clone()
+            };
+            &counted_sampling
+        }
+        None => sampling,
+    };
 
     let mut columns = vec![x_column];
     columns.extend(y_columns.iter().map(String::as_str));
@@ -859,80 +877,143 @@ pub fn prepare_chart_data(
     })
 }
 
-/// Series per Y column: `steps` steps along X, each its lowest and highest finite Y at
-/// the step's lowest X, in X order. Two passes over the view, both streamed: X's
-/// bounds, then one group per step. A step where a series has no value breaks its line.
-type EnvelopeSeries = (Vec<Vec<(f64, f64)>>, Vec<Vec<usize>>);
+/// What [`envelope_series`] found.
+enum Envelope {
+    /// Per Y column, its points and where its line breaks, from `rows` rows in
+    /// `steps` steps.
+    Drawn {
+        series: Vec<Vec<(f64, f64)>>,
+        breaks: Vec<Vec<usize>>,
+        rows: usize,
+        steps: usize,
+    },
+    /// The view is no more rows than the sample size, this many: no envelope.
+    Fits(usize),
+}
+
+/// What a pass stopped by [`until_cancelled`] fails with.
+const ENVELOPE_CANCELLED: &str = "chart cancelled";
+
+/// `e`, failing the query once `cancel` is set: a streamed pass stops at its next
+/// morsel rather than reading on for a chart nobody waits for.
+fn until_cancelled(e: Expr, cancel: &Arc<AtomicBool>) -> Expr {
+    let cancel = Arc::clone(cancel);
+    e.map(
+        move |c: Column| {
+            polars_ensure!(!cancel.load(Ordering::Relaxed), ComputeError: ENVELOPE_CANCELLED);
+            Ok(c)
+        },
+        |_, field| Ok(field.clone()),
+    )
+}
+
+/// Collect a pass of the envelope, streamed whatever the setting: it holds a few
+/// numbers per step. A pass stopped by `cancel` is an error that says so.
+fn envelope_pass(lf: LazyFrame, cancel: &Arc<AtomicBool>) -> Result<DataFrame> {
+    crate::statistics::collect_lazy(lf, true).map_err(|e| {
+        if cancel.load(Ordering::Relaxed) {
+            color_eyre::eyre::eyre!(ENVELOPE_CANCELLED)
+        } else {
+            e.into()
+        }
+    })
+}
+
+/// Per Y column, half `limit` steps along X, each its lowest and highest finite Y at
+/// the step's lowest X, in X order. Two streamed passes over the view: the rows and
+/// X's bounds, then one group per step. A row with no X is left out whole; a step
+/// with rows where a series has no value breaks its line.
 fn envelope_series(
     lf: &LazyFrame,
     x_column: &str,
     x_dtype: &DataType,
     y_columns: &[String],
-    steps: usize,
-    streaming: bool,
-) -> Result<EnvelopeSeries> {
+    limit: usize,
+    sampling: &ChartSampling,
+) -> Result<Envelope> {
+    let cancel = &sampling.cancel;
+    // Temporal X as its ordinal, as `x_values` reads it.
     let x = match x_dtype {
         DataType::Datetime(_, _) | DataType::Date | DataType::Time | DataType::Duration(_) => {
             col(x_column).cast(DataType::Int64).cast(DataType::Float64)
         }
         _ => col(x_column).cast(DataType::Float64),
     };
-    let lf = lf
-        .clone()
-        .select(
-            std::iter::once(x.alias("__x"))
-                .chain(y_columns.iter().enumerate().map(|(i, y)| {
-                    // Not finite is null here, so the aggregations below are a plain
-                    // min and max, which stream; a filter inside them does not.
-                    let y = col(y.as_str()).cast(DataType::Float64);
-                    when(y.clone().is_finite())
-                        .then(y)
-                        .otherwise(lit(NULL).cast(DataType::Float64))
-                        .alias(format!("__y{i}"))
-                }))
-                .collect::<Vec<_>>(),
-        )
-        // A row filter, not a filter inside the select: that would leave X shorter than
-        // the Y columns beside it, and is not something the streaming engine streams.
-        .filter(col("__x").is_finite());
-    let bounds = crate::statistics::collect_lazy(
-        lf.clone()
-            .select([col("__x").min().alias("lo"), col("__x").max().alias("hi")]),
-        streaming,
+    // Not finite is null, so the aggregations below are a plain min and max, which
+    // stream; a filter inside them does not.
+    let finite = |e: Expr| {
+        when(e.clone().is_finite())
+            .then(e)
+            .otherwise(lit(NULL).cast(DataType::Float64))
+    };
+    let x = finite(until_cancelled(x, cancel)).alias("__x");
+    let bounds = envelope_pass(
+        lf.clone().select([
+            len().alias("rows"),
+            x.clone().min().alias("lo"),
+            x.clone().max().alias("hi"),
+        ]),
+        cancel,
     )?;
+    let rows = bounds
+        .column("rows")?
+        .cast(&DataType::UInt64)?
+        .u64()?
+        .get(0)
+        .unwrap_or(0) as usize;
+    if rows <= limit {
+        return Ok(Envelope::Fits(rows));
+    }
+    let steps = (limit / 2).max(1);
+    let n = y_columns.len();
+    let drawn = |series, breaks| Envelope::Drawn {
+        series,
+        breaks,
+        rows,
+        steps,
+    };
     let bound = |name: &str| -> Result<Option<f64>> { Ok(bounds.column(name)?.f64()?.get(0)) };
     let (Some(lo), Some(hi)) = (bound("lo")?, bound("hi")?) else {
-        return Ok((
-            vec![Vec::new(); y_columns.len()],
-            vec![Vec::new(); y_columns.len()],
-        ));
+        return Ok(drawn(vec![Vec::new(); n], vec![Vec::new(); n]));
     };
     let per_x = if hi > lo {
         steps as f64 / (hi - lo)
     } else {
         0.0
     };
+    let lf = lf
+        .clone()
+        .select(
+            std::iter::once(x)
+                .chain(y_columns.iter().enumerate().map(|(i, y)| {
+                    finite(col(y.as_str()).cast(DataType::Float64)).alias(format!("__y{i}"))
+                }))
+                .collect::<Vec<_>>(),
+        )
+        // A row filter, not a filter inside the select: that would leave X shorter than
+        // the Y columns beside it.
+        .filter(col("__x").is_not_null());
     let step = ((col("__x") - lit(lo)) * lit(per_x))
         .floor()
         .cast(DataType::Int64)
         .clip(lit(0i64), lit(steps as i64 - 1))
         .alias("__step");
     let mut aggs = vec![col("__x").min()];
-    for i in 0..y_columns.len() {
+    for i in 0..n {
         let y = col(format!("__y{i}"));
         aggs.push(y.clone().min().alias(format!("__lo{i}")));
         aggs.push(y.max().alias(format!("__hi{i}")));
     }
-    let df = crate::statistics::collect_lazy(
+    let df = envelope_pass(
         lf.group_by([step])
             .agg(aggs)
             .sort(["__step"], Default::default()),
-        streaming,
+        cancel,
     )?;
     let xs = df.column("__x")?.f64()?.clone();
-    let mut series = Vec::with_capacity(y_columns.len());
-    let mut breaks = Vec::with_capacity(y_columns.len());
-    for i in 0..y_columns.len() {
+    let mut series = Vec::with_capacity(n);
+    let mut breaks = Vec::with_capacity(n);
+    for i in 0..n {
         let lows = df.column(&format!("__lo{i}"))?.f64()?.clone();
         let highs = df.column(&format!("__hi{i}"))?.f64()?.clone();
         let mut points = Vec::with_capacity(xs.len() * 2);
@@ -955,7 +1036,7 @@ fn envelope_series(
         series.push(points);
         breaks.push(starts);
     }
-    Ok((series, breaks))
+    Ok(drawn(series, breaks))
 }
 
 /// Each column's finite values, read in one pass; nulls are dropped per column.
@@ -2034,6 +2115,61 @@ mod tests {
             prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &sampling, true).unwrap();
         assert_eq!(result.rows.envelope_steps, None);
         assert_eq!(result.series[0].len(), n);
+    }
+
+    /// An envelope reads the whole view twice: never over an object store in place,
+    /// where the sample reads a few row groups; and both passes stop when the chart
+    /// is no longer wanted.
+    #[test]
+    fn an_envelope_is_sampled_instead_where_full_reads_cost_and_stops_when_cancelled() {
+        let n = 10_000i64;
+        let lf = df!("x" => (0..n).collect::<Vec<_>>(), "y" => (0..n).collect::<Vec<_>>())
+            .unwrap()
+            .lazy();
+        let schema = lf.clone().collect_schema().unwrap();
+        let remote = ChartSampling {
+            full_passes: false,
+            ..ChartSampling::rows(Some(100))
+        };
+        let result =
+            prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &remote, true).unwrap();
+        assert_eq!(result.rows.envelope_steps, None);
+        assert_eq!(result.rows.sample_size, Some(100));
+
+        let cancelled = ChartSampling::rows(Some(100));
+        cancelled.cancel.store(true, Ordering::Relaxed);
+        let err = prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], &cancelled, true)
+            .err()
+            .expect("a cancelled envelope is not drawn");
+        assert_eq!(err.to_string(), "chart cancelled");
+    }
+
+    /// A temporal X is placed by its ordinal, as a sampled line places it.
+    #[test]
+    fn an_envelope_places_temporal_x_by_its_ordinal() {
+        let days: Vec<i32> = (0..1_000).collect();
+        let lf = df!("d" => &days, "y" => (0..1_000).map(f64::from).collect::<Vec<_>>())
+            .unwrap()
+            .lazy()
+            .with_column(col("d").cast(DataType::Date));
+        let schema = lf.clone().collect_schema().unwrap();
+        let result = prepare_chart_data(
+            &lf,
+            schema.as_ref(),
+            "d",
+            &["y".into()],
+            &ChartSampling::rows(Some(100)),
+            true,
+        )
+        .unwrap();
+        assert_eq!(result.rows.envelope_steps, Some(50));
+        let points = &result.series[0];
+        assert_eq!(points.first(), Some(&(0.0, 0.0)));
+        assert_eq!(points.last().map(|p| p.1), Some(999.0));
+        assert!(
+            points.iter().all(|&(x, y)| y >= x && y < x + 20.0),
+            "{points:?}"
+        );
     }
 
     /// A step where a series has no value breaks its line, as a null does.

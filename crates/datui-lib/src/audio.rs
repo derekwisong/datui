@@ -1840,6 +1840,40 @@ mod tests {
         assert_eq!(head.height(), 2);
     }
 
+    /// A line chart of a channel streams the plan for its envelope, map and all, and
+    /// keeps a one-sample spike a sample would miss.
+    #[test]
+    fn a_waveform_charts_as_its_envelope_over_seconds() {
+        let mut values = vec![0i16; 20_000];
+        values[12_345] = 30_000;
+        let bytes = wav(&[
+            chunk(b"fmt ", &fmt(1, 1, 8000, 16)),
+            chunk(b"data", &i16s(&values)),
+        ]);
+        let (_f, source) = open(&bytes, false);
+        let source = Arc::new(source);
+        let lf = source.lazy();
+        let schema = source.schema();
+        let result = crate::chart_data::prepare_chart_data(
+            &lf,
+            &schema,
+            SECONDS,
+            &["ch1".into()],
+            &crate::chart_data::ChartSampling::rows(Some(1_000)),
+            true,
+        )
+        .unwrap();
+        assert_eq!(result.rows.total_rows, 20_000);
+        assert_eq!(result.rows.envelope_steps, Some(500));
+        let top = result.series[0]
+            .iter()
+            .map(|p| p.1)
+            .fold(f64::MIN, f64::max);
+        assert_eq!(top, 30_000.0);
+        let last = result.series[0].last().unwrap().0;
+        assert!(last > 2.49 && last < 2.5, "X in seconds: {last}");
+    }
+
     #[test]
     fn hostile_headers_are_errors() {
         let refused = |bytes: &[u8], says: &str| {

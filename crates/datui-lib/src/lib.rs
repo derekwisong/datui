@@ -22936,6 +22936,7 @@ impl App {
             known_total: state.num_rows_if_valid(),
             seed: self.analysis_modal.sample.seed,
             streaming: self.app_config.performance.polars_streaming,
+            full_passes: !state.is_remote_source(),
             held: self.chart_cache.held_rows(dataset),
             cancel: Arc::default(),
         };

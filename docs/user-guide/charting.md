@@ -133,8 +133,10 @@ A **Line** chart over more rows than the sample size draws an envelope
 instead: X is cut into half as many steps as the sample size, and each step
 draws its lowest and highest value, so every peak of a waveform or a long time
 series stays on the plot where a sample would miss it. Two streamed passes
-read the view: X's range, then each step. The chart says so under the plot:
-`min and max of 192M rows in 5,000 steps`. Scatter and Bar keep the sample.
+read the view: the rows and X's range, then each step. The chart says so under
+the plot: `min and max of 192M rows in 5,000 steps`. Scatter and Bar keep the
+sample, and so does a Line over Parquet read in place from S3, GCS or Azure,
+which the envelope would download whole twice.
 
 ## Keys
 

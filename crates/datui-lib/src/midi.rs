@@ -77,6 +77,9 @@ pub enum Body<'a> {
     Sysex { escape: bool, data: &'a [u8] },
     /// `FF`: the meta type and its data.
     Meta { kind: u8, data: &'a [u8] },
+    /// A system common (`F1`-`F6`) or real-time (`F8`-`FE`) message, which a file
+    /// should not hold but some do, and its data bytes: 0 where it has none.
+    System { status: u8, a: u8, b: u8 },
 }
 
 /// A Standard MIDI File, parsed.
@@ -310,9 +313,37 @@ fn parse_track<'a>(body: &'a [u8], track: usize, events: &mut usize) -> Result<V
                     data,
                 }
             }
-            0xf1..=0xfe => {
+            // System real-time: one byte, and running status survives it, as on the
+            // wire. A file should not hold one, but its length is never in doubt.
+            0xf8..=0xfe => Body::System {
+                status: first,
+                a: 0,
+                b: 0,
+            },
+            // System common: its data bytes as the wire defines them. It cancels
+            // running status. 0xF4 and 0xF5 have no definition, so no length.
+            0xf1 | 0xf2 | 0xf3 | 0xf6 => {
+                running = None;
+                let (a, b) = match first {
+                    0xf1 | 0xf3 => (r.u8().ok_or_else(cut)?, 0),
+                    0xf2 => (r.u8().ok_or_else(cut)?, r.u8().ok_or_else(cut)?),
+                    _ => (0, 0),
+                };
+                if a & 0x80 != 0 || b & 0x80 != 0 {
+                    return Err(eyre!(
+                        "MIDI {}: a data byte has its high bit set",
+                        at(track, start)
+                    ));
+                }
+                Body::System {
+                    status: first,
+                    a,
+                    b,
+                }
+            }
+            0xf4 | 0xf5 => {
                 return Err(eyre!(
-                    "MIDI {}: status {first:#04X} is not allowed in a file",
+                    "MIDI {}: status {first:#04X} is undefined",
                     at(track, start)
                 ));
             }
@@ -712,6 +743,26 @@ fn add_file<'a>(
                     cols.value[row] = Some(i32::try_from(data.len()).unwrap_or(i32::MAX));
                     cols.text[row] = Some(hex((!escape).then_some(0xf0), data));
                 }
+                Body::System { status, a, b } => {
+                    let kind = match status {
+                        0xf1 => "mtc_quarter_frame",
+                        0xf2 => "song_position",
+                        0xf3 => "song_select",
+                        0xf6 => "tune_request",
+                        0xf8 => "clock",
+                        0xfa => "start",
+                        0xfb => "continue",
+                        0xfc => "stop",
+                        0xfe => "active_sensing",
+                        _ => "realtime",
+                    };
+                    cols.push(track_no, event.tick, time, kind);
+                    cols.value[row] = match status {
+                        0xf1 | 0xf3 => Some(i32::from(a)),
+                        0xf2 => Some((i32::from(b) << 7) | i32::from(a)),
+                        _ => None,
+                    };
+                }
                 Body::Meta { kind, data } => {
                     let name = meta_kind(kind);
                     cols.push(track_no, event.tick, time, name);
@@ -1092,6 +1143,39 @@ pub(crate) mod tests {
         // Meta events cancel running status.
         let track = [0x00, 0x90, 60, 100, 0x00, 0xff, 0x01, 0x00, 0x00, 60, 0];
         assert!(parse(&smf(0, 96, &[&track])).is_err());
+        // So do sysex and escape packets.
+        for sysex in [0xf0, 0xf7] {
+            let track = [0x00, 0x90, 60, 100, 0x00, sysex, 0x01, 0xf7, 0x00, 60, 0];
+            assert!(parse(&smf(0, 96, &[&track])).is_err(), "{sysex:02X}");
+        }
+        // And system common messages; 0xF4 has no definition, so no length to skip.
+        let track = [0x00, 0x90, 60, 100, 0x00, 0xf3, 0x02, 0x00, 60, 0];
+        assert!(parse(&smf(0, 96, &[&track])).is_err());
+        let err = parse(&smf(0, 96, &[&[0x00, 0xf4]])).unwrap_err();
+        assert!(err.to_string().contains("undefined"), "{err}");
+    }
+
+    /// A real-time byte a file should not hold is read as itself, and the note after
+    /// it still has the status before it, as on the wire.
+    #[test]
+    fn real_time_bytes_keep_running_status() {
+        let track = [
+            0x00, 0x90, 60, 100, 0x00, 0xf8, 0x00, 60, 0, 0x00, 0xf2, 0x10, 0x01, 0x00, 0xff, 0x2f,
+            0x00,
+        ];
+        let (df, _) = table(&smf(0, 96, &[&track]));
+        let kinds: Vec<_> = col(&df, "kind").str().unwrap().iter().flatten().collect();
+        assert_eq!(
+            kinds,
+            [
+                "note_on",
+                "clock",
+                "note_off",
+                "song_position",
+                "end_of_track"
+            ]
+        );
+        assert_eq!(col(&df, "value").i32().unwrap().get(3), Some(0x90));
     }
 
     /// Hostile lengths: past the end, overlong quantities, more tracks than are there.

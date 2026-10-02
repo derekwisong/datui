@@ -3620,7 +3620,8 @@ impl ColorParser {
         let support = supports_color::on(Stream::Stdout);
         #[cfg(windows)]
         let console = windows_console_true_color(
-            std::env::var_os("TERM").is_some(),
+            // `FORCE_COLOR` names a level for `supports_color` to answer with.
+            std::env::var_os("TERM").is_some() || std::env::var_os("FORCE_COLOR").is_some(),
             std::io::IsTerminal::is_terminal(&std::io::stdout()),
             crossterm::ansi_support::supports_ansi,
         );
@@ -3713,13 +3714,13 @@ impl ColorParser {
 
 /// Whether a Windows console draws 24-bit color, where `supports_color` cannot tell.
 /// It reads `TERM` and `COLORTERM`, which Windows Terminal and conhost do not set, and
-/// so takes both for a terminal without color. Both draw 24-bit color once virtual
+/// so takes both for a 16-color terminal. Both draw 24-bit color once virtual
 /// terminal processing is on, which crossterm turns on where it can (`vt`); a legacy
 /// console refuses it and keeps the 16 colors. With `TERM` set (mintty, an MSYS2
-/// shell) its answer stands.
+/// shell), or `FORCE_COLOR`, its answer stands.
 #[cfg(windows)]
-fn windows_console_true_color(term_set: bool, terminal: bool, vt: impl FnOnce() -> bool) -> bool {
-    !term_set && terminal && vt()
+fn windows_console_true_color(env_says: bool, terminal: bool, vt: impl FnOnce() -> bool) -> bool {
+    !env_says && terminal && vt()
 }
 
 impl Default for ColorParser {
@@ -4306,7 +4307,7 @@ mod tests {
         assert!(!rule(false, true, || false), "a legacy console");
         assert!(
             !rule(true, true, || true),
-            "TERM set: supports_color decides"
+            "TERM or FORCE_COLOR set: supports_color decides"
         );
         assert!(!rule(false, false, || true), "not a terminal");
     }

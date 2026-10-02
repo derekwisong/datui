@@ -35,27 +35,47 @@ pub fn named(path: &Path) -> PathBuf {
 }
 
 /// Whether standard input carries data: a pipe or a file. A terminal there is the
-/// user, and a device such as `/dev/null`, where a launcher points it, holds nothing.
+/// user, and a device such as `/dev/null` or Windows' `NUL`, where a launcher points
+/// it, holds nothing.
 pub fn piped() -> bool {
     use std::io::IsTerminal;
     let stdin = std::io::stdin();
-    if stdin.is_terminal() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsFd;
-        use std::os::unix::fs::FileTypeExt;
-        stdin
-            .as_fd()
-            .try_clone_to_owned()
-            .and_then(|fd| std::fs::File::from(fd).metadata())
-            .is_ok_and(|meta| !meta.file_type().is_char_device())
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    carries_data(stdin.is_terminal(), is_device(&stdin))
+}
+
+/// What [`piped`] decides from what standard input is: neither a terminal nor a
+/// device.
+pub fn carries_data(terminal: bool, device: bool) -> bool {
+    !terminal && !device
+}
+
+/// Whether standard input is a character device. One that cannot be asked is taken
+/// for one, so nothing is read from it.
+#[cfg(unix)]
+fn is_device(stdin: &std::io::Stdin) -> bool {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::FileTypeExt;
+    stdin
+        .as_fd()
+        .try_clone_to_owned()
+        .and_then(|fd| std::fs::File::from(fd).metadata())
+        .ok()
+        .is_none_or(|meta| meta.file_type().is_char_device())
+}
+
+/// Whether standard input is a character device: `NUL`, or a console, which
+/// `is_terminal` has already answered for.
+#[cfg(windows)]
+fn is_device(stdin: &std::io::Stdin) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+    // SAFETY: the handle is standard input's, open for the life of the process.
+    unsafe { GetFileType(stdin.as_raw_handle()) == FILE_TYPE_CHAR }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_device(_stdin: &std::io::Stdin) -> bool {
+    false
 }
 
 /// `path` as a host other than the command line means it: `-` is a file of that name,
@@ -104,7 +124,7 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
         (b"\xfd7zXZ\x00", CompressionFormat::Xz),
     ];
     if let Some((_, compression)) = COMPRESSED.iter().find(|(magic, _)| head.starts_with(magic)) {
-        // Only CSV is decompressed before it is read.
+        // What is inside is not looked at: CSV, unless `--format` names TSV or PSV.
         return (FileFormat::Csv, Some(*compression));
     }
     if head.starts_with(b"PAR1") {
@@ -249,6 +269,16 @@ mod tests {
 
     /// `-` is standard input wherever it is named, alone; no paths and a pipe on
     /// standard input select it, and a terminal there does not.
+    /// A terminal is the user and a device (`/dev/null`, `NUL`) holds nothing; only
+    /// a pipe or a file is read (#567).
+    #[test]
+    fn only_a_pipe_or_a_file_carries_data() {
+        assert!(carries_data(false, false), "a pipe or a file");
+        assert!(!carries_data(true, false), "a terminal");
+        assert!(!carries_data(false, true), "/dev/null or NUL");
+        assert!(!carries_data(true, true), "a console");
+    }
+
     #[test]
     fn stdin_is_chosen_by_a_dash_or_a_pipe() {
         assert_eq!(paths_or_stdin(Vec::new(), true), vec![PathBuf::from("-")]);

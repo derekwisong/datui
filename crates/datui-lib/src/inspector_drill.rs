@@ -235,7 +235,7 @@ impl Node {
     /// Whether Enter opens this node as a level: a struct, a list, an object or an
     /// array, or text that reads as a JSON object or array.
     pub fn opens(&self) -> bool {
-        self.shape() != Shape::Leaf || self.with_text(looks_like_json).unwrap_or(false)
+        self.shape() != Shape::Leaf || self.with_text(opens_as_json).unwrap_or(false)
     }
 
     /// The type as the item list names it.
@@ -351,6 +351,12 @@ pub fn looks_like_json(text: &str) -> bool {
         (t.as_bytes().first(), t.as_bytes().last()),
         (Some(b'{'), Some(b'}')) | (Some(b'['), Some(b']'))
     )
+}
+
+/// Whether Enter offers to open `text` as JSON: it reads as an object or array and
+/// is not over [`JSON_MAX_BYTES`], past which Enter shows more of it instead.
+pub fn opens_as_json(text: &str) -> bool {
+    text.len() <= JSON_MAX_BYTES && looks_like_json(text)
 }
 
 /// Parse `text` as JSON, refusing text over [`JSON_MAX_BYTES`]. serde_json stops at
@@ -509,6 +515,27 @@ pub struct JsonWait {
     pub frame: u64,
     pub row: usize,
     pub label: String,
+    /// The text's place, as [`path_key`] names it.
+    pub path: String,
+}
+
+/// A place in a row, for telling one item from another: the field, then each step
+/// opened and the item. Unit separators cannot be typed into a name, so two places
+/// never meet.
+pub fn path_key<'a>(steps: impl IntoIterator<Item = &'a str>) -> String {
+    steps.into_iter().collect::<Vec<_>>().join("\u{1f}")
+}
+
+impl Drill {
+    /// The place of the item `label` in the level shown.
+    pub fn item_key(&self, label: &str) -> String {
+        path_key(
+            self.levels
+                .iter()
+                .map(|l| l.label.as_str())
+                .chain(std::iter::once(label)),
+        )
+    }
 }
 
 #[cfg(test)]

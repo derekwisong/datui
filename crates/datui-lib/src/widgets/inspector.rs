@@ -5,7 +5,7 @@
 
 use crate::copy_modal::thousands;
 use crate::exact;
-use crate::inspector_drill::{Node, Shape, json_text, looks_like_json};
+use crate::inspector_drill::{Node, Shape, json_text, opens_as_json};
 use crate::inspector_modal::{BodyKey, CHUNK_BYTES, FieldRead, InspectorModal};
 use crate::render::context::RenderContext;
 use crate::widgets::datatable::{DataTableState, InspectField, InspectRow, NullKind, dtype_label};
@@ -600,7 +600,11 @@ pub fn render(
             enter = match &value {
                 Shown::Unread => Some("Read"),
                 Shown::Failed(_) => Some("Retry"),
-                Shown::Value(v) if value_opens(v) => Some("Open"),
+                Shown::Value(v)
+                    if value_opens(v) && !modal.known_not_json(row.frame, row.row, &field.name) =>
+                {
+                    Some("Open")
+                }
                 _ => None,
             };
             let key = BodyKey {
@@ -919,8 +923,8 @@ fn draw_value(
 /// reads as a JSON object or array.
 pub fn value_opens(value: &AnyValue) -> bool {
     match value {
-        AnyValue::String(s) => looks_like_json(s),
-        AnyValue::StringOwned(s) => looks_like_json(s),
+        AnyValue::String(s) => opens_as_json(s),
+        AnyValue::StringOwned(s) => opens_as_json(s),
         v => exact::is_nested_value(v),
     }
 }
@@ -1101,13 +1105,10 @@ fn render_drill(
 
     let body = match &focused {
         Some((label, child)) => {
-            let mut path: Vec<&str> = drill.levels.iter().map(|l| l.label.as_str()).collect();
-            path.push(label);
             let key = BodyKey {
                 frame: drill.frame,
                 row: drill.row,
-                // Unit separators cannot be typed into a name, so two paths never meet.
-                field: path.join("\u{1f}"),
+                field: drill.item_key(label),
                 escaped: modal.escaped,
                 chunks: modal.chunks,
                 width: measure as u16,
@@ -1139,7 +1140,9 @@ fn render_drill(
     let body_h = content_h.saturating_sub(list_h + 2 + header);
     let overflows = body.lines.len() > body_h;
     let list_overflows = len > list_h;
-    let opens = focused.as_ref().is_some_and(|(_, child)| child.opens());
+    let opens = focused.as_ref().is_some_and(|(label, child)| {
+        child.opens() && !modal.known_not_json(drill.frame, drill.row, &drill.item_key(label))
+    });
 
     let mut bar = HintBar::from_ctx(ctx);
     if opens {

@@ -25189,7 +25189,8 @@ impl App {
             }
             Job::InspectJson { token } => {
                 let modal = &mut self.inspector_modal;
-                if current && modal.json_wait.take_if(|w| w.token == *token).is_some() {
+                if current && let Some(wait) = modal.json_wait.take_if(|w| w.token == *token) {
+                    modal.not_json = Some((wait.frame, wait.row, wait.path));
                     self.flash_note(if panicked {
                         "Could not read the JSON; see the log".to_string()
                     } else {
@@ -26292,8 +26293,9 @@ impl App {
                 let drill = modal.drill.as_ref()?;
                 let (frame, row) = (drill.frame, drill.row);
                 let (label, node) = drill.level().focused()?;
-                if node.opens() {
-                    self.inspector_open(frame, row, label, node);
+                let path = drill.item_key(&label);
+                if node.opens() && !modal.known_not_json(frame, row, &path) {
+                    self.inspector_open(frame, row, label, path, node);
                 } else if event.code == KeyCode::Enter
                     && modal.body.as_ref().is_some_and(|(_, body)| body.more)
                 {
@@ -26306,27 +26308,29 @@ impl App {
     }
 
     /// Open `node` as a level under the one shown: a list or struct at once, text as
-    /// the JSON it holds, parsed here when short and on a worker when long.
+    /// the JSON it holds, parsed here when short and on a worker when long. `path`
+    /// is the text's place, remembered when it does not parse.
     fn inspector_open(
         &mut self,
         frame: u64,
         row: usize,
         label: String,
+        path: String,
         node: inspector_drill::Node,
     ) {
-        use inspector_drill::{JSON_INLINE_BYTES, JSON_MAX_BYTES, Node, Shape};
+        use inspector_drill::{JSON_INLINE_BYTES, Node, Shape};
         if node.shape() != Shape::Leaf {
             self.inspector_modal.drill_in(frame, row, label, node);
             return;
         }
         let Some(len) = node
-            .with_text(|s| inspector_drill::looks_like_json(s).then_some(s.len()))
+            .with_text(|s| inspector_drill::opens_as_json(s).then_some(s.len()))
             .flatten()
         else {
             return;
         };
-        // Short text is parsed on this key; text over the cap is refused as fast.
-        if len <= JSON_INLINE_BYTES || len > JSON_MAX_BYTES {
+        // Short text is parsed on this key.
+        if len <= JSON_INLINE_BYTES {
             match node.with_text(inspector_drill::parse_json) {
                 Some(Ok(value)) => {
                     let node = Node::Json {
@@ -26335,21 +26339,23 @@ impl App {
                     };
                     self.inspector_modal.drill_in(frame, row, label, node);
                 }
-                Some(Err(e)) => self.flash_note(sentence(&e)),
+                Some(Err(e)) => {
+                    self.inspector_modal.not_json = Some((frame, row, path));
+                    self.flash_note(sentence(&e));
+                }
                 None => {}
             }
             return;
         }
-        let Some(text) = node.with_text(str::to_string) else {
-            return;
-        };
-        let token = self.inspector_modal.wait_for_json(frame, row, label);
+        let token = self.inspector_modal.wait_for_json(frame, row, label, path);
+        // The worker reads the text where it is: the node is a one-row slice or a
+        // shared document, so nothing up to the 4 MiB cap is copied to hand it over.
         self.spawn_job(
             Job::InspectJson { token },
             Some(Self::READING_JSON),
-            move |_| {
-                inspector_drill::parse_json(&text)
-                    .map(|value| Answer::JsonParsed(std::sync::Arc::new(value)))
+            move |_| match node.with_text(inspector_drill::parse_json) {
+                Some(parsed) => parsed.map(|value| Answer::JsonParsed(std::sync::Arc::new(value))),
+                None => Err("not JSON: not text".to_string()),
             },
         );
     }
@@ -26461,7 +26467,12 @@ impl App {
         match shown {
             // A failed read is asked again: the pane said why, and Enter is the retry.
             Shown::Unread | Shown::Failed(_) => self.read_inspected_fields(&row),
-            Shown::Value(ref v) if crate::widgets::inspector::value_opens(v) => {
+            Shown::Value(ref v)
+                if crate::widgets::inspector::value_opens(v)
+                    && !self
+                        .inspector_modal
+                        .known_not_json(row.frame, row.row, &field.name) =>
+            {
                 let column = if field.buffered() {
                     row.values.column(&field.name).ok()
                 } else {
@@ -26472,7 +26483,8 @@ impl App {
                 if let Some(column) = column {
                     let node =
                         inspector_drill::Node::Native(column.as_materialized_series().clone());
-                    self.inspector_open(row.frame, row.row, field.name.clone(), node);
+                    let path = inspector_drill::path_key([field.name.as_str()]);
+                    self.inspector_open(row.frame, row.row, field.name.clone(), path, node);
                 }
             }
             // Only while the pane, as last drawn for this field, has more to show.
@@ -29026,6 +29038,50 @@ mod inspector_tests {
         let drill = app.inspector_modal.drill.as_ref().expect("opened");
         assert_eq!(drill.row, 1);
         assert_eq!(drill.level().node.len(), 40_001);
+    }
+
+    /// #615: text too long to open as JSON, or that did not parse, keeps Enter as
+    /// More: the footer stops offering Open, and Enter shows the next chunk.
+    #[test]
+    fn json_text_that_cannot_open_keeps_enter_as_more() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let huge = format!(
+            "[{}0]",
+            "0,".repeat(inspector_drill::JSON_MAX_BYTES / 2 + 1)
+        );
+        let bad = format!("{{{}}}", "x".repeat(40 * 1024));
+        let df = df!("huge" => [huge], "bad" => [bad]).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.set_column_order(vec!["huge".to_string(), "bad".to_string()]);
+        app.data_table_state = Some(state);
+        draw(&mut app);
+        press(&mut app, KeyCode::Char(' '));
+        let screen = draw(&mut app);
+        assert!(
+            screen.contains("More") && !screen.contains("Open"),
+            "{screen}"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.inspector_modal.chunks, 2, "Enter is More over the cap");
+        assert!(app.inspector_modal.drill.is_none());
+
+        press(&mut app, KeyCode::Down);
+        let screen = draw(&mut app);
+        assert!(screen.contains("Open"), "{screen}");
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.flash_message()
+                .is_some_and(|m| m.starts_with("Not JSON"))
+        );
+        let screen = draw(&mut app);
+        assert!(
+            screen.contains("More") && !screen.contains("Open"),
+            "{screen}"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.inspector_modal.chunks, 2, "then Enter is More");
+        assert!(app.inspector_modal.drill.is_none());
     }
 
     /// The footer names what Enter does on a field not read yet.

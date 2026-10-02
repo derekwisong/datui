@@ -81,11 +81,12 @@ fit, and the focused item's whole value is under the table.
 | Limit | |
 |---|---|
 | Items | Only the items on screen are read: a list of a million items opens at once, and `End` reaches the last |
-| JSON text | Up to 64 KB is parsed on the key; longer text in the background, with the spinner. Text over 4 MiB is not opened |
+| JSON text | Up to 64 KB is parsed on the key; longer text in the background, with the spinner. Text over 4 MiB is not opened; <kbd>Enter</kbd> shows more of it |
 | Depth | JSON nested deeper than 128 levels does not open |
 
 Text that does not parse stays where it is, and the bottom bar says why:
-`Not JSON: key must be a string at line 1 column 2`.
+`Not JSON: key must be a string at line 1 column 2`. From then on
+<kbd>Enter</kbd> on it shows more of the text, as on any long value.
 
 ## Copying a field
 

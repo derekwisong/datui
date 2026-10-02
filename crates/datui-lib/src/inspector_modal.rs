@@ -85,6 +85,9 @@ pub struct InspectorModal {
     pub json_wait: Option<JsonWait>,
     /// The last [`JsonWait::token`] handed out.
     pub json_token: u64,
+    /// Text that looked like JSON and did not parse, by frame, row and path: Enter
+    /// there is More again, not a second try that fails the same way.
+    pub not_json: Option<(u64, usize, String)>,
 }
 
 impl InspectorModal {
@@ -111,6 +114,7 @@ impl InspectorModal {
         self.shown_row = None;
         self.drill = None;
         self.json_wait = None;
+        self.not_json = None;
         self.reset_pane();
     }
 
@@ -121,6 +125,14 @@ impl InspectorModal {
         self.body = None;
         self.drill = None;
         self.json_wait = None;
+        self.not_json = None;
+    }
+
+    /// Whether the text at `path` of row `row` of frame `frame` was found not to be JSON.
+    pub fn known_not_json(&self, frame: u64, row: usize, path: &str) -> bool {
+        self.not_json
+            .as_ref()
+            .is_some_and(|(f, r, p)| (*f, *r) == (frame, row) && p == path)
     }
 
     /// The focused field, or None when the find text admits nothing.
@@ -218,13 +230,14 @@ impl InspectorModal {
     }
 
     /// A ticket for text about to be parsed as JSON off this thread.
-    pub fn wait_for_json(&mut self, frame: u64, row: usize, label: String) -> u64 {
+    pub fn wait_for_json(&mut self, frame: u64, row: usize, label: String, path: String) -> u64 {
         self.json_token += 1;
         self.json_wait = Some(JsonWait {
             token: self.json_token,
             frame,
             row,
             label,
+            path,
         });
         self.json_token
     }

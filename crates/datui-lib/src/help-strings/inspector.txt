@@ -41,7 +41,8 @@ Nested values:
   the row: each field, key or [index] opened. A list of structs, or a JSON
   array of objects, is a table with a column per field. Only the items on
   screen are read, so a list of a million items opens at once. JSON text over
-  64 KB is parsed in the background; text over 4 MiB is not opened.
+  64 KB is parsed in the background. Text over 4 MiB, or text that turned
+  out not to be JSON, is not opened: Enter shows more of it.
 
 Inside a level:
   ↑ / ↓ (j/k):      Move between items

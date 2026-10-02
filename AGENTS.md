@@ -11,10 +11,10 @@ https://derekwisong.github.io/datui/; do not restate them here.
 ./scripts/dev/setup-test-data.sh                # once: .venv + test fixtures
 cargo build                                     # debug binary at target/debug/datui
 cargo run -- data.parquet
-cargo test --workspace                          # what CI runs; plain `cargo test` is the root crate only
+cargo test --workspace                          # CI runs the same under nextest; plain `cargo test` is the root crate only
 cargo fmt
 cargo clippy --workspace --all-targets --locked -- -D warnings
-./scripts/code/fuzz.sh replay                   # seconds; run if you touched a parser or matcher
+./scripts/dev/test.sh integration fuzz_corpus_test  # fast fuzz corpus replay; run if you touched a parser or matcher
 ```
 
 CI rejects unformatted code and any clippy warning. `pre-commit install` runs

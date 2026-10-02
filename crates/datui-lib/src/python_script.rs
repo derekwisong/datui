@@ -240,15 +240,17 @@ fn filters_python(filters: &[SidebarFilter]) -> String {
 /// One step datui took to build the view, in the order it took them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
-    /// A q-style query. `keys` names a grouping's keys in its result, which orders
-    /// its rows.
+    /// A q-style query over data of the `input` schema. `keys` names a grouping's
+    /// keys in its result, which orders its rows.
     Query {
         query: String,
+        input: SchemaRef,
         keys: Vec<String>,
     },
     /// The rows a grouped q-style query grouped: its where clause alone.
     QueryRows {
         query: String,
+        input: SchemaRef,
     },
     /// A SQL statement over the data so far, registered as `df`. `ordered_by` names
     /// the keys datui orders a grouping's rows by when the statement does not.
@@ -292,12 +294,18 @@ impl Step {
     /// The method calls the step is, one per line, without indentation.
     fn python(&self) -> Vec<String> {
         match self {
-            Step::Query { query, keys } => match crate::query::parse_nodes(query) {
-                Ok(nodes) => nodes.python_steps(keys),
+            Step::Query { query, input, keys } => match crate::query::parse_nodes(query) {
+                Ok(mut nodes) => {
+                    nodes.resolve_division(input);
+                    nodes.python_steps(keys)
+                }
                 Err(e) => vec![format!("# the query did not parse: {e}")],
             },
-            Step::QueryRows { query } => match crate::query::parse_nodes(query) {
-                Ok(nodes) => nodes.python_filter().into_iter().collect(),
+            Step::QueryRows { query, input } => match crate::query::parse_nodes(query) {
+                Ok(mut nodes) => {
+                    nodes.resolve_division(input);
+                    nodes.python_filter().into_iter().collect()
+                }
                 Err(e) => vec![format!("# the query did not parse: {e}")],
             },
             Step::Sql { sql, ordered_by } => {
@@ -1016,8 +1024,15 @@ mod tests {
 
     #[test]
     fn a_grouped_query_groups_then_orders_by_its_keys() {
+        let input = Schema::from_iter([
+            Field::new("dept".into(), DataType::String),
+            Field::new("salary".into(), DataType::Float64),
+            Field::new("id".into(), DataType::Int64),
+            Field::new("age".into(), DataType::Int64),
+        ]);
         let text = script(vec![Step::Query {
             query: "select avg salary, n: count id by dept where age > 30".into(),
+            input: Arc::new(input),
             keys: vec!["dept".into()],
         }]);
         assert!(

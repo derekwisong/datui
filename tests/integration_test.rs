@@ -21947,3 +21947,58 @@ fn test_copy_as_python_reads_an_arrow_stream() {
     assert!(script.contains("pl.read_ipc_stream("), "{script}");
     assert_eq!(rows, view_csv(&app), "{script}");
 }
+
+/// The query language's `/` and `%` floor-divide two whole numbers, as Polars' `/`
+/// on two expressions does: the script writes `//` there and `/` where a float
+/// takes part, so its rows are datui's, negatives and a zero divisor included.
+#[test]
+fn test_copy_as_python_divides_integers_as_datui_does() {
+    let python = Path::new(".venv/bin/python");
+    if !python.exists() {
+        eprintln!("skipped: no .venv to write the file with");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ints.parquet");
+    let written = std::process::Command::new(python)
+        .arg("-c")
+        .arg(format!(
+            "import polars as pl\n\
+             pl.DataFrame({{\n\
+             'k': ['x', 'y', 'x', 'y', 'x', 'y', 'x'],\n\
+             'a': pl.Series([7, -7, 7, -7, 5, None, 0], dtype=pl.Int64),\n\
+             'b': pl.Series([2, 2, -2, -2, 0, 3, 4], dtype=pl.Int32),\n\
+             'f': [2.0, 2.0, -2.0, -2.0, 0.5, 3.0, 4.0],\n\
+             }}).write_parquet({:?})",
+            path.display().to_string()
+        ))
+        .status()
+        .unwrap();
+    assert!(written.success());
+    for query in [
+        "select k, q: a / b, r: a % b, m: a mod b, n: -a / b, t: a / f, h: a / 2",
+        "select k, a, b where (a / b) < 0",
+        "select q: sum a / sum b, t: sum a / sum f by k",
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .query(query.to_string());
+        pump_until_idle(&mut app, &rx, &tx);
+        assert!(
+            app.data_table_state.as_ref().unwrap().error().is_none(),
+            "{query}: {:?}",
+            app.data_table_state.as_ref().unwrap().error()
+        );
+        let (rows, script) = run_python_script(&app).unwrap();
+        assert!(
+            script.contains(" // "),
+            "{query}: no floor division\n{script}"
+        );
+        assert_eq!(rows, view_csv(&app), "{query}:\n{script}");
+    }
+}

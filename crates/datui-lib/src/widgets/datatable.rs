@@ -9294,10 +9294,9 @@ impl DataTableState {
             return;
         }
 
-        let parsed = parse_query(&query).map(|parsed| {
-            let schema = self.query_source().collect_schema().ok();
-            parsed.past_calendar_safe(schema.as_deref())
-        });
+        let source_schema = self.query_source().collect_schema().ok();
+        let parsed =
+            parse_query(&query).map(|parsed| parsed.past_calendar_safe(source_schema.as_deref()));
         match parsed {
             Ok(ParsedQuery {
                 cols,
@@ -9386,21 +9385,28 @@ impl DataTableState {
                 // The keys lead the result in `by` order, whatever they were named.
                 let keys: Vec<(PlSmallStr, Expr)> =
                     schema.iter_names().cloned().zip(group_by_cols).collect();
+                // Python's division depends on the types the query read.
+                let input = source_schema.unwrap_or_default();
                 let steps = vec![Step::Query {
                     query: query.clone(),
+                    input: input.clone(),
                     keys: keys.iter().map(|(name, _)| name.to_string()).collect(),
                 }];
                 // The same keys as Python, for a drill into one of the groups.
                 let python_keys: Vec<Option<String>> = match crate::query::parse_nodes(&query) {
-                    Ok(nodes) => nodes
-                        .group_by
-                        .iter()
-                        .map(|key| Some(key.without_aliases().python()))
-                        .collect(),
+                    Ok(mut nodes) => {
+                        nodes.resolve_division(&input);
+                        nodes
+                            .group_by
+                            .iter()
+                            .map(|key| Some(key.without_aliases().python()))
+                            .collect()
+                    }
                     Err(_) => vec![None; keys.len()],
                 };
                 let python_rows = Some(vec![Step::QueryRows {
                     query: query.clone(),
+                    input,
                 }]);
                 self.install_query_result(lf, schema, ActiveQuery::Dsl(query), locked, steps);
                 if !keys.is_empty() {

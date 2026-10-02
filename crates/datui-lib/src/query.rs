@@ -566,6 +566,41 @@ impl Node {
         }
     }
 
+    /// Each `/` named as Polars runs it over `schema`, the data the expression reads.
+    /// Polars' `/` on two expressions (`Div`) floor-divides whole numbers and divides
+    /// anything else; Python has no such operator, so the script needs `//` or `/`,
+    /// picked by the type of the quotient.
+    pub(crate) fn resolve_division(&mut self, schema: &Schema) {
+        match self {
+            Node::Bin(_, left, right) | Node::Coalesce(left, right) | Node::Filter(left, right) => {
+                left.resolve_division(schema);
+                right.resolve_division(schema);
+            }
+            Node::When(c, t, o) => {
+                c.resolve_division(schema);
+                t.resolve_division(schema);
+                o.resolve_division(schema);
+            }
+            Node::Op(inner, _) | Node::Alias(inner, _) => inner.resolve_division(schema),
+            _ => {}
+        }
+        if let Node::Bin(BinOp::Div, ..) = self {
+            let quotient = DataFrame::empty_with_schema(schema)
+                .lazy()
+                .select([self.to_expr()])
+                .collect_schema()
+                .ok()
+                .and_then(|s| s.get_at_index(0).map(|(_, dtype)| dtype.is_integer()));
+            if let (Some(whole), Node::Bin(op, ..)) = (quotient, self) {
+                *op = if whole {
+                    BinOp::FloorDiv
+                } else {
+                    BinOp::TrueDiv
+                };
+            }
+        }
+    }
+
     /// The literal as Python, bare: `1.0`, `"a"`, `True`, `None`.
     fn python_literal(&self) -> Option<String> {
         Some(match self {
@@ -1691,6 +1726,19 @@ impl QueryNodes {
             group_by: lower(self.group_by),
             group_by_names: self.group_by_names,
             distinct: self.distinct,
+        }
+    }
+
+    /// Each `/` named as Polars runs it over `schema`, the data the query reads; see
+    /// [`Node::resolve_division`].
+    pub(crate) fn resolve_division(&mut self, schema: &Schema) {
+        let nodes = self
+            .cols
+            .iter_mut()
+            .chain(self.filter.iter_mut())
+            .chain(self.group_by.iter_mut());
+        for node in nodes {
+            node.resolve_division(schema);
         }
     }
 
@@ -3396,6 +3444,36 @@ mod tests {
             py("t > 2024.01.31T10:00:00.5"),
             "pl.col(\"t\") > pl.lit(\"2024-01-31T10:00:00.500\").str.to_datetime(\"%Y-%m-%dT%H:%M:%S%.3f\", time_unit=\"ms\")"
         );
+    }
+
+    #[test]
+    fn division_reads_as_polars_runs_it_on_the_types() {
+        let schema = Schema::from_iter([
+            Field::new("i".into(), DataType::Int64),
+            Field::new("j".into(), DataType::Int32),
+            Field::new("u".into(), DataType::UInt8),
+            Field::new("f".into(), DataType::Float64),
+        ]);
+        let py = |expr: &str| {
+            let mut node = parse_node(&tokenize(expr).unwrap()).unwrap();
+            node.resolve_division(&schema);
+            node.python()
+        };
+        // Two whole numbers floor-divide, as Polars' `/` on two expressions does.
+        assert_eq!(py("i / j"), "pl.col(\"i\") // pl.col(\"j\")");
+        assert_eq!(py("j % i"), "pl.col(\"j\") // pl.col(\"i\")");
+        // A pair Polars has no type for, which fails the query in datui too, and an
+        // unknown column stay Python's `/`.
+        assert_eq!(py("i / u"), "pl.col(\"i\") / pl.col(\"u\")");
+        assert_eq!(py("(i mod 3) / j"), "(pl.col(\"i\") % 3) // pl.col(\"j\")");
+        // A float on either side, or a number as typed, divides.
+        assert_eq!(py("i / f"), "pl.col(\"i\") / pl.col(\"f\")");
+        assert_eq!(py("i / 2"), "pl.col(\"i\") / 2.0");
+        assert_eq!(
+            py("sum[i] / count[j]"),
+            "pl.col(\"i\").sum().alias(\"sum_i\") // pl.col(\"j\").count().alias(\"count_j\")"
+        );
+        assert_eq!(py("x / i"), "pl.col(\"x\") / pl.col(\"i\")");
     }
 
     #[test]

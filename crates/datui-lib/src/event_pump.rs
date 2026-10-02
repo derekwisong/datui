@@ -846,6 +846,10 @@ mod tests {
         let (mut p, dir) = loaded_pump();
         let out = dir.path().join("out.csv");
         assert!(!p.app.work_a_bump_would_strand(), "nothing is running yet");
+        // The export's worker waits until it has been seen running.
+        let (waits, release) =
+            crate::tests::worker_waits_once(|job| matches!(job, crate::Job::Export));
+        p.app.jobs.worker_waits = waits;
 
         p.send(AppEvent::Export(csv_export(&out))).unwrap();
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
@@ -869,6 +873,7 @@ mod tests {
             "the export it started is running now, and holds it in turn"
         );
 
+        release.send(()).unwrap();
         settle(&mut p);
         assert!(out.exists(), "and the export finishes, which is the point");
         assert!(
@@ -1143,6 +1148,12 @@ mod tests {
             .into_iter()
             .map(|job| p.app.job_for_tests(job, None))
             .collect();
+        // The open's first phase waits until the failures are in, so it is under way
+        // when they land.
+        let (waits, release) = crate::tests::worker_waits_once(|job| {
+            matches!(job, crate::Job::OpenNamed(_) | crate::Job::Load(_))
+        });
+        p.app.jobs.worker_waits = waits;
         p.send(AppEvent::Open(
             vec![dir.path().join("people.csv")],
             OpenOptions::default(),
@@ -1157,6 +1168,7 @@ mod tests {
                 panicked: true,
             });
         }
+        release.send(()).unwrap();
         settle(&mut p);
         assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
         assert_ne!(p.app.dataset_generation, shown, "the open finished");
@@ -1180,6 +1192,12 @@ mod tests {
             loads += usize::from(matches!(job, crate::Job::Load(_)));
             loads == 2
         }));
+        // The first phase waits for the first frame, so the open is seen under way.
+        let (waits, release) = crate::tests::worker_waits_once(|job| {
+            matches!(job, crate::Job::OpenNamed(_) | crate::Job::Load(_))
+        });
+        p.app.jobs.worker_waits = waits;
+        let mut release = Some(release);
         p.send(AppEvent::Open(vec![path.clone()], OpenOptions::default()))
             .unwrap();
         let mut frames = 0;
@@ -1187,6 +1205,9 @@ mod tests {
         while !p.app.error_modal.active {
             assert!(std::time::Instant::now() < deadline, "the open never ended");
             p.wait_and_drain(Duration::from_millis(50)).unwrap();
+            if let Some(release) = release.take() {
+                release.send(()).unwrap();
+            }
             if p.app.awaiting_dataset() {
                 frames += 1;
                 assert!(p.app.is_busy(), "busy at frame {frames}");
@@ -1462,6 +1483,10 @@ mod tests {
         p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
         let sql = "SELECT CAST(name AS INT) AS n FROM df";
         type_keys(&mut p, sql);
+        // Its worker waits until the keys are typed, so it is still running then.
+        let (waits, release) =
+            crate::tests::worker_waits_once(|job| matches!(job, crate::Job::Rows(_)));
+        p.app.jobs.worker_waits = waits;
         p.terminal_key(plain(KeyCode::Enter)).unwrap();
         // The statement starts running on the next pass over the channel.
         p.drain().unwrap();
@@ -1469,6 +1494,7 @@ mod tests {
         type_keys(&mut p, "jj");
         assert_eq!(held(&p).len(), 2);
 
+        release.send(()).unwrap();
         settle(&mut p);
         assert!(held(&p).is_empty());
         assert!(!p.app.error_modal.active);
@@ -1633,6 +1659,9 @@ mod tests {
     /// Item 5: a replayed Enter's Search runs before a key typed in the same moment. The
     /// run loop drains the channel after a replay, so the fresh key finds the app busy
     /// and waits; it then acts on the search's result.
+    ///
+    /// The search's rows are held on their worker until G is typed (#568): a result
+    /// back within the drain would leave nothing running for G to wait on.
     #[test]
     fn a_replayed_search_runs_before_a_fresh_key() {
         let (mut p, _dir) = loaded_pump();
@@ -1640,22 +1669,30 @@ mod tests {
         type_keys(&mut p, "/select name where age > 40");
         p.terminal_key(plain(KeyCode::Enter)).unwrap();
         p.app.busy = false;
+        let (waits, release) =
+            crate::tests::worker_waits_once(|job| matches!(job, crate::Job::Rows(_)));
+        p.app.jobs.worker_waits = waits;
 
         // Replay one key, then drain, exactly as the run loop does before polling.
         loop {
             let replayed = p.replay_one().unwrap();
             assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
             if p.app.is_busy() {
-                // The Search is running: a key typed now must wait for it.
-                assert!(
-                    !p.terminal_key(plain(KeyCode::Char('G'))).unwrap(),
-                    "G waits behind the running search"
-                );
                 break;
             }
             assert!(replayed, "should still be replaying the query");
         }
+        assert!(held(&p).is_empty(), "the whole query replayed");
+        // The Search is running: a key typed now must wait for it.
+        assert!(
+            !p.terminal_key(plain(KeyCode::Char('G'))).unwrap(),
+            "G waits behind the running search"
+        );
+        assert_eq!(held(&p), [KeyCode::Char('G')]);
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+        assert!(!p.replay_one().unwrap(), "G is not replayed while it runs");
 
+        release.send(()).unwrap();
         settle(&mut p);
         assert_eq!(p.app.input_mode, InputMode::Normal);
         let state = p.app.data_table_state.as_ref().unwrap();

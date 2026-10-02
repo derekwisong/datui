@@ -4620,6 +4620,22 @@ pub mod tests {
         }))
     }
 
+    /// For `Jobs::worker_waits`: the worker of the first job `which` picks waits, before
+    /// its work starts, until the sender returned sends or is dropped. Every other job
+    /// runs.
+    pub(crate) fn worker_waits_once(
+        which: fn(&crate::Job) -> bool,
+    ) -> (
+        Option<crate::jobs::WorkerWaits>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (release, gate) = std::sync::mpsc::channel();
+        let mut gate = Some(gate);
+        let waits: crate::jobs::WorkerWaits =
+            Box::new(move |job| if which(job) { gate.take() } else { None });
+        (Some(waits), release)
+    }
+
     /// The footer read, the size probe and a download go through the store Polars
     /// scans with, found in its cache by bucket and options, so the same object
     /// yields the same store.

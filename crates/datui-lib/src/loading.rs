@@ -880,11 +880,9 @@ impl Loader {
         }
         if stdin::is_stdin(&first) {
             // Read once: opened again (`H`), the copy on hand is read.
-            if let Some(kept) = self
-                .kept
-                .clone()
-                .filter(|kept| kept.url == first && kept.file.path().exists())
-            {
+            if let Some(kept) = self.kept.clone().filter(|kept| {
+                kept.url == first && kept.file.path().exists() && kept.serves(&options)
+            }) {
                 return self.read_download(kept, options);
             }
             let load = self.load.as_mut().expect("an open has a load");

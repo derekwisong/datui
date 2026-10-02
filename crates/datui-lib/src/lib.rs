@@ -16977,8 +16977,7 @@ impl App {
                 };
                 self.spawn_job(job, Some(status), move |_| {
                     let (url, _, options) = pending.parts();
-                    let mut options = options.clone();
-                    let download = match &pending {
+                    let (download, options) = match &pending {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { .. } => {
                             let ext = source::download_suffix(url);
@@ -16988,24 +16987,29 @@ impl App {
                                 ext.as_deref(),
                                 &writer,
                             )
+                            .map(|file| (file, options.clone()))
                         }
                         #[cfg(feature = "cloud")]
                         loading::PendingDownload::S3 { .. }
                         | loading::PendingDownload::Gcs { .. }
                         | loading::PendingDownload::Azure { .. } => {
-                            Self::download_cloud_to_temp(url, &cloud, &options, &runtime, &writer)
+                            Self::download_cloud_to_temp(url, &cloud, options, &runtime, &writer)
+                                .map(|file| (file, options.clone()))
                         }
                         // Its streams, converted as they arrive; its IPC files stay put.
                         #[cfg(feature = "cloud")]
                         loading::PendingDownload::Arrow { objects, .. } => {
                             crate::cloud_arrow::download(
-                                objects, &options, &cloud, &runtime, &writer,
+                                objects, options, &cloud, &runtime, &writer,
                             )
                             .map(|(file, parts)| {
-                                options.format = Some(FileFormat::Arrow);
-                                options.hive = false;
-                                options.arrow_parts = Some(Arc::new(parts));
-                                file
+                                let options = OpenOptions {
+                                    format: Some(FileFormat::Arrow),
+                                    hive: false,
+                                    arrow_parts: Some(Arc::new(parts)),
+                                    ..options.clone()
+                                };
+                                (file, options)
                             })
                         }
                     }
@@ -18695,7 +18699,7 @@ impl App {
                 )?);
             }
             Ok(LazyFrame::scan_ipc(
-                PlRefPath::try_from_path(path)?,
+                polars::prelude::PlRefPath::try_from_path(path)?,
                 Default::default(),
                 Default::default(),
             )?)

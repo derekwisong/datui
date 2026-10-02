@@ -187,13 +187,39 @@ pub enum Direction {
     Previous,
 }
 
-/// Where a find starts: a view row, and in it the column (an index into the columns
-/// searched) of the cell the last find landed on. With no column the whole row is in
-/// reach: `f` finds the first match at or after the cursor.
+/// Where a find starts: a view row, and in it the cursor's place among the columns
+/// searched. With no place the whole row is in reach: `f` finds the first match at or
+/// after the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Start {
     pub(crate) row: usize,
-    pub(crate) column: Option<usize>,
+    pub(crate) column: Option<At>,
+}
+
+/// The cursor's place in its row, as an index into the columns searched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum At {
+    /// On a searched column.
+    On(usize),
+    /// On a column not searched, just before this searched one (or past the last).
+    Before(usize),
+}
+
+impl At {
+    /// The first searched column past the cursor.
+    fn ahead(self) -> usize {
+        match self {
+            At::On(c) => c + 1,
+            At::Before(c) => c,
+        }
+    }
+
+    /// The searched columns before this one are behind the cursor.
+    fn behind(self) -> usize {
+        match self {
+            At::On(c) | At::Before(c) => c,
+        }
+    }
 }
 
 /// The cell a find landed on.
@@ -284,21 +310,21 @@ impl Search {
         };
         match direction {
             Direction::Next => {
-                let ahead = start.column.map(|c| Limit {
+                let ahead = start.column.map(|at| Limit {
                     row: r,
-                    columns: c + 1..n,
+                    columns: at.ahead()..n,
                 });
                 if let Some(hit) = self.forward(r, None, ahead.as_ref(), false)? {
                     return Ok(Some(found(hit, false, &self.columns)));
                 }
                 // Round from the top: up to the start row, and in it the cells up to
-                // the start cell, which is a match of its own when it is the only one.
+                // the cursor's, which is a match of its own when it is the only one.
                 let (end, behind) = match start.column {
-                    Some(c) => (
+                    Some(at) => (
                         r + 1,
                         Some(Limit {
                             row: r,
-                            columns: 0..c + 1,
+                            columns: 0..at.ahead(),
                         }),
                     ),
                     None => (r, None),
@@ -308,20 +334,20 @@ impl Search {
                     .map(|hit| found(hit, true, &self.columns)))
             }
             Direction::Previous => {
-                let behind = start.column.map(|c| Limit {
+                let behind = start.column.map(|at| Limit {
                     row: r,
-                    columns: 0..c,
+                    columns: 0..at.behind(),
                 });
                 if let Some(hit) = self.backward(0, r + 1, behind.as_ref())? {
                     return Ok(Some(found(hit, false, &self.columns)));
                 }
-                // Round from the bottom, down to the start cell.
+                // Round from the bottom, down to the cursor's cell.
                 let (from, ahead) = match start.column {
-                    Some(c) => (
+                    Some(at) => (
                         r,
                         Some(Limit {
                             row: r,
-                            columns: c..n,
+                            columns: at.behind()..n,
                         }),
                     ),
                     None => (r + 1, None),
@@ -559,8 +585,8 @@ pub(crate) struct FindRun {
     pub(crate) dataset: u64,
     pub(crate) frame: u64,
     pub(crate) direction: Direction,
-    /// The cursor row it started from.
-    pub(crate) row: usize,
+    /// It started before every cell of the view, so its first match is match 1.
+    pub(crate) from_top: bool,
     /// It started from the cell the last find landed on, with that match's number.
     pub(crate) from_hit: Option<Option<usize>>,
 }
@@ -656,7 +682,7 @@ impl App {
         None
     }
 
-    /// `n` / `N` at the table: the find in effect again, from the cell it landed on.
+    /// `n` / `N` at the table: the find in effect again, from the cursor's cell.
     pub(crate) fn find_again(&mut self, direction: Direction) {
         match self.find.active.as_ref() {
             Some(active) if active.dataset == self.dataset_generation => {
@@ -728,9 +754,8 @@ impl App {
         true
     }
 
-    /// Start a find for `spec` from the cursor. A find that goes on from the cell the
-    /// last one landed on (`n`, `N`) starts past that cell; `fresh`, or with the
-    /// cursor moved off it, the whole cursor row is in reach.
+    /// Start a find for `spec` from the cursor. `n` and `N` start past the cursor's
+    /// cell; `fresh` (`f`), the whole cursor row is in reach.
     fn start_find(&mut self, spec: FindSpec, direction: Direction, fresh: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -748,28 +773,36 @@ impl App {
         }
         let frame = state.len_generation();
         let row = state.cursor_row();
+        // `n` and `N` go on from the cursor's cell, as in vim; `f` reads its whole row.
+        let at = state.current_column().filter(|_| !fresh).map(|name| {
+            match columns.iter().position(|(n, _)| n == name) {
+                Some(c) => At::On(c),
+                None => {
+                    let order = state.get_column_order();
+                    let place = |n: &str| order.iter().position(|o| o == n);
+                    let cursor = place(name);
+                    At::Before(columns.iter().filter(|(n, _)| place(n) < cursor).count())
+                }
+            }
+        });
         let previous =
             self.find.active.as_ref().filter(|a| {
                 a.dataset == self.dataset_generation && a.frame == frame && a.spec == spec
             });
+        // On the cell the last find landed on, the count of matches goes on from it.
         let on_hit = previous
-            .filter(|_| !fresh)
             .and_then(|a| Some((a.hit.as_ref()?, a.ordinal)))
-            .filter(|((hit_row, _), _)| *hit_row == row)
-            .and_then(|((_, name), ordinal)| {
-                let at = columns.iter().position(|(n, _)| n == name)?;
-                Some((at, name.clone(), ordinal))
+            .and_then(|((hit_row, name), ordinal)| {
+                let c = columns.iter().position(|(n, _)| n == name)?;
+                (*hit_row == row && at == Some(At::On(c))).then(|| (name.clone(), ordinal))
             });
-        let start = Start {
-            row,
-            column: on_hit.as_ref().map(|(at, _, _)| *at),
-        };
+        let start = Start { row, column: at };
         self.find.active = Some(ActiveFind {
             spec: spec.clone(),
             dataset: self.dataset_generation,
             frame,
-            hit: on_hit.as_ref().map(|(_, name, _)| (row, name.clone())),
-            ordinal: on_hit.as_ref().and_then(|(_, _, ordinal)| *ordinal),
+            hit: on_hit.as_ref().map(|(name, _)| (row, name.clone())),
+            ordinal: on_hit.as_ref().and_then(|(_, ordinal)| *ordinal),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let run = FindRun {
@@ -777,8 +810,8 @@ impl App {
             dataset: self.dataset_generation,
             frame,
             direction,
-            row,
-            from_hit: on_hit.as_ref().map(|(_, _, ordinal)| *ordinal),
+            from_top: row == 0 && at.is_none_or(|at| at.ahead() == 0),
+            from_hit: on_hit.as_ref().map(|(_, ordinal)| *ordinal),
         };
         let rows = state.view_rows();
         let status = finding_status(&spec, None);
@@ -835,8 +868,7 @@ impl App {
             // Round from the top, it is the first match in the view.
             Direction::Next if found.wrapped => Some(1),
             Direction::Next if run.from_hit.is_some() => before.map(|k| k + 1),
-            // From the top row, nothing comes before it.
-            Direction::Next => (run.row == 0).then_some(1),
+            Direction::Next => run.from_top.then_some(1),
             Direction::Previous if found.wrapped => None,
             Direction::Previous => before.and_then(|k| k.checked_sub(1)).filter(|k| *k > 0),
         };
@@ -915,7 +947,7 @@ mod tests {
             let Some(found) = search.run(at, direction).unwrap() else {
                 break;
             };
-            let column = names.iter().position(|n| *n == found.column);
+            let column = names.iter().position(|n| *n == found.column).map(At::On);
             at = Start {
                 row: found.row,
                 column,
@@ -1015,11 +1047,45 @@ mod tests {
         let df = frame();
         let start = Start {
             row: 1,
-            column: Some(1),
+            column: Some(At::On(1)),
         };
         let found = walk(&df, &spec("li", false), None, start, Direction::Previous, 3);
         assert_eq!(cells(&found), [(0, "name"), (4, "city"), (4, "name")]);
         assert!(found[1].2, "before the first match comes round to the last");
+    }
+
+    /// On a column not searched, the cursor sits between the searched ones: the
+    /// cells to its right are ahead of it, those to its left behind.
+    #[test]
+    fn from_a_column_not_searched_the_cells_either_side_split() {
+        let df = frame();
+        let only_city = FindSpec {
+            column: Some("city".to_string()),
+            ..spec("li", false)
+        };
+        let order: Vec<String> = ["name", "city", "n"].map(String::from).to_vec();
+        let one = |at: At, direction: Direction| {
+            let columns = searched_columns(&order, df.schema(), &only_city);
+            let rows = ViewRows::of(df.clone().lazy(), None);
+            let search = Search::new(rows, columns, Arc::default(), |_| {});
+            let found = search
+                .run(
+                    Start {
+                        row: 1,
+                        column: Some(at),
+                    },
+                    direction,
+                )
+                .unwrap()
+                .unwrap();
+            (found.row, found.wrapped)
+        };
+        // On `name`, left of `city`: row 1's Lima is ahead, and behind is round.
+        assert_eq!(one(At::Before(0), Direction::Next), (1, false));
+        assert_eq!(one(At::Before(0), Direction::Previous), (4, true));
+        // On `n`, right of it: the other way about.
+        assert_eq!(one(At::Before(1), Direction::Next), (4, false));
+        assert_eq!(one(At::Before(1), Direction::Previous), (1, false));
     }
 
     #[test]
@@ -1037,7 +1103,7 @@ mod tests {
             .run(
                 Start {
                     row: 0,
-                    column: Some(0),
+                    column: Some(At::On(0)),
                 },
                 Direction::Previous,
             )
@@ -1534,6 +1600,48 @@ mod app_tests {
         assert_eq!(app.find.column.as_deref(), Some("w"));
     }
 
+    /// `n` and `N` go on from the cursor's cell: moved along the found row, the next
+    /// match is the one to the cursor's right, the previous the one to its left.
+    #[test]
+    fn n_and_capital_n_start_from_the_cursors_cell() {
+        let cell = |hit: bool, i: usize| {
+            if hit {
+                "needle".to_string()
+            } else {
+                format!("hay {i}")
+            }
+        };
+        let df = df!(
+            "a" => (0..20).map(|i| cell(i == 2, i)).collect::<Vec<_>>(),
+            "b" => (0..20).map(|i| cell(i == 2, i)).collect::<Vec<_>>(),
+            "c" => (0..20).map(|i| cell(false, i)).collect::<Vec<_>>(),
+            "d" => (0..20).map(|i| cell(i == 2 || i == 9, i)).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let (mut app, rx) = app_over(df);
+        find(&mut app, &rx, "needle");
+        assert_eq!(app.find_hit(), Some((2, "a".to_string())));
+        // To `c`, past the match in `b`.
+        key(&mut app, KeyCode::Char('l'));
+        key(&mut app, KeyCode::Char('l'));
+        key(&mut app, KeyCode::Char('n'));
+        settle(&mut app, &rx);
+        assert_eq!(app.find_hit(), Some((2, "d".to_string())), "right of c");
+        // Back to `c`: the previous match is `b`, left of it.
+        key(&mut app, KeyCode::Char('h'));
+        key(&mut app, KeyCode::Char('N'));
+        settle(&mut app, &rx);
+        assert_eq!(app.find_hit(), Some((2, "b".to_string())), "left of c");
+        // Down the rows: from row 5, the next is row 9, not the rest of row 2.
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Char('j'));
+        }
+        assert_eq!(cursor(&app), 5);
+        key(&mut app, KeyCode::Char('n'));
+        settle(&mut app, &rx);
+        assert_eq!(app.find_hit(), Some((9, "d".to_string())));
+    }
+
     #[test]
     fn no_match_says_so_and_nothing_moves() {
         let (mut app, rx) = app_over(haystack(50, &[]));
@@ -1579,7 +1687,7 @@ mod app_tests {
         key(&mut app, KeyCode::Char('n'));
         settle(&mut app, &rx);
         // Descending: id 700 is view row 299, id 5 row 994.
-        let expected = if from <= 299 { 299 } else { 994 };
+        let expected = if from < 299 { 299 } else { 994 };
         assert_eq!(app.find_hit(), Some((expected, "v".to_string())));
         assert_eq!(cursor(&app), expected);
     }

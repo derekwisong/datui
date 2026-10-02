@@ -476,7 +476,8 @@ impl EventPump {
     /// itself a navigation key. Once `/` or any other key is held the run is text, so
     /// nothing after it coalesces and a typed `/bookkeeper` keeps both `k`s. A column
     /// cursor key reads nothing, so each one is kept: `l` `l` `F` counts the column two
-    /// along, as it would idle. At the cap
+    /// along, as it would idle. So is each `n` and `N`: five typed move five matches.
+    /// At the cap
     /// the newest key is dropped and the user told; never the oldest, which may be the
     /// `/` the rest were typed into.
     fn hold(&mut self, key: KeyEvent) {
@@ -484,7 +485,7 @@ impl EventPump {
             self.held_for = Self::screen_of(&self.app);
         }
         if is_navigation(&key)
-            && !is_column_cursor_key(&key)
+            && !replays_each_press(&key)
             && self.held.back() == Some(&key)
             && self.app.in_normal_table_view()
             && self.held.iter().all(is_navigation)
@@ -642,8 +643,10 @@ impl Pacer {
     }
 }
 
-/// The column cursor's keys at the table: `h` `l` `[` `]` `{` `}` and the arrows across.
-fn is_column_cursor_key(key: &KeyEvent) -> bool {
+/// Navigation keys a held run keeps every press of: the column cursor's (`h` `l`
+/// `[` `]` `{` `}` and the arrows across), which read nothing, and a find's next and
+/// previous, each its own match.
+fn replays_each_press(key: &KeyEvent) -> bool {
     matches!(
         key.code,
         KeyCode::Left
@@ -654,6 +657,8 @@ fn is_column_cursor_key(key: &KeyEvent) -> bool {
             | KeyCode::Char(']')
             | KeyCode::Char('{')
             | KeyCode::Char('}')
+            | KeyCode::Char('n')
+            | KeyCode::Char('N')
     )
 }
 
@@ -822,6 +827,45 @@ mod tests {
             Some((2, "name".to_string())),
             "the cancelled find moved nothing; the held n went on from where it was"
         );
+    }
+
+    /// Each `n` typed while a find reads is held and replayed, as the column cursor's
+    /// keys are: five typed move five matches, not one.
+    #[test]
+    fn every_n_typed_while_a_find_reads_moves_a_match() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("matches.csv");
+        let mut file = std::fs::File::create(&path).expect("create csv");
+        writeln!(file, "id,v").expect("write csv");
+        for row in 0..10 {
+            writeln!(file, "{row},x{row}").expect("write csv");
+        }
+        drop(file);
+        let mut p = pump();
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        settle(&mut p);
+        rendered(&mut p.app);
+
+        p.terminal_key(plain(KeyCode::Char('f'))).unwrap();
+        type_keys(&mut p, "x");
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert!(p.app.finding());
+        for _ in 0..5 {
+            p.terminal_key(plain(KeyCode::Char('n'))).unwrap();
+        }
+        assert_eq!(held(&p), [KeyCode::Char('n'); 5], "none collapsed");
+        settle(&mut p);
+        assert!(held(&p).is_empty());
+        assert_eq!(p.app.find_hit(), Some((5, "v".to_string())));
+
+        p.terminal_key(plain(KeyCode::Char('N'))).unwrap();
+        assert!(p.app.finding());
+        p.terminal_key(plain(KeyCode::Char('N'))).unwrap();
+        p.terminal_key(plain(KeyCode::Char('N'))).unwrap();
+        assert_eq!(held(&p), [KeyCode::Char('N'); 2]);
+        settle(&mut p);
+        assert_eq!(p.app.find_hit(), Some((2, "v".to_string())));
     }
 
     /// Enter held behind `n` waits as Space, as behind any key that moves the cursor.

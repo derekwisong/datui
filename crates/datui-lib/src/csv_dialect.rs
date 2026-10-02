@@ -16,17 +16,7 @@ use polars::prelude::*;
 /// What `header_join` is when nothing sets it: Frictionless' `headerJoin` default.
 pub const DEFAULT_HEADER_JOIN: &str = " ";
 
-/// Why `c` cannot mark comment lines, if it cannot: it must be something, and on one
-/// line.
-pub fn check_comment_char(c: &str) -> Result<(), String> {
-    if c.is_empty() {
-        return Err("must not be empty".into());
-    }
-    if c.contains(['\n', '\r']) {
-        return Err("must not contain a line break".into());
-    }
-    Ok(())
-}
+pub use datui_cli::check_comment_char;
 
 /// The longest header line [`header_names`] reads: far wider than any real header,
 /// and a bound on what a file with no line breaks can make it hold.

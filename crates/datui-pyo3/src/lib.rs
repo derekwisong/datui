@@ -318,11 +318,8 @@ impl DatuiOptionsPy {
             }
         }
         if let Some(c) = comment_char {
-            if c.is_empty() || c.contains(['\n', '\r']) {
-                return Err(PyValueError::new_err(
-                    "comment_char must be non-empty and on one line",
-                ));
-            }
+            datui::csv_dialect::check_comment_char(&c)
+                .map_err(|e| PyValueError::new_err(format!("comment_char {e}")))?;
             opts.comment_char = Some(c);
         }
         if let Some(rows) = header_rows {
@@ -502,7 +499,10 @@ fn serialize_captured(lf: LazyFrame) -> PyResult<Vec<u8>> {
     lf.logical_plan
         .serialize_versioned(&mut buf, Default::default())
         .map_err(|e| {
-            PyRuntimeError::new_err(format!("datui could not serialize the captured view: {}", e))
+            PyRuntimeError::new_err(format!(
+                "datui could not serialize the captured view: {}",
+                e
+            ))
         })?;
     Ok(buf)
 }

@@ -514,16 +514,20 @@ fn parse_cloud_discover(text: &str) -> Result<String, String> {
     Ok(text)
 }
 
-/// Something to start a comment line with, on one line, as `[file_loading]
-/// comment_char` is checked.
-fn parse_comment_char(text: &str) -> Result<String, String> {
-    if text.is_empty() {
+/// Why `c` cannot mark comment lines, if it cannot: it must be something, and on one
+/// line. `--comment-char`, `[file_loading] comment_char` and the Python option share it.
+pub fn check_comment_char(c: &str) -> Result<(), String> {
+    if c.is_empty() {
         return Err("must not be empty".into());
     }
-    if text.contains(['\n', '\r']) {
+    if c.contains(['\n', '\r']) {
         return Err("must not contain a line break".into());
     }
-    Ok(text.to_string())
+    Ok(())
+}
+
+fn parse_comment_char(text: &str) -> Result<String, String> {
+    check_comment_char(text).map(|()| text.to_string())
 }
 
 /// Escape `|` and newlines for use in markdown table cells.

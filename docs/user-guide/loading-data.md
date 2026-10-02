@@ -38,6 +38,8 @@ names it:
 | `[` | JSON |
 | `{`, the first line a whole object | NDJSON |
 | `{`, the object open past the first line | JSON |
+| an NMEA sentence (`$GPGGA,`) with a checksum that matches, or of a type receivers write | NMEA |
+| XML whose first element is `<gpx` | GPX |
 | a first line with tabs and no commas | TSV |
 | anything else | CSV |
 
@@ -88,6 +90,8 @@ The format is taken from the extension, or from `--format` when there is none.
 | ORC | `.orc` | | |
 | SafeTensors | `.safetensors`, `model.safetensors.index.json` | header only | |
 | GGUF | `.gguf` | header only | |
+| NMEA 0183 | `.nmea` | read once to a temporary file | |
+| GPX | `.gpx` | read once to a temporary file | |
 | [Binary records](binary-formats.md) | any, through a format spec | yes | |
 
 **Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
@@ -157,6 +161,88 @@ count, size, the dtype or quantization mix, and the header's metadata
 
 A header that is corrupt, or a tensor that reaches past the end of the file
 (a download cut short), is refused with an error. Remote model files are downloaded whole before they open.
+
+### GPS logs
+
+```bash
+datui drive.nmea
+datui --table GSV drive.nmea         # one row per satellite in view
+head -n 3000 /dev/ttyACM0 | datui    # NMEA from standard input
+datui ride.gpx
+```
+
+An NMEA 0183 log or a GPX file is read once, start to end, into a temporary
+Arrow IPC file, which is then scanned like any other: memory stays at one batch
+of rows however long the log. A file with another name, such as `capture.log`,
+opens when its first complete line is an NMEA sentence or its first element is `<gpx`.
+`.nmea.gz` and the other compressions are read as they are decompressed.
+
+**NMEA** opens as one row per fix, merged from each second's GGA, RMC, VTG and
+GLL sentences:
+
+| Column | Holds |
+|---|---|
+| `time` | UTC. NMEA dates only RMC and ZDA; every other time of day takes the last date, a day on when it passes midnight |
+| `lat`, `lon` | Decimal degrees, negative south and west |
+| `alt` | Meters above mean sea level (GGA) |
+| `speed`, `course` | Meters per second; degrees true |
+| `sats`, `hdop` | Satellites used and horizontal dilution (GGA) |
+| `fix` | `none`, `gps`, `dgps`, `pps`, `rtk`, `rtk float`, `estimated`, `manual` or `simulated` |
+| `gap` | Seconds since the fix before; see [the gap column](#the-gap-column) |
+| `checksum_ok` | Every sentence of the fix matched its checksum; null when none had one |
+
+`--table` opens one sentence type instead, with all its fields: `GGA`, `RMC`,
+`VTG`, `GSA`, `GSV` (a row per satellite), `GLL`, `ZDA`, or `sentences` (every
+sentence as written, with its line number, vendor sentences included).
+Lines that are not NMEA are skipped; the Info panel's Notes tab counts them,
+and the sentences that fail their checksum. When the log has sentence types the
+table on screen does not show, such as GSV beside the fixes, the Schema tab
+names the other tables with how many sentences each has.
+
+A time of day is dated by the last RMC or ZDA before it. Rows read before the
+first one are dated back from it when it comes within the first 65,536 rows;
+when it comes later, those rows keep a null `time`. A log with neither sentence
+has no dates, and `time` is null throughout.
+
+`--table` is for any file that holds several tables. NMEA logs are the only
+ones so far; any other file opened with it is refused. Excel workbooks take
+`--sheet`.
+
+**GPX** opens as one row per `trkpt`, `rtept` and `wpt`:
+
+| Column | Holds |
+|---|---|
+| `time`, `lat`, `lon`, `ele` | The point's time (UTC), position and elevation |
+| `kind` | `track`, `route` or `waypoint` |
+| `track`, `track_name` | The track or route, numbered from 0 in each kind, and its name |
+| `segment` | The track segment, numbered from 0 in its track |
+| `gap` | Seconds since the point before in the same track segment; see [the gap column](#the-gap-column) |
+| the rest | The point's other fields (`name`, `sym`, `sat`, `hdop`...) and each leaf of its `<extensions>` by its name without the namespace (`hr`, `cad`, `atemp`), as numbers when every value is one |
+
+A file cut off mid-element opens with the points before the cut, and says so in
+Notes.
+
+#### The gap column
+
+`gap` is not in the file: datui adds it so a dropout can be sorted and checked.
+It is the seconds from the row before (the fix before, or the point before in
+the same GPX track segment) to this one.
+
+| `gap` is | When |
+|---|---|
+| null | The first fix or point; one without a time |
+| null | Time steps back more than 5 seconds: a receiver reset, or logs joined together |
+| null | NMEA not yet dated and more than an hour passed: whole days could be hidden in it |
+| negative, down to -5 | Time steps back a little, as a receiver's clock settles |
+| across midnight | An undated NMEA time earlier than the one before, within the hour, is taken as past midnight |
+
+To look at a track:
+
+| To see | Do |
+|---|---|
+| A rough map | Chart, XY, Scatter, X axis `lon`, Y series `lat` |
+| Dropouts | Sort by `gap`, largest first; or in [Data Quality](data-quality.md#declare-what-a-column-must-hold) declare a range for `gap`, such as at most 2, and each dropout is **Out of range** |
+| Speed spikes | The same for `speed`; Analysis also counts its outliers |
 
 ### CSV options
 
@@ -242,8 +328,8 @@ the file and reads the whole thing into memory instead.
 
 ### Temporary files
 
-A decompressed text file, a converted Arrow stream or a downloaded file lives in the
-temp directory while datui uses it.
+A decompressed text file, a converted Arrow stream or GPS log, or a downloaded file
+lives in the temp directory while datui uses it.
 
 | Exit | Temporary files |
 |---|---|

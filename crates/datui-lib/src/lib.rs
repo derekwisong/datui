@@ -81,6 +81,7 @@ pub mod fuzzy;
 #[cfg(feature = "cloud")]
 pub mod gcloud;
 pub mod glyphs;
+pub mod gps;
 pub(crate) mod help_strings;
 pub mod home;
 pub mod inspector_modal;
@@ -182,7 +183,12 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         FileFormat::Jsonl => Some(ExportFormat::Ndjson),
         FileFormat::Arrow => Some(ExportFormat::Ipc),
         FileFormat::Avro => Some(ExportFormat::Avro),
-        FileFormat::Orc | FileFormat::Excel | FileFormat::Safetensors | FileFormat::Gguf => None,
+        FileFormat::Orc
+        | FileFormat::Excel
+        | FileFormat::Safetensors
+        | FileFormat::Gguf
+        | FileFormat::Nmea
+        | FileFormat::Gpx => None,
     }
 }
 
@@ -8466,6 +8472,9 @@ pub struct OpenOptions {
     pub temp_dir: Option<std::path::PathBuf>,
     /// Excel sheet: 0-based index or sheet name (CLI only).
     pub excel_sheet: Option<String>,
+    /// `--table`: which table of a file that holds several, such as an NMEA log's
+    /// sentence types. `None` is the file's main table.
+    pub table: Option<String>,
     /// S3/compatible settings from the command line. They outrank the environment and
     /// the config file; see `effective_cloud`.
     pub s3_endpoint_url_override: Option<String>,
@@ -8539,6 +8548,7 @@ impl OpenOptions {
             decompress_in_memory: false,
             temp_dir: None,
             excel_sheet: None,
+            table: None,
             s3_endpoint_url_override: None,
             s3_access_key_id_override: None,
             s3_secret_access_key_override: None,
@@ -8759,6 +8769,7 @@ impl OpenOptions {
 
         // Excel sheet (CLI only)
         opts.excel_sheet = args.excel_sheet.clone();
+        opts.table = args.table.clone();
 
         // S3/compatible flags. The environment is folded in by `effective_cloud`.
         opts.s3_endpoint_url_override = args.s3_endpoint_url.clone();
@@ -9216,6 +9227,11 @@ pub(crate) enum Scan {
     DecompressSpec {
         file: PathBuf,
         choice: crate::formats::Choice,
+    },
+    /// A GPS log, read into a file of its own before it is scanned (`Step::ReadGps`).
+    Gps {
+        file: PathBuf,
+        format: FileFormat,
     },
 }
 
@@ -16879,6 +16895,61 @@ impl App {
                     })))
                 });
             }
+            Step::ReadGps {
+                file,
+                path,
+                options,
+                writer,
+                read,
+                progress,
+                download,
+            } => {
+                let cloud = self.app_config.cloud.clone();
+                let runtime = self.runtime.clone();
+                let report = crate::measurements::OpenReport {
+                    progress,
+                    meter: Arc::new(crate::measurements::Meter::default()),
+                    remembered: Some(self.cache.clone()),
+                };
+                let status = match options.format {
+                    Some(FileFormat::Gpx) => "Reading GPX...",
+                    _ => "Reading NMEA...",
+                };
+                self.spawn_job(job, Some(status), move |_| {
+                    let named = |e: color_eyre::Report| {
+                        crate::error_display::user_message_from_report(&e, Some(path.as_path()))
+                    };
+                    let format = options.format.unwrap_or(FileFormat::Nmea);
+                    let converted =
+                        crate::gps::convert(&file, &path, format, &options, &writer, &read)
+                            .map_err(named)?;
+                    // The converted file is an Arrow IPC file, scanned like one.
+                    let (state, facts, debug_label) = Self::build_schema_state(
+                        converted.lf,
+                        Some(path.as_path()),
+                        &options,
+                        &cloud,
+                        &runtime,
+                        &report,
+                    )
+                    .map_err(named)?;
+                    let mut open_notes = facts.open_notes;
+                    open_notes.extend(converted.notes);
+                    let state = state.with_open(OpenFacts {
+                        download,
+                        converted: converted.files,
+                        other_tables: converted.other_tables,
+                        open_notes,
+                        ..facts
+                    });
+                    Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
+                        state: Box::new(state),
+                        path: Some(path),
+                        options,
+                        debug_label: Some(format!("{} ({debug_label})", format.name())),
+                    })))
+                });
+            }
             Step::Scan {
                 paths,
                 options,
@@ -16918,7 +16989,7 @@ impl App {
                     })?;
                     let format = match &scan {
                         Scan::Frame(_) => report.format.or(options.format),
-                        Scan::Decompress { format, .. } => Some(*format),
+                        Scan::Decompress { format, .. } | Scan::Gps { format, .. } => Some(*format),
                         Scan::Streams(_) => Some(FileFormat::Arrow),
                         Scan::DecompressSpec { .. } => None,
                     };
@@ -16955,6 +17026,12 @@ impl App {
                                 spec_choice: Some(choice),
                                 ..options
                             },
+                        },
+                        Scan::Gps { file, .. } => LoadAnswer::Gps {
+                            bytes: std::fs::metadata(&file).map_or(0, |m| m.len()),
+                            file,
+                            path,
+                            options,
                         },
                     })))
                 });
@@ -18653,8 +18730,37 @@ impl App {
                     && path.is_file()
                     && crate::ipc_stream::is_stream_file(path))
                 .then_some(FileFormat::Arrow)
+            })
+            // A GPS log by a name under compression (`track.nmea.gz`), or by its first
+            // bytes when its name says no format at all (`gps.log`, `capture.txt`).
+            .or_else(|| crate::gps::format_by_name(path))
+            .or_else(|| {
+                (path.is_file() && options.compression.is_none())
+                    .then(|| crate::gps::sniff_path(path))
+                    .flatten()
             });
         report.format = effective_format;
+
+        // Refused rather than ignored: a file of one table opened with `--table` would
+        // otherwise look like the table asked for.
+        if options.table.is_some() && effective_format != Some(FileFormat::Nmea) {
+            let what = effective_format
+                .map_or("This file".to_string(), |f| format!("A {} file", f.name()));
+            return Err(color_eyre::eyre::eyre!(
+                "{what} holds one table; --table picks one of an NMEA log's."
+            ));
+        }
+
+        // A GPS log is read into a file of its own first: the load converts it
+        // (`Step::ReadGps`) into a copy the dataset holds, as a compressed CSV is.
+        if let [file] = paths
+            && let Some(format) = effective_format.filter(|f| crate::gps::is_gps(*f))
+        {
+            return Ok(Scan::Gps {
+                file: file.clone(),
+                format,
+            });
+        }
 
         // One compressed CSV, TSV or PSV, as a directory of one resolves to: the load
         // decompresses it (`Step::Decompress`) into a copy the dataset holds. Read here,
@@ -18739,7 +18845,12 @@ impl App {
                     report.model = Some(Arc::new(summary));
                     return Ok(lf.into());
                 }
-                Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
+                Some(FileFormat::Tsv)
+                | Some(FileFormat::Psv)
+                | Some(FileFormat::Excel)
+                | Some(FileFormat::Nmea)
+                | Some(FileFormat::Gpx)
+                | None => {
                     // The home screen asks `reads_many_files` before it offers a
                     // directory as one dataset, so a format that is refused here and
                     // offered there would be a promise nothing keeps. Asserted rather
@@ -18759,7 +18870,7 @@ impl App {
                         .into());
                     }
                     return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only)"
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only; open GPS logs one at a time)"
                     ));
                 }
             }
@@ -18832,6 +18943,13 @@ impl App {
                     let (lf, summary) = crate::model_files::read_model(paths, format)?;
                     report.model = Some(Arc::new(summary));
                     return Ok(lf.into());
+                }
+                Some(format @ (FileFormat::Nmea | FileFormat::Gpx)) => {
+                    // Settled above, before the compression check; here for the match.
+                    return Ok(Scan::Gps {
+                        file: path.clone(),
+                        format,
+                    });
                 }
                 Some(FileFormat::Orc) => DataTableState::from_orc(
                     path,

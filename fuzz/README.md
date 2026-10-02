@@ -2,8 +2,8 @@
 
 Coverage-guided fuzzing with [cargo-fuzz] and libFuzzer. The targets cover the
 hand-written parsers and matchers that run on untrusted input: the query language, the
-number renderer, the fuzzy matcher, the config glob matcher, config loading, and the
-SafeTensors and GGUF header readers.
+number renderer, the fuzzy matcher, the config glob matcher, config loading, the
+SafeTensors and GGUF header readers, and the NMEA and GPX readers.
 
 ## Setup
 
@@ -48,6 +48,7 @@ scripts/dev/test.sh integration fuzz_corpus_test
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher. Checked for hangs and for the wildcard-free fast path agreeing with equality. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and colour strings that are sliced by byte offset after a byte-length check. |
 | `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Model file headers read by lengths the file states. A corrupt header must be an error, never a panic or an allocation sized by the file. |
+| `gps_parse` | `gps::nmea::NmeaReader`, `gps::gpx::GpxReader` | GPS logs read a piece at a time, with line, markup, text and depth bounds. The first byte picks the NMEA table and the piece size. Frames must keep their schema and every coordinate must be on the globe. |
 
 ## Corpus
 
@@ -56,6 +57,8 @@ scripts/dev/test.sh integration fuzz_corpus_test
 entries are readable. The three targets taking `arbitrary`-decoded input hold a bounded
 sample of minimised inputs, capped at 64 files each — a few minutes of fuzzing yields
 thousands, and carrying them buys little when none of them is reviewable.
+`gps_parse` takes the bytes as they are; its seeds are small NMEA logs and GPX files
+behind a first byte that picks the table and the piece size.
 
 Files named `regression-*` are inputs that once crashed a target. Add one whenever you
 fix a crash; leave general coverage to the fuzzer.

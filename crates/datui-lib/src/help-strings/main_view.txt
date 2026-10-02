@@ -13,7 +13,8 @@ Navigation:
   Enter:            On a row of a by query or a SQL GROUP BY, drill into
                     its rows (Esc comes back); elsewhere, inspect the row
   Space:            Inspect the row: every field, each value whole and
-                    exact (Esc or Space closes)
+                    exact (Esc or Space closes). The bar's first chip
+                    names the key: Enter, or Space where Enter drills
 
 Data Operations:
   /:                Query: SQL, Search or q-style

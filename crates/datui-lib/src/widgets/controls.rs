@@ -365,6 +365,9 @@ impl Widget for &Controls {
         // The keys this bar would offer, custom or default. Worked out above the
         // status mode too: the way-out subset stays on a busy bar.
         const DEFAULT_CONTROLS: [(&str, &str); 14] = [
+            // First: the bar is cut from the right, and Enter on a row is the
+            // primary action, how a first session reads one record.
+            ("Space", "Inspect"),
             ("/", "Query"),
             ("f", "Find"),
             ("i", "Info"),
@@ -375,7 +378,6 @@ impl Widget for &Controls {
             ("e", "Export"),
             ("y", "Copy"),
             ("^O", "Home"),
-            ("Space", "Inspect"),
             ("g", "Column"),
             ("?", "Help"),
             ("q", "Quit"),
@@ -516,10 +518,12 @@ impl Widget for &Controls {
         // it sits: a chart bar that ends "Esc Back" must not lose exactly that
         // chip on a narrow terminal. Help yields second to last: nothing a
         // first session needs may live only behind a key the bar never shows.
+        // Inspect holds with Help and, on a tie, outlasts it: at 60 columns beside
+        // the column range there is room for one of them, and Help names it anyway.
         let n = controls.len() as i32;
         for (i, (key, label)) in controls.iter().enumerate() {
             let way_out = matches!(*key, "Esc" | "^C" | "^Q" | "q") || *label == "Quit";
-            let help = matches!(*key, "?" | "F1");
+            let help = matches!(*key, "?" | "F1") || *label == "Inspect";
             let weight = if way_out {
                 n + 2
             } else if help {
@@ -751,7 +755,7 @@ mod tests {
         // Room for it comes out of the keys, which the bar drops from the tail as it
         // always has, rather than out of the count.
         assert!(
-            labelled.contains("Query"),
+            labelled.contains("Inspect"),
             "the first keys are still offered: {labelled:?}"
         );
     }
@@ -851,6 +855,36 @@ mod tests {
             };
             assert_eq!(at(1, 6), at(295, 300), "at {width}");
             assert_eq!(at(1, 6), at(41, 47), "at {width}");
+        }
+    }
+
+    /// The inspect chip leads the bar, so a first session finds the inspector at
+    /// 80 and at 60 columns, with the column range on the bar.
+    #[test]
+    fn the_inspect_chip_survives_a_narrow_bar() {
+        use crate::widgets::column_paging::OnScreen;
+        let on = Some(OnScreen {
+            first: 1,
+            last: 5,
+            total: 14,
+        });
+        for width in [60, 80, 120] {
+            for (enter, key) in [(true, "Enter"), (false, "Space")] {
+                let bar = render_to_string(
+                    &with_row_count(60)
+                        .with_columns(on)
+                        .with_enter_inspects(enter),
+                    width,
+                );
+                assert!(
+                    bar.contains(&format!("{key}  Inspect")),
+                    "at {width}: {bar:?}"
+                );
+                assert!(bar.contains("q  Quit"), "at {width}: {bar:?}");
+                if width >= 80 {
+                    assert!(bar.contains("?  Help"), "at {width}: {bar:?}");
+                }
+            }
         }
     }
 

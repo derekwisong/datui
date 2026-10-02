@@ -607,3 +607,49 @@ fn the_other_tables_are_named_for_the_info_panel() {
     let (_, converted) = read_table(&db, "b", dir.path());
     assert_eq!(converted.other_tables, ["a", "c"]);
 }
+
+/// Names from the file are quoted wherever they go into a statement: each of these
+/// reads its own table, and none reads another or runs anything.
+#[test]
+fn hostile_table_names_read_their_own_table() {
+    let dir = temp();
+    let names = [
+        "a\"b",
+        "\"; DROP TABLE t; --",
+        "x]y",
+        "`tick`",
+        "new\nline",
+        "it's",
+        "main.t",
+    ];
+    let conn = Connection::open(dir.path().join("odd.db")).unwrap();
+    conn.execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('t');")
+        .unwrap();
+    for (i, name) in names.iter().enumerate() {
+        let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+        conn.execute_batch(&format!(
+            "CREATE TABLE {quoted} (v TEXT); INSERT INTO {quoted} VALUES ('{i}');"
+        ))
+        .unwrap();
+    }
+    drop(conn);
+    let db = dir.path().join("odd.db");
+    for (i, name) in names.iter().enumerate() {
+        let (df, _) = read_table(&db, name, dir.path());
+        let v: Vec<Option<&str>> = df.column("v").unwrap().str().unwrap().iter().collect();
+        assert_eq!(v, [Some(i.to_string().as_str())], "{name:?}");
+    }
+    let (df, _) = read_table(&db, "t", dir.path());
+    assert_eq!(df.height(), 1, "t is still there");
+    // A name with a NUL in it, which no statement can name, written into the schema:
+    // SQLite finds the schema malformed, and says so.
+    let nul = database(
+        dir.path(),
+        "nul.db",
+        "CREATE TABLE nul (v TEXT);
+         PRAGMA writable_schema = ON;
+         UPDATE sqlite_schema SET name = 'n' || char(0) || 'ul' WHERE name = 'nul';
+         PRAGMA writable_schema = OFF;",
+    );
+    assert!(tables(&nul).is_err());
+}

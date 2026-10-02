@@ -446,13 +446,17 @@ pub fn column_schema_of(
             )
             .ok()?;
             let reader = crate::widgets::datatable::DataTableState::configure_csv_reader(
-                LazyCsvReader::new(pl_path),
+                LazyCsvReader::new(pl_path).with_glob(crate::source::expands_as_glob(path)),
                 &options,
                 None,
             );
             crate::csv_dialect::name_columns(reader.finish().ok()?, header.as_deref()).ok()?
         }
-        crate::FileFormat::Jsonl => LazyJsonLineReader::new(pl_path).finish().ok()?,
+        crate::FileFormat::Jsonl => {
+            LazyJsonLineReader::new(crate::source::polars_literal_path(path).ok()?)
+                .finish()
+                .ok()?
+        }
         _ => return None,
     };
     let schema = lf.clone().collect_schema().ok()?;
@@ -2013,6 +2017,26 @@ mod tests {
     /// The sample reads with the separator the open reads with: the format's own, or
     /// `--delimiter` over it. A sample that split on `,` regardless would see one
     /// column in every TSV and PSV and in any CSV the flag was needed for.
+    /// A sampled file whose name holds `[` is that file, not the pattern it spells:
+    /// `d[1].jsonl` would read `d1.jsonl` (#625).
+    #[test]
+    fn the_sample_reads_a_file_named_like_a_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = |name: &str, format| {
+            column_schema_of(&dir.path().join(name), format, &ReadAs::default())
+                .unwrap()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>()
+        };
+        std::fs::write(dir.path().join("d[1].jsonl"), "{\"own\": 1}\n").unwrap();
+        std::fs::write(dir.path().join("d1.jsonl"), "{\"other\": 1}\n").unwrap();
+        std::fs::write(dir.path().join("d[1].csv"), "own\n1\n").unwrap();
+        std::fs::write(dir.path().join("d1.csv"), "other\n1\n").unwrap();
+        assert_eq!(names("d[1].jsonl", crate::FileFormat::Jsonl), ["own"]);
+        assert_eq!(names("d[1].csv", crate::FileFormat::Csv), ["own"]);
+    }
+
     #[test]
     fn the_sample_splits_on_the_separator_the_open_uses() {
         let dir = tempfile::tempdir().unwrap();

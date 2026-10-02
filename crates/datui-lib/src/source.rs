@@ -148,6 +148,40 @@ pub(crate) fn is_prefix_or_glob(url: &str) -> bool {
     url.ends_with('/') || url.contains('*')
 }
 
+/// The characters Polars expands a path on (`polars_io::path_utils::has_glob`).
+fn has_glob_chars(path: &Path) -> bool {
+    path.as_os_str().to_string_lossy().contains(['*', '?', '['])
+}
+
+/// Whether a path is a pattern to expand rather than a name: it carries a glob
+/// character and nothing on disk has that name. An existing `d[1].csv` or `a*b.csv`
+/// is that file; read as a glob, `d[1].csv` is `d1.csv` and `x?.csv` is every
+/// two-letter name. This is the `glob` flag for every Polars scan of a local path.
+pub(crate) fn expands_as_glob(path: &Path) -> bool {
+    has_glob_chars(path) && std::fs::symlink_metadata(path).is_err()
+}
+
+/// A path for a Polars reader that always expands globs (its NDJSON scan has no
+/// `glob` flag): an existing name with a glob character comes back escaped, so the
+/// pattern matches that file alone.
+pub(crate) fn polars_literal_path(
+    path: &Path,
+) -> polars::prelude::PolarsResult<polars::prelude::PlRefPath> {
+    if !has_glob_chars(path) || expands_as_glob(path) {
+        return polars::prelude::PlRefPath::try_from_path(path);
+    }
+    let text = polars::prelude::PlRefPath::try_from_path(path)?;
+    let mut escaped = String::with_capacity(text.as_str().len() + 8);
+    for c in text.as_str().chars() {
+        if matches!(c, '*' | '?' | '[' | ']') {
+            escaped.extend(['[', c, ']']);
+        } else {
+            escaped.push(c);
+        }
+    }
+    Ok(polars::prelude::PlRefPath::new(escaped.as_str()))
+}
+
 /// True when the path names an object-store location datui scans in place, with range
 /// requests, rather than downloads to a temporary file first: Parquet, or a prefix or
 /// glob of it. A downloaded object reaches the schema phase under its display URL, and
@@ -225,6 +259,24 @@ pub(crate) fn cloud_path_should_download(ext: Option<&str>, is_glob: bool) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_existing_name_is_never_a_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("d[1].csv");
+        std::fs::write(&file, "a\n1\n").unwrap();
+        assert!(!expands_as_glob(&file));
+        assert!(expands_as_glob(&dir.path().join("d[2].csv")));
+        assert!(expands_as_glob(&dir.path().join("*.csv")));
+        assert!(!expands_as_glob(&dir.path().join("plain.csv")));
+        assert!(!expands_as_glob(dir.path()));
+
+        let escaped = polars_literal_path(&file).unwrap();
+        assert!(escaped.as_str().ends_with("d[[]1[]].csv"), "{escaped:?}");
+        let pattern = dir.path().join("d[2].csv");
+        let kept = polars_literal_path(&pattern).unwrap();
+        assert_eq!(kept.as_str(), pattern.to_str().unwrap());
+    }
 
     #[test]
     fn every_url_datui_reads_is_remote() {

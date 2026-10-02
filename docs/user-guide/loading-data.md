@@ -382,7 +382,8 @@ lives in the temp directory while datui uses it.
 
 A directory tree whose segments are `key=value` (`year=2024/month=01/...`)
 opens as one table. Pass the root directory, which needs no flag, or a glob with
-`--hive`; a glob usually needs quoting so your shell leaves it alone. Only
+`--hive`; a glob usually needs quoting so your shell leaves it alone. A path
+that exists is never a glob: `d[1].parquet` opens that file, not `d1.parquet`. Only
 Parquet is supported — for a hive tree of anything else, open one partition.
 
 Partition columns appear first in the table and on the **Partitions** tab of the

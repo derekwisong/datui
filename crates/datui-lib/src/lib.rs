@@ -16042,7 +16042,7 @@ impl App {
             .find(|path| {
                 !source::is_remote_url(path)
                     && !crate::stdin::is_stdin(path)
-                    && !path.to_string_lossy().contains('*')
+                    && !source::expands_as_glob(path)
                     && !path.exists()
             })
             .cloned()
@@ -17980,15 +17980,14 @@ impl App {
         let schema = lf
             .collect_schema()
             .map_err(color_eyre::eyre::Report::from)?;
-        let partition_columns = match path.filter(|p| {
-            options.hive && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
-        }) {
-            Some(p) => DataTableState::discover_hive_partition_columns(p)
-                .into_iter()
-                .filter(|c| schema.contains(c.as_str()))
-                .collect::<Vec<_>>(),
-            None => Vec::new(),
-        };
+        let partition_columns =
+            match path.filter(|p| options.hive && (p.is_dir() || source::expands_as_glob(p))) {
+                Some(p) => DataTableState::discover_hive_partition_columns(p)
+                    .into_iter()
+                    .filter(|c| schema.contains(c.as_str()))
+                    .collect::<Vec<_>>(),
+                None => Vec::new(),
+            };
         let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, false);
         let part_cols = (!partition_columns.is_empty()).then_some(partition_columns);
         DataTableState::from_schema_and_lazyframe(schema, lf, options, part_cols)
@@ -18651,11 +18650,8 @@ impl App {
         // reached here with a directory and without the flag fell through to the
         // Parquet scan and answered `Unsupported file type`.
         if paths.len() == 1 && (options.hive || path.is_dir()) {
-            let path_str = path.as_os_str().to_string_lossy();
-            let is_single_file = path.exists()
-                && path.is_file()
-                && !path_str.contains('*')
-                && !path_str.contains("**");
+            // A file is a file whatever its name holds: `a*b.parquet` is not a glob.
+            let is_single_file = path.is_file();
             if !is_single_file {
                 // What the directory holds picks the reader. A directory used to go
                 // straight to the Parquet scan whatever was in it, so a directory of
@@ -18735,9 +18731,8 @@ impl App {
                         }
                     }
                 }
-                let use_parquet_hive = path.is_dir()
-                    || path_str.contains(".parquet")
-                    || path_str.contains("*.parquet");
+                let use_parquet_hive =
+                    path.is_dir() || path.as_os_str().to_string_lossy().contains(".parquet");
                 if use_parquet_hive {
                     // Only build the LazyFrame here; schema and partition discovery are the
                     // schema phase's ("Caching schema").

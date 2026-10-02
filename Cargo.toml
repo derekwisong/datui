@@ -51,8 +51,11 @@ tempfile = "3.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 fs2 = "0.4"
 toml = "1.1"
-# Writing a `.csv.gz` fixture. Already `datui-lib`'s, so nothing new enters the tree.
+# Writing compressed fixtures. Already `datui-lib`'s, so nothing new enters the tree.
 flate2 = "1.0"
+zstd = "0.14"
+bzip2 = "0.6"
+xz2 = "0.1"
 # Reading an Avro file's schema back. Also `datui-lib`'s.
 serde_json = "1.0"
 # Decodes fuzz corpus inputs in tests/fuzz_corpus_test.rs as libfuzzer-sys does.

@@ -15482,6 +15482,77 @@ fn test_delimiter_flag_splits_the_columns() {
     }
 }
 
+/// Every delimited format opens with every compression (#567): by its name
+/// (`x.tsv.gz`), by `--format` beside a compression suffix, and by `--format` and
+/// `--compression` on a name that says neither; decompressed lazily and in memory.
+#[test]
+fn test_every_delimited_format_opens_with_every_compression() {
+    use std::io::Write;
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let compress = |compression: &str, body: &[u8]| -> Vec<u8> {
+        match compression {
+            "gz" => {
+                let mut enc = flate2::write::GzEncoder::new(Vec::new(), Default::default());
+                enc.write_all(body).unwrap();
+                enc.finish().unwrap()
+            }
+            "zst" => zstd::encode_all(body, 0).unwrap(),
+            "bz2" => {
+                let mut enc = bzip2::write::BzEncoder::new(Vec::new(), Default::default());
+                enc.write_all(body).unwrap();
+                enc.finish().unwrap()
+            }
+            "xz" => {
+                let mut enc = xz2::write::XzEncoder::new(Vec::new(), 6);
+                enc.write_all(body).unwrap();
+                enc.finish().unwrap()
+            }
+            other => panic!("no compression {other}"),
+        }
+    };
+    for (format, sep) in [("csv", ','), ("tsv", '\t'), ("psv", '|')] {
+        let body = format!("id{sep}name\n1{sep}ann\n2{sep}bob\n");
+        for (ext, compression) in [
+            ("gz", "gzip"),
+            ("zst", "zstd"),
+            ("bz2", "bzip2"),
+            ("xz", "xz"),
+        ] {
+            let bytes = compress(ext, body.as_bytes());
+            let named = tmp.path().join(format!("data.{format}.{ext}"));
+            let bare = tmp.path().join(format!("{format}-{ext}.bin"));
+            std::fs::write(&named, &bytes).unwrap();
+            std::fs::write(&bare, &bytes).unwrap();
+            let named_arg = named.to_str().unwrap();
+            let bare_arg = bare.to_str().unwrap();
+            for in_memory in [false, true] {
+                let mut flagged = vec!["datui"];
+                if in_memory {
+                    flagged.push("--decompress-in-memory");
+                }
+                for (what, path, extra) in [
+                    ("by name", &named, vec![named_arg]),
+                    ("--format", &named, vec![named_arg, "--format", format]),
+                    (
+                        "--format --compression",
+                        &bare,
+                        vec![bare_arg, "--format", format, "--compression", compression],
+                    ),
+                ] {
+                    let mut argv = flagged.clone();
+                    argv.extend(extra);
+                    let (_, df) =
+                        open_and_collect(vec![path.clone()], options_as_the_binary_does(&argv, ""));
+                    let case = format!("{format}.{ext} {what} (in memory: {in_memory})");
+                    assert_eq!(names(&df), ["id", "name"], "{case}");
+                    assert_eq!(df.height(), 2, "{case}");
+                }
+            }
+        }
+    }
+}
+
 /// The flag outranks the separator a `.tsv` implies, and export offers it. Without the
 /// flag export offers a comma, not the tab: a `.tsv` exports as CSV, to a `.csv` by
 /// default, and a tab there reopens as one column.

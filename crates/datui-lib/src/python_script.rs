@@ -491,6 +491,29 @@ fn is_url(path: &Path) -> bool {
     crate::source::is_remote_url(path)
 }
 
+/// `url` without what may be a secret: a user and password before the host, and
+/// for HTTP the query string and fragment, where a signed URL keeps its signature
+/// or a token. The second value says whether anything was taken out.
+fn without_secrets(url: &str) -> (String, bool) {
+    let Some(scheme_end) = url.find("://").map(|i| i + 3) else {
+        return (url.to_string(), false);
+    };
+    let (scheme, rest) = url.split_at(scheme_end);
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(host_end);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let http = scheme.eq_ignore_ascii_case("http://") || scheme.eq_ignore_ascii_case("https://");
+    let path = match path.find(['?', '#']) {
+        Some(i) if http => &path[..i],
+        _ => path,
+    };
+    let kept = format!("{scheme}{host}{path}");
+    let cut = kept != url;
+    (kept, cut)
+}
+
 /// The format a file is read as: `--format`, else its extension, looking through a
 /// compression extension (`.csv.gz` is CSV).
 fn file_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
@@ -522,7 +545,8 @@ fn commonest_format<'a>(names: impl Iterator<Item = &'a str>) -> Option<FileForm
 fn reader_target(path: &Path, record: &OpenRecord) -> Option<(String, FileFormat, bool)> {
     let text = path.to_string_lossy().to_string();
     if is_url(path) {
-        if let Some(format) = file_format(path, record.options) {
+        let (text, _) = without_secrets(&text);
+        if let Some(format) = file_format(Path::new(&text), record.options) {
             return Some((text, format, false));
         }
         // A prefix: scanned whole, in the format of what it holds.
@@ -655,10 +679,22 @@ pub fn source(record: &OpenRecord) -> Source {
     let mut after = options.read_python.clone();
     let mut skip_tail = None;
     let mut notes = Vec::new();
+    let endpoint = record.s3_endpoint.as_deref().map(without_secrets);
+    if paths
+        .iter()
+        .any(|p| is_url(p) && without_secrets(&p.to_string_lossy()).1)
+        || endpoint.as_ref().is_some_and(|(_, cut)| *cut)
+    {
+        notes.push(
+            "datui left a user, password or query string out of the URL, as it may be a \
+             credential: add it back if the server needs it."
+                .to_string(),
+        );
+    }
     let remote_s3 = names.iter().any(|n| n.starts_with("s3://"));
     let storage = || {
         let mut pairs = Vec::new();
-        if let Some(endpoint) = &record.s3_endpoint {
+        if let Some((endpoint, _)) = &endpoint {
             pairs.push(format!("\"aws_endpoint_url\": {}", py_str(endpoint)));
         }
         if let Some(region) = &record.s3_region {
@@ -1152,6 +1188,43 @@ mod tests {
             after,
             vec![".filter(pl.int_range(pl.len()) < pl.len() - 1)"]
         );
+    }
+
+    #[test]
+    fn credentials_in_a_url_stay_out_of_the_script() {
+        assert_eq!(
+            without_secrets("https://u:p@host.example/d/x.parquet?X-Amz-Signature=abc#f"),
+            ("https://host.example/d/x.parquet".to_string(), true)
+        );
+        assert_eq!(
+            without_secrets("s3://bucket/data-?.parquet"),
+            ("s3://bucket/data-?.parquet".to_string(), false)
+        );
+        let options = OpenOptions::new();
+        let schema = Schema::default();
+        let paths = vec![PathBuf::from(
+            "https://user:secret@host.example/d/x.csv?token=s3cr3t",
+        )];
+        let record = OpenRecord {
+            paths: Some(&paths),
+            options: &options,
+            schema: &schema,
+            remote_objects: Vec::new(),
+            s3_endpoint: Some("http://key:secret@localhost:9000".into()),
+            s3_region: None,
+            read_as_text: Vec::new(),
+        };
+        let text = Script {
+            source: source(&record),
+            steps: Vec::new(),
+        }
+        .render();
+        assert!(
+            !text.contains("secret") && !text.contains("s3cr3t"),
+            "{text}"
+        );
+        assert!(text.contains("\"https://host.example/d/x.csv\""), "{text}");
+        assert!(text.contains("# datui left a user"), "{text}");
     }
 
     #[test]

@@ -118,6 +118,8 @@ Data piped in on standard input, or in a format Polars has no reader for
 fill in. A step the script cannot repeat, such as a drill into a group whose
 rows are lists, is a comment, and the steps after it are commented out.
 An S3 endpoint and region go into `storage_options`; credentials never do.
+A user and password in a URL, and an HTTP URL's query string (where a signed
+URL keeps its signature), are left out, with a comment saying so.
 
 ## Keys
 

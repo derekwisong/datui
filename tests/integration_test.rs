@@ -11264,6 +11264,64 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
 }
 
+/// A List column loaded from a file is data, not a group: Enter inspects the row and
+/// leaves the view as it was. A `by` query that holds its groups as lists still drills.
+#[test]
+fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
+    let dir = common::fixture_dir().join("enter_list_column");
+    // `t` holds lists as data; `x` is a plain column a `by` query can group on.
+    let df = df!("k" => &[1i64, 1, 2, 3], "t" => &["a", "b", "c", "d"])
+        .unwrap()
+        .lazy()
+        .group_by([col("k")])
+        .agg([col("t"), (col("k").first() % lit(2i64)).alias("x")])
+        .sort(["k"], Default::default())
+        .collect()
+        .unwrap();
+    write_parquet(&dir, "", df);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![dir.join("data.parquet")],
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 220, 30);
+    let before = painted(&mut app, &rx, &tx, area);
+    // The key on the chip before the Inspect label.
+    let at = before.find("Inspect").unwrap_or_else(|| panic!("{before}"));
+    let chip = before[..at].trim_end();
+    assert!(chip.ends_with(" Enter"), "{before}");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.is_grouped());
+    let headers = state.headers();
+    let schema = state.lf().clone().collect_schema().unwrap();
+
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert!(app.inspector_modal.active);
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.is_drilled_down());
+    assert_eq!(state.headers(), headers);
+    assert_eq!(state.lf().clone().collect_schema().unwrap(), schema);
+    assert_eq!(current_rows(&app), 3);
+
+    app.event(&AppEvent::Search("select k by x".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert!(app.data_table_state.as_ref().unwrap().is_grouped());
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::Normal, "Enter drilled");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.is_drilled_down());
+    assert!(state.lf().clone().collect().unwrap().height() > 0);
+}
+
 /// Salaries by department, 40 rows: `dept` cycles eng, ops, sales and a null every
 /// fourth row; `salary` climbs by 5,000 from 60,000; `ts` is the hour `i % 24`.
 #[cfg(feature = "sql")]
@@ -11479,7 +11537,9 @@ fn test_sql_group_by_with_lists_drills_into_source_rows() {
          WHERE dept IS NOT NULL GROUP BY dept ORDER BY dept",
     );
     let state = app.data_table_state.as_mut().unwrap();
-    assert!(state.is_grouped(), "a list column");
+    assert!(state.is_grouped(), "a GROUP BY");
+    assert!(!app.enter_inspects(), "Enter drills");
+    let state = app.data_table_state.as_mut().unwrap();
     state.drill_down_into_group(0).unwrap();
     assert_eq!(state.headers(), ["dept", "id", "salary", "ts"]);
     assert_eq!(state.lf().clone().collect().unwrap().height(), 10);

@@ -3587,18 +3587,15 @@ mod template_rollback_tests {
         assert_eq!(left_out(&app), 1, "sorting again says it once, not twice");
     }
 
-    /// Drilling into a group and back out puts the frame back; the note about what the
-    /// frame leaves out has to come back with it.
-    ///
-    /// Reachable without a group-by: `is_grouped` is a dtype question — does any column
-    /// hold a list — so a dataset written with a native List column is drillable as it
-    /// stands, drift and all.
+    /// A native List column does not make a table grouped: with no grouping query
+    /// behind it, a drill is a no-op that leaves the frame and its note alone. Queries
+    /// drop the drift column, so a grouped view never carries one of these notes.
     #[test]
-    fn drilling_back_up_puts_the_views_note_back_with_its_frame() {
+    fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
         use polars::prelude::{IntoLazy, ParquetWriter, df};
         let dir = tempfile::tempdir().unwrap();
         let write = |sub: &str, frame: polars::prelude::DataFrame| {
-            // Grouped into a List column, which is what makes the dataset drillable.
+            // A native List column, written to the file.
             let mut frame = frame
                 .lazy()
                 .group_by([col("id"), col("n")])
@@ -3636,7 +3633,11 @@ mod template_rollback_tests {
         });
 
         let state = app.data_table_state.as_mut().unwrap();
-        assert!(state.is_grouped(), "a native List column, with no group-by");
+        assert!(
+            !state.is_grouped(),
+            "a native List column, with no group-by"
+        );
+        assert!(!state.can_drill_down());
         assert!(state.drifts(), "and the files disagree on `n`");
 
         let left_out = |s: &crate::widgets::datatable::DataTableState| {
@@ -3656,25 +3657,9 @@ mod template_rollback_tests {
 
         state.table_state.select(Some(0));
         state.drill_down_into_group(0).unwrap();
-        assert!(state.is_drilled_down());
-        assert_eq!(
-            left_out(state),
-            0,
-            "a group's rows stand for no one file, so nothing there is left out"
-        );
-
-        state.drill_up().unwrap();
-        assert_eq!(
-            state.lf().clone().collect().unwrap().height(),
-            3,
-            "the frame that comes back still leaves the two out"
-        );
-        assert_eq!(
-            left_out(state),
-            1,
-            "so the note is back with it: {:#?}",
-            state.notes()
-        );
+        assert!(!state.is_drilled_down());
+        assert_eq!(state.lf().clone().collect().unwrap().height(), 3);
+        assert_eq!(left_out(state), 1, "the note stays: {:#?}", state.notes());
     }
 
     /// A rollback that stops half way leaves a state that is neither the template's nor

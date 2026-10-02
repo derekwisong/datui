@@ -1717,6 +1717,40 @@ mod tests {
         assert!(held(&p).is_empty(), "the drilling Enter is dropped");
     }
 
+    /// A table loaded with a List column is not a group: Enter typed ahead while busy
+    /// is held as Space, and replays into the inspector rather than a drill.
+    #[test]
+    fn enter_over_a_loaded_list_column_waits_as_space() {
+        use polars::prelude::{IntoLazy, ParquetWriter, col, df};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("lists.parquet");
+        let mut frame = df!("k" => &[1i64, 1, 2], "v" => &[10i64, 11, 12])
+            .unwrap()
+            .lazy()
+            .group_by([col("k")])
+            .agg([col("v")])
+            .collect()
+            .unwrap();
+        ParquetWriter::new(std::fs::File::create(&path).unwrap())
+            .finish(&mut frame)
+            .unwrap();
+
+        let mut p = pump();
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        settle(&mut p);
+        rendered(&mut p.app);
+        assert!(!p.app.data_table_state.as_ref().unwrap().can_drill_down());
+        p.app.busy = true;
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert_eq!(held(&p), [KeyCode::Char('j'), KeyCode::Char(' ')]);
+        p.app.busy = false;
+        settle(&mut p);
+        assert_eq!(p.app.input_mode, InputMode::Inspect);
+        assert!(!p.app.data_table_state.as_ref().unwrap().is_drilled_down());
+    }
+
     /// Item 7: column scroll acts live at a busy table rather than queueing, and a held
     /// column-scroll key coalesces when it cannot act live.
     #[test]

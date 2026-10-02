@@ -1190,7 +1190,7 @@ pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<Fil
 
 /// Why a remote model is downloaded rather than read by its headers.
 #[cfg(any(feature = "http", feature = "cloud"))]
-pub(crate) const NO_RANGES: &str = "The server does not send byte ranges, so the header cannot be read on its own: the whole file is downloaded.";
+pub(crate) const NO_RANGES: &str = "The server does not send byte ranges, so the model's header cannot be read without downloading the whole file.";
 
 /// The download a remote source needs before it can be read, if it needs one: an HTTP
 /// file always, and one object of a store that cannot be scanned in place.

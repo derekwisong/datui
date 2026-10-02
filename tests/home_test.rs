@@ -5923,6 +5923,9 @@ fn test_esc_back_through_a_cloud_source_puts_the_cursor_on_each_row_entered() {
 // ---------------------------------------------------------------------------
 
 /// The home screen at 80×24 over one directory of `files` CSVs, its listing landed.
+///
+/// The directory's name is longer than its heading has room for, so the heading is
+/// cut on every platform rather than only where the temp path is long (#575).
 fn home_at_80x24(
     files: usize,
 ) -> (
@@ -5931,7 +5934,8 @@ fn home_at_80x24(
     std::sync::mpsc::Receiver<datui::AppEvent>,
 ) {
     common::isolate_cache();
-    let tmp = TempDir::new().unwrap();
+    let tmp = TempDir::with_prefix("a-directory-name-longer-than-its-heading-has-room-for-at-80-")
+        .unwrap();
     for i in 0..files {
         touch(tmp.path(), &format!("f{i:02}.csv"));
     }

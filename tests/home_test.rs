@@ -5666,6 +5666,26 @@ mod coming_back {
         assert!(app.home.trail.is_empty(), "{:?}", app.home.trail);
     }
 
+    /// The row comes back on the line it was left on, not wherever keeping it in view
+    /// would put it: here mid-screen, after the list scrolled down past it (#551).
+    #[test]
+    fn esc_puts_the_row_back_on_the_line_it_was_left_on() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d30 = tmp.path().join("d30");
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+
+        select(&mut app, &tmp.path().join("d39"));
+        select(&mut app, &d30);
+        let (offset, scroll) = (on_screen(&app), app.home.scroll);
+        assert!(scroll > 0, "the list scrolled");
+        assert!(offset > 2 && offset < 12, "mid-screen: {offset}");
+        go_into(&mut app, &rx, KeyCode::Enter, &d30);
+        go_back(&mut app, &rx, None);
+        assert_eq!(on(&app), Some(d30));
+        assert_eq!(on_screen(&app), offset);
+    }
+
     /// Backspace goes up whether or not the user came that way; where they did not,
     /// the cursor lands on the directory just left.
     #[test]
@@ -5885,4 +5905,250 @@ fn test_esc_back_through_a_cloud_source_puts_the_cursor_on_each_row_entered() {
     assert_eq!(app.home.filter, "lake");
     assert_eq!(Some(app.home.selected), found(&app));
     assert_eq!(on_screen(&app), offset);
+}
+
+// ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+/// The home screen at 80×24 over one directory of `files` CSVs, its listing landed.
+fn home_at_80x24(
+    files: usize,
+) -> (
+    TempDir,
+    datui::App,
+    std::sync::mpsc::Receiver<datui::AppEvent>,
+) {
+    common::isolate_cache();
+    let tmp = TempDir::new().unwrap();
+    for i in 0..files {
+        touch(tmp.path(), &format!("f{i:02}.csv"));
+    }
+    let mut config = datui::config::AppConfig::default();
+    config.data.directories = vec![tmp.path().to_string_lossy().into_owned()];
+    config.data.use_desktop_recents = false;
+    config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+    listed(&mut app, &rx, |app| {
+        visible_names(&app.home).contains(&"f00.csv".to_string())
+    });
+    (tmp, app, rx)
+}
+
+/// Handle events until no listing is out and `done` holds, then draw.
+fn listed(
+    app: &mut datui::App,
+    rx: &std::sync::mpsc::Receiver<datui::AppEvent>,
+    done: impl Fn(&datui::App) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        while let Ok(event) = rx.try_recv() {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                next = app.event(&event);
+            }
+        }
+        if !app.home.listing_in_flight && done(app) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the listing never landed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    cursor_line(app);
+}
+
+/// Draw a frame at 80×24 and say which screen line the cursor is on.
+fn cursor_line(app: &mut datui::App) -> u16 {
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    Widget::render(&mut *app, area, &mut buf);
+    // A row carries the rail; a section header's rule turns heavy instead.
+    let g = datui::glyphs::get();
+    let lines: Vec<u16> = (0..area.height)
+        .filter(|&y| {
+            (0..3).any(|x| buf[(x, y)].symbol() == g.rail)
+                || (0..area.width).any(|x| buf[(x, y)].symbol() == g.rule_h_focused)
+        })
+        .collect();
+    let screen: Vec<String> = (0..area.height)
+        .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one row carries the rail: {lines:?}\n{}",
+        screen.join("\n")
+    );
+    lines[0]
+}
+
+fn press_and_draw(app: &mut datui::App, code: crossterm::event::KeyCode) -> u16 {
+    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+        code,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    cursor_line(app)
+}
+
+/// Up from the bottom moves the cursor up the screen; the list scrolls only once the
+/// cursor is two lines from the top (#551).
+#[test]
+fn test_up_from_the_bottom_moves_the_cursor_not_the_list() {
+    use crossterm::event::KeyCode;
+    let (_tmp, mut app, _rx) = home_at_80x24(60);
+    let first = press_and_draw(&mut app, KeyCode::Home);
+    let top = first - app.home.selected as u16;
+    let bottom = press_and_draw(&mut app, KeyCode::End);
+    assert!(app.home.scroll > 0, "sixty files are more than a screen");
+    let height = bottom - top + 1;
+    assert!(height > 10, "list is {height} lines");
+
+    let scroll = app.home.scroll;
+    for step in 1..=(height - 3) {
+        let line = press_and_draw(&mut app, KeyCode::Up);
+        assert_eq!(line, bottom - step, "after {step} up");
+        assert_eq!(app.home.scroll, scroll, "the list holds still");
+    }
+    assert_eq!(bottom - (height - 3), top + 2, "two lines of margin");
+    // From here the list scrolls under a cursor that stays two lines down.
+    for step in 1..=5 {
+        let line = press_and_draw(&mut app, KeyCode::Up);
+        assert_eq!(line, top + 2, "after {step} more up");
+        assert_eq!(app.home.scroll, scroll - step as usize);
+    }
+    // Down again moves the cursor, not the list.
+    let line = press_and_draw(&mut app, KeyCode::Down);
+    assert_eq!(line, top + 3);
+    assert_eq!(app.home.scroll, scroll - 5);
+}
+
+/// Down from the top moves the cursor down the screen until it is two lines from the
+/// bottom, then the list scrolls; Up then moves the cursor back up the screen.
+#[test]
+fn test_down_from_the_top_moves_the_cursor_until_the_margin() {
+    use crossterm::event::KeyCode;
+    let (_tmp, mut app, _rx) = home_at_80x24(60);
+    let first = press_and_draw(&mut app, KeyCode::Home);
+    let top = first - app.home.selected as u16;
+    let bottom = press_and_draw(&mut app, KeyCode::End);
+    let height = bottom - top + 1;
+    let first = press_and_draw(&mut app, KeyCode::Home);
+    assert_eq!(app.home.scroll, 0);
+
+    let mut line = first;
+    while line < bottom - 2 {
+        let next = press_and_draw(&mut app, KeyCode::Down);
+        assert_eq!(next, line + 1);
+        assert_eq!(app.home.scroll, 0, "the list holds still");
+        line = next;
+    }
+    for step in 1..=5 {
+        assert_eq!(press_and_draw(&mut app, KeyCode::Down), bottom - 2);
+        assert_eq!(app.home.scroll, step);
+    }
+    let scroll = app.home.scroll;
+    for step in 1..=(height - 5) {
+        assert_eq!(press_and_draw(&mut app, KeyCode::Up), bottom - 2 - step);
+        assert_eq!(app.home.scroll, scroll, "the list holds still");
+    }
+}
+
+/// A page moves the cursor a screenful; the list scrolls only as far as keeps it in
+/// view, and paging back does the same from the other edge.
+#[test]
+fn test_paging_scrolls_only_as_far_as_the_cursor_needs() {
+    use crossterm::event::KeyCode;
+    let (_tmp, mut app, _rx) = home_at_80x24(60);
+    let first = press_and_draw(&mut app, KeyCode::Home);
+    let top = first - app.home.selected as u16;
+    let bottom = press_and_draw(&mut app, KeyCode::End);
+    press_and_draw(&mut app, KeyCode::Home);
+
+    assert_eq!(press_and_draw(&mut app, KeyCode::PageDown), bottom - 2);
+    let scroll = app.home.scroll;
+    assert!(scroll > 0);
+    // Back up the screen without scrolling, then a page up scrolls to keep the margin.
+    assert_eq!(press_and_draw(&mut app, KeyCode::Up), bottom - 3);
+    assert_eq!(app.home.scroll, scroll);
+    let line = press_and_draw(&mut app, KeyCode::PageUp);
+    assert_eq!(app.home.scroll, 0);
+    assert_eq!(line, top + app.home.selected as u16);
+}
+
+/// Rows arriving above the cursor push the list down, not the cursor: it stays on
+/// its row and on its line.
+#[test]
+fn test_rows_arriving_above_the_cursor_leave_it_on_its_line() {
+    use crossterm::event::KeyCode;
+    let (tmp, mut app, rx) = home_at_80x24(60);
+    // Up from the end, so the cursor is mid-screen rather than held at a margin.
+    press_and_draw(&mut app, KeyCode::End);
+    let f50 = tmp.path().join("f50.csv");
+    let mut line = 0;
+    while app.home.selected_entry().map(|e| e.path) != Some(f50.clone()) {
+        line = press_and_draw(&mut app, KeyCode::Up);
+    }
+    for i in 0..5 {
+        touch(tmp.path(), &format!("e{i}.csv"));
+    }
+    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Char('r'),
+        crossterm::event::KeyModifiers::CONTROL,
+    )));
+    listed(&mut app, &rx, |app| {
+        visible_names(&app.home).contains(&"e4.csv".to_string())
+    });
+    assert_eq!(app.home.selected_entry().map(|e| e.path), Some(f50));
+    assert_eq!(cursor_line(&mut app), line);
+}
+
+/// The view does not open past the end: rows going away below the cursor bring the
+/// view up rather than leaving blank lines under the last row.
+#[test]
+fn test_the_view_never_leaves_blank_lines_below_the_last_row() {
+    use crossterm::event::KeyCode;
+    let (tmp, mut app, rx) = home_at_80x24(60);
+    let bottom = press_and_draw(&mut app, KeyCode::End);
+    let f44 = tmp.path().join("f44.csv");
+    let mut before = bottom;
+    while app.home.selected_entry().map(|e| e.path) != Some(f44.clone()) {
+        before = press_and_draw(&mut app, KeyCode::Up);
+    }
+    for i in 45..60 {
+        fs::remove_file(tmp.path().join(format!("f{i:02}.csv"))).unwrap();
+    }
+    let _ = app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Char('r'),
+        crossterm::event::KeyModifiers::CONTROL,
+    )));
+    // The reload lists in the background; wait for the rows to go.
+    listed(&mut app, &rx, |app| {
+        !visible_names(&app.home).contains(&"f59.csv".to_string())
+    });
+    let line = cursor_line(&mut app);
+    assert_eq!(app.home.selected_entry().map(|e| e.path), Some(f44));
+    // By line, not by `scroll`: other tests here add recents above the cursor.
+    assert!(line > before, "the view came up: line {line}, was {before}");
+    let rows = app.home.visible().len();
+    assert_eq!(
+        line as usize + (rows - 1 - app.home.selected),
+        bottom as usize,
+        "the last row is on the bottom line"
+    );
 }

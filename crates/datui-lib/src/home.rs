@@ -163,6 +163,32 @@ pub enum CloudLook {
 /// library reads; it names the level above a source's buckets, which no real URL can.
 pub const CLOUD_PLACE: &str = "cloud://";
 
+/// Lines kept between the cursor and the edge of the list while it can scroll.
+const SCROLL_MARGIN: usize = 2;
+
+/// The first line of a list `height` lines tall that keeps line `selected` on
+/// screen, given the list started at `top`.
+///
+/// The view stays put while the cursor moves inside it, and scrolls only as far as
+/// keeps the cursor [`SCROLL_MARGIN`] lines from an edge. It never starts so low
+/// that the last line rises above the bottom: folding, filtering or a taller
+/// terminal shows more rows rather than empty space.
+pub(crate) fn settle_top(top: usize, selected: usize, height: usize, total: usize) -> usize {
+    if height == 0 {
+        return top.min(selected);
+    }
+    // A short list keeps the cursor reachable at every line.
+    let margin = SCROLL_MARGIN.min((height - 1) / 2);
+    let top = if selected < top + margin {
+        selected.saturating_sub(margin)
+    } else if selected + margin >= top + height {
+        selected + margin + 1 - height
+    } else {
+        top
+    };
+    top.min(total.saturating_sub(height))
+}
+
 /// The place for one cloud source.
 pub fn cloud_place(id: &str) -> PathBuf {
     PathBuf::from(format!("{CLOUD_PLACE}{id}"))
@@ -1071,6 +1097,9 @@ pub struct HomeState {
     /// Held across listings while rows are still arriving, since the row may not be in
     /// the first one; dropped as soon as the user moves the cursor.
     pub returning: Option<RowKey>,
+    /// How far down the list the row being returned to was when the user left it, so
+    /// it comes back on the same line rather than wherever the scroll falls.
+    pub returning_line: Option<usize>,
 }
 
 /// Where the cursor was in a listing the user went inside from.
@@ -1088,6 +1117,8 @@ pub struct Mark {
     /// running is dropped by its generation once the user leaves, so it is started
     /// again rather than kept.
     pub search: Option<SearchState>,
+    /// Rows between the top of the list and the cursor.
+    pub line: usize,
 }
 
 /// The result of one recursive walk below the working directory.
@@ -1161,6 +1192,7 @@ impl Default for HomeState {
             recent_expanded: false,
             trail: Vec::new(),
             returning: None,
+            returning_line: None,
         }
     }
 }
@@ -2211,6 +2243,8 @@ impl HomeState {
     pub fn apply_listing(&mut self, listing: Listing) {
         let returning = self.returning.take();
         let previous = returning.clone().or_else(|| self.selected_key());
+        // Rows landing above the cursor move the list, not the cursor.
+        let line = self.selected.saturating_sub(self.scroll);
         self.sections = listing.sections;
         self.missing = listing.missing;
         // Browsing, the first section is the directory browsed.
@@ -2242,6 +2276,10 @@ impl HomeState {
             if self.rows_still_arriving() {
                 self.returning = returning;
             }
+        } else if returning.is_some() {
+            self.scroll_to_returning_line();
+        } else {
+            self.scroll = self.selected.saturating_sub(line);
         }
         self.follow_selection();
     }
@@ -2254,6 +2292,7 @@ impl HomeState {
             key: self.selected_key(),
             filter: self.filter.clone(),
             search: (!self.search.running).then(|| self.search.clone()),
+            line: self.selected.saturating_sub(self.scroll),
         };
         // A place already on the trail is being entered again from elsewhere; its
         // old mark describes a visit that is over.
@@ -2279,11 +2318,13 @@ impl HomeState {
                 self.filter = mark.filter;
                 self.search = mark.search.unwrap_or_default();
                 self.returning = mark.key;
+                self.returning_line = Some(mark.line);
             }
             None => {
                 self.filter.clear();
                 self.search.reset();
                 self.returning = from.map(RowKey::Entry);
+                self.returning_line = None;
             }
         }
     }
@@ -2305,9 +2346,17 @@ impl HomeState {
         if let Some(idx) = self.row_of(&key) {
             self.selected = idx;
             self.returning = None;
+            self.scroll_to_returning_line();
             self.follow_selection();
         } else if !self.rows_still_arriving() {
             self.returning = None;
+        }
+    }
+
+    /// Put the row just returned to on the line it was left on, when that is known.
+    fn scroll_to_returning_line(&mut self) {
+        if let Some(line) = self.returning_line.take() {
+            self.scroll = self.selected.saturating_sub(line);
         }
     }
 
@@ -2405,9 +2454,8 @@ impl HomeState {
     /// `scroll` still says four hundred, and the first batch is spent on rows nobody
     /// is looking at.
     fn follow_selection(&mut self) {
-        self.scroll = self
-            .selected
-            .saturating_sub(self.view_height.saturating_sub(3).max(1));
+        let rows = self.visible().len();
+        self.scroll = settle_top(self.scroll, self.selected, self.view_height, rows);
     }
 
     /// Whether a section is folded: what the user last chose for it, else its default.

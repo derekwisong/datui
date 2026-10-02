@@ -9967,6 +9967,9 @@ pub struct DataTable {
     pub find_style: Style,
     /// The found cell's column, while the cursor is on its row: set at render.
     find_column: Option<String>,
+    /// What a delimited spec's read found, for the units on the type row: set at
+    /// render.
+    delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
 }
 
 impl Default for DataTable {
@@ -10004,6 +10007,7 @@ impl Default for DataTable {
             find_cell: None,
             find_style: Style::default(),
             find_column: None,
+            delimited: None,
         }
     }
 }
@@ -10714,11 +10718,16 @@ impl DataTable {
         // The type row is part of the header, so a column is at least as wide as its
         // type name; "datetime" under a column called "ts" would otherwise clip.
         // A binary column's buffer holds the stub text; the type is the source's.
+        // A unit from a delimited spec's unit row sits beside the type: `f64 · deg F`.
         let type_label = self.dtype_row.then(|| {
-            if is_binary {
+            let label = if is_binary {
                 dtype_label(&DataType::Binary)
             } else {
                 dtype_label(dtype)
+            };
+            match self.delimited.as_ref().and_then(|read| read.unit_of(name)) {
+                Some(unit) => format!("{label} {} {unit}", self.glyphs.middot),
+                None => label,
             }
         });
         let type_width = type_label
@@ -11141,6 +11150,7 @@ impl StatefulWidget for DataTable {
         self.sort_columns = state.view_sort_columns().to_vec();
         self.sort_descending = state.view_sort_descending().to_vec();
         self.current_column = state.current_column().map(str::to_string);
+        self.delimited = state.delimited_read().cloned();
         // One column on the left is the rail: blank on every row but the one the
         // cursor is on, where it carries the accent. It also holds the "columns off to
         // the left" hint in the header, so no header name ever gets a character

@@ -21158,10 +21158,10 @@ impl App {
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
-            // The Model, Audio and MIDI tabs scroll their lists the same way.
+            // The Model, Audio, MIDI and Metadata tabs scroll their lists the same way.
             let detail_tab = matches!(
                 self.info_modal.active_tab,
-                InfoTab::Model | InfoTab::Audio | InfoTab::Midi
+                InfoTab::Model | InfoTab::Audio | InfoTab::Midi | InfoTab::Metadata
             );
             let notes = self
                 .data_table_state

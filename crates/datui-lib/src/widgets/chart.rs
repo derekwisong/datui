@@ -732,8 +732,15 @@ fn render_xy_chart(
                 all_x_min + 0.5
             };
 
-            let x_axis_title = modal.effective_x_column().map(|s| s.as_str()).unwrap_or("");
-            let y_axis_title = y_columns.join(", ");
+            let x_axis_title = modal
+                .effective_x_column()
+                .map(|s| modal.axis_title(s))
+                .unwrap_or_default();
+            let y_axis_title = y_columns
+                .iter()
+                .map(|c| modal.axis_title(c))
+                .collect::<Vec<_>>()
+                .join(", ");
             let y_bounds = [y_min_bounds, y_max_bounds];
             // On a log scale a tick stands for its value before the log.
             let y = if log_scale {
@@ -752,7 +759,7 @@ fn render_xy_chart(
                     [x_min_bounds, x_max_bounds],
                     x_axis_kind,
                     &numbers.x,
-                    x_axis_title,
+                    &x_axis_title,
                 ),
                 y,
             );

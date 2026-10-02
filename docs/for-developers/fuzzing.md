@@ -13,6 +13,7 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `fuzzy_match` | `fuzzy::best_match` | Returned positions must be valid, strictly ascending character indices into the haystack, one per needle character. The home screen highlights matches by indexing with them. |
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher, checked for hangs and for its wildcard-free fast path agreeing with equality. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and color strings that get sliced by byte offset after a byte-length check. |
+| `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Hand-written readers for model file headers that allocate and skip by lengths read from the file. Every input goes to both; a corrupt header must be an error, never a panic or an allocation sized by the file, and a header that parses must build its table. |
 
 ## Layout
 
@@ -90,6 +91,10 @@ again.
 The other three take structured input that `arbitrary` decodes from raw bytes, so a
 hand-written seed would mean nothing. Those directories hold a bounded sample of
 minimized inputs from a real run, capped at 64 files each.
+
+`model_header` takes the bytes as they are. Its seeds are small model file headers:
+SafeTensors with and without `__metadata__`, GGUF v3 in both byte orders with strings,
+arrays and tensors of several types, and GGUF v2.
 
 Commit a `regression-*` input for each fixed crash. Keep routine coverage inputs
 in the fuzzing cache. Minimize any additional seeds before committing them:

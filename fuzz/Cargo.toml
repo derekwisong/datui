@@ -88,3 +88,10 @@ path = "fuzz_targets/config_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "model_header"
+path = "fuzz_targets/model_header.rs"
+test = false
+doc = false
+bench = false

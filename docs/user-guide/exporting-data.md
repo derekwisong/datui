@@ -38,7 +38,7 @@ on screen. Numbers use their raw values, without display formatting.
 Every format also offers **Source file** for a dataset whose files disagree; see
 [below](#source-file).
 
-Excel and ORC can be read but not written.
+Excel, ORC, NMEA and GPX can be read but not written.
 
 ## Lists and structs
 

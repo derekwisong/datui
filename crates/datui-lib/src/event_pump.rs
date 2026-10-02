@@ -380,8 +380,10 @@ impl EventPump {
     /// continuation queued by it runs right after that frame.
     pub fn run(&mut self, mut draw: impl FnMut(&mut App) -> Result<()>) -> Result<Ended> {
         let mut pacer = Pacer::default();
+        let mut first_rows = crate::first_rows_trace::FirstRowsTrace::from_env();
         draw(&mut self.app)?;
         self.app.frame_painted();
+        first_rows.painted(&self.app);
         pacer.drew(Instant::now());
         loop {
             let mut pass = Pass::default();
@@ -420,6 +422,7 @@ impl EventPump {
                 draw(app)?;
                 // A count waiting for the rows to be on screen starts now.
                 app.frame_painted();
+                first_rows.painted(app);
                 pacer.drew(now);
                 // The frame sets the visible row count; a change asks for a collect.
                 if let Some(state) = &mut app.data_table_state

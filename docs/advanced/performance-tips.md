@@ -3,6 +3,7 @@
 Opening a file and calculating over it have different costs. Datui keeps a
 buffer of visible rows, but a query, sort, aggregation or analysis may scan
 the full input. Lazy loading does not make every operation fit in memory.
+[Performance](../reference/performance.md) has measured startup times and memory.
 
 | Task | What helps |
 |---|---|

@@ -2938,6 +2938,29 @@ pub fn expand_config_path(raw: &str) -> PathBuf {
     expand_path(raw)
 }
 
+/// `path` with a leading `~` expanded, and nothing else. For a path from the command
+/// line: cmd, and PowerShell before 7.4, pass `~\data\a.csv` on as typed, as every
+/// shell does a quoted `"~/a.csv"`. A `$` there has been through the shell already
+/// and is part of a name.
+pub fn expand_home(path: &Path) -> PathBuf {
+    path.to_str()
+        .and_then(home_path)
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// `~`, `~/x` and, on Windows, `~\x` under the home directory; `None` for anything
+/// else, or with no home directory.
+fn home_path(text: &str) -> Option<PathBuf> {
+    if text == "~" {
+        return dirs::home_dir();
+    }
+    let rest = text
+        .strip_prefix("~/")
+        // What `display_path` writes there, and what a Windows user types.
+        .or_else(|| text.strip_prefix("~\\").filter(|_| cfg!(windows)))?;
+    dirs::home_dir().map(|home| home.join(rest))
+}
+
 /// `path` spelled one way, without asking the filesystem: rebuilt from its components,
 /// so separators compare as one (on Windows `~/a.csv` expands to `C:\Users\me\a.csv`
 /// and `$USERPROFILE/a.csv` to `C:\Users\me/a.csv`), with no `.` and a trailing
@@ -3005,20 +3028,7 @@ pub(crate) fn expand_path(raw: &str) -> PathBuf {
     }
 
     // `~` expands only at the start of the path, as in a shell.
-    if expanded == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-    } else if let Some(rest) = expanded
-        .strip_prefix("~/")
-        // What `display_path` writes there, and what a Windows user types.
-        .or_else(|| expanded.strip_prefix("~\\").filter(|_| cfg!(windows)))
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest);
-    }
-
-    PathBuf::from(expanded)
+    home_path(&expanded).unwrap_or_else(|| PathBuf::from(expanded))
 }
 
 /// One config file's settings as written: the keys it sets and nothing else.
@@ -4229,6 +4239,32 @@ fn bracket_depth(line: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
+    /// A path from the command line has been through the shell: only a leading `~`
+    /// is left for datui to expand.
+    #[test]
+    fn a_command_line_path_expands_only_a_leading_tilde() {
+        let home = dirs::home_dir().expect("a home directory");
+        let expand = |p: &str| super::expand_home(Path::new(p));
+        assert_eq!(expand("~"), home);
+        assert_eq!(expand("~/data/a.csv"), home.join("data/a.csv"));
+        for kept in [
+            "a/~/b.csv",
+            "~user/a.csv",
+            "$HOME/a.csv",
+            "-",
+            "s3://b/~/a.csv",
+        ] {
+            assert_eq!(expand(kept), PathBuf::from(kept), "{kept}");
+        }
+        #[cfg(windows)]
+        assert_eq!(expand(r"~\data\a.csv"), home.join(r"data\a.csv"));
+        // A backslash is part of a name off Windows.
+        #[cfg(not(windows))]
+        assert_eq!(expand(r"~\a.csv"), PathBuf::from(r"~\a.csv"));
+    }
+
     #[test]
     fn a_path_place_ignores_spelling_but_not_meaning() {
         let place = |p: &str| super::path_place(std::path::Path::new(p));

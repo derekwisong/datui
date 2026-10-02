@@ -8798,8 +8798,8 @@ impl OpenOptions {
             config
                 .file_loading
                 .temp_dir
-                .as_ref()
-                .map(std::path::PathBuf::from)
+                .as_deref()
+                .map(crate::config::expand_config_path)
         });
 
         // Excel sheet (CLI only)
@@ -27920,6 +27920,9 @@ fn run_impl(
 ) -> Result<Option<LazyFrame>> {
     use event_pump::EventPump;
     use std::io::Write;
+
+    // First, so a missing file is named as the home directory has it.
+    let input = startup::expand_home(input);
     use std::sync::{Mutex, Once, mpsc};
 
     // The saved views are read on a worker from here; the first thing that needs them

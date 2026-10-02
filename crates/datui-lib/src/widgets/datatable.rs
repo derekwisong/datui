@@ -12409,17 +12409,23 @@ mod tests {
 
     /// A SQL grouping whose ORDER BY covers every key, by alias, ordinal or name,
     /// leaves its groups' order to the sort (#523), and still reads the same rows page
-    /// by page, in the order polars-sql's own plan gives, with either engine. A sort
-    /// that leaves any key out, sorts by an expression of one, or reads the groups
-    /// through a LIMIT or a computed column keeps the groups' order.
+    /// by page, in the order polars-sql's own plan gives, with either engine, NULL and
+    /// NaN keys too. A sort that leaves any key out, sorts by an expression of one, or
+    /// reads the groups through a LIMIT, a filter or a computed column keeps the
+    /// groups' order.
     #[cfg(feature = "sql")]
     #[test]
     fn a_sql_grouping_sorted_by_its_keys_leaves_the_order_to_the_sort() {
         use polars::lazy::dsl::DslPlan;
+        // NaNs group as one and sort as one, as do 0.0 and -0.0.
+        let floats = [0.0, -0.0, f64::NAN, -f64::NAN, 1.0, f64::INFINITY, -1.5];
         let df = df!(
             "k" => (0..5000i64).map(|i| i % 3).collect::<Vec<_>>(),
             "v" => (0..5000i64).collect::<Vec<_>>(),
             "w" => (0..5000i64).map(|i| (i % 11 != 0).then_some(i % 700)).collect::<Vec<_>>(),
+            "f" => (0..5000usize)
+                .map(|i| (i % 9 != 0).then_some(floats[i % floats.len()]))
+                .collect::<Vec<_>>(),
         )
         .unwrap();
         let groups_ordered = |plan: &DslPlan| -> Vec<bool> {
@@ -12456,7 +12462,23 @@ mod tests {
                 false,
             ),
             (
+                "SELECT k, f, COUNT(*) AS n FROM df GROUP BY k, f ORDER BY f DESC NULLS FIRST, k",
+                false,
+            ),
+            (
+                "SELECT w % 7 AS w, COUNT(*) AS n FROM df GROUP BY w % 7 ORDER BY w",
+                false,
+            ),
+            (
                 "SELECT v % 1000 AS g, COUNT(*) AS n FROM df GROUP BY g ORDER BY n",
+                true,
+            ),
+            (
+                "SELECT k, w, COUNT(*) AS n FROM df GROUP BY k, w ORDER BY k, w + 0",
+                true,
+            ),
+            (
+                "SELECT * FROM (SELECT w, COUNT(*) AS n FROM df GROUP BY w) WHERE n > 7 ORDER BY w",
                 true,
             ),
             (

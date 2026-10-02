@@ -1,0 +1,38 @@
+How often each value of one column occurs in the view, with the query,
+filters and drill-down applied. F at the table opens it on the current
+column, the one underlined in the header: the column g went to, or else
+the first column the scroll shows.
+
+  ↑ / ↓ (j/k):      Move
+  PgUp/PgDn:        A page
+  Home/End:         First and last line
+  ← / → (h/l):      The previous or next column
+  Enter:            The rows holding the value, as a drill-down; Esc
+                    there comes back here
+  s:                Sort by count or by value
+  a:                Count every row, when the counts are of a sample
+  y:                Copy the counts as TSV: every value, its count,
+                    percent and cumulative percent
+  e:                Export the counts to a file
+  Esc:              Back to the table; while every row is being
+                    counted, stop that and keep the sample
+  ? / F1:           Show this help
+
+The summary:
+  Rows, Distinct and Nulls for every column; Sum, Mean, Min and Max for
+  numbers; Min and Max for dates and times. Distinct leaves out null. A
+  sample shows no Sum: a sample's is not the column's.
+
+What is read:
+  One pass over the column counts every row. A remote view, or one over
+  100 times the sample size (10,000,000 rows at the default), held in one
+  Parquet or IPC file is sampled first instead, and the header says so:
+  sample of 100,000 of 36,839,175 rows. a then counts every row. The
+  sample size is [performance] analysis_sample_rows; 0 always counts
+  every row.
+
+The listing:
+  The 1,000 most common values, then the rest summed on one line: other
+  (N values). Nulls (∅) have a line of their own: ranked by their rows
+  when sorted by count, last when sorted by value. Cum % runs down the
+  list. The bar is the line's rows beside the most common value's.

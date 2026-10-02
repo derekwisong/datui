@@ -75,6 +75,7 @@ pub enum JobKind {
     FileFacts,
     ChartExport,
     Find,
+    ValueCounts,
 }
 
 /// One started operation. Issued when it starts, carried by its worker, and handed
@@ -149,6 +150,8 @@ pub(crate) enum Job {
     },
     /// A find reading the view for its next match.
     Find(crate::find::FindRun),
+    /// Counting a column's values for the Value Counts screen.
+    ValueCounts,
 }
 
 /// A look at a path chosen on the home screen. Every key acts on the home screen even
@@ -198,6 +201,7 @@ impl Job {
             Job::FileFacts { .. } => JobKind::FileFacts,
             Job::ChartExport { .. } => JobKind::ChartExport,
             Job::Find(_) => JobKind::Find,
+            Job::ValueCounts => JobKind::ValueCounts,
         }
     }
 
@@ -320,6 +324,8 @@ pub(crate) enum Answer {
     FileFacts(crate::widgets::info::FileFacts),
     /// [`Job::Find`]: the cell found, or `None` when nothing in the view matches.
     Found(Option<crate::find::Found>),
+    /// [`Job::ValueCounts`]: the column's values, counted.
+    ValueCounts(Box<crate::value_counts::ValueCounts>),
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),

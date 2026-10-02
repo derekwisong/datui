@@ -7,6 +7,8 @@ pub enum MainViewContent {
     Analysis,
     /// Full-screen chart view.
     Chart,
+    /// Full-screen value counts of one column.
+    ValueCounts,
     /// Full-screen home screen: pick a dataset.
     Home,
     /// Full-screen progress for a dataset that is still loading. Whatever table state
@@ -26,6 +28,8 @@ impl MainViewContent {
             MainViewContent::Home
         } else if app.awaiting_dataset() {
             MainViewContent::Loading
+        } else if app.value_counts_shown() {
+            MainViewContent::ValueCounts
         } else {
             MainViewContent::from_app_state(
                 app.analysis_modal.active,
@@ -169,6 +173,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
         }
         MainViewContent::Analysis => ControlBarSpec::Custom(analysis_control_keys(app)),
         MainViewContent::Chart => ControlBarSpec::Custom(chart_control_keys(app)),
+        MainViewContent::ValueCounts => ControlBarSpec::Custom(value_counts_control_keys(app)),
         // Only the keys that survive the busy gate in `App::key`. Offering anything
         // else would be advertising something that does nothing.
         MainViewContent::Loading => ControlBarSpec::Custom(vec![
@@ -622,6 +627,48 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
 /// While the column Picker is open it owns the keys, so the bar says so; the
 /// rest of the time the bar leads with the direct chart-type switch and names
 /// what the focused row itself takes.
+/// Control bar keys for Value Counts: only those that act on what is on screen.
+fn value_counts_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+    // The export dialog carries its own footer.
+    if app.input_mode == crate::InputMode::Export {
+        return vec![("^Q", "Quit"), ("Esc", "Cancel")];
+    }
+    let g = crate::glyphs::get();
+    let modal = &app.value_counts;
+    let counts = modal.current();
+    let mut keys = Vec::new();
+    if let Some(counts) = counts {
+        if !matches!(
+            modal.selected_kind(),
+            Some(crate::value_counts::LineKind::Other(_)) | None
+        ) {
+            keys.push(("Enter", "Rows"));
+        }
+        // A sample's way to the exact counts comes first: it says the counts are
+        // not all there is.
+        if counts.is_sample() && !modal.counting() {
+            keys.push(("a", "All rows"));
+        }
+        keys.push(("s", "Sort"));
+        keys.push((g.updown_lr, "Column"));
+        keys.push(("y", "Copy"));
+        keys.push(("e", "Export"));
+    } else {
+        keys.push((g.updown_lr, "Column"));
+    }
+    keys.push(("?", "Help"));
+    // With counts on screen, Esc stops a count of every row and keeps them.
+    keys.push((
+        "Esc",
+        if counts.is_some() && modal.counting() {
+            "Stop"
+        } else {
+            "Back"
+        },
+    ));
+    keys
+}
+
 fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     let g = crate::glyphs::get();
     if app.chart_export_modal.active {

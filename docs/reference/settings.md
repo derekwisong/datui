@@ -31,7 +31,7 @@ single_spine_schema = true    # Partitioned Parquet: every column any file has, 
 [display]
 row_numbers = false         # Row numbers on the left (# toggles)
 row_start_index = 1         # First row number, 0 or 1
-number_format = "none"      # Digit grouping, see below (F toggles)
+number_format = "none"      # Digit grouping, see below (, toggles)
 align_numeric_right = true  # Right-align numbers and their headers
 column_colors = true        # Color cells and headers by type
 dtype_row = true            # Second header row naming each type (D toggles)
@@ -67,7 +67,7 @@ and the ASCII set otherwise:
 ### Number formatting
 
 `number_format` groups digits so `248956422` reads as `248,956,422`.
-<kbd>F</kbd> toggles it for the session.
+<kbd>,</kbd> toggles it for the session.
 
 | Preset | `1234567.89` becomes |
 |---|---|

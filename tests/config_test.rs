@@ -1041,7 +1041,7 @@ fn test_generated_config_documents_number_format() {
     assert!(template.contains("number_format = \"none\""));
     assert!(template.contains("[display.number_format]"));
     assert!(template.contains("align_numeric_right = true"));
-    assert!(template.contains("Press F"));
+    assert!(template.contains("Press , to toggle"));
     assert!(template.contains("exclude_columns"));
     // No magnitude threshold: the comment must point at exclude_columns as the
     // way to leave identifier columns alone.

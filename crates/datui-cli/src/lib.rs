@@ -401,7 +401,7 @@ pub struct Args {
     #[arg(long = "column-colors", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
     pub column_colors: Option<bool>,
 
-    /// Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press F to toggle while running
+    /// Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press , to toggle while running
     #[arg(long = "number-format", value_name = "FORMAT", value_parser = clap::builder::PossibleValuesParser::new(NUMBER_FORMAT_VALUES), help_heading = "Display")]
     pub number_format: Option<String>,
 

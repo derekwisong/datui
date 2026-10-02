@@ -13,7 +13,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Scroll one column |
 | <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | [A page of columns](../user-guide/filtering-sorting.md#move-across-a-wide-table) left or right |
 | <kbd>{</kbd> <kbd>}</kbd> | First column; last page of columns |
-| <kbd>g</kbd> | Go to a column by name |
+| <kbd>g</kbd> | Go to a column by name; it becomes the current column, underlined in the header, until the columns scroll |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> or <kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>Ctrl</kbd>+<kbd>F</kbd> | One page |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
@@ -24,6 +24,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
 | <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md) |
+| <kbd>F</kbd> | [Value counts](../user-guide/value-counts.md) of the current column: the one underlined, which <kbd>g</kbd> went to, or else the first on screen |
 | <kbd>r</kbd> | Reverse the sort; with no sort, reverse the row order |
 | <kbd>R</kbd> | Reset: clear query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
 | <kbd>c</kbd> | [Chart](../user-guide/charting.md) |
@@ -35,7 +36,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>v</kbd> | [Views](../user-guide/views.md) |
 | <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |
 | <kbd>#</kbd> | Toggle row numbers |
-| <kbd>F</kbd> | Toggle [digit grouping](settings.md#number-formatting) |
+| <kbd>,</kbd> | Toggle [digit grouping](settings.md#number-formatting) (was <kbd>F</kbd>) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
@@ -67,9 +68,27 @@ key, beyond the paging chords above.
 |---|---|
 | type | Narrow the list to the names that contain it |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move |
-| <kbd>Enter</kbd> | Go to the column |
+| <kbd>Enter</kbd> | Go to the column and make it the current one |
 | <kbd>Backspace</kbd> | Delete a character; <kbd>Ctrl</kbd>+<kbd>W</kbd> a word, <kbd>Ctrl</kbd>+<kbd>U</kbd> all |
 | <kbd>Esc</kbd> | Close without moving |
+
+## Value counts
+
+<kbd>F</kbd> at the table counts the current column, the one underlined in the header.
+
+| Key | Action |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page |
+| <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last line |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous or next column |
+| <kbd>Enter</kbd> | The rows holding the value, as a drill-down; <kbd>Esc</kbd> there comes back |
+| <kbd>s</kbd> | Sort by count or by value |
+| <kbd>a</kbd> | Count every row, when the counts are of a sample |
+| <kbd>y</kbd> | Copy the counts as TSV |
+| <kbd>e</kbd> | Export the counts |
+| <kbd>?</kbd> <kbd>F1</kbd> | Help |
+| <kbd>Esc</kbd> | Back to the table; while every row is being counted, stop and keep the sample |
 
 ## Home screen
 

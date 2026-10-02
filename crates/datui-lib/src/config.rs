@@ -1753,10 +1753,10 @@ impl NumberFormatConfig {
         }
 
         // Formatting starts on only if the user actually configured something.
-        // When they did not, F still needs a format to turn on, so the toggle
+        // When they did not, `,` still needs a format to turn on, so the toggle
         // target becomes Thousands grouping while keeping every other setting
         // they chose (separators, min_digits, precision). Comma grouping is what
-        // the default user pressing F is asking for.
+        // the default user pressing `,` is asking for.
         let enabled = !format.is_noop();
         let format = if enabled {
             format
@@ -1880,7 +1880,7 @@ panel has not been opened since. The Notes tab is there either way",
     ),
     (
         "number_format",
-        "How numbers are displayed in the data table. Press F to toggle on/off while running.\n\
+        "How numbers are displayed in the data table. Press , to toggle on/off while running.\n\
          Shorthand — one of:\n\
          \x20  none         1234567    (default: renders exactly as the file stores it)\n\
          \x20  thousands    1,234,567\n\

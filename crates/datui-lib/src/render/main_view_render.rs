@@ -21,6 +21,9 @@ pub fn render_main_view(
         MainViewContent::Chart => {
             crate::render::chart_view::render(main_area, buf, app, ctx);
         }
+        MainViewContent::ValueCounts => {
+            crate::render::value_counts_view::render(main_area, buf, app, ctx);
+        }
         MainViewContent::Home => {
             crate::render::home_view::render(main_area, buf, app, ctx);
         }

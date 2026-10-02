@@ -42,7 +42,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `--row-numbers` | Show row numbers on the left side of the table. Press N to toggle while running |
 | `--row-start-index <N>` | Starting index for row numbers (default: 1) |
 | `--column-colors[=<BOOL>]` | Color table cells by column type (default: true) |
-| `--number-format <FORMAT>` | Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press F to toggle while running |
+| `--number-format <FORMAT>` | Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press , to toggle while running |
 | `--align-numeric-right[=<BOOL>]` | Right-align numeric columns and their headers (default: true) |
 | `--generate-config` | Write the default configuration to ~/.config/datui/config.toml and exit |
 | `--force` | Overwrite an existing config file (with --generate-config) |

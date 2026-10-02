@@ -178,6 +178,9 @@ pub struct DataTableState {
     start_row: usize,
     pub visible_rows: usize,
     pub termcol_index: usize,
+    /// The column `g` or Value Counts last chose, which the column keys (`F`) act on
+    /// until the columns scroll. See [`Self::current_column`].
+    chosen_column: Option<String>,
     pub visible_termcols: usize,
     /// The scrolling side as last drawn, which a sideways page is planned in. `None`
     /// before the first draw.
@@ -415,6 +418,8 @@ struct GroupedView {
     start_row: usize,
     termcol_index: usize,
     selected: Option<usize>,
+    /// Drilled into from Value Counts rather than from a grouped row.
+    by_value: bool,
 }
 
 /// The rows a grouped result was computed from and how its keys were computed, so a
@@ -820,6 +825,13 @@ pub struct DatasetAtOpen {
 pub struct ExportFrame {
     lf: LazyFrame,
     files: Option<SourceFiles>,
+}
+
+impl ExportFrame {
+    /// Rows that are not the view's, such as a column's value counts.
+    pub fn of(lf: LazyFrame) -> Self {
+        Self { lf, files: None }
+    }
 }
 
 /// The dataset's files in scan order, and the row each starts at.
@@ -1691,6 +1703,7 @@ impl DataTableState {
             sort_columns: Vec::new(),
             sort_descending: Vec::new(),
             sort_ascending: true,
+            chosen_column: None,
             active_query: String::new(),
             active_sql_query: String::new(),
             active_fuzzy_query: String::new(),
@@ -1817,6 +1830,7 @@ impl DataTableState {
             sort_columns: Vec::new(),
             sort_descending: Vec::new(),
             sort_ascending: true,
+            chosen_column: None,
             active_query: String::new(),
             active_sql_query: String::new(),
             active_fuzzy_query: String::new(),
@@ -7098,6 +7112,8 @@ impl DataTableState {
     /// which measures it from the rows on hand; a relative move typed behind it waits
     /// too and lands after it, in order, so no key is lost or planned on a guess.
     pub fn scroll_columns(&mut self, mv: ColumnMove) {
+        // Scrolled, the column keys act on the column at the left edge again.
+        self.chosen_column = None;
         if matches!(
             mv,
             ColumnMove::First | ColumnMove::Last | ColumnMove::Reveal(_)
@@ -7111,6 +7127,37 @@ impl DataTableState {
             self.apply_column_move(mv, start);
         } else if self.column_moves.len() < MAX_WAITING_MOVES {
             self.column_moves.push(mv);
+        }
+    }
+
+    /// The column the column keys (`F`) act on, underlined in the header: the one `g`
+    /// or Value Counts last chose while it is shown, else the first scrolling column.
+    pub fn current_column(&self) -> Option<&str> {
+        self.chosen_column
+            .as_deref()
+            .filter(|name| self.column_order.iter().any(|c| c == name))
+            .or_else(|| {
+                let at = self.frozen_shown() + self.termcol_index;
+                self.column_order
+                    .get(at.min(self.column_order.len().saturating_sub(1)))
+                    .map(String::as_str)
+            })
+    }
+
+    /// Make the shown column `name` the one the column keys act on.
+    pub fn choose_column(&mut self, name: &str) {
+        self.chosen_column = Some(name.to_string());
+    }
+
+    /// Start the scrolling columns at the shown column `name`, so it is the first
+    /// after the frozen ones. A column drawn frozen is on screen already.
+    pub fn scroll_to_column(&mut self, name: &str) {
+        let Some(at) = self.column_order.iter().position(|c| c == name) else {
+            return;
+        };
+        if let Some(index) = at.checked_sub(self.frozen_shown()) {
+            self.clear_column_moves();
+            self.scroll_columns_to(index);
         }
     }
 
@@ -8159,6 +8206,62 @@ impl DataTableState {
                 .filter(|(name, _)| keys.contains(&name.as_str()))
                 .unzip();
         }
+        self.enter_group(group, group_index, false)
+    }
+
+    /// Show the rows of the view holding `value` in `column` (null matching nulls),
+    /// as a drill into a group does: the breadcrumb names the value, and Esc comes
+    /// back to the view. Inside a group already, it narrows that group, and Esc goes
+    /// back to the view the group was drilled from.
+    pub fn drill_into_value(&mut self, column: &str, value: AnyValue<'static>) -> Result<()> {
+        let dtype = self
+            .schema
+            .get(column)
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("no column {column}"))?;
+        let label = crate::exact::str_value(&value).to_string();
+        let matches = col(column).eq_missing(lit(Scalar::new(dtype, value)));
+        let group = GroupRows {
+            lf: self.visible_lf().filter(matches),
+            key_columns: vec![column.to_string()],
+            key_values: vec![label],
+            lead: vec![column.to_string()],
+        };
+        if !self.is_drilled_down() {
+            let index = self.start_row + self.table_state.selected().unwrap_or(0);
+            return self.enter_group(group, index, true);
+        }
+        let schema = group.lf.clone().collect_schema()?;
+        let order = std::mem::take(&mut self.column_order);
+        if let Some(keys) = self.drilled_down_group_key_columns.as_mut() {
+            keys.extend(group.key_columns);
+        }
+        if let Some(values) = self.drilled_down_group_key.as_mut() {
+            values.extend(group.key_values);
+        }
+        // The group's filters and sort are in the frame now.
+        self.filters.clear();
+        self.sort_columns.clear();
+        self.sort_descending.clear();
+        self.sort_ascending = true;
+        self.install_base(group.lf, schema);
+        self.column_order = order;
+        self.start_row = 0;
+        self.termcol_index = 0;
+        self.clear_column_moves();
+        self.table_state.select(Some(0));
+        self.collect();
+        Ok(())
+    }
+
+    /// Whether the drill on screen came from Value Counts.
+    pub fn drilled_into_value(&self) -> bool {
+        self.grouped.as_ref().is_some_and(|view| view.by_value)
+    }
+
+    /// Show `group`, the group on row `group_index` of the view, keeping the view to
+    /// come back to.
+    fn enter_group(&mut self, group: GroupRows, group_index: usize, by_value: bool) -> Result<()> {
         let schema = group.lf.clone().collect_schema()?;
         self.drilled_down_group_key = Some(group.key_values);
         self.drilled_down_group_key_columns = Some(group.key_columns);
@@ -8181,6 +8284,7 @@ impl DataTableState {
             start_row: self.start_row,
             termcol_index: self.termcol_index,
             selected: self.table_state.selected(),
+            by_value,
         });
         self.sort_ascending = true;
         self.install_base(group.lf, schema);
@@ -9014,6 +9118,8 @@ pub struct DataTable {
     pub sort_columns: Vec<String>,
     /// Which way each of them runs, per column, as it is applied.
     pub sort_descending: Vec<bool>,
+    /// The column the column keys act on: its name is underlined.
+    pub current_column: Option<String>,
     /// The glyph set the table draws with: the terminal's, unless a test asks for one.
     pub glyphs: &'static crate::glyphs::Glyphs,
     /// The terminal's width, which bounds automatic text widths (see
@@ -9054,6 +9160,7 @@ impl Default for DataTable {
             drift_groups: Arc::new(Vec::new()),
             sort_columns: Vec::new(),
             sort_descending: Vec::new(),
+            current_column: None,
             glyphs: crate::glyphs::get(),
             screen_width: 0,
             find_cell: None,
@@ -9861,6 +9968,13 @@ impl DataTable {
                     Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
                     None => Style::default().add_modifier(Modifier::BOLD),
                 };
+                // The column the column keys act on: an underline, which neither a
+                // glyph set nor a palette can take away.
+                let name_style = if self.current_column.as_deref() == Some(col.name.as_str()) {
+                    name_style.add_modifier(Modifier::UNDERLINED)
+                } else {
+                    name_style
+                };
                 // The marks are state, so a long name gives way to them: the name is
                 // what gets clipped, never the sort direction or the drift footnote.
                 let marks = crate::glyphs::cell_width(col.drift_mark)
@@ -10062,6 +10176,7 @@ impl StatefulWidget for DataTable {
         // rows being drawn, so the header marks can never disagree with them.
         self.sort_columns = state.view_sort_columns().to_vec();
         self.sort_descending = state.view_sort_descending().to_vec();
+        self.current_column = state.current_column().map(str::to_string);
         // One column on the left is the rail: blank on every row but the one the
         // cursor is on, where it carries the accent. It also holds the "columns off to
         // the left" hint in the header, so no header name ever gets a character
@@ -13852,7 +13967,7 @@ mod tests {
 
     #[test]
     fn disabled_formatting_renders_raw_digits() {
-        // What the F toggle does: same settings, enabled = false.
+        // What the `,` toggle does: same settings, enabled = false.
         let mut settings = NumberFormatSettings {
             format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
             enabled: true,

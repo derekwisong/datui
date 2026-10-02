@@ -270,80 +270,213 @@ pub fn read_safetensors<R: Read>(reader: R, len: u64) -> Result<Header> {
     if json.len() as u64 != header_len {
         return Err(eyre!("SafeTensors: the header is cut short"));
     }
-    parse_safetensors_json(&json)
+    parse_safetensors_json(&json, len.saturating_sub(8).saturating_sub(header_len))
 }
 
-/// The header's JSON, without its length prefix.
-fn parse_safetensors_json(json: &[u8]) -> Result<Header> {
-    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(json)
-        .map_err(|e| eyre!("SafeTensors: the header is not a JSON object: {e}"))?;
-    let mut tensors = Vec::with_capacity(map.len());
-    let mut metadata = Vec::new();
-    for (name, value) in map {
-        if name == "__metadata__" {
-            let serde_json::Value::Object(entries) = value else {
-                return Err(eyre!("SafeTensors: __metadata__ is not an object"));
-            };
-            for (key, value) in entries {
-                let text = match value {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                };
-                metadata.push((key, MetaValue::Text(text)));
-            }
-            continue;
+/// The header's JSON, without its length prefix. `data_len` is how many bytes of
+/// tensor data follow it, which every tensor's `data_offsets` must stay inside.
+///
+/// Read straight into what is kept rather than through `serde_json::Value`: a hostile
+/// 100 MB header of tiny arrays would be gigabytes as a `Value` tree. Fields the spec
+/// does not name are passed over without being stored, and keys are seen in the order
+/// the file has them, which is the order the metadata is shown in.
+fn parse_safetensors_json(json: &[u8], data_len: u64) -> Result<Header> {
+    let mut de = serde_json::Deserializer::from_slice(json);
+    let parsed = serde::Deserializer::deserialize_map(&mut de, StHeaderVisitor)
+        .and_then(|header| de.end().map(|()| header))
+        .map_err(|e| eyre!("SafeTensors: the header is not valid: {e}"))?;
+    let (mut tensors, metadata) = parsed;
+    for t in &tensors {
+        if t.offset_end.is_some_and(|end| end > data_len) {
+            return Err(eyre!(
+                "SafeTensors: tensor {:?} runs past the end of the file ({data_len} bytes of data)",
+                t.name
+            ));
         }
-        let bad = |why: &str| eyre!("SafeTensors: tensor {name:?} {why}");
-        let serde_json::Value::Object(info) = value else {
-            return Err(bad("is not an object"));
-        };
-        let dtype = info
-            .get("dtype")
-            .and_then(|d| d.as_str())
-            .ok_or_else(|| bad("has no dtype"))?
-            .to_string();
-        let dims = info
-            .get("shape")
-            .and_then(|s| s.as_array())
-            .ok_or_else(|| bad("has no shape"))?;
-        if dims.len() > MAX_DIMS {
-            return Err(bad("has more dimensions than datui reads"));
-        }
-        let shape = dims
-            .iter()
-            .map(|d| {
-                d.as_u64()
-                    .ok_or_else(|| bad("has a dimension that is not a count"))
-            })
-            .collect::<Result<Vec<u64>>>()?;
-        let offsets = info
-            .get("data_offsets")
-            .and_then(|o| o.as_array())
-            .filter(|o| o.len() == 2)
-            .ok_or_else(|| bad("has no data_offsets pair"))?;
-        let (Some(start), Some(end)) = (offsets[0].as_u64(), offsets[1].as_u64()) else {
-            return Err(bad("has data_offsets that are not offsets"));
-        };
-        if end < start {
-            return Err(bad("ends before it starts"));
-        }
-        tensors.push(Tensor {
-            name,
-            dtype,
-            params: product(&shape),
-            shape,
-            bytes: Some(end - start),
-            offset: start,
-            offset_end: Some(end),
-        });
     }
-    // The order the data is in. The JSON object's own order is not kept by the parser.
+    // The order the data is in.
     tensors.sort_by(|a, b| a.offset.cmp(&b.offset).then_with(|| a.name.cmp(&b.name)));
     Ok(Header {
         kind: ModelKind::SafeTensors,
         tensors,
         metadata,
     })
+}
+
+/// One tensor's entry. Any other field is skipped, not kept.
+#[derive(serde::Deserialize)]
+struct StEntry {
+    dtype: String,
+    shape: StShape,
+    data_offsets: (u64, u64),
+}
+
+/// A shape, refused past [`MAX_DIMS`] before a longer list is stored.
+struct StShape(Vec<u64>);
+
+impl<'de> serde::Deserialize<'de> for StShape {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = StShape;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a list of at most {MAX_DIMS} dimensions")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<StShape, A::Error> {
+                let mut dims = Vec::new();
+                while let Some(d) = seq.next_element::<u64>()? {
+                    if dims.len() == MAX_DIMS {
+                        return Err(serde::de::Error::custom("more dimensions than datui reads"));
+                    }
+                    dims.push(d);
+                }
+                Ok(StShape(dims))
+            }
+        }
+        d.deserialize_seq(V)
+    }
+}
+
+/// A `__metadata__` value. The spec says text; a number or a bool is shown as written,
+/// and anything nested is passed over and named by what it is.
+struct StMetaValue(String);
+
+impl<'de> serde::Deserialize<'de> for StMetaValue {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = StMetaValue;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a metadata value")
+            }
+            fn visit_str<E>(self, v: &str) -> std::result::Result<StMetaValue, E> {
+                Ok(StMetaValue(v.to_string()))
+            }
+            fn visit_string<E>(self, v: String) -> std::result::Result<StMetaValue, E> {
+                Ok(StMetaValue(v))
+            }
+            fn visit_bool<E>(self, v: bool) -> std::result::Result<StMetaValue, E> {
+                Ok(StMetaValue(v.to_string()))
+            }
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<StMetaValue, E> {
+                Ok(StMetaValue(v.to_string()))
+            }
+            fn visit_u64<E>(self, v: u64) -> std::result::Result<StMetaValue, E> {
+                Ok(StMetaValue(v.to_string()))
+            }
+            fn visit_f64<E>(self, v: f64) -> std::result::Result<StMetaValue, E> {
+                Ok(StMetaValue(v.to_string()))
+            }
+            fn visit_unit<E>(self) -> std::result::Result<StMetaValue, E> {
+                Ok(StMetaValue("null".to_string()))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<StMetaValue, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(StMetaValue("[array]".to_string()))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<StMetaValue, A::Error> {
+                while map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(StMetaValue("{object}".to_string()))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// `__metadata__`, in the order the file has it.
+struct StMetadata(Metadata);
+
+impl<'de> serde::Deserialize<'de> for StMetadata {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = StMetadata;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object of metadata")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<StMetadata, A::Error> {
+                let mut out: Metadata = Vec::new();
+                while let Some((key, StMetaValue(value))) =
+                    map.next_entry::<String, StMetaValue>()?
+                {
+                    if !out.iter().any(|(k, _)| *k == key) {
+                        out.push((key, MetaValue::Text(value)));
+                    }
+                }
+                Ok(StMetadata(out))
+            }
+        }
+        d.deserialize_map(V)
+    }
+}
+
+/// The whole header: its tensors, and `__metadata__`.
+struct StHeaderVisitor;
+
+impl<'de> serde::de::Visitor<'de> for StHeaderVisitor {
+    type Value = (Vec<Tensor>, Metadata);
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON object of tensors")
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        use serde::de::Error;
+        let mut tensors = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut metadata = None;
+        while let Some(name) = map.next_key::<String>()? {
+            if name == "__metadata__" {
+                if metadata.is_some() {
+                    return Err(A::Error::custom("__metadata__ appears twice"));
+                }
+                let StMetadata(m) = map
+                    .next_value()
+                    .map_err(|e| A::Error::custom(format!("__metadata__: {e}")))?;
+                metadata = Some(m);
+                continue;
+            }
+            let entry: StEntry = map
+                .next_value()
+                .map_err(|e| A::Error::custom(format!("tensor {name:?}: {e}")))?;
+            if !seen.insert(name.clone()) {
+                return Err(A::Error::custom(format!("tensor {name:?} appears twice")));
+            }
+            let (start, end) = entry.data_offsets;
+            if end < start {
+                return Err(A::Error::custom(format!(
+                    "tensor {name:?} ends before it starts"
+                )));
+            }
+            let shape = entry.shape.0;
+            tensors.push(Tensor {
+                name,
+                dtype: entry.dtype,
+                params: product(&shape),
+                shape,
+                bytes: Some(end - start),
+                offset: start,
+                offset_end: Some(end),
+            });
+        }
+        Ok((tensors, metadata.unwrap_or_default()))
+    }
 }
 
 /// The product of a shape; 1 for a scalar, `None` on overflow.
@@ -934,6 +1067,43 @@ pub(crate) mod tests {
             r#"{"__metadata__":3}"#,
         ] {
             assert!(parse_header(&safetensors_bytes(bad, 8)).is_err(), "{bad}");
+        }
+    }
+
+    /// The spec's rules a viewer can check from the header: one entry per name, two
+    /// offsets inside the data, a shape of counts. A field it does not name is passed
+    /// over, and `__metadata__` keeps the file's order.
+    #[test]
+    fn safetensors_entries_follow_the_spec() {
+        let ok = r#"{"__metadata__":{"z":"1","a":"2","n":3},
+            "t":{"dtype":"F32","shape":[2],"data_offsets":[0,8],"extra":[[1,2],{"x":1}]}}"#;
+        let header = parse_header(&safetensors_bytes(ok, 8)).unwrap();
+        let keys: Vec<&str> = header.metadata.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["z", "a", "n"], "the file's order");
+        assert_eq!(header.metadata[2].1, MetaValue::Text("3".into()));
+        for (bad, why) in [
+            (
+                r#"{"t":{"dtype":"F32","shape":[2],"data_offsets":[0,8]},
+                    "t":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#,
+                "appears twice",
+            ),
+            (
+                r#"{"t":{"dtype":"F32","shape":[4],"data_offsets":[0,16]}}"#,
+                "past the end",
+            ),
+            (
+                r#"{"t":{"dtype":"F32","shape":[2],"data_offsets":[0,4,8]}}"#,
+                "tensor \"t\"",
+            ),
+            (
+                r#"{"t":{"dtype":"F32","shape":[1,1,1,1,1,1,1,1,1],"data_offsets":[0,4]}}"#,
+                "dimensions",
+            ),
+        ] {
+            let err = parse_header(&safetensors_bytes(bad, 8))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(why), "{bad}: {err}");
         }
     }
 

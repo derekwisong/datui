@@ -9133,6 +9133,19 @@ pub struct ReadReport {
     pub format: Option<FileFormat>,
 }
 
+/// What a scan built: the frame, or one compressed delimited file for the load to
+/// decompress, since the copy has to outlive the scan.
+pub(crate) enum Scan {
+    Frame(Box<LazyFrame>),
+    Decompress { file: PathBuf, format: FileFormat },
+}
+
+impl From<LazyFrame> for Scan {
+    fn from(lf: LazyFrame) -> Self {
+        Scan::Frame(Box::new(lf))
+    }
+}
+
 /// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
 #[derive(Clone)]
 pub enum RunInput {
@@ -16669,7 +16682,7 @@ impl App {
                         files_disagree: options.files_disagree,
                         format: None,
                     };
-                    let lf = Self::build_lazyframe_from_paths_with(
+                    let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
                         &paths,
                         &options,
@@ -16679,16 +16692,23 @@ impl App {
                     .map_err(|e| {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
                     })?;
+                    let format = match &scan {
+                        Scan::Frame(_) => report.format.or(options.format),
+                        Scan::Decompress { format, .. } => Some(*format),
+                    };
                     let options = OpenOptions {
                         left_out: report.left_out,
                         files_disagree: report.files_disagree,
-                        format: report.format.or(options.format),
+                        format,
                         ..options
                     };
-                    Ok(Answer::Load(Box::new(LoadAnswer::Scanned {
-                        lf: Box::new(lf),
-                        path,
-                        options,
+                    Ok(Answer::Load(Box::new(match scan {
+                        Scan::Frame(lf) => LoadAnswer::Scanned { lf, path, options },
+                        Scan::Decompress { file, .. } => LoadAnswer::Compressed {
+                            file,
+                            path,
+                            options,
+                        },
                     })))
                 });
             }
@@ -18006,7 +18026,7 @@ impl App {
         paths: &[PathBuf],
         options: &OpenOptions,
         report: &mut ReadReport,
-    ) -> Result<LazyFrame> {
+    ) -> Result<Scan> {
         // Only the cloud readers below take the settings.
         #[cfg(not(feature = "cloud"))]
         let _ = cloud;
@@ -18043,7 +18063,7 @@ impl App {
                             options,
                         )
                     {
-                        return lf;
+                        return lf.map(Scan::from);
                     }
                     let pl_path = PlRefPath::new(full.as_str());
                     let hive_options = if is_glob {
@@ -18066,7 +18086,7 @@ impl App {
                     // The frame alone. Building a state here would ask Polars for the
                     // schema, which lists every file under a prefix, and the schema
                     // phase that follows lists them once more for itself.
-                    return Ok(lf);
+                    return Ok(lf.into());
                 }
                 #[cfg(not(feature = "cloud"))]
                 {
@@ -18093,7 +18113,7 @@ impl App {
                             options,
                         )
                     {
-                        return lf;
+                        return lf.map(Scan::from);
                     }
                     let pl_path = PlRefPath::new(full.as_str());
                     let hive_options = if is_glob {
@@ -18113,7 +18133,7 @@ impl App {
                             e
                         )
                     })?;
-                    return Ok(lf);
+                    return Ok(lf.into());
                 }
                 #[cfg(not(feature = "cloud"))]
                 {
@@ -18139,7 +18159,7 @@ impl App {
                             options,
                         )
                     {
-                        return lf;
+                        return lf.map(Scan::from);
                     }
                     let args = ScanArgsParquet {
                         cloud_options: Some(cloud_opts),
@@ -18159,7 +18179,7 @@ impl App {
                             )
                         },
                     )?;
-                    return Ok(lf);
+                    return Ok(lf.into());
                 }
                 #[cfg(not(feature = "cloud"))]
                 {
@@ -18180,7 +18200,7 @@ impl App {
         paths: &[PathBuf],
         options: &OpenOptions,
         report: &mut ReadReport,
-    ) -> Result<LazyFrame> {
+    ) -> Result<Scan> {
         let path = &paths[0];
 
         // One path that is a directory, whether or not `--hive` said so: naming a
@@ -18274,7 +18294,7 @@ impl App {
                 if use_parquet_hive {
                     // Only build the LazyFrame here; schema and partition discovery are the
                     // schema phase's ("Caching schema").
-                    return DataTableState::scan_parquet_hive(path);
+                    return DataTableState::scan_parquet_hive(path).map(Scan::from);
                 }
                 return Err(color_eyre::eyre::eyre!(
                     "With --hive use a directory or a glob pattern for Parquet (e.g. path/to/dir or path/**/*.parquet)"
@@ -18295,6 +18315,22 @@ impl App {
                 .then_some(FileFormat::Parquet)
             });
         report.format = effective_format;
+
+        // One compressed CSV, TSV or PSV, as a directory of one resolves to: the load
+        // decompresses it (`Step::Decompress`) into a copy the dataset holds. Read here,
+        // the copy went with the state dropped below and the frame scanned nothing.
+        if let [file] = paths
+            && options
+                .compression
+                .or_else(|| CompressionFormat::from_extension(file))
+                .is_some()
+            && let Some(format) = crate::loading::delimited_format(file, options)
+        {
+            return Ok(Scan::Decompress {
+                file: file.clone(),
+                format,
+            });
+        }
 
         let lf = if paths.len() > 1 {
             match effective_format {
@@ -18463,9 +18499,10 @@ impl App {
             effective_format,
             Some(FileFormat::Json) | Some(FileFormat::Jsonl)
         ) {
-            return DataTableState::apply_parse_dates_to_json_lazyframe(lf.into_lf(), options);
+            return DataTableState::apply_parse_dates_to_json_lazyframe(lf.into_lf(), options)
+                .map(Scan::from);
         }
-        Ok(lf.into_lf())
+        Ok(lf.into_lf().into())
     }
 
     /// Whether the plain help overlay is on screen.

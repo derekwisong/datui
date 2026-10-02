@@ -9,9 +9,10 @@ datui formats check acme.l2feed day.l2 # check a spec and print a file's first r
 ```
 
 A file of fixed-size records, such as a tick capture, a sensor log or a struct
-dump, opens as a table once a spec describes it. A spec is one TOML file per
-format. Specs are data: no scripts or expressions. Every size read from a file is
-bounded.
+dump, opens as a table once a spec describes it. So does a family of CSV-like
+text files with lines above their header: see [delimited text](#delimited-text).
+A spec is one TOML file per format. Specs are data: no scripts or expressions.
+Every size read from a file is bounded.
 
 ## A spec
 
@@ -118,7 +119,7 @@ a repository of specs can run it in CI.
 |---|---|
 | `--spec FILE` | That spec, whatever the file is called |
 | `--format NAME` | The spec of that name |
-| A name datui already reads (`.csv`, `.parquet`) | Read as it is, as before |
+| A name datui already reads (`.csv`, `.parquet`) | Read as it is, as before, unless a [delimited spec](#delimited-text) matches a `.csv`, `.tsv` or `.psv` |
 | A `glob` matches | That spec |
 | A `magic` matches, in a file whose bytes are no format datui reads (such as Parquet) | That spec |
 
@@ -136,6 +137,95 @@ spec matches opens as it does without specs.
 <kbd>b</kbd> on the table picks another spec and reads the file again with it.
 The Notes tab of <kbd>i</kbd> says which spec read the file and why, the header's
 values, and any bytes left out.
+
+## Delimited text
+
+```bash
+datui flight.csv                                 # a delimited spec's magic matches
+datui logs/                                      # a directory of them, as one table
+datui formats check acme.instrument-log flight.csv
+```
+
+Loggers and instruments write a metadata line and a units line above a padded
+header:
+
+```
+#device_info, log_version="1.03", model="Unit 7, rev B", serial="123"
+#yyyy-mm-dd, hh:mm:ss, hh:mm, degrees, volts, deg F
+  Lcl Date, Lcl Time, UTCOfst,     Latitude, bus1volts, T1 Temp
+          ,         ,        ,             ,      25.1,   187.2
+2024-03-01, 10:00:00,  -05:00,    40.100000,      25.0,   180.0
+```
+
+A spec of `kind = "delimited"` holds the [CSV options](loading-data.md#csv-options)
+for such a family of files, so they open with no flags: from the command line,
+from the home screen, compressed, or as a directory.
+
+```toml
+name = "acme.instrument-log"
+kind = "delimited"
+match = { magic = "#device_info" }       # or glob = ["**/logs/log_*.csv"]
+
+comment_char = "#"
+skip_initial_space = true
+header_rows = { name = 3, unit = 2 }     # a list, such as [3] or [3, 2], also works
+metadata_line = 1
+
+[columns]
+time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
+```
+
+| Key | What it says |
+|---|---|
+| `kind` | `delimited`. Default `binary` |
+| `match` | `glob` and `magic`, as for binary specs. `magic` compares the start of the first line |
+| `delimiter` | One character, such as `";"` or `"\t"`. Default `,`, or the one the file's name implies |
+| `comment_char` | Lines that start with it are skipped wherever they are |
+| `skip_initial_space` | `true`: ignore the spaces after a delimiter |
+| `header_rows` | `{ name = N, unit = M }`: the line that names the columns and the line that gives their units. `name` may be a list of lines, joined with `header_join` (default a space). A number or a list is `name` alone. A header line is never data |
+| `header_join` | What joins the pieces of a name from several lines |
+| `metadata_line` | A line of `key="value"` or `key=value` pairs, separated by commas, for the Info panel. It must not be data: above the last header line, within `skip_lines`, or a comment line |
+| `null_value` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
+| `skip_lines` | Lines to pass over before the header |
+| `[columns]` | Derived columns, below |
+
+Lines count from 1 at the top of the file. Each option the spec sets replaces
+the command line's and the config's; the others keep theirs. The header lines
+and the metadata line are the only lines read apart from the CSV reader.
+
+### Units
+
+A unit sits beside its column's type on the table's type row
+(`f64 · deg F`), in a **Unit** column on the Info panel's Schema tab, and in
+chart axis titles (`T1 Temp (deg F)`). Units follow column names, so a query,
+filter or sort that keeps a column keeps its unit.
+
+### Metadata
+
+The Info panel's **Metadata** tab lists the metadata line's pairs, under its
+leading item when it has one (`device_info`). A line that is not pairs is shown
+as it is. For a directory, the first file's line is shown.
+
+### Derived columns
+
+| `as` | `from` | Column |
+|---|---|---|
+| `datetime` | a date and a time, and optionally a UTC offset such as `-05:00`, `+0530` or `-5`; or one column of text | A datetime. With an offset it is in UTC |
+| `date` | one column | A date |
+| `time` | one column | A time of day |
+
+`format = "%Y-%m-%d %H:%M:%S"` gives the strftime format of the text, a date
+and a time joined with a space; without it the format is inferred. A value that
+does not parse is null. The column goes before the first column it is made
+from, which stays. There is no expression language: anything more is a
+[query](querying-data.md).
+
+### Matching
+
+A delimited spec matches a file whose name says no format datui reads, or says
+`.csv`, `.tsv` or `.psv`, compressed or not. A directory is read through the
+spec its first file matches. <kbd>H</kbd> reads the file without a header, and
+without its derived columns.
 
 ## Checks
 

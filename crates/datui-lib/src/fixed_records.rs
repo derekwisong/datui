@@ -30,8 +30,8 @@ const DAY_NS: i64 = 86_400_000_000_000;
 
 /// The bytes a column reads.
 pub enum Bytes {
-    /// A file, mapped.
-    Mapped(memmap2::Mmap),
+    /// A file, mapped, and the file, to ask its length again.
+    Mapped(memmap2::Mmap, std::fs::File),
     /// Bytes in memory, for tests and the fuzz target.
     Owned(Vec<u8>),
 }
@@ -45,18 +45,33 @@ impl Bytes {
             return Ok(Self::Owned(Vec::new()));
         }
         // SAFETY: the map is read-only and lives as long as the scan. A file truncated
-        // by another process while it is mapped faults on access, as it does for every
-        // reader that maps (Polars' own IPC reader included); datui does not write to
-        // the files it reads.
+        // by another process while it is mapped faults (SIGBUS) on access past its new
+        // end, as it does for every reader that maps (Polars' own readers included).
+        // Datui does not write to the files it reads, and `still_whole` refuses a read
+        // once the file is shorter, which leaves only a truncation during a read.
         let map = unsafe { memmap2::Mmap::map(&file)? };
-        Ok(Self::Mapped(map))
+        Ok(Self::Mapped(map, file))
     }
 
     pub fn as_slice(&self) -> &[u8] {
         match self {
-            Self::Mapped(map) => map,
+            Self::Mapped(map, _) => map,
             Self::Owned(bytes) => bytes,
         }
+    }
+
+    /// Fails when the mapped file is now shorter than its map, so reading the map
+    /// would go past the file's end.
+    pub fn still_whole(&self) -> PolarsResult<()> {
+        if let Self::Mapped(map, file) = self {
+            let len = file.metadata()?.len();
+            polars_ensure!(
+                len >= map.len() as u64,
+                ComputeError: "the file is now {len} bytes, shorter than the {} it had when it was opened; open it again",
+                map.len()
+            );
+        }
+        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -226,22 +241,22 @@ impl ColumnLayout {
         }
     }
 
-    /// Bytes one row's cell takes.
-    fn cell_width(&self) -> usize {
-        self.width * self.count.max(1)
+    /// Bytes one row's cell takes, `None` past `usize`.
+    fn cell_width(&self) -> Option<usize> {
+        self.width.checked_mul(self.count.max(1))
     }
 
     /// Rows this column can give from a source of `len` bytes.
     fn rows_in(&self, len: usize) -> usize {
-        let cell = self.cell_width();
-        if self.stride == 0 || len <= self.start {
+        let Some(cell) = self.cell_width() else {
             return 0;
-        }
-        let room = len - self.start;
-        if room < cell {
-            0
-        } else {
-            (room - cell) / self.stride + 1
+        };
+        match len
+            .checked_sub(self.start)
+            .and_then(|room| room.checked_sub(cell))
+        {
+            Some(after_first) if self.stride > 0 => after_first / self.stride + 1,
+            _ => 0,
         }
     }
 
@@ -250,6 +265,10 @@ impl ColumnLayout {
         polars_ensure!(
             self.stride > 0 && self.width > 0 && self.count > 0,
             ComputeError: "column {} has no width", self.name
+        );
+        polars_ensure!(
+            self.cell_width().is_some(),
+            ComputeError: "column {}: {} values of {} bytes is too many", self.name, self.count, self.width
         );
         if let Some(width) = self.physical.width() {
             polars_ensure!(
@@ -319,11 +338,19 @@ fn null_integer(null: Null, physical: Physical) -> Option<i128> {
 }
 
 /// The first `rows` values of `column` from `bytes`: one cell a row, an Array of
-/// `column.count` values each when it holds more than one. The caller makes sure
-/// every value it asks for lies inside `bytes` ([`FixedRecords::new`] does).
+/// `column.count` values each when it holds more than one. Asking for more rows than
+/// `bytes` holds is an error.
 pub fn decode(bytes: &[u8], column: &ColumnLayout, rows: usize) -> PolarsResult<Column> {
+    column.validate()?;
+    let fits = column.rows_in(bytes.len());
+    polars_ensure!(
+        rows <= fits,
+        ComputeError: "column {}: {rows} rows asked for, {fits} in {} bytes", column.name, bytes.len()
+    );
     let count = column.count.max(1);
-    let values = rows * count;
+    let values = rows
+        .checked_mul(count)
+        .ok_or_else(|| polars_err!(ComputeError: "column {}: too many values", column.name))?;
     // Each value's bytes, row by row and in a row left to right.
     let at = move |i: usize| {
         let start = column.start + (i / count) * column.stride + (i % count) * column.width;
@@ -689,7 +716,9 @@ impl FixedRecords {
     }
 
     fn decode_column(&self, column: &ColumnLayout, rows: usize) -> PolarsResult<Column> {
-        decode(self.sources[column.source].as_slice(), column, rows)
+        let source = &self.sources[column.source];
+        source.still_whole()?;
+        decode(source.as_slice(), column, rows)
     }
 }
 
@@ -907,6 +936,51 @@ mod tests {
             records.window(99, 5).unwrap().collect().unwrap().height(),
             0
         );
+    }
+
+    /// A layout that asks for more than its bytes hold is refused, never read past.
+    #[test]
+    fn a_read_past_the_bytes_is_an_error_not_a_panic() {
+        let u2 = column("u", 0, 2, Physical::Unsigned(2));
+        assert!(decode(&[1, 0, 2, 0], &u2, 2).is_ok());
+        assert!(decode(&[1, 0, 2, 0], &u2, 3).is_err());
+        let mut huge = u2.clone();
+        huge.count = usize::MAX;
+        assert!(decode(&[0; 4], &huge, 0).is_err());
+        assert!(
+            FixedRecords::new(vec![Arc::new(Bytes::Owned(vec![0; 4]))], vec![huge], 1).is_err()
+        );
+        let mut far = u2;
+        far.start = usize::MAX;
+        let records = records(vec![0; 4], vec![far], usize::MAX);
+        assert_eq!(records.rows(), 0);
+    }
+
+    /// A mapped file cut short after it was opened is refused at the next read, rather
+    /// than read past its new end.
+    #[test]
+    fn a_file_that_shrank_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.bin");
+        std::fs::write(&path, [7u8; 64]).unwrap();
+        let bytes = Arc::new(Bytes::map(&path).unwrap());
+        let records = Arc::new(
+            FixedRecords::new(
+                vec![bytes],
+                vec![column("a", 0, 1, Physical::Unsigned(1))],
+                usize::MAX,
+            )
+            .unwrap(),
+        );
+        assert_eq!(records.collect(64).unwrap().height(), 64);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(8)
+            .unwrap();
+        let err = records.clone().into_lazy().unwrap().collect().unwrap_err();
+        assert!(err.to_string().contains("shorter"), "{err}");
     }
 
     #[test]

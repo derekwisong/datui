@@ -666,12 +666,15 @@ impl GpxReader {
         }
         let in_track = point.kind != "waypoint";
         // Seconds since the point before, in a track segment only: routes and
-        // waypoints are places, not a recording.
+        // waypoints are places, not a recording. None when time steps back further
+        // than a clock settling, as NMEA's.
         let gap = match (point.kind, point.time) {
             ("track", Some(time)) => self
                 .last_time
                 .replace(time)
-                .map(|last| (time - last) as f64 / 1000.0),
+                .map(|last| time - last)
+                .filter(|ms| *ms >= -super::nmea::BACK_MS)
+                .map(|ms| ms as f64 / 1000.0),
             _ => None,
         };
         let cells = [

@@ -25,6 +25,12 @@ const MAX_TYPES: usize = 64;
 const KNOTS: f64 = 1852.0 / 3600.0;
 const DAY_MS: i64 = 86_400_000;
 const HALF_DAY_MS: i64 = DAY_MS / 2;
+/// How far a fix's time may step back and still have a `gap`: a receiver's clock
+/// settling. Further back is a reset or a log spliced together, and has none.
+pub(crate) const BACK_MS: i64 = 5_000;
+/// The longest pause measured between fixes not yet dated: past it, whole days may
+/// have gone by unseen.
+const UNDATED_MS: i64 = 3_600_000;
 
 /// The tables an NMEA log opens as: the fixes merged from its sentences, each sentence
 /// type alone, or every sentence as it stands.
@@ -534,6 +540,19 @@ fn and_checksum(a: Option<bool>, b: Option<bool>) -> Option<bool> {
     }
 }
 
+/// Milliseconds from the fix at `last` to the one at `now`, each a time of day and its
+/// time when dated. `None` when time stepped back more than [`BACK_MS`], or when a fix
+/// is undated and more than [`UNDATED_MS`] passed, in which whole days could hide.
+/// Undated, a time of day earlier than the last is taken as past midnight.
+fn gap_ms(last: (u32, Option<i64>), now: (u32, Option<i64>)) -> Option<i64> {
+    let ms = match (last.1, now.1) {
+        (Some(last), Some(now)) => return Some(now - last).filter(|ms| *ms >= -BACK_MS),
+        _ => i64::from(now.0) - i64::from(last.0),
+    };
+    let ms = if ms < -BACK_MS { ms + DAY_MS } else { ms };
+    (-BACK_MS..=UNDATED_MS).contains(&ms).then_some(ms)
+}
+
 /// What a read counted, for the notes.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Stats {
@@ -584,8 +603,9 @@ pub struct NmeaReader {
     undated: Vec<(usize, u32)>,
     /// The time of day of the epoch the last sentences belong to.
     epoch: Option<u32>,
-    /// The time of day of the last fix that had one, for the next fix's `gap`.
-    last_fix: Option<u32>,
+    /// The time of day of the last fix that had one, and its time when dated, for the
+    /// next fix's `gap`.
+    last_fix: Option<(u32, Option<i64>)>,
     fix: Option<Fix>,
     stats: Stats,
 }
@@ -835,12 +855,13 @@ impl NmeaReader {
             Some(tod) => self.row_time(Some(tod)),
             None => Cell::Time(None),
         };
-        // Seconds since the fix before, across midnight too; a log's fixes are never
-        // a day apart.
+        let dated = match time {
+            Cell::Time(ms) => ms,
+            _ => None,
+        };
         let gap = fix.tod.and_then(|tod| {
-            let last = self.last_fix.replace(tod)?;
-            let ms = (i64::from(tod) - i64::from(last)).rem_euclid(DAY_MS);
-            Some(ms as f64 / 1000.0)
+            let last = self.last_fix.replace((tod, dated))?;
+            gap_ms(last, (tod, dated)).map(|ms| ms as f64 / 1000.0)
         });
         self.emit(vec![
             time,
@@ -1067,6 +1088,40 @@ mod tests {
             "a capture that starts mid-sentence"
         );
         assert!(!looks_like(b"a,b*47\n$USD,$EUR\n"));
+    }
+
+    /// A gap is measured forward, across midnight too, and is left empty where the
+    /// log cannot say how long passed.
+    #[test]
+    fn a_gap_is_empty_where_time_cannot_say() {
+        let h = 3_600_000;
+        let day = DAY_MS;
+        // Dated: the times say, however long the pause.
+        assert_eq!(gap_ms((0, Some(day)), (0, Some(2 * day))), Some(day));
+        assert_eq!(
+            gap_ms((1000, Some(1000)), (0, Some(0))),
+            Some(-1000),
+            "settling"
+        );
+        assert_eq!(
+            gap_ms((0, Some(10 * h)), (0, Some(6 * h))),
+            None,
+            "back an hour"
+        );
+        // Undated: midnight crossed, a short pause, a long one, a step back.
+        let last_second = (DAY_MS - 1000) as u32;
+        assert_eq!(gap_ms((last_second, None), (1000, None)), Some(2000));
+        assert_eq!(gap_ms((0, None), (60_000, None)), Some(60_000));
+        assert_eq!(
+            gap_ms((0, None), (2 * h as u32, None)),
+            None,
+            "days may hide"
+        );
+        assert_eq!(
+            gap_ms((5 * h as u32, None), (h as u32, None)),
+            None,
+            "back hours"
+        );
     }
 
     #[test]

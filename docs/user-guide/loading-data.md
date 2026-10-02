@@ -188,7 +188,7 @@ GLL sentences:
 | `speed`, `course` | Meters per second; degrees true |
 | `sats`, `hdop` | Satellites used and horizontal dilution (GGA) |
 | `fix` | `none`, `gps`, `dgps`, `pps`, `rtk`, `rtk float`, `estimated`, `manual` or `simulated` |
-| `gap` | Seconds since the fix before; null on the first |
+| `gap` | Seconds since the fix before; see [the gap column](#the-gap-column) |
 | `checksum_ok` | Every sentence of the fix matched its checksum; null when none had one |
 
 `--table` opens one sentence type instead, with all its fields: `GGA`, `RMC`,
@@ -210,11 +210,25 @@ ones so far; any other file opened with it is refused. Excel workbooks take
 | `kind` | `track`, `route` or `waypoint` |
 | `track`, `track_name` | The track or route, numbered from 0 in each kind, and its name |
 | `segment` | The track segment, numbered from 0 in its track |
-| `gap` | Seconds since the point before in the same track segment |
+| `gap` | Seconds since the point before in the same track segment; see [the gap column](#the-gap-column) |
 | the rest | The point's other fields (`name`, `sym`, `sat`, `hdop`...) and each leaf of its `<extensions>` by its name without the namespace (`hr`, `cad`, `atemp`), as numbers when every value is one |
 
 A file cut off mid-element opens with the points before the cut, and says so in
 Notes.
+
+#### The gap column
+
+`gap` is not in the file: datui adds it so a dropout can be sorted and checked.
+It is the seconds from the row before (the fix before, or the point before in
+the same GPX track segment) to this one.
+
+| `gap` is | When |
+|---|---|
+| null | The first fix or point; one without a time |
+| null | Time steps back more than 5 seconds: a receiver reset, or logs joined together |
+| null | NMEA not yet dated and more than an hour passed: whole days could be hidden in it |
+| negative, down to -5 | Time steps back a little, as a receiver's clock settles |
+| across midnight | An undated NMEA time earlier than the one before, within the hour, is taken as past midnight |
 
 To look at a track:
 

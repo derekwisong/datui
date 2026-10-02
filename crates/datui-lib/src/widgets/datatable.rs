@@ -345,6 +345,8 @@ pub struct DataTableState {
     model: Option<Arc<crate::model_files::ModelSummary>>,
     /// What a read through a format spec found: the spec, why, and its notes.
     format_read: Option<Arc<crate::formats::Read>>,
+    /// What a read through a delimited spec found: units and metadata.
+    delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
     /// The fixed records the data as loaded is, while it still is: a window of a
     /// pristine view starts its columns at the window rather than decoding from row 0.
     fixed_window: Option<Arc<dyn crate::pushdown::Windowed>>,
@@ -862,6 +864,8 @@ pub struct OpenFacts {
     pub not_the_table: Option<&'static str>,
     /// What a read through a format spec found.
     pub format_read: Option<Arc<crate::formats::Read>>,
+    /// What a read through a delimited spec found.
+    pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
     /// The downloaded file the frame scans, held for as long as the state lives.
     pub download: Option<crate::download::TempDownload>,
     /// What a model file's header said besides its tensors.
@@ -1840,6 +1844,7 @@ impl DataTableState {
             not_the_table: None,
             model: None,
             format_read: None,
+            delimited: None,
             fixed_window: None,
             audio: None,
             midi: None,
@@ -1984,6 +1989,7 @@ impl DataTableState {
             not_the_table: None,
             model: None,
             format_read: None,
+            delimited: None,
             fixed_window: None,
             audio: None,
             midi: None,
@@ -2041,6 +2047,7 @@ impl DataTableState {
             open_notes,
             not_the_table,
             format_read,
+            delimited,
             download,
             model,
             converted,
@@ -2092,6 +2099,7 @@ impl DataTableState {
         self.pushdown = pushdown;
         self.source_hold = hold;
         self.format_read = format_read;
+        self.delimited = delimited;
         self.download = download;
         self.model = model;
         self.converted = converted;
@@ -4033,23 +4041,29 @@ impl DataTableState {
         path: &Path,
         compression: Option<CompressionFormat>,
     ) -> Result<Option<Vec<String>>> {
-        Self::csv_header_names(options, || {
-            let file = BufReader::new(File::open(path)?);
-            Ok::<Box<dyn std::io::BufRead>, _>(match compression {
-                None => Box::new(file),
-                Some(CompressionFormat::Gzip) => {
-                    Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
-                }
-                Some(CompressionFormat::Zstd) => {
-                    Box::new(BufReader::new(zstd::Decoder::with_buffer(file)?))
-                }
-                Some(CompressionFormat::Bzip2) => {
-                    Box::new(BufReader::new(bzip2::read::BzDecoder::new(file)))
-                }
-                Some(CompressionFormat::Xz) => {
-                    Box::new(BufReader::new(xz2::read::XzDecoder::new(file)))
-                }
-            })
+        Self::csv_header_names(options, || Self::text_source(path, compression))
+    }
+
+    /// The text of the file at `path`, through its decompressor when it has one.
+    pub(crate) fn text_source(
+        path: &Path,
+        compression: Option<CompressionFormat>,
+    ) -> std::io::Result<Box<dyn std::io::BufRead>> {
+        let file = BufReader::new(File::open(path)?);
+        Ok(match compression {
+            None => Box::new(file),
+            Some(CompressionFormat::Gzip) => {
+                Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
+            }
+            Some(CompressionFormat::Zstd) => {
+                Box::new(BufReader::new(zstd::Decoder::with_buffer(file)?))
+            }
+            Some(CompressionFormat::Bzip2) => {
+                Box::new(BufReader::new(bzip2::read::BzDecoder::new(file)))
+            }
+            Some(CompressionFormat::Xz) => {
+                Box::new(BufReader::new(xz2::read::XzDecoder::new(file)))
+            }
         })
     }
 
@@ -4104,6 +4118,12 @@ impl DataTableState {
             })?;
         }
         lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options, read)?;
+        // Read without a header (`H`), the columns have no names to derive from.
+        if let Some(spec_read) = &options.delimited
+            && options.has_header != Some(false)
+        {
+            lf = spec_read.delimited().derive(lf)?;
+        }
         Self::apply_skip_tail_rows_csv(lf, options)
     }
 
@@ -6571,6 +6591,18 @@ impl DataTableState {
     /// The MIDI file's header, tracks and tempo, when the dataset is MIDI events.
     pub fn midi(&self) -> Option<&crate::midi::MidiSummary> {
         self.midi.as_deref()
+    }
+
+    /// What a read through a delimited spec found, when the dataset was read through
+    /// one.
+    pub fn delimited_read(&self) -> Option<&Arc<crate::delimited_spec::DelimitedRead>> {
+        self.delimited.as_ref()
+    }
+
+    /// The unit of the column named `column`, from a delimited spec's unit row. Kept
+    /// by name, so a query, filter or sort that keeps the column keeps its unit.
+    pub fn unit_of(&self, column: &str) -> Option<&str> {
+        self.delimited.as_ref()?.unit_of(column)
     }
 
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked

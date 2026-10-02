@@ -250,6 +250,9 @@ pub struct Spec {
     pub layout: Layout,
     pub header: Header,
     pub records: Records,
+    /// For `kind = "delimited"`: the reading options of a CSV-like file. A delimited
+    /// spec has no header or record fields.
+    pub delimited: Option<Arc<crate::delimited_spec::Delimited>>,
 }
 
 impl PartialEq for Spec {
@@ -265,7 +268,18 @@ impl PartialEq for Spec {
             && self.layout == other.layout
             && self.header == other.header
             && self.records == other.records
+            && self.delimited == other.delimited
     }
+}
+
+/// What a spec's `match` says files of it look like.
+#[derive(Default)]
+struct MatchRules {
+    globs: Vec<String>,
+    glob_set: Option<GlobSet>,
+    magic: Vec<u8>,
+    magic_offset: u64,
+    expect: Vec<(String, Expected)>,
 }
 
 /// Line and column (one-based) of byte `offset` in `text`.
@@ -510,6 +524,361 @@ impl Reader<'_> {
                 format!("{what}: expected a whole number or the name of an earlier field"),
             )),
         }
+    }
+
+    /// A spec's `name`: namespaced, such as `acme.l2feed`.
+    fn spec_name(&self, top: &BTreeMap<&str, &Value<'_>>) -> Result<String, SpecError> {
+        match top.get("name") {
+            Some(v) => {
+                let name = self.string(v, "name")?;
+                if !is_spec_name(&name) {
+                    return Err(self.error(
+                        &v.span(),
+                        "name: expected a namespaced name of letters, digits, `_` and `-`, such as acme.l2feed",
+                    ));
+                }
+                Ok(name)
+            }
+            None => Err(self.error(&(0..0), "missing `name`, such as name = \"acme.l2feed\"")),
+        }
+    }
+
+    /// A spec's `match`: its globs, magic and, given a binary header's fields, the
+    /// header values a file must hold.
+    fn match_rules(
+        &self,
+        v: &Value<'_>,
+        header: Option<&[Field]>,
+    ) -> Result<MatchRules, SpecError> {
+        let (mut globs, mut magic, mut magic_offset) = (Vec::new(), Vec::new(), 0u64);
+        let mut glob_set = None;
+        let mut expect = Vec::new();
+        let table = self.table(v, "match")?;
+        let keys = self.entries(table, "match", &["glob", "magic", "magic_offset", "where"])?;
+        if let Some(g) = keys.get("glob") {
+            globs = match g.get_ref() {
+                DeValue::String(s) => vec![s.to_string()],
+                DeValue::Array(items) => items
+                    .iter()
+                    .map(|item| self.string(item, "glob"))
+                    .collect::<Result<_, _>>()?,
+                _ => {
+                    return Err(self.error(&g.span(), "glob: expected a string or a list of them"));
+                }
+            };
+            let mut builder = GlobSetBuilder::new();
+            for glob in &globs {
+                builder.add(
+                    Glob::new(glob).map_err(|e| {
+                        self.error(&g.span(), format!("glob `{glob}`: {}", e.kind()))
+                    })?,
+                );
+            }
+            glob_set = Some(
+                builder
+                    .build()
+                    .map_err(|e| self.error(&g.span(), format!("glob: {e}")))?,
+            );
+        }
+        if let Some(m) = keys.get("magic") {
+            magic = match m.get_ref() {
+                DeValue::String(s) => s.as_bytes().to_vec(),
+                DeValue::Array(items) => items
+                    .iter()
+                    .map(|item| {
+                        let byte = self.integer(item, "magic")?;
+                        u8::try_from(byte)
+                            .map_err(|_| self.error(&item.span(), "magic: a byte is 0 to 255"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                _ => {
+                    return Err(
+                        self.error(&m.span(), "magic: expected a string or a list of bytes")
+                    );
+                }
+            };
+            if magic.is_empty() || magic.len() as u64 > MAX_MATCH_READ {
+                return Err(self.error(&m.span(), "magic: expected 1 to 65536 bytes"));
+            }
+        }
+        if let Some(o) = keys.get("magic_offset") {
+            let offset = self.integer(o, "magic_offset")?;
+            let room = MAX_MATCH_READ - magic.len() as u64;
+            if offset < 0 || offset as u64 > room {
+                return Err(self.error(&o.span(), format!("magic_offset: expected 0 to {room}")));
+            }
+            magic_offset = offset as u64;
+        }
+        if let Some(w) = keys.get("where") {
+            let Some(header_fields) = header else {
+                return Err(self.error(
+                    &w.span(),
+                    "where compares a binary header's fields; a delimited spec matches by glob and magic",
+                ));
+            };
+            let table = self.table(w, "where")?;
+            for (key, value) in table {
+                let reference: &str = key.get_ref();
+                let Some(field) = reference.strip_prefix("header.") else {
+                    return Err(self.error(
+                        &key.span(),
+                        "where: expected header fields, such as \"header.version\" = 3",
+                    ));
+                };
+                let Some(target) = header_fields
+                    .iter()
+                    .find(|f| f.name.as_deref() == Some(field))
+                else {
+                    return Err(self.error(
+                        &key.span(),
+                        format!("where: no header field named `{field}`"),
+                    ));
+                };
+                let wanted = match value.get_ref() {
+                    DeValue::Integer(_)
+                        if target.ty.is_integer() && target.meaning == Meaning::Plain =>
+                    {
+                        Expected::Int(i128::from(self.integer(value, "where")?))
+                    }
+                    DeValue::String(s) if target.ty == Type::Str => Expected::Text(s.to_string()),
+                    _ => {
+                        return Err(self.error(
+                            &value.span(),
+                            format!(
+                                "where: `{field}` is a {}; expected a value of that type",
+                                type_name(target.ty)
+                            ),
+                        ));
+                    }
+                };
+                expect.push((field.to_string(), wanted));
+            }
+        }
+        Ok(MatchRules {
+            globs,
+            glob_set,
+            magic,
+            magic_offset,
+            expect,
+        })
+    }
+
+    /// The reading options of a `kind = "delimited"` spec, from its top-level keys.
+    fn delimited(
+        &self,
+        top: &BTreeMap<&str, &Value<'_>>,
+    ) -> Result<crate::delimited_spec::Delimited, SpecError> {
+        use crate::delimited_spec::{Delimited, Derived, DerivedKind, HeaderRows, MAX_HEAD_LINE};
+        let line = |value: &Value<'_>, what: &str| -> Result<usize, SpecError> {
+            let n = self.integer(value, what)?;
+            if n < 1 || n as usize > MAX_HEAD_LINE {
+                return Err(self.error(
+                    &value.span(),
+                    format!("{what}: expected a line from 1 to {MAX_HEAD_LINE}"),
+                ));
+            }
+            Ok(n as usize)
+        };
+        let lines = |value: &Value<'_>, what: &str| -> Result<Vec<usize>, SpecError> {
+            match value.get_ref() {
+                DeValue::Integer(_) => Ok(vec![line(value, what)?]),
+                DeValue::Array(items) if !items.is_empty() => {
+                    let mut rows = Vec::with_capacity(items.len());
+                    for item in items {
+                        let n = line(item, what)?;
+                        if rows.contains(&n) {
+                            return Err(self
+                                .error(&item.span(), format!("{what}: line {n} is named twice")));
+                        }
+                        rows.push(n);
+                    }
+                    Ok(rows)
+                }
+                _ => Err(self.error(
+                    &value.span(),
+                    format!("{what}: expected a line number or a list of them"),
+                )),
+            }
+        };
+        let mut spec = Delimited::default();
+        if let Some(v) = top.get("delimiter") {
+            let text = self.string(v, "delimiter")?;
+            spec.delimiter = match text.as_bytes() {
+                [b] if b.is_ascii() && !matches!(b, b'"' | b'\n' | b'\r') => Some(*b),
+                _ => {
+                    return Err(self.error(
+                        &v.span(),
+                        "delimiter: expected one character, such as \",\", \";\" or \"\\t\"",
+                    ));
+                }
+            };
+        }
+        if let Some(v) = top.get("comment_char") {
+            let text = self.string(v, "comment_char")?;
+            crate::csv_dialect::check_comment_char(&text)
+                .map_err(|e| self.error(&v.span(), format!("comment_char: {e}")))?;
+            spec.comment_char = Some(text);
+        }
+        if let Some(v) = top.get("skip_initial_space") {
+            spec.skip_initial_space = Some(self.boolean(v, "skip_initial_space")?);
+        }
+        if let Some(v) = top.get("header_join") {
+            spec.header_join = Some(self.string(v, "header_join")?);
+        }
+        if let Some(v) = top.get("skip_lines") {
+            let n = self.integer(v, "skip_lines")?;
+            if n < 0 || n > i64::from(u32::MAX) {
+                return Err(self.error(&v.span(), "skip_lines: expected 0 or more"));
+            }
+            spec.skip_lines = Some(n as usize);
+        }
+        if let Some(v) = top.get("null_value") {
+            spec.null_values = match v.get_ref() {
+                DeValue::String(s) => vec![s.to_string()],
+                DeValue::Array(items) => items
+                    .iter()
+                    .map(|item| self.string(item, "null_value"))
+                    .collect::<Result<_, _>>()?,
+                _ => {
+                    return Err(self.error(
+                        &v.span(),
+                        "null_value: expected a string or a list of them, such as \"NA\" or \"COL=-999\"",
+                    ));
+                }
+            };
+        }
+        if let Some(v) = top.get("header_rows") {
+            let rows = match v.get_ref() {
+                DeValue::Table(table) => {
+                    let keys =
+                        self.entries(table, "header_rows", &["name", "unit", "description"])?;
+                    if let Some(d) = keys.get("description") {
+                        return Err(
+                            self.error(&d.span(), "header_rows.description is not yet supported")
+                        );
+                    }
+                    let Some(name) = keys.get("name") else {
+                        return Err(self.error(
+                            &v.span(),
+                            "header_rows: missing `name`, the line that names the columns",
+                        ));
+                    };
+                    let name = lines(name, "header_rows.name")?;
+                    let unit = keys
+                        .get("unit")
+                        .map(|u| {
+                            let n = line(u, "header_rows.unit")?;
+                            if name.contains(&n) {
+                                return Err(self.error(
+                                    &u.span(),
+                                    format!("header_rows.unit: line {n} is also a name line"),
+                                ));
+                            }
+                            Ok(n)
+                        })
+                        .transpose()?;
+                    HeaderRows { name, unit }
+                }
+                _ => HeaderRows {
+                    name: lines(v, "header_rows")?,
+                    unit: None,
+                },
+            };
+            spec.header_rows = Some(rows);
+        }
+        if let Some(v) = top.get("metadata_line") {
+            let n = line(v, "metadata_line")?;
+            let header = spec.header_rows.as_ref();
+            if header.is_some_and(|h| h.name.contains(&n) || h.unit == Some(n)) {
+                return Err(self.error(
+                    &v.span(),
+                    format!("metadata_line: line {n} is a header line"),
+                ));
+            }
+            let before_data = header
+                .map_or(0, HeaderRows::last)
+                .max(spec.skip_lines.unwrap_or(0));
+            if n > before_data && spec.comment_char.is_none() {
+                return Err(self.error(
+                    &v.span(),
+                    format!(
+                        "metadata_line: line {n} would be read as data; put it above header_rows, or set skip_lines or comment_char"
+                    ),
+                ));
+            }
+            spec.metadata_line = Some(n);
+        }
+        if let Some(v) = top.get("columns") {
+            let table = self.table(v, "[columns]")?;
+            for (key, value) in table {
+                let name: &str = key.get_ref();
+                let what = format!("columns.{name}");
+                let entry = self.table(value, &what)?;
+                let keys = self.entries(entry, &what, &["from", "as", "format"])?;
+                let Some(from) = keys.get("from") else {
+                    return Err(self.error(
+                        &value.span(),
+                        format!("{what}: missing `from`, the columns it is made from"),
+                    ));
+                };
+                let from_columns: Vec<String> = match from.get_ref() {
+                    DeValue::String(s) => vec![s.to_string()],
+                    DeValue::Array(items) => items
+                        .iter()
+                        .map(|item| self.string(item, &format!("{what}.from")))
+                        .collect::<Result<_, _>>()?,
+                    _ => {
+                        return Err(self.error(
+                            &from.span(),
+                            format!("{what}.from: expected a column name or a list of them"),
+                        ));
+                    }
+                };
+                let Some(kind) = keys.get("as") else {
+                    return Err(self.error(
+                        &value.span(),
+                        format!("{what}: missing `as`; expected datetime, date or time"),
+                    ));
+                };
+                let kind = match self.string(kind, &format!("{what}.as"))?.as_str() {
+                    "datetime" => DerivedKind::Datetime,
+                    "date" => DerivedKind::Date,
+                    "time" => DerivedKind::Time,
+                    _ => {
+                        return Err(self.error(
+                            &kind.span(),
+                            format!("{what}.as: expected datetime, date or time"),
+                        ));
+                    }
+                };
+                let most = if kind == DerivedKind::Datetime { 3 } else { 1 };
+                if from_columns.is_empty() || from_columns.len() > most {
+                    let expected = if most == 3 {
+                        "1 to 3 columns: a date, a time and a UTC offset"
+                    } else {
+                        "one column"
+                    };
+                    return Err(self.error(
+                        &from.span(),
+                        format!("{what}.from: as = \"{}\" takes {expected}", kind.name()),
+                    ));
+                }
+                let format = keys
+                    .get("format")
+                    .map(|f| self.string(f, &format!("{what}.format")))
+                    .transpose()?;
+                if name.trim().is_empty() {
+                    return Err(self.error(&key.span(), "columns: a column needs a name"));
+                }
+                spec.columns.push(Derived {
+                    name: name.to_string(),
+                    from: from_columns,
+                    kind,
+                    format,
+                });
+            }
+        }
+        Ok(spec)
     }
 
     fn fields(
@@ -1061,12 +1430,28 @@ impl Spec {
                 message: e.message().to_string(),
             }
         })?;
+        let kind = document
+            .get_ref()
+            .iter()
+            .find(|(key, _)| {
+                let key: &str = key.get_ref();
+                key == "kind"
+            })
+            .map(|(_, v)| v);
+        if let Some(v) = kind {
+            match reader.string(v, "kind")?.as_str() {
+                "binary" => {}
+                "delimited" => return Self::parse_delimited(&reader, document.get_ref(), path),
+                _ => return Err(reader.error(&v.span(), "kind: expected binary or delimited")),
+            }
+        }
         let top = reader.entries(
             document.get_ref(),
             "the spec",
             &[
                 "name",
                 "description",
+                "kind",
                 "match",
                 "endian",
                 "layout",
@@ -1082,21 +1467,7 @@ impl Spec {
                 return Err(reader.error(&v.span(), format!("`{later}` is not yet supported")));
             }
         }
-        let name = match top.get("name") {
-            Some(v) => {
-                let name = reader.string(v, "name")?;
-                if !is_spec_name(&name) {
-                    return Err(reader.error(
-                        &v.span(),
-                        "name: expected a namespaced name of letters, digits, `_` and `-`, such as acme.l2feed",
-                    ));
-                }
-                name
-            }
-            None => {
-                return Err(reader.error(&whole, "missing `name`, such as name = \"acme.l2feed\""));
-            }
-        };
+        let name = reader.spec_name(&top)?;
         let description = top
             .get("description")
             .map(|v| reader.string(v, "description"))
@@ -1137,113 +1508,16 @@ impl Spec {
             }
         }
 
-        let (mut globs, mut magic, mut magic_offset) = (Vec::new(), Vec::new(), 0u64);
-        let mut glob_set = None;
-        let mut expect = Vec::new();
-        if let Some(v) = top.get("match") {
-            let table = reader.table(v, "match")?;
-            let keys =
-                reader.entries(table, "match", &["glob", "magic", "magic_offset", "where"])?;
-            if let Some(g) = keys.get("glob") {
-                globs = match g.get_ref() {
-                    DeValue::String(s) => vec![s.to_string()],
-                    DeValue::Array(items) => items
-                        .iter()
-                        .map(|item| reader.string(item, "glob"))
-                        .collect::<Result<_, _>>()?,
-                    _ => {
-                        return Err(
-                            reader.error(&g.span(), "glob: expected a string or a list of them")
-                        );
-                    }
-                };
-                let mut builder = GlobSetBuilder::new();
-                for glob in &globs {
-                    builder.add(Glob::new(glob).map_err(|e| {
-                        reader.error(&g.span(), format!("glob `{glob}`: {}", e.kind()))
-                    })?);
-                }
-                glob_set = Some(
-                    builder
-                        .build()
-                        .map_err(|e| reader.error(&g.span(), format!("glob: {e}")))?,
-                );
-            }
-            if let Some(m) = keys.get("magic") {
-                magic = match m.get_ref() {
-                    DeValue::String(s) => s.as_bytes().to_vec(),
-                    DeValue::Array(items) => items
-                        .iter()
-                        .map(|item| {
-                            let byte = reader.integer(item, "magic")?;
-                            u8::try_from(byte).map_err(|_| {
-                                reader.error(&item.span(), "magic: a byte is 0 to 255")
-                            })
-                        })
-                        .collect::<Result<_, _>>()?,
-                    _ => {
-                        return Err(
-                            reader.error(&m.span(), "magic: expected a string or a list of bytes")
-                        );
-                    }
-                };
-                if magic.is_empty() || magic.len() as u64 > MAX_MATCH_READ {
-                    return Err(reader.error(&m.span(), "magic: expected 1 to 65536 bytes"));
-                }
-            }
-            if let Some(o) = keys.get("magic_offset") {
-                let offset = reader.integer(o, "magic_offset")?;
-                let room = MAX_MATCH_READ - magic.len() as u64;
-                if offset < 0 || offset as u64 > room {
-                    return Err(
-                        reader.error(&o.span(), format!("magic_offset: expected 0 to {room}"))
-                    );
-                }
-                magic_offset = offset as u64;
-            }
-            if let Some(w) = keys.get("where") {
-                let table = reader.table(w, "where")?;
-                for (key, value) in table {
-                    let reference: &str = key.get_ref();
-                    let Some(field) = reference.strip_prefix("header.") else {
-                        return Err(reader.error(
-                            &key.span(),
-                            "where: expected header fields, such as \"header.version\" = 3",
-                        ));
-                    };
-                    let Some(target) = header
-                        .fields
-                        .iter()
-                        .find(|f| f.name.as_deref() == Some(field))
-                    else {
-                        return Err(reader.error(
-                            &key.span(),
-                            format!("where: no header field named `{field}`"),
-                        ));
-                    };
-                    let wanted = match value.get_ref() {
-                        DeValue::Integer(_)
-                            if target.ty.is_integer() && target.meaning == Meaning::Plain =>
-                        {
-                            Expected::Int(i128::from(reader.integer(value, "where")?))
-                        }
-                        DeValue::String(s) if target.ty == Type::Str => {
-                            Expected::Text(s.to_string())
-                        }
-                        _ => {
-                            return Err(reader.error(
-                                &value.span(),
-                                format!(
-                                    "where: `{field}` is a {}; expected a value of that type",
-                                    type_name(target.ty)
-                                ),
-                            ));
-                        }
-                    };
-                    expect.push((field.to_string(), wanted));
-                }
-            }
-        }
+        let MatchRules {
+            globs,
+            glob_set,
+            magic,
+            magic_offset,
+            expect,
+        } = match top.get("match") {
+            Some(v) => reader.match_rules(v, Some(&header.fields))?,
+            None => MatchRules::default(),
+        };
 
         let Some(records_value) = top.get("records") else {
             return Err(reader.error(&whole, "missing [records], with the fields of one record"));
@@ -1364,7 +1638,77 @@ impl Spec {
                 size,
                 count,
             },
+            delimited: None,
         })
+    }
+
+    /// A `kind = "delimited"` spec: a CSV-like file's reading options, with no
+    /// header or record fields.
+    fn parse_delimited(
+        reader: &Reader<'_>,
+        document: &DeTable<'_>,
+        path: Option<&Path>,
+    ) -> Result<Self, SpecError> {
+        let top = reader.entries(
+            document,
+            "a delimited spec",
+            &[
+                "name",
+                "description",
+                "kind",
+                "match",
+                "delimiter",
+                "comment_char",
+                "skip_initial_space",
+                "header_rows",
+                "header_join",
+                "metadata_line",
+                "null_value",
+                "skip_lines",
+                "columns",
+            ],
+        )?;
+        let name = reader.spec_name(&top)?;
+        let description = top
+            .get("description")
+            .map(|v| reader.string(v, "description"))
+            .transpose()?;
+        let MatchRules {
+            globs,
+            glob_set,
+            magic,
+            magic_offset,
+            expect,
+        } = match top.get("match") {
+            Some(v) => reader.match_rules(v, None)?,
+            None => MatchRules::default(),
+        };
+        let delimited = reader.delimited(&top)?;
+        Ok(Self {
+            name,
+            description,
+            path: path.map(Path::to_path_buf),
+            globs,
+            glob_set,
+            magic,
+            magic_offset,
+            expect,
+            endian: Endian::Little,
+            layout: Layout::Rows,
+            header: Header::default(),
+            records: Records {
+                framing: Framing::Fixed,
+                fields: Vec::new(),
+                size: None,
+                count: None,
+            },
+            delimited: Some(Arc::new(delimited)),
+        })
+    }
+
+    /// Whether the spec is `kind = "delimited"`.
+    pub fn is_delimited(&self) -> bool {
+        self.delimited.is_some()
     }
 
     /// Read the spec in `path`.
@@ -1820,6 +2164,12 @@ impl Spec {
 
     /// Read `bytes`, one file of the rows layout, named `named` in what it says.
     pub fn open_rows(&self, bytes: Arc<Bytes>, named: &str) -> Result<Opened, String> {
+        if self.is_delimited() {
+            return Err(format!(
+                "{} is a delimited spec; it reads text through the CSV reader",
+                self.name
+            ));
+        }
         if self.layout == Layout::Columns {
             return Err(format!(
                 "{} is a directory of column files (layout = \"columns\"); open the directory",
@@ -1899,6 +2249,12 @@ impl Spec {
 
     /// Read `dir`, a directory of one file per record field.
     pub fn open_columns(&self, dir: &Path) -> Result<Opened, String> {
+        if self.is_delimited() {
+            return Err(format!(
+                "{} is a delimited spec; it reads text through the CSV reader",
+                self.name
+            ));
+        }
         if self.layout == Layout::Rows {
             return Err(format!(
                 "{} reads one file, and {} is a directory",
@@ -2168,7 +2524,19 @@ impl Registry {
         is_dir: bool,
         head: impl FnOnce(u64) -> Option<Vec<u8>>,
     ) -> Option<Matched> {
-        let globbed = self.by_glob(path, is_dir);
+        self.matching_among(path, is_dir, |_| true, head)
+    }
+
+    /// [`Self::matching`] among the specs `wanted` says may read `path`.
+    pub fn matching_among(
+        &self,
+        path: &Path,
+        is_dir: bool,
+        wanted: impl Fn(&Spec) -> bool,
+        head: impl FnOnce(u64) -> Option<Vec<u8>>,
+    ) -> Option<Matched> {
+        let mut globbed = self.by_glob(path, is_dir);
+        globbed.retain(|s| wanted(s));
         let (candidates, by) = if !globbed.is_empty() {
             (globbed, Chosen::Glob)
         } else if is_dir {
@@ -2178,7 +2546,7 @@ impl Registry {
                 .specs
                 .iter()
                 .map(|f| &f.spec)
-                .filter(|s| s.layout == Layout::Rows && !s.magic.is_empty())
+                .filter(|s| s.layout == Layout::Rows && !s.magic.is_empty() && wanted(s))
                 .cloned()
                 .collect();
             (magic, Chosen::Magic)
@@ -2221,8 +2589,11 @@ impl Registry {
             let spec = &found.spec;
             out.push_str(&spec.name);
             let summary = spec.match_summary();
-            if !summary.is_empty() {
-                out.push_str(&format!("  ({summary})"));
+            match (spec.is_delimited(), summary.is_empty()) {
+                (true, true) => out.push_str("  (delimited)"),
+                (true, false) => out.push_str(&format!("  (delimited; {summary})")),
+                (false, true) => {}
+                (false, false) => out.push_str(&format!("  ({summary})")),
             }
             out.push('\n');
             if let Some(description) = &spec.description {
@@ -2307,6 +2678,8 @@ pub struct Asked {
     /// A built-in format from `--format`, which no spec overrides.
     pub builtin: bool,
     pub compression: Option<crate::CompressionFormat>,
+    /// Several files are read as one: only a delimited spec reads them.
+    pub text_only: bool,
 }
 
 /// Where a spec was chosen from, carried to a decompressed copy's read.
@@ -2324,6 +2697,8 @@ pub enum Route {
     Read(Box<Read>),
     /// Compressed: decompress it, then read the copy with `choice.spec`.
     Decompress(Choice),
+    /// A delimited spec's: read with the CSV reader, in the spec's dialect.
+    Delimited(Choice),
 }
 
 /// Whether, and with which spec, `path` is read. In order: `--spec FILE`, then
@@ -2364,6 +2739,15 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
     } else {
         None
     };
+    if asked.text_only
+        && let Some(choice) = &explicit
+        && !choice.spec.is_delimited()
+    {
+        return Err(format!(
+            "{} reads one file, or one directory of column files",
+            choice.spec.name
+        ));
+    }
     let choice = match explicit {
         Some(choice) => choice,
         None => {
@@ -2371,10 +2755,19 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
                 return Ok(Route::Elsewhere);
             }
             let is_dir = path.is_dir();
-            // What the name already says is read as it says, compressed or not.
-            if !is_dir && crate::discover::data_format(path).is_some()
-                || crate::discover::is_parquet_key(&crate::discover::directory_and_name(path))
-            {
+            // What the name already says is read as it says, compressed or not: a
+            // spec of records takes only a name that says no format datui reads, and a
+            // delimited spec also one that says delimited text.
+            let said = (!is_dir)
+                .then(|| crate::discover::data_format(path))
+                .flatten();
+            let parquet_key =
+                crate::discover::is_parquet_key(&crate::discover::directory_and_name(path));
+            let records_may = said.is_none() && !parquet_key && !asked.text_only;
+            let text_may = !is_dir
+                && !parquet_key
+                && said.is_none_or(|f| crate::FileFormat::separator(f).is_some());
+            if !records_may && !text_may {
                 return Ok(Route::Elsewhere);
             }
             // A glob names the file as it is stored uncompressed: `day.l2.zst` is an `*.l2`.
@@ -2382,7 +2775,14 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
                 Some(_) => path.with_extension(""),
                 None => path.to_path_buf(),
             };
-            let matched = registry.matching(&inner, is_dir, |reach| {
+            let wanted = |s: &Spec| {
+                if s.is_delimited() {
+                    text_may
+                } else {
+                    records_may
+                }
+            };
+            let matched = registry.matching_among(&inner, is_dir, wanted, |reach| {
                 // A file with no extension may be Parquet, Arrow, Avro or ORC by its bytes,
                 // which it stays.
                 if compression.is_none() && crate::discover::sniff_format(path).is_some() {
@@ -2402,6 +2802,10 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
             }
         }
     };
+    // The CSV reader reads a delimited spec's files, compressed or not.
+    if choice.spec.is_delimited() {
+        return Ok(Route::Delimited(choice));
+    }
     if compression.is_some() && path.is_file() {
         return Ok(Route::Decompress(choice));
     }
@@ -2525,6 +2929,11 @@ fn check(named: &str, file: Option<&Path>, registry: &Registry) -> Result<String
     if !summary.is_empty() {
         out.push_str(&format!("  matches {summary}\n"));
     }
+    if spec.is_delimited() {
+        return crate::delimited_spec::check(&spec, file, CHECK_ROWS)
+            .map(|rest| out.clone() + &rest)
+            .map_err(|rest| out.clone() + &rest);
+    }
     let named_fields = spec
         .records
         .fields
@@ -2594,7 +3003,7 @@ fn check(named: &str, file: Option<&Path>, registry: &Registry) -> Result<String
 }
 
 /// `df` as plain text: a row of names, then a row per record, columns aligned.
-fn text_table(df: &polars::prelude::DataFrame) -> String {
+pub(crate) fn text_table(df: &polars::prelude::DataFrame) -> String {
     let mut rows: Vec<Vec<String>> = vec![
         df.get_column_names()
             .iter()

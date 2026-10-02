@@ -1,0 +1,732 @@
+//! Format specs of `kind = "delimited"`: the reading options for a family of CSV-like
+//! files, with header rows that have roles (names, units), a metadata line, and a few
+//! derived columns.
+//!
+//! A spec is parsed in [`crate::formats`], beside the binary specs, and matched by the
+//! same `match`. Reading it is the CSV reader's: [`Delimited::apply`] sets the
+//! dialect options a matched file is opened with, and [`Delimited::derive`] adds the
+//! derived columns to the frame. The only lines read apart from the scan are the
+//! header lines and the metadata line ([`Delimited::facts`]).
+
+use crate::formats::{Chosen, Spec};
+use polars::prelude::*;
+use std::io::BufRead;
+use std::sync::Arc;
+
+/// What the lines before the data hold, by role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderRows {
+    /// The 1-based lines whose pieces, joined, name the columns.
+    pub name: Vec<usize>,
+    /// The line that gives each column's unit.
+    pub unit: Option<usize>,
+}
+
+impl HeaderRows {
+    /// The last header line: the data starts after it.
+    pub fn last(&self) -> usize {
+        self.name
+            .iter()
+            .copied()
+            .chain(self.unit)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// What a derived column is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivedKind {
+    /// From a date and a time, or one text column, with an optional UTC offset.
+    Datetime,
+    Date,
+    Time,
+}
+
+impl DerivedKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Datetime => "datetime",
+            Self::Date => "date",
+            Self::Time => "time",
+        }
+    }
+}
+
+/// A column built from others: `time = { from = ["Date", "Time", "Offset"], as = "datetime" }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Derived {
+    pub name: String,
+    pub from: Vec<String>,
+    pub kind: DerivedKind,
+    /// A strftime format for the text the `from` columns make, joined with a space.
+    /// Inferred from the values when not given.
+    pub format: Option<String>,
+}
+
+/// A delimited spec's reading options. Each one left out keeps what the command line
+/// or the config says.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Delimited {
+    pub delimiter: Option<u8>,
+    pub comment_char: Option<String>,
+    pub skip_initial_space: Option<bool>,
+    pub header_rows: Option<HeaderRows>,
+    pub header_join: Option<String>,
+    pub metadata_line: Option<usize>,
+    pub null_values: Vec<String>,
+    pub skip_lines: Option<usize>,
+    pub columns: Vec<Derived>,
+}
+
+/// The `key="value"` line at the top of a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Metadata {
+    /// The line as it is in the file, without its comment prefix and line break.
+    pub raw: String,
+    /// The leading item with no `=`, such as `device_info` in `#device_info, a="1"`.
+    pub title: Option<String>,
+    /// Key and value, in the order the line has them. Empty when the line does not
+    /// parse, and then `raw` is shown.
+    pub pairs: Vec<(String, String)>,
+}
+
+/// What a file's header lines say besides its column names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeadFacts {
+    /// Each column's unit, by the name the column is shown with.
+    pub units: Vec<(String, String)>,
+    pub metadata: Option<Metadata>,
+}
+
+/// What a read through a delimited spec found, as the open carries it to the dataset.
+#[derive(Debug, Clone)]
+pub struct DelimitedRead {
+    pub spec: Arc<Spec>,
+    pub by: Chosen,
+    /// The other specs that matched as well as `spec`, by the same rule.
+    pub also: Vec<String>,
+    /// Each column's unit, by the name the column is shown with.
+    pub units: Vec<(String, String)>,
+    pub metadata: Option<Metadata>,
+    /// The file the header lines were read from, when more than one file was read.
+    pub facts_from: Option<String>,
+}
+
+impl DelimitedRead {
+    /// The read before its header lines are read: the spec and why.
+    pub fn chosen(spec: Arc<Spec>, by: Chosen, also: Vec<String>) -> Self {
+        Self {
+            spec,
+            by,
+            also,
+            units: Vec::new(),
+            metadata: None,
+            facts_from: None,
+        }
+    }
+
+    pub fn delimited(&self) -> &Delimited {
+        self.spec
+            .delimited
+            .as_deref()
+            .expect("a delimited read has a delimited spec")
+    }
+
+    /// The unit of the column shown as `column`.
+    pub fn unit_of(&self, column: &str) -> Option<&str> {
+        self.units
+            .iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, unit)| unit.as_str())
+    }
+
+    /// The dataset's notes about the read: which spec read it and why, and what else
+    /// matched.
+    pub fn notes(&self) -> Vec<crate::notes::Note> {
+        let note = |summary: String, scope: String| crate::notes::Note {
+            summary,
+            scope,
+            read_as_text: None,
+            passed_over: None,
+        };
+        let from = self
+            .spec
+            .path
+            .as_ref()
+            .map_or_else(|| "the spec".to_string(), |p| p.display().to_string());
+        let mut notes = vec![note(
+            format!("read as {}, chosen by {}", self.spec.name, self.by.words()),
+            format!("from {from}"),
+        )];
+        if !self.also.is_empty() {
+            notes.push(note(
+                format!(
+                    "{} also {} this file",
+                    self.also.join(", "),
+                    if self.also.len() == 1 {
+                        "matches"
+                    } else {
+                        "match"
+                    }
+                ),
+                format!("by {}", self.by.words()),
+            ));
+        }
+        notes
+    }
+}
+
+/// The most lines [`Delimited::facts`] reads: the header lines and the metadata line
+/// sit at the top of a file.
+pub const MAX_HEAD_LINE: usize = 1000;
+
+impl Delimited {
+    /// `options` with the spec's dialect: each option the spec gives replaces what the
+    /// command line or the config said, and the file is read as CSV unless its name
+    /// says TSV or PSV.
+    pub fn apply(&self, options: &mut crate::OpenOptions) {
+        if let Some(d) = self.delimiter {
+            options.delimiter = Some(d);
+        }
+        if let Some(c) = &self.comment_char {
+            options.comment_char = Some(c.clone());
+        }
+        if let Some(s) = self.skip_initial_space {
+            options.skip_initial_space = s;
+        }
+        if let Some(rows) = &self.header_rows {
+            options.header_rows = rows.name.clone();
+            // The unit line is a header line too: the data starts after the last one.
+            options.skip_lines = Some(options.skip_lines.unwrap_or(0).max(rows.last()));
+        }
+        if let Some(join) = &self.header_join {
+            options.header_join = join.clone();
+        }
+        if let Some(n) = self.skip_lines {
+            options.skip_lines = Some(options.skip_lines.unwrap_or(0).max(n));
+        }
+        if !self.null_values.is_empty() {
+            // Applied again to a read again's options, so each value once.
+            let values = options.null_values.get_or_insert_with(Vec::new);
+            for value in &self.null_values {
+                if !values.contains(value) {
+                    values.push(value.clone());
+                }
+            }
+        }
+        if options
+            .format
+            .is_none_or(|f| crate::FileFormat::separator(f).is_none())
+        {
+            options.format = Some(crate::FileFormat::Csv);
+        }
+    }
+
+    /// The lines [`Self::facts`] reads, 1-based.
+    fn head_lines(&self) -> Vec<usize> {
+        let mut lines: Vec<usize> = self
+            .header_rows
+            .iter()
+            .flat_map(|rows| rows.name.iter().copied().chain(rows.unit))
+            .chain(self.metadata_line)
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+        lines
+    }
+
+    /// The units and the metadata from the top of the text `source` holds, split on
+    /// `separator`. Only the lines the spec names are read.
+    pub fn facts(
+        &self,
+        source: impl BufRead,
+        separator: u8,
+        join: &str,
+    ) -> color_eyre::Result<HeadFacts> {
+        let wanted = self.head_lines();
+        if wanted.is_empty() {
+            return Ok(HeadFacts::default());
+        }
+        let lines = crate::csv_dialect::named_lines(source, &wanted)?;
+        let line = |n: usize| -> &[u8] {
+            wanted
+                .iter()
+                .position(|&w| w == n)
+                .map_or(&[][..], |i| lines[i].as_slice())
+        };
+        let comment = self.comment_char.as_deref();
+        let mut units = Vec::new();
+        if let Some(rows) = &self.header_rows
+            && let Some(unit) = rows.unit
+        {
+            let mut pieces: Vec<Vec<String>> = Vec::new();
+            for &row in &rows.name {
+                for (i, field) in
+                    crate::csv_dialect::header_fields(line(row), row, separator, comment)
+                        .into_iter()
+                        .enumerate()
+                {
+                    if pieces.len() <= i {
+                        pieces.resize_with(i + 1, Vec::new);
+                    }
+                    if !field.is_empty() {
+                        pieces[i].push(field);
+                    }
+                }
+            }
+            let names: Vec<String> = pieces.into_iter().map(|p| p.join(join)).collect();
+            let raw: Vec<PlSmallStr> = (1..=names.len())
+                .map(|i| format!("column_{i}").into())
+                .collect();
+            let shown = crate::csv_dialect::shown_names(&raw, Some(&names));
+            let unit_fields =
+                crate::csv_dialect::header_fields(line(unit), unit, separator, comment);
+            for (name, unit) in shown.into_iter().zip(unit_fields) {
+                if !unit.is_empty() {
+                    units.push((name, unit));
+                }
+            }
+        }
+        let metadata = self.metadata_line.map(|n| {
+            let mut text = line(n);
+            if n == 1 {
+                text = text.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(text);
+            }
+            let text = String::from_utf8_lossy(text);
+            let text = text.trim_end_matches(['\n', '\r']);
+            let text = comment.and_then(|c| text.strip_prefix(c)).unwrap_or(text);
+            parse_metadata(text)
+        });
+        Ok(HeadFacts { units, metadata })
+    }
+
+    /// `lf` with the derived columns, each before the first column it is made from.
+    /// Lazy: nothing is read.
+    pub fn derive(&self, mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
+        if self.columns.is_empty() {
+            return Ok(lf);
+        }
+        let schema = lf.collect_schema()?;
+        let mut order: Vec<PlSmallStr> = schema.iter_names().cloned().collect();
+        let mut exprs = Vec::with_capacity(self.columns.len());
+        for derived in &self.columns {
+            for from in &derived.from {
+                if !schema.contains(from) {
+                    polars_bail!(ColumnNotFound: "{}: no column named `{from}`", derived.name);
+                }
+            }
+            let name = PlSmallStr::from(derived.name.as_str());
+            if !order.contains(&name) {
+                let at = order
+                    .iter()
+                    .position(|c| c.as_str() == derived.from[0])
+                    .unwrap_or(order.len());
+                order.insert(at, name.clone());
+            }
+            exprs.push(derived.expr().alias(name));
+        }
+        Ok(lf
+            .with_columns(exprs)
+            .select(order.into_iter().map(col).collect::<Vec<_>>()))
+    }
+}
+
+/// `read` with the units and metadata from the header lines of the first of
+/// `paths`, read in `options`' dialect.
+pub fn read_facts(
+    read: &DelimitedRead,
+    paths: &[std::path::PathBuf],
+    options: &crate::OpenOptions,
+) -> color_eyre::Result<DelimitedRead> {
+    let Some(file) = paths.first() else {
+        return Ok(read.clone());
+    };
+    let compression = options
+        .compression
+        .or_else(|| crate::CompressionFormat::from_extension(file));
+    let source = crate::widgets::datatable::DataTableState::text_source(file, compression)?;
+    let separator = options.separator_or(
+        options
+            .format
+            .and_then(crate::FileFormat::separator)
+            .unwrap_or(b','),
+    );
+    let HeadFacts { units, metadata } = read
+        .delimited()
+        .facts(source, separator, &options.header_join)
+        .map_err(|e| e.wrap_err(file.display().to_string()))?;
+    Ok(DelimitedRead {
+        units,
+        metadata,
+        facts_from: (paths.len() > 1).then(|| {
+            file.file_name().map_or_else(
+                || file.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        }),
+        ..read.clone()
+    })
+}
+
+/// What `datui formats check` prints for a delimited spec and, given `file`, the
+/// file's metadata, units and first `rows` rows as read.
+pub fn check(
+    spec: &Arc<Spec>,
+    file: Option<&std::path::Path>,
+    rows: usize,
+) -> Result<String, String> {
+    let delimited = spec
+        .delimited
+        .as_deref()
+        .ok_or_else(|| format!("error: {} is not a delimited spec\n", spec.name))?;
+    let mut out = String::new();
+    out.push_str(&format!("  delimited: {}\n", delimited.summary()));
+    for derived in &delimited.columns {
+        out.push_str(&format!(
+            "  {} = {} from {}\n",
+            derived.name,
+            derived.kind.name(),
+            derived.from.join(", ")
+        ));
+    }
+    let Some(file) = file else {
+        return Ok(out);
+    };
+    let fail = |out: &str, e: &dyn std::fmt::Display| format!("{out}error: {e}\n");
+    let mut options = crate::OpenOptions {
+        format: crate::FileFormat::from_path(file),
+        ..Default::default()
+    };
+    delimited.apply(&mut options);
+    let chosen = DelimitedRead::chosen(spec.clone(), Chosen::SpecFile, Vec::new());
+    options.delimited = Some(Arc::new(chosen.clone()));
+    let read = read_facts(&chosen, &[file.to_path_buf()], &options).map_err(|e| fail(&out, &e))?;
+    if let Some(metadata) = &read.metadata {
+        if metadata.pairs.is_empty() {
+            out.push_str(&format!(
+                "metadata (not key=value pairs): {}\n",
+                metadata.raw
+            ));
+        } else {
+            let pairs: Vec<String> = metadata
+                .pairs
+                .iter()
+                .map(|(k, v)| format!("{k} = {v}"))
+                .collect();
+            let title = metadata
+                .title
+                .as_ref()
+                .map_or_else(String::new, |t| format!("{t}: "));
+            out.push_str(&format!("metadata: {title}{}\n", pairs.join(", ")));
+        }
+    }
+    if !read.units.is_empty() {
+        let units: Vec<String> = read
+            .units
+            .iter()
+            .map(|(column, unit)| format!("{column} = {unit}"))
+            .collect();
+        out.push_str(&format!("units: {}\n", units.join(", ")));
+    }
+    let separator = options.separator_or(b',');
+    let state =
+        crate::widgets::datatable::DataTableState::from_delimited(file, separator, &options)
+            .map_err(|e| fail(&out, &e))?;
+    let df = state
+        .lf()
+        .clone()
+        .limit(rows as IdxSize)
+        .collect()
+        .map_err(|e| fail(&out, &e))?;
+    out.push_str(&crate::formats::text_table(&df));
+    Ok(out)
+}
+
+impl Delimited {
+    /// The options the spec sets, in a line: `header line 3, unit line 2, ...`.
+    pub fn summary(&self) -> String {
+        let lines = |rows: &[usize]| {
+            let rows: Vec<String> = rows.iter().map(usize::to_string).collect();
+            rows.join(" + ")
+        };
+        let mut said = Vec::new();
+        if let Some(d) = self.delimiter {
+            said.push(format!("delimiter {:?}", d as char));
+        }
+        if let Some(rows) = &self.header_rows {
+            said.push(format!("names on line {}", lines(&rows.name)));
+            if let Some(unit) = rows.unit {
+                said.push(format!("units on line {unit}"));
+            }
+        }
+        if let Some(n) = self.metadata_line {
+            said.push(format!("metadata on line {n}"));
+        }
+        if let Some(c) = &self.comment_char {
+            said.push(format!("comments start {c:?}"));
+        }
+        if self.skip_initial_space == Some(true) {
+            said.push("skip initial space".to_string());
+        }
+        if let Some(n) = self.skip_lines {
+            said.push(format!("skip {n} lines"));
+        }
+        if !self.null_values.is_empty() {
+            said.push(format!("null {}", self.null_values.join(", ")));
+        }
+        if said.is_empty() {
+            "CSV with a header line".to_string()
+        } else {
+            said.join(", ")
+        }
+    }
+}
+
+/// An offset such as `-05:00`, `+0530`, `-5` or `05:00:00`: its sign, hours and minutes.
+const OFFSET: &str = r"^\s*([+-])?(\d{1,2})(?::?(\d{2}))?(?::\d{2})?\s*$";
+
+impl Derived {
+    fn expr(&self) -> Expr {
+        let text = |name: &str| col(name).cast(DataType::String);
+        let options = StrptimeOptions {
+            format: self.format.as_deref().map(PlSmallStr::from),
+            strict: false,
+            exact: true,
+            cache: true,
+        };
+        match self.kind {
+            DerivedKind::Date => text(&self.from[0]).str().to_date(options),
+            DerivedKind::Time => text(&self.from[0]).str().to_time(options),
+            DerivedKind::Datetime => {
+                let stamp = match self.from.as_slice() {
+                    [one] => text(one),
+                    [date, time, ..] => concat_str([text(date), text(time)], " ", false),
+                    [] => unreachable!("a derived column has a source"),
+                };
+                let local = stamp.str().to_datetime(
+                    Some(TimeUnit::Microseconds),
+                    None,
+                    options,
+                    lit("raise"),
+                );
+                let Some(offset) = self.from.get(2) else {
+                    return local;
+                };
+                // Local time less its offset from UTC is UTC.
+                let part = |group| text(offset).str().extract(lit(OFFSET), group);
+                let sign = when(part(1).eq(lit("-")))
+                    .then(lit(-1i64))
+                    .otherwise(lit(1i64));
+                let minutes = sign
+                    * (part(2).cast(DataType::Int64) * lit(60i64)
+                        + part(3).cast(DataType::Int64).fill_null(lit(0i64)));
+                let shift =
+                    (minutes * lit(60_000_000i64)).cast(DataType::Duration(TimeUnit::Microseconds));
+                (local - shift).dt().replace_time_zone(
+                    Some(polars::prelude::TimeZone::UTC),
+                    lit("raise"),
+                    NonExistent::Raise,
+                )
+            }
+        }
+    }
+}
+
+/// `name, key="value", key=value`: the items separated by commas outside quotes. A
+/// first item with no `=` is the title. A line with anything else, or with no pairs,
+/// is kept raw only.
+pub fn parse_metadata(line: &str) -> Metadata {
+    let raw = line.trim().to_string();
+    let mut items = Vec::new();
+    let mut item = String::new();
+    let mut quoted = false;
+    for c in line.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                item.push(c);
+            }
+            ',' if !quoted => items.push(std::mem::take(&mut item)),
+            c => item.push(c),
+        }
+    }
+    items.push(item);
+    let unparsed = |raw: String| Metadata {
+        raw,
+        title: None,
+        pairs: Vec::new(),
+    };
+    if quoted {
+        return unparsed(raw);
+    }
+    let mut title = None;
+    let mut pairs = Vec::new();
+    for (i, item) in items.iter().map(|s| s.trim()).enumerate() {
+        if item.is_empty() {
+            continue;
+        }
+        match item.split_once('=') {
+            Some((key, value)) => {
+                let key = key.trim();
+                if key.is_empty() || key.contains('"') {
+                    return unparsed(raw);
+                }
+                pairs.push((key.to_string(), unquote(value.trim())));
+            }
+            None if i == 0 && !item.contains('"') => title = Some(item.to_string()),
+            None => return unparsed(raw),
+        }
+    }
+    if pairs.is_empty() {
+        return unparsed(raw);
+    }
+    Metadata { raw, title, pairs }
+}
+
+/// `"a ""b"""` is `a "b"`; a value with no quotes around it is itself.
+fn unquote(value: &str) -> String {
+    match value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+        Some(inner) => inner.replace("\"\"", "\""),
+        None => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_metadata_line_parses_into_pairs_and_a_title() {
+        let m = parse_metadata(r#"device_info, log_version="1.03", model="X, Y", serial=123,"#);
+        assert_eq!(m.title.as_deref(), Some("device_info"));
+        assert_eq!(
+            m.pairs,
+            [
+                ("log_version".to_string(), "1.03".to_string()),
+                ("model".to_string(), "X, Y".to_string()),
+                ("serial".to_string(), "123".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_that_does_not_parse_is_kept_raw() {
+        for line in [
+            "just some words",
+            "a=1, stray",
+            r#"a="open"#,
+            "=1",
+            "title only",
+        ] {
+            let m = parse_metadata(line);
+            assert!(m.pairs.is_empty(), "{line}: {m:?}");
+            assert_eq!(m.raw, line.trim());
+        }
+    }
+
+    fn spec() -> Delimited {
+        Delimited {
+            comment_char: Some("#".into()),
+            header_rows: Some(HeaderRows {
+                name: vec![3],
+                unit: Some(2),
+            }),
+            metadata_line: Some(1),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn units_follow_the_shown_names_and_the_metadata_line_is_read() {
+        let text = "#device_info, version=\"2\"\n#yyyy-mm-dd, hh:mm, volts,\n  Date, Time,  Volts, Volts,\n";
+        let HeadFacts { units, metadata } = spec().facts(text.as_bytes(), b',', " ").unwrap();
+        assert_eq!(
+            units,
+            [
+                ("Date".to_string(), "yyyy-mm-dd".to_string()),
+                ("Time".to_string(), "hh:mm".to_string()),
+                ("Volts".to_string(), "volts".to_string()),
+            ]
+        );
+        let metadata = metadata.unwrap();
+        assert_eq!(metadata.title.as_deref(), Some("device_info"));
+        assert_eq!(metadata.pairs, [("version".to_string(), "2".to_string())]);
+    }
+
+    #[test]
+    fn apply_sets_the_dialect_and_skips_every_header_line() {
+        let mut options = crate::OpenOptions::default();
+        let spec = Delimited {
+            header_rows: Some(HeaderRows {
+                name: vec![2],
+                unit: Some(3),
+            }),
+            null_values: vec!["NA".into()],
+            ..spec()
+        };
+        spec.apply(&mut options);
+        assert_eq!(options.header_rows, [2]);
+        assert_eq!(options.skip_lines, Some(3));
+        assert_eq!(options.comment_char.as_deref(), Some("#"));
+        assert_eq!(options.null_values, Some(vec!["NA".to_string()]));
+        assert_eq!(options.format, Some(crate::FileFormat::Csv));
+    }
+
+    #[test]
+    fn a_datetime_from_date_time_and_offset_is_utc() {
+        let df = df!(
+            "d" => [Some("2024-03-05"), None, Some("2024-03-05")],
+            "t" => [Some("14:03:22"), None, Some("23:30:00")],
+            "o" => [Some("-05:00"), None, Some("+0530")],
+            "v" => [1, 2, 3],
+        )
+        .unwrap();
+        let spec = Delimited {
+            columns: vec![Derived {
+                name: "time".into(),
+                from: vec!["d".into(), "t".into(), "o".into()],
+                kind: DerivedKind::Datetime,
+                format: None,
+            }],
+            ..Default::default()
+        };
+        let out = spec.derive(df.lazy()).unwrap().collect().unwrap();
+        assert_eq!(
+            out.get_column_names()
+                .iter()
+                .map(|n| n.as_str())
+                .collect::<Vec<_>>(),
+            ["time", "d", "t", "o", "v"],
+            "before its first source"
+        );
+        let time = out.column("time").unwrap();
+        assert_eq!(
+            time.dtype(),
+            &DataType::Datetime(TimeUnit::Microseconds, Some(TimeZone::UTC))
+        );
+        let shown: Vec<String> = (0..3).map(|i| time.get(i).unwrap().to_string()).collect();
+        assert_eq!(shown[0], "2024-03-05 19:03:22 UTC");
+        assert_eq!(shown[1], "null");
+        assert_eq!(shown[2], "2024-03-05 18:00:00 UTC");
+    }
+
+    #[test]
+    fn a_missing_source_column_is_named() {
+        let df = df!("a" => [1]).unwrap();
+        let spec = Delimited {
+            columns: vec![Derived {
+                name: "day".into(),
+                from: vec!["date".into()],
+                kind: DerivedKind::Date,
+                format: None,
+            }],
+            ..Default::default()
+        };
+        let Err(err) = spec.derive(df.lazy()) else {
+            panic!("a missing column is an error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("day: no column named `date`"), "{err}");
+    }
+}

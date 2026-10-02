@@ -1316,6 +1316,7 @@ dependencies = [
  "toml",
  "unicode-width",
  "ureq",
+ "windows-sys 0.61.2",
  "xz2",
  "zstd 0.14.0",
 ]

@@ -49,6 +49,21 @@ max_buffered_mb = 512       # Cap on buffer memory, 0 for none. Planned before t
 unicode = "auto"            # "auto", "always" or "never": glyphs or ASCII
 ```
 
+### Glyphs or ASCII
+
+`unicode = "auto"` draws the Unicode glyphs when the terminal is doing UTF-8,
+and the ASCII set otherwise:
+
+| Environment | Set |
+|---|---|
+| `LC_ALL`, `LC_CTYPE` or `LANG` set (first non-empty wins) | Unicode if it names UTF-8 (`en_US.UTF-8`), else ASCII (`C`) |
+| None set, Windows Terminal (`WT_SESSION`) | Unicode |
+| None set, VS Code's terminal (`TERM_PROGRAM=vscode`) | Unicode |
+| None set, Windows console code page 65001 (`chcp 65001`) | Unicode |
+| None set, anything else | ASCII |
+
+`"always"` or `"never"` skips detection.
+
 ### Number formatting
 
 `number_format` groups digits so `248956422` reads as `248,956,422`.
@@ -293,8 +308,9 @@ datui's defaults avoid them only because it cannot know your font.
 - An override must keep the display width of the glyph it replaces, or the
   columns beside it would shift; a wrong width is rejected at startup with the
   slot named.
-- Overrides apply only when the Unicode set is active. In a C locale (`unicode
-  = "never"`, or no UTF-8 in the environment) the ASCII set draws, untouched.
+- Overrides apply only when the Unicode set is active. Under `unicode =
+  "never"`, or when [detection](#glyphs-or-ascii) finds no UTF-8, the ASCII
+  set draws, untouched.
 - `spinner` takes any number of frames; `score_marks` takes exactly 5,
   `mini_bars` and `bar_eighths` exactly 8. The wordmark cannot be overridden.
 

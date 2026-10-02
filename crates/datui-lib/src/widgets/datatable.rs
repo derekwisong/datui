@@ -10162,6 +10162,17 @@ impl DataTable {
         } else {
             self.cell_cursor_style
         };
+        // Under a reversed row (`table_selected = "reversed"`), a reversed cell would
+        // read as the rest of the row: the current cell is the one drawn upright.
+        let cell_style = if self
+            .highlight_style()
+            .add_modifier
+            .contains(Modifier::REVERSED)
+        {
+            cell_style.remove_modifier(Modifier::REVERSED)
+        } else {
+            cell_style
+        };
         let headers: Vec<Cell> = columns()
             .enumerate()
             .map(|(i, (col, w))| {
@@ -16608,6 +16619,33 @@ mod tests {
             }
             let city = column_span(&buf, area, "city");
             assert!(!reversed(city.start, 0) && !reversed(city.start, 1));
+        }
+    }
+
+    /// Under a reversed row, the current cell is drawn upright, tinted or not, so it
+    /// stands out from the row; the header keeps its own mark.
+    #[test]
+    fn the_current_cell_stands_out_of_a_reversed_row() {
+        let (mut state, area) = cursor_fixture();
+        state.move_cursor(CursorMove::Right);
+        for tint in [Color::Rgb(0x3b, 0x42, 0x61), Color::Black, Color::Reset] {
+            let mut buf = Buffer::empty(area);
+            DataTable {
+                selection_style: Style::default().add_modifier(Modifier::REVERSED),
+                ..DataTable::default()
+            }
+            .with_cursor_styles(
+                crate::config::column_cursor_style(Some(tint)),
+                crate::config::cell_cursor_style(Some(tint)),
+            )
+            .render(area, &mut buf, &mut state);
+            let reversed = |x, y| buf[(x, y)].modifier.contains(Modifier::REVERSED);
+            for x in column_span(&buf, area, "name") {
+                assert!(!reversed(x, 1), "{tint:?}: the current cell is upright");
+                assert!(buf[(x, 1)].modifier.contains(Modifier::BOLD));
+            }
+            let city = column_span(&buf, area, "city");
+            assert!(reversed(city.start, 1), "{tint:?}: the rest of the row");
         }
     }
 

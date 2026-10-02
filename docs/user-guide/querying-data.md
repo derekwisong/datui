@@ -156,6 +156,7 @@ A date or datetime past the calendar's range, such as a sentinel of
 | `.str`, `.format`, `like`, `.part`, `.slice`, `.replace`, `.strip`, `^` with text | Its stored number, as the table shows it: `-9223372036854775807 us since 1970-01-01 UTC` |
 | SQL `CAST(... AS VARCHAR)`, `\|\|`, `CONCAT`, `STRFTIME`; `COALESCE`, `CASE` or `UNION` with text | Its stored number |
 | `.date`, `.time`, `.year`, `.month_start` and the other date parts; SQL date functions and `INTERVAL` arithmetic | Null |
+| SQL `CAST(... AS TIMESTAMP)`; `^`, `COALESCE`, `CASE`, `GREATEST` or `LEAST` with a datetime | Null when the datetime cannot count it |
 
 A nanosecond datetime only spans 1677-09-21 to 2262-04-11. Near those ends,
 such as pandas' `Timestamp.max`:
@@ -166,6 +167,7 @@ such as pandas' `Timestamp.max`:
 | `.month_end` | Null within a month of either end |
 | SQL `INTERVAL` arithmetic | Null when the interval could carry it past an end |
 | With a time zone: `.date`, `.time`, `.doy` and the rows above | Null within a day of either end |
+| A date cast to a nanosecond datetime or met with one, as above | Null before 1677-09-22 or after 2262-04-11 |
 
 ## Drill into a GROUP BY
 

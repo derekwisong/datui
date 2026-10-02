@@ -19632,6 +19632,43 @@ fn out_of_range_dates_in_sql_cast_to_their_stored_number() {
     draw_wide(&mut app, "sql");
 }
 
+/// A date that a microsecond datetime cannot count, `Date(i32::MAX)`, cast to one or
+/// met with one, is null, where Polars panicked naming it (#526). In range it is
+/// Polars' own.
+#[test]
+fn a_date_past_what_a_datetime_counts_is_null_as_one() {
+    let dir = common::fixture_dir();
+    let (mut app, rx, tx) = open_past_calendar(&dir);
+    let some = |s: &str| Some(s.to_string());
+    let midnight = "1970-01-01 00:00:00";
+    let t_us = "-9223372036854775807 us since 1970-01-01 UTC";
+    run_query(&mut app, &rx, &tx, "select x: d ^ t_us");
+    assert_eq!(view_text(&app, "x"), [some(midnight), some(t_us)]);
+    #[cfg(feature = "sql")]
+    for (sql, expected) in [
+        (
+            "SELECT CAST(d AS TIMESTAMP) AS x FROM df",
+            [some(midnight), None],
+        ),
+        (
+            "SELECT COALESCE(d, t_us) AS x FROM df",
+            [some(midnight), some(t_us)],
+        ),
+        (
+            "SELECT CASE WHEN s = 'a' THEN t_us ELSE d END AS x FROM df",
+            [some(midnight), None],
+        ),
+        (
+            "SELECT GREATEST(d, t_us) AS x FROM df",
+            [some(midnight), some(t_us)],
+        ),
+    ] {
+        run_sql(&mut app, &rx, &tx, sql);
+        assert_eq!(app.error_message(), None, "{sql}");
+        assert_eq!(view_text(&app, "x"), expected, "{sql}");
+    }
+}
+
 /// Each group of a grouping keyed on the text of a [`PAST_CALENDAR`] column drills
 /// into the one row holding it: `b` for the date past the calendar, else `a`.
 #[track_caller]

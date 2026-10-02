@@ -265,6 +265,45 @@ fn moves_ns(function: &TemporalFunction) -> bool {
     )
 }
 
+/// `column` with each date a datetime in `unit` cannot count as null. Polars' own
+/// cast to that datetime makes such a date null too, but a strict cast, and the
+/// one a coalesce or a when/then/otherwise makes to their common type, then fails
+/// naming the date, which panics past the calendar. Any other type, and every
+/// value when none is that far out, as it is.
+fn countable_dates(column: Column, unit: TimeUnit) -> PolarsResult<Column> {
+    if column.dtype() != &DataType::Date {
+        return Ok(column);
+    }
+    let per_day: i64 = match unit {
+        TimeUnit::Nanoseconds => 86_400_000_000_000,
+        TimeUnit::Microseconds => 86_400_000_000,
+        TimeUnit::Milliseconds => 86_400_000,
+    };
+    let fits = |days: i32| i64::from(days).abs() <= i64::MAX / per_day;
+    let series = column.as_materialized_series();
+    let days = series.to_physical_repr();
+    let days = days.i32()?;
+    if [days.min(), days.max()].into_iter().flatten().all(fits) {
+        return Ok(column);
+    }
+    Ok(days
+        .apply(|days| days.filter(|days| fits(*days)))
+        .into_date()
+        .into_series()
+        .with_name(series.name().clone())
+        .into_column())
+}
+
+/// [`countable_dates`] in a plan, ahead of whatever casts `expr` to a datetime in
+/// `unit`.
+fn countable_expr(expr: Expr, unit: TimeUnit) -> Expr {
+    expr.map_with_fmt_str(
+        move |c| countable_dates(c, unit),
+        |_, field| Ok(field.clone()),
+        "past_calendar_countable",
+    )
+}
+
 /// Whether a date part goes through a calendar date, and so panics on a value
 /// past the calendar. The rest read or relabel the stored number.
 fn reads_calendar(function: &TemporalFunction) -> bool {
@@ -287,7 +326,9 @@ fn reads_calendar(function: &TemporalFunction) -> bool {
 /// a when/then/otherwise, which Polars casts to text itself, goes through
 /// [`text_expr`] too, but only with `schema`, which says the result is text. Date
 /// math that overflows near the ends of the nanosecond range reads from
-/// [`ns_edge_expr`].
+/// [`ns_edge_expr`]. A date cast to a datetime, or met with one in a coalesce, a
+/// when/then/otherwise, `fill_null` or a horizontal min or max (the last ones only
+/// with `schema`), goes through [`countable_expr`].
 pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
     let may_leave = |e: &Expr| match (e, schema) {
         (Expr::Literal(_), _) => false,
@@ -316,6 +357,24 @@ pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
                 .is_ok_and(|f| f.dtype() == &DataType::String)
         })
     };
+    let may_be_date = |e: &Expr| match (e, schema) {
+        (Expr::Literal(_), _) => false,
+        (e, Some(schema)) => e
+            .to_field(schema)
+            .map_or(true, |f| f.dtype() == &DataType::Date),
+        (_, None) => true,
+    };
+    let countable = |e: Expr, unit: TimeUnit| {
+        if may_be_date(&e) {
+            countable_expr(e, unit)
+        } else {
+            e
+        }
+    };
+    let datetime_unit = |e: &Expr| match e.to_field(schema?).ok()?.dtype() {
+        DataType::Datetime(unit, _) => Some(*unit),
+        _ => None,
+    };
     expr.map_expr(|e| match e {
         e @ (Expr::Ternary { .. }
         | Expr::Function {
@@ -337,13 +396,53 @@ pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
             },
             e => e,
         },
+        // Polars casts the inputs to their common type, a datetime here.
+        e @ (Expr::Ternary { .. }
+        | Expr::Function {
+            function:
+                FunctionExpr::Coalesce
+                | FunctionExpr::FillNull
+                | FunctionExpr::MaxHorizontal
+                | FunctionExpr::MinHorizontal,
+            ..
+        }) => match (datetime_unit(&e), e) {
+            (
+                Some(unit),
+                Expr::Ternary {
+                    predicate,
+                    truthy,
+                    falsy,
+                },
+            ) => Expr::Ternary {
+                predicate,
+                truthy: Arc::new(countable(Arc::unwrap_or_clone(truthy), unit)),
+                falsy: Arc::new(countable(Arc::unwrap_or_clone(falsy), unit)),
+            },
+            (Some(unit), Expr::Function { input, function }) => Expr::Function {
+                input: input.into_iter().map(|e| countable(e, unit)).collect(),
+                function,
+            },
+            (_, e) => e,
+        },
         Expr::Cast {
             expr,
             dtype,
             options,
-        } if dtype.as_literal() == Some(&DataType::String) && may_leave(&expr) => {
-            text_expr(Arc::unwrap_or_clone(expr), options)
-        }
+        } => match dtype.as_literal() {
+            Some(DataType::String) if may_leave(&expr) => {
+                text_expr(Arc::unwrap_or_clone(expr), options)
+            }
+            Some(DataType::Datetime(unit, _)) if may_be_date(&expr) => Expr::Cast {
+                expr: Arc::new(countable_expr(Arc::unwrap_or_clone(expr), *unit)),
+                dtype,
+                options,
+            },
+            _ => Expr::Cast {
+                expr,
+                dtype,
+                options,
+            },
+        },
         Expr::Function {
             mut input,
             function: FunctionExpr::TemporalExpr(function),
@@ -387,12 +486,18 @@ pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
 #[cfg(feature = "sql")]
 fn guards(expr: &Expr) -> bool {
     expr.into_iter().any(|e| match e {
-        Expr::Cast { dtype, .. } => dtype.as_literal() == Some(&DataType::String),
+        Expr::Cast { dtype, .. } => matches!(
+            dtype.as_literal(),
+            Some(DataType::String | DataType::Datetime(..))
+        ),
         Expr::Ternary { .. } => true,
         Expr::Function { function, .. } => matches!(
             function,
             FunctionExpr::TemporalExpr(_)
                 | FunctionExpr::Coalesce
+                | FunctionExpr::FillNull
+                | FunctionExpr::MaxHorizontal
+                | FunctionExpr::MinHorizontal
                 | FunctionExpr::StringExpr(
                     StringFunction::ConcatHorizontal { .. } | StringFunction::ConcatVertical { .. }
                 )
@@ -789,10 +894,12 @@ mod tests {
         // text by Polars; known only with the schema.
         let one = || col("i").eq(lit(1));
         let kept = [
-            coalesce(&[col("d"), col("t")]),
+            coalesce(&[col("t"), col("ns")]),
             coalesce(&[col("s"), lit("x")]),
-            when(one()).then(col("d")).otherwise(col("t")),
+            when(one()).then(col("t")).otherwise(col("ns")),
             when(one()).then(col("ns")).otherwise(col("s")),
+            col("t").cast(DataType::Datetime(TimeUnit::Nanoseconds, None)),
+            col("d").fill_null(col("d")),
         ];
         for expr in kept {
             assert_eq!(guard_expr(expr.clone(), Some(&schema)), expr);
@@ -802,11 +909,20 @@ mod tests {
             coalesce(&[col("s"), col("d")]),
             when(one()).then(col("d")).otherwise(col("s")),
             when(one()).then(lit("x")).otherwise(col("t")),
+            // A date met with a datetime, which Polars casts to it (#526).
+            coalesce(&[col("d"), col("t")]),
+            when(one()).then(col("d")).otherwise(col("t")),
+            col("d").fill_null(col("t")),
+            polars::lazy::dsl::max_horizontal([col("t"), col("d")]).unwrap(),
         ];
         for expr in changed {
             assert_ne!(guard_expr(expr.clone(), Some(&schema)), expr);
             assert_eq!(guard_expr(expr.clone(), None), expr);
         }
+        // A date cast to a datetime, with the schema or without.
+        let cast = col("d").cast(DataType::Datetime(TimeUnit::Microseconds, None));
+        assert_ne!(guard_expr(cast.clone(), Some(&schema)), cast);
+        assert_ne!(guard_expr(cast.clone(), None), cast);
     }
 
     /// Met with text in a coalesce, a when/then/otherwise or a union, a date is
@@ -862,6 +978,151 @@ mod tests {
                     assert_eq!(text, values(polars), "{sql}");
                 }
             }
+        }
+    }
+
+    /// Day counts on either side of what a nanosecond and a microsecond datetime can
+    /// count, the ends of a date, one in range and a null.
+    const DAYS: [Option<i32>; 13] = [
+        Some(0),
+        Some(19_737),
+        Some(106_751),
+        Some(106_752),
+        Some(-106_751),
+        Some(-106_752),
+        Some(106_751_991),
+        Some(106_751_992),
+        Some(-106_751_991),
+        Some(-106_751_992),
+        Some(i32::MAX),
+        Some(i32::MIN),
+        None,
+    ];
+
+    /// `d`, the dates `days`, beside µs (`t`) and ns (`tn`) datetimes with nulls, and
+    /// a flag `b`.
+    fn dates_and_datetimes(days: &[Option<i32>]) -> LazyFrame {
+        let n = days.len() as i64;
+        df!(
+            "d" => days,
+            "t" => (0..n).map(|i| (i % 3 != 0).then_some(i * 1_000_000)).collect::<Vec<_>>(),
+            "b" => (0..n).map(|i| i % 2 == 0).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("d").cast(DataType::Date),
+            col("t").cast(DataType::Datetime(TimeUnit::Microseconds, None)),
+            col("t")
+                .cast(DataType::Datetime(TimeUnit::Nanoseconds, None))
+                .alias("tn"),
+        ])
+    }
+
+    /// [`DAYS`] with each a datetime in `unit` cannot count as null.
+    fn countable_days(unit: TimeUnit) -> Vec<Option<i32>> {
+        let per_day: i64 = match unit {
+            TimeUnit::Nanoseconds => 86_400_000_000_000,
+            _ => 86_400_000_000,
+        };
+        DAYS.iter()
+            .map(|d| d.filter(|d| i64::from(*d).abs() <= i64::MAX / per_day))
+            .collect()
+    }
+
+    /// A date cast to a datetime that cannot count it, explicitly or to the common
+    /// type of a coalesce, a when/then/otherwise, `fill_null` or a horizontal min or
+    /// max, is null, where Polars' strict cast panicked naming it (#526). Every other
+    /// value is what Polars gives it, on both engines.
+    #[test]
+    fn a_date_a_datetime_cannot_count_is_null_as_one() {
+        use polars::lazy::dsl::{max_horizontal, min_horizontal};
+        let schema = dates_and_datetimes(&DAYS).collect_schema().unwrap();
+        let us = TimeUnit::Microseconds;
+        let ns = TimeUnit::Nanoseconds;
+        let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let cases = [
+            (col("d").strict_cast(DataType::Datetime(us, None)), us),
+            (col("d").strict_cast(DataType::Datetime(ns, None)), ns),
+            (col("d").strict_cast(DataType::Datetime(us, paris)), us),
+            (coalesce(&[col("d"), col("t")]), us),
+            (coalesce(&[col("t"), col("d")]), us),
+            (coalesce(&[col("d"), col("tn")]), ns),
+            (when(col("b")).then(col("d")).otherwise(col("t")), us),
+            (max_horizontal([col("d"), col("t")]).unwrap(), us),
+            (min_horizontal([col("t"), col("d")]).unwrap(), us),
+            (col("d").fill_null(col("t")), us),
+        ];
+        for (expr, unit) in cases {
+            let guarded = guard_expr(expr.clone(), Some(&schema));
+            let expected = dates_and_datetimes(&countable_days(unit))
+                .select([expr.clone()])
+                .collect()
+                .unwrap();
+            for streaming in [false, true] {
+                let out = crate::statistics::collect_lazy(
+                    dates_and_datetimes(&DAYS).select([guarded.clone()]),
+                    streaming,
+                )
+                .unwrap();
+                assert_eq!(out.schema(), expected.schema(), "{expr:?}");
+                assert!(
+                    out.equals_missing(&expected),
+                    "{expr:?} streaming: {streaming}\n{out}\n{expected}"
+                );
+            }
+        }
+    }
+
+    /// SQL's cast of a date to a timestamp, and a date met with a timestamp, are null
+    /// where the timestamp cannot count the date, where Polars panicked (#526).
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_date_a_timestamp_cannot_count_is_null_in_sql() {
+        let mut ctx = polars_sql::SQLContext::new();
+        for (sql, unit) in [
+            (
+                "SELECT CAST(d AS TIMESTAMP) AS x FROM df",
+                TimeUnit::Microseconds,
+            ),
+            ("SELECT d::timestamp AS x FROM df", TimeUnit::Microseconds),
+            (
+                "SELECT CAST(d AS TIMESTAMP(9)) AS x FROM df",
+                TimeUnit::Nanoseconds,
+            ),
+            ("SELECT COALESCE(d, t) AS x FROM df", TimeUnit::Microseconds),
+            ("SELECT IFNULL(t, d) AS x FROM df", TimeUnit::Microseconds),
+            ("SELECT COALESCE(d, tn) AS x FROM df", TimeUnit::Nanoseconds),
+            (
+                "SELECT CASE WHEN b THEN d ELSE t END AS x FROM df",
+                TimeUnit::Microseconds,
+            ),
+            ("SELECT GREATEST(d, t) AS x FROM df", TimeUnit::Microseconds),
+            ("SELECT LEAST(t, d) AS x FROM df", TimeUnit::Microseconds),
+            (
+                "SELECT MAX(CAST(d AS TIMESTAMP)) AS x FROM df GROUP BY b",
+                TimeUnit::Microseconds,
+            ),
+            (
+                "SELECT df.d AS x FROM df JOIN e ON CAST(df.d AS TIMESTAMP) = e.t",
+                TimeUnit::Microseconds,
+            ),
+        ] {
+            // Rows sorted: a GROUP BY's and a join's come in any order.
+            let mut run = |days: &[Option<i32>], guard: bool| {
+                ctx.register("df", dates_and_datetimes(days));
+                ctx.register("e", dates_and_datetimes(days));
+                let mut lf = ctx.execute(sql).unwrap();
+                if guard {
+                    guard_plan(&mut lf.logical_plan);
+                }
+                lf.sort(["x"], SortMultipleOptions::default())
+                    .collect()
+                    .unwrap()
+            };
+            let expected = run(&countable_days(unit), false);
+            let out = run(&DAYS, true);
+            assert!(out.equals_missing(&expected), "{sql}\n{out}\n{expected}");
         }
     }
 }

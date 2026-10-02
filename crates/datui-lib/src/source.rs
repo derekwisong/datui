@@ -170,6 +170,8 @@ pub(crate) fn polars_literal_path(
     if !has_glob_chars(path) || expands_as_glob(path) {
         return polars::prelude::PlRefPath::try_from_path(path);
     }
+    // Escaped as Polars will read it: on Windows that text has `/` separators and no
+    // `\\?\` prefix, so neither a separator nor the prefix's `?` is touched.
     let text = polars::prelude::PlRefPath::try_from_path(path)?;
     let mut escaped = String::with_capacity(text.as_str().len() + 8);
     for c in text.as_str().chars() {
@@ -276,6 +278,51 @@ mod tests {
         let pattern = dir.path().join("d[2].csv");
         let kept = polars_literal_path(&pattern).unwrap();
         assert_eq!(kept.as_str(), pattern.to_str().unwrap());
+    }
+
+    /// The escaped name reads that one file through the NDJSON scan, which always
+    /// expands, whatever else the name holds: `]` alone, braces (no glob meaning to
+    /// Polars), a backslash (a plain character on Unix), and a directory with `[`.
+    #[test]
+    fn an_escaped_name_reads_that_file_alone() {
+        use polars::prelude::{LazyFileListReader, LazyJsonLineReader};
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("set[1]");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::create_dir(dir.path().join("set1")).unwrap();
+        let mut names = vec!["d[1]", "h]", "i{j,k}", "[!x]", "set[1]/p[a]"];
+        if cfg!(unix) {
+            names.extend(["a*b", "x?", "e\\f", "g[x]*?"]);
+        }
+        // What the unescaped patterns would also match.
+        for decoy in ["d1", "ha", "set1/pa", "ab", "xy", "gx", "y"] {
+            std::fs::write(dir.path().join(format!("{decoy}.jsonl")), "{\"v\": 0}\n").unwrap();
+        }
+        for name in names {
+            let file = dir.path().join(format!("{name}.jsonl"));
+            std::fs::write(
+                &file,
+                format!("{{\"v\": \"{}\"}}\n", name.replace('\\', "/")),
+            )
+            .unwrap();
+            let lf = LazyJsonLineReader::new(polars_literal_path(&file).unwrap())
+                .finish()
+                .unwrap();
+            let df = lf.collect().unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(df.height(), 1, "{name}");
+            let v = df
+                .column("v")
+                .unwrap()
+                .str()
+                .unwrap()
+                .get(0)
+                .map(str::to_string);
+            assert_eq!(
+                v.as_deref(),
+                Some(name.replace('\\', "/").as_str()),
+                "{name}"
+            );
+        }
     }
 
     #[test]

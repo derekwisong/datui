@@ -49,6 +49,7 @@ scripts/dev/test.sh integration fuzz_corpus_test
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher. Checked for hangs and for the wildcard-free fast path agreeing with equality. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and colour strings that are sliced by byte offset after a byte-length check. |
 | `audio_header` | `audio::read_header`, `audio::AudioSource` | WAV, RF64 and AIFF headers and samples read by sizes and offsets the file states. A corrupt header must be an error, never a panic or an allocation sized by the file. |
+| `midi_file` | `midi::parse`, `midi::build` | A Standard MIDI File parser reading chunk, delta and event lengths from the file. A corrupt file must be an error, never a panic or an allocation sized by the file. |
 | `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Model file headers read by lengths the file states. A corrupt header must be an error, never a panic or an allocation sized by the file. |
 | `gps_parse` | `gps::nmea::NmeaReader`, `gps::gpx::GpxReader` | GPS logs read a piece at a time, with line, markup, text and depth bounds. The first byte picks the NMEA table and the piece size. Frames must keep their schema and every coordinate must be on the globe. |
 

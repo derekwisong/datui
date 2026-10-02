@@ -10,6 +10,7 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 | **Schema** | Row and column counts, column types, schema source, file coverage, and Parquet codecs/compression |
 | **Model** | A SafeTensors or GGUF model's totals and header metadata; appears for model files |
 | **Audio** | An audio file's format, length, metadata and markers; appears for audio files |
+| **MIDI** | A MIDI file's format, timing, length, tempo and tracks; appears for MIDI files |
 | **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
@@ -25,8 +26,8 @@ directories, globs and datasets of several files have no file size.
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch tabs |
 | <kbd>Tab</kbd> | Move between the Schema tab bar and its column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, or the model's or audio file's metadata |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's or audio file's metadata |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, the model's or audio file's metadata, or the MIDI tracks |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's or audio file's metadata or the MIDI tracks |
 | <kbd>Enter</kbd> | Apply a note's offered action, when available |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
@@ -68,6 +69,22 @@ opens on the Audio tab:
 
 A data size of 0 or a placeholder, as a recorder leaves it, says so: the
 frames are counted from the file's size.
+
+## MIDI
+
+For a [MIDI file](loading-data.md#midi-files), <kbd>i</kbd> opens on the MIDI
+tab, or on Notes first when a note never ends or a file could not be read:
+
+| Line | Shows |
+|---|---|
+| Format | `MIDI format 1`, the timing (`480 ticks per quarter`, or SMPTE frames), and the track count |
+| Length | The time of the last event (`2:05.250`), the event count, and the notes, with how many never end |
+| Tempo | The first tempo, and the range and number of changes when it changes; the first time and key signatures |
+| Copyright | The first copyright notice, when there is one |
+| Tracks | Each track's number and name, its events, notes, channels and instrument name |
+
+For a directory of songs, the lines are totals and the tempo range, and the
+list is the files that could not be read, with why.
 
 ## Notes
 

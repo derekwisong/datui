@@ -352,6 +352,8 @@ pub struct DataTableState {
     /// that root, untouched, a window is read straight from the file's frames. See
     /// [`crate::OpenOptions::audio`].
     audio: Option<(Arc<crate::audio::AudioSource>, u64)>,
+    /// What a MIDI file said besides its events. See [`crate::OpenOptions::midi`].
+    midi: Option<Arc<crate::midi::MidiSummary>>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -866,6 +868,8 @@ pub struct OpenFacts {
     pub other_tables: Vec<String>,
     /// The audio file the frame scans.
     pub audio: Option<Arc<crate::audio::AudioSource>>,
+    /// What a MIDI file said besides its events.
+    pub midi: Option<Arc<crate::midi::MidiSummary>>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1860,6 +1864,7 @@ impl DataTableState {
             format_read: None,
             fixed_window: None,
             audio: None,
+            midi: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2001,6 +2006,7 @@ impl DataTableState {
             format_read: None,
             fixed_window: None,
             audio: None,
+            midi: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2058,6 +2064,7 @@ impl DataTableState {
             converted,
             other_tables,
             audio,
+            midi,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2106,6 +2113,7 @@ impl DataTableState {
             self.set_num_rows(audio.frames() as usize);
             self.audio = Some((audio, self.root_generation));
         }
+        self.midi = midi;
         self
     }
 
@@ -6534,6 +6542,11 @@ impl DataTableState {
     /// loaded.
     fn fixed_window_now(&self) -> Option<&Arc<crate::fixed_records::FixedRecords>> {
         self.fixed_window.as_ref().filter(|_| self.is_pristine())
+    }
+
+    /// The MIDI file's header, tracks and tempo, when the dataset is MIDI events.
+    pub fn midi(&self) -> Option<&crate::midi::MidiSummary> {
+        self.midi.as_deref()
     }
 
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked

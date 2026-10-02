@@ -524,8 +524,8 @@ mod parquet_key_tests {
 pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     let mut head = [0u8; 16];
     let head = read_head(path, &mut head)?;
-    if let Some(model) = model_format_of(head) {
-        return Some(model);
+    if let Some(signed) = signed_format_of(head) {
+        return Some(signed);
     }
     if head.starts_with(b"PAR1") {
         // Both ends, because `PAR1` at the front alone is a truncated write — the
@@ -570,26 +570,29 @@ fn read_head<'a>(path: &Path, buf: &'a mut [u8]) -> Option<&'a [u8]> {
     Some(&buf[..filled])
 }
 
-/// A model file by its first bytes: GGUF's magic, or a SafeTensors header's length and
-/// the `{` after it.
-fn model_format_of(head: &[u8]) -> Option<crate::FileFormat> {
+/// A model or MIDI file by its first bytes: GGUF's magic, a SafeTensors header's length
+/// and the `{` after it, or `MThd` and its length of 6.
+fn signed_format_of(head: &[u8]) -> Option<crate::FileFormat> {
     if crate::model_files::looks_like_gguf(head) {
         Some(crate::FileFormat::Gguf)
     } else if crate::model_files::looks_like_safetensors(head) {
         Some(crate::FileFormat::Safetensors)
+    } else if crate::midi::looks_like_midi(head) {
+        Some(crate::FileFormat::Midi)
     } else {
         None
     }
 }
 
-/// Whether a file whose name says nothing is a SafeTensors or GGUF model, by its first
-/// bytes. Checkpoints are often saved as `.bin` or with no extension at all.
+/// Whether a file whose name says nothing is a SafeTensors or GGUF model or a MIDI
+/// file, by its first bytes. Checkpoints are often saved as `.bin` or with no extension
+/// at all.
 ///
-/// Only these two: their signatures are specific enough to trust on a file of any
-/// name, where `ORC` at the front of a text file is a word, not a format.
-pub fn sniff_model_format(path: &Path) -> Option<crate::FileFormat> {
+/// Only these: their signatures are specific enough to trust on a file of any name,
+/// where `ORC` at the front of a text file is a word, not a format.
+pub fn sniff_signed_format(path: &Path) -> Option<crate::FileFormat> {
     let mut head = [0u8; 16];
-    model_format_of(read_head(path, &mut head)?)
+    signed_format_of(read_head(path, &mut head)?)
 }
 
 /// Whether a file whose name says nothing is WAV or AIFF audio, by its first bytes.
@@ -3315,9 +3318,9 @@ mod classification_tests {
         );
     }
 
-    /// A model file is known by its first bytes under any name.
+    /// A model or MIDI file is known by its first bytes under any name.
     #[test]
-    fn model_files_are_sniffed_by_their_first_bytes() {
+    fn signed_files_are_sniffed_by_their_first_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let gguf = dir.path().join("weights");
         std::fs::write(&gguf, b"GGUF\x03\x00\x00\x00").unwrap();
@@ -3329,10 +3332,13 @@ mod classification_tests {
         std::fs::write(&text, b"just some text").unwrap();
         assert_eq!(sniff_format(&gguf), Some(crate::FileFormat::Gguf));
         assert_eq!(
-            sniff_model_format(&st),
+            sniff_signed_format(&st),
             Some(crate::FileFormat::Safetensors)
         );
-        assert_eq!(sniff_model_format(&text), None);
+        assert_eq!(sniff_signed_format(&text), None);
+        let midi = dir.path().join("song.bin");
+        std::fs::write(&midi, b"MThd\0\0\0\x06\0\0\0\x01\0\x60").unwrap();
+        assert_eq!(sniff_signed_format(&midi), Some(crate::FileFormat::Midi));
     }
 
     /// A directory is offered as one dataset only when its format can be read as many

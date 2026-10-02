@@ -274,6 +274,7 @@ pub fn ensure_sample_data() {
             "dialect_padded_log.csv",
             "gps/drive.nmea",
             "audio/loop.aiff",
+            "midi/song.mid",
         ];
 
         let needs_generation = !sample_data_dir.exists()

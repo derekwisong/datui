@@ -11,6 +11,7 @@ pub mod fuzzy_match;
 pub mod glob_match;
 pub mod gps_parse;
 pub mod ipc_stream_head;
+pub mod midi_file;
 pub mod model_header;
 pub mod number_format;
 pub mod parse_query;

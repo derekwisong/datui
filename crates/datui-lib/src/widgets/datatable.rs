@@ -3834,7 +3834,20 @@ impl DataTableState {
         if per_column.is_empty() {
             return Ok(Self::build_polars_null_values(&global, &per_column, None));
         }
-        let schema = schema()?;
+        let schema = match schema() {
+            Ok(schema) => schema,
+            // Nothing follows the header lines: no value to read as null.
+            Err(e)
+                if header.is_some()
+                    && matches!(
+                        e.downcast_ref::<PolarsError>(),
+                        Some(PolarsError::NoData(_))
+                    ) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
         let raw: Vec<PlSmallStr> = schema.iter_names().cloned().collect();
         let shown = crate::csv_dialect::shown_names(&raw, header);
         for (column, _) in per_column.iter_mut() {

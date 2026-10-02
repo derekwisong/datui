@@ -21247,7 +21247,15 @@ fn header_rows_on_a_file_with_no_rows_yet() {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     std::io::Write::write_all(&mut encoder, header.as_bytes()).unwrap();
     std::fs::write(&gz, encoder.finish().unwrap()).unwrap();
-    let flags = ["--comment-char", "#", "--header-rows", "3,2"];
+    // A per-column null value has no rows to read the columns from.
+    let flags = [
+        "--comment-char",
+        "#",
+        "--header-rows",
+        "3,2",
+        "--null-value",
+        "Latitude degrees=-",
+    ];
     let names = ["Lcl Date yyyy-mm-dd", "Latitude degrees"];
     for (path, in_memory) in [(&empty, false), (&gz, false), (&gz, true)] {
         let options = OpenOptions {

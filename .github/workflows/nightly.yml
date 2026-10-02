@@ -138,8 +138,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read
-      actions: read
+      contents: read  # the checkout and the release fallback
+      actions: read  # earlier Nightly runs, their jobs and their artifacts
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -167,18 +167,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The newest Nightly on main whose startup guard passed; the latest release
-          # before there is one.
+          # The newest Nightly on main whose startup guard passed and whose build is
+          # still kept; the latest release before there is one. A run whose artifact
+          # has expired is passed over rather than ending the search at the release.
           passed=""
           for id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --branch main \
               --limit 30 --json databaseId -q '.[].databaseId'); do
             [ "$id" = "$GITHUB_RUN_ID" ] && continue
             result=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" \
-              -q '.jobs[] | select(.name == "Startup guard") | .conclusion')
-            if [ "$result" = success ]; then passed=$id; break; fi
+              -q '.jobs[] | select(.name == "Startup guard") | .conclusion' || true)
+            [ "$result" = success ] || continue
+            rm -rf passed
+            if gh run download "$id" --repo "$GITHUB_REPOSITORY" --name nightly-linux --dir passed; then
+              passed=$id
+              break
+            fi
           done
           mkdir -p baseline
-          if [ -n "$passed" ] && gh run download "$passed" --repo "$GITHUB_REPOSITORY" --name nightly-linux --dir passed; then
+          if [ -n "$passed" ]; then
             echo "Baseline: Nightly run $passed"
             cp passed/target/release/datui baseline/datui
           else

@@ -582,6 +582,20 @@ pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
             named = true;
         }
     }
+    // Delimited text a delimited spec's glob names keeps its place and gains the name.
+    for row in rows.iter_mut().filter(|r| {
+        r.kind == EntryKind::File
+            && r.format_spec.is_none()
+            && discover::data_format(&r.path).is_some_and(|f| f.separator().is_some())
+    }) {
+        if let Some(spec) = formats
+            .by_glob(&row.path, false)
+            .into_iter()
+            .find(|s| s.is_delimited())
+        {
+            row.format_spec = Some(spec.name.clone());
+        }
+    }
     // Data sorts first, and these rows are data now.
     if named {
         discover::sort_entries(rows);

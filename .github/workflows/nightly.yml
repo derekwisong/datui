@@ -12,10 +12,9 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,15 +36,15 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
           # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
           # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
           # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
           # indexes did not fetch, it fails there, for the right reason.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
 
@@ -56,6 +55,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -64,7 +64,7 @@ jobs:
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: nightly
-          cache-workspace-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build release binary
         run: cargo build --release --locked --workspace -p datui
@@ -125,10 +125,9 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 150
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,8 +137,6 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -148,6 +145,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -156,7 +154,7 @@ jobs:
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: nightly
-          cache-workspace-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build release binary
         run: cargo build --release --locked -p datui
@@ -202,11 +200,10 @@ jobs:
   # silently splits the cache again.
   windows-tests:
     runs-on: windows-latest
+    timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -216,8 +213,6 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -226,6 +221,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -233,8 +229,8 @@ jobs:
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: ci
-          cache-workspace-crates: true
+          shared-key: tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Create virtual environment and install requirements
         run: |
@@ -271,14 +267,13 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -288,8 +283,6 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
@@ -301,6 +294,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -308,9 +302,10 @@ jobs:
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: nightly
-          key: ${{ matrix.target }}
-          cache-workspace-crates: true
+          # rust-cache ignores `key` beside `shared-key`, so the target goes in the
+          # shared key; with `key` the two targets raced for one entry.
+          shared-key: nightly-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build release binary
         run: cargo build --release --locked -p datui --target ${{ matrix.target }}
@@ -365,11 +360,10 @@ jobs:
   # here too, nearly all of it LTO.
   macos-tests:
     runs-on: macos-latest
+    timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -379,8 +373,6 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -389,6 +381,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -396,8 +389,8 @@ jobs:
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: ci
-          cache-workspace-crates: true
+          shared-key: tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Create virtual environment and install requirements
         run: |
@@ -435,6 +428,7 @@ jobs:
   fuzz:
     name: Fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -484,7 +478,9 @@ jobs:
           toolchain: stable
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
@@ -497,6 +493,7 @@ jobs:
           shared-key: fuzz-asan
           workspaces: fuzz
           cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
@@ -579,6 +576,7 @@ jobs:
   features:
     name: Feature combinations
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: "0"
     steps:
@@ -606,7 +604,9 @@ jobs:
           toolchain: stable
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
@@ -614,6 +614,7 @@ jobs:
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: features
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # Five feature sets of Polars test builds would crowd the PR cache out of
           # the repository's 10 GB budget; keep only the registry.
           cache-targets: false
@@ -625,7 +626,9 @@ jobs:
         with:
           python-version: '3.x'
           cache: 'pip'
-          cache-dependency-path: scripts/requirements.txt
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-fixtures.txt
 
       - name: Generate sample data
         run: |

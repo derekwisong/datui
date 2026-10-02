@@ -39,8 +39,6 @@ jobs:
     needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,8 +62,6 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Install system dependencies
         run: |
@@ -83,6 +79,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -94,7 +91,8 @@ jobs:
         # used to share was only ever written from tags, so every release found
         # nothing, built from cold (57 minutes on Windows), then spent quota
         # saving an entry no later tag could reach. Nightly's release build uses
-        # the same commands and env, so its key prefix matches here; the version
+        # the same commands and env, so its key prefix matches here (keep the two in
+        # step: rust-cache hashes CARGO*/RUST* env into the key); the version
         # bump changes the lockfile hash, and rust-cache falls back to the most
         # recent nightly entry, which differs by datui's own crates.
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -347,8 +345,6 @@ jobs:
     needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -359,8 +355,6 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -369,6 +363,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -426,8 +421,6 @@ jobs:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -438,8 +431,6 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
@@ -451,6 +442,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             scripts/requirements.txt
+            scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
             python/pyproject.toml
@@ -462,9 +454,8 @@ jobs:
         # Nightly's entry from main, restore only. See the linux job.
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: nightly
+          shared-key: nightly-${{ matrix.target }}
           save-if: false
-          key: ${{ matrix.target }}
           cache-workspace-crates: true
 
       - name: Build release binary

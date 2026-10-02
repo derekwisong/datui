@@ -1,0 +1,21 @@
+# What scripts/generate_sample_data.py imports, and everything those pull in, at
+# exact versions. CI caches the generated fixtures under a key that hashes this
+# file, so a version that floated would let the cache serve fixtures a fresh run
+# would no longer write. A bump here regenerates them. requirements.txt includes
+# this file, so local fixtures come from the same versions.
+
+# The Python polars paired with Rust polars 0.55, so tests run against the plans the
+# wheel is built for. The wheel itself accepts polars>=1.38 (see python/pyproject.toml).
+# Move this with the Rust polars bump.
+polars==1.43.2
+polars-runtime-32==1.43.2
+
+# numpy 2.5 needs Python 3.12; the older lines keep local setup working on 3.10 and
+# 3.11. CI resolves the newest Python, and its key holds the Python version.
+numpy==2.5.3; python_version >= "3.12"
+numpy==2.3.5; python_version == "3.11"
+numpy==2.2.6; python_version < "3.11"
+pyarrow==25.0.1
+fastavro==1.12.2
+openpyxl==3.1.5
+et-xmlfile==2.0.0

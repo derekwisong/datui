@@ -83,6 +83,6 @@ When upgrading Rust Polars, review these together:
 |---|---|
 | `python/pyproject.toml` | Minimum supported Python Polars version |
 | `python/datui/__init__.py` | `PAIRED_POLARS` |
-| `scripts/requirements.txt` | Development/test Polars pin |
+| `scripts/requirements-fixtures.txt` | Development/test Polars pin |
 
 Run the Python tests after changing either side of the bridge.

@@ -1,13 +1,7 @@
-# The Python polars paired with Rust polars 0.55, so tests run against the plans the
-# wheel is built for. The wheel itself accepts polars>=1.38 (see python/pyproject.toml).
-# Move this with the Rust polars bump.
-polars>=1.43,<1.44
+# Polars and the sample-data generator's packages, at exact versions
+-r requirements-fixtures.txt
 
-# for building sample data
-numpy
-pyarrow
-fastavro
-openpyxl
+# scripts/docs renders index.html.j2
 jinja2
 
 # for running the pre-commit hooks

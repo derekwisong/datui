@@ -24,9 +24,22 @@ env:
   # slows compilation and inflates target/ (and therefore the cache) for nothing.
   CARGO_INCREMENTAL: "0"
 
+# Cache policy. rust-cache saves only from main: an entry written on a pull request
+# is readable by that pull request alone, and those entries pushed main's out of the
+# 10 GB budget. A pull request restores main's entry for its job. Each job variant
+# has its own shared-key: rust-cache names an entry by that key, the runner OS and
+# arch, the toolchain, CARGO*/RUST* env and the lockfile, so two jobs that build
+# different things under one key race to save it and one restores the other's
+# build. Workspace crates are left out of the cache (no cache-workspace-crates):
+# they change on every pull request. No sccache: most of what datui compiles is a
+# crate type it cannot cache, and its entries took budget for a handful of hits.
+# No setup-python pip cache either: it saves whenever its key misses, pull requests
+# included, and restoring it took longer than pip downloading the wheels.
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       is_dev_version: ${{ steps.version.outputs.is_dev_version }}
     env:
@@ -51,19 +64,23 @@ jobs:
         with:
           toolchain: stable
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
           # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
           # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
           # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
-          # indexes did not fetch, it fails there, for the right reason.
+          # indexes did not fetch, it fails there, for the right reason. A stalled mirror
+          # gets 30s per connection and three retries, and the step five minutes, so a
+          # hang fails here rather than holding the job until its own timeout.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: ci
-          cache-workspace-crates: true
+          shared-key: clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: ./scripts/code/check_format.sh
@@ -79,6 +96,7 @@ jobs:
   no-default-features:
     name: No default features
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,7 +108,9 @@ jobs:
           toolchain: stable
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
@@ -98,6 +118,7 @@ jobs:
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: no-default-features
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run clippy without default features
         run: ./scripts/dev/test.sh features none
@@ -109,6 +130,8 @@ jobs:
   fuzz:
     name: Fuzz corpus replay
     runs-on: ubuntu-latest
+    # A cold cache builds Polars with coverage instrumentation: about 20 minutes.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,7 +143,9 @@ jobs:
           toolchain: stable
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
@@ -133,6 +158,7 @@ jobs:
         with:
           shared-key: fuzz
           workspaces: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Installed from source rather than via a marketplace action: every action in
       # this repository is SHA-pinned, and adding one more third party to the supply
@@ -150,6 +176,7 @@ jobs:
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -167,7 +194,9 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y pkg-config libfontconfig1-dev
 
@@ -176,17 +205,19 @@ jobs:
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check
         run: cargo check --workspace --locked
 
+  # No `needs: [check]`: nothing passes between the two, so waiting on clippy only
+  # added its minute to every run.
   linux:
     runs-on: ubuntu-latest
-    needs: [check]
+    # Cold, this builds Polars from scratch: about 20 minutes.
+    timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -199,47 +230,76 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
-          # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
-          # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
-          # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
-          # indexes did not fetch, it fails there, for the right reason.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-wheel.txt
-            scripts/requirements-wheel-windows.txt
-            python/pyproject.toml
+          sudo apt-get install -y pkg-config libfontconfig1-dev
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: ci
-          cache-workspace-crates: true
+          shared-key: tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Create virtual environment and install requirements
+      # The fixtures are cached under a key holding every input to the generator:
+      #   - scripts/generate_sample_data.py, which reads no other file
+      #   - scripts/requirements-fixtures.txt: every package it imports, and what
+      #     those pull in, at exact versions
+      #   - the Python version setup-python resolved, and the runner OS and arch
+      #   - sample-data-v1, a schema version to bump by hand to discard them all
+      # No restore-keys: a near match is a stale one. A restore is checked against
+      # the manifest saved with it (every file name and SHA-256) and regenerated if
+      # anything differs. Saved from main only, before the tests run.
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Restore sample data
+        id: sample-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            tests/sample-data
+            ${{ runner.temp }}/sample-data.sha256
+          key: sample-data-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('scripts/generate_sample_data.py', 'scripts/requirements-fixtures.txt') }}
+
+      - name: Verify restored sample data
+        id: verify
+        if: steps.sample-data.outputs.cache-hit == 'true'
         run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r scripts/requirements.txt
-          .venv/bin/pip install -r scripts/requirements-wheel.txt
+          (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.actual"
+          if [ -s "$RUNNER_TEMP/sample-data.sha256" ] && cmp -s "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Restored sample data does not match its manifest; regenerating"
+            diff "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual" || true
+          fi
 
+      # The venv exists only for the generator. With the fixtures in place the tests
+      # never start Python.
       - name: Generate sample data
-        run: .venv/bin/python scripts/generate_sample_data.py
+        id: generate
+        if: steps.verify.outputs.ok != 'true'
+        run: |
+          rm -rf tests/sample-data
+          python -m venv .venv
+          .venv/bin/pip install --disable-pip-version-check -r scripts/requirements-fixtures.txt
+          .venv/bin/python scripts/generate_sample_data.py
+          (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.sha256"
 
-      - name: Test documentation navigation and builds
-        run: .venv/bin/python -m unittest discover -s scripts/docs -p 'test_*.py'
+      - name: Save sample data
+        if: steps.generate.outcome == 'success' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            tests/sample-data
+            ${{ runner.temp }}/sample-data.sha256
+          key: ${{ steps.sample-data.outputs.cache-primary-key }}
 
       - name: Build
         run: cargo build --workspace --tests --locked
@@ -259,32 +319,20 @@ jobs:
             echo "Manpage not found" && exit 1
           fi
 
-      - name: Bundle CLI for wheel
-        run: |
-          mkdir -p python/datui_bin
-          mv target/debug/datui python/datui_bin/
-          chmod +x python/datui_bin/datui
-          cp LICENSE python/LICENSE
-
-      - name: Build and install Python package
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
-        run: . .venv/bin/activate && cd python && maturin develop
-
-      - name: Run Python tests
-        run: . .venv/bin/activate && pytest python/tests/ -v
-
       - name: Show disk space after build
         run: df -h
 
-  windows:
-    runs-on: windows-latest
-    needs: [check]
-    if: needs.check.outputs.is_dev_version != 'true'
+  # The Python lane, beside linux rather than after it: the docs scripts' tests, and
+  # the wheel built and tested with the CLI it bundles. The CLI is built here with
+  # `-p datui`, the feature set that ships. Nothing comes over from linux: waiting
+  # for its artifact would put this lane back on the critical path.
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    # Cold, this builds Polars for the CLI and again for the extension.
+    timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -294,25 +342,83 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Install system dependencies
+        timeout-minutes: 5
+        run: |
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-wheel.txt
-            scripts/requirements-wheel-windows.txt
-            python/pyproject.toml
 
+      # The CLI and the extension build into one target/. The key hashes the root
+      # Cargo.lock only, so a change to crates/datui-pyo3/Cargo.lock alone rebuilds
+      # what moved until a root lockfile or toolchain change saves a fresh entry.
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: ci
-          cache-workspace-crates: true
+          shared-key: python
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Create virtual environment and install requirements
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r scripts/requirements.txt
+          .venv/bin/pip install -r scripts/requirements-wheel.txt
+
+      - name: Test documentation navigation and builds
+        run: .venv/bin/python -m unittest discover -s scripts/docs -p 'test_*.py'
+
+      - name: Build CLI
+        run: cargo build -p datui --locked
+
+      - name: Bundle CLI for wheel
+        run: |
+          mkdir -p python/datui_bin
+          mv target/debug/datui python/datui_bin/
+          chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
+
+      - name: Build and install Python package
+        run: . .venv/bin/activate && cd python && maturin develop
+
+      - name: Run Python tests
+        run: . .venv/bin/activate && pytest python/tests/ -v
+
+  windows:
+    runs-on: windows-latest
+    needs: [check]
+    if: needs.check.outputs.is_dev_version != 'true'
+    timeout-minutes: 120
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+
+      # Nightly's windows-tests and macos-tests keep this entry warm from main; keep
+      # their env and key in step with these jobs.
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Create virtual environment and install requirements
         run: |
@@ -360,10 +466,9 @@ jobs:
     runs-on: macos-latest
     needs: [check]
     if: needs.check.outputs.is_dev_version != 'true'
+    timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -373,25 +478,19 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-wheel.txt
-            scripts/requirements-wheel-windows.txt
-            python/pyproject.toml
 
+      # Nightly's windows-tests and macos-tests keep this entry warm from main; keep
+      # their env and key in step with these jobs.
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: ci
-          cache-workspace-crates: true
+          shared-key: tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Create virtual environment and install requirements
         run: |
@@ -439,28 +538,36 @@ jobs:
   # One context for the branch ruleset to require. The jobs above cannot be required
   # directly: windows and macos are skipped on a -dev version, and a required check
   # that never reports blocks the pull request forever rather than failing it. This
-  # job always runs, so it always reports, and it fails if anything it waits on
-  # failed or was cancelled. Skipped is not a failure -- that is the conditional
-  # platforms doing exactly what they were told.
+  # job always runs, so it always reports. It fails closed: every job must succeed,
+  # except that windows and macos may be skipped when check says the version is a
+  # -dev one. A failure, a cancellation, a timeout or any other skip fails it.
   #
   # Note this gates the CI workflow only. A job cannot wait on another workflow's
   # jobs, so Security's contexts (cargo-deny, zizmor) are required separately.
   ci-passed:
     name: CI passed
     runs-on: ubuntu-latest
-    needs: [check, no-default-features, fuzz, msrv, linux, windows, macos]
+    timeout-minutes: 5
+    needs: [check, no-default-features, fuzz, msrv, linux, python, windows, macos]
     if: always()
     steps:
-      - name: Check that every job passed or was skipped
+      - name: Check that every job passed or was skipped as intended
         # Through env, not interpolated into the script: every expansion in a `run:`
         # block is one zizmor flags, and the habit is worth more than the exception.
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "Job results: $RESULTS"
-          for result in $RESULTS; do
-            case "$result" in
-              success|skipped) ;;
-              *) echo "::error::A CI job reported '$result'"; exit 1 ;;
+          results=$(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$NEEDS")
+          dev=$(jq -r '.check.outputs.is_dev_version // ""' <<<"$NEEDS")
+          echo "$results"
+          [ -n "$results" ] || { echo "::error::No job results"; exit 1; }
+          failed=0
+          while read -r job result; do
+            case "$job:$result" in
+              *:success) ;;
+              windows:skipped|macos:skipped)
+                [ "$dev" = "true" ] || { echo "::error::$job was skipped, but check did not report a -dev version"; failed=1; } ;;
+              *) echo "::error::$job reported '$result'"; failed=1 ;;
             esac
-          done
+          done <<<"$results"
+          exit "$failed"

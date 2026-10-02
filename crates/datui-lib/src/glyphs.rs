@@ -938,8 +938,10 @@ static GLYPHS: OnceLock<Glyphs> = OnceLock::new();
 struct Environment {
     /// The first non-empty of `LC_ALL`, `LC_CTYPE`, `LANG`.
     locale: Option<String>,
-    /// `WT_SESSION` is set: Windows Terminal. Always false off Windows.
-    windows_terminal: bool,
+    /// A terminal that draws these glyphs whatever the code page: Windows
+    /// Terminal (`WT_SESSION`) or VS Code's (`TERM_PROGRAM=vscode`). Always false
+    /// off Windows.
+    unicode_terminal: bool,
     /// The console output code page. Always `None` off Windows.
     console_code_page: Option<u32>,
 }
@@ -959,7 +961,8 @@ impl Environment {
             let page = unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() };
             Self {
                 locale,
-                windows_terminal: std::env::var_os("WT_SESSION").is_some(),
+                unicode_terminal: std::env::var_os("WT_SESSION").is_some()
+                    || std::env::var_os("TERM_PROGRAM").is_some_and(|t| t == "vscode"),
                 console_code_page: (page != 0).then_some(page),
             }
         }
@@ -972,8 +975,8 @@ impl Environment {
 
     /// The rule. A locale variable decides when one is set, on every OS, so
     /// `LANG=C` means ASCII everywhere and MSYS2 shells on Windows count as
-    /// they do on Unix. Windows itself sets none: there, Windows Terminal
-    /// (whose consoles default to an OEM code page, but which ships fonts for
+    /// they do on Unix. Windows itself sets none: there, Windows Terminal or
+    /// VS Code (whose consoles default to an OEM code page, but which draw
     /// these glyphs) or a console switched to UTF-8 (`chcp 65001`, or the
     /// system "Use Unicode UTF-8" option) picks Unicode.
     fn is_utf8(&self) -> bool {
@@ -982,7 +985,7 @@ impl Environment {
                 let lower = value.to_ascii_lowercase();
                 lower.contains("utf-8") || lower.contains("utf8")
             }
-            None => self.windows_terminal || self.console_code_page == Some(CP_UTF8),
+            None => self.unicode_terminal || self.console_code_page == Some(CP_UTF8),
         }
     }
 }
@@ -990,10 +993,10 @@ impl Environment {
 /// Whether the terminal can be trusted with UTF-8.
 ///
 /// `LC_ALL` beats `LC_CTYPE` beats `LANG`, as in POSIX. With none of them set,
-/// Windows counts as UTF-8 under Windows Terminal or a UTF-8 console code
-/// page. A terminal that is not doing UTF-8 renders multi-byte characters as
-/// replacement boxes, so this is the signal that matters, not terminal
-/// capability, which says nothing about the font.
+/// Windows counts as UTF-8 under Windows Terminal, VS Code's terminal or a
+/// UTF-8 console code page. A terminal that is not doing UTF-8 renders
+/// multi-byte characters as replacement boxes, so this is the signal that
+/// matters, not terminal capability, which says nothing about the font.
 pub fn environment_is_utf8() -> bool {
     Environment::current().is_utf8()
 }
@@ -1439,9 +1442,9 @@ mod tests {
     /// none is set (#541).
     #[test]
     fn utf8_rule_reads_the_locale_then_the_windows_console() {
-        let env = |locale: Option<&str>, windows_terminal: bool, page: Option<u32>| Environment {
+        let env = |locale: Option<&str>, unicode_terminal: bool, page: Option<u32>| Environment {
             locale: locale.map(String::from),
-            windows_terminal,
+            unicode_terminal,
             console_code_page: page,
         };
         // Unix: the locale alone.
@@ -1449,7 +1452,7 @@ mod tests {
         assert!(env(Some("C.utf8"), false, None).is_utf8());
         assert!(!env(Some("C"), false, None).is_utf8());
         assert!(!env(None, false, None).is_utf8());
-        // Windows sets no locale: Windows Terminal or a UTF-8 code page.
+        // Windows sets no locale: Windows Terminal, VS Code or a UTF-8 code page.
         assert!(env(None, true, Some(437)).is_utf8());
         assert!(env(None, false, Some(CP_UTF8)).is_utf8());
         assert!(!env(None, false, Some(437)).is_utf8());
@@ -1464,7 +1467,7 @@ mod tests {
     #[test]
     fn unix_reads_no_windows_signals() {
         let current = Environment::current();
-        assert!(!current.windows_terminal);
+        assert!(!current.unicode_terminal);
         assert_eq!(current.console_code_page, None);
     }
 

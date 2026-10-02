@@ -58,6 +58,7 @@ and the ASCII set otherwise:
 |---|---|
 | `LC_ALL`, `LC_CTYPE` or `LANG` set (first non-empty wins) | Unicode if it names UTF-8 (`en_US.UTF-8`), else ASCII (`C`) |
 | None set, Windows Terminal (`WT_SESSION`) | Unicode |
+| None set, VS Code's terminal (`TERM_PROGRAM=vscode`) | Unicode |
 | None set, Windows console code page 65001 (`chcp 65001`) | Unicode |
 | None set, anything else | ASCII |
 

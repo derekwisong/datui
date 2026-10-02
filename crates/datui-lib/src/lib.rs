@@ -17362,9 +17362,17 @@ impl App {
             Some((streams, 0)) => {
                 format!("Files: {streams} Arrow streams, converted as they download\n")
             }
-            Some((streams, in_place)) => format!(
-                "Files: {streams} Arrow streams, converted as they download; {in_place} IPC files read in place\n"
-            ),
+            Some((streams, in_place)) => {
+                let streams = match streams {
+                    1 => "1 Arrow stream, converted as it downloads".to_string(),
+                    n => format!("{n} Arrow streams, converted as they download"),
+                };
+                let in_place = match in_place {
+                    1 => "1 IPC file read in place".to_string(),
+                    n => format!("{n} IPC files read in place"),
+                };
+                format!("Files: {streams}; {in_place}\n")
+            }
             None => String::new(),
         };
         format!(

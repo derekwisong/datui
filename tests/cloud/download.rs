@@ -687,7 +687,8 @@ fn only_the_streams_in_a_bucket_are_downloaded() {
     let asked = open_prefix(&mut app, &rx, "s3://lake/m/", dir.path(), None);
     let asked = asked.expect("the stream is put to the user");
     assert!(
-        asked.contains("1 Arrow streams, converted as they download; 1 IPC files read in place"),
+        asked
+            .contains("Files: 1 Arrow stream, converted as it downloads; 1 IPC file read in place"),
         "{asked}"
     );
     assert_eq!(app.error_message(), None);

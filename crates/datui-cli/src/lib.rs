@@ -340,7 +340,7 @@ pub struct Args {
     #[arg(long = "compression", value_enum, help_heading = "Reading")]
     pub compression: Option<CompressionFormat>,
 
-    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, or the name of a binary format spec such as acme.l2feed
+    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, or the name of a binary format spec such as acme.l2feed
     #[arg(long = "format", value_name = "FORMAT", value_parser = parse_format, help_heading = "Reading")]
     pub format: Option<FormatChoice>,
 

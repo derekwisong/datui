@@ -2338,6 +2338,7 @@ mod chart_prepare_tests {
             x_column: x.to_string(),
             y_columns: vec!["y".to_string()],
             row_limit: None,
+            envelope: true,
         }
     }
 
@@ -9629,6 +9630,9 @@ pub(crate) enum ChartRequest {
         x_column: String,
         y_columns: Vec<String>,
         row_limit: Option<usize>,
+        /// Draw each step's lowest and highest value: see
+        /// [`chart_data::prepare_chart_data`].
+        envelope: bool,
     },
     /// Only an x column is selected: its range gives the placeholder axis its bounds.
     XRange {
@@ -9704,6 +9708,9 @@ impl ChartRequest {
                         x_column,
                         y_columns,
                         row_limit,
+                        // A line is drawn from each step's lowest and highest value
+                        // rather than a sample; scatter and bar keep the sample.
+                        envelope: modal.chart_type == ChartType::Line,
                     }
                 })
             }
@@ -9750,9 +9757,12 @@ impl ChartRequest {
             Self::XY {
                 x_column,
                 y_columns,
+                envelope,
                 ..
             } => {
-                let r = chart_data::prepare_chart_data(lf, schema, x_column, y_columns, sampling)?;
+                let r = chart_data::prepare_chart_data(
+                    lf, schema, x_column, y_columns, sampling, *envelope,
+                )?;
                 ChartPrepared::XY(ChartCacheXY {
                     x_column: x_column.clone(),
                     y_columns: y_columns.clone(),

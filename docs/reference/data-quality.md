@@ -43,6 +43,7 @@ the same rows, so their count is the rows.
 | Nearly unique | Every row whose value repeats | Rows beyond one per value; more open | The most repeated value |
 | Missing in files, Type mismatch | Every row of the named files | Rows of those files | The files and the values a conflict hides |
 | Repeated key | Every row whose declared key another row also holds | Rows sharing a key value | |
+| Clipping, Runs of zeros | Every sample at full scale, or every exact zero, in the channel | Samples in the runs | Each channel's runs |
 | Any other | Rows matching the check | The finding's rows, or a range for grouped columns | |
 
 Rows open from the rows the run kept, in memory: no read, and the same rows
@@ -96,6 +97,9 @@ run finds nothing, the list is on the page under the coverage.
 | Numbers as text / Dates as text | Note | At least 95% of a text column parses as numbers or ISO dates |
 | Codes as text | Note | Whole numbers with leading zeros or a fixed width: a code, fine as text |
 | Nearly unique | Note | A whole-number or text column at least 95% unique whose values still repeat; a duplicate if it is a key |
+| Clipping | Problem | Audio: runs of 3 or more samples at full scale, the waveform cut flat at the limit |
+| Runs of zeros | Note | Audio: runs of exact zeros 10 ms or longer (16 samples at least): dropouts, or digital silence at the ends |
+| DC offset | Note | Audio: a channel whose mean is 1% of full scale or more from zero |
 | Unparsed times | Problem | Text read as time whose values the chosen format does not read; <kbd>Enter</kbd> opens their rows |
 | Single value | Note | One value in every row checked |
 | Repeated key | Problem | Rows sharing a value of the declared key; see [Column intent](#column-intent) |
@@ -589,6 +593,7 @@ data that has not changed.
 | Nearly unique | Non-null rows − distinct values, on exact profiles of whole-number and text columns only, reported when distinct values are at least 95% of non-null rows and at least one value repeats. That counts rows beyond one per value; the drill-in opens every row that shares one, which is always more |
 | Absent values | Rows held by files whose footer has no such column ÷ rows in the loaded source; read from footers, not values |
 | Type conflicts | Rows held by files that store the column in a type the scan cannot read ÷ rows in the loaded source; read from footers, not values |
+| Clipping, runs of zeros, DC offset | Audio files only, on a full run over the whole source or an untouched view: one more pass reads every sample of the file. A run at full scale is 3 or more samples at the most positive or negative value the valid bits allow, or at ±1.0 for float; a run of zeros is 10 ms or longer and at least 16 samples; the offset is the channel's mean ÷ full scale |
 | Segment null rate | Null cells ÷ (evaluated rows × profiled logical columns) in that segment |
 | Trend bar rate | Σ count ÷ Σ denominator over the bar's segments with sampled rows; rows per segment is Σ rows ÷ segments, a segment the sample missed counting zero sampled rows |
 | 95% interval | Wilson score interval at z = 1.96 on a bar's count of its denominator: centre (p + z²/2n) ÷ (1 + z²/n), half-width z·√(p(1−p)/n + z²/4n²) ÷ (1 + z²/n). It assumes a simple random sample; seeded runs of one file are clustered, so read it as a floor on the uncertainty there |

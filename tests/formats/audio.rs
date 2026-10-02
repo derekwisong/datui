@@ -284,3 +284,55 @@ fn a_compressed_wav_is_refused_by_name() {
     let err = app.error_message().unwrap_or_default();
     assert!(err.contains("mu-law"), "{err}");
 }
+
+/// A full Data Quality run over an audio file reads its samples whole: the clipped
+/// run, the run of silence and the offset on the second channel are found, and
+/// nothing on the clean first channel.
+#[test]
+fn data_quality_finds_clipping_silence_and_dc_offset() {
+    use datui::data_quality::{ObservationKind, QualityCompute};
+    let (mut app, rx) = open("tone.wav");
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    press(&mut app, KeyCode::Enter);
+    let plan = &mut app.analysis_modal.data_quality_plan;
+    plan.method = datui::sampling::SampleMethod::EveryRow;
+    plan.compute = QualityCompute::Full;
+    // A full scan asks first; the second Enter runs it.
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    let results = app
+        .analysis_modal
+        .data_quality_results
+        .as_ref()
+        .expect("the run finished");
+    let found = |kind: ObservationKind, column: &str| {
+        results
+            .observations
+            .iter()
+            .find(|o| o.kind == kind && o.column == column)
+            .cloned()
+    };
+    let clipping = found(ObservationKind::Clipping, "ch2").expect("clipping on ch2");
+    assert_eq!(clipping.affected_rows, 20);
+    assert!(
+        clipping.fact.starts_with("1 run of 3+ samples"),
+        "{}",
+        clipping.fact
+    );
+    let zeros = found(ObservationKind::ZeroRuns, "ch2").expect("silence on ch2");
+    assert_eq!(zeros.affected_rows, 500);
+    let dc = found(ObservationKind::DcOffset, "ch2").expect("an offset on ch2");
+    assert!(dc.fact.contains("% of full scale"), "{}", dc.fact);
+    for kind in [
+        ObservationKind::Clipping,
+        ObservationKind::ZeroRuns,
+        ObservationKind::DcOffset,
+    ] {
+        assert!(
+            found(kind, "ch1").is_none(),
+            "{kind:?} on the clean channel"
+        );
+    }
+}

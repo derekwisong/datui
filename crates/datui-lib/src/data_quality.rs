@@ -848,6 +848,8 @@ pub enum QualityStage {
     ProfilingSegments,
     ComputingIntervals,
     CheckingSharedNulls,
+    /// An audio file's samples, read whole for clipping, runs of zeros and DC offset.
+    CheckingSignal,
     Assembling,
 }
 
@@ -868,6 +870,7 @@ impl QualityStage {
             Self::ProfilingSegments => "Profiling segments",
             Self::ComputingIntervals => "Computing intervals",
             Self::CheckingSharedNulls => "Checking columns missing together",
+            Self::CheckingSignal => "Checking the signal",
             Self::Assembling => "Assembling the report",
         }
     }
@@ -1608,6 +1611,12 @@ pub enum ObservationKind {
     OutOfRange,
     /// Text declared to read as a number that does not.
     UnparsedNumber,
+    /// Audio samples in runs at full scale: the waveform cut flat at the limit.
+    Clipping,
+    /// Audio samples in long runs of exact zeros: dropouts, or digital silence.
+    ZeroRuns,
+    /// An audio channel whose mean sits away from zero.
+    DcOffset,
 }
 
 impl ObservationKind {
@@ -1631,6 +1640,9 @@ impl ObservationKind {
             Self::NotAllowed => "Not allowed",
             Self::OutOfRange => "Out of range",
             Self::UnparsedNumber => "Unparsed number",
+            Self::Clipping => "Clipping",
+            Self::ZeroRuns => "Zero runs",
+            Self::DcOffset => "DC offset",
         }
     }
 
@@ -1663,6 +1675,11 @@ impl ObservationKind {
             Self::UnparsedNumber => {
                 "Non-null text that does not read as the number / non-null values"
             }
+            Self::Clipping => "Samples in runs of 3 or more at full scale / samples",
+            Self::ZeroRuns => {
+                "Samples in runs of exact zeros 10 ms or longer (16 samples at least) / samples"
+            }
+            Self::DcOffset => "The channel's mean / full scale; noted from 1%",
         }
     }
 }
@@ -1697,6 +1714,9 @@ pub struct QualityObservation {
     pub files: Vec<QualityFileEvidence>,
     /// The format an [`ObservationKind::UnparsedTime`] measurement read the text with.
     pub time_format: Option<TimeInterpretation>,
+    /// The values at or past which an audio sample is at full scale, for an
+    /// [`ObservationKind::Clipping`] measurement's rows.
+    pub full_scale: Option<(f64, f64)>,
 }
 
 impl QualityObservation {
@@ -1756,6 +1776,12 @@ impl QualityObservation {
             ObservationKind::UnparsedTime => {
                 self.time_format.as_ref().map(TimeInterpretation::unparsed)
             }
+            // Every sample at full scale, in a run or not: the runs are what is
+            // counted, and the samples around them are what a look wants.
+            ObservationKind::Clipping => self
+                .full_scale
+                .map(|(low, high)| value.clone().lt_eq(lit(low)).or(value.gt_eq(lit(high)))),
+            ObservationKind::ZeroRuns => Some(value.eq(lit(0))),
             // Absent and conflicting rows are named by their files, not by a predicate
             // over values: the column is not in those rows to be tested.
             // Declared rules find their rows through what the run measured them with:
@@ -1769,7 +1795,8 @@ impl QualityObservation {
             | ObservationKind::RequiredMissing
             | ObservationKind::NotAllowed
             | ObservationKind::OutOfRange
-            | ObservationKind::UnparsedNumber => None,
+            | ObservationKind::UnparsedNumber
+            | ObservationKind::DcOffset => None,
         }
     }
 }
@@ -3696,6 +3723,7 @@ fn identity_observations(
             normalized_category: None,
             files: Vec::new(),
             time_format: None,
+            full_scale: None,
         });
     }
     observations.extend(variants.iter().map(|group| QualityObservation {
@@ -3712,6 +3740,7 @@ fn identity_observations(
         normalized_category: Some(group.normalized.clone()),
         files: Vec::new(),
         time_format: None,
+        full_scale: None,
     }));
     observations
 }
@@ -4951,6 +4980,7 @@ fn interpretation_observations(
                 normalized_category: None,
                 files: Vec::new(),
                 time_format: Some(format.clone()),
+                full_scale: None,
             })
         })
         .collect()
@@ -5547,6 +5577,7 @@ fn drift_observations(
                 normalized_category: None,
                 files,
                 time_format: None,
+                full_scale: None,
             });
         }
     }
@@ -5593,6 +5624,120 @@ fn read_conflict_examples(
     }
 }
 
+/// Read every sample of `audio` once and add what a recording's quality turns on to
+/// `results`: clipping, runs of exact zeros, and DC offset, per channel. Only for a
+/// full run whose scope is every frame of the file, which the caller decides: the
+/// read is of the file, not of the view.
+pub fn add_signal_observations(
+    results: &mut DataQualityResults,
+    audio: &crate::audio::AudioSource,
+    watch: &QualityWatch,
+) -> Result<()> {
+    watch.stage(QualityStage::CheckingSignal, true, true)?;
+    let reports = audio
+        .signal_report(&|| watch.cancelled())
+        .ok_or_else(|| Report::msg(crate::sampling::CANCELLED))?;
+    results
+        .observations
+        .extend(signal_observations(&reports, audio.header().sample_rate));
+    Ok(())
+}
+
+/// Observations from [`crate::audio::SignalReport`]s: a channel with runs at full
+/// scale, runs of exact zeros, or a mean 1% of full scale or more from zero.
+pub fn signal_observations(
+    reports: &[crate::audio::SignalReport],
+    sample_rate: f64,
+) -> Vec<QualityObservation> {
+    let mut observations = Vec::new();
+    let samples = |n: u64| {
+        format!(
+            "{} {}",
+            crate::numfmt::group_chrome(n as usize),
+            if n == 1 { "sample" } else { "samples" }
+        )
+    };
+    let runs = |n: u64| if n == 1 { "run" } else { "runs" };
+    for report in reports {
+        let evaluated = report.frames as usize;
+        let push = |observations: &mut Vec<QualityObservation>,
+                    kind: ObservationKind,
+                    affected: u64,
+                    fact: String,
+                    full_scale: Option<(f64, f64)>| {
+            observations.push(QualityObservation {
+                kind,
+                column: report.channel.clone(),
+                affected_rows: affected as usize,
+                evaluated_rows: evaluated,
+                fact,
+                normalized_category: None,
+                files: Vec::new(),
+                time_format: None,
+                full_scale,
+            });
+        };
+        if report.clip_runs > 0 {
+            push(
+                &mut observations,
+                ObservationKind::Clipping,
+                report.in_clip_runs,
+                format!(
+                    "{} {} of {}+ samples at full scale; longest {}",
+                    crate::numfmt::group_chrome(report.clip_runs as usize),
+                    runs(report.clip_runs),
+                    report.clip_run_min,
+                    samples(report.longest_clip)
+                ),
+                Some(report.full_scale),
+            );
+        }
+        if report.zero_runs > 0 {
+            push(
+                &mut observations,
+                ObservationKind::ZeroRuns,
+                report.in_zero_runs,
+                format!(
+                    "{} {} of exact zeros, {}+ samples; longest {} ({})",
+                    crate::numfmt::group_chrome(report.zero_runs as usize),
+                    runs(report.zero_runs),
+                    report.zero_run_min,
+                    samples(report.longest_zeros),
+                    crate::widgets::info::clock(report.longest_zeros as f64 / sample_rate)
+                ),
+                None,
+            );
+        }
+        let (low, high) = report.full_scale;
+        let half_range = (high - low) / 2.0;
+        let share = if half_range > 0.0 {
+            report.mean.abs() / half_range
+        } else {
+            0.0
+        };
+        if share >= DC_OFFSET_SHARE {
+            // Integers in their own units; float and normalized to four places.
+            let mean = if half_range > 2.0 {
+                format!("{:+.1}", report.mean)
+            } else {
+                format!("{:+.4}", report.mean)
+            };
+            push(
+                &mut observations,
+                ObservationKind::DcOffset,
+                report.frames,
+                format!("mean {mean} ({:.1}% of full scale)", share * 100.0),
+                None,
+            );
+        }
+    }
+    observations
+}
+
+/// A channel's mean, as a share of full scale, from which it is called DC offset: 1%,
+/// -40 dBFS, well above any dither or noise floor.
+const DC_OFFSET_SHARE: f64 = 0.01;
+
 fn observation(
     kind: ObservationKind,
     profile: &ColumnQualityProfile,
@@ -5608,6 +5753,7 @@ fn observation(
         normalized_category: None,
         files: Vec::new(),
         time_format: None,
+        full_scale: None,
     }
 }
 
@@ -5841,6 +5987,7 @@ mod tests {
                 normalized_category: None,
                 files: Vec::new(),
                 time_format: None,
+                full_scale: None,
             };
             let rows = fixture()
                 .filter(observation.evidence_predicate().unwrap())
@@ -5857,6 +6004,7 @@ mod tests {
             normalized_category: Some("north".to_string()),
             files: Vec::new(),
             time_format: None,
+            full_scale: None,
         };
         let rows = df!("category" => &["North", " north ", "NORTH"])
             .unwrap()

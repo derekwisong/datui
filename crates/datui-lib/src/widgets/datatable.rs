@@ -6469,6 +6469,19 @@ impl DataTableState {
             .map(|(source, _)| source)
     }
 
+    /// The audio file a data-quality run over `scope` reads every frame of, for the
+    /// checks that read the samples whole (clipping, runs of zeros, DC offset): the
+    /// whole source, or a view with nothing applied.
+    pub(crate) fn audio_for_quality(
+        &self,
+        scope: &crate::data_quality::QualityScope,
+    ) -> Option<Arc<crate::audio::AudioSource>> {
+        use crate::data_quality::QualityScope;
+        matches!(scope, QualityScope::WholeSource | QualityScope::CurrentView)
+            .then(|| self.audio_window().cloned())
+            .flatten()
+    }
+
     pub fn not_the_table(&self) -> Option<&'static str> {
         self.not_the_table
     }

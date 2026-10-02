@@ -23451,6 +23451,10 @@ impl App {
                         (lf, source, rows)
                     };
                     let streaming = state.polars_streaming();
+                    // An audio file's signal checks read its samples whole: a full run's.
+                    let audio = (plan.compute == data_quality::QualityCompute::Full)
+                        .then(|| state.audio_for_quality(&plan.scope))
+                        .flatten();
                     let view_generation = state.len_generation();
                     let dataset_generation = self.dataset_generation;
                     let kept_entry = self.kept_quality_entry(&plan.sample());
@@ -23558,6 +23562,17 @@ impl App {
                             kept.as_deref(),
                             &watch,
                         );
+                        let results = match (results, audio) {
+                            (Ok(mut results), Some(audio)) => {
+                                crate::data_quality::add_signal_observations(
+                                    &mut results,
+                                    &audio,
+                                    &watch,
+                                )
+                                .map(|()| results)
+                            }
+                            (results, _) => results,
+                        };
                         // Let go before the answer goes out: a `d` handled as soon
                         // as it lands must find the app's handle the last one.
                         drop(held);

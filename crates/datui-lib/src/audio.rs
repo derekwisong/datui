@@ -821,7 +821,8 @@ fn read_comm(body: &[u8], aifc: bool) -> Result<Comm> {
 
 /// An open audio file: its header and a map of its bytes, read a window at a time.
 pub struct AudioSource {
-    file: File,
+    /// The file the map is of, for [`Self::extend`]; `None` for bytes given whole.
+    file: Option<File>,
     map: Mmap,
     header: AudioHeader,
     frames: u64,
@@ -858,7 +859,24 @@ impl AudioSource {
         let header = read_header(&map)?;
         let frames = header.frames(map.len() as u64).min(MAX_FRAMES);
         Ok(Self {
-            file,
+            file: Some(file),
+            map,
+            header,
+            frames,
+            normalize,
+        })
+    }
+
+    /// An audio file from its bytes, copied into an anonymous map: for the fuzz target,
+    /// which has bytes and no file.
+    pub fn from_bytes(bytes: &[u8], normalize: bool) -> Result<Self> {
+        let header = read_header(bytes)?;
+        let mut copy = memmap2::MmapMut::map_anon(bytes.len())?;
+        copy.copy_from_slice(bytes);
+        let map = copy.make_read_only()?;
+        let frames = header.frames(map.len() as u64).min(MAX_FRAMES);
+        Ok(Self {
+            file: None,
             map,
             header,
             frames,
@@ -907,8 +925,11 @@ impl AudioSource {
     /// cap; a placeholder grows with the file. This is what following a recording
     /// needs: the header's size says nothing until the recorder stops.
     pub fn extend(&mut self) -> Result<u64> {
+        let Some(file) = &self.file else {
+            return Ok(0);
+        };
         // SAFETY: as in `open`.
-        let map = unsafe { Mmap::map(&self.file)? };
+        let map = unsafe { Mmap::map(file)? };
         let frames = self.header.frames(map.len() as u64).min(MAX_FRAMES);
         let added = frames.saturating_sub(self.frames);
         self.map = map;
@@ -1012,78 +1033,36 @@ impl AudioSource {
         let be = h.big_endian;
         let scale = 1.0 / h.sample.full_scale() as f32;
         let bytes = frames.map(move |f| f.and_then(|f| self.sample_at(f, channel)));
+        let sample = h.sample;
         macro_rules! int_column {
-            ($chunked:ty, $t:ty, $decode:expr) => {{
-                let decode = $decode;
+            ($chunked:ty, $t:ty) => {{
                 if self.normalize {
                     Float32Chunked::from_iter_options(
                         name,
-                        bytes.map(|b| b.map(|b| decode(b) as f32 * scale)),
+                        bytes.map(|b| b.map(|b| int_sample(sample, be, b) as f32 * scale)),
                     )
                     .into_column()
                 } else {
-                    <$chunked>::from_iter_options(name, bytes.map(|b| b.map(|b| decode(b) as $t)))
-                        .into_column()
+                    <$chunked>::from_iter_options(
+                        name,
+                        bytes.map(|b| b.map(|b| int_sample(sample, be, b) as $t)),
+                    )
+                    .into_column()
                 }
             }};
         }
-        match h.sample {
-            Sample::U8 => int_column!(Int8Chunked, i8, |b: &[u8]| (b[0] ^ 0x80) as i8 as i32),
-            Sample::I8 => int_column!(Int8Chunked, i8, |b: &[u8]| b[0] as i8 as i32),
-            Sample::I16 => int_column!(Int16Chunked, i16, |b: &[u8]| {
-                let a = [b[0], b[1]];
-                (if be {
-                    i16::from_be_bytes(a)
-                } else {
-                    i16::from_le_bytes(a)
-                }) as i32
-            }),
-            Sample::I24 => int_column!(Int32Chunked, i32, |b: &[u8]| {
-                let a = if be {
-                    [b[2], b[1], b[0], 0]
-                } else {
-                    [b[0], b[1], b[2], 0]
-                };
-                // Sign-extended by shifting the top byte into place and back.
-                i32::from_le_bytes(a) << 8 >> 8
-            }),
-            Sample::I32 => int_column!(Int32Chunked, i32, |b: &[u8]| {
-                let a = [b[0], b[1], b[2], b[3]];
-                if be {
-                    i32::from_be_bytes(a)
-                } else {
-                    i32::from_le_bytes(a)
-                }
-            }),
-            Sample::F32 => Float32Chunked::from_iter_options(
-                name,
-                bytes.map(|b| {
-                    b.map(|b| {
-                        let a = [b[0], b[1], b[2], b[3]];
-                        if be {
-                            f32::from_be_bytes(a)
-                        } else {
-                            f32::from_le_bytes(a)
-                        }
-                    })
-                }),
-            )
-            .into_column(),
-            Sample::F64 => Float64Chunked::from_iter_options(
-                name,
-                bytes.map(|b| {
-                    b.map(|b| {
-                        let mut a = [0u8; 8];
-                        a.copy_from_slice(b);
-                        if be {
-                            f64::from_be_bytes(a)
-                        } else {
-                            f64::from_le_bytes(a)
-                        }
-                    })
-                }),
-            )
-            .into_column(),
+        match sample {
+            Sample::U8 | Sample::I8 => int_column!(Int8Chunked, i8),
+            Sample::I16 => int_column!(Int16Chunked, i16),
+            Sample::I24 | Sample::I32 => int_column!(Int32Chunked, i32),
+            Sample::F32 => {
+                Float32Chunked::from_iter_options(name, bytes.map(|b| b.map(|b| f32_sample(be, b))))
+                    .into_column()
+            }
+            Sample::F64 => {
+                Float64Chunked::from_iter_options(name, bytes.map(|b| b.map(|b| f64_sample(be, b))))
+                    .into_column()
+            }
         }
     }
 
@@ -1126,6 +1105,137 @@ impl AudioSource {
         base.select(exprs)
     }
 
+    /// The lowest and highest value a channel's column can hold, in the column's own
+    /// units: the most negative and most positive integer the valid bits allow, or
+    /// [-1, 1] for float. A sample at either is at full scale.
+    pub fn full_scale_bounds(&self) -> (f64, f64) {
+        let h = &self.header;
+        if h.sample.is_float() {
+            return (-1.0, 1.0);
+        }
+        let container = (h.sample.bytes() * 8) as u32;
+        let valid = (h.valid_bits as u32).clamp(1, container);
+        // Valid bits are the high ones: a 20-bit sample in a 24-bit container steps by 16.
+        let step = (1u64 << (container - valid)) as f64;
+        let low = -h.sample.full_scale();
+        let high = h.sample.full_scale() - step;
+        if self.normalize {
+            let scale = h.sample.full_scale();
+            (low / scale, (high / scale) as f32 as f64)
+        } else {
+            (low, high)
+        }
+    }
+
+    /// One pass over every frame, a channel at a time per frame, measuring what a
+    /// recording's quality turns on: runs of samples at full scale (clipping), runs of
+    /// exact zeros (dropouts and digital silence), and each channel's mean (DC offset).
+    /// Memory stays flat however long the file is. `stop` is asked every million frames;
+    /// `None` when it says to stop.
+    pub fn signal_report(&self, stop: &dyn Fn() -> bool) -> Option<Vec<SignalReport>> {
+        let h = &self.header;
+        let channels = h.channels as usize;
+        let (low, high) = self.full_scale_bounds();
+        let scale = if self.normalize && !h.sample.is_float() {
+            1.0 / h.sample.full_scale()
+        } else {
+            1.0
+        };
+        let zero_run = (h.sample_rate / 100.0).round().max(16.0) as u64;
+        let mut reports: Vec<SignalReport> = h
+            .channel_names
+            .iter()
+            .map(|name| SignalReport {
+                channel: name.clone(),
+                frames: self.frames,
+                full_scale: (low, high),
+                clip_run_min: CLIP_RUN,
+                zero_run_min: zero_run,
+                ..SignalReport::default()
+            })
+            .collect();
+        let mut clip_len = vec![0u64; channels];
+        let mut zero_len = vec![0u64; channels];
+        let mut sums = vec![0f64; channels];
+        let decode = |b: &[u8]| -> f64 {
+            let be = h.big_endian;
+            let v = match h.sample {
+                Sample::F32 => f32_sample(be, b) as f64,
+                Sample::F64 => f64_sample(be, b),
+                int => int_sample(int, be, b) as f64,
+            };
+            v * scale
+        };
+        let end_run =
+            |len: &mut u64, min: u64, runs: &mut u64, within: &mut u64, longest: &mut u64| {
+                if *len >= min {
+                    *runs += 1;
+                    *within += *len;
+                    *longest = (*longest).max(*len);
+                }
+                *len = 0;
+            };
+        for frame in 0..self.frames {
+            if frame % (1 << 20) == 0 && stop() {
+                return None;
+            }
+            for c in 0..channels {
+                let Some(bytes) = self.sample_at(frame, c) else {
+                    continue;
+                };
+                let v = decode(bytes);
+                let r = &mut reports[c];
+                if !v.is_finite() {
+                    continue;
+                }
+                sums[c] += v;
+                if v <= low || v >= high {
+                    r.at_full_scale += 1;
+                    clip_len[c] += 1;
+                } else {
+                    end_run(
+                        &mut clip_len[c],
+                        CLIP_RUN,
+                        &mut r.clip_runs,
+                        &mut r.in_clip_runs,
+                        &mut r.longest_clip,
+                    );
+                }
+                if v == 0.0 {
+                    zero_len[c] += 1;
+                } else {
+                    end_run(
+                        &mut zero_len[c],
+                        zero_run,
+                        &mut r.zero_runs,
+                        &mut r.in_zero_runs,
+                        &mut r.longest_zeros,
+                    );
+                }
+            }
+        }
+        for (c, r) in reports.iter_mut().enumerate() {
+            end_run(
+                &mut clip_len[c],
+                CLIP_RUN,
+                &mut r.clip_runs,
+                &mut r.in_clip_runs,
+                &mut r.longest_clip,
+            );
+            end_run(
+                &mut zero_len[c],
+                zero_run,
+                &mut r.zero_runs,
+                &mut r.in_zero_runs,
+                &mut r.longest_zeros,
+            );
+            if self.frames > 0 {
+                r.mean = sums[c] / self.frames as f64;
+            }
+        }
+        Some(reports)
+    }
+
     /// The markers as a table: `id`, `sample`, `time`, `label`, and `length` when any
     /// marker is a region.
     pub fn markers_frame(&self) -> PolarsResult<DataFrame> {
@@ -1154,6 +1264,89 @@ impl AudioSource {
         }
         DataFrame::new(m.len(), columns)
     }
+}
+
+/// An integer sample's value from its bytes. 8-bit WAV is unsigned around 128 and is
+/// shown signed; 24-bit is sign-extended. Float samples are not integers: 0.
+fn int_sample(sample: Sample, be: bool, b: &[u8]) -> i32 {
+    match sample {
+        Sample::U8 => (b[0] ^ 0x80) as i8 as i32,
+        Sample::I8 => b[0] as i8 as i32,
+        Sample::I16 => {
+            let a = [b[0], b[1]];
+            (if be {
+                i16::from_be_bytes(a)
+            } else {
+                i16::from_le_bytes(a)
+            }) as i32
+        }
+        Sample::I24 => {
+            let a = if be {
+                [b[2], b[1], b[0], 0]
+            } else {
+                [b[0], b[1], b[2], 0]
+            };
+            // Sign-extended by shifting the top byte into place and back.
+            i32::from_le_bytes(a) << 8 >> 8
+        }
+        Sample::I32 => {
+            let a = [b[0], b[1], b[2], b[3]];
+            if be {
+                i32::from_be_bytes(a)
+            } else {
+                i32::from_le_bytes(a)
+            }
+        }
+        Sample::F32 | Sample::F64 => 0,
+    }
+}
+
+fn f32_sample(be: bool, b: &[u8]) -> f32 {
+    let a = [b[0], b[1], b[2], b[3]];
+    if be {
+        f32::from_be_bytes(a)
+    } else {
+        f32::from_le_bytes(a)
+    }
+}
+
+fn f64_sample(be: bool, b: &[u8]) -> f64 {
+    let mut a = [0u8; 8];
+    a.copy_from_slice(&b[..8]);
+    if be {
+        f64::from_be_bytes(a)
+    } else {
+        f64::from_le_bytes(a)
+    }
+}
+
+/// The shortest run of samples at full scale that counts as clipping. One sample
+/// there is a loud peak; three in a row is the waveform flattened against the limit.
+pub const CLIP_RUN: u64 = 3;
+
+/// What [`AudioSource::signal_report`] measured of one channel.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SignalReport {
+    pub channel: String,
+    pub frames: u64,
+    /// The values at or past which a sample is at full scale, in the column's units.
+    pub full_scale: (f64, f64),
+    /// Samples at full scale, in runs or not.
+    pub at_full_scale: u64,
+    /// The shortest run counted, and the runs of at least that many samples at full
+    /// scale, the samples in them, and the longest.
+    pub clip_run_min: u64,
+    pub clip_runs: u64,
+    pub in_clip_runs: u64,
+    pub longest_clip: u64,
+    /// The shortest run of exact zeros counted (10 ms, and at least 16 samples), and
+    /// the runs that long, the samples in them, and the longest.
+    pub zero_run_min: u64,
+    pub zero_runs: u64,
+    pub in_zero_runs: u64,
+    pub longest_zeros: u64,
+    /// The channel's mean, in the column's units.
+    pub mean: f64,
 }
 
 /// A column of [`AudioSource::schema`].
@@ -1691,5 +1884,46 @@ mod tests {
         assert_eq!(ints(&tail, "ch1"), [0, 1234, 0, 0]);
         let window = source.window(frames - 3, 1, None).unwrap();
         assert_eq!(ints(&window, "ch1"), [1234]);
+    }
+
+    #[test]
+    fn the_signal_report_counts_runs_at_full_scale_and_of_zeros_and_the_mean() {
+        // 1 kHz mono: 100 samples of 1,000, a run of 4 at full scale, a single sample
+        // at full scale, 20 zeros (the shortest counted run is 16 samples), 10 more.
+        let mut values = vec![1000i16; 100];
+        values.extend([i16::MAX; 4]);
+        values.push(500);
+        values.push(i16::MIN);
+        values.extend([0; 20]);
+        values.extend([1000; 10]);
+        let bytes = wav(&[
+            chunk(b"fmt ", &fmt(1, 1, 1000, 16)),
+            chunk(b"data", &i16s(&values)),
+        ]);
+        let (_f, source) = open(&bytes, false);
+        let report = &source.signal_report(&|| false).unwrap()[0];
+        assert_eq!(report.full_scale, (-32768.0, 32767.0));
+        assert_eq!(report.at_full_scale, 5);
+        assert_eq!(
+            (report.clip_runs, report.in_clip_runs, report.longest_clip),
+            (1, 4, 4)
+        );
+        assert_eq!(report.zero_run_min, 16);
+        assert_eq!(
+            (report.zero_runs, report.in_zero_runs, report.longest_zeros),
+            (1, 20, 20)
+        );
+        let sum: f64 = values.iter().map(|&v| v as f64).sum();
+        assert!((report.mean - sum / values.len() as f64).abs() < 1e-9);
+
+        // Normalized, the bounds and the mean are in the column's units.
+        let (_f, source) = open(&bytes, true);
+        let report = &source.signal_report(&|| false).unwrap()[0];
+        assert_eq!(report.full_scale.0, -1.0);
+        assert_eq!(report.clip_runs, 1);
+        assert!(report.mean < 1.0);
+
+        // A stop is honored.
+        assert!(source.signal_report(&|| true).is_none());
     }
 }

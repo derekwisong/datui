@@ -939,6 +939,7 @@ impl IntentResults {
                 normalized_category: None,
                 files: Vec::new(),
                 time_format: None,
+                full_scale: None,
             });
         };
         if !self.measured {

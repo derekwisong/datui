@@ -1589,31 +1589,50 @@ fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, 
     Some((file_of(start), file_of(end - 1).min(files - 1)))
 }
 
+/// A source that reads a window at its first row, rather than from row 0 up.
+#[derive(Clone, Copy)]
+enum DirectWindow<'a> {
+    /// Polars gives an anonymous scan no row offset, so a slice deep in the view would
+    /// decode every row before it; the records start the window there instead.
+    Records(&'a crate::fixed_records::FixedRecords),
+    /// The in-memory engine builds the plan's frame index from row 0 up to a slice's
+    /// end, so the window at the end of a long recording would cost 4 bytes per frame
+    /// before it.
+    Audio(&'a Arc<crate::audio::AudioSource>),
+}
+
+impl<'a> DirectWindow<'a> {
+    fn of(
+        records: Option<&'a crate::fixed_records::FixedRecords>,
+        audio: Option<&'a Arc<crate::audio::AudioSource>>,
+    ) -> Option<Self> {
+        records.map(Self::Records).or(audio.map(Self::Audio))
+    }
+}
+
 /// Rows `[start, start + len)` of `lf` as `all_columns`. With `files` counted, a scan
 /// of only the files holding them, so a window deep in a remote dataset does not read
-/// every file before it. With `audio`, the frames read straight from the file: the
-/// in-memory engine builds the plan's frame index from row 0 up to a slice's end, so
-/// the window at the end of a long recording would cost 4 bytes per frame before it.
+/// every file before it. With `direct`, the rows read straight from the source.
 fn window_of(
     lf: &LazyFrame,
     files: Option<&RemoteFiles>,
-    records: Option<&crate::fixed_records::FixedRecords>,
-    audio: Option<&Arc<crate::audio::AudioSource>>,
+    direct: Option<DirectWindow<'_>>,
     read_as_text: &[PlSmallStr],
     start: usize,
     len: usize,
     all_columns: Vec<Expr>,
 ) -> PolarsResult<LazyFrame> {
-    // Polars gives an anonymous scan no row offset, so a slice deep in the view would
-    // decode every row before it; the records start the window there instead.
-    if let Some(records) = records {
-        return Ok(records.window(start, len)?.select(all_columns));
-    }
-    if let Some(audio) = audio {
-        return Ok(audio
-            .window(start as u64, len as u64, None)?
-            .lazy()
-            .select(all_columns));
+    match direct {
+        Some(DirectWindow::Records(records)) => {
+            return Ok(records.window(start, len)?.select(all_columns));
+        }
+        Some(DirectWindow::Audio(audio)) => {
+            return Ok(audio
+                .window(start as u64, len as u64, None)?
+                .lazy()
+                .select(all_columns));
+        }
+        None => {}
     }
     if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
         && let Some((first, last)) = files_holding(offsets, start, len)
@@ -1689,8 +1708,7 @@ impl ViewRows {
         window_of(
             &self.lf,
             self.files.as_ref(),
-            self.records.as_deref(),
-            self.audio.as_ref(),
+            DirectWindow::of(self.records.as_deref(), self.audio.as_ref()),
             &self.read_as_text,
             start,
             len,
@@ -6867,8 +6885,10 @@ impl DataTableState {
         window_of(
             &self.lf,
             self.remote_files.as_ref().filter(|_| self.remote_window()),
-            self.fixed_window_now().map(|r| r.as_ref()),
-            self.audio_window(),
+            DirectWindow::of(
+                self.fixed_window_now().map(|r| r.as_ref()),
+                self.audio_window(),
+            ),
             &self.read_as_text,
             start,
             len,

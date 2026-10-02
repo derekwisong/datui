@@ -7119,6 +7119,15 @@ fn test_the_rows_left_out_are_the_conflicting_files_own_wherever_they_sit() {
         left_out.summary,
         "n is not read from 3 files, so the 4 rows there are left out of the sort"
     );
+    // Copy as Python cannot leave them out, so it says so and stops there.
+    let script = app.python_script(app.data_table_state.as_ref().unwrap());
+    assert!(
+        script.contains(
+            "    # n is not read from 3 files, so the 4 rows there are left out of the sort\n    \
+             # .sort("
+        ),
+        "{script}"
+    );
 }
 
 /// Clearing the sort brings the rows back and takes the note with it, and a sort on a

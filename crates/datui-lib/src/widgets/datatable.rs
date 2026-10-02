@@ -9140,6 +9140,16 @@ impl DataTableState {
         if !self.filters.is_empty() {
             steps.push(Step::Filter(self.typed_filters()));
         }
+        // Rows of files that hold a filtered or sorted column as another type: datui
+        // leaves them out by where they were read, which a script cannot know.
+        let left_out: Vec<String> = self
+            .view_exclusions()
+            .into_iter()
+            .map(|(_, note)| note.summary)
+            .collect();
+        if !left_out.is_empty() {
+            steps.push(Step::Unreproducible(left_out.join("; ")));
+        }
         if !self.sort_columns.is_empty() {
             steps.push(Step::Sort {
                 columns: self.sort_columns.clone(),

@@ -198,6 +198,10 @@ Lines that are not NMEA are skipped; the Info panel's Notes tab counts them,
 and the sentences that fail their checksum, and lists the other tables in the
 log with how many sentences each has.
 
+`--table` is for any file that holds several tables. NMEA logs are the only
+ones so far; any other file opened with it is refused. Excel workbooks take
+`--sheet`.
+
 **GPX** opens as one row per `trkpt`, `rtept` and `wpt`:
 
 | Column | Holds |

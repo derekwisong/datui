@@ -217,6 +217,25 @@ fn table_opens_one_sentence_type() {
     );
     let message = app.error_message().expect("an unknown table is refused");
     assert!(message.contains("fixes, GGA, RMC"), "{message}");
+
+    // A file of one table is refused too, rather than opened as if it were the table.
+    for path in [
+        gps().join("ride.gpx"),
+        PathBuf::from("tests/sample-data/people.parquet"),
+    ] {
+        let (options, _) = scratch();
+        let (app, _rx) = open_with(
+            path,
+            OpenOptions {
+                table: Some("GGA".to_string()),
+                ..options
+            },
+        );
+        let message = app
+            .error_message()
+            .expect("--table on one table is refused");
+        assert!(message.contains("holds one table"), "{message}");
+    }
 }
 
 #[test]

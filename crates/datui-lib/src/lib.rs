@@ -18737,6 +18737,16 @@ impl App {
             });
         report.format = effective_format;
 
+        // Refused rather than ignored: a file of one table opened with `--table` would
+        // otherwise look like the table asked for.
+        if options.table.is_some() && effective_format != Some(FileFormat::Nmea) {
+            let what = effective_format
+                .map_or("This file".to_string(), |f| format!("A {} file", f.name()));
+            return Err(color_eyre::eyre::eyre!(
+                "{what} holds one table; --table picks one of an NMEA log's."
+            ));
+        }
+
         // A GPS log is read into a file of its own first: the load converts it
         // (`Step::ReadGps`) into a copy the dataset holds, as a compressed CSV is.
         if let [file] = paths

@@ -223,11 +223,6 @@ pub(crate) fn convert(
     };
     let notes = match format {
         FileFormat::Gpx => {
-            if options.table.is_some() {
-                return Err(eyre!(
-                    "--table picks an NMEA sentence type; GPX has one table."
-                ));
-            }
             let mut gpx = gpx::GpxReader::new();
             loop {
                 let n = next(&mut chunk)?;

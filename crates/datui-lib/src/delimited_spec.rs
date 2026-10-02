@@ -501,7 +501,8 @@ impl Derived {
             DerivedKind::Datetime => {
                 let stamp = match self.from.as_slice() {
                     [one] => text(one),
-                    [date, time, ..] => concat_str([text(date), text(time)], " ", false),
+                    // A null in either is a null stamp.
+                    [date, time, ..] => text(date) + lit(" ") + text(time),
                     [] => unreachable!("a derived column has a source"),
                 };
                 let local = stamp.str().to_datetime(

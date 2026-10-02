@@ -20906,6 +20906,19 @@ fn arrow_ipc_streams_open() {
     }
 }
 
+/// `.arrows`, the extension Arrow gives streams, is Arrow.
+#[test]
+fn an_arrows_file_opens_as_a_stream() {
+    common::ensure_sample_data();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("people.arrows");
+    std::fs::copy("tests/sample-data/people_stream.arrow", &path).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let (app, _rx, _tx) = open_with_scratch(vec![path], scratch.path());
+    let state = app.data_table_state.as_ref().expect("the stream opens");
+    assert_eq!(state.num_rows(), 1000);
+}
+
 /// A directory of Hugging Face shards opens as one table, its JSON files left aside.
 #[test]
 fn a_directory_of_arrow_ipc_stream_shards_opens_as_one_table() {

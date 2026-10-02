@@ -80,7 +80,7 @@ The format is taken from the extension, or from `--format` when there is none.
 |---|---|---|---|
 | Parquet | `.parquet` | yes | yes |
 | CSV and other delimited text | `.csv`, `.tsv`, `.psv` | yes | |
-| Arrow IPC, Feather v2 | `.arrow`, `.ipc`, `.feather` | yes | |
+| Arrow IPC, Feather v2 | `.arrow`, `.arrows`, `.ipc`, `.feather` | yes | |
 | NDJSON | `.jsonl` | | |
 | JSON | `.json` | | |
 | Avro | `.avro` | | |
@@ -95,10 +95,10 @@ loaded in full before the table appears, except a directory of NDJSON files in
 a bucket, which is scanned.
 
 **Arrow IPC streams**, the format of a Hugging Face `datasets` cache, are told
-from IPC files by their first bytes: a `.arrow`, `.ipc` or `.feather` file, one
-with no extension, or one read with `--format arrow`. A stream has
-no index of its rows, so it is converted once to an IPC file in the temp
-directory, then scanned lazily like any other:
+from IPC files by their first bytes: a `.arrow`, `.arrows`, `.ipc` or `.feather`
+file, one with no extension, or one read with `--format arrow`. A stream has no
+index of its rows, so it is converted once to an IPC file in the temp directory,
+then scanned lazily like any other:
 
 ```bash
 datui ~/.cache/huggingface/datasets/imdb/plain_text/0.0.0/abc123/imdb-train.arrow

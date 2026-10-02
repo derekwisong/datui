@@ -680,7 +680,7 @@ pub fn unreadable_by_name(path: &Path) -> bool {
 /// The format a file's name says it holds, compression suffix walked past.
 ///
 /// The question every listing actually asks. Named extensions are not formats: `.ipc`,
-/// `.arrow` and `.feather` are one format under three names, and a directory holding two
+/// `.arrow`, `.arrows` and `.feather` are one format under four names, and a directory holding two
 /// of them is one kind of thing. Asking [`crate::FileFormat`] rather than a list of its
 /// own is what keeps the home screen from offering a file the reader has no route for,
 /// which is how `.txt` came to be listed and refused and `.psv` readable and invisible.
@@ -2270,8 +2270,8 @@ mod classification_tests {
     #[test]
     fn what_is_offered_and_what_opens_are_one_list() {
         for ext in [
-            "parquet", "csv", "tsv", "psv", "json", "jsonl", "ndjson", "arrow", "ipc", "feather",
-            "avro", "orc", "xls", "xlsx", "xlsm", "xlsb",
+            "parquet", "csv", "tsv", "psv", "json", "jsonl", "ndjson", "arrow", "arrows", "ipc",
+            "feather", "avro", "orc", "xls", "xlsx", "xlsm", "xlsb",
         ] {
             let named = PathBuf::from(format!("sales.{ext}"));
             assert!(
@@ -3335,7 +3335,8 @@ mod classification_tests {
         }
         // The ones that do are unaffected — every arm the multi-path open handles.
         for ext in [
-            "parquet", "csv", "json", "jsonl", "ndjson", "arrow", "ipc", "feather", "avro", "orc",
+            "parquet", "csv", "json", "jsonl", "ndjson", "arrow", "arrows", "ipc", "feather",
+            "avro", "orc",
         ] {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(format!("a.{ext}")), b"x").unwrap();

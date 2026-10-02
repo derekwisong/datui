@@ -57,8 +57,8 @@ impl FileFormat {
     /// The format's name, as a row on the home screen says it: `12 parquet`, `3 csv`.
     ///
     /// Lowercase and singular, because it is counted beside a number and read as a
-    /// noun. One name per format rather than per extension: `.ipc`, `.arrow` and
-    /// `.feather` are `arrow`, which is what a reader has to know about them.
+    /// noun. One name per format rather than per extension: `.ipc`, `.arrow`,
+    /// `.arrows` and `.feather` are `arrow`, which is what a reader has to know about them.
     pub fn name(self) -> &'static str {
         match self {
             Self::Parquet => "parquet",
@@ -151,7 +151,7 @@ impl FileFormat {
             "psv" => Some(Self::Psv),
             "json" => Some(Self::Json),
             "jsonl" | "ndjson" => Some(Self::Jsonl),
-            "arrow" | "ipc" | "feather" => Some(Self::Arrow),
+            "arrow" | "arrows" | "ipc" | "feather" => Some(Self::Arrow),
             "avro" => Some(Self::Avro),
             "orc" => Some(Self::Orc),
             "xls" | "xlsx" | "xlsm" | "xlsb" => Some(Self::Excel),

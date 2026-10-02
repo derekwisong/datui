@@ -11325,7 +11325,7 @@ impl App {
                 .is_some_and(|extension| {
                     matches!(
                         extension.to_ascii_lowercase().as_str(),
-                        "parquet" | "pq" | "arrow" | "ipc" | "feather"
+                        "parquet" | "pq" | "arrow" | "arrows" | "ipc" | "feather"
                     )
                 })
         });

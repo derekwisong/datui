@@ -96,7 +96,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | WAV, BWF, RF64, AIFF | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | yes | |
 | MIDI | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | | |
 | [Binary records](binary-formats.md) | any, through a format spec | yes | |
-| SQLite | `.db`, `.sqlite`, `.sqlite3`, `.db3` | read once to a temporary file | |
+| SQLite | `.db`, `.sqlite`, `.sqlite3`, `.db3` | read in place; sort and filter run in SQLite | |
 
 **Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
 queries, sorting and analysis may read the full input. The other formats are
@@ -370,10 +370,20 @@ tables, a full-text index's shadow tables) are hidden until
 its first bytes whatever it is called. The home screen labels a database with
 its tables (`3 tables`).
 
-A table is read once, start to end, into a temporary Arrow IPC file, which is
-then scanned like any other: sort, filter and query run on the copy, and memory
-stays at one batch of rows. The loading screen shows how far the read has got;
-<kbd>Ctrl</kbd>+<kbd>O</kbd> stops it and removes the partial file.
+A table is read in place; nothing is copied.
+
+| | How |
+|---|---|
+| The rows on screen | Read from SQLite a page at a time, by the table's rowid (or primary key), so the first rows show at once and <kbd>End</kbd> costs what the top does |
+| Row count | SQLite's `count(*)`, in the background |
+| Sort and filters from the sidebar | Run in SQLite as `ORDER BY` and `WHERE`, so an index on the column serves them. Ties keep the table's order and nulls sort last, as for any other file |
+| A query, analysis, Data Quality, a chart, an export | Read the columns they use from SQLite a batch at a time; what they hold is in memory, as for a JSON or Excel file. A query's simple comparisons run in SQLite |
+| Leaving the table (<kbd>Ctrl</kbd>+<kbd>O</kbd>, quit) | Stops whatever SQLite is running for it |
+
+A view is paged by position and cannot be reversed with <kbd>r</kbd> in SQLite
+(Polars does it). A sort on a column without an index has SQLite sort the
+rows for each page; SQLite may use temporary files in the temp directory to do
+so.
 
 Columns are typed by what they declare, as SQLite reads a declared type:
 
@@ -383,11 +393,14 @@ Columns are typed by what they declare, as SQLite reads a declared type:
 | `REAL`, `FLOAT`, `DOUBLE` | `f64` |
 | `TEXT`, `VARCHAR(n)`, `CLOB` | `str` |
 | `BLOB` | `binary` |
-| nothing, `NUMERIC`, `DECIMAL`, `BOOLEAN`, `DATE` | by the values: whole numbers `i64`, numbers `f64`, text `str` |
+| nothing, `NUMERIC`, `DECIMAL`, `BOOLEAN`, `DATE` | by the values in the first 1,000 rows: whole numbers `i64`, numbers `f64`, blobs `binary`, text `str` |
 
-SQLite lets a column hold values of any type. A column whose values are of
-several types is read as text, numbers as written and blobs as `X'0A1B'`, and
-the Info panel's Notes tab names it. Dates stay text, as SQLite stores them.
+SQLite lets a column hold values of any type. A column whose first 1,000 rows
+hold values of several types is read as text, numbers as SQLite writes them and
+blobs as `X'0A1B'`. After the open, one pass over the table checks the rest: a
+value further on that is not a number, in a number column, reads as null, and
+the Info panel's Notes tab says how many. Dates stay text, as SQLite stores
+them.
 
 The database is only read:
 
@@ -398,7 +411,7 @@ The database is only read:
 | A WAL database without a `-wal` file | Read as the file stands (SQLite's `immutable`), writing nothing and taking no lock. A program that starts writing it during the read can make the read fail or come out wrong |
 | A `-wal` without its `-shm`, in a directory datui cannot write to | An error: read without the WAL, it would lack what was committed there |
 | A `-journal` left by a program that stopped mid-write | An error: datui does not roll it back. Opening the database once with the `sqlite3` tool does |
-| A program writing the database meanwhile | datui waits up to 2 seconds for its lock. Without WAL, the program cannot commit while a table is read |
+| A program writing the database meanwhile | datui waits up to 2 seconds for its lock. Without WAL, the program cannot commit while datui reads, which is a page at a time except for a whole-table read |
 | Not a SQLite database, or damaged | An error |
 
 A compressed database (`shop.db.gz`) is not read; decompress it first.
@@ -487,7 +500,7 @@ the file and reads the whole thing into memory instead.
 
 ### Temporary files
 
-A decompressed text file, a converted Arrow stream, GPS log or SQLite table, or a downloaded file
+A decompressed text file, a converted Arrow stream or GPS log, or a downloaded file
 lives in the temp directory while datui uses it.
 
 | Exit | Temporary files |

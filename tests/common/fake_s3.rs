@@ -1,10 +1,10 @@
 //! An in-process stand-in for an S3 bucket that counts what is asked of it.
 //!
-//! Enough of the S3 API for datui and Polars to list a prefix and read objects in
-//! ranges: `ListObjectsV2` (prefix and delimiter, one page), `HEAD`, and `GET` with
-//! or without a `Range`. Signatures are not checked. Every request is counted, and
-//! every body byte sent, so a test can say what a run cost on the wire. Nothing
-//! leaves the loopback interface.
+//! Enough of the S3 API for datui and Polars to list the bucket and a prefix and read
+//! objects in ranges: `ListBuckets`, `ListObjectsV2` (prefix and delimiter, one page),
+//! `HEAD`, and `GET` with or without a `Range`. Signatures are not checked. Every
+//! request is counted, and every body byte sent, so a test can say what a run cost on
+//! the wire. Nothing leaves the loopback interface.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -26,6 +26,7 @@ pub struct Wire {
 }
 
 /// One reading of [`Wire`].
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WireCount {
     pub lists: u64,
@@ -34,6 +35,7 @@ pub struct WireCount {
     pub bytes: u64,
 }
 
+#[allow(dead_code)]
 impl WireCount {
     pub fn requests(&self) -> u64 {
         self.lists + self.heads + self.gets
@@ -51,6 +53,7 @@ impl WireCount {
 }
 
 impl Wire {
+    #[allow(dead_code)]
     pub fn count(&self) -> WireCount {
         WireCount {
             lists: self.lists.load(Ordering::SeqCst),
@@ -135,6 +138,7 @@ impl FakeS3 {
     }
 
     /// The configuration that points datui at this bucket.
+    #[allow(dead_code)]
     pub fn cloud_config(&self) -> datui::config::CloudConfig {
         datui::config::CloudConfig {
             s3_endpoint_url: Some(self.endpoint.clone()),
@@ -190,7 +194,15 @@ fn answer(stream: TcpStream, bucket: &str, objects: &RwLock<Objects>, wire: &Wir
             .map(|rest| rest.trim_start_matches('/').to_string())
             .unwrap_or_default();
         let objects = objects.read().expect("objects");
-        let written = if key.is_empty() && method == "GET" {
+        // `ListBuckets`: the endpoint itself, which path-style addressing never lists.
+        let written = if path.is_empty() && method == "GET" && !query.contains("list-type") {
+            let body = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListAllMyBucketsResult>\
+                 <Buckets><Bucket><Name>{bucket}</Name></Bucket></Buckets>\
+                 </ListAllMyBucketsResult>"
+            );
+            respond(&mut out, "200 OK", &[], body.as_bytes())
+        } else if key.is_empty() && method == "GET" {
             wire.lists.fetch_add(1, Ordering::SeqCst);
             let body = list(bucket, query, &objects);
             respond(&mut out, "200 OK", &[], body.as_bytes())

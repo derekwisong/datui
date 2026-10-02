@@ -6,6 +6,9 @@ use std::fs;
 use tempfile::TempDir;
 
 mod common;
+#[cfg(feature = "cloud")]
+#[path = "common/fake_s3.rs"]
+mod fake_s3;
 
 /// Names of the dataset rows on screen, ignoring section headers.
 ///
@@ -5410,4 +5413,476 @@ fn test_unidentified_extensionless_files_keep_the_door() {
     };
     home.rebuild(&[], &[]);
     assert!(home.visible().iter().any(|r| matches!(r, Row::Door { .. })));
+}
+
+/// Coming back is by row, not index, and waits for the row: a walk still running when
+/// the user went inside is started again, and the cursor goes to the row it left when
+/// the walk finds it — unless the user has moved the cursor since.
+#[test]
+fn test_coming_back_waits_for_a_row_still_to_arrive() {
+    let tmp = TempDir::new().unwrap();
+    for name in ["a.csv", "b.csv", "deep_x.csv"] {
+        touch(tmp.path(), name);
+    }
+    let sub = tmp.path().join("sub");
+    let deep = touch(&sub, "deep/deep.parquet");
+    let found = || vec![datui::discover::Entry::for_test(&deep, "deep.parquet")];
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    home.filter = "deep".into();
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.running = true;
+    home.search_batch(tmp.path(), found(), 3);
+    let at = home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, Row::Entry { entry, .. } if entry.path == deep))
+        .expect("the walk's row");
+    home.move_selection(at as isize - home.selected as isize);
+
+    // Inside, and back: the walk was still out, so it is not kept.
+    home.leave_mark();
+    home.browsing = Some(deep.parent().unwrap().to_path_buf());
+    home.filter.clear();
+    home.search.reset();
+    home.rebuild(&[], &[]);
+    home.browsing = Some(tmp.path().to_path_buf());
+    home.come_back(Some(sub.clone()));
+    assert_eq!(home.filter, "deep");
+    assert!(home.search.results.is_empty());
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.running = true;
+    home.rebuild(&[], &[]);
+    assert_ne!(
+        home.selected_entry().map(|e| e.path),
+        Some(deep.clone()),
+        "not there yet"
+    );
+    assert!(home.returning.is_some(), "still waiting for it");
+    home.search_batch(tmp.path(), found(), 3);
+    assert_eq!(home.selected_entry().map(|e| e.path), Some(deep.clone()));
+    assert!(home.returning.is_none());
+
+    // The same again, but the user moves first: the cursor stays where they put it.
+    home.search.running = true;
+    home.leave_mark();
+    home.come_back(None);
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.running = true;
+    home.rebuild(&[], &[]);
+    assert!(home.returning.is_some());
+    home.move_selection(1);
+    let moved = home.selected;
+    home.search_batch(tmp.path(), found(), 3);
+    assert_eq!(home.selected, moved);
+    assert!(home.returning.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Coming back: leaving a place puts the cursor on the row it was entered from
+// ---------------------------------------------------------------------------
+
+mod coming_back {
+    use super::touch;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use datui::home::Row;
+    use datui::{App, AppEvent};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc::Receiver;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    /// The home screen over `config`, its first listing landed.
+    pub(super) fn home_app(mut config: datui::config::AppConfig) -> (App, Receiver<AppEvent>) {
+        config.data.use_desktop_recents = false;
+        config.data.hide_sources = vec!["public".to_string()];
+        // Whatever this machine is logged in to is not part of the test.
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        app.enter_home();
+        settle(&mut app, &rx, |_| true);
+        (app, rx)
+    }
+
+    fn handle(app: &mut App, event: AppEvent) {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
+        }
+    }
+
+    /// Handle events until no listing is out and `done` holds, then draw a frame, which
+    /// is what settles the scroll.
+    pub(super) fn settle(app: &mut App, rx: &Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            while let Ok(event) = rx.try_recv() {
+                handle(app, event);
+            }
+            if !app.home.listing_in_flight && !app.home.search.running && done(app) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the home screen never settled: browsing {:?}, listing {}, rows {:?}",
+                app.home.browsing,
+                app.home.listing_in_flight,
+                entries(app)
+            );
+            if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
+                handle(app, event);
+            }
+        }
+        draw(app);
+    }
+
+    pub(super) fn draw(app: &mut App) {
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+    }
+
+    pub(super) fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    pub(super) fn entries(app: &App) -> Vec<PathBuf> {
+        app.home
+            .visible()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Entry { entry, .. } => Some(entry.path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Put the cursor on the row for `path`, the way arrowing to it would.
+    pub(super) fn select(app: &mut App, path: &Path) {
+        let index = app
+            .home
+            .visible()
+            .iter()
+            .position(|row| matches!(row, Row::Entry { entry, .. } if entry.path == path))
+            .unwrap_or_else(|| panic!("a row for {path:?} in {:?}", entries(app)));
+        let delta = index as isize - app.home.selected as isize;
+        app.home.move_selection(delta);
+        draw(app);
+    }
+
+    pub(super) fn on(app: &App) -> Option<PathBuf> {
+        app.home.selected_entry().map(|entry| entry.path)
+    }
+
+    /// Where the cursor is in the viewport. Other tests in this binary open datasets,
+    /// and the recents they leave can add rows above it in the shared cache, so this,
+    /// not the index, is what coming back has to keep.
+    pub(super) fn on_screen(app: &App) -> usize {
+        app.home.selected - app.home.scroll
+    }
+
+    /// Enter or →, then wait for the place it went into to list. Its rows, not the
+    /// in-flight flag alone: a superseded listing clears that flag as it is dropped.
+    pub(super) fn go_into(app: &mut App, rx: &Receiver<AppEvent>, code: KeyCode, place: &Path) {
+        let before = entries(app);
+        assert!(press(app, code).is_none(), "went inside, opened nothing");
+        assert_eq!(app.home.browsing.as_deref(), Some(place));
+        settle(app, rx, |app| {
+            let now = entries(app);
+            !now.is_empty() && now != before
+        });
+    }
+
+    /// Esc, then wait for where it went back to.
+    pub(super) fn go_back(app: &mut App, rx: &Receiver<AppEvent>, to: Option<&Path>) {
+        press(app, KeyCode::Esc);
+        assert_eq!(app.home.browsing.as_deref(), to);
+        settle(app, rx, |app| app.home.returning.is_none());
+    }
+
+    /// Forty directories of mixed files, so each is a place to go inside rather than a
+    /// table, and one near the end is well off the first screen.
+    fn many_directories(tmp: &Path) {
+        for i in 0..40 {
+            let dir = tmp.join(format!("d{i:02}"));
+            touch(&dir, "x.csv");
+            touch(&dir, "y.parquet");
+        }
+    }
+
+    fn local_config(dir: &Path) -> datui::config::AppConfig {
+        let mut config = datui::config::AppConfig::default();
+        config.data.directories = vec![dir.to_string_lossy().into_owned()];
+        config
+    }
+
+    #[test]
+    fn esc_from_a_directory_puts_the_cursor_back_on_it_level_by_level() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d30 = tmp.path().join("d30");
+        let inner = d30.join("inner");
+        let deeper = inner.join("deeper");
+        touch(&inner, "a.csv");
+        touch(&deeper, "x.csv");
+        touch(&deeper, "y.parquet");
+        // After `inner`, so the row entered is not the only one.
+        touch(&d30, "zz/x.csv");
+        touch(&d30, "zz/y.parquet");
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+
+        select(&mut app, &d30);
+        let (offset, scroll) = (on_screen(&app), app.home.scroll);
+        assert!(scroll > 0, "the row is below the first screen");
+        go_into(&mut app, &rx, KeyCode::Enter, &d30);
+        select(&mut app, &inner);
+        let inner_at = app.home.selected;
+        go_into(&mut app, &rx, KeyCode::Enter, &inner);
+        select(&mut app, &deeper);
+        go_into(&mut app, &rx, KeyCode::Right, &deeper);
+
+        go_back(&mut app, &rx, Some(&inner));
+        assert_eq!(on(&app), Some(deeper.clone()));
+        go_back(&mut app, &rx, Some(&d30));
+        assert_eq!(on(&app), Some(inner.clone()));
+        assert_eq!(app.home.selected, inner_at);
+        go_back(&mut app, &rx, None);
+        assert_eq!(on(&app), Some(d30.clone()));
+        assert_eq!(on_screen(&app), offset);
+        assert!(app.home.trail.is_empty(), "{:?}", app.home.trail);
+    }
+
+    /// Backspace goes up whether or not the user came that way; where they did not,
+    /// the cursor lands on the directory just left.
+    #[test]
+    fn backspace_above_where_the_browse_began_lands_on_the_directory_left() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d12 = tmp.path().join("d12");
+        let (mut app, rx) = home_app(datui::config::AppConfig::default());
+        // Typed at `~`: the browse starts in `d12`, its parent never listed.
+        press(&mut app, KeyCode::Char('~'));
+        for c in d12.to_string_lossy().chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        go_into(&mut app, &rx, KeyCode::Enter, &d12);
+
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.home.browsing.as_deref(), Some(tmp.path()));
+        settle(&mut app, &rx, |app| app.home.returning.is_none());
+        assert_eq!(on(&app), Some(d12));
+        // And Esc still goes back to the listing the path was typed at.
+        go_back(&mut app, &rx, None);
+    }
+
+    #[test]
+    fn esc_from_a_collection_dataset_puts_the_cursor_back_on_it() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let mut config = datui::config::AppConfig::default();
+        config.sources = vec![datui::config::SourceConfig {
+            name: "lab".to_string(),
+            label: Some("Lab".to_string()),
+            datasets: ["d01", "d02", "d03"]
+                .iter()
+                .map(|name| datui::config::DatasetConfig {
+                    name: name.to_string(),
+                    path: Some(tmp.path().join(name).to_string_lossy().into_owned()),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }];
+        let (mut app, rx) = home_app(config);
+        let d03 = tmp.path().join("d03");
+
+        select(&mut app, &d03);
+        let offset = on_screen(&app);
+        go_into(&mut app, &rx, KeyCode::Enter, &d03);
+        go_back(&mut app, &rx, None);
+        assert_eq!(on(&app), Some(d03));
+        assert_eq!(on_screen(&app), offset);
+    }
+
+    /// A search result opened and closed: home comes back to the results, filter and
+    /// row, and Esc then backs out the filter and the directory as usual.
+    #[test]
+    fn a_search_result_opened_and_closed_comes_back_to_the_results() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d07 = tmp.path().join("d07");
+        let found = touch(&d07, "zz/deep.csv");
+        touch(&d07, "aa/deep_first.csv");
+        std::fs::write(&found, "id,name\n1,ada\n").unwrap();
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+
+        select(&mut app, &d07);
+        go_into(&mut app, &rx, KeyCode::Enter, &d07);
+        for c in "deep".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        settle(&mut app, &rx, |app| app.home.search.done);
+        select(&mut app, &found);
+        let offset = on_screen(&app);
+        let Some(AppEvent::Open(paths, options)) = press(&mut app, KeyCode::Enter) else {
+            panic!("Enter on a file opens it");
+        };
+        crate::common::pump_open_until_loaded(&mut app, &rx, paths, options);
+        assert!(app.data_table_state.is_some(), "the table loaded");
+
+        app.enter_home();
+        settle(&mut app, &rx, |app| app.home.selected_entry().is_some());
+        assert_eq!(app.home.filter, "deep");
+        assert_eq!(on(&app), Some(found));
+        assert_eq!(on_screen(&app), offset);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.home.filter.is_empty());
+        go_back(&mut app, &rx, None);
+        assert_eq!(on(&app), Some(d07));
+    }
+
+    /// A table opened from inside a directory, and back: home is where it was left,
+    /// and Esc from there still comes back to the row the directory was entered from.
+    #[test]
+    fn a_dataset_opened_inside_a_directory_leaves_the_way_back() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d25 = tmp.path().join("d25");
+        let people = d25.join("people.csv");
+        std::fs::write(&people, "id,name\n1,ada\n2,grace\n").unwrap();
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+
+        select(&mut app, &d25);
+        let offset = on_screen(&app);
+        go_into(&mut app, &rx, KeyCode::Enter, &d25);
+        select(&mut app, &people);
+        let Some(AppEvent::Open(paths, options)) = press(&mut app, KeyCode::Enter) else {
+            panic!("Enter on a file opens it");
+        };
+        crate::common::pump_open_until_loaded(&mut app, &rx, paths, options);
+        assert!(app.data_table_state.is_some(), "the table loaded");
+
+        app.enter_home();
+        settle(&mut app, &rx, |app| app.home.selected_entry().is_some());
+        assert_eq!(app.home.browsing.as_deref(), Some(d25.as_path()));
+        assert_eq!(on(&app), Some(people));
+        go_back(&mut app, &rx, None);
+        assert_eq!(on(&app), Some(d25));
+        assert_eq!(on_screen(&app), offset);
+    }
+}
+
+/// A cloud source, its bucket, and prefixes three deep, against a local stand-in for
+/// S3, then back out one level at a time.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_esc_back_through_a_cloud_source_puts_the_cursor_on_each_row_entered() {
+    use coming_back::{entries, go_back, go_into, home_app, on, on_screen, press, select, settle};
+    use crossterm::event::KeyCode;
+    use std::path::PathBuf;
+
+    let objects = [
+        "a/x.csv",
+        "b/x.csv",
+        "m/1/x.csv",
+        "m/q/k/x.csv",
+        "m/q/z/x.csv",
+        "m/q/z/y.csv",
+    ]
+    .iter()
+    .map(|key| (key.to_string(), b"a\n1\n".to_vec()))
+    .collect();
+    let s3 = fake_s3::FakeS3::serve("lake", objects);
+    // Signatures are not checked, so any variable cargo sets will do for the keys;
+    // setting one here would race the other tests in this binary.
+    let connection = |name: &str, key: &str| datui::config::CloudConnectionConfig {
+        name: name.to_string(),
+        kind: Some("s3".to_string()),
+        endpoint_url: Some(s3.endpoint.clone()),
+        region: Some("us-east-1".to_string()),
+        addressing: Some("path".to_string()),
+        access_key_id_env: Some(key.to_string()),
+        secret_access_key_env: Some("CARGO_PKG_NAME".to_string()),
+        ..Default::default()
+    };
+    let mut config = datui::config::AppConfig::default();
+    // Bucket names are what `Found` is about here, not the working directory.
+    config.data.search.enabled = false;
+    // Two, so the one entered is not the first row. Keys of their own: the same server
+    // with the same key would be one source.
+    config.cloud.connections = vec![
+        connection("aa", "CARGO_PKG_NAME"),
+        connection("lab", "CARGO_PKG_VERSION"),
+    ];
+    let (mut app, rx) = home_app(config);
+    let source = datui::home::cloud_place("lab");
+    settle(&mut app, &rx, |app| entries(app).contains(&source));
+
+    let bucket = PathBuf::from("s3://lab@lake");
+    let m = PathBuf::from("s3://lab@lake/m/");
+    let q = PathBuf::from("s3://lab@lake/m/q/");
+    let z = PathBuf::from("s3://lab@lake/m/q/z/");
+
+    select(&mut app, &source);
+    let at_source = on_screen(&app);
+    go_into(&mut app, &rx, KeyCode::Enter, &source);
+    select(&mut app, &bucket);
+    go_into(&mut app, &rx, KeyCode::Enter, &bucket);
+    select(&mut app, &m);
+    let at_m = on_screen(&app);
+    go_into(&mut app, &rx, KeyCode::Right, &m);
+    select(&mut app, &q);
+    go_into(&mut app, &rx, KeyCode::Right, &q);
+    select(&mut app, &z);
+    go_into(&mut app, &rx, KeyCode::Right, &z);
+
+    go_back(&mut app, &rx, Some(&q));
+    assert_eq!(on(&app), Some(z));
+    go_back(&mut app, &rx, Some(&m));
+    assert_eq!(on(&app), Some(q));
+    go_back(&mut app, &rx, Some(&bucket));
+    assert_eq!(on(&app), Some(m));
+    assert_eq!(on_screen(&app), at_m);
+    go_back(&mut app, &rx, Some(&source));
+    assert_eq!(on(&app), Some(bucket.clone()));
+    go_back(&mut app, &rx, None);
+    assert_eq!(on(&app), Some(source));
+    assert_eq!(on_screen(&app), at_source);
+
+    // A bucket under `Found` is entered from the results, so Esc goes back to them,
+    // filter and row, rather than to the bucket's source.
+    for c in "lake".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let found = |app: &datui::App| {
+        app.home.visible().iter().position(|row| {
+            matches!(row, datui::home::Row::Entry { entry, section, .. }
+                if entry.path == bucket
+                    && app.home.sections[*section].title == datui::home::HomeState::SEARCH_SECTION)
+        })
+    };
+    let at_found = found(&app).expect("the bucket under Found");
+    app.home
+        .move_selection(at_found as isize - app.home.selected as isize);
+    coming_back::draw(&mut app);
+    let offset = on_screen(&app);
+    go_into(&mut app, &rx, KeyCode::Enter, &bucket);
+    go_back(&mut app, &rx, None);
+    assert_eq!(app.home.filter, "lake");
+    assert_eq!(Some(app.home.selected), found(&app));
+    assert_eq!(on_screen(&app), offset);
 }

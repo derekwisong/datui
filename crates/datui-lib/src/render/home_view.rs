@@ -1295,14 +1295,26 @@ fn entry_line<'a>(
         .rfind(" (")
         .filter(|_| entry.opens_whole_directory)
         .map(|at| name.split_at(at))
-        .map(|(base, what)| (base.to_string(), what.to_string()))
-        .filter(|(_, what)| budget > what.chars().count() + ellipsis_len);
+        .map(|(base, what)| (base.to_string(), what.to_string()));
     if name.chars().count() > budget
+        && budget > ellipsis_len
         && let Some((base, what)) = door_cut
     {
-        let room = budget - what.chars().count() - ellipsis_len;
-        let kept: String = base.chars().take(room).collect();
-        name = format!("{kept}{}{what}", g.ellipsis);
+        name = if budget > what.chars().count() + ellipsis_len {
+            let room = budget - what.chars().count() - ellipsis_len;
+            let kept: String = base.chars().take(room).collect();
+            format!("{kept}{}{what}", g.ellipsis)
+        } else {
+            // Narrower still: the directory goes entirely, and what Enter opens keeps
+            // its head.
+            let what = what.trim_start();
+            if what.chars().count() <= budget {
+                what.to_string()
+            } else {
+                let kept: String = what.chars().take(budget - ellipsis_len).collect();
+                format!("{kept}{}", g.ellipsis)
+            }
+        };
         name_positions.clear();
     } else if name.chars().count() > budget && budget > 1 {
         let original_len = name.chars().count();
@@ -2026,7 +2038,7 @@ const DOOR_OF_A_LAKE_TABLE: &str = "Enter reads the files, ignoring the table's 
 const DOOR_OF_FILES_THAT_DIFFER: &str = "Enter stacks the files, matching columns by name.";
 
 /// The same, where only part of the directory is read: the `reads` line says which.
-const DOOR_OF_A_MIX: &str = "Enter reads only what the reads line names.";
+const DOOR_OF_A_MIX: &str = "Enter reads the files on the reads line as one table.";
 
 /// Every sentence the pane offers as guidance, for the test that reads them.
 #[cfg(test)]
@@ -3649,6 +3661,15 @@ mod tests {
             narrow.chars().count(),
             row_width(78 - META_WIDTH as usize, true),
             "the columns stay where they are: {narrow:?}"
+        );
+        // At 60 the directory goes and what Enter opens keeps its head.
+        let narrowest = drawn(58);
+        assert!(narrowest.contains("(3 Parquet files"), "{narrowest:?}");
+        assert!(!narrowest.contains("same_"), "{narrowest:?}");
+        assert_eq!(
+            narrowest.chars().count(),
+            row_width(58 - META_WIDTH as usize, true),
+            "{narrowest:?}"
         );
         let wide = drawn(200);
         assert!(

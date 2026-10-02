@@ -518,7 +518,8 @@ pub fn door_name(door: &Entry, rows: &[Entry]) -> String {
 /// What `Enter` on a door that is not one table reads, and what it leaves out, for the
 /// details pane. The local open reads the commonest format's files directly inside; a
 /// directory of Parquet with subdirectories, or with no files of its own, is scanned
-/// whole for Parquet instead.
+/// whole for Parquet instead. A prefix in an object store is scanned whole in its
+/// commonest format.
 pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
     if !matches!(door_kind(door), DoorKind::Mixed | DoorKind::Single) {
         return None;
@@ -533,9 +534,13 @@ pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
     let Some((format, count)) = holds.formats.first() else {
         return (holds.directories > 0).then(|| ("every Parquet file below".to_string(), None));
     };
-    let below = holds.partitions > 0 || (holds.formats.len() == 1 && format == "parquet");
+    // A prefix in an object store is scanned whole, subdirectories included.
+    let remote = is_object_store_url(&door.path);
+    let below = remote || holds.partitions > 0 || (holds.formats.len() == 1 && format == "parquet");
     let below = below && holds.directories > 0;
-    let reads = if below {
+    let reads = if below && remote {
+        format!("every {format} file below")
+    } else if below {
         "every Parquet file below".to_string()
     } else {
         format!("{count}{more} {format}")
@@ -2452,7 +2457,13 @@ impl HomeState {
 
         // Keep the cursor on the same row across a refresh; landing back at the top
         // every time a background result arrives makes the screen unusable.
-        if !self.reselect(previous) {
+        let placed = self.reselect(previous);
+        // A row returned to is where the user left it, not a landing a late footer may
+        // still move.
+        if placed && returning.is_some() {
+            self.landing = false;
+        }
+        if !placed {
             self.select_first_entry();
             // The row being returned to may be in a later listing: a remote place
             // still answering, or a search still walking.
@@ -3800,6 +3811,7 @@ impl HomeState {
             && !door_lands(entry)
         {
             self.selected = self.landing_row();
+            self.follow_selection();
         }
     }
 

@@ -6442,3 +6442,116 @@ mod landing {
         draw(&mut app);
     }
 }
+
+/// Footers read after the cursor landed on a door turn it down as one table: the cursor
+/// goes to the first file, as it would have had they been read first. Once the user has
+/// moved, the cursor stays where they put it.
+#[test]
+fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
+    use datui::discover::{Entry, EntryKind};
+    use datui::home::Measured;
+    use std::path::PathBuf;
+
+    let exports = PathBuf::from("gs://bucket/exports");
+    let object = |name: &str| {
+        let mut entry = Entry::directory(&exports.join(name));
+        entry.name = name.to_string();
+        entry.kind = EntryKind::File;
+        entry.size = Some(1_000);
+        entry
+    };
+    let fresh = || {
+        let mut home = HomeState {
+            network_check: |_| true,
+            ..Default::default()
+        };
+        home.probe_ready(
+            exports.clone(),
+            vec![
+                object("a.parquet"),
+                object("b.parquet"),
+                object("c.parquet"),
+            ],
+        );
+        home.browsing = Some(exports.clone());
+        home.rebuild(&[], &[]);
+        assert!(
+            home.selection_is_the_door(),
+            "the names alone say one table"
+        );
+        home
+    };
+    let turned_down = |home: &mut HomeState| {
+        let door = door_of(home).unwrap().path.clone();
+        home.enriched.insert(
+            door,
+            Measured {
+                kind: Some(EntryKind::Directory),
+                ..Default::default()
+            },
+        );
+        home.apply_measurements();
+        assert_eq!(
+            door_of(home).map(|d| d.name.as_str()),
+            Some("exports (3 Parquet files, schemas differ)")
+        );
+    };
+
+    let mut home = fresh();
+    turned_down(&mut home);
+    assert!(!home.selection_is_the_door());
+    assert_eq!(
+        home.selected_entry().map(|e| e.path),
+        Some(exports.join("a.parquet"))
+    );
+
+    // Down and back up: the user chose the door, and a late answer leaves it there.
+    let mut home = fresh();
+    home.move_selection(1);
+    home.move_selection(-1);
+    assert!(home.selection_is_the_door());
+    turned_down(&mut home);
+    assert!(home.selection_is_the_door(), "the user's own choice stays");
+}
+
+/// A prefix in an object store is scanned whole, so the pane does not claim its
+/// subdirectories are skipped.
+#[test]
+fn test_a_mixed_prefix_says_it_reads_below() {
+    use datui::discover::{Entry, EntryKind};
+    use std::path::PathBuf;
+
+    let place = PathBuf::from("gs://bucket/mix");
+    let row = |name: &str, kind: EntryKind| {
+        let mut entry = Entry::directory(&place.join(name));
+        entry.name = name.to_string();
+        entry.kind = kind;
+        entry.size = Some(1_000);
+        entry
+    };
+    let mut home = HomeState {
+        network_check: |_| true,
+        ..Default::default()
+    };
+    home.probe_ready(
+        place.clone(),
+        vec![
+            row("a.csv", EntryKind::File),
+            row("b.csv", EntryKind::File),
+            row("c.json", EntryKind::File),
+            row("sub", EntryKind::Directory),
+        ],
+    );
+    home.browsing = Some(place);
+    home.rebuild(&[], &[]);
+    let door = door_of(&home).expect("the prefix carries the door").clone();
+    assert_eq!(door.name, "mix (all files, mixed)");
+    assert_eq!(
+        datui::home::door_reads(&door),
+        Some((
+            "every csv file below".to_string(),
+            Some("1 json".to_string())
+        ))
+    );
+    assert!(!home.selection_is_the_door());
+}

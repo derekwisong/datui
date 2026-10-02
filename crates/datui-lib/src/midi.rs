@@ -907,6 +907,11 @@ pub fn build(files: &[(String, Smf<'_>)]) -> Result<(LazyFrame, MidiSummary)> {
     for (name, smf) in files {
         add_file(smf, many.then_some(name.as_str()), &mut cols, &mut summary);
     }
+    Ok((frame(cols, many)?, summary))
+}
+
+/// The columns as a table, with the `file` column first when there is one.
+fn frame(cols: Columns<'_>, many: bool) -> Result<LazyFrame> {
     let rows = cols.rows();
     let mut columns: Vec<Column> = Vec::new();
     if many {
@@ -934,8 +939,7 @@ pub fn build(files: &[(String, Smf<'_>)]) -> Result<(LazyFrame, MidiSummary)> {
     columns.push(Series::new("value".into(), cols.value).into());
     columns.push(micros("length", Series::new("length".into(), cols.length))?);
     columns.push(Series::new("text".into(), cols.text).into());
-    let df = DataFrame::new(rows, columns)?;
-    Ok((df.lazy(), summary))
+    Ok(DataFrame::new(rows, columns)?.lazy())
 }
 
 /// Read one file's bytes, refusing one past [`MAX_FILE_BYTES`].
@@ -944,8 +948,11 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     if len > MAX_FILE_BYTES {
+        let size = crate::widgets::info::format_bytes;
         return Err(eyre!(
-            "the file is {len} bytes; datui reads MIDI files up to {MAX_FILE_BYTES}"
+            "MIDI file is {}; datui reads MIDI files up to {}",
+            size(len),
+            size(MAX_FILE_BYTES)
         ));
     }
     let mut bytes = Vec::with_capacity(len as usize);
@@ -958,52 +965,52 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>> {
 ///
 /// One file that cannot be read is an error. Of several — a directory of songs — a
 /// file that cannot be read is left out and named in the summary, unless none can be.
+/// Files are read one at a time and each one's bytes let go once its rows are taken,
+/// so a directory never holds more than one file's bytes.
 pub fn read_midi(paths: &[PathBuf]) -> Result<(LazyFrame, MidiSummary)> {
     if paths.is_empty() {
         return Err(eyre!("No MIDI files to read"));
     }
-    let name_of = |p: &PathBuf| {
-        p.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| p.display().to_string())
-    };
-    let mut raw = Vec::with_capacity(paths.len());
+    let names: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        })
+        .collect();
+    let many = paths.len() > 1;
+    let mut cols = Columns::default();
+    let mut summary = MidiSummary::default();
     let mut unreadable = Vec::new();
-    let one = paths.len() == 1;
-    for path in paths {
-        match read_bytes(path) {
-            Ok(bytes) => raw.push((name_of(path), bytes)),
-            Err(e) if one => return Err(e),
-            Err(e) => unreadable.push((name_of(path), e.to_string())),
-        }
-    }
-    let mut parsed = Vec::with_capacity(raw.len());
-    let mut events = 0usize;
-    for (name, bytes) in &raw {
-        match parse(bytes) {
-            Ok(smf) => {
-                events += smf.tracks.iter().map(Vec::len).sum::<usize>();
-                if events > MAX_EVENTS {
-                    return Err(eyre!(
-                        "These MIDI files have more than {MAX_EVENTS} events; datui reads up to that many"
-                    ));
-                }
-                parsed.push((name.clone(), smf));
+    for (path, name) in paths.iter().zip(&names) {
+        let read = read_bytes(path);
+        let parsed = read.as_deref().map_err(|e| eyre!("{e}")).and_then(parse);
+        let smf = match parsed {
+            Ok(smf) => smf,
+            Err(e) if !many => return Err(e),
+            Err(e) => {
+                unreadable.push((name.clone(), e.to_string()));
+                continue;
             }
-            Err(e) if one => return Err(e),
-            Err(e) => unreadable.push((name.clone(), e.to_string())),
+        };
+        let events = smf.tracks.iter().map(Vec::len).sum::<usize>();
+        if summary.events + events > MAX_EVENTS {
+            return Err(eyre!(
+                "These MIDI files have more than {MAX_EVENTS} events; datui reads up to that many"
+            ));
         }
+        add_file(&smf, many.then_some(name.as_str()), &mut cols, &mut summary);
     }
-    if parsed.is_empty() {
+    if summary.files == 0 {
         let (name, why) = unreadable
             .first()
             .cloned()
             .unwrap_or_else(|| (String::new(), "no files".to_string()));
         return Err(eyre!("No MIDI file could be read; {name}: {why}"));
     }
-    let (lf, mut summary) = build(&parsed)?;
     summary.unreadable = unreadable;
-    Ok((lf, summary))
+    Ok((frame(cols, many)?, summary))
 }
 
 /// What the open has to say about the events: notes that never end, and files that
@@ -1330,6 +1337,32 @@ pub(crate) mod tests {
         assert_eq!(parse(&riff).unwrap().tracks[0].len(), 1);
         assert!(!looks_like_midi(b"RIFF\0\0\0\0WAVEfmt "));
         assert!(!looks_like_midi(b"MThd\0\0\0\x07"));
+    }
+
+    /// Of a directory, a file too large or broken is left out and named; alone, it is
+    /// the error. The `file` column stays when only one of the files is read.
+    #[test]
+    fn a_directory_leaves_out_what_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.mid");
+        std::fs::write(&good, smf(0, 96, &[&[0x00, 0x90, 60, 100]])).unwrap();
+        let huge = dir.path().join("huge.mid");
+        // Sparse: the size is all that is read before the refusal.
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
+        let err = read_midi(std::slice::from_ref(&huge))
+            .err()
+            .expect("a file too large is refused")
+            .to_string();
+        assert!(err.contains("up to 64.0 MiB"), "{err}");
+        let (lf, summary) = read_midi(&[huge, good]).unwrap();
+        let df = lf.collect().unwrap();
+        assert_eq!(df.height(), 1);
+        assert_eq!(col(&df, "file").str().unwrap().get(0), Some("good.mid"));
+        assert_eq!(summary.unreadable.len(), 1);
+        assert_eq!(summary.unreadable[0].0, "huge.mid");
     }
 
     #[test]

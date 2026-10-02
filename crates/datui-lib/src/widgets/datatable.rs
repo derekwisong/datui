@@ -6488,7 +6488,7 @@ impl DataTableState {
                     return;
                 }
             };
-            self.locked_df = if self.is_grouped() {
+            self.locked_df = if self.has_list_columns() {
                 match self.format_grouped_dataframe(locked_df) {
                     Ok(formatted_df) => Some(formatted_df),
                     Err(e) => {
@@ -6521,7 +6521,7 @@ impl DataTableState {
                     return;
                 }
             };
-            self.df = if self.is_grouped() {
+            self.df = if self.has_list_columns() {
                 match self.format_grouped_dataframe(scroll_df) {
                     Ok(formatted_df) => Some(formatted_df),
                     Err(e) => {
@@ -6569,7 +6569,7 @@ impl DataTableState {
                 .map(|s| s.as_str())
                 .collect();
             if let Ok(locked_df) = full_df.select(locked_names) {
-                self.locked_df = if self.is_grouped() {
+                self.locked_df = if self.has_list_columns() {
                     self.format_grouped_dataframe(locked_df).ok()
                 } else {
                     Some(locked_df)
@@ -6589,7 +6589,7 @@ impl DataTableState {
             self.df = None;
         } else {
             if let Ok(scroll_df) = full_df.select(scroll_names) {
-                self.df = if self.is_grouped() {
+                self.df = if self.has_list_columns() {
                     self.format_grouped_dataframe(scroll_df).ok()
                 } else {
                     Some(scroll_df)
@@ -7115,7 +7115,7 @@ impl DataTableState {
     fn page_column(&self, name: &str, offset: usize, len: usize) -> Option<DataFrame> {
         let column = self.buffered_df.as_ref()?.select([name]).ok()?;
         let page = visible_slice(&column, offset, len)?;
-        if self.is_grouped() {
+        if self.has_list_columns() {
             self.format_grouped_dataframe(page).ok()
         } else {
             Some(page)
@@ -7495,7 +7495,15 @@ impl DataTableState {
         self.reshape_source.as_ref()
     }
 
+    /// Whether the view is a grouping's result (a `by` query, a SQL GROUP BY), so its
+    /// rows drill into groups. Recorded by the query, never inferred from list columns:
+    /// a table loaded with one is not grouped.
     pub fn is_grouped(&self) -> bool {
+        self.group_source.is_some()
+    }
+
+    /// Whether any column holds lists, which the table draws as text.
+    fn has_list_columns(&self) -> bool {
         self.schema
             .iter()
             .any(|(_, dtype)| matches!(dtype, DataType::List(_)))
@@ -7731,13 +7739,13 @@ impl DataTableState {
     /// Whether Enter on a row drills into its group: the view is a grouped result and
     /// not already a group's rows.
     pub fn can_drill_down(&self) -> bool {
-        !self.is_drilled_down() && (self.is_grouped() || self.group_source.is_some())
+        !self.is_drilled_down() && self.is_grouped()
     }
 
     /// Whether a drill shows the lists of a row as the group's rows rather than
-    /// filtering the source: a `by` result, or lists with no grouping query behind them.
+    /// filtering the source: a `by` result that holds its groups as lists.
     fn drills_lists(&self) -> bool {
-        self.is_grouped() && self.group_source.as_ref().is_none_or(|s| s.rows_in_lists)
+        self.has_list_columns() && self.group_source.as_ref().is_some_and(|s| s.rows_in_lists)
     }
 
     /// The columns of a row that a drill into its group reads: every column of a result

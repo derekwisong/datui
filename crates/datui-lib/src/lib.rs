@@ -3587,18 +3587,15 @@ mod template_rollback_tests {
         assert_eq!(left_out(&app), 1, "sorting again says it once, not twice");
     }
 
-    /// Drilling into a group and back out puts the frame back; the note about what the
-    /// frame leaves out has to come back with it.
-    ///
-    /// Reachable without a group-by: `is_grouped` is a dtype question — does any column
-    /// hold a list — so a dataset written with a native List column is drillable as it
-    /// stands, drift and all.
+    /// A native List column does not make a table grouped: with no grouping query
+    /// behind it, a drill is a no-op that leaves the frame and its note alone. Queries
+    /// drop the drift column, so a grouped view never carries one of these notes.
     #[test]
-    fn drilling_back_up_puts_the_views_note_back_with_its_frame() {
+    fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
         use polars::prelude::{IntoLazy, ParquetWriter, df};
         let dir = tempfile::tempdir().unwrap();
         let write = |sub: &str, frame: polars::prelude::DataFrame| {
-            // Grouped into a List column, which is what makes the dataset drillable.
+            // A native List column, written to the file.
             let mut frame = frame
                 .lazy()
                 .group_by([col("id"), col("n")])
@@ -3636,7 +3633,11 @@ mod template_rollback_tests {
         });
 
         let state = app.data_table_state.as_mut().unwrap();
-        assert!(state.is_grouped(), "a native List column, with no group-by");
+        assert!(
+            !state.is_grouped(),
+            "a native List column, with no group-by"
+        );
+        assert!(!state.can_drill_down());
         assert!(state.drifts(), "and the files disagree on `n`");
 
         let left_out = |s: &crate::widgets::datatable::DataTableState| {
@@ -3656,25 +3657,9 @@ mod template_rollback_tests {
 
         state.table_state.select(Some(0));
         state.drill_down_into_group(0).unwrap();
-        assert!(state.is_drilled_down());
-        assert_eq!(
-            left_out(state),
-            0,
-            "a group's rows stand for no one file, so nothing there is left out"
-        );
-
-        state.drill_up().unwrap();
-        assert_eq!(
-            state.lf().clone().collect().unwrap().height(),
-            3,
-            "the frame that comes back still leaves the two out"
-        );
-        assert_eq!(
-            left_out(state),
-            1,
-            "so the note is back with it: {:#?}",
-            state.notes()
-        );
+        assert!(!state.is_drilled_down());
+        assert_eq!(state.lf().clone().collect().unwrap().height(), 3);
+        assert_eq!(left_out(state), 1, "the note stays: {:#?}", state.notes());
     }
 
     /// A rollback that stops half way leaves a state that is neither the template's nor
@@ -21838,6 +21823,11 @@ impl App {
                 if self.input_mode != InputMode::Normal {
                     return None;
                 }
+                // With no group to drill into, Enter is Space: the row inspector.
+                if self.enter_inspects() {
+                    self.open_inspector();
+                    return None;
+                }
                 let state = self.data_table_state.as_ref()?;
                 // An empty result has no row selected, and says so like any other.
                 let drill = state
@@ -21846,9 +21836,6 @@ impl App {
                     .map(|selected| state.start_row() + selected)
                     .and_then(|index| Some((index, state.drill_row(index)?)));
                 match drill {
-                    None if state.is_drilled_down() => {
-                        self.flash_note("Already in a group; Esc goes back".to_string());
-                    }
                     None => self.flash_note("Nothing to drill into".to_string()),
                     Some((group_index, DrillRow::Buffered(row))) => {
                         self.drill_into(group_index, &row)
@@ -25102,7 +25089,19 @@ impl App {
             .expect("destination just built"))
     }
 
-    /// Space at the table: the inspector over the selected row.
+    /// Whether Enter at the table opens the inspector, as Space does: there is a table,
+    /// and it is not one whose rows drill into groups (a `by` view, a SQL GROUP BY).
+    /// Inside a drill-down there is nothing further to drill into either.
+    pub fn enter_inspects(&self) -> bool {
+        self.input_mode == InputMode::Normal
+            && self
+                .data_table_state
+                .as_ref()
+                .is_some_and(|state| !state.can_drill_down())
+    }
+
+    /// Space at the table, and Enter where there is nothing to drill into: the
+    /// inspector over the selected row.
     fn open_inspector(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -25872,11 +25871,13 @@ impl Widget for &mut App {
                 dimmed,
                 query_active,
                 q_pops,
+                enter_inspects,
             } => {
                 controls = controls
                     .with_dimmed(dimmed)
                     .with_query_active(query_active)
-                    .with_q_pops(q_pops);
+                    .with_q_pops(q_pops)
+                    .with_enter_inspects(enter_inspects);
             }
             crate::render::main_view::ControlBarSpec::Custom(pairs) => {
                 controls = controls.with_custom_controls(pairs);

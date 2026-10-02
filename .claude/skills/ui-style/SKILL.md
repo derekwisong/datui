@@ -229,7 +229,9 @@ leaving:
   surfaces (chart deliberately has no quit key); `Ctrl+O` home. (#320
   landed the approved `q` evolution.)
 - `?` and F1 for help, including home's empty-filter `?`.
-- The feature keys: `/ s c a p e i v V r R N F D H`, Enter-to-drill.
+- The feature keys: `/ s c a p e i v V r R N F D H`, Enter-to-drill
+  (where there is no group to drill into, Enter inspects the row, as Space
+  does; #542).
   (#317 moved the views list from `t`/`T` to `v`/`V` with the rename.)
 - Text fields keep their readline bindings.
 - Home's type-to-filter: every printable except `?` and Space (empty filter

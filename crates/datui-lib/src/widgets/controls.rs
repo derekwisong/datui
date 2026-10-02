@@ -10,6 +10,9 @@ pub struct Controls {
     pub row_count: Option<usize>,
     /// True when `q` pops to the home screen instead of quitting; the bar says so.
     pub q_pops: bool,
+    /// True when Enter inspects the row, there being nothing to drill into; the
+    /// inspect chip then names Enter rather than Space.
+    pub enter_inspects: bool,
     /// The dataset's full row count, when `row_count` is a filtered or queried subset
     /// of it. The bar then reads "417 of 1,000" instead of a bare number that
     /// hides the filter. Only ever a count something already resolved.
@@ -140,6 +143,11 @@ impl Controls {
         self
     }
 
+    pub fn with_enter_inspects(mut self, enter_inspects: bool) -> Self {
+        self.enter_inspects = enter_inspects;
+        self
+    }
+
     /// Set the full dataset count beside a filtered view's. See [`Self::total_row_count`].
     pub fn with_total_row_count(mut self, total: Option<usize>) -> Self {
         self.total_row_count = total;
@@ -174,6 +182,7 @@ impl Controls {
             caption: None,
             row_count: Some(row_count),
             q_pops: false,
+            enter_inspects: false,
             total_row_count: None,
             dimmed: false,
             query_active: false,
@@ -345,6 +354,12 @@ impl Widget for &Controls {
             if self.q_pops {
                 // The bar says which meaning q carries right now.
                 defaults.last_mut().expect("q is the last chip").1 = "Home";
+            }
+            if self.enter_inspects {
+                // Enter is the key people reach for; where it drills, Space inspects.
+                if let Some(chip) = defaults.iter_mut().find(|(_, label)| *label == "Inspect") {
+                    chip.0 = "Enter";
+                }
             }
             defaults
         };

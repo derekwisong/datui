@@ -51,6 +51,7 @@
 - [Dataset collections](reference/sources.md)
 - [Cloud sources](reference/cloud-sources.md)
 - [Data quality](reference/data-quality.md)
+- [Performance](reference/performance.md)
 
 # Contribute
 

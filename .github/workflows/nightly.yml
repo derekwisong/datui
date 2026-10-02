@@ -123,6 +123,78 @@ jobs:
             target/release/datui
             target/release/datui.1
 
+  # Time to first rows and peak memory on generated files, tonight's build against
+  # the last build that passed this check (scripts/bench/startup.py guard). Both run
+  # on this runner, interleaved, so the runner's speed cancels out. It fails only at
+  # twice the baseline's median and past an absolute floor, so noise cannot trip it.
+  # The baseline is the last passing night rather than the release: a release can be
+  # far slower than main (0.3.2 took 30 times as long to first rows), which would hide
+  # a doubling until the next one. A failing night is never a baseline, so a
+  # regression keeps failing until it is fixed. Nightly rather than on pull requests:
+  # it needs a release build.
+  startup-guard:
+    name: Startup guard
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: scripts/requirements-fixtures.txt
+
+      - name: Install the fixture generator
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r scripts/requirements-fixtures.txt
+
+      - name: Download tonight's build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-linux
+          path: candidate
+
+      - name: Download the baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The newest Nightly on main whose startup guard passed; the latest release
+          # before there is one.
+          passed=""
+          for id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --branch main \
+              --limit 30 --json databaseId -q '.[].databaseId'); do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            result=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" \
+              -q '.jobs[] | select(.name == "Startup guard") | .conclusion')
+            if [ "$result" = success ]; then passed=$id; break; fi
+          done
+          mkdir -p baseline
+          if [ -n "$passed" ] && gh run download "$passed" --repo "$GITHUB_REPOSITORY" --name nightly-linux --dir passed; then
+            echo "Baseline: Nightly run $passed"
+            cp passed/target/release/datui baseline/datui
+          else
+            echo "Baseline: the latest release"
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern 'datui-*-x86_64.tar.gz' --dir baseline
+            tar xzf baseline/datui-*-x86_64.tar.gz -C baseline
+          fi
+          chmod +x baseline/datui candidate/target/release/datui
+
+      - name: Compare startup
+        run: |
+          .venv/bin/python scripts/bench/startup.py guard \
+            --baseline baseline/datui \
+            --candidate candidate/target/release/datui \
+            --data "$RUNNER_TEMP/bench"
+
   windows:
     runs-on: windows-latest
     timeout-minutes: 150

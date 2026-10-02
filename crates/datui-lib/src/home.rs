@@ -452,6 +452,7 @@ fn format_title(name: &str) -> String {
         "excel" => "Excel".to_string(),
         "safetensors" => "SafeTensors".to_string(),
         "gguf" => "GGUF".to_string(),
+        "audio" => "Audio".to_string(),
         other => other.to_ascii_uppercase(),
     }
 }

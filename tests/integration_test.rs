@@ -9,6 +9,8 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+#[path = "formats/audio.rs"]
+mod audio;
 #[cfg(feature = "cloud")]
 #[path = "cloud/download.rs"]
 mod cloud_download;

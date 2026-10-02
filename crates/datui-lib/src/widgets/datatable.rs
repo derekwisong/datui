@@ -348,6 +348,10 @@ pub struct DataTableState {
     /// The fixed records the data as loaded is, while it still is: a window of a
     /// pristine view starts its columns at the window rather than decoding from row 0.
     fixed_window: Option<Arc<crate::fixed_records::FixedRecords>>,
+    /// The audio file the dataset is, and the root it was opened as: while the view is
+    /// that root, untouched, a window is read straight from the file's frames. See
+    /// [`crate::OpenOptions::audio`].
+    audio: Option<(Arc<crate::audio::AudioSource>, u64)>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -860,6 +864,8 @@ pub struct OpenFacts {
     /// The file's other tables, each as `--table` names it with how many rows it holds
     /// where that is known, for the Info panel's Schema tab. Empty for a file of one.
     pub other_tables: Vec<String>,
+    /// The audio file the frame scans.
+    pub audio: Option<Arc<crate::audio::AudioSource>>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1585,11 +1591,14 @@ fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, 
 
 /// Rows `[start, start + len)` of `lf` as `all_columns`. With `files` counted, a scan
 /// of only the files holding them, so a window deep in a remote dataset does not read
-/// every file before it.
+/// every file before it. With `audio`, the frames read straight from the file: a scan
+/// can only stop early, not start late, so the window at the end of a long recording
+/// would otherwise decode every frame before it.
 fn window_of(
     lf: &LazyFrame,
     files: Option<&RemoteFiles>,
     records: Option<&crate::fixed_records::FixedRecords>,
+    audio: Option<&Arc<crate::audio::AudioSource>>,
     read_as_text: &[PlSmallStr],
     start: usize,
     len: usize,
@@ -1599,6 +1608,12 @@ fn window_of(
     // decode every row before it; the records start the window there instead.
     if let Some(records) = records {
         return Ok(records.window(start, len)?.select(all_columns));
+    }
+    if let Some(audio) = audio {
+        return Ok(audio
+            .window(start as u64, len as u64, None)?
+            .lazy()
+            .select(all_columns));
     }
     if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
         && let Some((first, last)) = files_holding(offsets, start, len)
@@ -1622,6 +1637,8 @@ pub(crate) struct ViewRows {
     files: Option<RemoteFiles>,
     /// See [`DataTableState::fixed_window`].
     records: Option<Arc<crate::fixed_records::FixedRecords>>,
+    /// The audio file a window reads its frames from. See [`window_of`].
+    audio: Option<Arc<crate::audio::AudioSource>>,
     read_as_text: Vec<PlSmallStr>,
     /// The buffer on hand and the view row it starts at.
     pub(crate) buffer: Option<(DataFrame, usize)>,
@@ -1673,6 +1690,7 @@ impl ViewRows {
             &self.lf,
             self.files.as_ref(),
             self.records.as_deref(),
+            self.audio.as_ref(),
             &self.read_as_text,
             start,
             len,
@@ -1689,6 +1707,7 @@ impl ViewRows {
             lf,
             files: None,
             records: None,
+            audio: None,
             read_as_text: Vec::new(),
             buffer,
             num_rows: None,
@@ -1822,6 +1841,7 @@ impl DataTableState {
             model: None,
             format_read: None,
             fixed_window: None,
+            audio: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -1962,6 +1982,7 @@ impl DataTableState {
             model: None,
             format_read: None,
             fixed_window: None,
+            audio: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2018,6 +2039,7 @@ impl DataTableState {
             model,
             converted,
             other_tables,
+            audio,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2061,6 +2083,11 @@ impl DataTableState {
         self.model = model;
         self.converted = converted;
         self.other_tables = other_tables;
+        if let Some(audio) = audio {
+            // The count is arithmetic on the file's size: nothing to scan for it.
+            self.set_num_rows(audio.frames() as usize);
+            self.audio = Some((audio, self.root_generation));
+        }
         self
     }
 
@@ -6428,6 +6455,20 @@ impl DataTableState {
     ///
     /// For the chip in the control bar. The note says the same at length; this is what
     /// keeps the row count from reading as the table's.
+    /// The audio file the dataset is, when it is one.
+    pub fn audio(&self) -> Option<&crate::audio::AudioSource> {
+        self.audio.as_ref().map(|(source, _)| source.as_ref())
+    }
+
+    /// The audio file whose frames a window can read directly: the view is the root
+    /// the file was opened as, with nothing applied.
+    fn audio_window(&self) -> Option<&Arc<crate::audio::AudioSource>> {
+        self.audio
+            .as_ref()
+            .filter(|(_, root)| *root == self.root_generation && self.is_pristine())
+            .map(|(source, _)| source)
+    }
+
     pub fn not_the_table(&self) -> Option<&'static str> {
         self.not_the_table
     }
@@ -6814,6 +6855,7 @@ impl DataTableState {
             &self.lf,
             self.remote_files.as_ref().filter(|_| self.remote_window()),
             self.fixed_window_now().map(|r| r.as_ref()),
+            self.audio_window(),
             &self.read_as_text,
             start,
             len,
@@ -6832,6 +6874,7 @@ impl DataTableState {
                 .filter(|_| self.remote_window())
                 .cloned(),
             records: self.fixed_window_now().cloned(),
+            audio: self.audio_window().cloned(),
             read_as_text: self.read_as_text.clone(),
             buffer: self
                 .buffered_df

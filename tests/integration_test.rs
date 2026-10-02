@@ -15487,30 +15487,8 @@ fn test_delimiter_flag_splits_the_columns() {
 /// `--compression` on a name that says neither; decompressed lazily and in memory.
 #[test]
 fn test_every_delimited_format_opens_with_every_compression() {
-    use std::io::Write;
     common::isolate_cache();
     let tmp = tempfile::TempDir::new().unwrap();
-    let compress = |compression: &str, body: &[u8]| -> Vec<u8> {
-        match compression {
-            "gz" => {
-                let mut enc = flate2::write::GzEncoder::new(Vec::new(), Default::default());
-                enc.write_all(body).unwrap();
-                enc.finish().unwrap()
-            }
-            "zst" => zstd::encode_all(body, 0).unwrap(),
-            "bz2" => {
-                let mut enc = bzip2::write::BzEncoder::new(Vec::new(), Default::default());
-                enc.write_all(body).unwrap();
-                enc.finish().unwrap()
-            }
-            "xz" => {
-                let mut enc = xz2::write::XzEncoder::new(Vec::new(), 6);
-                enc.write_all(body).unwrap();
-                enc.finish().unwrap()
-            }
-            other => panic!("no compression {other}"),
-        }
-    };
     for (format, sep) in [("csv", ','), ("tsv", '\t'), ("psv", '|')] {
         let body = format!("id{sep}name\n1{sep}ann\n2{sep}bob\n");
         for (ext, compression) in [
@@ -15549,6 +15527,87 @@ fn test_every_delimited_format_opens_with_every_compression() {
                     assert_eq!(df.height(), 2, "{case}");
                 }
             }
+        }
+    }
+}
+
+/// `body` compressed as a file ending `.{ext}` is.
+fn compress(ext: &str, body: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    match ext {
+        "gz" => {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), Default::default());
+            enc.write_all(body).unwrap();
+            enc.finish().unwrap()
+        }
+        "zst" => zstd::encode_all(body, 0).unwrap(),
+        "bz2" => {
+            let mut enc = bzip2::write::BzEncoder::new(Vec::new(), Default::default());
+            enc.write_all(body).unwrap();
+            enc.finish().unwrap()
+        }
+        "xz" => {
+            let mut enc = xz2::write::XzEncoder::new(Vec::new(), 6);
+            enc.write_all(body).unwrap();
+            enc.finish().unwrap()
+        }
+        other => panic!("no compression {other}"),
+    }
+}
+
+/// A directory holding one compressed delimited file opens as that file (#576), named
+/// as `datui --hive dir/` names it. The scan used to decompress it into a copy it then
+/// dropped, so the frame scanned a file that was gone; it is decompressed by the load,
+/// which keeps the copy with the dataset.
+#[test]
+fn test_a_directory_of_one_compressed_delimited_file_opens() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    for (format, sep) in [("csv", ','), ("tsv", '\t'), ("psv", '|')] {
+        let body = format!("id{sep}name\n1{sep}ann\n2{sep}bob\n");
+        for ext in ["gz", "zst", "bz2", "xz"] {
+            let case = format!("{format}.{ext}");
+            let dir = tmp.path().join(format!("{format}-{ext}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(format!("data.{format}.{ext}")),
+                compress(ext, body.as_bytes()),
+            )
+            .unwrap();
+
+            let (tx, rx) = mpsc::channel();
+            let mut app = App::new(tx, common::test_runtime());
+            let mut next = app.event(&AppEvent::OpenNamed(
+                vec![dir.clone()],
+                OpenOptions {
+                    hive: true,
+                    ..OpenOptions::default()
+                },
+            ));
+            loop {
+                match next.take() {
+                    Some(AppEvent::Crash(message)) => panic!("{case}: {message}"),
+                    Some(event) => next = app.event(&event),
+                    None => match next_event(&app, &rx) {
+                        Some(event) => next = Some(event),
+                        None => break,
+                    },
+                }
+            }
+            let state = app.data_table_state.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{case}: the directory opened ({:?}, {:?})",
+                    app.input_mode,
+                    app.error_message()
+                )
+            });
+            assert!(
+                state.scans_a_temp_file(),
+                "{case}: the dataset holds its copy"
+            );
+            let df = state.lf().clone().collect().unwrap();
+            assert_eq!(names(&df), ["id", "name"], "{case}");
+            assert_eq!(df.height(), 2, "{case}");
         }
     }
 }

@@ -369,6 +369,12 @@ pub(crate) enum LoadAnswer {
         path: Option<PathBuf>,
         options: OpenOptions,
     },
+    /// The scan found one compressed delimited file, `file`, to decompress first.
+    Compressed {
+        file: PathBuf,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+    },
     /// The dataset, its schema read.
     SchemaRead {
         state: Box<DataTableState>,
@@ -813,6 +819,23 @@ impl Loader {
                 }
             }
             (
+                LoadAnswer::Compressed {
+                    file,
+                    path,
+                    options,
+                },
+                Phase::Scanning { .. } | Phase::ScanningStrings,
+            ) => {
+                load.phase = Phase::Decompressing;
+                Step::Decompress {
+                    path: path.unwrap_or_else(|| file.clone()),
+                    file,
+                    options,
+                    writer: load.writer.clone(),
+                    download: load.download.as_ref().map(|fetched| fetched.file.clone()),
+                }
+            }
+            (
                 LoadAnswer::SchemaRead {
                     state,
                     path,
@@ -939,7 +962,7 @@ impl Drop for Loader {
 /// The delimited format (CSV, TSV or PSV) `path` is read as, if it is one: `--format`
 /// when given, else the extension, looking through a compression suffix
 /// (`x.tsv.gz` is TSV).
-fn delimited_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
+pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
     let format = options.format.or_else(|| {
         FileFormat::from_path(path).or_else(|| {
             CompressionFormat::from_extension(path)?;
@@ -1287,6 +1310,43 @@ mod tests {
         assert!(matches!(
             loader.open(request("logs.tsv.gz")),
             Step::Decompress { ref options, .. } if options.format == Some(FileFormat::Tsv)
+        ));
+    }
+
+    /// A scan that finds one compressed delimited file, as a directory of one does, hands
+    /// it to the decompress step under the name the open was asked for (#576); the
+    /// answer of a load in another phase changes nothing.
+    #[test]
+    fn a_compressed_file_the_scan_found_is_decompressed() {
+        let compressed = || LoadAnswer::Compressed {
+            file: PathBuf::from("dir/data.tsv.gz"),
+            path: Some(PathBuf::from("dir")),
+            options: OpenOptions {
+                format: Some(FileFormat::Tsv),
+                ..OpenOptions::default()
+            },
+        };
+        let mut loader = Loader::default();
+        assert!(matches!(loader.open(request("dir")), Step::Scan { .. }));
+        let id = loader.id().unwrap();
+        assert!(matches!(
+            answer(&mut loader, id, compressed()),
+            Step::Decompress { ref file, ref path, ref options, download: None, .. }
+                if file == Path::new("dir/data.tsv.gz")
+                    && path == Path::new("dir")
+                    && options.format == Some(FileFormat::Tsv)
+        ));
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Decompressing", 30)
+        );
+        assert!(matches!(
+            answer(&mut loader, id, compressed()),
+            Step::Nothing
+        ));
+        assert!(matches!(
+            answer(&mut loader, id, schema_read("dir")),
+            Step::Install(_)
         ));
     }
 

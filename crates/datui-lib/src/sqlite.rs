@@ -496,7 +496,13 @@ mod read {
         let mut rows = stmt.query([]).ok()?;
         while let Some(row) = rows.next().ok()? {
             for (i, column) in batch.columns.iter_mut().enumerate() {
-                column.push(row.get_ref(i).ok()?);
+                // Only the type matters here: a text or blob of any length stands for
+                // its kind empty, so a table of large blobs is not held to preview it.
+                column.push(match row.get_ref(i).ok()? {
+                    ValueRef::Text(_) => ValueRef::Text(b""),
+                    ValueRef::Blob(_) => ValueRef::Blob(b""),
+                    value => value,
+                });
             }
         }
         Some(

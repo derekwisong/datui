@@ -34,6 +34,7 @@ names it:
 | First bytes | Read as |
 |---|---|
 | Parquet, Arrow IPC or Avro magic number, or an Arrow IPC stream's schema message | that format |
+| `SQLite format 3` | SQLite; a database of several tables needs `--table` |
 | gzip, zstd, bzip2 or xz magic number | compressed CSV, or TSV or PSV with `--format` |
 | `[` | JSON |
 | `{`, the first line a whole object | NDJSON |
@@ -95,6 +96,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | WAV, BWF, RF64, AIFF | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | yes | |
 | MIDI | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | | |
 | [Binary records](binary-formats.md) | any, through a format spec | yes | |
+| SQLite | `.db`, `.sqlite`, `.sqlite3`, `.db3` | read once to a temporary file | |
 
 **Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
 queries, sorting and analysis may read the full input. The other formats are
@@ -221,9 +223,9 @@ first one are dated back from it when it comes within the first 65,536 rows;
 when it comes later, those rows keep a null `time`. A log with neither sentence
 has no dates, and `time` is null throughout.
 
-`--table` is for any file that holds several tables. NMEA logs are the only
-ones so far; any other file opened with it is refused. Excel workbooks take
-`--sheet`.
+`--table` is for any file that holds several tables: NMEA logs and
+[SQLite databases](#sqlite-databases). Any other file opened with it is refused.
+Excel workbooks take `--sheet`.
 
 **GPX** opens as one row per `trkpt`, `rtept` and `wpt`:
 
@@ -347,6 +349,58 @@ Press <kbd>i</kbd> for the [MIDI tab](dataset-info.md#midi): format, timing,
 length, tempo, meter, key and each track's name, events, notes and channels.
 Notes that never end are counted on the Notes tab.
 
+### SQLite databases
+
+```bash
+datui shop.db                        # its one table, or the list of its tables
+datui shop.db --table orders         # a table or view by name
+datui shop.db/orders                 # the same
+cat shop.db | datui --table orders   # from standard input
+```
+
+| The database | What happens |
+|---|---|
+| One table or view of its own | Opens it |
+| Several | Opens the home screen inside the database: a row per table and view, like a directory of tables. <kbd>Enter</kbd> opens one; <kbd>q</kbd> comes back to the list |
+| Several, downloaded or piped in | Refused with the names of its tables; `--table` picks one |
+
+SQLite's own tables (`sqlite_master`, `sqlite_sequence`, the `sqlite_stat`
+tables, a full-text index's shadow tables) are hidden until
+<kbd>Ctrl</kbd>+<kbd>A</kbd>; `--table` opens them by name. A file is known by
+its first bytes whatever it is called. The home screen labels a database with
+its tables (`3 tables`).
+
+A table is read once, start to end, into a temporary Arrow IPC file, which is
+then scanned like any other: sort, filter and query run on the copy, and memory
+stays at one batch of rows. The loading screen shows how far the read has got;
+<kbd>Ctrl</kbd>+<kbd>O</kbd> stops it and removes the partial file.
+
+Columns are typed by what they declare, as SQLite reads a declared type:
+
+| Declared | Column |
+|---|---|
+| `INTEGER`, `INT`, `BIGINT`, anything with `INT` | `i64` |
+| `REAL`, `FLOAT`, `DOUBLE` | `f64` |
+| `TEXT`, `VARCHAR(n)`, `CLOB` | `str` |
+| `BLOB` | `binary` |
+| nothing, `NUMERIC`, `DECIMAL`, `BOOLEAN`, `DATE` | by the values: whole numbers `i64`, numbers `f64`, text `str` |
+
+SQLite lets a column hold values of any type. A column whose values are of
+several types is read as text, numbers as written and blobs as `X'0A1B'`, and
+the Info panel's Notes tab names it. Dates stay text, as SQLite stores them.
+
+The database is only read:
+
+| | |
+|---|---|
+| Opened | Read only, with `query_only` and defensive mode. Extensions cannot be loaded, and reading a table runs no trigger |
+| A WAL database with a `-wal` file | Read through it, so what another program has committed is seen. SQLite creates the `-shm` file beside it if it is missing |
+| A WAL database without one, or in a directory datui cannot write to | Read as the file stands, writing nothing |
+| A program writing the database meanwhile | datui waits up to 2 seconds for its lock. Without WAL, the program cannot commit while a table is read |
+| Not a SQLite database, or damaged | An error |
+
+A compressed database (`shop.db.gz`) is not read; decompress it first.
+
 ### CSV options
 
 They apply to `.tsv` and `.psv` files too. A directory of CSVs in a bucket takes
@@ -431,7 +485,7 @@ the file and reads the whole thing into memory instead.
 
 ### Temporary files
 
-A decompressed text file, a converted Arrow stream or GPS log, or a downloaded file
+A decompressed text file, a converted Arrow stream, GPS log or SQLite table, or a downloaded file
 lives in the temp directory while datui uses it.
 
 | Exit | Temporary files |

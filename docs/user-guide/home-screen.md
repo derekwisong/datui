@@ -137,6 +137,7 @@ count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts
 | `delta`, `iceberg`, `hudi` | A lake-table marker |
 | `12 parquet`, `3 csv` | Direct data files of one format |
 | `3 safetensors`, `2 gguf` | A model: weight files of one format, with only JSON (config, tokenizer) beside them. Opens as one table |
+| `3 tables` | A SQLite database (a file, not a directory). One table opens; several are listed, a row each, when <kbd>Enter</kbd> or <kbd>→</kbd> goes inside |
 | `mixed` | Several formats |
 | `dir` | No direct data files; `dir+` means the listing was cut short |
 | `bucket`, `container` | The top of an object store |
@@ -150,7 +151,9 @@ also skipped. A capped listing says so, for example `5000+ parquet`.
 Select the `… files datui can't open` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>,
 to reveal unreadable files such as `README.md`.
 They are dimmed and cannot be opened. Set `[data] show_unreadable_files = true`
-to show them by default.
+to show them by default. Inside a SQLite database the same row and key show
+its internal tables (`sqlite_master`, `sqlite_sequence`), which open like the
+others. See [SQLite databases](loading-data.md#sqlite-databases).
 
 ### Opening a directory
 
@@ -334,7 +337,7 @@ These commands do not delete data files.
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
 | <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Refresh the locations on screen |
-| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read, or a SQLite database's internal tables |
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember or forget the selected directory; a file represents its parent |
 | <kbd>Delete</kbd> | Forget a recent entry; on a place, confirm forgetting its entries; on a remembered heading, forget it; on a cloud source, hide it |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Confirm forgetting all recent entries |

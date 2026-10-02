@@ -2,7 +2,7 @@
 
 **A terminal UI for tabular data.**
 
-datui opens Parquet, CSV, JSON, Excel and other tabular files from local disk
+datui opens Parquet, CSV, JSON, Excel, SQLite and other tabular files from local disk
 or cloud storage. You can browse and filter rows, run SQL, plot columns, and
 export the result. It also works with Polars DataFrames in Python.
 

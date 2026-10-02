@@ -21846,3 +21846,70 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
         assert_eq!(rows, view_csv(&app), "{what}:\n{script}");
     }
 }
+
+/// A CSV datui reads with `--parse-strings` and stray spaces in its header: the
+/// script trims the names and types the text columns as datui did.
+#[test]
+fn test_copy_as_python_reads_a_csv_as_datui_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("typed.csv");
+    std::fs::write(
+        &path,
+        " id ,when,amount,code,at,stamp,note\n\
+         1,03/15/2024, 12 ,007,10:30,2024-03-15 10:30:00, a \n\
+         2,04/01/2024,3.5,010,11:45,2024-04-01 11:45:00,b\n\
+         3,,  ,,,,\n\
+         4,12/31/2023,-2,100,08:00,2023-12-31 08:00:00,  c\n",
+    )
+    .unwrap();
+    for parse_strings in [true, false] {
+        let options = OpenOptions {
+            parse_strings: parse_strings.then_some(datui::ParseStringsTarget::All),
+            ..OpenOptions::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], options);
+        pump_until_idle(&mut app, &rx, &tx);
+        let Some((rows, script)) = run_python_script(&app) else {
+            eprintln!("skipped: no .venv to run the scripts with");
+            return;
+        };
+        assert!(script.contains(".rename({\" id \": \"id\"})"), "{script}");
+        assert_eq!(script.contains(".with_columns("), parse_strings, "{script}");
+        assert_eq!(
+            rows,
+            view_csv(&app),
+            "parse_strings={parse_strings}:\n{script}"
+        );
+    }
+}
+
+/// NDJSON with dates held as text: the script types them as datui did.
+#[test]
+fn test_copy_as_python_types_json_dates_as_datui_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.jsonl");
+    std::fs::write(
+        &path,
+        "{\"id\": 1, \"day\": \"2024-03-15\", \"at\": \"2024-03-15T10:30:00\", \"what\": \"a\"}\n\
+         {\"id\": 2, \"day\": \"2024-04-01\", \"at\": \"2024-04-01T11:45:00\", \"what\": \"b\"}\n",
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .query("select id, day, at where day > 2024.03.20".into());
+    pump_until_idle(&mut app, &rx, &tx);
+    let Some((rows, script)) = run_python_script(&app) else {
+        eprintln!("skipped: no .venv to run the scripts with");
+        return;
+    };
+    assert!(script.contains("pl.scan_ndjson("), "{script}");
+    assert!(script.contains(".str.to_date("), "{script}");
+    assert_eq!(rows, view_csv(&app), "{script}");
+}

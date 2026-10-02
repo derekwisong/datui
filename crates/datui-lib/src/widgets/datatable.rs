@@ -22,7 +22,7 @@ use crate::filter_modal::FilterStatement;
 use crate::local_copy::RemoteObject;
 use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
-use crate::python_script::{SidebarFilter, Step};
+use crate::python_script::{SidebarFilter, Step, py_str};
 use crate::query::{ParsedQuery, parse_query};
 use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
@@ -375,6 +375,9 @@ pub struct DataTableState {
     /// How `base_lf` was built from the data as loaded, step by step, for Copy as
     /// Python. Set with every new base; empty for the data as loaded.
     base_steps: Vec<Step>,
+    /// What the open did to the rows its reader gave, as Python method calls: names
+    /// trimmed, text columns typed.
+    read_python: Vec<String>,
     /// How `reshaped_lf` was built, while there is one: what SQL runs over.
     reshape_steps: Option<Vec<Step>>,
     /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
@@ -1838,6 +1841,7 @@ impl DataTableState {
             last_melt_spec: None,
             reshape_source: None,
             base_steps: Vec::new(),
+            read_python: Vec::new(),
             reshape_steps: None,
             partition_columns: None,
             decompress_temp_file: None,
@@ -1977,6 +1981,7 @@ impl DataTableState {
             last_melt_spec: None,
             reshape_source: None,
             base_steps: Vec::new(),
+            read_python: Vec::new(),
             reshape_steps: None,
             partition_columns,
             decompress_temp_file: None,
@@ -3998,24 +4003,54 @@ impl DataTableState {
     /// What every CSV read does once Polars has parsed it: name the columns (trimmed,
     /// or from `--header-rows`), skip the padding after a delimiter, type the text
     /// columns, and drop the footer.
+    /// `read` gets the steps that Python can repeat.
     fn finish_csv_frame(
         lf: LazyFrame,
         options: &OpenOptions,
         header: Option<&[String]>,
+        read: &mut Vec<String>,
     ) -> Result<LazyFrame> {
-        let lf = crate::csv_dialect::name_columns(lf, header)?;
-        Self::finish_csv_values(lf, options)
+        let lf = Self::name_csv_columns(lf, header, Some(read))?;
+        Self::finish_csv_values(lf, options, read)
+    }
+
+    /// [`crate::csv_dialect::name_columns`], with the renames as Python in `read`.
+    /// Names from `--header-rows` are not recorded: Copy as Python does not write that
+    /// read.
+    fn name_csv_columns(
+        mut lf: LazyFrame,
+        header: Option<&[String]>,
+        read: Option<&mut Vec<String>>,
+    ) -> Result<LazyFrame> {
+        if let (None, Some(read)) = (header, read) {
+            let raw: Vec<PlSmallStr> = lf.collect_schema()?.iter_names().cloned().collect();
+            let shown = crate::csv_dialect::shown_names(&raw, None);
+            let renames: Vec<String> = raw
+                .iter()
+                .zip(&shown)
+                .filter(|(raw, shown)| raw.as_str() != shown.as_str())
+                .map(|(raw, shown)| format!("{}: {}", py_str(raw), py_str(shown)))
+                .collect();
+            if !renames.is_empty() {
+                read.push(format!(".rename({{{}}})", renames.join(", ")));
+            }
+        }
+        Ok(crate::csv_dialect::name_columns(lf, header)?)
     }
 
     /// [`Self::finish_csv_frame`] after the names, for frames already named: several
     /// files are named one at a time and stacked first.
-    fn finish_csv_values(mut lf: LazyFrame, options: &OpenOptions) -> Result<LazyFrame> {
+    fn finish_csv_values(
+        mut lf: LazyFrame,
+        options: &OpenOptions,
+        read: &mut Vec<String>,
+    ) -> Result<LazyFrame> {
         if options.skip_initial_space {
             lf = crate::csv_dialect::skip_initial_space(lf, |column| {
                 Self::csv_null_values_for(options, column)
             })?;
         }
-        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options, read)?;
         Self::apply_skip_tail_rows_csv(lf, options)
     }
 
@@ -4125,6 +4160,7 @@ impl DataTableState {
     fn apply_parse_strings_to_csv_lazyframe(
         lf: LazyFrame,
         options: &OpenOptions,
+        read: &mut Vec<String>,
     ) -> Result<LazyFrame> {
         let Some(target) = &options.parse_strings else {
             return Ok(lf);
@@ -4137,6 +4173,7 @@ impl DataTableState {
                 dates: options.parse_dates,
                 numbers: true,
             },
+            read,
         )
     }
 
@@ -4146,6 +4183,7 @@ impl DataTableState {
     pub(crate) fn apply_parse_dates_to_json_lazyframe(
         lf: LazyFrame,
         options: &OpenOptions,
+        read: &mut Vec<String>,
     ) -> Result<LazyFrame> {
         if !options.parse_dates {
             return Ok(lf);
@@ -4158,6 +4196,7 @@ impl DataTableState {
                 dates: true,
                 numbers: false,
             },
+            read,
         )
     }
 
@@ -4222,6 +4261,7 @@ impl DataTableState {
         target: &ParseStringsTarget,
         sample_rows: usize,
         types: StringTypes,
+        read: &mut Vec<String>,
     ) -> Result<LazyFrame> {
         // The scan already inferred the schema; the sample below is the one read.
         let schema = lf.clone().collect_schema()?;
@@ -4253,6 +4293,8 @@ impl DataTableState {
             sample_df.estimated_size()
         );
         let mut exprs = Vec::with_capacity(target_cols.len());
+        // The same typing as Python, for Copy as Python.
+        let mut python = Vec::with_capacity(target_cols.len());
         for col_name in &target_cols {
             let name = PlSmallStr::from(col_name.as_str());
             let s = sample_df.column(col_name.as_str())?;
@@ -4364,6 +4406,41 @@ impl DataTableState {
             let base_with_nulls = when(base.clone().eq(lit(PlSmallStr::from_static(""))))
                 .then(Null {}.lit())
                 .otherwise(base.clone());
+            let trimmed = format!(
+                "pl.col({}).str.strip_chars(\" \\t\\n\\r\")",
+                py_str(col_name)
+            );
+            let blank_null = format!("{trimmed}.replace(\"\", None)");
+            let format_arg = |f: &Option<String>| match f {
+                Some(f) => format!("{}, ", py_str(f)),
+                None => String::new(),
+            };
+            python.push(match &inferred {
+                InferredType::Date => format!(
+                    "{blank_null}.str.to_date({}strict=False, exact=False)",
+                    format_arg(&date_fmt)
+                ),
+                InferredType::Datetime => format!(
+                    "{blank_null}.str.to_datetime({}time_unit=\"us\", strict=False)",
+                    format_arg(&datetime_fmt)
+                ),
+                InferredType::Time => format!(
+                    "{blank_null}.str.to_time({}strict=False)",
+                    format_arg(&time_fmt)
+                ),
+                InferredType::Duration => format!(
+                    "# {}: datui reads these as durations (\"1d2h\"); Polars has no parser for them",
+                    col_name
+                ),
+                InferredType::Int64 => {
+                    format!("{blank_null}.cast(pl.Int64, strict=False)")
+                }
+                InferredType::Float64 => {
+                    format!("{blank_null}.cast(pl.Float64, strict=False)")
+                }
+                InferredType::String if types.numbers => trimmed.clone(),
+                InferredType::String => String::new(),
+            });
             let expr = match inferred {
                 InferredType::Date => {
                     let opts = StrptimeOptions {
@@ -4426,6 +4503,18 @@ impl DataTableState {
                 InferredType::String => continue,
             };
             exprs.push(expr);
+        }
+        let python: Vec<String> = python.into_iter().filter(|p| !p.is_empty()).collect();
+        if !python.is_empty() {
+            read.push(".with_columns(".to_string());
+            read.extend(python.into_iter().map(|p| {
+                if p.starts_with('#') {
+                    format!("    {p}")
+                } else {
+                    format!("    {p},")
+                }
+            }));
+            read.push(")".to_string());
         }
         Ok(lf.with_columns(exprs))
     }
@@ -4552,7 +4641,8 @@ impl DataTableState {
                         (df, header)
                     }
                 };
-                let lf = Self::finish_csv_frame(df.lazy(), options, header.as_deref())?;
+                let mut read = Vec::new();
+                let lf = Self::finish_csv_frame(df.lazy(), options, header.as_deref(), &mut read)?;
                 let mut state = Self::new(
                     lf,
                     options.pages_lookahead,
@@ -4563,6 +4653,7 @@ impl DataTableState {
                 )?;
                 state.row_numbers = options.row_numbers;
                 state.row_start_index = options.row_start_index;
+                state.read_python = read;
                 Ok(state)
             } else {
                 // Decompress to temp file, then lazy scan
@@ -4586,7 +4677,8 @@ impl DataTableState {
         let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
         let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?);
         let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
-        let lf = Self::finish_csv_frame(lf, options, header.as_deref())?;
+        let mut read = Vec::new();
+        let lf = Self::finish_csv_frame(lf, options, header.as_deref(), &mut read)?;
         let mut state = Self::new(
             lf,
             options.pages_lookahead,
@@ -4597,6 +4689,7 @@ impl DataTableState {
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
+        state.read_python = read;
         Ok(state)
     }
 
@@ -4635,17 +4728,21 @@ impl DataTableState {
         // Each file is named from its own header, so files whose names are padded
         // differently, or whose header lines say the same thing, stack by name.
         let mut lazy_frames = Vec::with_capacity(paths.len());
-        for p in paths {
+        // Python reads the files as one scan: the first file's renames stand for all.
+        let mut read = Vec::new();
+        for (i, p) in paths.iter().enumerate() {
             let p = p.as_ref();
             let header = Self::csv_header_names_of(options, p, None)?;
             let nv = Self::build_null_values_for_csv(options, p, header.as_deref())?;
             let reader = LazyCsvReader::new(PlRefPath::try_from_path(p)?);
             let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
-            lazy_frames.push(crate::csv_dialect::name_columns(lf, header.as_deref())?);
+            let record = (i == 0).then_some(&mut read);
+            lazy_frames.push(Self::name_csv_columns(lf, header.as_deref(), record)?);
         }
         let lf = Self::finish_csv_values(
             polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?,
             options,
+            &mut read,
         )?;
         let mut state = Self::new(
             lf,
@@ -4657,6 +4754,7 @@ impl DataTableState {
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
+        state.read_python = read;
         Ok(state)
     }
 
@@ -9032,6 +9130,11 @@ impl DataTableState {
             .collect()
     }
 
+    /// What the open did to the rows its reader gave, as Python method calls.
+    pub fn read_python(&self) -> &[String] {
+        &self.read_python
+    }
+
     /// How `lf` was built: the base's steps, then the filters and the sort.
     fn view_steps(&self) -> Vec<Step> {
         let mut steps = self.base_steps.clone();
@@ -11672,10 +11775,16 @@ mod tests {
     fn string_inference_keeps_the_whole_frame() {
         let utc = DataType::Datetime(TimeUnit::Microseconds, Some(TimeZone::UTC));
         let typed = |target: &ParseStringsTarget, types: StringTypes| {
-            DataTableState::type_string_columns(mixed_strings(), target, 1_000, types)
-                .unwrap()
-                .collect()
-                .unwrap()
+            DataTableState::type_string_columns(
+                mixed_strings(),
+                target,
+                1_000,
+                types,
+                &mut Vec::new(),
+            )
+            .unwrap()
+            .collect()
+            .unwrap()
         };
         let all = StringTypes {
             dates: true,
@@ -11726,6 +11835,7 @@ mod tests {
         let json = DataTableState::apply_parse_dates_to_json_lazyframe(
             mixed_strings(),
             &crate::OpenOptions::default(),
+            &mut Vec::new(),
         )
         .unwrap()
         .collect()

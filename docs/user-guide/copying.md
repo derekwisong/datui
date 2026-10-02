@@ -104,7 +104,7 @@ they were applied:
 
 | In datui | In the script |
 |---|---|
-| The file | `pl.scan_*`, or `pl.read_*(...).lazy()` for JSON, Avro and Excel, with the reader options datui used (delimiter, header, skipped lines and rows, null values); a directory or bucket prefix as a glob |
+| The file | `pl.scan_*`, or `pl.read_*(...).lazy()` for JSON, Avro and Excel, with the reader options datui used (delimiter, header, skipped lines and rows, null values), then the column names it trimmed and the text columns it read as numbers or dates; a directory or bucket prefix as a glob |
 | Query | `.filter`, `.group_by().agg()` ordered by the keys, `.select`, `.unique` |
 | SQL | `.sql(..., table_name="df")` |
 | Search | `.filter` with a case-insensitive pattern per word |

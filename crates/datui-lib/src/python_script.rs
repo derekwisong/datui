@@ -579,7 +579,9 @@ pub fn source(record: &OpenRecord) -> Source {
     };
     let options = record.options;
     let mut args: Vec<String> = vec![target];
-    let mut after = Vec::new();
+    // What the open did to the rows read, as datui recorded it, then the footer.
+    let mut after = options.read_python.clone();
+    let mut skip_tail = None;
     let mut notes = Vec::new();
     let remote_s3 = names.iter().any(|n| n.starts_with("s3://"));
     let storage = || {
@@ -628,7 +630,9 @@ pub fn source(record: &OpenRecord) -> Source {
             if options.ignore_errors {
                 args.push("ignore_errors=True".to_string());
             }
-            if options.csv_try_parse_dates() {
+            // A prefix in a bucket is read without it; see `build_lazyframe_from_paths`.
+            let bucket_prefix = below && paths.iter().any(|p| is_url(p));
+            if options.csv_try_parse_dates() && !bucket_prefix {
                 args.push("try_parse_dates=True".to_string());
             }
             if let Some(nulls) = csv_null_values(options, record.schema) {
@@ -638,14 +642,7 @@ pub fn source(record: &OpenRecord) -> Source {
                 args.push(s);
             }
             if let Some(n) = options.skip_tail_rows.filter(|n| *n > 0) {
-                after.push(format!(".filter(pl.int_range(pl.len()) < pl.len() - {n})"));
-            }
-            if options.parse_strings.is_some() {
-                notes.push(
-                    "datui also trimmed text columns and read numbers and dates in them \
-                     (--parse-strings); this script reads them as Polars does."
-                        .to_string(),
-                );
+                skip_tail = Some(format!(".filter(pl.int_range(pl.len()) < pl.len() - {n})"));
             }
             match options.compression.or_else(|| {
                 paths
@@ -690,21 +687,7 @@ pub fn source(record: &OpenRecord) -> Source {
             };
         }
     };
-    if matches!(format, FileFormat::Json | FileFormat::Jsonl) && options.parse_dates {
-        let temporal: Vec<String> = record
-            .schema
-            .iter()
-            .filter(|(_, dtype)| dtype.is_temporal())
-            .map(|(name, _)| name.to_string())
-            .collect();
-        if !temporal.is_empty() {
-            notes.push(format!(
-                "datui read dates in these text columns: {}. Parse them with \
-                 .str.to_date() or .str.to_datetime() where a step needs them as dates.",
-                temporal.join(", ")
-            ));
-        }
-    }
+    after.extend(skip_tail);
     if !record.read_as_text.is_empty() {
         notes.push(format!(
             "datui read these columns as text from every file: {}.",

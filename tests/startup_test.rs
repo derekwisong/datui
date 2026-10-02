@@ -7,6 +7,8 @@
 //! hang; the hang guard is the failure. Linux only, for `openpty` and `mkfifo`.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -478,6 +480,22 @@ fn data_piped_in_opens_in_its_format() {
             "{name}: the spooled file is removed"
         );
     }
+}
+
+/// An Arrow IPC stream piped in, as pyarrow writes one, is converted and opens; the
+/// spooled file and the converted copy are both gone once it quits.
+#[test]
+fn an_arrow_stream_piped_in_opens() {
+    common::ensure_sample_data();
+    let body = std::fs::read("tests/sample-data/people_stream.arrow").unwrap();
+    let dirs = Dirs::new();
+    let (mut session, mut pipe) = dirs.spawn_piped(&[Path::new("-")]);
+    pipe.write_all(&body).unwrap();
+    drop(pipe);
+    session.wait_for_screen("Lastname1");
+    session.type_keys(CTRL_Q);
+    assert!(session.wait_exit().success());
+    assert_eq!(files_in(&dirs.tmp()), 0, "both temp files are removed");
 }
 
 /// No path and data piped in reads it. A producer that is slow shows what has come

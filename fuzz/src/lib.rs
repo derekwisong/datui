@@ -7,6 +7,7 @@
 pub mod config_parse;
 pub mod fuzzy_match;
 pub mod glob_match;
+pub mod ipc_stream_head;
 pub mod model_header;
 pub mod number_format;
 pub mod parse_query;

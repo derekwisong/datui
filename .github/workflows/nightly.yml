@@ -538,6 +538,7 @@ jobs:
           - number_format
           - fuzzy_match
           - glob_match
+          - ipc_stream_head
           - config_parse
           - model_header
     env:

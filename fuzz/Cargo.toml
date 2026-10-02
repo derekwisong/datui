@@ -90,6 +90,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ipc_stream_head"
+path = "fuzz_targets/ipc_stream_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "model_header"
 path = "fuzz_targets/model_header.rs"
 test = false

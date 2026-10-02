@@ -15,6 +15,8 @@ mod config_parse;
 mod fuzzy_match;
 #[path = "../fuzz/src/glob_match.rs"]
 mod glob_match;
+#[path = "../fuzz/src/ipc_stream_head.rs"]
+mod ipc_stream_head;
 #[path = "../fuzz/src/model_header.rs"]
 mod model_header;
 #[path = "../fuzz/src/number_format.rs"]
@@ -107,6 +109,9 @@ fn every_corpus_input_passes_its_target() {
     replay("glob_match", &mut failures, |b| {
         fuzz::<(&str, &str)>(b, glob_match::run)
     });
+    replay("ipc_stream_head", &mut failures, |b| {
+        fuzz::<&[u8]>(b, ipc_stream_head::run)
+    });
     replay("model_header", &mut failures, model_header::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
@@ -141,6 +146,7 @@ fn every_corpus_has_a_replay() {
         "config_parse",
         "fuzzy_match",
         "glob_match",
+        "ipc_stream_head",
         "model_header",
         "number_format",
         "parse_query",

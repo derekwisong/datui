@@ -667,6 +667,57 @@ def save_ipc(df, filename):
     print(f"Generated: {filepath}")
 
 
+def _as_hugging_face_table(df):
+    """The frame as Hugging Face `datasets` holds it: 32-bit string offsets."""
+    import pyarrow as pa
+
+    table = df.to_arrow()
+    fields = [
+        pa.field(f.name, pa.string()) if pa.types.is_large_string(f.type) or pa.types.is_string_view(f.type) else f
+        for f in table.schema
+    ]
+    return table.cast(pa.schema(fields))
+
+
+def _write_stream(table, filepath, **options):
+    """Write `table` as an Arrow IPC stream (no footer), several record batches."""
+    import pyarrow as pa
+
+    with pa.OSFile(str(filepath), "wb") as sink:
+        with pa.ipc.new_stream(sink, table.schema, options=pa.ipc.IpcWriteOptions(**options)) as writer:
+            for batch in table.to_batches(max_chunksize=7):
+                writer.write_batch(batch)
+    print(f"Generated: {filepath}")
+
+
+def save_ipc_streams(df):
+    """Arrow IPC streams, the format of a Hugging Face `datasets` cache: plain, with
+    LZ4 and ZSTD buffers, in the legacy layout without the continuation marker, and a
+    `save_to_disk` directory of shards with its two JSON files."""
+    import json
+
+    table = _as_hugging_face_table(df)
+    _write_stream(table, OUTPUT_DIR / "people_stream.arrow")
+    _write_stream(table, OUTPUT_DIR / "people_stream_lz4.arrow", compression="lz4")
+    _write_stream(table, OUTPUT_DIR / "people_stream_zstd.arrow", compression="zstd")
+    _write_stream(table, OUTPUT_DIR / "people_stream_legacy", use_legacy_format=True)
+
+    shards_dir = OUTPUT_DIR / "hf_shards"
+    shards_dir.mkdir(exist_ok=True)
+    n = 3
+    per = -(-table.num_rows // n)
+    names = []
+    for i in range(n):
+        name = f"data-{i:05d}-of-{n:05d}.arrow"
+        names.append(name)
+        _write_stream(table.slice(i * per, per), shards_dir / name)
+    (shards_dir / "dataset_info.json").write_text(json.dumps({"description": "", "features": {}}))
+    (shards_dir / "state.json").write_text(
+        json.dumps({"_data_files": [{"filename": name} for name in names], "_split": "train"})
+    )
+    print(f"Generated: {shards_dir}")
+
+
 def _polars_dtype_to_avro(dtype):
     """Map Polars dtype to Avro schema (nullable union). Date/Datetime use logical types."""
     if dtype == pl.Int64:
@@ -883,6 +934,7 @@ def main():
     save_csv(people_df, "people.csv")
     save_parquet(people_df, "people.parquet")
     save_ipc(people_df, "people.arrow")
+    save_ipc_streams(people_df)
     save_avro(people_df, "people.avro")
     save_excel(people_df, "people.xlsx")
 

@@ -675,4 +675,66 @@ mod tests {
         assert_eq!(exact.summary.rows, 20_000);
         assert_eq!(exact.summary.distinct, 7);
     }
+
+    /// Every line's rows against a group-by of the same frame, and the rows a
+    /// drill into each line's value finds, for the types that group oddly: NaN and
+    /// -0.0, empty and escaped text, categoricals, dates, lists, structs, decimals.
+    #[test]
+    fn counts_and_drills_agree_with_a_group_by_for_every_kind_of_value() {
+        let mixed = df!(
+            "f" => [Some(1.5f64), Some(f64::NAN), None, Some(f64::NAN), Some(-0.0), Some(0.1 + 0.2)],
+            "s" => [Some(""), Some("a\tb"), Some("x\ny"), None, Some(""), Some("'\"\\")],
+            "b" => [Some(true), Some(false), None, Some(true), Some(true), None],
+            "l" => [Some(Series::new("".into(), [1i32, 2])), None, Some(Series::new("".into(), [1i32, 2])), Some(Series::new("".into(), Vec::<i32>::new())), None, None],
+            "n" => [1.25f64, 1.25, 3.5, 3.5, 3.5, 0.0],
+            "d" => [Some(19000i32), None, Some(19000), Some(1), None, Some(1)],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("s")
+                .cast(DataType::from_categories(Categories::global()))
+                .alias("c"),
+            col("n").cast(DataType::Decimal(10, 2)).alias("x"),
+            col("d").cast(DataType::Date),
+            as_struct(vec![col("b"), col("d")]).alias("st"),
+        ])
+        .collect()
+        .unwrap();
+        for column in ["f", "s", "b", "l", "c", "x", "d", "st"] {
+            let counts = count(mixed.clone(), column);
+            let groups = mixed
+                .clone()
+                .lazy()
+                .group_by([col(column)])
+                .agg([len()])
+                .collect()
+                .unwrap()
+                .height();
+            let summary = &counts.summary;
+            assert_eq!(
+                summary.distinct + usize::from(summary.nulls > 0),
+                groups,
+                "{column}"
+            );
+            let lines = counts.lines(Order::Count);
+            assert_eq!(lines.last().unwrap().cumulative, 6, "{column}");
+            let dtype = mixed.schema().get(column).unwrap().clone();
+            for line in lines {
+                let value = match line.kind {
+                    LineKind::Value(at) => counts.value(at).unwrap(),
+                    LineKind::Null => AnyValue::Null,
+                    LineKind::Other(_) => unreachable!(),
+                };
+                let found = mixed
+                    .clone()
+                    .lazy()
+                    .filter(col(column).eq_missing(lit(Scalar::new(dtype.clone(), value))))
+                    .collect()
+                    .unwrap()
+                    .height();
+                assert_eq!(found as u64, line.rows, "{column} {:?}", line.kind);
+            }
+        }
+    }
 }

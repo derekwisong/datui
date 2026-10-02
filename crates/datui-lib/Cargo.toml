@@ -106,6 +106,10 @@ features = [
     # The same for `DataType::Array`, which schema_union.rs matches on; it arrived
     # only through `polars/streaming` or `polars/sql`.
     "dtype-array",
+    # Decimal's values are 128-bit, and grouping by them (value counts, a bar
+    # chart's categories, `by`) hashes them as unsigned 128-bit: without this
+    # Polars panics.
+    "dtype-u128",
     "dtype-datetime",
     "dtype-time",
     "dtype-duration",

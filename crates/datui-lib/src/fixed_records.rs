@@ -963,7 +963,8 @@ mod tests {
     }
 
     /// A mapped file cut short after it was opened is refused at the next read, rather
-    /// than read past its new end.
+    /// than read past its new end. Windows refuses to cut a mapped file (os error 1224),
+    /// so there it cannot shrink.
     #[test]
     fn a_file_that_shrank_is_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -979,12 +980,17 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(records.collect(64).unwrap().height(), 64);
-        std::fs::OpenOptions::new()
+        let cut = std::fs::OpenOptions::new()
             .write(true)
             .open(&path)
             .unwrap()
-            .set_len(8)
-            .unwrap();
+            .set_len(8);
+        if cfg!(windows) {
+            assert_eq!(cut.unwrap_err().raw_os_error(), Some(1224));
+            assert_eq!(records.collect(64).unwrap().height(), 64);
+            return;
+        }
+        cut.unwrap();
         let err = records.clone().into_lazy().unwrap().collect().unwrap_err();
         assert!(err.to_string().contains("shorter"), "{err}");
     }

@@ -15,6 +15,7 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `ipc_stream_head` | `ipc_stream::is_stream_head`, `stdin::sniff` | Reads a length from a file's first bytes and checks the flatbuffer it names is an Arrow schema message, on any file being opened and any pipe. Any bytes must give an answer, never a panic (Polars' own schema reader panics on some column types), and a pipe that is a stream must be read as one. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and color strings that get sliced by byte offset after a byte-length check. |
 | `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Hand-written readers for model file headers that allocate and skip by lengths read from the file. Every input goes to both; a corrupt header must be an error, never a panic or an allocation sized by the file, and a header that parses must build its table. |
+| `format_spec` | `formats::Spec`, `fixed_records` | A binary format spec and a file it reads, split at the first NUL byte. A spec parses or fails with a line and column; a file reads or fails; every row the reader counts decodes, and a window of the rows matches the same rows read from the start. |
 
 ## Layout
 
@@ -82,10 +83,10 @@ independently of Nightly. Failed replays upload crashing inputs as build artifac
 
 `fuzz/corpus/` is committed, but it is a *seed* corpus, not the full coverage corpus.
 
-The three targets that take text are seeded with inputs a person can read: `parse_query`
+The four targets that take text are seeded with inputs a person can read: `parse_query`
 from the parser's own unit tests and the query examples throughout `docs/`,
 `sql_group_plan` from the planner's unit tests, `config_parse` from the TOML blocks in
-`docs/`. Anything named `regression-*` is an
+`docs/`, and `format_spec` from the specs in the user guide, each with a file after it. Anything named `regression-*` is an
 input that once crashed a target, kept so the replay test notices if it ever crashes
 again.
 

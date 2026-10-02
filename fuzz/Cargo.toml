@@ -102,3 +102,10 @@ path = "fuzz_targets/model_header.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "format_spec"
+path = "fuzz_targets/format_spec.rs"
+test = false
+doc = false
+bench = false

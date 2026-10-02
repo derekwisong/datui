@@ -20,13 +20,14 @@ pub mod table;
 
 use std::fs::File;
 use std::io::{BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::prelude::*;
 
+use crate::download::TempDownload;
 use crate::notes::Note;
 use crate::numfmt::group_chrome;
 use crate::segments::{Converted, Segments};
@@ -116,16 +117,169 @@ pub(crate) fn open_reader<'a>(
     )
 }
 
-/// Read `file` (named `display` to the user) as `format` into temporary IPC files,
-/// written through `writer`, counting the bytes of `file` read in `read`.
+/// Read `files` (named `display` to the user when there is one) as `format` into
+/// temporary IPC files, written through `writer`, counting the bytes of the files read
+/// in `read`. Several files are one table with a `file` column first, each file's
+/// columns its own and the others null; what the reads noticed is counted across them.
 pub(crate) fn convert(
-    file: &Path,
+    files: &[PathBuf],
     display: &Path,
     format: FileFormat,
     options: &OpenOptions,
     writer: &Writer,
     read: &AtomicU64,
 ) -> Result<Converted> {
+    let [file] = files else {
+        return convert_many(files, format, options, writer, read);
+    };
+    let one = convert_one(file, display, format, options, writer, read)?;
+    let (notes, other_tables) = one.stats.notes(None, options)?;
+    Ok(Converted {
+        lf: one.lf,
+        files: one.files,
+        notes,
+        other_tables,
+    })
+}
+
+/// Each of `files` read as [`convert_one`] reads it, then stacked under a `file`
+/// column. A GPX file's fields are typed in that file, and stacked as one type where
+/// two files disagree.
+fn convert_many(
+    files: &[PathBuf],
+    format: FileFormat,
+    options: &OpenOptions,
+    writer: &Writer,
+    read: &AtomicU64,
+) -> Result<Converted> {
+    let mut frames = Vec::with_capacity(files.len());
+    let mut written = Vec::new();
+    let mut stats: Option<Stats> = None;
+    for file in files {
+        let one = convert_one(file, file, format, options, writer, read)?;
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.display().to_string());
+        frames.push(one.lf.select([lit(name).alias("file"), all().as_expr()]));
+        written.extend(one.files);
+        match &mut stats {
+            None => stats = Some(one.stats),
+            Some(stats) => stats.absorb(one.stats),
+        }
+    }
+    let stats = stats.ok_or_else(|| eyre!("No GPS logs to read."))?;
+    let lf = concat(
+        &frames,
+        UnionArgs {
+            diagonal: true,
+            to_supertypes: true,
+            ..Default::default()
+        },
+    )?;
+    let (notes, other_tables) = stats.notes(Some(files.len()), options)?;
+    Ok(Converted {
+        lf,
+        files: written,
+        notes,
+        other_tables,
+    })
+}
+
+/// What one log's read noticed, of either format.
+enum Stats {
+    Gpx {
+        stats: gpx::Stats,
+        /// Files that end inside an element.
+        truncated: usize,
+    },
+    Nmea {
+        stats: nmea::Stats,
+        /// Files with rows and no sentence that gives the date.
+        undated: usize,
+    },
+}
+
+impl Stats {
+    /// Count `other`, another file's, in with these.
+    fn absorb(&mut self, other: Stats) {
+        match (self, other) {
+            (
+                Stats::Gpx { stats, truncated },
+                Stats::Gpx {
+                    stats: more,
+                    truncated: also,
+                },
+            ) => {
+                stats.points += more.points;
+                stats.tracks += more.tracks;
+                stats.routes += more.routes;
+                stats.waypoints += more.waypoints;
+                stats.fields_dropped += more.fields_dropped;
+                stats.bad_times += more.bad_times;
+                stats.truncated |= more.truncated;
+                *truncated += also;
+            }
+            (
+                Stats::Nmea { stats, undated },
+                Stats::Nmea {
+                    stats: more,
+                    undated: also,
+                },
+            ) => {
+                stats.absorb(&more);
+                *undated += also;
+            }
+            // One format per open.
+            _ => {}
+        }
+    }
+
+    /// The notes for the Notes tab, and the other tables for the Schema tab, of `of`
+    /// files (`None` for one).
+    fn notes(&self, of: Option<usize>, options: &OpenOptions) -> Result<(Vec<Note>, Vec<String>)> {
+        Ok(match self {
+            Stats::Gpx { stats, truncated } => (gpx_notes(stats, of, *truncated), Vec::new()),
+            Stats::Nmea { stats, undated } => {
+                let table = nmea_table(options)?;
+                (
+                    nmea_notes(stats, of, *undated),
+                    nmea_other_tables(stats, table),
+                )
+            }
+        })
+    }
+}
+
+/// The NMEA table `--table` names, the fixes when it names none.
+fn nmea_table(options: &OpenOptions) -> Result<nmea::Table> {
+    match options.table.as_deref() {
+        None => Ok(nmea::Table::Fixes),
+        Some(name) => nmea::Table::from_name(name).ok_or_else(|| {
+            eyre!(
+                "No table {name:?} in an NMEA log. The tables are: {}.",
+                nmea::Table::ALL.map(nmea::Table::name).join(", ")
+            )
+        }),
+    }
+}
+
+/// One log read: the frame over its segments, the files they are, and its counts.
+struct One {
+    lf: LazyFrame,
+    files: Vec<TempDownload>,
+    stats: Stats,
+}
+
+/// Read `file` (named `display` to the user) as `format` into temporary IPC files.
+fn convert_one(
+    file: &Path,
+    display: &Path,
+    format: FileFormat,
+    options: &OpenOptions,
+    writer: &Writer,
+    read: &AtomicU64,
+) -> Result<One> {
     let mut reader = open_reader(file, options, read)?;
     let mut segments = Segments::new(options, writer);
     let mut chunk = vec![0u8; CHUNK];
@@ -141,7 +295,7 @@ pub(crate) fn convert(
             }
         }
     };
-    let notes = match format {
+    match format {
         FileFormat::Gpx => {
             let mut gpx = gpx::GpxReader::new();
             loop {
@@ -157,24 +311,18 @@ pub(crate) fn convert(
             let last = gpx.finish().map_err(|e| eyre!(e))?;
             segments.write(&last)?;
             let (lf, files) = segments.finish()?;
-            let lf = type_gpx_fields(lf, gpx.fields());
-            return Ok(Converted {
-                lf,
+            let stats = gpx.stats().clone();
+            Ok(One {
+                lf: type_gpx_fields(lf, gpx.fields()),
                 files,
-                notes: gpx_notes(gpx.stats()),
-                other_tables: Vec::new(),
-            });
+                stats: Stats::Gpx {
+                    truncated: usize::from(stats.truncated),
+                    stats,
+                },
+            })
         }
         FileFormat::Nmea => {
-            let table = match options.table.as_deref() {
-                None => nmea::Table::Fixes,
-                Some(name) => nmea::Table::from_name(name).ok_or_else(|| {
-                    eyre!(
-                        "No table {name:?} in an NMEA log. The tables are: {}.",
-                        nmea::Table::ALL.map(nmea::Table::name).join(", ")
-                    )
-                })?,
-            };
+            let table = nmea_table(options)?;
             let mut log = nmea::NmeaReader::new(table);
             loop {
                 let n = next(&mut chunk)?;
@@ -194,21 +342,19 @@ pub(crate) fn convert(
                 ));
             }
             segments.write(&last)?;
-            (
-                nmea_notes(log.stats()),
-                nmea_other_tables(log.stats(), table),
-            )
+            let (lf, files) = segments.finish()?;
+            let stats = log.stats().clone();
+            Ok(One {
+                lf,
+                files,
+                stats: Stats::Nmea {
+                    undated: usize::from(!stats.dated && stats.rows > 0),
+                    stats,
+                },
+            })
         }
-        other => return Err(eyre!("{} is not a GPS format.", other.name())),
-    };
-    let (notes, other_tables) = notes;
-    let (lf, files) = segments.finish()?;
-    Ok(Converted {
-        lf,
-        files,
-        notes,
-        other_tables,
-    })
+        other => Err(eyre!("{} is not a GPS format.", other.name())),
+    }
 }
 
 /// A GPX field column as numbers when every value in it was one.
@@ -247,10 +393,17 @@ fn count(n: u64, one: &str, many: &str) -> String {
     format!("{} {}", group_chrome(n), if n == 1 { one } else { many })
 }
 
-/// What reading an NMEA log noticed.
-fn nmea_notes(stats: &nmea::Stats) -> Vec<Note> {
+/// What reading an NMEA log noticed; of `of` logs, `undated` of them without a date.
+fn nmea_notes(stats: &nmea::Stats, of: Option<usize>, undated: usize) -> Vec<Note> {
     let mut notes = Vec::new();
-    let of_lines = format!("of {}", count(stats.lines, "line", "lines"));
+    let of_lines = match of {
+        None => format!("of {}", count(stats.lines, "line", "lines")),
+        Some(n) => format!(
+            "of {} in {}",
+            count(stats.lines, "line", "lines"),
+            count(n as u64, "log", "logs")
+        ),
+    };
     if stats.skipped > 0 {
         notes.push(note(
             format!(
@@ -269,11 +422,15 @@ fn nmea_notes(stats: &nmea::Stats) -> Vec<Note> {
             format!("of {}", count(stats.sentences, "sentence", "sentences")),
         ));
     }
-    if !stats.dated && stats.rows > 0 {
-        notes.push(note(
-            "No RMC or ZDA sentence gives the date, so time is empty".to_string(),
-            of_lines.clone(),
-        ));
+    if undated > 0 {
+        let summary = match of {
+            None => "No RMC or ZDA sentence gives the date, so time is empty".to_string(),
+            Some(n) => format!(
+                "{undated} of {n} logs {} no RMC or ZDA sentence to give the date, so their time is empty",
+                if undated == 1 { "has" } else { "have" }
+            ),
+        };
+        notes.push(note(summary, of_lines.clone()));
     }
     notes
 }
@@ -305,15 +462,26 @@ fn nmea_other_tables(stats: &nmea::Stats, table: nmea::Table) -> Vec<String> {
         .collect()
 }
 
-/// What reading a GPX file noticed.
-fn gpx_notes(stats: &gpx::Stats) -> Vec<Note> {
+/// What reading a GPX file noticed; of `of` files, `truncated` of them cut short.
+fn gpx_notes(stats: &gpx::Stats, of: Option<usize>, truncated: usize) -> Vec<Note> {
     let mut notes = Vec::new();
-    let of_points = format!("of {}", count(stats.points, "point", "points"));
-    if stats.truncated {
-        notes.push(note(
-            "The file ends inside an element; the points before it are shown".to_string(),
-            of_points.clone(),
-        ));
+    let of_points = match of {
+        None => format!("of {}", count(stats.points, "point", "points")),
+        Some(n) => format!(
+            "of {} in {}",
+            count(stats.points, "point", "points"),
+            count(n as u64, "file", "files")
+        ),
+    };
+    if truncated > 0 {
+        let summary = match of {
+            None => "The file ends inside an element; the points before it are shown".to_string(),
+            Some(n) => format!(
+                "{truncated} of {n} files {} inside an element; the points before it are shown",
+                if truncated == 1 { "ends" } else { "end" }
+            ),
+        };
+        notes.push(note(summary, of_points.clone()));
     }
     if stats.bad_times > 0 {
         notes.push(note(
@@ -405,7 +573,7 @@ mod tests {
         let out_dir = tempfile::tempdir().unwrap();
         let writer = Writer::default();
         let converted = convert(
-            &path,
+            std::slice::from_ref(&path),
             &path,
             FileFormat::Gpx,
             &options(out_dir.path()),
@@ -438,7 +606,7 @@ mod tests {
         std::fs::create_dir(&temp).unwrap();
         std::fs::create_dir(dir.path().join("t1")).unwrap();
         let converted = convert(
-            &path,
+            std::slice::from_ref(&path),
             &path,
             FileFormat::Nmea,
             &options(&temp),
@@ -461,7 +629,7 @@ mod tests {
         let writer = Writer::default();
         let read = AtomicU64::default();
         let converted = convert(
-            &path,
+            std::slice::from_ref(&path),
             &path,
             FileFormat::Nmea,
             &options(dir.path()),
@@ -487,7 +655,7 @@ mod tests {
             "a GSV the fixes do not show"
         );
         let gsv = convert(
-            &path,
+            std::slice::from_ref(&path),
             &path,
             FileFormat::Nmea,
             &OpenOptions {
@@ -501,7 +669,7 @@ mod tests {
         assert_eq!(gsv.lf.collect().unwrap().height(), 1);
         assert_eq!(gsv.other_tables, ["fixes", "RMC 1", "sentences"]);
         let none = convert(
-            &path,
+            std::slice::from_ref(&path),
             &path,
             FileFormat::Nmea,
             &OpenOptions {
@@ -516,7 +684,7 @@ mod tests {
         std::fs::write(&text, "hello\nworld\n").unwrap();
         assert!(
             convert(
-                &text,
+                std::slice::from_ref(&text),
                 &text,
                 FileFormat::Nmea,
                 &options(dir.path()),
@@ -524,6 +692,112 @@ mod tests {
                 &AtomicU64::default()
             )
             .is_err()
+        );
+    }
+
+    /// Several logs are one table with a `file` column first; a field one GPX file has
+    /// and another lacks is null in the other, typed where the files agree and stacked
+    /// as text where they do not; notes count across the files; the files go with the
+    /// frame.
+    #[test]
+    fn several_logs_are_one_table_with_a_file_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let gpx = |name: &str, points: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(
+                &path,
+                format!("<gpx><trk><trkseg>{points}</trkseg></trk></gpx>"),
+            )
+            .unwrap();
+            path
+        };
+        let a = gpx(
+            "a.gpx",
+            "<trkpt lat=\"1\" lon=\"2\"><extensions><hr>90</hr><cad>7</cad></extensions></trkpt>\
+             <trkpt lat=\"1\" lon=\"3\"><time>yesterday</time></trkpt>",
+        );
+        let b = gpx(
+            "b.gpx",
+            "<trkpt lat=\"5\" lon=\"6\"><extensions><hr>91</hr><cad>fast</cad><pwr>200</pwr></extensions></trkpt>",
+        );
+        let out = tempfile::tempdir().unwrap();
+        let read = AtomicU64::default();
+        let converted = convert(
+            &[a.clone(), b.clone()],
+            dir.path(),
+            FileFormat::Gpx,
+            &options(out.path()),
+            &Writer::default(),
+            &read,
+        )
+        .unwrap();
+        let df = converted.lf.clone().collect().unwrap();
+        assert_eq!(df.get_column_names()[0].as_str(), "file");
+        let files: Vec<Option<&str>> = df.column("file").unwrap().str().unwrap().iter().collect();
+        assert_eq!(files, [Some("a.gpx"), Some("a.gpx"), Some("b.gpx")]);
+        let hr = df.column("hr").unwrap();
+        assert_eq!(hr.dtype(), &DataType::Int64, "a number in both files");
+        assert_eq!(hr.null_count(), 1);
+        assert_eq!(df.column("cad").unwrap().dtype(), &DataType::String);
+        assert_eq!(df.column("pwr").unwrap().null_count(), 2, "only b has it");
+        assert_eq!(
+            read.load(Ordering::Relaxed),
+            std::fs::metadata(&a).unwrap().len() + std::fs::metadata(&b).unwrap().len()
+        );
+        let notes: Vec<_> = converted
+            .notes
+            .iter()
+            .map(|n| (n.summary.as_str(), n.scope.as_str()))
+            .collect();
+        assert_eq!(
+            notes,
+            [(
+                "1 time is not ISO 8601 and left empty",
+                "of 3 points in 2 files"
+            )]
+        );
+        assert!(converted.files.len() >= 2);
+        drop(converted);
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+    }
+
+    /// NMEA logs stack with their counts added: one without a date says so of itself
+    /// alone, and a table the fixes do not show is offered from either.
+    #[test]
+    fn nmea_logs_stack_and_count_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let dated = dir.path().join("a.nmea");
+        std::fs::write(
+            &dated,
+            "$GPRMC,120000,A,4807.038,N,01131.000,E,1.0,0.0,010124,,,A\n",
+        )
+        .unwrap();
+        let undated = dir.path().join("b.nmea");
+        std::fs::write(
+            &undated,
+            "$GPGGA,120001,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,\n$GPGSV,1,1,01,07,40,083,46\n",
+        )
+        .unwrap();
+        let converted = convert(
+            &[dated, undated],
+            dir.path(),
+            FileFormat::Nmea,
+            &options(dir.path()),
+            &Writer::default(),
+            &AtomicU64::default(),
+        )
+        .unwrap();
+        let df = converted.lf.clone().collect().unwrap();
+        assert_eq!(df.height(), 2);
+        assert_eq!(df.get_column_names()[0].as_str(), "file");
+        let summaries: Vec<_> = converted.notes.iter().map(|n| n.summary.as_str()).collect();
+        assert_eq!(
+            summaries,
+            ["1 of 2 logs has no RMC or ZDA sentence to give the date, so their time is empty"]
+        );
+        assert_eq!(
+            converted.other_tables,
+            ["GGA 1", "RMC 1", "GSV 1", "sentences"]
         );
     }
 }

@@ -582,6 +582,26 @@ impl Stats {
         }
     }
 
+    /// Count another log's sentences in with these.
+    pub fn absorb(&mut self, other: &Stats) {
+        self.lines += other.lines;
+        self.sentences += other.sentences;
+        self.skipped += other.skipped;
+        self.bad_checksums += other.bad_checksums;
+        self.other_types += other.other_types;
+        self.rows += other.rows;
+        self.dated &= other.dated;
+        for (name, n) in &other.types {
+            if let Some((_, have)) = self.types.iter_mut().find(|(t, _)| t == name) {
+                *have += n;
+            } else if self.types.len() < MAX_TYPES {
+                self.types.push((name.clone(), *n));
+            } else {
+                self.other_types += n;
+            }
+        }
+    }
+
     /// How many sentences of `kind` were read.
     pub fn of(&self, kind: &str) -> u64 {
         self.types

@@ -48,7 +48,8 @@ A find starts in the rows already read. Past them it reads the view on, a
 window at a time, and the bar shows the rows read; <kbd>Esc</kbd> or
 <kbd>Ctrl</kbd>+<kbd>O</kbd> stops it. A filtered view, a CSV or NDJSON
 cannot skip to a window, so <kbd>N</kbd> there reads the rows before the cursor
-in one pass. The order of a sorted view, a SQL result included, is the order on
+in one pass, and <kbd>n</kbd> from deep in the view reads windows no smaller than
+the rows above them. The order of a sorted view, a SQL result included, is the order on
 screen, so <kbd>n</kbd> never skips or repeats a row.
 
 [Search](querying-data.md#search) in the query prompt filters rows instead.

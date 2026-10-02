@@ -1125,6 +1125,14 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                 partitions += 1;
             }
         } else if let Some(found) = data_format(&entry_path)
+            // A sharded checkpoint's index is counted as the JSON it is, so the label
+            // counts the shards; the read still takes it, for the metadata it carries.
+            .map(
+                |found| match crate::model_files::is_safetensors_index(&entry_path) {
+                    true => crate::FileFormat::Json,
+                    false => found,
+                },
+            )
             // Data by where it sits rather than by its name: see [`is_data_file`].
             .or_else(|| {
                 is_parquet_key(&directory_and_name(&entry_path))
@@ -3161,6 +3169,7 @@ mod classification_tests {
             "generation_config.json",
             "tokenizer.json",
             "tokenizer_config.json",
+            "model.safetensors.index.json",
         ] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
         }
@@ -3173,11 +3182,11 @@ mod classification_tests {
             panic!("weights and JSON are two formats");
         };
         assert_eq!(format, crate::FileFormat::Safetensors);
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3, "the shards, and the index for its metadata");
         assert_eq!(passed_over, [(crate::FileFormat::Json, 4)]);
         let (kind, holds) = look_at_directory(dir.path());
         assert_eq!(kind, EntryKind::MultiFile, "opened as one");
-        assert_eq!(holds.label(), "2 safetensors");
+        assert_eq!(holds.label(), "2 safetensors", "the shards, not the index");
 
         // The index is the model too, named by what it is rather than its extension.
         assert_eq!(

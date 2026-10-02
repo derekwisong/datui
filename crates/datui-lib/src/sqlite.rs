@@ -275,7 +275,7 @@ mod read {
     /// SQLite steps between looks at the stop flag, for a statement that works a long
     /// time before its first row (a view that sorts).
     const STEPS_PER_LOOK: i32 = 100_000;
-    /// The longest a preview reads before it gives up.
+    /// The longest a preview, or the estimate of a table's rows, reads before it gives up.
     const PREVIEW_TIME: Duration = Duration::from_secs(2);
     /// Tables whose columns a listing reads; past this they are listed by name.
     const MAX_DESCRIBED: usize = 1000;
@@ -481,6 +481,14 @@ mod read {
         let Ok(conn) = open(path) else {
             return 0;
         };
+        // A virtual table may walk all its rows to answer; the bar can do without.
+        let began = std::time::Instant::now();
+        if conn
+            .progress_handler(STEPS_PER_LOOK, Some(move || began.elapsed() > PREVIEW_TIME))
+            .is_err()
+        {
+            return 0;
+        }
         let sql = format!("SELECT max(rowid) FROM main.{}", quoted(&table.name));
         conn.query_row(&sql, [], |row| row.get::<_, Option<i64>>(0))
             .ok()

@@ -22,6 +22,8 @@ mod fake_s3;
 mod formats_open;
 #[path = "formats/gps.rs"]
 mod gps;
+#[path = "formats/midi.rs"]
+mod midi;
 #[path = "formats/model_files.rs"]
 mod model_files;
 #[cfg(feature = "cloud")]

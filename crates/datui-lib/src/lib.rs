@@ -95,6 +95,7 @@ pub mod local_copy;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
+pub mod midi;
 pub mod model_files;
 pub mod nested_json;
 pub mod notes;
@@ -192,7 +193,8 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         | FileFormat::Gguf
         | FileFormat::Nmea
         | FileFormat::Gpx
-        | FileFormat::Audio => None,
+        | FileFormat::Audio
+        | FileFormat::Midi => None,
     }
 }
 
@@ -8533,6 +8535,9 @@ pub struct OpenOptions {
     /// for a window read straight from the file. Found by the scan and carried to the
     /// dataset as `left_out` is. `None` for every other open.
     pub audio: Option<Arc<crate::audio::AudioSource>>,
+    /// What a MIDI file said besides its events, for the Info panel; carried as
+    /// `model` is. `None` for every other open.
+    pub midi: Option<Arc<crate::midi::MidiSummary>>,
 }
 
 impl OpenOptions {
@@ -8546,6 +8551,7 @@ impl OpenOptions {
             left_out: Vec::new(),
             model: None,
             read_python: Vec::new(),
+            midi: None,
             read_as_plain_files_of: None,
             files_disagree: Default::default(),
             compression: None,
@@ -9235,6 +9241,8 @@ pub struct ReadReport {
     pub read_python: Vec<String>,
     /// The audio file the scan opened. See [`OpenOptions::audio`].
     pub audio: Option<Arc<crate::audio::AudioSource>>,
+    /// What a MIDI file said besides its events. See [`OpenOptions::midi`].
+    pub midi: Option<Arc<crate::midi::MidiSummary>>,
 }
 
 /// What a scan built: the frame, or what the load has to turn into a file it can scan
@@ -17014,6 +17022,7 @@ impl App {
                         format_read: None,
                         read_python: Vec::new(),
                         audio: None,
+                        midi: None,
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
@@ -17041,6 +17050,7 @@ impl App {
                         spec_choice: None,
                         read_python: report.read_python,
                         audio: report.audio,
+                        midi: report.midi,
                         ..options
                     };
                     Ok(Answer::Load(Box::new(match scan {
@@ -18041,6 +18051,10 @@ impl App {
             facts.format_read = Some(read.clone());
         }
         facts.audio = options.audio.clone();
+        if let Some(midi) = &options.midi {
+            facts.open_notes.extend(crate::midi::notes(midi));
+        }
+        facts.midi = options.midi.clone();
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         facts.remote_source = path.is_some_and(source::scans_in_place);
@@ -18756,11 +18770,11 @@ impl App {
                         || (path.is_file() && crate::discover::has_parquet_magic(path))))
                 .then_some(FileFormat::Parquet)
             })
-            // A model file or audio is known by its first bytes whatever it is called.
+            // A model, audio or MIDI file is known by its first bytes whatever it is called.
             .or_else(|| {
                 path.is_file()
                     .then(|| {
-                        crate::discover::sniff_model_format(path)
+                        crate::discover::sniff_signed_format(path)
                             .or_else(|| crate::discover::sniff_audio_format(path))
                     })
                     .flatten()
@@ -18885,6 +18899,11 @@ impl App {
                     report.model = Some(Arc::new(summary));
                     return Ok(lf.into());
                 }
+                Some(FileFormat::Midi) => {
+                    let (lf, summary) = crate::midi::read_midi(paths)?;
+                    report.midi = Some(Arc::new(summary));
+                    return Ok(lf.into());
+                }
                 Some(FileFormat::Tsv)
                 | Some(FileFormat::Psv)
                 | Some(FileFormat::Excel)
@@ -18997,6 +19016,11 @@ impl App {
                         Arc::new(crate::audio::AudioSource::open(path, options.normalize)?);
                     let lf = source.lazy();
                     report.audio = Some(source);
+                    return Ok(lf.into());
+                }
+                Some(FileFormat::Midi) => {
+                    let (lf, summary) = crate::midi::read_midi(paths)?;
+                    report.midi = Some(Arc::new(summary));
                     return Ok(lf.into());
                 }
                 Some(FileFormat::Orc) => DataTableState::from_orc(
@@ -20466,8 +20490,11 @@ impl App {
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
-            // The Model and Audio tabs scroll their metadata the same way.
-            let detail_tab = matches!(self.info_modal.active_tab, InfoTab::Model | InfoTab::Audio);
+            // The Model, Audio and MIDI tabs scroll their lists the same way.
+            let detail_tab = matches!(
+                self.info_modal.active_tab,
+                InfoTab::Model | InfoTab::Audio | InfoTab::Midi
+            );
             let notes = self
                 .data_table_state
                 .as_ref()
@@ -22546,6 +22573,9 @@ impl App {
                         // is particular to it is on the Model tab.
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Model);
+                    } else if state.midi().is_some() {
+                        // So is a MIDI file's.
+                        self.info_modal.open_on(crate::widgets::info::InfoTab::Midi);
                     } else {
                         self.info_modal.open();
                     }

@@ -40,6 +40,8 @@ pub enum FileFormat {
     Gpx,
     /// Uncompressed audio (.wav, .bwf, .rf64, .aif, .aiff, .aifc): one row per sample frame
     Audio,
+    /// Standard MIDI File (.mid, .midi, .smf, .kar, .rmi): one row per event
+    Midi,
 }
 
 impl FileFormat {
@@ -82,6 +84,7 @@ impl FileFormat {
             Self::Nmea => "nmea",
             Self::Gpx => "gpx",
             Self::Audio => "audio",
+            Self::Midi => "midi",
         }
     }
 
@@ -94,7 +97,7 @@ impl FileFormat {
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
     /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -110,6 +113,7 @@ impl FileFormat {
         Self::Nmea,
         Self::Gpx,
         Self::Audio,
+        Self::Midi,
     ];
 
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
@@ -177,6 +181,7 @@ impl FileFormat {
             "nmea" => Some(Self::Nmea),
             "gpx" => Some(Self::Gpx),
             "wav" | "wave" | "bwf" | "rf64" | "aif" | "aiff" | "aifc" => Some(Self::Audio),
+            "mid" | "midi" | "smf" | "kar" | "rmi" => Some(Self::Midi),
             _ => None,
         }
     }
@@ -908,6 +913,14 @@ mod tests {
             "an index is read as the shards it names"
         );
         assert_eq!(
+            FileFormat::from_path(Path::new("song.MID")),
+            Some(FileFormat::Midi)
+        );
+        assert_eq!(
+            FileFormat::from_path(Path::new("karaoke.kar")),
+            Some(FileFormat::Midi)
+        );
+        assert_eq!(
             FileFormat::from_path(Path::new("config.json")),
             Some(FileFormat::Json)
         );
@@ -954,7 +967,8 @@ mod format_tests {
                 | FileFormat::Gguf
                 | FileFormat::Nmea
                 | FileFormat::Gpx
-                | FileFormat::Audio => FileFormat::ALL.contains(&f),
+                | FileFormat::Audio
+                | FileFormat::Midi => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -985,7 +999,8 @@ mod format_tests {
                 "gguf",
                 "nmea",
                 "gpx",
-                "audio"
+                "audio",
+                "midi"
             ]
         );
     }

@@ -134,7 +134,7 @@ pub(crate) fn wrap_to(text: &str, width: usize) -> Vec<String> {
 }
 
 /// `n` comma-grouped, for the panel's own labels.
-fn group_u64(n: u64) -> String {
+pub(crate) fn group_u64(n: u64) -> String {
     let mut out = String::new();
     crate::numfmt::NumberFormat::CHROME.write_u64(n, &mut out);
     out
@@ -435,6 +435,104 @@ pub fn format_bytes(n: u64) -> String {
     }
 }
 
+/// The MIDI tab's lines above its list: format and timing, length and counts, tempo,
+/// meter and key, copyright.
+pub(crate) fn midi_facts(midi: &crate::midi::MidiSummary, sep: &str) -> Vec<String> {
+    let mut head = match midi.format {
+        Some(format) => format!("MIDI format {format}"),
+        None => "MIDI".to_string(),
+    };
+    if midi.files > 1 {
+        head.push_str(sep);
+        head.push_str(&count_of(midi.files as u64, "file", "files"));
+    }
+    if let Some(division) = midi.division {
+        head.push_str(sep);
+        head.push_str(&division.label());
+    }
+    head.push_str(sep);
+    head.push_str(&count_of(midi.track_count as u64, "track", "tracks"));
+    let mut counts = format!(
+        "Length: {}{sep}{}{sep}{}",
+        clock(midi.length_micros as f64 / 1e6),
+        count_of(midi.events as u64, "event", "events"),
+        count_of(midi.notes as u64, "note", "notes"),
+    );
+    if midi.unended > 0 {
+        let n = midi.unended;
+        let verb = if n == 1 { "ends" } else { "end" };
+        counts.push_str(&format!(" ({} never {verb})", group_u64(n as u64)));
+    }
+    let mut lines = vec![head, counts];
+    let mut music = Vec::new();
+    // In microseconds a quarter, so the fewest is the fastest.
+    if let Some((first, fastest, slowest)) = midi.tempo {
+        let bpm = crate::midi::bpm;
+        let n = midi.tempo_changes;
+        let changes = format!(
+            "{} {}",
+            group_u64(n as u64),
+            if n == 1 { "change" } else { "changes" }
+        );
+        music.push(match (midi.files > 1, slowest == fastest) {
+            (_, true) => format!("Tempo: {} bpm", bpm(first)),
+            // Of many songs, the first one's tempo says nothing of the rest.
+            (true, false) => format!("Tempo: {}-{} bpm", bpm(slowest), bpm(fastest)),
+            (false, false) => format!(
+                "Tempo: {} bpm ({}-{}, {changes})",
+                bpm(first),
+                bpm(slowest),
+                bpm(fastest)
+            ),
+        });
+    }
+    // The first of each, which for a directory of songs would be one song's.
+    if midi.files == 1 {
+        if let Some(time) = &midi.time_signature {
+            music.push(format!("Time: {time}"));
+        }
+        if let Some(key) = &midi.key {
+            music.push(format!("Key: {key}"));
+        }
+    }
+    if !music.is_empty() {
+        lines.push(music.join(sep));
+    }
+    if let Some(copyright) = midi.copyright.as_ref().filter(|_| midi.files == 1) {
+        lines.push(format!("Copyright: {copyright}"));
+    }
+    lines
+}
+
+/// Each track as a key and a value: `2 Piano` and `2,000 events · 600 notes · ch 1`.
+pub(crate) fn midi_track_rows(
+    midi: &crate::midi::MidiSummary,
+    sep: &str,
+) -> Vec<(String, crate::model_files::MetaValue)> {
+    midi.tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let key = match &t.name {
+                Some(name) if !name.trim().is_empty() => format!("{} {}", i + 1, name.trim()),
+                _ => (i + 1).to_string(),
+            };
+            let mut parts = vec![count_of(t.events as u64, "event", "events")];
+            if t.notes > 0 {
+                parts.push(count_of(t.notes as u64, "note", "notes"));
+            }
+            if !t.channels.is_empty() {
+                let channels: Vec<String> = t.channels.iter().map(u8::to_string).collect();
+                parts.push(format!("ch {}", channels.join(", ")));
+            }
+            if let Some(instrument) = t.instrument.as_deref().filter(|i| !i.trim().is_empty()) {
+                parts.push(instrument.trim().to_string());
+            }
+            (key, crate::model_files::MetaValue::Text(parts.join(sep)))
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InfoTab {
     #[default]
@@ -443,6 +541,8 @@ pub enum InfoTab {
     Model,
     /// An audio file's format, length and metadata.
     Audio,
+    /// A MIDI file's header, timing and tracks.
+    Midi,
     Resources,
     Partitions,
     Notes,
@@ -455,6 +555,8 @@ pub struct TabsOffered {
     pub model: bool,
     /// The dataset is an audio file's frames.
     pub audio: bool,
+    /// The dataset is a MIDI file's events.
+    pub midi: bool,
     pub partitions: bool,
     pub notes: bool,
 }
@@ -465,6 +567,7 @@ impl TabsOffered {
         Self {
             model: state.model().is_some(),
             audio: state.audio().is_some(),
+            midi: state.midi().is_some(),
             partitions: state
                 .partition_columns()
                 .map(|v| !v.is_empty())
@@ -486,6 +589,9 @@ impl InfoTab {
         if offered.audio {
             tabs.push(InfoTab::Audio);
         }
+        if offered.midi {
+            tabs.push(InfoTab::Midi);
+        }
         tabs.push(InfoTab::Resources);
         if offered.partitions {
             tabs.push(InfoTab::Partitions);
@@ -501,6 +607,7 @@ impl InfoTab {
             InfoTab::Schema => "Schema",
             InfoTab::Model => "Model",
             InfoTab::Audio => "Audio",
+            InfoTab::Midi => "MIDI",
             InfoTab::Resources => "Resources",
             InfoTab::Partitions => "Partitions",
             InfoTab::Notes => "Notes",
@@ -1409,12 +1516,11 @@ impl<'a> DataTableInfo<'a> {
     /// A model file's totals, then its metadata as key and value, every value whole: a
     /// chat template wraps over as many lines as it takes, and the list scrolls.
     fn render_model_tab(&mut self, area: Rect, buf: &mut Buffer) {
-        let Some(model) = self.state.model() else {
+        // Copied out, so what it lends does not hold `self`.
+        let state = self.state;
+        let Some(model) = state.model() else {
             return;
         };
-        if area.height == 0 || area.width < 8 {
-            return;
-        }
         let g = crate::glyphs::get();
         let sep = format!(" {} ", g.middot);
         let mut head = model.kind.label();
@@ -1445,7 +1551,7 @@ impl<'a> DataTableInfo<'a> {
             .into_iter()
             .map(|line| (line, Style::default()))
             .collect();
-        self.render_detail(area, buf, &lines, &model.metadata);
+        self.render_detail(area, buf, &lines, "Metadata", &model.metadata);
     }
 
     /// An audio file's format, size and length, then its metadata (`bext`, iXML, `LIST
@@ -1458,10 +1564,41 @@ impl<'a> DataTableInfo<'a> {
             return;
         }
         let (lines, metadata) = audio_detail(audio, self.theme);
-        self.render_detail(area, buf, &lines, &metadata);
+        self.render_detail(area, buf, &lines, "Metadata", &metadata);
     }
 
-    /// A detail tab's head lines, then a blank line, a `Metadata` rule and the metadata
+    /// A MIDI file's header, length and tempo, then its tracks; for a directory of
+    /// songs, the totals, then the files that could not be read.
+    fn render_midi_tab(&mut self, area: Rect, buf: &mut Buffer) {
+        let state = self.state;
+        let Some(midi) = state.midi() else {
+            return;
+        };
+        let g = crate::glyphs::get();
+        let sep = format!(" {} ", g.middot);
+        let lines: Vec<(String, Style)> = midi_facts(midi, &sep)
+            .into_iter()
+            .map(|line| (line, Style::default()))
+            .collect();
+        let (title, rows) = if midi.files > 1 {
+            let rows: Vec<_> = midi
+                .unreadable
+                .iter()
+                .map(|(file, why)| {
+                    (
+                        file.clone(),
+                        crate::model_files::MetaValue::Text(why.clone()),
+                    )
+                })
+                .collect();
+            ("Unreadable", rows)
+        } else {
+            ("Tracks", midi_track_rows(midi, &sep))
+        };
+        self.render_detail(area, buf, &lines, title, &rows);
+    }
+
+    /// A detail tab's head lines, then a blank line, a rule titled `title` and the list
     /// as key and value, scrolled by `detail_scroll`. Each value is drawn whole: it
     /// wraps over as many lines as it takes.
     fn render_detail(
@@ -1469,8 +1606,12 @@ impl<'a> DataTableInfo<'a> {
         area: Rect,
         buf: &mut Buffer,
         lines: &[(String, Style)],
-        metadata: &[(String, crate::model_files::MetaValue)],
+        title: &str,
+        list: &[(String, crate::model_files::MetaValue)],
     ) {
+        if area.height == 0 || area.width < 8 {
+            return;
+        }
         let width = area.width as usize;
         let mut y = area.y;
         let bottom = area.y + area.height;
@@ -1491,15 +1632,15 @@ impl<'a> DataTableInfo<'a> {
                 y += 1;
             }
         }
-        // A blank line, then the rule, then at least one line of metadata, or none: a
-        // file with no metadata has no rule to count it.
-        if metadata.is_empty() || y + 2 >= bottom {
+        // A blank line, then the rule, then at least one line of the list, or none: an
+        // empty list has no rule to count it.
+        if list.is_empty() || y + 2 >= bottom {
             return;
         }
         y += 1;
-        let count = group_u64(metadata.len() as u64);
+        let count = group_u64(list.len() as u64);
         SectionRule {
-            title: "Metadata",
+            title,
             chip: Some(&count),
             focused: self.modal.focus == InfoFocus::Body,
         }
@@ -1514,7 +1655,7 @@ impl<'a> DataTableInfo<'a> {
         );
         y += 1;
 
-        let rows = metadata_lines(metadata, width);
+        let rows = metadata_lines(list, width);
         let room = (bottom - y) as usize;
         let fits = rows.len() <= room;
         // The last row says what is out of view when not everything fits.
@@ -1873,6 +2014,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Notes => offered.notes,
             InfoTab::Model => offered.model,
             InfoTab::Audio => offered.audio,
+            InfoTab::Midi => offered.midi,
             _ => false,
         };
         let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
@@ -1943,13 +2085,16 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Resources => self.render_resources_tab(body, buf),
             InfoTab::Model if offered.model => self.render_model_tab(body, buf),
             InfoTab::Audio if offered.audio => self.render_audio_tab(body, buf),
+            InfoTab::Midi if offered.midi => self.render_midi_tab(body, buf),
             InfoTab::Partitions if offered.partitions => {
                 self.render_partitioned_data_tab(body, buf)
             }
             InfoTab::Notes if offered.notes => self.render_notes_tab(body, buf),
-            InfoTab::Model | InfoTab::Audio | InfoTab::Partitions | InfoTab::Notes => {
-                self.render_schema_tab(body, buf)
-            }
+            InfoTab::Model
+            | InfoTab::Audio
+            | InfoTab::Midi
+            | InfoTab::Partitions
+            | InfoTab::Notes => self.render_schema_tab(body, buf),
         }
     }
 }
@@ -1970,6 +2115,7 @@ mod tests {
         TabsOffered {
             model: false,
             audio: false,
+            midi: false,
             partitions,
             notes,
         }
@@ -2548,6 +2694,7 @@ mod tests {
         let offered = TabsOffered {
             model: true,
             audio: false,
+            midi: false,
             partitions: false,
             notes: true,
         };

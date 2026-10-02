@@ -148,6 +148,9 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     if crate::audio::looks_like_audio(head) {
         return (FileFormat::Audio, None);
     }
+    if crate::midi::looks_like_midi(head) {
+        return (FileFormat::Midi, None);
+    }
     // An Arrow IPC stream, which is what pyarrow and Polars write to a pipe.
     if crate::ipc_stream::is_stream_head(head) {
         return (FileFormat::Arrow, None);
@@ -250,9 +253,10 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 25] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 26] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
             (b"GGUF\x03\x00\x00\x00", FileFormat::Gguf, None),
+            (b"MThd\0\0\0\x06\0\x01", FileFormat::Midi, None),
             (
                 b"\x02\x00\x00\x00\x00\x00\x00\x00{}",
                 FileFormat::Safetensors,

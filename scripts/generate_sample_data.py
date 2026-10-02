@@ -1237,6 +1237,108 @@ def generate_audio_files():
     print(f"Generated: {audio / 'loop.aiff'}")
 
 
+def _vlq(n):
+    """A MIDI variable-length quantity: seven bits a byte, high bit on all but the last."""
+    out = [n & 0x7F]
+    n >>= 7
+    while n:
+        out.insert(0, (n & 0x7F) | 0x80)
+        n >>= 7
+    return bytes(out)
+
+
+def _meta(kind, data):
+    if isinstance(data, str):
+        data = data.encode("latin-1")
+    return bytes([0xFF, kind]) + _vlq(len(data)) + data
+
+
+def _smf(fmt, division, tracks):
+    """A Standard MIDI File: `tracks` are lists of (delta, event bytes)."""
+    out = b"MThd" + struct.pack(">IHHH", 6, fmt, len(tracks), division)
+    for events in tracks:
+        body = b"".join(_vlq(delta) + event for delta, event in events)
+        out += b"MTrk" + struct.pack(">I", len(body)) + body
+    return out
+
+
+END = _meta(0x2F, b"")
+
+
+def generate_midi_files():
+    """MIDI files written by hand: a format 1 song with a tempo change, running status,
+    a note that never ends and a sysex; a format 0 drum loop; SMPTE timing; a RIFF MIDI
+    wrapper; a directory of songs with one broken file; and a file cut short.
+    """
+    midi = OUTPUT_DIR / "midi"
+    midi.mkdir(exist_ok=True)
+    conductor = [
+        (0, _meta(0x03, "Song")),
+        (0, _meta(0x02, "(c) datui tests")),
+        (0, _meta(0x58, bytes([4, 2, 24, 8]))),
+        (0, _meta(0x59, bytes([1, 0]))),  # one sharp, major: G
+        (0, _meta(0x51, (500_000).to_bytes(3, "big"))),  # 120 bpm
+        (0, bytes([0xF0, 5, 0x7E, 0x7F, 0x09, 0x01, 0xF7])),
+        (3840, _meta(0x51, (666_667).to_bytes(3, "big"))),  # 90 bpm from bar 3
+        (0, _meta(0x06, "Chorus")),
+        (0, END),
+    ]
+    piano = [
+        (0, _meta(0x03, "Piano")),
+        (0, _meta(0x04, "Acoustic Grand")),
+        (0, bytes([0xC0, 0])),
+        (0, bytes([0xB0, 64, 127])),  # sustain on
+        (0, bytes([0x90, 60, 100])),  # C4, E4 and G4, the last two by running status
+        (0, bytes([64, 80])),
+        (0, bytes([67, 90])),
+        (480, bytes([0x80, 60, 64])),
+        (0, bytes([64, 64])),
+        (0, bytes([67, 64])),
+        (0, bytes([0xB0, 64, 0])),
+        (0, bytes([0xE0, 0x00, 0x40])),  # pitch bend at center
+        (480, bytes([0x90, 72, 127])),  # C5, never released
+        (0, _meta(0x05, "la")),
+        (0, END),
+    ]
+    bass = [
+        (0, _meta(0x03, "Bass")),
+        (0, bytes([0x91, 36, 112])),
+        (960, bytes([36, 0])),  # a note on at velocity 0 is a note off
+        (0, bytes([36, 96])),
+        (960, bytes([36, 0])),
+        (0, END),
+    ]
+    song = _smf(1, 480, [conductor, piano, bass])
+    (midi / "song.mid").write_bytes(song)
+    drums = _smf(
+        0,
+        96,
+        [[
+            (0, _meta(0x51, (600_000).to_bytes(3, "big"))),  # 100 bpm
+            (0, bytes([0x99, 36, 100])),
+            (96, bytes([0x89, 36, 0])),
+            (0, END),
+        ]],
+    )
+    (midi / "drums.mid").write_bytes(drums)
+    # 25 fps and 40 ticks a frame: a thousand ticks a second, whatever the tempo.
+    smpte = _smf(
+        0,
+        ((256 - 25) << 8) | 40,
+        [[(0, bytes([0x90, 60, 100])), (1000, bytes([0x80, 60, 0])), (0, END)]],
+    )
+    (midi / "smpte.mid").write_bytes(smpte)
+    riff = b"RMID" + b"data" + struct.pack("<I", len(song)) + song
+    (midi / "song.rmi").write_bytes(b"RIFF" + struct.pack("<I", len(riff)) + riff)
+    (midi / "cut_short.mid").write_bytes(song[:-5])
+    corpus = midi / "corpus"
+    corpus.mkdir(exist_ok=True)
+    (corpus / "drums.mid").write_bytes(drums)
+    (corpus / "song.mid").write_bytes(song)
+    (corpus / "broken.mid").write_bytes(song[:-5])
+    print(f"Generated: {midi}")
+
+
 def main():
     print("Generating sample data files...")
     print(f"Output directory: {OUTPUT_DIR}")
@@ -1365,6 +1467,8 @@ def main():
     # Audio: WAV, Broadcast WAV, extensible float and AIFF
     print("\n16. Generating audio files...")
     generate_audio_files()
+    print("\n17. Generating MIDI files...")
+    generate_midi_files()
 
     print("\nSample data generation complete!")
 

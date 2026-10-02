@@ -130,15 +130,17 @@ pub(crate) fn load_config(input: &RunInput) -> Result<AppConfig> {
 }
 
 /// `input` with a leading `~` expanded in the paths its command line names: the
-/// datasets and `--temp-dir`. `--log-file` expands with `[debug] log_file`.
+/// datasets, `--spec` and `--temp-dir`. `--log-file` expands with `[debug] log_file`.
 pub(crate) fn expand_home(input: RunInput) -> RunInput {
     match input {
         RunInput::Cli(mut args) => {
-            for path in &mut args.paths {
+            for path in args
+                .paths
+                .iter_mut()
+                .chain(args.spec.as_mut())
+                .chain(args.temp_dir.as_mut())
+            {
                 *path = crate::config::expand_home(path);
-            }
-            if let Some(dir) = &mut args.temp_dir {
-                *dir = crate::config::expand_home(dir);
             }
             RunInput::Cli(args)
         }
@@ -235,12 +237,21 @@ mod tests {
     #[test]
     fn the_command_line_s_paths_expand_a_leading_tilde() {
         let home = dirs::home_dir().expect("a home directory");
-        let args =
-            Args::try_parse_from(["datui", "~/a.csv", "b.csv", "--temp-dir", "~/scratch"]).unwrap();
+        let args = Args::try_parse_from([
+            "datui",
+            "~/a.csv",
+            "b.csv",
+            "--temp-dir",
+            "~/scratch",
+            "--spec",
+            "~/l2feed.toml",
+        ])
+        .unwrap();
         let RunInput::Cli(args) = expand_home(RunInput::Cli(Box::new(args))) else {
             panic!("still the command line");
         };
         assert_eq!(args.paths, [home.join("a.csv"), PathBuf::from("b.csv")]);
         assert_eq!(args.temp_dir, Some(home.join("scratch")));
+        assert_eq!(args.spec, Some(home.join("l2feed.toml")));
     }
 }

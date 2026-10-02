@@ -38,7 +38,7 @@ names it:
 | `[` | JSON |
 | `{`, the first line a whole object | NDJSON |
 | `{`, the object open past the first line | JSON |
-| `$` and an NMEA sentence address (`$GPGGA,`) | NMEA |
+| an NMEA sentence (`$GPGGA,`) with a checksum that matches, or of a type receivers write | NMEA |
 | XML whose first element is `<gpx` | GPX |
 | a first line with tabs and no commas | TSV |
 | anything else | CSV |
@@ -174,7 +174,7 @@ datui ride.gpx
 An NMEA 0183 log or a GPX file is read once, start to end, into a temporary
 Arrow IPC file, which is then scanned like any other: memory stays at one batch
 of rows however long the log. A file with another name, such as `capture.log`,
-opens when its first line is an NMEA sentence or its first element is `<gpx`.
+opens when its first complete line is an NMEA sentence or its first element is `<gpx`.
 `.nmea.gz` and the other compressions are read as they are decompressed.
 
 **NMEA** opens as one row per fix, merged from each second's GGA, RMC, VTG and

@@ -270,27 +270,41 @@ fn parse_sentence(line: &[u8]) -> Option<Sentence<'_>> {
     })
 }
 
-/// Whether the first bytes of a file are an NMEA log: its first line that is not
-/// blank is a sentence, `$` and an address, at the start of the line.
+/// Sentence types a receiver writes, by which a sentence with no checksum is known.
+const KNOWN: [&str; 14] = [
+    "GGA", "RMC", "VTG", "GSA", "GSV", "GLL", "ZDA", "GNS", "GST", "GBS", "TXT", "HDT", "DTM",
+    "GRS",
+];
+
+/// Whether the first bytes of a file are an NMEA log: its first line that is not blank
+/// is a sentence at the start of the line, either with a checksum that matches or of a
+/// type receivers write. A CSV header such as `$USD,$EUR` has the shape of a sentence
+/// and is neither. A capture from a serial port starts wherever the port was in its
+/// output, so a first line that is the tail of a sentence (`...,M,,*47`) is passed over.
 pub fn looks_like(head: &[u8]) -> bool {
     let head = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
-    let Some(line) = head
+    let mut lines = head
         .split(|&b| b == b'\n')
         .map(|l| l.trim_ascii())
-        .find(|l| !l.is_empty())
-    else {
-        return false;
+        .filter(|l| !l.is_empty());
+    let sentence = |line: &[u8]| {
+        line.first() == Some(&b'$')
+            && parse_sentence(line).is_some_and(|s| {
+                s.checksum_ok == Some(true) || (s.talker.len() == 2 && KNOWN.contains(&s.kind))
+            })
     };
-    // A line cut off by the end of the head still has its address.
-    line.first() == Some(&b'$')
-        && line.iter().position(|&b| b == b',').is_some_and(|comma| {
-            let address = &line[1..comma];
-            (3..=10).contains(&address.len())
-                && address[0].is_ascii_uppercase()
-                && address
-                    .iter()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-        })
+    let tail = |line: &[u8]| {
+        line.len() >= 3
+            && line[line.len() - 3] == b'*'
+            && line[line.len() - 2..].iter().all(u8::is_ascii_hexdigit)
+    };
+    match lines.next() {
+        Some(first) if sentence(first) => true,
+        Some(first) if first.first() != Some(&b'$') && tail(first) => {
+            lines.next().is_some_and(sentence)
+        }
+        _ => false,
+    }
 }
 
 fn number(s: &str) -> Option<f64> {
@@ -1039,6 +1053,20 @@ mod tests {
         assert!(parse_sentence(b"hello").is_none());
         assert!(looks_like(b"\n$GPGGA,123519,48"));
         assert!(!looks_like(b"time,lat\n$GPGGA,1"));
+        let vendor = with_checksum("PUBX,00,1");
+        assert!(looks_like(vendor.as_bytes()), "a vendor's, by its checksum");
+        let wrong = vendor.replace("PUBX,00", "PUBX,01");
+        assert!(
+            !looks_like(wrong.as_bytes()),
+            "a vendor's, its checksum wrong"
+        );
+        assert!(!looks_like(b"$USD,$EUR\n1,2\n"), "a CSV header");
+        assert!(!looks_like(b"$AMOUNT,QTY\n1,2\n"));
+        assert!(
+            looks_like(b"5.4,M,46.9,M,,*47\r\n$GNRMC,120000,A,4807.038,N"),
+            "a capture that starts mid-sentence"
+        );
+        assert!(!looks_like(b"a,b*47\n$USD,$EUR\n"));
     }
 
     #[test]

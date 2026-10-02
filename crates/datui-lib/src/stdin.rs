@@ -247,7 +247,7 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 22] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 23] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
             (b"GGUF\x03\x00\x00\x00", FileFormat::Gguf, None),
             (
@@ -256,6 +256,8 @@ mod tests {
                 None,
             ),
             (b"$GPGGA,123519,4807.038,N", FileFormat::Nmea, None),
+            // A CSV header with the shape of a sentence.
+            (b"$USD,$EUR\n1,2\n", FileFormat::Csv, None),
             (
                 b"<?xml version=\"1.0\"?>\n<gpx version=\"1.1\">",
                 FileFormat::Gpx,

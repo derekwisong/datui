@@ -515,8 +515,16 @@ fn ggml_type(id: u32) -> Option<(&'static str, u64, u64)> {
         28 => ("F64", 1, 8),
         29 => ("IQ1_M", 256, 56),
         30 => ("BF16", 1, 2),
+        // Repacked Q4_0 and IQ4_NL, since removed from GGML; files written by
+        // llama.cpp in late 2024 still carry them, with the same block sizes.
+        31 => ("Q4_0_4_4", 32, 18),
+        32 => ("Q4_0_4_8", 32, 18),
+        33 => ("Q4_0_8_8", 32, 18),
         34 => ("TQ1_0", 256, 54),
         35 => ("TQ2_0", 256, 66),
+        36 => ("IQ4_NL_4_4", 32, 18),
+        37 => ("IQ4_NL_4_8", 32, 18),
+        38 => ("IQ4_NL_8_8", 32, 18),
         39 => ("MXFP4", 32, 17),
         _ => return None,
     })

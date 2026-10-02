@@ -14,6 +14,9 @@ Usage: datui [OPTIONS] [PATH]...
 | `--skip-lines <N>` | Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows |
 | `--skip-rows <N>` | Skip this many CSV rows at the start of the file; the header is read after them. Quote-aware: a row with embedded newlines counts once. Compare --skip-lines |
 | `--skip-tail-rows <N>` | Skip this many rows at the end of the file, such as a vendor footer or trailing garbage. Needs the row count first, which reads the whole file; on a directory in a bucket, every file |
+| `--comment-char <C>` | Lines that start with this are comments and are skipped, before the header and among the data; the header is the first line that is not one. Frictionless `commentChar` |
+| `--header-rows <N[,M...]>` | The line, or comma-separated lines, that hold the header, counted from 1 at the top of the file before anything is skipped. Several are joined per column with [file_loading] header_join (default a space); the data starts after the last. Frictionless `headerRows` |
+| `--skip-initial-space[=<BOOL>]` | Ignore the spaces after a delimiter, so padded numbers read as numbers and a cell of spaces is null. Frictionless `skipInitialSpace` |
 | `--no-header[=<BOOL>]` | Read the first row as data, not column names; columns are named column_1, column_2, … |
 | `--delimiter <CODE>` | Column separator for a delimited text file, as an ASCII code (9 for tab). Default: `,` for .csv, tab for .tsv, `\|` for .psv |
 | `--infer-schema-length <N>` | Number of rows to use when inferring CSV schema (default: 1000). Larger values reduce the risk of a wrong type (e.g. int then N/A) |

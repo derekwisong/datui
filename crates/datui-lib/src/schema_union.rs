@@ -361,6 +361,30 @@ pub struct ReadAs {
     pub infer_schema_length: Option<usize>,
     pub ignore_errors: bool,
     pub try_parse_dates: bool,
+    pub comment_char: Option<String>,
+    pub header_rows: Vec<usize>,
+    pub header_join: String,
+}
+
+impl ReadAs {
+    /// The open's options that say the same, so the sample is configured by the
+    /// open's own reader setup rather than a copy of it.
+    fn open_options(&self, format: crate::FileFormat) -> crate::OpenOptions {
+        crate::OpenOptions {
+            delimiter: self.delimiter.or(format.separator()),
+            has_header: self.has_header,
+            skip_rows: self.skip_rows,
+            skip_lines: self.skip_lines,
+            infer_schema_length: self.infer_schema_length,
+            ignore_errors: self.ignore_errors,
+            parse_dates: self.try_parse_dates,
+            parse_strings: None,
+            comment_char: self.comment_char.clone(),
+            header_rows: self.header_rows.clone(),
+            header_join: self.header_join.clone(),
+            ..crate::OpenOptions::default()
+        }
+    }
 }
 
 impl Default for ReadAs {
@@ -381,6 +405,9 @@ impl Default for ReadAs {
             infer_schema_length: None,
             ignore_errors: false,
             try_parse_dates: true,
+            comment_char: None,
+            header_rows: Vec::new(),
+            header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
         }
     }
 }
@@ -413,24 +440,17 @@ pub fn column_schema_of(
             // Read the way the open will read it. Where the header is and how far the
             // reader looks before settling a type both change what comes back, and a
             // sample that used its own answers would describe a file nobody opened.
-            let separator = as_read.delimiter.or(format.separator()).unwrap_or(b',');
-            let mut reader = LazyCsvReader::new(pl_path)
-                .with_separator(separator)
-                .with_try_parse_dates(as_read.try_parse_dates)
-                .with_ignore_errors(as_read.ignore_errors);
-            if let Some(has_header) = as_read.has_header {
-                reader = reader.with_has_header(has_header);
-            }
-            if let Some(skip) = as_read.skip_rows {
-                reader = reader.with_skip_rows(skip);
-            }
-            if let Some(skip) = as_read.skip_lines {
-                reader = reader.with_skip_lines(skip);
-            }
-            if let Some(n) = as_read.infer_schema_length {
-                reader = reader.with_infer_schema_length(Some(n));
-            }
-            reader.finish().ok()?
+            let options = as_read.open_options(format);
+            let header = crate::widgets::datatable::DataTableState::csv_header_names_of(
+                &options, path, None,
+            )
+            .ok()?;
+            let reader = crate::widgets::datatable::DataTableState::configure_csv_reader(
+                LazyCsvReader::new(pl_path),
+                &options,
+                None,
+            );
+            crate::csv_dialect::name_columns(reader.finish().ok()?, header.as_deref()).ok()?
         }
         crate::FileFormat::Jsonl => LazyJsonLineReader::new(pl_path).finish().ok()?,
         _ => return None,

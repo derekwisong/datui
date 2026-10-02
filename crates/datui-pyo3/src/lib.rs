@@ -171,6 +171,10 @@ impl DatuiOptionsPy {
         polars_streaming=true,
         workaround_pivot_date_index=true,
         null_values=None,
+        comment_char=None,
+        header_rows=None,
+        header_join=None,
+        skip_initial_space=false,
         debug=false,
         parse_strings=None,
         parse_strings_sample_rows=1000
@@ -203,6 +207,10 @@ impl DatuiOptionsPy {
         polars_streaming: bool,
         workaround_pivot_date_index: bool,
         null_values: Option<Bound<'_, pyo3::types::PyAny>>,
+        comment_char: Option<String>,
+        header_rows: Option<Vec<usize>>,
+        header_join: Option<String>,
+        skip_initial_space: bool,
         debug: bool,
         parse_strings: Option<Bound<'_, pyo3::types::PyAny>>,
         parse_strings_sample_rows: usize,
@@ -309,6 +317,23 @@ impl DatuiOptionsPy {
                 opts.null_values = Some(a.extract::<Vec<String>>()?);
             }
         }
+        if let Some(c) = comment_char {
+            datui::csv_dialect::check_comment_char(&c)
+                .map_err(|e| PyValueError::new_err(format!("comment_char {e}")))?;
+            opts.comment_char = Some(c);
+        }
+        if let Some(rows) = header_rows {
+            if rows.contains(&0) {
+                return Err(PyValueError::new_err(
+                    "header_rows are line numbers counted from 1",
+                ));
+            }
+            opts.header_rows = rows;
+        }
+        if let Some(join) = header_join {
+            opts.header_join = join;
+        }
+        opts.skip_initial_space = skip_initial_space;
         opts.parse_strings = parse_strings_from_py(parse_strings.as_ref().map(|b| b.as_ref()))?;
         opts.parse_strings_sample_rows = parse_strings_sample_rows;
         opts.debug = debug;
@@ -394,6 +419,14 @@ impl DatuiOptionsPy {
         if let Some(ref v) = o.null_values {
             d.set_item("null_values", v.as_slice())?;
         }
+        if let Some(ref v) = o.comment_char {
+            d.set_item("comment_char", v.as_str())?;
+        }
+        if !o.header_rows.is_empty() {
+            d.set_item("header_rows", o.header_rows.clone())?;
+        }
+        d.set_item("header_join", o.header_join.as_str())?;
+        d.set_item("skip_initial_space", o.skip_initial_space)?;
         d.set_item("debug", o.debug)?;
         Ok(d)
     }
@@ -466,7 +499,10 @@ fn serialize_captured(lf: LazyFrame) -> PyResult<Vec<u8>> {
     lf.logical_plan
         .serialize_versioned(&mut buf, Default::default())
         .map_err(|e| {
-            PyRuntimeError::new_err(format!("datui could not serialize the captured view: {}", e))
+            PyRuntimeError::new_err(format!(
+                "datui could not serialize the captured view: {}",
+                e
+            ))
         })?;
     Ok(buf)
 }

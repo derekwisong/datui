@@ -1998,19 +1998,6 @@ impl DataTableState {
         self
     }
 
-    /// Make `lf` the data as loaded: the root of the pipeline (`original_lf` and
-    /// `base_lf`), the frame shown, and the schema. For load-time options such as header
-    /// trimming, string parsing and dropped footer rows, which have to survive a later
-    /// filter or sort.
-    fn replace_original_lf(&mut self, lf: &LazyFrame) -> Result<()> {
-        let schema = lf.clone().collect_schema()?;
-        self.replace_root(lf.clone(), schema);
-        // A new root is new data; a count remembered for the old one would show as
-        // the "of" total under the first filter on this one.
-        self.pristine_rows = None;
-        Ok(())
-    }
-
     /// Make `lf` the data as loaded, with `schema`: the root, the base and the frame
     /// shown, until the caller lays the filters and sort back on. The rows and count
     /// read through the old root are dropped, and checkpoints taken over it no longer
@@ -3734,15 +3721,28 @@ impl DataTableState {
         options: &OpenOptions,
         null_values: Option<&NullValues>,
     ) -> LazyCsvReader {
-        reader = reader.with_separator(options.separator_or(b','));
-        if let Some(skip_lines) = options.skip_lines {
-            reader = reader.with_skip_lines(skip_lines);
-        }
-        if let Some(skip_rows) = options.skip_rows {
-            reader = reader.with_skip_rows(skip_rows);
-        }
-        if let Some(has_header) = options.has_header {
-            reader = reader.with_has_header(has_header);
+        reader = reader
+            .with_separator(options.separator_or(b','))
+            .with_comment_prefix(options.comment_char.as_deref().map(PlSmallStr::from));
+        if let Some(rows) = options.header_rows() {
+            // The header lines are read apart (`csv_header_names`); Polars starts
+            // after the last of them, with `--skip-lines` counted from the same top
+            // and `--skip-rows` counted after.
+            let last = rows.iter().copied().max().unwrap_or(0);
+            reader = reader
+                .with_has_header(false)
+                .with_skip_lines(last.max(options.skip_lines.unwrap_or(0)))
+                .with_skip_rows_after_header(options.skip_rows.unwrap_or(0));
+        } else {
+            if let Some(skip_lines) = options.skip_lines {
+                reader = reader.with_skip_lines(skip_lines);
+            }
+            if let Some(skip_rows) = options.skip_rows {
+                reader = reader.with_skip_rows(skip_rows);
+            }
+            if let Some(has_header) = options.has_header {
+                reader = reader.with_has_header(has_header);
+            }
         }
         if let Some(n) = options.infer_schema_length {
             reader = reader.with_infer_schema_length(Some(n));
@@ -3760,14 +3760,21 @@ impl DataTableState {
         null_values: Option<&NullValues>,
     ) -> CsvReadOptions {
         let mut read_options = CsvReadOptions::default();
-        if let Some(skip_lines) = options.skip_lines {
-            read_options.skip_lines = skip_lines;
-        }
-        if let Some(skip_rows) = options.skip_rows {
-            read_options.skip_rows = skip_rows;
-        }
-        if let Some(has_header) = options.has_header {
-            read_options.has_header = has_header;
+        if let Some(rows) = options.header_rows() {
+            let last = rows.iter().copied().max().unwrap_or(0);
+            read_options.has_header = false;
+            read_options.skip_lines = last.max(options.skip_lines.unwrap_or(0));
+            read_options.skip_rows_after_header = options.skip_rows.unwrap_or(0);
+        } else {
+            if let Some(skip_lines) = options.skip_lines {
+                read_options.skip_lines = skip_lines;
+            }
+            if let Some(skip_rows) = options.skip_rows {
+                read_options.skip_rows = skip_rows;
+            }
+            if let Some(has_header) = options.has_header {
+                read_options.has_header = has_header;
+            }
         }
         if let Some(n) = options.infer_schema_length {
             read_options.infer_schema_length = Some(n);
@@ -3775,6 +3782,12 @@ impl DataTableState {
         read_options.ignore_errors = options.ignore_errors;
         read_options.map_parse_options(|opts| {
             opts.with_separator(options.separator_or(b','))
+                .with_comment_prefix(
+                    options
+                        .comment_char
+                        .as_deref()
+                        .map(polars::io::csv::read::CommentPrefix::new_from_str),
+                )
                 .with_try_parse_dates(options.csv_try_parse_dates())
                 .with_null_values(null_values.cloned())
         })
@@ -3791,26 +3804,25 @@ impl DataTableState {
         lf.collect_schema().map_err(color_eyre::eyre::Report::from)
     }
 
-    /// Build Polars NullValues from options; path_for_schema required when both global and per-column specs are set.
+    /// Build Polars NullValues from options, for the CSV at `path` with the header
+    /// lines `header` read from it.
     fn build_null_values_for_csv(
         options: &OpenOptions,
-        path_for_schema: Option<&Path>,
+        path: &Path,
+        header: Option<&[String]>,
     ) -> Result<Option<NullValues>> {
-        Self::build_null_values_with(options, || {
-            let path = path_for_schema.ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "Internal error: path required for null_values with both global and per-column"
-                )
-            })?;
+        Self::build_null_values_with(options, header, || {
             let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?);
             Self::csv_schema_for_null_values(reader, options)
         })
     }
 
-    /// Build Polars NullValues from options. `schema` is only called when both global
-    /// and per-column specs are set, which is the one case that needs column names.
+    /// Build Polars NullValues from options. `schema` is the reader's own columns, read
+    /// only when a spec names a column: the user names it as it is shown (trimmed, or
+    /// from `--header-rows`), and the reader knows it by what it parsed.
     pub(crate) fn build_null_values_with(
         options: &OpenOptions,
+        header: Option<&[String]>,
         schema: impl FnOnce() -> Result<Arc<Schema>>,
     ) -> Result<Option<NullValues>> {
         let specs = match &options.null_values {
@@ -3818,29 +3830,118 @@ impl DataTableState {
             Some(s) if s.is_empty() => return Ok(None),
             Some(s) => s.as_slice(),
         };
-        let (global, per_column) = Self::parse_null_value_specs(specs);
-        let nv = if !global.is_empty() && !per_column.is_empty() {
-            let schema = schema()?;
-            Self::build_polars_null_values(&global, &per_column, Some(schema.as_ref()))
-        } else {
-            Self::build_polars_null_values(&global, &per_column, None)
+        let (global, mut per_column) = Self::parse_null_value_specs(specs);
+        if per_column.is_empty() {
+            return Ok(Self::build_polars_null_values(&global, &per_column, None));
+        }
+        let schema = match schema() {
+            Ok(schema) => schema,
+            // Nothing follows the header lines: no value to read as null.
+            Err(e)
+                if header.is_some()
+                    && matches!(
+                        e.downcast_ref::<PolarsError>(),
+                        Some(PolarsError::NoData(_))
+                    ) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
         };
-        Ok(nv)
+        let raw: Vec<PlSmallStr> = schema.iter_names().cloned().collect();
+        let shown = crate::csv_dialect::shown_names(&raw, header);
+        for (column, _) in per_column.iter_mut() {
+            if let Some(i) = shown.iter().position(|s| s == column) {
+                *column = raw[i].to_string();
+            }
+        }
+        Ok(Self::build_polars_null_values(
+            &global,
+            &per_column,
+            Some(schema.as_ref()),
+        ))
     }
 
-    /// Trim leading/trailing whitespace from CSV column names. Applied whenever we have a CSV LazyFrame.
-    fn trim_csv_column_names(mut lf: LazyFrame) -> Result<LazyFrame> {
-        let schema = lf.collect_schema()?;
-        let names: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
-        let trimmed: Vec<String> = names.iter().map(|s| s.trim().to_string()).collect();
-        if names == trimmed {
-            return Ok(lf);
+    /// The null values `--null-value` gives the column shown as `column`.
+    pub(crate) fn csv_null_values_for(options: &OpenOptions, column: &str) -> Vec<String> {
+        let (global, per_column) =
+            Self::parse_null_value_specs(options.null_values.as_deref().unwrap_or_default());
+        let mut values: Vec<String> = per_column
+            .into_iter()
+            .filter(|(c, _)| c == column)
+            .map(|(_, v)| v)
+            .collect();
+        values.extend(global);
+        values
+    }
+
+    /// The names `--header-rows` gives the columns of the CSV `source` holds, or
+    /// `None` when it is not in effect.
+    fn csv_header_names<R: std::io::BufRead>(
+        options: &OpenOptions,
+        source: impl FnOnce() -> std::io::Result<R>,
+    ) -> Result<Option<Vec<String>>> {
+        let Some(rows) = options.header_rows() else {
+            return Ok(None);
+        };
+        Ok(Some(crate::csv_dialect::header_names(
+            source()?,
+            rows,
+            &options.header_join,
+            options.separator_or(b','),
+            options.comment_char.as_deref(),
+        )?))
+    }
+
+    /// [`Self::csv_header_names`] for a file on disk, compressed with `compression`
+    /// or not.
+    pub(crate) fn csv_header_names_of(
+        options: &OpenOptions,
+        path: &Path,
+        compression: Option<CompressionFormat>,
+    ) -> Result<Option<Vec<String>>> {
+        Self::csv_header_names(options, || {
+            let file = BufReader::new(File::open(path)?);
+            Ok::<Box<dyn std::io::BufRead>, _>(match compression {
+                None => Box::new(file),
+                Some(CompressionFormat::Gzip) => {
+                    Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
+                }
+                Some(CompressionFormat::Zstd) => {
+                    Box::new(BufReader::new(zstd::Decoder::with_buffer(file)?))
+                }
+                Some(CompressionFormat::Bzip2) => {
+                    Box::new(BufReader::new(bzip2::read::BzDecoder::new(file)))
+                }
+                Some(CompressionFormat::Xz) => {
+                    Box::new(BufReader::new(xz2::read::XzDecoder::new(file)))
+                }
+            })
+        })
+    }
+
+    /// What every CSV read does once Polars has parsed it: name the columns (trimmed,
+    /// or from `--header-rows`), skip the padding after a delimiter, type the text
+    /// columns, and drop the footer.
+    fn finish_csv_frame(
+        lf: LazyFrame,
+        options: &OpenOptions,
+        header: Option<&[String]>,
+    ) -> Result<LazyFrame> {
+        let lf = crate::csv_dialect::name_columns(lf, header)?;
+        Self::finish_csv_values(lf, options)
+    }
+
+    /// [`Self::finish_csv_frame`] after the names, for frames already named: several
+    /// files are named one at a time and stacked first.
+    fn finish_csv_values(mut lf: LazyFrame, options: &OpenOptions) -> Result<LazyFrame> {
+        if options.skip_initial_space {
+            lf = crate::csv_dialect::skip_initial_space(lf, |column| {
+                Self::csv_null_values_for(options, column)
+            })?;
         }
-        Ok(lf.rename(
-            names.iter().map(|s| s.as_str()),
-            trimmed.iter().map(|s| s.as_str()),
-            false,
-        ))
+        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+        Self::apply_skip_tail_rows_csv(lf, options)
     }
 
     /// If options.skip_tail_rows is set, run a count query and slice the LazyFrame to drop that many rows from the end. Used for CSV with trailing garbage/footer.
@@ -4296,36 +4397,33 @@ impl DataTableState {
         if let Some(compression) = compression {
             if options.decompress_in_memory {
                 // Eager read: decompress into memory, then CSV read
-                match compression {
+                let (df, header) = match compression {
                     CompressionFormat::Gzip | CompressionFormat::Zstd => {
-                        let nv = Self::build_null_values_for_csv(options, Some(path))?;
+                        let header = Self::csv_header_names_of(options, path, Some(compression))?;
+                        let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
                         let read_options = Self::eager_csv_read_options(options, nv.as_ref());
-                        let df = read_options
-                            .try_into_reader_with_file_path(Some(path.into()))?
-                            .finish()?;
-                        let mut lf = Self::trim_csv_column_names(df.lazy())?;
-                        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                        lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-                        let mut state = Self::new(
-                            lf,
-                            options.pages_lookahead,
-                            options.pages_lookback,
-                            options.max_buffered_rows,
-                            options.max_buffered_mb,
-                            options.polars_streaming,
+                        let df = crate::csv_dialect::read_after_header(
+                            read_options
+                                .try_into_reader_with_file_path(Some(path.into()))?
+                                .finish(),
+                            header.as_deref(),
                         )?;
-                        state.row_numbers = options.row_numbers;
-                        state.row_start_index = options.row_start_index;
-                        Ok(state)
+                        (df, header)
                     }
-                    CompressionFormat::Bzip2 => {
-                        let file = File::open(path)?;
-                        let mut decoder = bzip2::read::BzDecoder::new(BufReader::new(file));
+                    CompressionFormat::Bzip2 | CompressionFormat::Xz => {
+                        let file = BufReader::new(File::open(path)?);
                         let mut decompressed = Vec::new();
-                        decoder.read_to_end(&mut decompressed)?;
+                        if compression == CompressionFormat::Bzip2 {
+                            bzip2::read::BzDecoder::new(file).read_to_end(&mut decompressed)?;
+                        } else {
+                            xz2::read::XzDecoder::new(file).read_to_end(&mut decompressed)?;
+                        }
+                        let header = Self::csv_header_names(options, || {
+                            Ok(std::io::Cursor::new(decompressed.as_slice()))
+                        })?;
                         // Column names for per-column null values come from the bytes: the file on
                         // disk is still compressed.
-                        let nv = Self::build_null_values_with(options, || {
+                        let nv = Self::build_null_values_with(options, header.as_deref(), || {
                             let one_row =
                                 Self::eager_csv_read_options(options, None).with_n_rows(Some(1));
                             let df = CsvReader::new(std::io::Cursor::new(decompressed.as_slice()))
@@ -4334,109 +4432,61 @@ impl DataTableState {
                             Ok(df.schema().clone())
                         })?;
                         let read_options = Self::eager_csv_read_options(options, nv.as_ref());
-                        let df = CsvReader::new(std::io::Cursor::new(decompressed))
-                            .with_options(read_options)
-                            .finish()?;
-                        let mut lf = Self::trim_csv_column_names(df.lazy())?;
-                        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                        lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-                        let mut state = Self::new(
-                            lf,
-                            options.pages_lookahead,
-                            options.pages_lookback,
-                            options.max_buffered_rows,
-                            options.max_buffered_mb,
-                            options.polars_streaming,
+                        let df = crate::csv_dialect::read_after_header(
+                            CsvReader::new(std::io::Cursor::new(decompressed))
+                                .with_options(read_options)
+                                .finish(),
+                            header.as_deref(),
                         )?;
-                        state.row_numbers = options.row_numbers;
-                        state.row_start_index = options.row_start_index;
-                        Ok(state)
+                        (df, header)
                     }
-                    CompressionFormat::Xz => {
-                        let file = File::open(path)?;
-                        let mut decoder = xz2::read::XzDecoder::new(BufReader::new(file));
-                        let mut decompressed = Vec::new();
-                        decoder.read_to_end(&mut decompressed)?;
-                        // Column names for per-column null values come from the bytes: the file on
-                        // disk is still compressed.
-                        let nv = Self::build_null_values_with(options, || {
-                            let one_row =
-                                Self::eager_csv_read_options(options, None).with_n_rows(Some(1));
-                            let df = CsvReader::new(std::io::Cursor::new(decompressed.as_slice()))
-                                .with_options(one_row)
-                                .finish()?;
-                            Ok(df.schema().clone())
-                        })?;
-                        let read_options = Self::eager_csv_read_options(options, nv.as_ref());
-                        let df = CsvReader::new(std::io::Cursor::new(decompressed))
-                            .with_options(read_options)
-                            .finish()?;
-                        let mut lf = Self::trim_csv_column_names(df.lazy())?;
-                        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                        lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-                        let mut state = Self::new(
-                            lf,
-                            options.pages_lookahead,
-                            options.pages_lookback,
-                            options.max_buffered_rows,
-                            options.max_buffered_mb,
-                            options.polars_streaming,
-                        )?;
-                        state.row_numbers = options.row_numbers;
-                        state.row_start_index = options.row_start_index;
-                        Ok(state)
-                    }
-                }
+                };
+                let lf = Self::finish_csv_frame(df.lazy(), options, header.as_deref())?;
+                let mut state = Self::new(
+                    lf,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.polars_streaming,
+                )?;
+                state.row_numbers = options.row_numbers;
+                state.row_start_index = options.row_start_index;
+                Ok(state)
             } else {
                 // Decompress to temp file, then lazy scan
                 let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
                 let temp =
                     Self::decompress_compressed_csv_to_temp(path, compression, &temp_dir, writer)?;
-                let nv_temp = Self::build_null_values_for_csv(options, Some(temp.path()))?;
-                let mut state = Self::from_csv_customize(
-                    temp.path(),
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    |reader| Self::configure_csv_reader(reader, options, nv_temp.as_ref()),
-                )?;
-                let mut lf = Self::trim_csv_column_names(std::mem::take(&mut state.lf))?;
-                state.replace_original_lf(&lf)?;
-                if options.parse_strings.is_some() {
-                    lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                    state.replace_original_lf(&lf)?;
-                }
-                lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-                state.replace_original_lf(&lf)?;
-                state.row_numbers = options.row_numbers;
-                state.row_start_index = options.row_start_index;
+                let mut state = Self::scan_csv_file(temp.path(), options)?;
                 state.decompress_temp_file = Some(Arc::new(temp));
                 Ok(state)
             }
         } else {
             // For uncompressed files, use lazy scanning (more efficient)
-            let nv = Self::build_null_values_for_csv(options, Some(path))?;
-            let mut state = Self::from_csv_customize(
-                path,
-                options.pages_lookahead,
-                options.pages_lookback,
-                options.max_buffered_rows,
-                options.max_buffered_mb,
-                |reader| Self::configure_csv_reader(reader, options, nv.as_ref()),
-            )?;
-            let mut lf = Self::trim_csv_column_names(std::mem::take(&mut state.lf))?;
-            state.replace_original_lf(&lf)?;
-            if options.parse_strings.is_some() {
-                lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                state.replace_original_lf(&lf)?;
-            }
-            lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-            state.replace_original_lf(&lf)?;
-            state.row_numbers = options.row_numbers;
-            state.row_start_index = options.row_start_index;
-            Ok(state)
+            Self::scan_csv_file(path, options)
         }
+    }
+
+    /// One uncompressed delimited file, scanned lazily. The frame is finished before
+    /// the state is made from it, so the column order is of the names shown.
+    fn scan_csv_file(path: &Path, options: &OpenOptions) -> Result<Self> {
+        let header = Self::csv_header_names_of(options, path, None)?;
+        let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
+        let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?);
+        let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
+        let lf = Self::finish_csv_frame(lf, options, header.as_deref())?;
+        let mut state = Self::new(
+            lf,
+            options.pages_lookahead,
+            options.pages_lookback,
+            options.max_buffered_rows,
+            options.max_buffered_mb,
+            true,
+        )?;
+        state.row_numbers = options.row_numbers;
+        state.row_start_index = options.row_start_index;
+        Ok(state)
     }
 
     pub fn from_csv_customize<F>(
@@ -4471,20 +4521,21 @@ impl DataTableState {
         if paths.len() == 1 {
             return Self::from_csv(paths[0].as_ref(), options);
         }
-        let nv = Self::build_null_values_for_csv(options, Some(paths[0].as_ref()))?;
+        // Each file is named from its own header, so files whose names are padded
+        // differently, or whose header lines say the same thing, stack by name.
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
-            let reader = LazyCsvReader::new(pl_path);
+            let p = p.as_ref();
+            let header = Self::csv_header_names_of(options, p, None)?;
+            let nv = Self::build_null_values_for_csv(options, p, header.as_deref())?;
+            let reader = LazyCsvReader::new(PlRefPath::try_from_path(p)?);
             let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
-            lazy_frames.push(lf);
+            lazy_frames.push(crate::csv_dialect::name_columns(lf, header.as_deref())?);
         }
-        let mut lf = Self::trim_csv_column_names(polars::prelude::concat(
-            lazy_frames.as_slice(),
-            Self::union_of_files(),
-        )?)?;
-        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-        lf = Self::apply_skip_tail_rows_csv(lf, options)?;
+        let lf = Self::finish_csv_values(
+            polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?,
+            options,
+        )?;
         let mut state = Self::new(
             lf,
             options.pages_lookahead,

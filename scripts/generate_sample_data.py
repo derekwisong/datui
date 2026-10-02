@@ -924,6 +924,62 @@ def generate_model_files():
     write_gguf(models / "tiny.gguf")
 
 
+def generate_csv_dialect_files():
+    """Text files laid out as instrument and logger exports are, for --comment-char,
+    --header-rows and --skip-initial-space. Written as text: their layout is the point.
+    """
+    # A padded log: two comment lines, the second of them units, then the names, then
+    # values padded to the width of their column, some cells only spaces.
+    widths = [10, 9, 8, 13, 10, 8]
+    names = ["Lcl Date", "Lcl Time", "UTCOfst", "Latitude", "bus1volts", "E1 CHT1"]
+    lines = [
+        '#device_info, log_version="1.03", model="X", serial="123"',
+        "#yyyy-mm-dd, hh:mm:ss, hh:mm, degrees, volts, deg F",
+        ",".join(n.rjust(w) for n, w in zip(names, widths)),
+        ",".join(["".rjust(w) for w in widths[:4]] + ["25.1".rjust(10), "187.2".rjust(8)]),
+    ]
+    for i in range(20):
+        cells = [
+            "2024-03-01",
+            f"10:00:{i:02d}",
+            "-05:00",
+            f"{40.1 + i / 1000:.6f}",
+            f"{25.0 + (i % 5) / 10:.1f}",
+            f"{180 + i * 0.5:.1f}",
+        ]
+        lines.append(",".join(c.rjust(w) for c, w in zip(cells, widths)))
+    text = "\n".join(lines) + "\n"
+    padded = OUTPUT_DIR / "dialect_padded_log.csv"
+    padded.write_text(text)
+    with gzip.open(OUTPUT_DIR / "dialect_padded_log.csv.gz", "wt", compresslevel=6) as f:
+        f.write(text)
+    print(f"Generated: {padded} (and .gz)")
+
+    # Two header lines, names over units, that join into one name per column.
+    two = OUTPUT_DIR / "dialect_two_header_rows.csv"
+    two.write_text(
+        "station,temp,pressure\n"
+        ",degC,hPa\n"
+        "A,12.5,1013.2\n"
+        "B,13.0,1012.8\n"
+        "C,11.75,1014.0\n"
+    )
+    print(f"Generated: {two}")
+
+    # Comment lines before the header and among the data.
+    mid = OUTPUT_DIR / "dialect_mid_comments.csv"
+    mid.write_text(
+        "# exported 2024-03-01\n"
+        "id,value\n"
+        "1,10\n"
+        "# sensor reset\n"
+        "2,20\n"
+        "# sensor reset\n"
+        "3,30\n"
+    )
+    print(f"Generated: {mid}")
+
+
 def main():
     print("Generating sample data files...")
     print(f"Output directory: {OUTPUT_DIR}")
@@ -1043,6 +1099,8 @@ def main():
     # Model files: SafeTensors (one file and a sharded checkpoint) and GGUF
     print("\n13. Generating model files...")
     generate_model_files()
+    print("\n14. Generating CSV dialect files...")
+    generate_csv_dialect_files()
 
     print("\nSample data generation complete!")
 

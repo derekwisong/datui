@@ -17,6 +17,9 @@ fn test_config_used_for_row_numbers() {
         no_header: None,
         delimiter: None,
         null_value: vec![],
+        comment_char: None,
+        header_rows: vec![],
+        skip_initial_space: None,
         compression: None,
         format: None,
         debug: false,
@@ -77,6 +80,9 @@ fn test_cli_args_override_config() {
         no_header: None,
         delimiter: None,
         null_value: vec![],
+        comment_char: None,
+        header_rows: vec![],
+        skip_initial_space: None,
         compression: None,
         format: None,
         debug: false,
@@ -137,6 +143,9 @@ fn test_config_display_settings() {
         no_header: None,
         delimiter: None,
         null_value: vec![],
+        comment_char: None,
+        header_rows: vec![],
+        skip_initial_space: None,
         compression: None,
         format: None,
         debug: false,
@@ -197,6 +206,9 @@ fn test_config_file_loading_settings() {
         no_header: None,
         delimiter: None,
         null_value: vec![],
+        comment_char: None,
+        header_rows: vec![],
+        skip_initial_space: None,
         compression: None,
         format: None,
         debug: false,
@@ -255,6 +267,9 @@ fn test_config_null_values_merge() {
         no_header: None,
         delimiter: None,
         null_value: vec!["amount=".to_string()],
+        comment_char: None,
+        header_rows: vec![],
+        skip_initial_space: None,
         compression: None,
         format: None,
         debug: false,
@@ -326,6 +341,9 @@ fn test_parse_strings_default_and_no_parse_strings() {
         no_header: None,
         delimiter: None,
         null_value: vec![],
+        comment_char: None,
+        header_rows: vec![],
+        skip_initial_space: None,
         compression: None,
         format: None,
         debug: false,
@@ -379,4 +397,42 @@ fn test_parse_strings_default_and_no_parse_strings() {
     config_off.file_loading.parse_strings = Some(false);
     let opts_config_off = OpenOptions::from_args_and_config(&args, &config_off);
     assert!(opts_config_off.parse_strings.is_none());
+}
+
+/// The CSV dialect: the command line over `[file_loading]`; `--header-rows` is a
+/// file's layout and has no config key, as `--skip-lines` has none.
+#[test]
+fn test_csv_dialect_cli_over_config() {
+    use clap::Parser;
+    let mut config = AppConfig::default();
+    let opts = OpenOptions::from_args_and_config(&Args::parse_from(["datui", "a.csv"]), &config);
+    assert_eq!(opts.comment_char, None);
+    assert!(opts.header_rows.is_empty());
+    assert_eq!(opts.header_join, " ");
+    assert!(!opts.skip_initial_space);
+
+    config.file_loading.comment_char = Some(";".into());
+    config.file_loading.header_join = Some("_".into());
+    config.file_loading.skip_initial_space = Some(true);
+    let opts = OpenOptions::from_args_and_config(&Args::parse_from(["datui", "a.csv"]), &config);
+    assert_eq!(opts.comment_char.as_deref(), Some(";"));
+    assert_eq!(opts.header_join, "_");
+    assert!(opts.skip_initial_space);
+
+    let args = Args::parse_from([
+        "datui",
+        "--comment-char",
+        "#",
+        "--header-rows",
+        "3,2",
+        "--skip-initial-space=false",
+        "a.csv",
+    ]);
+    let opts = OpenOptions::from_args_and_config(&args, &config);
+    assert_eq!(opts.comment_char.as_deref(), Some("#"));
+    assert_eq!(opts.header_rows, [3, 2]);
+    assert!(!opts.skip_initial_space);
+
+    assert!(Args::try_parse_from(["datui", "--header-rows", "0", "a.csv"]).is_err());
+    assert!(Args::try_parse_from(["datui", "--comment-char", "", "a.csv"]).is_err());
 }

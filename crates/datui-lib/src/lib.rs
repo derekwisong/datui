@@ -27848,36 +27848,48 @@ fn restore_terminal() {
     }
 }
 
-/// The signal that ended the session, if one did: SIGTERM or SIGHUP. Set once.
-#[cfg(unix)]
+/// The exit status the session's ending signal calls for, once one has ended it;
+/// 0 until then. Set once.
 static ENDED_BY_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-/// The signal (SIGTERM or SIGHUP) that ended the session [`run`] returned from, for
-/// the binary to exit with `128 + n`, as if it had not been caught.
+/// The exit status for the binary when a signal ended the session [`run`] returned
+/// from: `128 + n` for SIGTERM or SIGHUP, as if it had not been caught, and on
+/// Windows the status a console process closed by its window ends with.
 pub fn ended_by_signal() -> Option<i32> {
-    #[cfg(unix)]
-    {
-        let signal = ENDED_BY_SIGNAL.load(std::sync::atomic::Ordering::SeqCst);
-        (signal != 0).then_some(signal)
-    }
-    #[cfg(not(unix))]
-    None
+    let status = ENDED_BY_SIGNAL.load(std::sync::atomic::Ordering::SeqCst);
+    (status != 0).then_some(status)
 }
 
-/// End the session on SIGTERM or SIGHUP (the terminal closing) as a quit does, so the
-/// screen is handed back and an open's temp files are removed (#510). A second signal,
-/// or a session still running a few seconds after the first, ends the process at once,
-/// as the signal would have: a stuck event loop cannot make datui unkillable.
+/// A signal that ends the session arrived: quit as `q` does, so the screen is handed
+/// back and an open's temp files are removed (#510). A second one, or a session still
+/// running a few seconds after the first, ends the process at once, as the signal
+/// would have: a stuck event loop cannot make datui unkillable. Called on the runtime.
+fn end_session(status: i32, tx: &std::sync::mpsc::Sender<AppEvent>) {
+    use std::sync::atomic::Ordering;
+    // Longer than the exit sweep's grace, which is part of a normal quit, and short
+    // of the five seconds Windows allows a console process it is closing.
+    const STRAGGLE: std::time::Duration = std::time::Duration::from_secs(3);
+    fn end_now(status: i32) -> ! {
+        restore_terminal();
+        std::process::exit(status)
+    }
+    if ENDED_BY_SIGNAL
+        .compare_exchange(0, status, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        end_now(ENDED_BY_SIGNAL.load(Ordering::SeqCst));
+    }
+    let _ = tx.send(AppEvent::Exit);
+    tokio::spawn(async move {
+        tokio::time::sleep(STRAGGLE).await;
+        end_now(status);
+    });
+}
+
+/// End the session on SIGTERM or SIGHUP (the terminal closing).
 #[cfg(unix)]
 fn quit_on_signals(runtime: &tokio::runtime::Handle, tx: &std::sync::mpsc::Sender<AppEvent>) {
-    use std::sync::atomic::Ordering;
     use tokio::signal::unix::{SignalKind, signal};
-    // Longer than the exit sweep's grace, which is part of a normal quit.
-    const STRAGGLE: std::time::Duration = std::time::Duration::from_secs(3);
-    fn end_now(signal: i32) -> ! {
-        restore_terminal();
-        std::process::exit(128 + signal)
-    }
     // `signal` registers with the runtime it is called in.
     let _runtime = runtime.enter();
     for kind in [SignalKind::terminate(), SignalKind::hangup()] {
@@ -27887,21 +27899,38 @@ fn quit_on_signals(runtime: &tokio::runtime::Handle, tx: &std::sync::mpsc::Sende
         let tx = tx.clone();
         runtime.spawn(async move {
             while arrivals.recv().await.is_some() {
-                let number = kind.as_raw_value();
-                if ENDED_BY_SIGNAL
-                    .compare_exchange(0, number, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
-                {
-                    end_now(ENDED_BY_SIGNAL.load(Ordering::SeqCst));
-                }
-                let _ = tx.send(AppEvent::Exit);
-                tokio::spawn(async move {
-                    tokio::time::sleep(STRAGGLE).await;
-                    end_now(number);
-                });
+                end_session(128 + kind.as_raw_value(), &tx);
             }
         });
     }
+}
+
+/// End the session when its console window is closed, or the user logs off or the
+/// machine shuts down. Tokio holds the control handler until the process exits, so
+/// the quit runs before Windows ends it.
+#[cfg(windows)]
+fn quit_on_signals(runtime: &tokio::runtime::Handle, tx: &std::sync::mpsc::Sender<AppEvent>) {
+    use tokio::signal::windows::{ctrl_close, ctrl_logoff, ctrl_shutdown};
+    /// STATUS_CONTROL_C_EXIT, what a console process ends with when closed.
+    const CLOSED: i32 = 0xC000_013A_u32 as i32;
+    // Each registers with the runtime it is called in.
+    let _runtime = runtime.enter();
+    // Three listener types with one shape and no trait in common.
+    macro_rules! quit_on {
+        ($listen:expr) => {
+            if let Ok(mut arrivals) = $listen {
+                let tx = tx.clone();
+                runtime.spawn(async move {
+                    while arrivals.recv().await.is_some() {
+                        end_session(CLOSED, &tx);
+                    }
+                });
+            }
+        };
+    }
+    quit_on!(ctrl_close());
+    quit_on!(ctrl_logoff());
+    quit_on!(ctrl_shutdown());
 }
 
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop
@@ -28015,7 +28044,7 @@ fn run_impl(
     let mut reader = terminal_input::TerminalInput::start(tx.clone())?;
     // Only for the datui binary: the handlers stay for the life of the process, and a
     // host such as Python keeps its own.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if matches!(input, RunInput::Cli(_)) {
         quit_on_signals(&rt_handle, &tx);
     }

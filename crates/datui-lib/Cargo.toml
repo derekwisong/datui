@@ -98,6 +98,9 @@ tokio = { version = "1", features = ["signal"] }
 # input, to tell `NUL` from a pipe. Already in the tree.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console"] }
+# Closing the console window, logging off and shutting down end a session as a quit
+# does. Tokio's console control handler, on the windows-sys above.
+tokio = { version = "1", features = ["signal"] }
 
 [dependencies.polars]
 version = "0.55"

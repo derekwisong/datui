@@ -18288,6 +18288,20 @@ impl App {
         }
     }
 
+    /// A format spec reads a local file (or a downloaded copy); an object store path
+    /// that is scanned in place would otherwise open without it and say nothing.
+    fn refuse_spec_in_place(path: &Path, options: &OpenOptions) -> Result<()> {
+        if source::is_remote_url(path)
+            && (options.spec_file.is_some() || options.spec_name.is_some())
+        {
+            return Err(color_eyre::eyre::eyre!(
+                "format specs read local files; download {} first",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+
     /// `found` is what the read has to say about itself, for the caller to put in the
     /// dataset's notes: which data files it passed over, and whether the files it did
     /// read carry the same columns. Written here rather than worked out by the caller
@@ -18304,6 +18318,7 @@ impl App {
         #[cfg(not(feature = "cloud"))]
         let _ = cloud;
         let path = &paths[0];
+        Self::refuse_spec_in_place(path, options)?;
         match source::input_source(path) {
             source::InputSource::Http(_url) => {
                 #[cfg(feature = "http")]
@@ -27978,6 +27993,49 @@ mod background_read_tests {
             .map(|name| name.to_string())
             .collect();
         assert_eq!(shown, ["b", "a"]);
+    }
+}
+
+#[cfg(test)]
+mod spec_source_tests {
+    use super::*;
+
+    /// A spec asked for on an object store path scanned in place is refused, saying
+    /// why, rather than dropped; a local path and a plain remote open are not.
+    #[test]
+    fn a_spec_on_a_remote_path_is_refused() {
+        let asked = [
+            OpenOptions {
+                spec_name: Some("acme.l2feed".into()),
+                ..OpenOptions::default()
+            },
+            OpenOptions {
+                spec_file: Some(PathBuf::from("l2feed.toml")),
+                ..OpenOptions::default()
+            },
+        ];
+        for url in ["s3://bucket/day.l2", "gs://bucket/day.l2", "az://c/day.l2"] {
+            for options in &asked {
+                let e = App::build_lazyframe_from_paths_with(
+                    &crate::config::CloudConfig::default(),
+                    &[PathBuf::from(url)],
+                    options,
+                    &mut ReadReport::default(),
+                    &crate::formats::Registry::default(),
+                )
+                .err()
+                .unwrap_or_else(|| panic!("{url} opened"));
+                assert!(
+                    e.to_string().contains("format specs read local files"),
+                    "{url}: {e}"
+                );
+            }
+        }
+        assert!(App::refuse_spec_in_place(Path::new("/data/day.l2"), &asked[0]).is_ok());
+        assert!(
+            App::refuse_spec_in_place(Path::new("s3://bucket/day.l2"), &OpenOptions::default())
+                .is_ok()
+        );
     }
 }
 

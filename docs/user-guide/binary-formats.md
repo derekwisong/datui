@@ -145,6 +145,7 @@ values, and any bytes left out.
 | The magic does not match | The open fails, showing the bytes found |
 | A file that ends partway through a record | The whole records open; a note shows the bytes left over |
 | A header count larger than the file | The whole records open, with a note |
+| `--spec` or `--format NAME` on an `s3://`, `gs://` or Azure path | Refused: specs read local files, so download it first |
 
 ## Columns layout
 

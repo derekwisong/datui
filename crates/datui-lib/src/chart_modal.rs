@@ -810,6 +810,25 @@ impl ChartModal {
 
 #[cfg(test)]
 mod tests {
+
+    /// An axis is titled with its column's unit, when a delimited spec read one.
+    #[test]
+    fn an_axis_title_names_the_unit() {
+        let spec =
+            crate::formats::Spec::parse("name = \"a.b\"\nkind = \"delimited\"", None).unwrap();
+        let mut read = crate::delimited_spec::DelimitedRead::chosen(
+            std::sync::Arc::new(spec),
+            crate::formats::Chosen::Named,
+            Vec::new(),
+        );
+        read.units = vec![("cht1".to_string(), "deg F".to_string())];
+        let mut modal = ChartModal::default();
+        assert_eq!(modal.axis_title("cht1"), "cht1");
+        modal.units = Some(std::sync::Arc::new(read));
+        assert_eq!(modal.axis_title("cht1"), "cht1 (deg F)");
+        assert_eq!(modal.axis_title("volts"), "volts");
+    }
+
     use super::{ChartColumns, ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
     use crate::chart_data::{BarOrder, BarValue};
 

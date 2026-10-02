@@ -6681,3 +6681,30 @@ fn a_file_a_spec_names_is_listed_under_the_spec() {
     assert_eq!(notes.kind, EntryKind::Other);
     assert_eq!(rows[0].name, "day.l2", "data sorts first");
 }
+
+/// A CSV a delimited spec's glob names keeps its place as data and gains the spec's
+/// name; a binary spec's glob does not take a CSV.
+#[test]
+fn a_csv_a_delimited_spec_names_is_listed_under_the_spec() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("log_001.csv"), "a\n1\n").unwrap();
+    std::fs::write(tmp.path().join("other.csv"), "a\n1\n").unwrap();
+    let delimited = datui::formats::Spec::parse(
+        "name = \"acme.instrument-log\"\nkind = \"delimited\"\nmatch = { glob = \"log_*.csv\" }",
+        None,
+    )
+    .unwrap();
+    let binary = datui::formats::Spec::parse(
+        "name = \"acme.raw\"\nmatch = { glob = \"*.csv\" }\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]",
+        None,
+    )
+    .unwrap();
+    let registry = datui::formats::Registry::of(vec![binary, delimited]);
+    let mut rows = discover::scan_dir(tmp.path());
+    datui::home::name_by_spec(&registry, &mut rows);
+    let log = rows.iter().find(|r| r.name == "log_001.csv").unwrap();
+    assert_eq!(log.kind, EntryKind::File);
+    assert_eq!(log.label(), "acme.instrument-log");
+    let other = rows.iter().find(|r| r.name == "other.csv").unwrap();
+    assert_eq!(other.format_spec, None);
+}

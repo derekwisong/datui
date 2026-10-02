@@ -3586,4 +3586,186 @@ fields = [{{ name = "x", type = "u1" }}]"#
         assert!(e.contains("l2.toml:3:10: fields: expected an array"), "{e}");
         assert!(check("acme.nothing", None, &registry).is_err());
     }
+
+    const LOG: &str = r##"
+name = "acme.instrument-log"
+kind = "delimited"
+match = { magic = "#device_info" }
+
+comment_char = "#"
+skip_initial_space = true
+header_rows = { name = 3, unit = 2 }
+metadata_line = 1
+
+[columns]
+time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
+"##;
+
+    const LOG_TEXT: &str = "#device_info, log_version=\"1.03\", model=\"X\"\n#yyyy-mm-dd, hh:mm:ss, hh:mm, deg F\n  Lcl Date, Lcl Time, UTCOfst, E1 CHT1\n          ,         ,       ,   187.2\n2024-03-01, 10:00:00, -05:00,   180.0\n";
+
+    #[test]
+    fn the_delimited_example_parses() {
+        use crate::delimited_spec::{DerivedKind, HeaderRows};
+        let spec = Spec::parse(LOG, None).unwrap();
+        assert!(spec.is_delimited());
+        assert_eq!(spec.magic, b"#device_info");
+        let d = spec.delimited.as_deref().unwrap();
+        assert_eq!(d.comment_char.as_deref(), Some("#"));
+        assert_eq!(d.skip_initial_space, Some(true));
+        assert_eq!(
+            d.header_rows,
+            Some(HeaderRows {
+                name: vec![3],
+                unit: Some(2)
+            })
+        );
+        assert_eq!(d.metadata_line, Some(1));
+        assert_eq!(d.columns[0].name, "time");
+        assert_eq!(d.columns[0].kind, DerivedKind::Datetime);
+        assert_eq!(d.columns[0].from.len(), 3);
+        // A list of name lines joins them, as Frictionless does.
+        let joined = Spec::parse(
+            "name = \"a.b\"\nkind = \"delimited\"\nheader_rows = [1, 2]\ndelimiter = \"\\t\"\nnull_value = [\"NA\", \"x=-1\"]",
+            None,
+        )
+        .unwrap();
+        let d = joined.delimited.as_deref().unwrap();
+        assert_eq!(d.header_rows.as_ref().unwrap().name, [1, 2]);
+        assert_eq!(d.delimiter, Some(b'\t'));
+        assert_eq!(d.null_values, ["NA", "x=-1"]);
+        // A binary spec is not one.
+        assert!(!Spec::parse(L2, None).unwrap().is_delimited());
+    }
+
+    #[test]
+    fn delimited_spec_errors_point_at_the_line_and_column() {
+        let head = "name = \"a.b\"\nkind = \"delimited\"\n";
+        for (rest, said) in [
+            (
+                "records = 1",
+                "3:1: unknown key `records` in a delimited spec",
+            ),
+            ("header_rows = { unit = 2 }", "header_rows: missing `name`"),
+            (
+                "header_rows = { name = 2, unit = 2 }",
+                "header_rows.unit: line 2 is also a name line",
+            ),
+            (
+                "header_rows = { name = 2, description = 1 }",
+                "header_rows.description is not yet supported",
+            ),
+            (
+                "header_rows = 0",
+                "header_rows: expected a line from 1 to 1000",
+            ),
+            ("header_rows = [2, 2]", "header_rows: line 2 is named twice"),
+            (
+                "header_rows = 2\nmetadata_line = 5",
+                "4:17: metadata_line: line 5 would be read as data",
+            ),
+            (
+                "header_rows = 2\nmetadata_line = 2",
+                "metadata_line: line 2 is a header line",
+            ),
+            ("delimiter = \"ab\"", "delimiter: expected one character"),
+            ("comment_char = \"\"", "comment_char: must not be empty"),
+            (
+                "match = { where = { \"header.v\" = 1 } }",
+                "where compares a binary header's fields",
+            ),
+            (
+                "[columns]\nt = { from = [\"a\", \"b\"], as = \"date\" }",
+                "columns.t.from: as = \"date\" takes one column",
+            ),
+            (
+                "[columns]\nt = { from = \"a\", as = \"instant\" }",
+                "columns.t.as: expected datetime, date or time",
+            ),
+            (
+                "[columns]\nt = { as = \"date\" }",
+                "columns.t: missing `from`",
+            ),
+            ("kind = \"text\"", "kind: expected binary or delimited"),
+        ] {
+            let text = format!("{head}{rest}");
+            let text = text.replacen(
+                "kind = \"delimited\"\nkind = \"text\"",
+                "kind = \"text\"",
+                1,
+            );
+            let e = Spec::parse(&text, None).unwrap_err().to_string();
+            assert!(e.contains(said), "{rest}: {e}");
+        }
+        // A metadata line below the header lines is fine when it is a comment line.
+        let text = format!("{head}header_rows = 2\ncomment_char = \"#\"\nmetadata_line = 5");
+        assert!(Spec::parse(&text, None).is_ok());
+    }
+
+    #[test]
+    fn a_delimited_spec_matches_csv_names_and_a_binary_spec_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("flight.csv");
+        std::fs::write(&csv, LOG_TEXT).unwrap();
+        let binary = "name = \"acme.raw\"\nmatch = { glob = \"*.csv\", magic = \"#dev\" }\n[records]\nfields = [{ name = \"b\", type = \"u1\" }]";
+        let registry = Registry::of(vec![
+            Spec::parse(binary, None).unwrap(),
+            Spec::parse(LOG, None).unwrap(),
+        ]);
+        let asked = Asked::default();
+        match route(&csv, &asked, &registry).unwrap() {
+            Route::Delimited(choice) => {
+                assert_eq!(choice.spec.name, "acme.instrument-log");
+                assert_eq!(choice.by, Chosen::Magic);
+            }
+            _ => panic!("the delimited spec reads the CSV"),
+        }
+        // Several files: only a delimited spec is asked about.
+        let several = Asked {
+            spec_name: Some("acme.raw".into()),
+            text_only: true,
+            ..Asked::default()
+        };
+        let Err(e) = route(&csv, &several, &registry) else {
+            panic!("a binary spec does not read several files");
+        };
+        assert!(e.contains("reads one file"), "{e}");
+        // A CSV whose first line is not the magic is read as it always was.
+        let plain = dir.path().join("plain.csv");
+        std::fs::write(&plain, "a,b\n1,2\n").unwrap();
+        assert!(matches!(
+            route(&plain, &asked, &registry).unwrap(),
+            Route::Elsewhere
+        ));
+    }
+
+    #[test]
+    fn formats_check_prints_a_delimited_file_s_metadata_units_and_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = dir.path().join("log.toml");
+        std::fs::write(&spec, LOG).unwrap();
+        let data = dir.path().join("flight.csv");
+        std::fs::write(&data, LOG_TEXT).unwrap();
+        let registry = Registry::default();
+        let text = check(&spec.to_string_lossy(), Some(&data), &registry).unwrap();
+        assert!(text.starts_with("acme.instrument-log: ok"), "{text}");
+        assert!(
+            text.contains("delimited: names on line 3, units on line 2, metadata on line 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("time = datetime from Lcl Date, Lcl Time, UTCOfst"),
+            "{text}"
+        );
+        assert!(
+            text.contains("metadata: device_info: log_version = 1.03, model = X"),
+            "{text}"
+        );
+        assert!(text.contains("E1 CHT1 = deg F"), "{text}");
+        assert!(text.contains("2024-03-01 15:00:00 UTC"), "{text}");
+        let listing = Registry::of(vec![Spec::parse(LOG, None).unwrap()]).listing(&[]);
+        assert!(
+            listing.contains("acme.instrument-log  (delimited; magic \"#device_info\")"),
+            "{listing}"
+        );
+    }
 }

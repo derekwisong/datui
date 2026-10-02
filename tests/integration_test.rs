@@ -18,6 +18,8 @@ mod common;
 #[cfg(feature = "cloud")]
 #[path = "common/fake_s3.rs"]
 mod fake_s3;
+#[path = "formats/delimited.rs"]
+mod formats_delimited;
 #[path = "formats/open.rs"]
 mod formats_open;
 #[path = "formats/gps.rs"]

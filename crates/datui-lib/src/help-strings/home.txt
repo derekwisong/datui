@@ -72,12 +72,13 @@ Reading a row:
   "(all files, mixed)" or "(Delta files, not the table)". The cursor
   starts on it only for a hive table or one schema, and on the first row
   inside otherwise. The row hides while a filter is typed, and is absent
-  when nothing inside is openable. Inside a
-  directory, the last row counts the files datui can't open; Enter on it
-  shows them. A SQLite database's label counts its tables ("3 tables");
-  one of several lists them inside, a row each, and Enter opens one. The Notes tab says what a read had to decide. In a
-  collection, "dataset" marks a remote directory not listed until you
-  enter it, and "missing" a local path with nothing there.
+  when nothing inside is openable. Inside a directory, the last row
+  counts the files datui can't open; Enter on it shows them. A SQLite
+  database's label counts its tables ("3 tables"); one of several lists
+  them inside, a row each, and Enter opens one. The Notes tab says what a
+  read had to decide. In a collection, "dataset" marks a remote directory
+  not listed until you enter it, and "missing" a local path with nothing
+  there.
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)

@@ -80,6 +80,15 @@ pub(crate) enum PendingDownload {
         size: Option<u64>,
         options: OpenOptions,
     },
+    /// A prefix of Arrow files in S3, GCS or Azure: `objects` are the URLs and sizes
+    /// the probe's listing chose, downloaded into one IPC file.
+    #[cfg(feature = "cloud")]
+    Folder {
+        url: String,
+        objects: Vec<(String, u64)>,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
 }
 
 #[cfg(any(feature = "http", feature = "cloud"))]
@@ -96,6 +105,19 @@ impl PendingDownload {
             PendingDownload::Gcs { url, size, options } => (url, *size, options),
             #[cfg(feature = "cloud")]
             PendingDownload::Azure { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::Folder {
+                url, size, options, ..
+            } => (url, *size, options),
+        }
+    }
+
+    /// How many files a prefix's download is, for the question about it.
+    pub(crate) fn files(&self) -> Option<usize> {
+        match self {
+            #[cfg(feature = "cloud")]
+            PendingDownload::Folder { objects, .. } => Some(objects.len()),
+            _ => None,
         }
     }
 
@@ -110,6 +132,8 @@ impl PendingDownload {
             PendingDownload::Gcs { size, .. } => *size = found,
             #[cfg(feature = "cloud")]
             PendingDownload::Azure { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::Folder { size, .. } => *size = found,
         }
         self
     }
@@ -1282,6 +1306,10 @@ pub(crate) const NO_RANGES: &str = "The server does not send byte ranges, so the
 /// file always, and one object of a store that cannot be scanned in place.
 #[cfg(any(feature = "http", feature = "cloud"))]
 fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
+    #[cfg(feature = "cloud")]
+    if let Some(folder) = arrow_folder(src, options) {
+        return Some(folder);
+    }
     let options = options.clone();
     match src {
         #[cfg(feature = "http")]
@@ -1316,6 +1344,26 @@ fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<P
         }),
         _ => None,
     }
+}
+
+/// A prefix whose listing found Arrow files: Polars cannot scan streams, and reads no
+/// IPC files from a store as one table, so they are downloaded into one IPC file.
+#[cfg(feature = "cloud")]
+fn arrow_folder(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
+    let url = match src {
+        source::InputSource::S3(url) => format!("s3://{url}"),
+        source::InputSource::Gcs(url) => format!("gs://{url}"),
+        source::InputSource::Azure(url) => url.clone(),
+        _ => return None,
+    };
+    (options.format == Some(FileFormat::Arrow) && url.ends_with('/') && !url.contains('*')).then(
+        || PendingDownload::Folder {
+            url,
+            objects: Vec::new(),
+            size: None,
+            options: options.clone(),
+        },
+    )
 }
 
 #[cfg(feature = "cloud")]
@@ -2074,6 +2122,36 @@ mod tests {
         assert!(matches!(
             loader.answered(id, schema_read(url), &jobs),
             Step::Nothing
+        ));
+    }
+
+    /// A bucket prefix the listing said is Arrow is listed and downloaded, not sent to
+    /// the Parquet scan; a prefix of another format, or a glob, is scanned in place.
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn a_prefix_of_arrow_is_downloaded() {
+        let open = |url: &str, format: FileFormat| {
+            let mut loader = Loader::default();
+            let mut request = request(url);
+            request.options.format = Some(format);
+            request.options.hive = true;
+            loader.open(request)
+        };
+        for url in ["s3://lake/hf/", "gs://lake/hf/"] {
+            let Step::Probe(PendingDownload::Folder { url: listed, .. }) =
+                open(url, FileFormat::Arrow)
+            else {
+                panic!("{url}: the prefix is listed first");
+            };
+            assert_eq!(listed, url);
+        }
+        assert!(matches!(
+            open("s3://lake/hf/", FileFormat::Csv),
+            Step::Scan { .. }
+        ));
+        assert!(matches!(
+            open("s3://lake/hf/*.arrow", FileFormat::Arrow),
+            Step::Scan { .. }
         ));
     }
 

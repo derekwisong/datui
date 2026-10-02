@@ -924,6 +924,24 @@ pub fn look_at_listing(
             None => counts.push((format, 1)),
         }
     }
+    // A Hugging Face dataset's own JSON files are its writer's, as they are on disk.
+    let arrow = crate::FileFormat::Arrow.name();
+    let hugging_face: Vec<String> = if counts.iter().any(|(f, _)| *f == arrow) {
+        files
+            .iter()
+            .map(|key| last(key))
+            .filter(|name| crate::discover::is_hugging_face_metadata(name))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let json = crate::FileFormat::Json.name();
+    for (format, n) in &mut counts {
+        if *format == json {
+            *n -= hugging_face.len();
+        }
+    }
+    counts.retain(|(_, n)| *n > 0);
     // The same order the local routes rank by, so a prefix and the directory it mirrors
     // name the same format — including on a tie, where Parquet wins.
     counts.sort_by(|a, b| crate::discover::rank_formats((a.0, a.1), (b.0, b.1)));
@@ -953,6 +971,7 @@ pub fn look_at_listing(
         .map(|(key, _)| last(key))
         .chain(directories.iter().map(|f| last(f)))
         .filter(|name| !name.is_empty() && crate::discover::is_bookkeeping(name))
+        .chain(hugging_face)
         .collect();
     skipped_names.sort();
     // An object and a prefix of the same name are one thing named twice: the listing
@@ -1999,6 +2018,26 @@ mod tests {
         .1;
         assert_eq!(holds.not_read, 0);
         assert_eq!(holds.label(), "dir");
+    }
+
+    /// A Hugging Face cache's JSON is its writer's, as on disk: one shard beside
+    /// `dataset_info.json` and `state.json` is a prefix of Arrow, not of JSON.
+    #[test]
+    fn a_hugging_face_prefix_is_arrow() {
+        let holds = look_at_listing(
+            "hf/",
+            &directories(&[]),
+            &objects(&[
+                ("hf/data-00000-of-00001.arrow", 5),
+                ("hf/dataset_info.json", 5),
+                ("hf/state.json", 5),
+            ]),
+        )
+        .1;
+        assert_eq!(holds.formats, vec![("arrow".to_string(), 1)]);
+        assert_eq!(holds.skipped_names, ["dataset_info.json", "state.json"]);
+        let holds = look_at_listing("j/", &directories(&[]), &objects(&[("j/state.json", 5)])).1;
+        assert_eq!(holds.formats, vec![("json".to_string(), 1)], "no Arrow");
     }
 
     #[test]

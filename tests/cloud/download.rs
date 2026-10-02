@@ -455,3 +455,101 @@ fn status_kib(field: &str) -> u64 {
         .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
         .expect("a /proc/self/status field")
 }
+
+/// Handle events until nothing is queued or owed, answering Yes to a download.
+fn settle_confirming(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
+    while let Some(event) = next_event(app, rx) {
+        chain(app, event);
+        if app.awaiting_download_confirmation() {
+            chain(
+                app,
+                AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            );
+        }
+    }
+}
+
+/// A prefix named on the command line, with downloads landing in `dir`.
+fn open_prefix(app: &mut App, rx: &mpsc::Receiver<AppEvent>, url: &str, dir: &Path) {
+    let options = OpenOptions {
+        temp_dir: Some(dir.to_path_buf()),
+        ..OpenOptions::default()
+    };
+    chain(app, AppEvent::OpenNamed(vec![PathBuf::from(url)], options));
+    settle_confirming(app, rx);
+}
+
+/// A Hugging Face cache in a bucket opens its train split as on disk: only train's
+/// shards are fetched, into one IPC file, the other splits are named and the file
+/// `map()` wrote is left out. Its JSON is the cache's, not a table to read instead.
+#[test]
+fn a_prefix_of_hugging_face_splits_opens_one() {
+    crate::common::ensure_sample_data();
+    let names = [
+        "people-train-00000-of-00002.arrow",
+        "people-train-00001-of-00002.arrow",
+        "people-test.arrow",
+        "people-validation.arrow",
+        "cache-0f3c2a1b9d8e7f60.arrow",
+        "dataset_info.json",
+    ];
+    let objects = names
+        .iter()
+        .map(|name| {
+            let bytes = std::fs::read(format!("tests/sample-data/hf_cache/{name}")).unwrap();
+            (format!("hf/{name}"), bytes)
+        })
+        .collect();
+    let s3 = FakeS3::serve("lake", objects);
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    open_prefix(&mut app, &rx, "s3://lake/hf/", dir.path());
+    assert_eq!(app.error_message(), None);
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the train split opens");
+    assert_eq!(state.num_rows(), 600);
+    assert_eq!(state.other_tables(), ["test", "validation"]);
+    let notes: Vec<String> = state.notes().into_iter().map(|n| n.summary).collect();
+    assert!(
+        notes.contains(&"1 cache file written by map() not read".to_string()),
+        "{notes:?}"
+    );
+    assert_eq!(s3.wire.count().gets, 2, "train's two shards, nothing else");
+    assert_eq!(files_in(dir.path()).len(), 1, "one IPC file of both");
+    assert_eq!(app.open_path(), Some(Path::new("s3://lake/hf/")));
+}
+
+/// A prefix of IPC files, and one of a single stream, are read as Arrow rather than
+/// sent to the Parquet reader.
+#[test]
+fn a_prefix_of_arrow_files_opens() {
+    use polars::prelude::*;
+    let ipc = |from: i64| {
+        let mut df = df!("id" => (from..from + 50).collect::<Vec<_>>()).unwrap();
+        let mut bytes = Vec::new();
+        IpcWriter::new(&mut bytes).finish(&mut df).unwrap();
+        bytes
+    };
+    crate::common::ensure_sample_data();
+    let stream = std::fs::read("tests/sample-data/people_stream.arrow").unwrap();
+    for (objects, rows) in [
+        (
+            BTreeMap::from([
+                ("t/a.arrow".to_string(), ipc(0)),
+                ("t/b.arrow".to_string(), ipc(50)),
+            ]),
+            100,
+        ),
+        (BTreeMap::from([("t/s.arrow".to_string(), stream)]), 1000),
+    ] {
+        let s3 = FakeS3::serve("lake", objects);
+        let (mut app, rx) = app(&s3);
+        let dir = tempfile::tempdir().unwrap();
+        open_prefix(&mut app, &rx, "s3://lake/t/", dir.path());
+        assert_eq!(app.error_message(), None);
+        assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), rows);
+        assert_eq!(files_in(dir.path()).len(), 1);
+    }
+}

@@ -137,15 +137,12 @@ pub(crate) fn convert(
     writer: &Writer,
     read: &AtomicU64,
 ) -> Result<TempDownload> {
-    let dir = temp_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(std::env::temp_dir);
     let size = paths
         .iter()
         .filter_map(|p| std::fs::metadata(p).ok())
         .map(|m| m.len())
         .sum();
-    room(size, crate::local_copy::free_space(&dir), &dir)?;
+    has_room(size, temp_dir)?;
     let mut merge = Merge::create(temp_dir, writer)?;
     for path in paths {
         merge.append(path, path, read)?;
@@ -343,6 +340,15 @@ fn stopped() -> color_eyre::Report {
 
 /// What to do about a temp directory too small for the copy.
 const ELSEWHERE: &str = "Choose another place with --temp-dir or the temp_dir setting.";
+
+/// Whether `temp_dir` (the system temp directory when `None`) has room for a copy of
+/// `needs` bytes of Arrow; see [`room`].
+pub(crate) fn has_room(needs: u64, temp_dir: Option<&Path>) -> Result<()> {
+    let dir = temp_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    room(needs, crate::local_copy::free_space(&dir), &dir)
+}
 
 /// The copy is about the size of the streams, larger where their buffers are
 /// compressed: refused before any of it is written where `dir` has less free.

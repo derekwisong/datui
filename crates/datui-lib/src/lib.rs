@@ -53,6 +53,8 @@ pub mod chart_modal;
 pub mod cli;
 pub mod clipboard;
 #[cfg(feature = "cloud")]
+mod cloud_arrow;
+#[cfg(feature = "cloud")]
 pub mod cloud_browse;
 #[cfg(feature = "cloud")]
 pub mod cloud_command;
@@ -16904,6 +16906,24 @@ impl App {
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 self.spawn_job(job, Some("Checking size..."), move |_| {
+                    // A prefix of Arrow files: its listing says which, and their size.
+                    #[cfg(feature = "cloud")]
+                    if let loading::PendingDownload::Folder { url, .. } = &pending {
+                        let (_, _, options) = pending.parts();
+                        let (objects, options) = crate::cloud_arrow::list(
+                            url, options, &cloud, &runtime,
+                        )
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                        let size = objects.iter().map(|(_, size)| size).sum();
+                        return Ok(Answer::Load(Box::new(LoadAnswer::Sized(
+                            loading::PendingDownload::Folder {
+                                url: url.clone(),
+                                objects,
+                                size: Some(size),
+                                options,
+                            },
+                        ))));
+                    }
                     let size = match &pending {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { url, .. } => {
@@ -16915,6 +16935,8 @@ impl App {
                         | loading::PendingDownload::Azure { url, .. } => {
                             Self::fetch_remote_size_cloud(url, &cloud, &runtime).unwrap_or(None)
                         }
+                        #[cfg(feature = "cloud")]
+                        loading::PendingDownload::Folder { size, .. } => *size,
                     };
                     Ok(Answer::Load(Box::new(LoadAnswer::Sized(
                         pending.with_size(size),
@@ -16938,6 +16960,14 @@ impl App {
                     loading::PendingDownload::Gcs { .. } => "Downloading from GCS...",
                     #[cfg(feature = "cloud")]
                     loading::PendingDownload::Azure { .. } => "Downloading from Azure...",
+                    #[cfg(feature = "cloud")]
+                    loading::PendingDownload::Folder { url, .. } => {
+                        match source::input_source(Path::new(url)) {
+                            source::InputSource::Gcs(_) => "Downloading from GCS...",
+                            source::InputSource::Azure(_) => "Downloading from Azure...",
+                            _ => "Downloading from S3...",
+                        }
+                    }
                 };
                 self.spawn_job(job, Some(status), move |_| {
                     let (url, _, options) = pending.parts();
@@ -16957,6 +16987,12 @@ impl App {
                         | loading::PendingDownload::Gcs { .. }
                         | loading::PendingDownload::Azure { .. } => {
                             Self::download_cloud_to_temp(url, &cloud, options, &runtime, &writer)
+                        }
+                        #[cfg(feature = "cloud")]
+                        loading::PendingDownload::Folder { objects, .. } => {
+                            crate::cloud_arrow::download(
+                                objects, options, &cloud, &runtime, &writer,
+                            )
                         }
                     }
                     .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
@@ -17301,8 +17337,12 @@ impl App {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| std::env::temp_dir().display().to_string());
         let note = note.map(|note| format!("{note}\n\n")).unwrap_or_default();
+        let files = pending
+            .files()
+            .map(|n| format!("Files: {n} Arrow, read as one\n"))
+            .unwrap_or_default();
         format!(
-            "{note}URL: {url}\nFile size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
+            "{note}URL: {url}\n{files}File size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
         )
     }
 
@@ -17494,7 +17534,8 @@ impl App {
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
-        if !options.single_spine_schema {
+        // A prefix of Arrow files is read from its download (`cloud_arrow`).
+        if !options.single_spine_schema || options.format == Some(FileFormat::Arrow) {
             return None;
         }
         // Unlike the local path this does not require --hive: a directory or glob URL
@@ -18225,7 +18266,9 @@ impl App {
         }
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
-        facts.remote_source = path.is_some_and(source::scans_in_place);
+        // A prefix of Arrow files is read from its download too (`cloud_arrow`).
+        facts.remote_source =
+            options.format != Some(FileFormat::Arrow) && path.is_some_and(source::scans_in_place);
         // The cheap footer-sum row count, for a local Parquet hive directory. Asked
         // here because a stat on a mount that has stopped answering hangs its thread.
         if options.hive
@@ -18318,6 +18361,18 @@ impl App {
                 .with_cloud_options(Some(cloud_opts))
                 .finish()
                 .map_err(named),
+            // A prefix of Arrow is downloaded before it gets here (`cloud_arrow`); a glob
+            // is not listed for it.
+            FileFormat::Arrow => {
+                let folder = url
+                    .split('*')
+                    .next()
+                    .and_then(|head| head.rsplit_once('/'))
+                    .map_or(url, |(folder, _)| folder);
+                Err(color_eyre::eyre::eyre!(
+                    "Arrow files in a bucket are read by folder, not by glob: open {folder}/"
+                ))
+            }
             // Parquet has its own branch, and the rest have no multi-file cloud reader
             // in Polars — an ORC or Avro prefix is still a file at a time.
             _ => return None,

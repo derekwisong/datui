@@ -84,6 +84,9 @@ pub(crate) struct Converted {
     pub lf: LazyFrame,
     pub files: Vec<TempDownload>,
     pub notes: Vec<Note>,
+    /// The file's other tables, for the Info panel's Schema tab; empty when none would
+    /// show anything this one does not.
+    pub other_tables: Vec<String>,
 }
 
 /// The temporary IPC files a conversion writes, one per schema.
@@ -266,6 +269,7 @@ pub(crate) fn convert(
                 lf,
                 files,
                 notes: gpx_notes(gpx.stats()),
+                other_tables: Vec::new(),
             });
         }
         FileFormat::Nmea => {
@@ -297,12 +301,21 @@ pub(crate) fn convert(
                 ));
             }
             segments.write(&last)?;
-            nmea_notes(log.stats(), table)
+            (
+                nmea_notes(log.stats()),
+                nmea_other_tables(log.stats(), table),
+            )
         }
         other => return Err(eyre!("{} is not a GPS format.", other.name())),
     };
+    let (notes, other_tables) = notes;
     let (lf, files) = segments.finish()?;
-    Ok(Converted { lf, files, notes })
+    Ok(Converted {
+        lf,
+        files,
+        notes,
+        other_tables,
+    })
 }
 
 /// A GPX field column as numbers when every value in it was one.
@@ -342,7 +355,7 @@ fn count(n: u64, one: &str, many: &str) -> String {
 }
 
 /// What reading an NMEA log noticed.
-fn nmea_notes(stats: &nmea::Stats, table: nmea::Table) -> Vec<Note> {
+fn nmea_notes(stats: &nmea::Stats) -> Vec<Note> {
     let mut notes = Vec::new();
     let of_lines = format!("of {}", count(stats.lines, "line", "lines"));
     if stats.skipped > 0 {
@@ -369,25 +382,34 @@ fn nmea_notes(stats: &nmea::Stats, table: nmea::Table) -> Vec<Note> {
             of_lines.clone(),
         ));
     }
-    let others: Vec<String> = nmea::Table::ALL
+    notes
+}
+
+/// The tables of an NMEA log besides `table`, each named as `--table` takes it with the
+/// sentences it holds, when one of them holds rows `table` does not show: a sentence
+/// type the fixes do not merge (GSA, GSV, ZDA), or any other type beside one type's
+/// table. Empty otherwise, so a log of fixes only says nothing.
+fn nmea_other_tables(stats: &nmea::Stats, table: nmea::Table) -> Vec<String> {
+    use nmea::Table;
+    let typed = |t: Table| !matches!(t, Table::Fixes | Table::Sentences);
+    let merged = |t: Table| matches!(t, Table::Gga | Table::Rmc | Table::Vtg | Table::Gll);
+    let worth = Table::ALL.into_iter().any(|t| {
+        t != table && typed(t) && stats.of(t.name()) > 0 && !(table == Table::Fixes && merged(t))
+    });
+    if !worth {
+        return Vec::new();
+    }
+    Table::ALL
         .into_iter()
         .filter(|t| *t != table)
-        .filter_map(|t| match t {
-            nmea::Table::Fixes | nmea::Table::Sentences => Some(t.name().to_string()),
-            _ => {
+        .filter_map(|t| match typed(t) {
+            false => Some(t.name().to_string()),
+            true => {
                 let n = stats.of(t.name());
                 (n > 0).then(|| format!("{} {}", t.name(), group_chrome(n as usize)))
             }
         })
-        .collect();
-    notes.push(note(
-        format!(
-            "Open the log as another table with --table: {}",
-            others.join(", ")
-        ),
-        format!("this is the {} table", table.name()),
-    ));
-    notes
+        .collect()
 }
 
 /// What reading a GPX file noticed.
@@ -431,6 +453,28 @@ mod tests {
             temp_dir: Some(dir.to_path_buf()),
             ..Default::default()
         }
+    }
+
+    /// Other tables are offered only when one holds rows this one does not show.
+    #[test]
+    fn other_tables_only_when_worth_opening() {
+        let stats = |types: &[(&str, u64)]| nmea::Stats {
+            types: types.iter().map(|(t, n)| (t.to_string(), *n)).collect(),
+            ..Default::default()
+        };
+        let fixes_only = stats(&[("GGA", 3), ("RMC", 3), ("VTG", 3)]);
+        assert!(nmea_other_tables(&fixes_only, nmea::Table::Fixes).is_empty());
+        assert_eq!(
+            nmea_other_tables(&fixes_only, nmea::Table::Gga),
+            ["fixes", "RMC 3", "VTG 3", "sentences"]
+        );
+        let gga_only = stats(&[("GGA", 3)]);
+        assert!(nmea_other_tables(&gga_only, nmea::Table::Gga).is_empty());
+        let with_gsv = stats(&[("GGA", 3), ("GSV", 9)]);
+        assert_eq!(
+            nmea_other_tables(&with_gsv, nmea::Table::Fixes),
+            ["GGA 3", "GSV 9", "sentences"]
+        );
     }
 
     #[test]
@@ -517,7 +561,12 @@ mod tests {
             summaries[0].starts_with("1 line is not NMEA"),
             "{summaries:?}"
         );
-        assert!(summaries.last().unwrap().contains("GSV 1"), "{summaries:?}");
+        assert_eq!(summaries.len(), 1, "{summaries:?}");
+        assert_eq!(
+            converted.other_tables,
+            ["RMC 1", "GSV 1", "sentences"],
+            "a GSV the fixes do not show"
+        );
         let gsv = convert(
             &path,
             &path,
@@ -531,6 +580,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(gsv.lf.collect().unwrap().height(), 1);
+        assert_eq!(gsv.other_tables, ["fixes", "RMC 1", "sentences"]);
         let none = convert(
             &path,
             &path,

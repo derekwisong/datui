@@ -380,6 +380,8 @@ pub struct DataTableState {
     download: Option<crate::download::TempDownload>,
     /// The files a GPS log was read into, which the frame scans; held as `download` is.
     converted: Vec<crate::download::TempDownload>,
+    /// The file's other tables, as `--table` names them; see [`OpenFacts::other_tables`].
+    other_tables: Vec<String>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
@@ -836,6 +838,9 @@ pub struct OpenFacts {
     pub model: Option<Arc<crate::model_files::ModelSummary>>,
     /// The files a GPS log was read into, which the frame scans.
     pub converted: Vec<crate::download::TempDownload>,
+    /// The file's other tables, each as `--table` names it with how many rows it holds
+    /// where that is known, for the Info panel's Schema tab. Empty for a file of one.
+    pub other_tables: Vec<String>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1820,6 +1825,7 @@ impl DataTableState {
             decompress_temp_file: None,
             download: None,
             converted: Vec::new(),
+            other_tables: Vec::new(),
             polars_streaming,
             defer_collect: false,
             needs_recollect: false,
@@ -1956,6 +1962,7 @@ impl DataTableState {
             decompress_temp_file: None,
             download: None,
             converted: Vec::new(),
+            other_tables: Vec::new(),
             polars_streaming: options.polars_streaming,
             defer_collect: false,
             needs_recollect: false,
@@ -1985,6 +1992,7 @@ impl DataTableState {
             download,
             model,
             converted,
+            other_tables,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2027,6 +2035,7 @@ impl DataTableState {
         self.download = download;
         self.model = model;
         self.converted = converted;
+        self.other_tables = other_tables;
         self
     }
 
@@ -6292,6 +6301,11 @@ impl DataTableState {
     /// keeps the row count from reading as the table's.
     pub fn not_the_table(&self) -> Option<&'static str> {
         self.not_the_table
+    }
+
+    /// The file's other tables, as `--table` names them; empty for a file of one.
+    pub fn other_tables(&self) -> &[String] {
+        &self.other_tables
     }
 
     /// The model file's metadata and totals, when the dataset is a model's tensors.

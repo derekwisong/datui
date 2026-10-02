@@ -155,13 +155,13 @@ fn an_nmea_log_opens_as_its_fixes() {
             .any(|n| n.starts_with("1 sentence fails its checksum")),
         "{notes:?}"
     );
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.starts_with("Open the log as another table") && n.contains("GSV 600")),
-        "{notes:?}"
-    );
+    assert_eq!(notes.len(), 2, "the other tables are not a note: {notes:?}");
     let state = app.data_table_state.as_ref().unwrap();
+    let others = state.other_tables();
+    assert!(
+        others.iter().any(|t| t == "GSV 600") && others.iter().any(|t| t == "sentences"),
+        "the Schema tab names the other tables: {others:?}"
+    );
     assert!(state.scans_a_temp_file());
     assert_eq!(files_in(&dir), 1, "one converted file");
     drop(app);

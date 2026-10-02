@@ -16938,6 +16938,7 @@ impl App {
                     let state = state.with_open(OpenFacts {
                         download,
                         converted: converted.files,
+                        other_tables: converted.other_tables,
                         open_notes,
                         ..facts
                     });

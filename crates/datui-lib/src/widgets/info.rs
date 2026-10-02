@@ -806,6 +806,12 @@ impl<'a> DataTableInfo<'a> {
         if !by_type.is_empty() {
             lines.push(by_type);
         }
+        // A file of several tables (an NMEA log's sentence types) names the others.
+        let others = self.state.other_tables();
+        if !others.is_empty() {
+            let sep = format!(" {} ", crate::glyphs::get().middot);
+            lines.push(format!("Other tables (--table): {}", others.join(&sep)));
+        }
         for (i, s) in lines.iter().enumerate() {
             Paragraph::new(s.as_str()).render(
                 Rect {
@@ -2174,6 +2180,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A file of several tables names the others under the schema's size; a file of
+    /// one adds no line.
+    #[test]
+    fn the_schema_tab_names_a_file_s_other_tables() {
+        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        use polars::prelude::*;
+
+        let theme = RenderContext::for_test();
+        let paint = |other_tables: Vec<String>| {
+            let mut lf = df!("id" => &[1i64, 2]).unwrap().lazy();
+            let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+            let state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                lf,
+                &crate::OpenOptions::default(),
+                None,
+            )
+            .unwrap()
+            .with_open(OpenFacts {
+                other_tables,
+                ..Default::default()
+            });
+            let area = Rect::new(0, 0, 70, 12);
+            let mut buf = Buffer::empty(area);
+            let mut modal = InfoModal::default();
+            modal.open();
+            let mut panel = DataTableInfo::new(
+                &state,
+                InfoContext {
+                    format: None,
+                    facts: None,
+                    parquet_file: false,
+                },
+                &mut modal,
+                &theme,
+            );
+            (&mut panel).render(area, &mut buf);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let middot = crate::glyphs::get().middot;
+        let text = paint(vec!["GSV 9".into(), "sentences".into()]);
+        let line = format!("Other tables (--table): GSV 9 {middot} sentences");
+        assert!(text.iter().any(|row| row.contains(&line)), "{text:#?}");
+        let text = paint(Vec::new());
+        assert!(
+            !text.iter().any(|row| row.contains("Other tables")),
+            "{text:#?}"
+        );
     }
 
     /// Focus is the accent: in the schema, the section rule brightens and the row

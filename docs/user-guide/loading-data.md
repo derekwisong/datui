@@ -195,8 +195,9 @@ GLL sentences:
 `VTG`, `GSA`, `GSV` (a row per satellite), `GLL`, `ZDA`, or `sentences` (every
 sentence as written, with its line number, vendor sentences included).
 Lines that are not NMEA are skipped; the Info panel's Notes tab counts them,
-and the sentences that fail their checksum, and lists the other tables in the
-log with how many sentences each has.
+and the sentences that fail their checksum. When the log has sentence types the
+table on screen does not show, such as GSV beside the fixes, the Schema tab
+names the other tables with how many sentences each has.
 
 `--table` is for any file that holds several tables. NMEA logs are the only
 ones so far; any other file opened with it is refused. Excel workbooks take

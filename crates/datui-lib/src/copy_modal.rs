@@ -61,7 +61,7 @@ pub struct CopyModal {
     pub header_row: bool,
     pub header_view: bool,
     pub header_table: bool,
-    /// The cell scope's column. Kept across opens while the view still has it.
+    /// The cell scope's column: the column cursor's when the dialog opens.
     pub column: Option<String>,
     pub available_columns: Vec<String>,
     /// The one Picker, open for the focused row; None while the form has the keys.
@@ -96,18 +96,16 @@ impl CopyModal {
         Self::default()
     }
 
-    /// Open over the current table. Scope, format and headers are sticky;
-    /// the column survives only while the view still has it.
-    pub fn open(&mut self, columns: Vec<String>, context: CopyContext) {
+    /// Open over the current table. Scope, format and headers are sticky; the
+    /// cell scope's column is the column cursor's, `current`.
+    pub fn open(&mut self, columns: Vec<String>, current: Option<&str>, context: CopyContext) {
         self.active = true;
         self.focus = CopyFocus::Scope;
         self.picker = None;
         self.attention = false;
-        if let Some(column) = &self.column
-            && !columns.iter().any(|c| c == column)
-        {
-            self.column = None;
-        }
+        self.column = current
+            .filter(|current| columns.iter().any(|c| c == current))
+            .map(str::to_string);
         self.available_columns = columns;
         self.context = context;
     }
@@ -310,20 +308,21 @@ mod tests {
     }
 
     #[test]
-    fn choices_are_sticky_across_opens_but_a_gone_column_is_not() {
+    fn choices_are_sticky_across_opens_and_the_column_is_the_cursors() {
         let mut modal = CopyModal::new();
-        modal.open(vec!["a".into(), "b".into()], CopyContext::default());
+        let ab = || vec!["a".to_string(), "b".to_string()];
+        modal.open(ab(), Some("a"), CopyContext::default());
+        assert_eq!(modal.column.as_deref(), Some("a"));
         modal.scope = CopyScope::View;
         modal.format = CopyFormat::Markdown;
-        modal.column = Some("b".into());
+        modal.column = Some("a".into());
         modal.close();
-        modal.open(vec!["a".into(), "b".into()], CopyContext::default());
+        modal.open(ab(), Some("b"), CopyContext::default());
         assert_eq!(modal.scope, CopyScope::View);
         assert_eq!(modal.format, CopyFormat::Markdown);
-        assert_eq!(modal.column.as_deref(), Some("b"));
+        assert_eq!(modal.column.as_deref(), Some("b"), "the cursor moved to b");
         modal.close();
-        // The view changed shape; a column it no longer has cannot stay picked.
-        modal.open(vec!["a".into()], CopyContext::default());
+        modal.open(vec!["a".into()], None, CopyContext::default());
         assert_eq!(modal.column, None);
     }
 

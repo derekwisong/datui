@@ -32,22 +32,38 @@ impl SortFilterModal {
         Self::default()
     }
 
-    pub fn open(&mut self, history_limit: usize, theme: &crate::config::Theme) {
+    /// Open on the Columns tab with its cursor on `current`, the table's column
+    /// cursor, which a new filter also starts on.
+    pub fn open(
+        &mut self,
+        history_limit: usize,
+        theme: &crate::config::Theme,
+        current: Option<&str>,
+    ) {
         self.active = true;
         self.active_tab = SortFilterTab::Sort;
         self.focus = SortFilterFocus::TabBar;
         self.sort.focus = SortFocus::ColumnList;
         self.sort.status = None;
-        // The render draws the cursor rail at `selected().unwrap_or(0)`; select
-        // the row for real, or Space/L/v on the first row silently do nothing
-        // until an arrow press makes the shown cursor true.
-        if self.sort.table_state.selected().is_none() && !self.sort.columns.is_empty() {
-            self.sort.table_state.select(Some(0));
-        }
         self.sort.history_limit = history_limit;
         self.sort.filter_input = crate::widgets::text_input::TextInput::new()
             .with_history_limit(history_limit)
             .with_theme(theme);
+        // The render draws the cursor rail at `selected().unwrap_or(0)`; select
+        // the row for real, or Space/L/v on the first row silently do nothing
+        // until an arrow press makes the shown cursor true.
+        let at = current.and_then(|name| {
+            self.sort
+                .filtered_columns()
+                .iter()
+                .position(|(_, c)| c.name == name)
+        });
+        if let Some(at) = at {
+            self.sort.table_state.select(Some(at));
+        } else if self.sort.table_state.selected().is_none() && !self.sort.columns.is_empty() {
+            self.sort.table_state.select(Some(0));
+        }
+        self.filter.current_column = current.map(str::to_string);
         // The cursor is where `sync_sort_filter_modal` put it: on the add row.
         self.filter.editor = None;
     }

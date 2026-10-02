@@ -110,6 +110,8 @@ pub struct FilterModal {
     /// end for the trailing "add filter" row.
     pub cursor: usize,
     pub editor: Option<FilterEditor>,
+    /// The table's column cursor, where a new filter's column starts.
+    pub current_column: Option<String>,
 }
 
 impl FilterModal {
@@ -157,6 +159,13 @@ impl FilterModal {
             .with_theme(theme);
         value.set_focused(false);
         let (editing, logical) = if self.on_add_row() {
+            if let Some(i) = self
+                .current_column
+                .as_ref()
+                .and_then(|current| self.available_columns.iter().position(|c| c == current))
+            {
+                column.select_original(i);
+            }
             (None, LogicalOperator::And)
         } else {
             let statement = &self.statements[self.cursor];

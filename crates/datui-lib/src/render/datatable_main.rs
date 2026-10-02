@@ -136,6 +136,7 @@ pub fn render(
                     ctx.accent,
                     ctx.dimmed,
                 )
+                .with_cursor_styles(ctx.column_cursor_style(), ctx.cell_cursor_style())
                 .with_drift(
                     state.display_drift(table_area.height as usize),
                     state.drift_groups(),

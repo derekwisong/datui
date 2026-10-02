@@ -209,7 +209,7 @@ impl EventPump {
             return Act::HoldAs(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         }
         // Busy, nothing queued yet, at the plain table view: the harmless view keys act
-        // (quit, column scroll, help); a bare Enter that would drill, or Esc, confirms
+        // (quit, the column cursor, help); a bare Enter that would drill, or Esc, confirms
         // nothing and is dropped; everything else is type-ahead and waits. Once anything
         // is queued, or the view is a text field or modal, every key waits to keep the
         // typed order.
@@ -474,7 +474,9 @@ impl EventPump {
     /// burst, each step chaining another collect, so consecutive repeats become one
     /// press — but only at the plain table view and only while every key already held is
     /// itself a navigation key. Once `/` or any other key is held the run is text, so
-    /// nothing after it coalesces and a typed `/bookkeeper` keeps both `k`s. At the cap
+    /// nothing after it coalesces and a typed `/bookkeeper` keeps both `k`s. A column
+    /// cursor key reads nothing, so each one is kept: `l` `l` `F` counts the column two
+    /// along, as it would idle. At the cap
     /// the newest key is dropped and the user told; never the oldest, which may be the
     /// `/` the rest were typed into.
     fn hold(&mut self, key: KeyEvent) {
@@ -482,6 +484,7 @@ impl EventPump {
             self.held_for = Self::screen_of(&self.app);
         }
         if is_navigation(&key)
+            && !is_column_cursor_key(&key)
             && self.held.back() == Some(&key)
             && self.app.in_normal_table_view()
             && self.held.iter().all(is_navigation)
@@ -639,9 +642,23 @@ impl Pacer {
     }
 }
 
-/// Keys that move the view and are commonly held down. Column scroll (Left/Right/h/l)
-/// and column paging (`[ ] { }`) are included so a held one collapses when it cannot
-/// act live (behind other keys, or in a modal).
+/// The column cursor's keys at the table: `h` `l` `[` `]` `{` `}` and the arrows across.
+fn is_column_cursor_key(key: &KeyEvent) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char('h')
+            | KeyCode::Char('l')
+            | KeyCode::Char('[')
+            | KeyCode::Char(']')
+            | KeyCode::Char('{')
+            | KeyCode::Char('}')
+    )
+}
+
+/// Keys that move the view and are commonly held down. The column cursor's keys
+/// (Left/Right/h/l, `[ ] { }`) are included, so Enter behind them still inspects.
 fn is_navigation(key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -1840,35 +1857,55 @@ mod tests {
         assert!(!p.app.data_table_state.as_ref().unwrap().is_drilled_down());
     }
 
-    /// Item 7: column scroll acts live at a busy table rather than queueing, and a held
-    /// column-scroll key coalesces when it cannot act live.
+    /// Item 7: the column cursor acts live at a busy table rather than queueing, and a
+    /// held column cursor key is kept, each one, as it would act idle: it reads
+    /// nothing, so a burst costs nothing, and a per-column key held behind it acts on
+    /// the column the cursor reached.
     #[test]
-    fn column_scroll_acts_live_and_coalesces() {
+    fn column_cursor_acts_live_and_held_keys_all_replay() {
+        let cursor = |p: &EventPump| {
+            p.app
+                .data_table_state
+                .as_ref()
+                .unwrap()
+                .current_column_index()
+                .unwrap()
+        };
         let (mut p, _dir) = loaded_pump();
         p.app.busy = true;
-        let before = p.app.data_table_state.as_ref().unwrap().termcol_index;
+        let before = cursor(&p);
         assert!(
             p.terminal_key(plain(KeyCode::Right)).unwrap(),
-            "Right scrolls a column live"
+            "Right moves the cursor live"
         );
         assert!(held(&p).is_empty(), "it did not queue");
-        assert_eq!(
-            p.app.data_table_state.as_ref().unwrap().termcol_index,
-            before + 1
-        );
+        assert_eq!(cursor(&p), before + 1);
 
-        let (mut p2, _d) = loaded_pump();
+        let (mut p2, _d) = wide_pump();
         p2.app.busy = true;
-        // A non-actor navigation key is held first, so the Rights behind it queue.
+        // A non-actor navigation key is held first, so the keys behind it queue.
         p2.terminal_key(plain(KeyCode::Char('k'))).unwrap();
-        for _ in 0..20 {
-            p2.terminal_key(plain(KeyCode::Right)).unwrap();
+        p2.terminal_key(plain(KeyCode::Char('k'))).unwrap();
+        for _ in 0..2 {
+            p2.terminal_key(plain(KeyCode::Char('l'))).unwrap();
         }
+        p2.terminal_key(plain(KeyCode::Char('h'))).unwrap();
+        p2.terminal_key(plain(KeyCode::Char('l'))).unwrap();
         assert_eq!(
             held(&p2),
-            vec![KeyCode::Char('k'), KeyCode::Right],
-            "the held Rights collapse to one"
+            vec![
+                KeyCode::Char('k'),
+                KeyCode::Char('l'),
+                KeyCode::Char('l'),
+                KeyCode::Char('h'),
+                KeyCode::Char('l')
+            ],
+            "the held k's collapse; every column key stays"
         );
+        let before = cursor(&p2);
+        p2.app.busy = false;
+        while p2.replay_one().unwrap() {}
+        assert_eq!(cursor(&p2), before + 2, "replayed in order, as typed");
     }
 
     /// A pump with a CSV of sixty narrow columns loaded and drawn at 100 wide: three
@@ -1896,8 +1933,8 @@ mod tests {
         pump.app.data_table_state.as_ref().unwrap().termcol_index
     }
 
-    /// Column paging acts at a busy table at once, as column scroll does; behind a
-    /// held key it waits, a held run of one collapses, and it replays in order.
+    /// Column paging acts at a busy table at once, as the column cursor does; behind a
+    /// held key it waits, and it replays in order.
     #[test]
     fn column_paging_acts_live_and_replays_in_order() {
         let (mut p, _dir) = wide_pump();
@@ -1919,9 +1956,9 @@ mod tests {
         assert!(p.terminal_key(plain(KeyCode::Char('['))).unwrap());
         assert_eq!(first_scrolled(&p), 0);
 
-        // Behind a held key they wait, and a run of one collapses.
+        // Behind a held key they wait, each one: they read nothing.
         p.terminal_key(plain(KeyCode::Char('k'))).unwrap();
-        for _ in 0..5 {
+        for _ in 0..2 {
             p.terminal_key(plain(KeyCode::Char(']'))).unwrap();
         }
         p.terminal_key(plain(KeyCode::Char('}'))).unwrap();
@@ -1930,6 +1967,7 @@ mod tests {
             held(&p),
             vec![
                 KeyCode::Char('k'),
+                KeyCode::Char(']'),
                 KeyCode::Char(']'),
                 KeyCode::Char('}'),
                 KeyCode::Char('['),

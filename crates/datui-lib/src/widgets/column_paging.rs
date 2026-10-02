@@ -20,37 +20,33 @@ pub struct Room {
 
 /// Which shown columns the table drew, counted from 1 in the table's order: frozen
 /// columns first, hidden columns not at all. `first` and `last` are the scrolling
-/// columns on screen; the frozen ones are always on screen before them.
+/// columns on screen; the frozen ones are always on screen before them. `cursor` is
+/// the column cursor's column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OnScreen {
     pub first: usize,
     pub last: usize,
+    pub cursor: usize,
     pub total: usize,
 }
 
 impl OnScreen {
-    /// The widest label this table can have: the bar reserves it, so paging moves
-    /// nothing on the bar as the numbers change.
+    /// The widest label this table can have: the bar reserves it, so moving the
+    /// cursor moves nothing on the bar as the numbers change.
     pub fn widest_label(&self, compact: bool) -> String {
         Self {
-            first: self.total.saturating_sub(1),
-            last: self.total,
-            total: self.total,
+            cursor: self.total,
+            ..*self
         }
         .label(compact)
     }
 
-    /// `cols 41-47 of 300`, or `cols 41-47/300` where the bar is short of room.
+    /// `col 43 of 300`, or `col 43/300` where the bar is short of room.
     pub fn label(&self, compact: bool) -> String {
-        let range = if self.last > self.first {
-            format!("{}-{}", self.first, self.last)
-        } else {
-            self.first.to_string()
-        };
         if compact {
-            format!("cols {range}/{}", self.total)
+            format!("col {}/{}", self.cursor, self.total)
         } else {
-            format!("cols {range} of {}", self.total)
+            format!("col {} of {}", self.cursor, self.total)
         }
     }
 }
@@ -75,6 +71,27 @@ pub enum ColumnMove {
     /// Show this column: left where it is when already whole on screen, else first,
     /// or on the last page when it is on that page.
     Reveal(usize),
+    /// Keep this column whole on screen, scrolling as little as it takes: first when
+    /// it is left of the screen, last when it is right of it.
+    Keep(usize),
+}
+
+/// A move of the column cursor. The view follows only as far as the cursor needs:
+/// it scrolls when the cursor would leave the screen, and pages move both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorMove {
+    /// The shown column before the cursor's, frozen ones included.
+    Left,
+    /// The shown column after the cursor's.
+    Right,
+    /// The first shown column, and the view back to the start.
+    First,
+    /// The last shown column, on the last page.
+    Last,
+    /// A page left, the cursor on its first column.
+    PageLeft,
+    /// A page right, the cursor on its first column.
+    PageRight,
 }
 
 /// How many columns from `start` are drawn whole, the way the table lays them out:
@@ -159,6 +176,17 @@ pub fn plan(
             }
             Some(column.min(start_ending_at(last, room, &mut width)?))
         }
+        ColumnMove::Keep(column) => {
+            let column = column.min(last);
+            if column <= current {
+                return Some(column);
+            }
+            // Only the columns up to this one are measured: the rest cannot change it.
+            if column - current < whole_from(current, column + 1, room, &mut width)? {
+                return Some(current);
+            }
+            start_ending_at(column, room, &mut width)
+        }
     }
 }
 
@@ -181,13 +209,12 @@ mod tests {
         let on = OnScreen {
             first: 41,
             last: 47,
+            cursor: 43,
             total: 300,
         };
-        assert_eq!(on.label(false), "cols 41-47 of 300");
-        assert_eq!(on.label(true), "cols 41-47/300");
-        let one = OnScreen { last: 41, ..on };
-        assert_eq!(one.label(false), "cols 41 of 300");
-        assert_eq!(on.widest_label(true), "cols 299-300/300");
+        assert_eq!(on.label(false), "col 43 of 300");
+        assert_eq!(on.label(true), "col 43/300");
+        assert_eq!(on.widest_label(true), "col 300/300");
     }
 
     #[test]
@@ -303,6 +330,36 @@ mod tests {
             plan(ColumnMove::Reveal(9), 0, 10, ROOM, widths(&ws)),
             Some(7)
         );
+    }
+
+    #[test]
+    fn keep_scrolls_only_as_far_as_the_column() {
+        let ws = [8; 10];
+        // Whole on screen (0..=2 fit in 30): nothing moves.
+        for column in 0..3 {
+            assert_eq!(
+                plan(ColumnMove::Keep(column), 0, 10, ROOM, widths(&ws)),
+                Some(0)
+            );
+        }
+        // Past the right edge: it becomes the last whole column.
+        assert_eq!(plan(ColumnMove::Keep(3), 0, 10, ROOM, widths(&ws)), Some(1));
+        assert_eq!(plan(ColumnMove::Keep(9), 0, 10, ROOM, widths(&ws)), Some(7));
+        // Left of the screen: it becomes the first.
+        assert_eq!(plan(ColumnMove::Keep(2), 5, 10, ROOM, widths(&ws)), Some(2));
+        // A column wider than the room stands alone.
+        let wide = [8, 8, 50, 8];
+        assert_eq!(
+            plan(ColumnMove::Keep(2), 0, 4, ROOM, widths(&wide)),
+            Some(2)
+        );
+        // Only the columns up to it are measured.
+        let mut seen = Vec::new();
+        plan(ColumnMove::Keep(4), 2, 10, ROOM, |i| {
+            seen.push(i);
+            Some(8)
+        });
+        assert!(seen.iter().all(|&i| i <= 4), "{seen:?}");
     }
 
     #[test]

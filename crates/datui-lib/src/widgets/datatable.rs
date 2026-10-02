@@ -26,7 +26,7 @@ use crate::query::{ParsedQuery, parse_query};
 use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
 use crate::unfinished::{Claim, Writer};
-use crate::widgets::column_paging::{ColumnMove, OnScreen, Room};
+use crate::widgets::column_paging::{ColumnMove, CursorMove, OnScreen, Room};
 use crate::widgets::column_widths::{ColumnWidths, PageMeasure, WidthChoice};
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 use polars::io::csv::read::NullValues;
@@ -178,16 +178,22 @@ pub struct DataTableState {
     start_row: usize,
     pub visible_rows: usize,
     pub termcol_index: usize,
-    /// The column `g` or Value Counts last chose, which the column keys (`F`) act on
-    /// until the columns scroll. See [`Self::current_column`].
-    chosen_column: Option<String>,
+    /// The column cursor's column, by name, so it follows hide, reorder and freeze.
+    /// `None` is the first column. See [`Self::current_column`].
+    cursor_column: Option<String>,
+    /// Where the cursor stood in `column_order` when placed: a column hidden from
+    /// under it hands the cursor to the one now in its place.
+    cursor_at: usize,
+    /// The cursor may be off screen (the order, the frozen count or the room
+    /// changed): the next draw brings it back, scrolling as little as it takes.
+    reveal_cursor: bool,
     pub visible_termcols: usize,
     /// The scrolling side as last drawn, which a sideways page is planned in. `None`
     /// before the first draw.
     scroll_room: Option<Room>,
     /// Sideways moves waiting on the next draw to measure columns not drawn yet, in
     /// the order asked. See [`Self::scroll_columns`].
-    column_moves: Vec<ColumnMove>,
+    column_moves: Vec<WaitingMove>,
     /// The pages `]` went, from and to, so `[` straight after goes back exactly.
     page_trail: Vec<(usize, usize)>,
     /// Which columns the last draw showed, while some are off screen.
@@ -417,6 +423,7 @@ struct GroupedView {
     locked_columns_count: usize,
     start_row: usize,
     termcol_index: usize,
+    cursor_column: Option<String>,
     selected: Option<usize>,
     /// Drilled into from Value Counts rather than from a grouped row.
     by_value: bool,
@@ -518,6 +525,8 @@ pub struct ViewRollback {
     table_state: TableState,
     start_row: usize,
     termcol_index: usize,
+    cursor_column: Option<String>,
+    cursor_at: usize,
     schema: Arc<Schema>,
     num_rows: usize,
     num_rows_valid: bool,
@@ -1703,7 +1712,9 @@ impl DataTableState {
             sort_columns: Vec::new(),
             sort_descending: Vec::new(),
             sort_ascending: true,
-            chosen_column: None,
+            cursor_column: None,
+            cursor_at: 0,
+            reveal_cursor: false,
             active_query: String::new(),
             active_sql_query: String::new(),
             active_fuzzy_query: String::new(),
@@ -1830,7 +1841,9 @@ impl DataTableState {
             sort_columns: Vec::new(),
             sort_descending: Vec::new(),
             sort_ascending: true,
-            chosen_column: None,
+            cursor_column: None,
+            cursor_at: 0,
+            reveal_cursor: false,
             active_query: String::new(),
             active_sql_query: String::new(),
             active_fuzzy_query: String::new(),
@@ -2005,6 +2018,7 @@ impl DataTableState {
         self.unsorted_lf = None;
         self.schema = schema;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+        self.settle_cursor();
         // A query that groups records its source after installing its result.
         self.group_source = None;
         self.drop_buffer();
@@ -2033,6 +2047,7 @@ impl DataTableState {
         self.start_row = 0;
         self.termcol_index = 0;
         self.clear_column_moves();
+        self.place_cursor_at(0);
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
@@ -7091,8 +7106,8 @@ impl DataTableState {
         self.scroll_columns(ColumnMove::StepLeft);
     }
 
-    /// Which shown columns the table last drew, while some are off screen: what the
-    /// control bar's column range says.
+    /// Which shown columns the table last drew, and the cursor's: what the control
+    /// bar's column position says.
     pub fn columns_on_screen(&self) -> Option<OnScreen> {
         self.on_screen
     }
@@ -7102,18 +7117,12 @@ impl DataTableState {
         self.column_order.len().saturating_sub(self.frozen_shown())
     }
 
-    /// Back to the first scrolling column.
-    pub fn scroll_to_first_column(&mut self) {
-        self.scroll_columns(ColumnMove::First);
-    }
-
-    /// Move sideways, planned from the widths the columns were last drawn at. Reads
-    /// nothing. A page that needs a column not drawn yet waits for the next draw,
-    /// which measures it from the rows on hand; a relative move typed behind it waits
-    /// too and lands after it, in order, so no key is lost or planned on a guess.
+    /// Move the view sideways, leaving the cursor where it is unless the view leaves
+    /// it behind on the left. Planned from the widths the columns were last drawn at;
+    /// reads nothing. A page that needs a column not drawn yet waits for the next
+    /// draw, which measures it from the rows on hand; a relative move typed behind it
+    /// waits too and lands after it, in order, so no key is lost or planned on a guess.
     pub fn scroll_columns(&mut self, mv: ColumnMove) {
-        // Scrolled, the column keys act on the column at the left edge again.
-        self.chosen_column = None;
         if matches!(
             mv,
             ColumnMove::First | ColumnMove::Last | ColumnMove::Reveal(_)
@@ -7125,50 +7134,172 @@ impl DataTableState {
             && let Some(start) = self.plan_known(mv)
         {
             self.apply_column_move(mv, start);
-        } else if self.column_moves.len() < MAX_WAITING_MOVES {
+        } else {
+            self.wait(WaitingMove::View(mv));
+        }
+    }
+
+    /// Move the column cursor (`h` `l` `[` `]` `{` `}`), the view following only when
+    /// the cursor would leave the screen. Reads nothing; a move that needs a column
+    /// not drawn yet waits for the next draw, in order, as [`Self::scroll_columns`]
+    /// says.
+    pub fn move_cursor(&mut self, mv: CursorMove) {
+        if matches!(mv, CursorMove::First | CursorMove::Last) {
+            self.column_moves.clear();
+        }
+        if !self.column_moves.is_empty()
+            || !self.land_cursor_move(mv, &mut |state: &mut Self, view| state.plan_known(view))
+        {
+            self.wait(WaitingMove::Cursor(mv));
+        }
+    }
+
+    /// Put the cursor on the shown column `name` and show it as `g` does: left where
+    /// it is when already whole on screen, else first after the frozen columns, or on
+    /// the last page when it is there. A frozen column is on screen already.
+    pub fn go_to_column(&mut self, name: &str) {
+        let Some(at) = self.column_order.iter().position(|c| c == name) else {
+            return;
+        };
+        self.column_moves.clear();
+        self.place_cursor_at(at);
+        if let Some(index) = at.checked_sub(self.frozen_shown()) {
+            self.scroll_columns(ColumnMove::Reveal(index));
+        }
+    }
+
+    /// Put the cursor on the shown column `name`, scrolling as little as it takes to
+    /// show it.
+    pub fn set_current_column(&mut self, name: &str) {
+        let Some(at) = self.column_order.iter().position(|c| c == name) else {
+            return;
+        };
+        self.column_moves.clear();
+        self.place_cursor_at(at);
+        self.follow_cursor(&mut |state: &mut Self, view| state.plan_known(view));
+    }
+
+    /// The column cursor's column: the one the per-column keys act on (value counts,
+    /// copying a cell, the sidebar and inspector opening on it, a find in one column).
+    /// The first shown column until the cursor moves; `None` with no columns shown.
+    pub fn current_column(&self) -> Option<&str> {
+        self.cursor_index().map(|at| self.column_order[at].as_str())
+    }
+
+    /// The cursor's place among the shown columns, from 0, frozen ones first.
+    pub fn current_column_index(&self) -> Option<usize> {
+        self.cursor_index()
+    }
+
+    fn cursor_index(&self) -> Option<usize> {
+        let last = self.column_order.len().checked_sub(1)?;
+        Some(
+            self.cursor_column
+                .as_deref()
+                .and_then(|name| self.column_order.iter().position(|c| c == name))
+                .unwrap_or(self.cursor_at.min(last)),
+        )
+    }
+
+    fn place_cursor_at(&mut self, at: usize) {
+        self.cursor_column = self.column_order.get(at).cloned();
+        self.cursor_at = at;
+    }
+
+    /// After the shown columns changed: the cursor stays on its column by name, or,
+    /// where that was hidden, takes the one now in its place; the next draw shows it.
+    fn settle_cursor(&mut self) {
+        let at = self.cursor_index().unwrap_or(0);
+        self.place_cursor_at(at);
+        self.reveal_cursor = true;
+    }
+
+    /// Queue a move for the next draw, behind any already waiting.
+    fn wait(&mut self, mv: WaitingMove) {
+        if self.column_moves.len() < MAX_WAITING_MOVES {
             self.column_moves.push(mv);
         }
     }
 
-    /// The column the column keys (`F`) act on, underlined in the header: the one `g`
-    /// or Value Counts last chose while it is shown, else the first scrolling column.
-    pub fn current_column(&self) -> Option<&str> {
-        self.chosen_column
-            .as_deref()
-            .filter(|name| self.column_order.iter().any(|c| c == name))
-            .or_else(|| {
-                let at = self.frozen_shown() + self.termcol_index;
-                self.column_order
-                    .get(at.min(self.column_order.len().saturating_sub(1)))
-                    .map(String::as_str)
-            })
-    }
-
-    /// Make the shown column `name` the one the column keys act on.
-    pub fn choose_column(&mut self, name: &str) {
-        self.chosen_column = Some(name.to_string());
-    }
-
-    /// Start the scrolling columns at the shown column `name`, so it is the first
-    /// after the frozen ones. A column drawn frozen is on screen already.
-    pub fn scroll_to_column(&mut self, name: &str) {
-        let Some(at) = self.column_order.iter().position(|c| c == name) else {
+    /// Scroll as little as it takes to show the cursor's column whole, with `plan`;
+    /// a plan that needs a width not drawn yet waits for the next draw.
+    fn follow_cursor(&mut self, plan: &mut impl FnMut(&mut Self, ColumnMove) -> Option<usize>) {
+        let Some(index) = self
+            .cursor_index()
+            .and_then(|at| at.checked_sub(self.frozen_shown()))
+        else {
             return;
         };
-        if let Some(index) = at.checked_sub(self.frozen_shown()) {
-            self.clear_column_moves();
-            self.scroll_columns_to(index);
+        let view = ColumnMove::Keep(index);
+        match plan(self, view) {
+            // On screen already: nothing moves, and the trail `[` retraces stays.
+            Some(start) if start == self.termcol_index => {}
+            Some(start) => self.apply_column_move(view, start),
+            None => self.wait(WaitingMove::View(view)),
         }
     }
 
-    /// Show the shown column `name`. A column drawn frozen is on screen already.
-    pub fn reveal_column(&mut self, name: &str) {
-        let Some(at) = self.column_order.iter().position(|c| c == name) else {
-            return;
+    /// Land a cursor move, the view planned with `plan`. Returns false, changing
+    /// nothing, when a page cannot be planned yet: where it lands decides the cursor.
+    fn land_cursor_move(
+        &mut self,
+        mv: CursorMove,
+        plan: &mut impl FnMut(&mut Self, ColumnMove) -> Option<usize>,
+    ) -> bool {
+        let Some(cursor) = self.cursor_index() else {
+            return true;
         };
-        if let Some(index) = at.checked_sub(self.frozen_shown()) {
-            self.scroll_columns(ColumnMove::Reveal(index));
+        let last = self.column_order.len() - 1;
+        let frozen = self.frozen_shown();
+        match mv {
+            CursorMove::Left | CursorMove::Right => {
+                let at = if mv == CursorMove::Left {
+                    cursor.saturating_sub(1)
+                } else {
+                    (cursor + 1).min(last)
+                };
+                self.place_cursor_at(at);
+                self.follow_cursor(plan);
+            }
+            CursorMove::First | CursorMove::Last => {
+                let (at, view) = if mv == CursorMove::First {
+                    (0, ColumnMove::First)
+                } else {
+                    (last, ColumnMove::Last)
+                };
+                self.place_cursor_at(at);
+                match plan(self, view) {
+                    Some(start) => self.apply_column_move(view, start),
+                    None => self.wait(WaitingMove::View(view)),
+                }
+            }
+            CursorMove::PageLeft | CursorMove::PageRight => {
+                let view = if mv == CursorMove::PageLeft {
+                    ColumnMove::PageLeft
+                } else {
+                    ColumnMove::PageRight
+                };
+                let Some(start) = plan(self, view) else {
+                    return false;
+                };
+                let from = self.termcol_index;
+                self.apply_column_move(view, start);
+                let at = if self.termcol_index != from {
+                    // The new page, from its first column.
+                    frozen + self.termcol_index
+                } else if mv == CursorMove::PageRight {
+                    // On the last page already: its last column.
+                    last
+                } else if cursor > frozen {
+                    // On the first page: its first column, then the first of all.
+                    frozen
+                } else {
+                    0
+                };
+                self.place_cursor_at(at.min(last));
+            }
         }
+        true
     }
 
     /// The scrolling columns, by name.
@@ -7189,10 +7320,12 @@ impl DataTableState {
         if let Some(back) = self.retrace(mv) {
             return Some(back);
         }
-        let needs_widths = !matches!(
-            mv,
-            ColumnMove::StepLeft | ColumnMove::StepRight | ColumnMove::First
-        );
+        let needs_widths = match mv {
+            ColumnMove::StepLeft | ColumnMove::StepRight | ColumnMove::First => false,
+            // Back to a column at or left of the first shown needs no width.
+            ColumnMove::Keep(column) => column > self.termcol_index,
+            _ => true,
+        };
         let room = match self.scroll_room {
             Some(room) => room,
             None if needs_widths => return None,
@@ -7204,7 +7337,8 @@ impl DataTableState {
         })
     }
 
-    /// Land `mv` at `start`, keeping the trail `[` retraces.
+    /// Land `mv` at `start`, keeping the trail `[` retraces. A cursor the view leaves
+    /// behind on the left comes along, to the first column shown.
     fn apply_column_move(&mut self, mv: ColumnMove, start: usize) {
         let from = self.termcol_index;
         let start = start.min(self.scroll_count().saturating_sub(1));
@@ -7220,6 +7354,13 @@ impl DataTableState {
             _ => self.page_trail.clear(),
         }
         self.scroll_columns_to(start);
+        let frozen = self.frozen_shown();
+        if let Some(cursor) = self.cursor_index()
+            && cursor >= frozen
+            && cursor < frozen + self.termcol_index
+        {
+            self.place_cursor_at(frozen + self.termcol_index);
+        }
     }
 
     /// Forget sideways moves waiting on a draw and the trail `[` retraces: the
@@ -7238,30 +7379,51 @@ impl DataTableState {
         }
     }
 
-    /// Record the scrolling side as the renderer lays it out, and land the moves
-    /// waiting on it, in order, with `width`, which measures a column not drawn yet
-    /// from the rows on hand. Called while drawing, before the scrolling columns are
-    /// drawn; reads nothing. With no rows on hand the moves wait for a draw that has
-    /// them.
+    /// Record the scrolling side as the renderer lays it out, land the moves waiting
+    /// on it, in order, and bring the cursor back on screen when it may have left,
+    /// with `width`, which measures a column not drawn yet from the rows on hand.
+    /// Called while drawing, before the scrolling columns are drawn; reads nothing,
+    /// and measures only the columns a move crosses. With no rows on hand the moves
+    /// wait for a draw that has them.
     fn land_column_moves(&mut self, room: Room, mut width: impl FnMut(&mut Self, &str) -> u16) {
+        if self.scroll_room != Some(room) {
+            // A resize, or a frozen column given back: the cursor may be off screen.
+            self.reveal_cursor = true;
+        }
         self.scroll_room = Some(room);
-        if self.column_moves.is_empty() || !self.buffer_on_hand() || self.defer_collect {
+        if (self.column_moves.is_empty() && !self.reveal_cursor)
+            || !self.buffer_on_hand()
+            || self.defer_collect
+        {
             return;
         }
-        let moves = std::mem::take(&mut self.column_moves);
-        let names: Vec<String> = self.scrolling_names().to_vec();
-        for mv in moves {
-            let start = match self.retrace(mv) {
-                Some(back) => back,
-                None => {
-                    let from = self.termcol_index;
-                    crate::widgets::column_paging::plan(mv, from, names.len(), room, |i| {
-                        Some(width(self, &names[i]))
-                    })
-                    .unwrap_or(from)
+        let mut plan = |state: &mut Self, mv: ColumnMove| -> Option<usize> {
+            if let Some(back) = state.retrace(mv) {
+                return Some(back);
+            }
+            let from = state.termcol_index;
+            let count = state.scroll_count();
+            Some(
+                crate::widgets::column_paging::plan(mv, from, count, room, |i| {
+                    let name = state.scrolling_names()[i].clone();
+                    Some(width(state, &name))
+                })
+                .unwrap_or(from),
+            )
+        };
+        for mv in std::mem::take(&mut self.column_moves) {
+            match mv {
+                WaitingMove::View(mv) => {
+                    let start = plan(self, mv).unwrap_or(self.termcol_index);
+                    self.apply_column_move(mv, start);
                 }
-            };
-            self.apply_column_move(mv, start);
+                WaitingMove::Cursor(mv) => {
+                    self.land_cursor_move(mv, &mut plan);
+                }
+            }
+        }
+        if std::mem::take(&mut self.reveal_cursor) {
+            self.follow_cursor(&mut plan);
         }
     }
 
@@ -7311,12 +7473,14 @@ impl DataTableState {
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;
+        self.settle_cursor();
         self.collect();
     }
 
     pub fn set_locked_columns(&mut self, count: usize) {
         self.locked_columns_count = count.min(self.column_order.len());
         self.clear_column_moves();
+        self.settle_cursor();
         self.termcol_index = self
             .termcol_index
             .min(self.scroll_count().saturating_sub(1));
@@ -7522,6 +7686,8 @@ impl DataTableState {
             table_state: self.table_state,
             start_row: self.start_row,
             termcol_index: self.termcol_index,
+            cursor_column: self.cursor_column.clone(),
+            cursor_at: self.cursor_at,
             schema: self.schema.clone(),
             num_rows: self.num_rows,
             num_rows_valid: self.num_rows_valid,
@@ -7595,6 +7761,9 @@ impl DataTableState {
         self.column_order = saved.column_order;
         self.locked_columns_count = saved.locked_columns_count;
         self.frozen_fit = saved.frozen_fit;
+        self.cursor_column = saved.cursor_column;
+        self.cursor_at = saved.cursor_at;
+        self.reveal_cursor = true;
         self.grouped = saved.grouped;
         // A q-style query or a search forgets the pivot or melt it replaces.
         self.reshaped_lf = saved.reshaped_lf;
@@ -8249,6 +8418,7 @@ impl DataTableState {
         self.start_row = 0;
         self.termcol_index = 0;
         self.clear_column_moves();
+        self.settle_cursor();
         self.table_state.select(Some(0));
         self.collect();
         Ok(())
@@ -8283,6 +8453,7 @@ impl DataTableState {
             locked_columns_count: self.locked_columns_count,
             start_row: self.start_row,
             termcol_index: self.termcol_index,
+            cursor_column: self.cursor_column.clone(),
             selected: self.table_state.selected(),
             by_value,
         });
@@ -8299,6 +8470,7 @@ impl DataTableState {
         self.termcol_index = 0;
         self.clear_column_moves();
         self.locked_columns_count = 0;
+        self.settle_cursor();
         self.table_state.select(Some(0));
         self.collect();
 
@@ -8419,6 +8591,8 @@ impl DataTableState {
         self.start_row = view.start_row;
         self.termcol_index = view.termcol_index;
         self.clear_column_moves();
+        self.cursor_column = view.cursor_column;
+        self.settle_cursor();
         self.table_state.select(view.selected);
         self.collect();
         Ok(())
@@ -9118,8 +9292,13 @@ pub struct DataTable {
     pub sort_columns: Vec<String>,
     /// Which way each of them runs, per column, as it is applied.
     pub sort_descending: Vec<bool>,
-    /// The column the column keys act on: its name is underlined.
+    /// The column cursor's column: its header and cells are tinted.
     pub current_column: Option<String>,
+    /// The column cursor's cells, from the theme's `column_cursor_style` helper.
+    pub column_cursor_style: Style,
+    /// The column cursor's header and the current cell, from the theme's
+    /// `cell_cursor_style` helper.
+    pub cell_cursor_style: Style,
     /// The glyph set the table draws with: the terminal's, unless a test asks for one.
     pub glyphs: &'static crate::glyphs::Glyphs,
     /// The terminal's width, which bounds automatic text widths (see
@@ -9161,6 +9340,8 @@ impl Default for DataTable {
             sort_columns: Vec::new(),
             sort_descending: Vec::new(),
             current_column: None,
+            column_cursor_style: Style::default(),
+            cell_cursor_style: Style::default(),
             glyphs: crate::glyphs::get(),
             screen_width: 0,
             find_cell: None,
@@ -9293,6 +9474,13 @@ enum SliceCell {
 /// The most sideways moves held for a draw: a held key typed faster than frames
 /// can land, bounded so the draw that lands them stays a frame's work.
 const MAX_WAITING_MOVES: usize = 32;
+
+/// A sideways move waiting on a draw: the view's own, or the column cursor's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitingMove {
+    View(ColumnMove),
+    Cursor(CursorMove),
+}
 
 /// Where the scrolling columns are, for the off-screen hints over the header.
 struct ScrollCue {
@@ -9588,6 +9776,14 @@ impl DataTable {
     pub fn with_find_cell(mut self, cell: Option<(usize, String)>, style: Style) -> Self {
         self.find_cell = cell;
         self.find_style = style;
+        self
+    }
+
+    /// The column cursor's styles, from the theme's helpers: its cells, and its
+    /// header and the current cell.
+    pub fn with_cursor_styles(mut self, column: Style, cell: Style) -> Self {
+        self.column_cursor_style = column;
+        self.cell_cursor_style = cell;
         self
     }
 
@@ -9953,6 +10149,18 @@ impl DataTable {
         // column's alignment; a left-aligned heading over right-aligned digits reads
         // as a rendering bug.
         let last = fitted.cols.len().saturating_sub(1);
+        // The column cursor, when its column is among these.
+        let cursor = self
+            .current_column
+            .as_deref()
+            .and_then(|name| fitted.cols.iter().position(|c| c.name == name));
+        // The current cell is drawn as found while a find's cell is the cursor's: a find
+        // moves the cursor to the cell it lands on.
+        let cell_style = if cursor.is_some() && self.find_column == self.current_column {
+            self.find_style
+        } else {
+            self.cell_cursor_style
+        };
         let headers: Vec<Cell> = columns()
             .enumerate()
             .map(|(i, (col, w))| {
@@ -9967,13 +10175,6 @@ impl DataTable {
                 let name_style = match col.colour {
                     Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
                     None => Style::default().add_modifier(Modifier::BOLD),
-                };
-                // The column the column keys act on: an underline, which neither a
-                // glyph set nor a palette can take away.
-                let name_style = if self.current_column.as_deref() == Some(col.name.as_str()) {
-                    name_style.add_modifier(Modifier::UNDERLINED)
-                } else {
-                    name_style
                 };
                 // The marks are state, so a long name gives way to them: the name is
                 // what gets clipped, never the sort direction or the drift footnote.
@@ -10006,7 +10207,12 @@ impl DataTable {
                     let label = Span::styled(fit(label, type_w), type_style);
                     lines.push(cell_line(vec![label], type_w, col.right_align));
                 }
-                Cell::from(Text::from(lines))
+                let cell = Cell::from(Text::from(lines));
+                if cursor == Some(i) {
+                    cell.style(self.cell_cursor_style)
+                } else {
+                    cell
+                }
             })
             .collect();
 
@@ -10018,7 +10224,8 @@ impl DataTable {
                     .height(self.header_height()),
             )
             .row_highlight_style(self.highlight_style())
-            .cell_highlight_style(self.find_style);
+            .column_highlight_style(self.column_cursor_style)
+            .cell_highlight_style(cell_style);
         if leading_gap {
             // A blank selection column on every row: the Table offsets the header and
             // the cells past it and paints each row's tint across it, so the gap
@@ -10027,13 +10234,9 @@ impl DataTable {
                 .highlight_symbol(" ")
                 .highlight_spacing(HighlightSpacing::Always);
         }
-        // The found cell is the selected row's cell in the selected column; the column
-        // is selected for this draw alone, so nothing else reads it.
-        let found = self
-            .find_column
-            .as_deref()
-            .and_then(|name| fitted.cols.iter().position(|col| col.name == name));
-        state.select_column(found);
+        // The frozen and scrolling sides share the row selection; the column is each
+        // side's own, so it is set for this draw only.
+        state.select_column(cursor);
         StatefulWidget::render(table, area, buf, state);
         state.select_column(None);
     }
@@ -10373,16 +10576,35 @@ impl StatefulWidget for DataTable {
                 let more_left = state.termcol_index > 0;
                 let more_right = total_cols.saturating_sub(shown);
                 let first = state.frozen_shown() + state.termcol_index + 1;
-                state.on_screen = (more_left || more_right > 0).then_some(OnScreen {
-                    first,
-                    last: first + shown.saturating_sub(1),
-                    total: state.column_order.len(),
-                });
+                let total = state.column_order.len();
+                state.on_screen =
+                    state
+                        .cursor_index()
+                        .filter(|_| total > 1)
+                        .map(|cursor| OnScreen {
+                            first,
+                            last: first + shown.saturating_sub(1),
+                            cursor: cursor + 1,
+                            total,
+                        });
                 scroll_indicator = Some(ScrollCue {
                     area: scroll_area,
                     more_left,
                     more_right,
                 });
+            } else {
+                // Every column frozen: all on screen, and the cursor walks them.
+                let total = state.column_order.len();
+                state.on_screen =
+                    state
+                        .cursor_index()
+                        .filter(|_| total > 1)
+                        .map(|cursor| OnScreen {
+                            first: 1,
+                            last: total,
+                            cursor: cursor + 1,
+                            total,
+                        });
             }
         } else if !state.column_order.is_empty() {
             // Empty result (0 rows) but we have a schema - show empty table with header, no rows
@@ -16278,6 +16500,218 @@ mod tests {
         );
     }
 
+    /// A state over `id` (frozen), `name`, `city`, `amount`, thirty rows, drawn once at
+    /// 80×24 so the room and widths are known.
+    fn cursor_fixture() -> (DataTableState, Rect) {
+        let n = 30;
+        let lf = df!(
+            "id" => (0..n).collect::<Vec<i64>>(),
+            "name" => (0..n).map(|i| format!("name {i}")).collect::<Vec<_>>(),
+            "city" => (0..n).map(|i| format!("city {i}")).collect::<Vec<_>>(),
+            "amount" => (0..n).map(|i| i as f64 * 1.5).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 22;
+        state.set_locked_columns(1);
+        state.table_state.select(Some(0));
+        let area = Rect::new(0, 0, 80, 24);
+        DataTable::default().render(area, &mut Buffer::empty(area), &mut state);
+        (state, area)
+    }
+
+    /// The x range of the column headed `name` on the header row.
+    fn column_span(buf: &Buffer, area: Rect, name: &str) -> std::ops::Range<u16> {
+        let header = row_string(buf, area, 0);
+        let at = header.find(name).expect("the column is drawn") as u16;
+        at..at + name.len() as u16
+    }
+
+    /// The column cursor at 80×24: its header and cells take the column tint, the
+    /// current cell (the cursor's row and column) the cell tint, and the rest of the
+    /// current row keeps the row tint. Frozen columns take it the same way.
+    #[test]
+    fn the_column_cursor_tints_its_header_and_cells() {
+        let (mut state, area) = cursor_fixture();
+        let row_tint = Color::Rgb(0x28, 0x34, 0x57);
+        let column_tint = Color::Rgb(0x29, 0x2e, 0x42);
+        let cell_tint = Color::Rgb(0x3b, 0x42, 0x61);
+        let table = || {
+            DataTable {
+                selection_style: Style::default().bg(row_tint),
+                ..DataTable::default()
+            }
+            .with_cursor_styles(
+                crate::config::column_cursor_style(Some(column_tint)),
+                crate::config::cell_cursor_style(Some(cell_tint)),
+            )
+        };
+        state.move_cursor(CursorMove::Right);
+        state.move_cursor(CursorMove::Right);
+        assert_eq!(state.current_column(), Some("city"));
+        let mut buf = Buffer::empty(area);
+        table().render(area, &mut buf, &mut state);
+        let city = column_span(&buf, area, "city");
+        let name = column_span(&buf, area, "name");
+        for x in city.clone() {
+            assert_eq!(buf[(x, 0)].bg, cell_tint, "the header, at {x}");
+            assert!(buf[(x, 0)].modifier.contains(Modifier::BOLD));
+            assert_eq!(buf[(x, 1)].bg, cell_tint, "the current cell, at {x}");
+            for y in 2..area.height {
+                assert_eq!(buf[(x, y)].bg, column_tint, "the column, at {x},{y}");
+            }
+        }
+        for x in name.clone() {
+            assert_eq!(buf[(x, 1)].bg, row_tint, "the rest of the row");
+            assert_ne!(buf[(x, 0)].bg, cell_tint, "another header");
+            assert_ne!(buf[(x, 2)].bg, column_tint, "another column");
+        }
+
+        // Frozen: the same marks, left of the separator.
+        state.move_cursor(CursorMove::First);
+        assert_eq!(state.current_column(), Some("id"));
+        let mut buf = Buffer::empty(area);
+        table().render(area, &mut buf, &mut state);
+        let id = column_span(&buf, area, "id");
+        for x in id {
+            assert_eq!(buf[(x, 0)].bg, cell_tint);
+            assert_eq!(buf[(x, 1)].bg, cell_tint);
+            assert_eq!(buf[(x, 5)].bg, column_tint);
+        }
+        for x in city {
+            assert_ne!(buf[(x, 0)].bg, cell_tint, "city lets go of it");
+        }
+    }
+
+    /// Where the tints would not show (16 colors, `NO_COLOR`), the header and the
+    /// current cell are reversed, so the cursor is still on screen, and nothing else is.
+    #[test]
+    fn the_column_cursor_shows_without_its_tints() {
+        let (mut state, area) = cursor_fixture();
+        state.move_cursor(CursorMove::Right);
+        for tint in [Color::Black, Color::White, Color::Reset] {
+            let mut buf = Buffer::empty(area);
+            DataTable::default()
+                .with_cursor_styles(
+                    crate::config::column_cursor_style(Some(tint)),
+                    crate::config::cell_cursor_style(Some(tint)),
+                )
+                .render(area, &mut buf, &mut state);
+            let name = column_span(&buf, area, "name");
+            let reversed = |x, y| buf[(x, y)].modifier.contains(Modifier::REVERSED);
+            for x in name {
+                assert!(reversed(x, 0), "{tint:?}: the header");
+                assert!(reversed(x, 1), "{tint:?}: the current cell");
+                assert!(!reversed(x, 2), "{tint:?}: not the rest of the column");
+            }
+            let city = column_span(&buf, area, "city");
+            assert!(!reversed(city.start, 0) && !reversed(city.start, 1));
+        }
+    }
+
+    /// The cursor follows its column by name when the columns are reordered or
+    /// frozen, and a column hidden from under it hands it to the one in its place.
+    #[test]
+    fn the_column_cursor_follows_its_column_by_name() {
+        let (mut state, area) = cursor_fixture();
+        state.move_cursor(CursorMove::Right);
+        state.move_cursor(CursorMove::Right);
+        assert_eq!(state.current_column(), Some("city"));
+        let order = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        state.set_column_order(order(&["city", "id", "name", "amount"]));
+        assert_eq!(state.current_column(), Some("city"));
+        assert_eq!(state.current_column_index(), Some(0));
+        state.set_locked_columns(0);
+        state.set_column_order(order(&["id", "name", "city", "amount"]));
+        state.set_locked_columns(3);
+        assert_eq!(state.current_column(), Some("city"), "frozen now");
+        // Hidden: the column now in its place takes it.
+        state.set_locked_columns(0);
+        state.set_column_order(order(&["id", "name", "amount"]));
+        assert_eq!(state.current_column(), Some("amount"));
+        // Hidden at the end: the last column.
+        state.set_column_order(order(&["id", "name"]));
+        assert_eq!(state.current_column(), Some("name"));
+        state.set_column_order(Vec::new());
+        assert_eq!(state.current_column(), None);
+        DataTable::default().render(area, &mut Buffer::empty(area), &mut state);
+    }
+
+    /// `h` `l` cross from the frozen columns to the scrolling ones and back in the
+    /// shown order; the view moves only when the cursor would leave it, and a page
+    /// puts the cursor on the new page's first column.
+    #[test]
+    fn the_column_cursor_scrolls_only_at_the_edges() {
+        let n = 5;
+        let names: Vec<String> = (0..40).map(|i| format!("column_{i:02}")).collect();
+        let columns: Vec<Column> = names
+            .iter()
+            .map(|name| Column::new(name.as_str().into(), (0..n).collect::<Vec<i64>>()))
+            .collect();
+        let lf = DataFrame::new_infer_height(columns).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 5;
+        state.set_locked_columns(2);
+        let area = Rect::new(0, 0, 80, 8);
+        let draw = |state: &mut DataTableState| {
+            DataTable::default().render(area, &mut Buffer::empty(area), state);
+            state.columns_on_screen().unwrap()
+        };
+        let start = draw(&mut state);
+        assert_eq!((start.first, start.cursor), (3, 1));
+        state.move_cursor(CursorMove::Right);
+        state.move_cursor(CursorMove::Right);
+        let on = draw(&mut state);
+        assert_eq!((on.first, on.cursor), (3, 3), "into the scrolling side");
+        // Walk to the right edge: nothing scrolls until the cursor would leave (a
+        // column cut at the edge counts as leaving), then just enough.
+        let mut before = on;
+        let past = loop {
+            state.move_cursor(CursorMove::Right);
+            let now = draw(&mut state);
+            assert_eq!(now.cursor, before.cursor + 1);
+            if now.first != before.first {
+                break now;
+            }
+            before = now;
+        };
+        assert!(past.first > 3 && past.cursor <= past.last, "{past:?}");
+        assert!(past.cursor >= start.last, "not before the edge: {past:?}");
+        assert!(past.first <= before.last, "no column skipped: {past:?}");
+        // Back to the left edge, and one more scrolls back a column.
+        for _ in past.first..past.cursor {
+            state.move_cursor(CursorMove::Left);
+        }
+        assert_eq!(draw(&mut state).first, past.first);
+        state.move_cursor(CursorMove::Left);
+        assert_eq!(draw(&mut state).first, past.first - 1);
+        // Pages: the cursor starts the new page; on the last, it takes the last column.
+        state.move_cursor(CursorMove::PageRight);
+        let page = draw(&mut state);
+        assert_eq!(page.cursor, page.first);
+        state.move_cursor(CursorMove::Last);
+        let last = draw(&mut state);
+        assert_eq!((last.cursor, last.last), (40, 40));
+        state.move_cursor(CursorMove::PageRight);
+        assert_eq!(draw(&mut state).cursor, 40);
+        // From a frozen column, the next is the first scrolling column: the view
+        // goes back to it.
+        state.go_to_column("column_01");
+        assert_eq!(draw(&mut state).first, last.first, "frozen: on screen");
+        state.move_cursor(CursorMove::Right);
+        let back = draw(&mut state);
+        assert_eq!((back.first, back.cursor), (3, 3));
+        // `[` on the first page: its first column, then the first of all.
+        state.move_cursor(CursorMove::Right);
+        state.move_cursor(CursorMove::PageLeft);
+        assert_eq!(draw(&mut state).cursor, 3);
+        state.move_cursor(CursorMove::PageLeft);
+        assert_eq!(draw(&mut state).cursor, 1);
+        state.move_cursor(CursorMove::Left);
+        assert_eq!(draw(&mut state).cursor, 1, "nothing left of the first");
+    }
+
     /// Every cell right of the frozen separator sits one cell off it, as the cells
     /// left of it do, and the gap takes its row's tint. A right-aligned number as
     /// wide as its column, a negative one most often, used to touch the line:
@@ -16416,7 +16850,7 @@ mod tests {
         assert!(back < start);
         state.scroll_columns(ColumnMove::PageRight);
         assert_eq!(state.termcol_index, start);
-        state.scroll_to_first_column();
+        state.scroll_columns(ColumnMove::First);
         assert_eq!(state.termcol_index, 0);
     }
 
@@ -16470,7 +16904,7 @@ mod tests {
         let (mut first, draw) = paging_state();
         first.scroll_columns(Last);
         first.scroll_columns(StepRight);
-        first.scroll_to_first_column();
+        first.scroll_columns(ColumnMove::First);
         draw(&mut first);
         assert_eq!(first.termcol_index, 0);
     }

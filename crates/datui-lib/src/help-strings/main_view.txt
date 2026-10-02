@@ -79,9 +79,9 @@ While busy:
 Wide tables:
   ] starts the next page at the first column not shown whole, so a column
   cut at the edge is read whole there; the last page is always full, and
-  [ right after ] goes back to the page it left. While
-  columns are off screen the bar names those on it: cols 41-47 of 300,
-  counting the columns shown, frozen first and hidden ones not at all.
+  [ right after ] goes back to the page it left. The bar says where the
+  column cursor is: col 43 of 300, counting the columns shown, frozen
+  first and hidden ones not at all.
 
 Wide columns:
   A column keeps the width it was first drawn at, so paging and scrolling

@@ -842,8 +842,7 @@ impl App {
         };
         active.hit = Some((found.row, found.column.clone()));
         let needs_rows = state.go_to_found_row(found.row);
-        state.reveal_column(&found.column);
-        state.choose_column(&found.column);
+        state.go_to_column(&found.column);
         if found.wrapped {
             self.flash_note(match run.direction {
                 Direction::Next => "Wrapped to the top".to_string(),
@@ -1493,8 +1492,8 @@ mod app_tests {
         );
     }
 
-    /// Ctrl+L limits a find to the current column, the one underlined: `g` chooses
-    /// it, and a match makes it the found cell's.
+    /// Ctrl+L limits a find to the current column, the column cursor's, and a match
+    /// moves it to the found cell's.
     #[test]
     fn the_find_column_is_the_current_column() {
         let df = df!(
@@ -1511,7 +1510,10 @@ mod app_tests {
                 .current_column()
                 .map(str::to_string)
         };
-        app.data_table_state.as_mut().unwrap().choose_column("v");
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .set_current_column("v");
         key(&mut app, KeyCode::Char('f'));
         assert_eq!(app.find.column.as_deref(), Some("v"));
         type_text(&mut app, "needle");

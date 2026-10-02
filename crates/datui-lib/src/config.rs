@@ -2941,10 +2941,16 @@ pub fn expand_config_path(raw: &str) -> PathBuf {
 /// `path` with a leading `~` expanded, and nothing else. For a path from the command
 /// line: cmd, and PowerShell before 7.4, pass `~\data\a.csv` on as typed, as every
 /// shell does a quoted `"~/a.csv"`. A `$` there has been through the shell already
-/// and is part of a name.
+/// and is part of a name. A path that is there as typed, such as a file named `~` in
+/// the working directory, is that path.
 pub fn expand_home(path: &Path) -> PathBuf {
+    expand_home_unless(path, |p| p.symlink_metadata().is_ok())
+}
+
+fn expand_home_unless(path: &Path, there: impl FnOnce(&Path) -> bool) -> PathBuf {
     path.to_str()
         .and_then(home_path)
+        .filter(|_| !there(path))
         .unwrap_or_else(|| path.to_path_buf())
 }
 
@@ -4282,6 +4288,11 @@ mod tests {
         // A backslash is part of a name off Windows.
         #[cfg(not(windows))]
         assert_eq!(expand(r"~\a.csv"), PathBuf::from(r"~\a.csv"));
+        // A file named `~`, or under a directory named `~`, is that file.
+        for there in ["~", "~/a.csv"] {
+            let kept = super::expand_home_unless(Path::new(there), |_| true);
+            assert_eq!(kept, PathBuf::from(there), "{there}");
+        }
     }
 
     /// Windows Terminal and conhost set no `TERM`; with virtual terminal processing

@@ -123,3 +123,10 @@ path = "fuzz_targets/gps_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "midi_file"
+path = "fuzz_targets/midi_file.rs"
+test = false
+doc = false
+bench = false

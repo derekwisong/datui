@@ -23,6 +23,8 @@ mod glob_match;
 mod gps_parse;
 #[path = "../fuzz/src/ipc_stream_head.rs"]
 mod ipc_stream_head;
+#[path = "../fuzz/src/midi_file.rs"]
+mod midi_file;
 #[path = "../fuzz/src/model_header.rs"]
 mod model_header;
 #[path = "../fuzz/src/number_format.rs"]
@@ -119,6 +121,7 @@ fn every_corpus_input_passes_its_target() {
     replay("ipc_stream_head", &mut failures, |b| {
         fuzz::<&[u8]>(b, ipc_stream_head::run)
     });
+    replay("midi_file", &mut failures, midi_file::run);
     replay("model_header", &mut failures, model_header::run);
     replay("gps_parse", &mut failures, gps_parse::run);
     replay("audio_header", &mut failures, audio_header::run);
@@ -158,6 +161,7 @@ fn every_corpus_has_a_replay() {
         "fuzzy_match",
         "glob_match",
         "ipc_stream_head",
+        "midi_file",
         "model_header",
         "gps_parse",
         "number_format",

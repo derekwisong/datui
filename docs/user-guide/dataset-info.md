@@ -9,6 +9,7 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 |---|---|
 | **Schema** | Row and column counts, column types, schema source, file coverage, and Parquet codecs/compression |
 | **Model** | A SafeTensors or GGUF model's totals and header metadata; appears for model files |
+| **Audio** | An audio file's format, length, metadata and markers; appears for audio files |
 | **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
@@ -24,8 +25,8 @@ directories, globs and datasets of several files have no file size.
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch tabs |
 | <kbd>Tab</kbd> | Move between the Schema tab bar and its column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, or the model's metadata |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's metadata |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, or the model's or audio file's metadata |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's or audio file's metadata |
 | <kbd>Enter</kbd> | Apply a note's offered action, when available |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
@@ -51,6 +52,22 @@ how much more there is.
 Arrays of up to 16 items are listed; longer ones, such as a tokenizer's
 vocabulary, show their length (`[128,256 strings]`). Across several files, the
 first file to name a key gives its value.
+
+## Audio
+
+For a [WAV, BWF, RF64 or AIFF file](loading-data.md#audio-files), <kbd>i</kbd>
+opens on the Audio tab:
+
+| Line | Shows |
+|---|---|
+| Format | `WAV`, `WAV (Broadcast WAV)`, `RF64`, `AIFF` or `AIFF-C`, the channel count and the sample rate |
+| Samples | `24-bit integer`, with the valid bits when fewer; the encoding; and whether `--normalize` is on |
+| Frames | The frame count, the length (`1:02:03.250`) and the size of the sample data |
+| Warnings | A data size the file does not hold, or bytes after the last whole frame |
+| Metadata | `bext.*` (description, originator, origination, time reference, coding history), `ixml.*` (project, scene, take, tape, note) and the iXML document itself, `info.*` from `LIST INFO`, AIFF's name and annotation, then each marker: its time, frame, region length and label |
+
+A data size of 0 or a placeholder, as a recorder leaves it, says so: the
+frames are counted from the file's size.
 
 ## Notes
 

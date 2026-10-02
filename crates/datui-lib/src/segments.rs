@@ -95,9 +95,10 @@ impl<'a> Segments<'a> {
             .ok_or_else(|| eyre!("Nothing was read."))?;
         let mut frames = Vec::with_capacity(self.done.len());
         for (file, schema) in &self.done {
-            // The temp directory is the user's to name, `[` and all.
+            // A segment is one file this read wrote, in a temp directory the user
+            // names, `[` and all.
             let args = UnifiedScanArgs {
-                glob: crate::source::expands_as_glob(file.path()),
+                glob: false,
                 ..Default::default()
             };
             let lf = LazyFrame::scan_ipc(

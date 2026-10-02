@@ -21077,6 +21077,42 @@ fn files_in(dir: &Path) -> usize {
     std::fs::read_dir(dir).unwrap().count()
 }
 
+/// The copies an open writes, a decompressed CSV and a converted Arrow stream, are
+/// read from a temp directory named like a glob, not from what its name matches (#632).
+#[test]
+fn copies_in_a_temp_directory_named_like_a_glob_open() {
+    use std::io::Write;
+    common::ensure_sample_data();
+    let dir = tempfile::tempdir().unwrap();
+    let scratch = dir.path().join("t[1]");
+    std::fs::create_dir(&scratch).unwrap();
+    std::fs::create_dir(dir.path().join("t1")).unwrap();
+    let gz = dir.path().join("rows.csv.gz");
+    let mut encoder =
+        flate2::write::GzEncoder::new(File::create(&gz).unwrap(), flate2::Compression::default());
+    encoder.write_all(b"id\n1\n2\n").unwrap();
+    encoder.finish().unwrap();
+    let stream = Path::new("tests/sample-data").join("people_stream.arrow");
+    let people = LazyFrame::scan_ipc(
+        PlRefPath::try_from_path(&Path::new("tests/sample-data").join("people.arrow")).unwrap(),
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap()
+    .collect()
+    .unwrap()
+    .height();
+    for (path, rows) in [(gz, 2), (stream, people)] {
+        let (app, _rx, _tx) = open_with_scratch(vec![path.clone()], &scratch);
+        let state = app
+            .data_table_state
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} opens", path.display()));
+        assert_eq!(state.num_rows(), rows, "{}", path.display());
+        assert_eq!(files_in(&scratch), 1, "{}: the copy", path.display());
+    }
+}
+
 /// Arrow IPC streams, the format of a Hugging Face `datasets` cache, open: plain, with
 /// LZ4 and ZSTD buffers, and in the legacy layout without a name to go on. Each is
 /// converted once to an IPC file in the temp directory, which goes with the dataset.

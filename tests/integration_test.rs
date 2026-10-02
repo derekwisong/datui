@@ -15789,7 +15789,9 @@ fn quitting_mid_http_download_removes_the_partial_file() {
     let files = || {
         std::fs::read_dir(dir.path())
             .unwrap()
-            .map(|f| f.unwrap().metadata().unwrap().len())
+            // The file's size, not the directory entry's: on Windows that changes only
+            // when the writer closes the file.
+            .map(|f| std::fs::metadata(f.unwrap().path()).map_or(0, |m| m.len()))
             .collect::<Vec<_>>()
     };
     let (tx, rx) = mpsc::channel();
@@ -15851,7 +15853,9 @@ fn quitting_mid_decompression_removes_the_partial_copy() {
     let copy = || {
         std::fs::read_dir(scratch.path())
             .unwrap()
-            .map(|f| f.unwrap().metadata().unwrap().len())
+            // The file's size, not the directory entry's: on Windows that changes only
+            // when the writer closes the file.
+            .map(|f| std::fs::metadata(f.unwrap().path()).map_or(0, |m| m.len()))
             .collect::<Vec<_>>()
     };
     let (tx, _rx) = mpsc::channel();

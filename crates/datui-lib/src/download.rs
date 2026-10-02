@@ -749,11 +749,18 @@ mod tests {
                 &unstopped(),
             )
         });
-        // Mid-transfer: the first chunk is on disk and the store has gone quiet.
+        // Mid-transfer: the first chunk is on disk and the store has gone quiet. The
+        // size comes from the file, not the directory entry, which on Windows changes
+        // only when the writer closes it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !std::fs::read_dir(dir.path())
             .unwrap()
-            .any(|f| f.unwrap().metadata().unwrap().len() == CHUNK as u64)
+            .any(|f| std::fs::metadata(f.unwrap().path()).map_or(0, |m| m.len()) == CHUNK as u64)
         {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first chunk never landed"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         rt.shutdown_background();

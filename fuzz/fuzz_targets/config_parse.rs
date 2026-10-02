@@ -45,10 +45,14 @@ fuzz_target!(|input: Input| {
         let _ = parser.parse(color);
     }
 
-    // A config that does not deserialise is an expected outcome, not a finding.
-    let Ok(parsed) = toml::from_str::<AppConfig>(input.toml) else {
+    // A config that does not parse is an expected outcome, not a finding. The gate is
+    // the loader's own: a layer is valid TOML that also types as a config. Typing
+    // alone is laxer, since a table datui does not know is skipped unread, and an
+    // integer past i64 there deserialises although it is not TOML.
+    let Ok(layer) = ConfigLayer::parse(input.toml) else {
         return;
     };
+    let parsed: AppConfig = toml::from_str(input.toml).expect("a layer types as a config");
 
     // Validation runs on every load and must reject rather than panic.
     let _ = parsed.validate();
@@ -56,7 +60,6 @@ fuzz_target!(|input: Input| {
     // Layering is how imports and themes combine. A layer is checked when it is
     // parsed, so laying it over itself and resolving the result must succeed: a
     // failure here would surface as an error blamed on no particular file.
-    let layer = ConfigLayer::parse(input.toml).expect("text that deserialises is a layer");
     let resolved =
         AppConfig::from_layers([layer.clone(), layer]).expect("layers that parse resolve");
     let _ = resolved.validate();

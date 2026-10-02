@@ -927,14 +927,27 @@ mod read_tests {
             let stop = stop.clone();
             let dir = dir.path().to_path_buf();
             std::thread::spawn(move || {
-                // Once the first chunk is on disk, the server has gone quiet.
-                wait_until("the first chunk landed", || {
-                    std::fs::read_dir(&dir)
+                // Once the first chunk is on disk, the server has gone quiet. The size
+                // comes from the file, not its directory entry: Windows updates the
+                // entry's only when the writer closes it.
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let landed = loop {
+                    let sizes = std::fs::read_dir(&dir)
                         .unwrap()
-                        .any(|f| f.unwrap().metadata().unwrap().len() == 1024)
-                });
+                        .filter_map(|f| std::fs::metadata(f.unwrap().path()).ok())
+                        .map(|m| m.len());
+                    if sizes.into_iter().any(|len| len == 1024) {
+                        break true;
+                    }
+                    if Instant::now() > deadline {
+                        break false;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                };
+                // Stopped either way, so a chunk that never lands fails the test
+                // rather than leaving the read waiting on the server for good.
                 stop.store(true, Ordering::SeqCst);
-                Instant::now()
+                (landed, Instant::now())
             })
         };
         let error = read_to_temp(
@@ -944,7 +957,8 @@ mod read_tests {
             &crate::unfinished::Unfinished::default().writer(stop),
         )
         .unwrap_err();
-        let stopped_at = stopper.join().unwrap();
+        let (landed, stopped_at) = stopper.join().unwrap();
+        assert!(landed, "the first chunk landed");
         assert!(matches!(error, StreamError::Cut), "{error:?}");
         assert!(stopped_at.elapsed() < Duration::from_secs(2));
         assert_eq!(files_in(dir.path()), 0);

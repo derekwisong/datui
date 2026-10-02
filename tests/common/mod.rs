@@ -207,6 +207,49 @@ pub fn layered_config(layers: &[&str]) -> datui::config::AppConfig {
     .expect("test config layers resolve")
 }
 
+/// Each bordered box drawn in `rows` (one string per screen row), as the row of
+/// its bottom-left corner, in the active glyph set.
+///
+/// The ASCII set, which a locale without UTF-8 gets (Windows always), draws every
+/// corner as `+`, so counting the corner glyph finds four per box there. A
+/// bottom-left corner is the one with the left side above it and the bottom edge
+/// after it.
+#[allow(dead_code)]
+pub fn frame_bottoms(rows: &[String]) -> Vec<usize> {
+    let b = datui::glyphs::get().border;
+    let grid: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| r.chars().map(String::from).collect())
+        .collect();
+    let at = |x: usize, y: usize| grid.get(y).and_then(|r| r.get(x)).map(String::as_str);
+    // Where each corner has a glyph of its own, every one on screen is a box's,
+    // whatever its shape: count them all, and every box opened must close.
+    let corners = [b.top_left, b.top_right, b.bottom_left, b.bottom_right];
+    if (1..4).all(|i| !corners[..i].contains(&corners[i])) {
+        let opened: usize = rows.iter().map(|r| r.matches(b.top_left).count()).sum();
+        let closed: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .flat_map(|(y, r)| std::iter::repeat_n(y, r.matches(b.bottom_left).count()))
+            .collect();
+        assert_eq!(opened, closed.len(), "every frame closes: {rows:#?}");
+        return closed;
+    }
+    let mut bottoms = Vec::new();
+    for (y, row) in grid.iter().enumerate().skip(1) {
+        for x in 0..row.len() {
+            if at(x, y) == Some(b.bottom_left)
+                && at(x, y - 1) == Some(b.vertical_left)
+                && at(x + 1, y) == Some(b.horizontal_bottom)
+                && (x == 0 || at(x - 1, y) != Some(b.horizontal_bottom))
+            {
+                bottoms.push(y);
+            }
+        }
+    }
+    bottoms
+}
+
 /// Ensures that sample data files are generated before tests run.
 /// This function uses `std::sync::Once` to ensure it only runs once,
 /// even if called from multiple tests.

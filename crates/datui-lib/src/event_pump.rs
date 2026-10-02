@@ -78,8 +78,9 @@ pub struct EventPump {
     /// The hold covers the gap the break leaves. A frame is drawn before the
     /// continuation runs, and a key replayed then must not find the generation free.
     next_up: VecDeque<(AppEvent, Hold)>,
-    /// Events that arrived before there was an app to take them — keys typed while
-    /// `run` read the settings — handled first, in the order they came.
+    /// Events that arrived before there was an app to take them, while `run` read the
+    /// settings, then the startup open: handled first, in that order. The keys typed
+    /// meanwhile are in [`Self::typed`].
     backlog: VecDeque<AppEvent>,
     /// Keys read from the terminal and not yet offered to the app, oldest first. Each
     /// waits for what has arrived on the channel behind it, as it did when the loop
@@ -90,6 +91,11 @@ pub struct EventPump {
     /// Events handled since a key was last offered. Bounded by [`RESULTS_PER_KEY`], so
     /// a worker reporting faster than it is handled cannot starve the keyboard.
     since_key: usize,
+    /// How many of the keys at the front of [`Self::typed`] came from the backlog.
+    /// Typed before anything on the channel was sent, they wait on none of it: a
+    /// Ctrl+O typed while the settings were read lost to the startup open whenever
+    /// that open answered before the channel was ever found empty.
+    early: usize,
 }
 
 /// The most channel events handled while a typed key waits; then the key is offered.
@@ -108,12 +114,23 @@ impl EventPump {
             backlog: VecDeque::new(),
             typed: VecDeque::new(),
             since_key: 0,
+            early: 0,
         }
     }
 
-    /// Handle `events` before anything on the channel: they arrived first.
+    /// Handle `events` before anything on the channel: they arrived first, or are the
+    /// startup open those keys were typed at. Keys among them are offered, in order,
+    /// after the other events and ahead of the channel.
     pub fn handle_first(&mut self, events: impl IntoIterator<Item = AppEvent>) {
-        self.backlog.extend(events);
+        for event in events {
+            match event {
+                AppEvent::Terminal(Event::Key(key)) => {
+                    self.typed.push_back(key);
+                    self.early += 1;
+                }
+                event => self.backlog.push_back(event),
+            }
+        }
     }
 
     pub fn send(&self, event: AppEvent) -> Result<()> {
@@ -205,7 +222,8 @@ impl EventPump {
     }
 
     /// The next event to handle: a continuation first, then the backlog, then the
-    /// channel. `Empty` once a typed key has waited long enough, so it is offered.
+    /// channel. `Empty` once a typed key has waited long enough, or came from the
+    /// backlog, so it is offered.
     fn take_next(&mut self) -> Result<(AppEvent, Option<Hold>), TryRecvError> {
         if let Some((event, lease)) = self.next_up.pop_front() {
             return Ok((event, Some(lease)));
@@ -213,7 +231,7 @@ impl EventPump {
         if let Some(event) = self.backlog.pop_front() {
             return Ok((event, None));
         }
-        if !self.typed.is_empty() && self.since_key >= RESULTS_PER_KEY {
+        if !self.typed.is_empty() && (self.early > 0 || self.since_key >= RESULTS_PER_KEY) {
             return Err(TryRecvError::Empty);
         }
         self.rx.try_recv().map(|event| (event, None))
@@ -313,6 +331,7 @@ impl EventPump {
                         break;
                     };
                     self.since_key = 0;
+                    self.early = self.early.saturating_sub(1);
                     // One key per frame, as when the loop read the terminal itself: a
                     // key that acted is drawn before the next is offered, and a
                     // continuation it queued gets its frame first.
@@ -1866,24 +1885,25 @@ mod tests {
         assert!(held(&p).is_empty());
     }
 
-    /// A Ctrl+O typed while the settings were read is offered after the startup open
-    /// has begun, so it puts that open down: its look lands for nobody, and nothing opens
-    /// behind the home screen.
+    /// A Ctrl+O typed while the settings were read is offered once the startup open
+    /// has gone out and before anything it sends back, so that open is put down however
+    /// fast it would have been: nothing opens behind the home screen.
     #[test]
     fn ctrl_o_typed_before_the_app_existed_puts_the_startup_open_down() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         std::fs::write(&path, "name,age\nada,36\n").expect("write csv");
 
-        // As `run_impl` sets it up: the open announced, its look on the channel, and
-        // the keys from the settings read handed over first.
+        // As `run_impl` sets it up: the open announced, then the keys from the settings
+        // read handed over with the open behind them.
         let mut p = pump();
         p.app.set_loading_phase("Scanning input", 10);
-        p.send(AppEvent::OpenNamed(vec![path], OpenOptions::default()))
-            .unwrap();
-        p.handle_first([AppEvent::Terminal(Event::Key(ctrl('o')))]);
+        p.handle_first([
+            AppEvent::Terminal(Event::Key(ctrl('o'))),
+            AppEvent::OpenNamed(vec![path], OpenOptions::default()),
+        ]);
         settle(&mut p);
-        // The look was put down, not waited on: let its answer land.
+        // Anything that went out anyway is for nobody: let its answer land.
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
         while p.app.background_work_in_flight() {
             assert!(std::time::Instant::now() < deadline, "the look never ended");
@@ -1897,6 +1917,64 @@ mod tests {
             "nothing opened behind home"
         );
         assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+    }
+
+    /// The same for a frame handed over from Python: it was on the channel too, and
+    /// installed behind the home screen once Ctrl+O was offered first.
+    #[test]
+    fn ctrl_o_typed_before_the_app_existed_puts_a_startup_frame_down() {
+        use polars::prelude::IntoLazy;
+        let lf = polars::df!("a" => [1i64, 2, 3]).expect("frame").lazy();
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.handle_first([
+            AppEvent::Terminal(Event::Key(ctrl('o'))),
+            AppEvent::OpenLazyFrame(Box::new(lf), OpenOptions::default()),
+        ]);
+        settle(&mut p);
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        while p.app.background_work_in_flight() {
+            assert!(std::time::Instant::now() < deadline, "the read never ended");
+            p.wait_and_drain(Duration::from_millis(50)).unwrap();
+        }
+        settle(&mut p);
+
+        assert_eq!(p.app.input_mode, InputMode::Home);
+        assert!(
+            p.app.data_table_state.is_none(),
+            "nothing opened behind home"
+        );
+    }
+
+    /// Keys typed before the app existed meet the startup open as the loading screen:
+    /// a stray `G` or Esc is dropped, not replayed onto the table once it is up, and
+    /// `q` still quits.
+    #[test]
+    fn keys_typed_before_the_app_existed_meet_the_loading_screen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nada,36\nbob,41\n").expect("write csv");
+
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.handle_first([
+            AppEvent::Terminal(Event::Key(plain(KeyCode::Char('G')))),
+            AppEvent::Terminal(Event::Key(plain(KeyCode::Esc))),
+            AppEvent::OpenNamed(vec![path.clone()], OpenOptions::default()),
+        ]);
+        assert!(matches!(settle(&mut p), Drained::Continue { .. }));
+        assert!(held(&p).is_empty());
+        assert_eq!(p.app.input_mode, InputMode::Normal);
+        let state = p.app.data_table_state.as_ref().expect("the table opened");
+        assert_eq!(state.table_state.selected(), Some(0), "G was not replayed");
+
+        let mut p = pump();
+        p.app.set_loading_phase("Scanning input", 10);
+        p.handle_first([
+            AppEvent::Terminal(Event::Key(plain(KeyCode::Char('q')))),
+            AppEvent::OpenNamed(vec![path], OpenOptions::default()),
+        ]);
+        assert!(matches!(settle(&mut p), Drained::Exit), "q quits");
     }
 
     /// The loading screen has nothing to type ahead into, so nothing is held

@@ -1086,7 +1086,7 @@ impl DatasetConfig {
     /// What two entries naming the same data have in common.
     fn place_key(&self) -> String {
         match (&self.path, &self.url) {
-            (Some(path), _) => format!("path:{}", expand_path(path).display()),
+            (Some(path), _) => format!("path:{}", path_place(&expand_path(path)).display()),
             (None, Some(url)) => format!("url:{}", crate::source::canonical_cloud_place(url)),
             (None, None) => String::new(),
         }
@@ -2859,6 +2859,36 @@ pub fn expand_config_path(raw: &str) -> PathBuf {
     expand_path(raw)
 }
 
+/// `path` spelled one way, without asking the filesystem: rebuilt from its components,
+/// so separators compare as one (on Windows `~/a.csv` expands to `C:\Users\me\a.csv`
+/// and `$USERPROFILE/a.csv` to `C:\Users\me/a.csv`), with no `.` and a trailing
+/// separator dropped. A drive letter is one case and a UNC prefix takes backslashes.
+/// `..` stays: past a symlink it is not the parent the text names.
+fn path_place(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+    let mut place = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(drive) => {
+                    place.push(format!("{}:", char::from(drive.to_ascii_uppercase())));
+                }
+                Prefix::UNC(server, share) => {
+                    let mut unc = std::ffi::OsString::from(r"\\");
+                    unc.push(server);
+                    unc.push(r"\");
+                    unc.push(share);
+                    place.push(unc);
+                }
+                _ => place.push(prefix.as_os_str()),
+            },
+            other => place.push(other),
+        }
+    }
+    place
+}
+
 fn expand_path(raw: &str) -> PathBuf {
     let mut expanded = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
@@ -4042,6 +4072,44 @@ fn bracket_depth(line: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_path_place_ignores_spelling_but_not_meaning() {
+        let place = |p: &str| super::path_place(std::path::Path::new(p));
+        for (a, b) in [
+            ("/d/a.csv", "/d//a.csv"),
+            ("/d/a.csv", "/d/./a.csv"),
+            ("/d/sub", "/d/sub/"),
+            ("a.csv", "./a.csv"),
+        ] {
+            assert_eq!(place(a), place(b), "{a} and {b}");
+        }
+        for (a, b) in [
+            ("/d/../a.csv", "/a.csv"),
+            ("/d/a.csv", "/d/A.csv"),
+            ("/d/a.csv", "d/a.csv"),
+            ("/d/a.csv", "/d/a.csv.gz"),
+        ] {
+            assert_ne!(place(a), place(b), "{a} and {b}");
+        }
+        #[cfg(windows)]
+        {
+            for (a, b) in [
+                (r"C:\d\a.csv", r"c:\d\a.csv"),
+                (r"C:\d\a.csv", "C:/d/a.csv"),
+                (r"\\srv\share\a.csv", "//srv/share/a.csv"),
+            ] {
+                assert_eq!(place(a), place(b), "{a} and {b}");
+            }
+            for (a, b) in [
+                (r"C:\d\a.csv", r"D:\d\a.csv"),
+                (r"C:\a.csv", "C:a.csv"),
+                (r"\\srv\share\a.csv", r"\\srv\other\a.csv"),
+            ] {
+                assert_ne!(place(a), place(b), "{a} and {b}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

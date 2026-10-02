@@ -448,11 +448,12 @@ mod tests {
             .expect("the footer");
         // Every cell holds one character here, so columns are char counts.
         let x0 = top[y0][..x0].chars().count();
+        let side = crate::glyphs::get().border.vertical_right;
         let right = top[y0]
             .chars()
             .collect::<Vec<_>>()
             .iter()
-            .rposition(|&c| c == '│')
+            .rposition(|c| side.starts_with(*c))
             .expect("frame");
         let cells = |row: &str| -> String {
             let text: String = row.chars().take(right).skip(x0).collect();
@@ -494,7 +495,9 @@ mod tests {
                 for text in [help.to_string(), crate::glyphs::instructions_in_ascii(help)] {
                     let rows = help_rows(area, &text);
                     let mut rows = rows.iter();
-                    for line in text.lines().map(str::trim_end) {
+                    // What the overlay draws: ASCII twins when the locale is not UTF-8.
+                    let drawn = crate::glyphs::asciify_instructions(&text);
+                    for line in drawn.lines().map(str::trim_end) {
                         let first = rows.next().expect("a row per line");
                         assert!(line.starts_with(first.as_str()), "{first:?} for {line:?}");
                         let words: Vec<&str> = line.split_whitespace().collect();
@@ -631,8 +634,8 @@ mod tests {
         modal.show("Select at least one index column.".to_string());
         render_error_modal(area, &mut buf, &mut modal, &ctx);
         let rows = grid(&buf, area);
-        let corners: usize = rows.iter().map(|r| r.matches('╭').count()).sum();
-        assert_eq!(corners, 1, "one frame, no inner boxes: {rows:#?}");
+        let frames = crate::glyphs::frame_corners(&rows).len();
+        assert_eq!(frames, 1, "one frame, no inner boxes: {rows:#?}");
         let text = rows.join("\n");
         assert!(text.contains("Select at least one index column."));
         assert!(text.contains("Enter") && text.contains("OK") && text.contains("Esc"));
@@ -648,16 +651,17 @@ mod tests {
         modal.show("Overwrite out.csv?".to_string());
         render_confirmation_modal(area, &mut buf, &mut modal, &ctx);
         let rows = grid(&buf, area);
-        let corners: usize = rows.iter().map(|r| r.matches('╭').count()).sum();
-        assert_eq!(corners, 1, "one frame, no button boxes: {rows:#?}");
+        let frames = crate::glyphs::frame_corners(&rows).len();
+        assert_eq!(frames, 1, "one frame, no button boxes: {rows:#?}");
         let text = rows.join("\n");
         assert!(text.contains("Overwrite out.csv?"));
         let choice_row = rows
             .iter()
             .find(|r| r.contains("Yes") && r.contains("No"))
             .expect("the Yes/No line is there");
+        let rail = crate::glyphs::get().rail;
         assert!(
-            choice_row.contains("▎Yes"),
+            choice_row.contains(&format!("{rail}Yes")),
             "the rail is on Yes by default: {choice_row:?}"
         );
         assert!(text.contains("Confirm") && text.contains("Cancel"));
@@ -671,9 +675,12 @@ mod tests {
             .iter()
             .find(|r| r.contains("Yes") && r.contains("No"))
             .unwrap();
-        assert!(choice_row2.contains("▎No"), "{choice_row2:?}");
+        assert!(
+            choice_row2.contains(&format!("{rail}No")),
+            "{choice_row2:?}"
+        );
         // Compare columns, not byte offsets: the rail glyph is multi-byte.
-        let col = |r: &str| r.replace('\u{258e}', " ").find("Yes");
+        let col = |r: &str| r.replace(rail, " ").find("Yes");
         assert_eq!(
             col(choice_row),
             col(choice_row2),

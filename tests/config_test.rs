@@ -2550,6 +2550,11 @@ fn collection_mistakes_are_named() {
         let message = dataset(fields);
         assert!(message.contains(expected), "{fields:?}: {message}");
     }
+    // The variable that names the home directory: Windows sets USERPROFILE, not HOME.
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let home_twice = format!(
+        "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\npath = \"~/a.csv\"\n[[sources.datasets]]\nname = \"b\"\npath = \"${home_var}/a.csv\"\n"
+    );
     for (body, expected) in [
         (
             "[[sources]]\nname = \"My Data\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
@@ -2580,8 +2585,9 @@ fn collection_mistakes_are_named() {
             "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\nurl = \"https://account.blob.core.windows.net/c/p/\"\n[[sources.datasets]]\nname = \"b\"\nurl = \"abfss://c@account.dfs.core.windows.net/p\"\n",
             "is listed twice",
         ),
+        (&*home_twice, "is listed twice"),
         (
-            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\npath = \"~/a.csv\"\n[[sources.datasets]]\nname = \"b\"\npath = \"$HOME/a.csv\"\n",
+            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\npath = \"/d/a.csv\"\n[[sources.datasets]]\nname = \"b\"\npath = \"/d//a.csv\"\n",
             "is listed twice",
         ),
         (

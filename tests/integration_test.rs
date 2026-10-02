@@ -20368,6 +20368,28 @@ fn test_value_counts_enter_drills_and_esc_comes_back() {
     assert_eq!(on_screen(&app, "id").len(), 10);
 }
 
+/// A tab in the value drilled into is marked in the breadcrumb, not printed raw.
+#[test]
+fn test_value_counts_drill_breadcrumb_marks_a_tab() {
+    let (mut app, rx, tx) = open_csv_with(
+        "value_counts_tab.csv",
+        "k,n\n\"a\tb\",1\n\"a\tb\",2\nc,3\n",
+        OpenOptions::default(),
+    );
+    let area = Rect::new(0, 0, 80, 12);
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert_eq!(counted_lines(&app)[0], ("a\tb".to_string(), 2));
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, area);
+    assert_eq!(on_screen(&app, "n"), ["1", "2"]);
+    let screen = counts_screen(&mut app, 80, 12);
+    let crumb = screen.lines().next().unwrap();
+    let g = datui::glyphs::get();
+    let marked = datui::exact::cell_preview("a\tb", g);
+    assert!(crumb.contains(&format!("k={marked}")), "{crumb:?}");
+}
+
 /// The counts are of the view: a query's rows, not the file's.
 #[test]
 fn test_value_counts_count_the_queried_view() {

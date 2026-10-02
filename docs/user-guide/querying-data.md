@@ -209,6 +209,8 @@ Type words on the **Search** tab and press <kbd>Enter</kbd>. A row matches
 when, for every word, one of its text columns contains that word's characters
 in order, not necessarily adjacent. Matching is case-insensitive. Reopen the
 prompt to see how many rows matched.
+To jump between matches without filtering, [find](finding.md) with
+<kbd>f</kbd>.
 
 On **Food nutrition (fast food)**, `chicken` keeps 178 of 515 menu items.
 `chkn` keeps 186: it also finds Chick Fil-A's `Chick-n-Strips`, and, since the

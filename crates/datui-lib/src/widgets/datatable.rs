@@ -1520,6 +1520,77 @@ fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, 
     Some((file_of(start), file_of(end - 1).min(files - 1)))
 }
 
+/// Rows `[start, start + len)` of `lf` as `all_columns`. With `files` counted, a scan
+/// of only the files holding them, so a window deep in a remote dataset does not read
+/// every file before it.
+fn window_of(
+    lf: &LazyFrame,
+    files: Option<&RemoteFiles>,
+    read_as_text: &[PlSmallStr],
+    start: usize,
+    len: usize,
+    all_columns: Vec<Expr>,
+) -> PolarsResult<LazyFrame> {
+    if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
+        && let Some((first, last)) = files_holding(offsets, start, len)
+    {
+        let lf = (files.scan)(&files.urls[first..=last], read_as_text)?;
+        return Ok(lf
+            .select(all_columns)
+            .slice((start - offsets[first]) as i64, len as u32));
+    }
+    Ok(lf
+        .clone()
+        .select(all_columns)
+        .slice(start as i64, len as u32))
+}
+
+/// The rows of a view, for a reader off the UI thread: read a window at a time as a
+/// page is, or from the buffer the table already holds.
+#[derive(Clone)]
+pub(crate) struct ViewRows {
+    lf: LazyFrame,
+    files: Option<RemoteFiles>,
+    read_as_text: Vec<PlSmallStr>,
+    /// The buffer on hand and the view row it starts at.
+    pub(crate) buffer: Option<(DataFrame, usize)>,
+    /// The view's row count, when it is known.
+    pub(crate) num_rows: Option<usize>,
+    pub(crate) streaming: bool,
+}
+
+impl ViewRows {
+    /// Rows `[start, start + len)` of the view as `exprs`.
+    pub(crate) fn window(
+        &self,
+        start: usize,
+        len: usize,
+        exprs: Vec<Expr>,
+    ) -> PolarsResult<LazyFrame> {
+        window_of(
+            &self.lf,
+            self.files.as_ref(),
+            &self.read_as_text,
+            start,
+            len,
+            exprs,
+        )
+    }
+
+    /// The view `lf`, with `buffer` on hand from row `buffer_start`.
+    #[cfg(test)]
+    pub(crate) fn of(lf: LazyFrame, buffer: Option<(DataFrame, usize)>) -> Self {
+        Self {
+            lf,
+            files: None,
+            read_as_text: Vec::new(),
+            buffer,
+            num_rows: None,
+            streaming: false,
+        }
+    }
+}
+
 /// Snap `[start, end)` outward to the row groups it touches, given where each group
 /// starts (`offsets`, with the total last).
 ///
@@ -3456,6 +3527,11 @@ impl DataTableState {
 
     pub fn toggle_row_numbers(&mut self) {
         self.row_numbers = !self.row_numbers;
+    }
+
+    /// Whether the row-number column is shown.
+    pub fn row_numbers(&self) -> bool {
+        self.row_numbers
     }
 
     /// Row number display start (0 or 1); used by go-to-line to interpret user input.
@@ -6377,23 +6453,50 @@ impl DataTableState {
         len: usize,
         all_columns: Vec<Expr>,
     ) -> PolarsResult<LazyFrame> {
-        if let Some((files, offsets)) = self
-            .remote_files
-            .as_ref()
-            .filter(|_| self.remote_window())
-            .and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
-            && let Some((first, last)) = files_holding(offsets, start, len)
-        {
-            let lf = (files.scan)(&files.urls[first..=last], &self.read_as_text)?;
-            return Ok(lf
-                .select(all_columns)
-                .slice((start - offsets[first]) as i64, len as u32));
+        window_of(
+            &self.lf,
+            self.remote_files.as_ref().filter(|_| self.remote_window()),
+            &self.read_as_text,
+            start,
+            len,
+            all_columns,
+        )
+    }
+
+    /// The view's rows as a find reads them: a window at a time, the way a page is
+    /// read, and the buffer already on hand.
+    pub(crate) fn view_rows(&self) -> ViewRows {
+        ViewRows {
+            lf: self.lf.clone(),
+            files: self
+                .remote_files
+                .as_ref()
+                .filter(|_| self.remote_window())
+                .cloned(),
+            read_as_text: self.read_as_text.clone(),
+            buffer: self
+                .buffered_df
+                .as_ref()
+                .filter(|_| self.buffer_on_hand())
+                .map(|df| (df.clone(), self.buffered_start_row)),
+            num_rows: self.num_rows_valid.then_some(self.num_rows),
+            streaming: self.polars_streaming,
         }
-        Ok(self
-            .lf
-            .clone()
-            .select(all_columns)
-            .slice(start as i64, len as u32))
+    }
+
+    /// Put the cursor on view row `row`, centered, for a find that matched there.
+    /// Returns true if a collect is needed. A row past a provisional total is one the
+    /// find read, so the total reaches it until the count lands.
+    pub(crate) fn go_to_found_row(&mut self, row: usize) -> bool {
+        if !self.num_rows_valid && self.num_rows <= row {
+            self.num_rows = row + 1;
+        }
+        self.scroll_to_row_centered(row)
+    }
+
+    /// The view row the cursor is on.
+    pub(crate) fn cursor_row(&self) -> usize {
+        self.start_row + self.table_state.selected().unwrap_or(0)
     }
 
     /// Bytes a buffered row takes: measured on the last buffer collected, or until
@@ -8900,6 +9003,12 @@ pub struct DataTable {
     /// The terminal's width, which bounds automatic text widths (see
     /// [`crate::widgets::column_widths::text_cap`]). 0 takes the table's own width.
     pub screen_width: u16,
+    /// The cell a find landed on: its view row and column.
+    pub find_cell: Option<(usize, String)>,
+    /// How that cell is drawn, from the theme's `find_match_style`.
+    pub find_style: Style,
+    /// The found cell's column, while the cursor is on its row: set at render.
+    find_column: Option<String>,
 }
 
 impl Default for DataTable {
@@ -8931,6 +9040,9 @@ impl Default for DataTable {
             sort_descending: Vec::new(),
             glyphs: crate::glyphs::get(),
             screen_width: 0,
+            find_cell: None,
+            find_style: Style::default(),
+            find_column: None,
         }
     }
 }
@@ -9349,6 +9461,13 @@ impl DataTable {
         self
     }
 
+    /// Mark the cell a find landed on, drawn in `style` while the cursor is on its row.
+    pub fn with_find_cell(mut self, cell: Option<(usize, String)>, style: Style) -> Self {
+        self.find_cell = cell;
+        self.find_style = style;
+        self
+    }
+
     /// How many rows the header takes: the names, plus the type row when it is on.
     pub fn header_height(&self) -> u16 {
         if self.dtype_row { 2 } else { 1 }
@@ -9761,7 +9880,8 @@ impl DataTable {
                     .style(header_row_style)
                     .height(self.header_height()),
             )
-            .row_highlight_style(self.highlight_style());
+            .row_highlight_style(self.highlight_style())
+            .cell_highlight_style(self.find_style);
         if leading_gap {
             // A blank selection column on every row: the Table offsets the header and
             // the cells past it and paints each row's tint across it, so the gap
@@ -9770,7 +9890,15 @@ impl DataTable {
                 .highlight_symbol(" ")
                 .highlight_spacing(HighlightSpacing::Always);
         }
+        // The found cell is the selected row's cell in the selected column; the column
+        // is selected for this draw alone, so nothing else reads it.
+        let found = self
+            .find_column
+            .as_deref()
+            .and_then(|name| fitted.cols.iter().position(|col| col.name == name));
+        state.select_column(found);
         StatefulWidget::render(table, area, buf, state);
+        state.select_column(None);
     }
 
     /// The width a scrolling column is drawn at: the width it was last drawn at in
@@ -9967,6 +10095,12 @@ impl StatefulWidget for DataTable {
 
         let start_row = state.start_to_draw();
         state.on_screen = None;
+        // Only on the cursor's row: the cursor is what a find moves, and a mark left
+        // behind on a row scrolled past would read as a second match.
+        let selected = state.table_state.selected();
+        self.find_column = self.find_cell.take().and_then(|(row, name)| {
+            (row.checked_sub(start_row) == selected && selected.is_some()).then_some(name)
+        });
 
         // Where the scrolling columns are, for the cue drawn over the header after them.
         let mut scroll_indicator: Option<ScrollCue> = None;

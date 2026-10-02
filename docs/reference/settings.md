@@ -29,7 +29,7 @@ single_spine_schema = true    # Partitioned Parquet: every column any file has, 
 
 ```toml
 [display]
-row_numbers = false         # Row numbers on the left (N toggles)
+row_numbers = false         # Row numbers on the left (# toggles)
 row_start_index = 1         # First row number, 0 or 1
 number_format = "none"      # Digit grouping, see below (F toggles)
 align_numeric_right = true  # Right-align numbers and their headers
@@ -214,6 +214,7 @@ darkened. Set any slot to change it.
 | `row_numbers` | The row-number column | `#565f89` |
 | `alternate_row_color` | Every other row (`"default"` turns the stripe off) | `#1e2030` |
 | `table_selected` | Tint under the current row (`"reversed"` swaps fg and bg instead) | `#283457` |
+| `find_match` | Behind the cell a find (<kbd>f</kbd>) landed on; its text is black or white, whichever reads | `#e0af68` |
 | `column_separator` | Rule after frozen columns, rules beside section titles | `#3b4261` |
 | `sidebar_border`, `modal_border_active`, `modal_border_error` | Borders | `#565f89`, `#7dcfff`, `#f7768e` |
 | `str_col`, `int_col`, `float_col`, `bool_col`, `temporal_col`, `binary_col` | Cells and headers by type | `#9ece6a`, `#7aa2f7`, `#2ac3de`, `#e0af68`, `#bb9af7`, `#565f89` |

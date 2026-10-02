@@ -80,6 +80,13 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
                     Some(crate::InputType::GoToLine) => {
                         vec![("Enter", "Go"), ("F1", "Help"), ("Esc", "Cancel")]
                     }
+                    Some(crate::InputType::Find) => vec![
+                        ("Enter", "Find"),
+                        ("^R", "Regex"),
+                        ("^L", "Column"),
+                        ("F1", "Help"),
+                        ("Esc", "Cancel"),
+                    ],
                     // In the SQL input Tab completes; the tab bar is Shift+Tab or
                     // ^T away. Alt+Enter is named beside the tabs, where it has room.
                     _ if app.query_mode == crate::QueryMode::Sql
@@ -121,6 +128,15 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             // wait. At the form only the hard escapes act meanwhile.
             if app.pivot_computing() {
                 return ControlBarSpec::Custom(vec![("Esc", "Cancel"), ("^O", "Home")]);
+            }
+            // A find reading the view stops with Esc too.
+            if app.finding() {
+                return ControlBarSpec::Custom(vec![
+                    ("Esc", "Cancel"),
+                    ("^O", "Home"),
+                    ("?", "Help"),
+                    ("q", if app.opened_from_home { "Home" } else { "Quit" }),
+                ]);
             }
             if app.view_applying() {
                 return ControlBarSpec::Custom(vec![

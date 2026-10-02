@@ -348,6 +348,7 @@ fn test_theme_with_custom_colors() {
         accent_bright: "bright_cyan".to_string(),
         gradient_start: "blue".to_string(),
         gradient_end: "magenta".to_string(),
+        find_match: "yellow".to_string(),
     };
 
     let result = Theme::from_config(&config.theme);

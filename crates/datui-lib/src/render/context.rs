@@ -40,6 +40,8 @@ pub struct RenderContext {
     pub alternate_row_color: Option<Color>,
     /// Tint under the row the cursor is on; `None` means the old reversed-video look.
     pub table_selected: Option<Color>,
+    /// The cell a find landed on, from the theme's `find_match_style`.
+    pub find_match: ratatui::style::Style,
     /// Whether the data table shows its second header row of column types.
     pub dtype_row: bool,
 
@@ -139,6 +141,7 @@ impl RenderContext {
             column_separator: theme.get("column_separator"),
             alternate_row_color: theme.get_optional("alternate_row_color"),
             table_selected: theme.get_optional("table_selected"),
+            find_match: theme.find_match_style(),
             dtype_row: true,
 
             str_col: if column_colors {

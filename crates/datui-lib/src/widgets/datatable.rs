@@ -1063,6 +1063,51 @@ fn count_subquery_values_once(plan: &mut polars::lazy::dsl::DslPlan) {
     for_each_input(plan, &mut count_subquery_values_once);
 }
 
+/// The columns of `schema`, `plan`'s columns, that carry what polars-sql added to
+/// hold `IN` subqueries' values (see [`subquery_value_columns`]). A WHERE's projection
+/// drops them, but a QUALIFY keeps them in its result, a list of every value on every
+/// row, and a statement reading its result as a table carries them on (#519), under
+/// a join's suffix when both sides hold one. Matched by the name polars-sql gave
+/// them, which is unique to the process, so no column of the user's is taken for one.
+#[cfg(feature = "sql")]
+fn leftover_subquery_value_columns(
+    plan: &mut polars::lazy::dsl::DslPlan,
+    schema: &Schema,
+) -> Vec<PlSmallStr> {
+    use polars::lazy::dsl::DslPlan;
+    fn find(plan: &mut DslPlan, values: &mut Vec<PlSmallStr>, suffixes: &mut Vec<PlSmallStr>) {
+        match plan {
+            DslPlan::IR { dsl, .. } => {
+                let mut inner = Arc::unwrap_or_clone(dsl.clone());
+                find(&mut inner, values, suffixes);
+                return;
+            }
+            DslPlan::Join { options, .. } => suffixes.push(options.args.suffix().clone()),
+            _ => {}
+        }
+        values.extend(subquery_value_columns(plan));
+        for_each_input(plan, &mut |input| find(input, values, suffixes));
+    }
+    fn carries(name: &str, values: &[PlSmallStr], suffixes: &[PlSmallStr]) -> bool {
+        values.iter().any(|v| v == name)
+            || suffixes.iter().any(|s| {
+                name.strip_suffix(s.as_str())
+                    .is_some_and(|rest| carries(rest, values, suffixes))
+            })
+    }
+    let (mut values, mut suffixes) = (Vec::new(), Vec::new());
+    find(plan, &mut values, &mut suffixes);
+    if values.is_empty() {
+        return Vec::new();
+    }
+    suffixes.retain(|s| !s.is_empty());
+    schema
+        .iter_names()
+        .filter(|name| carries(name, &values, &suffixes))
+        .cloned()
+        .collect()
+}
+
 /// Whether `node` filters on a question of an `IN` subquery's values that the
 /// streaming engine answers once per row.
 #[cfg(feature = "sql")]
@@ -8542,13 +8587,25 @@ impl DataTableState {
                     // over a union's inputs: the nodes stable_order orders and the
                     // filter count_subquery_values_once rewrites keep their shape.
                     crate::past_calendar::guard_plan(&mut result_lf.logical_plan);
-                    let schema = match result_lf.clone().collect_schema() {
+                    let mut schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
                         Err(e) => {
                             self.error = Some(e);
                             return;
                         }
                     };
+                    let leftover =
+                        leftover_subquery_value_columns(&mut result_lf.logical_plan, &schema);
+                    if !leftover.is_empty() {
+                        let shown = Arc::make_mut(&mut schema);
+                        for name in &leftover {
+                            shown.shift_remove(name);
+                        }
+                        result_lf = result_lf.drop(Selector::ByName {
+                            names: leftover.into(),
+                            strict: true,
+                        });
+                    }
                     let group_source =
                         Self::sql_group_source(&mut ctx, trimmed, root, &mut result_lf, &schema);
                     // Groups sorted by their keys have no ties, and a statement simple
@@ -12018,6 +12075,111 @@ mod tests {
                 assert!(
                     got.equals_missing(&expected),
                     "{sql}, streaming {streaming}"
+                );
+            }
+        }
+    }
+
+    /// An `IN (SELECT …)` subquery returns exactly the statement's columns, after a
+    /// QUALIFY as after a WHERE: polars-sql leaves the column holding the values in a
+    /// QUALIFY's result (#519). The rows are polars-sql's own, and a user's column
+    /// named like polars-sql's is kept.
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_sql_in_subquery_returns_only_the_statements_columns() {
+        const LOOKALIKE: &str = "_POLARS_TMP_999999999";
+        let df = df!(
+            "k" => (0..300i64).map(|i| i % 3).collect::<Vec<_>>(),
+            "i" => (0..300i64).collect::<Vec<_>>(),
+            "w" => (0..300i64).map(|i| (i % 7 != 0).then_some(i % 11)).collect::<Vec<_>>(),
+            LOOKALIKE => (0..300i64).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let all = ["k", "i", "w", LOOKALIKE];
+        for (sql, columns) in [
+            (
+                "SELECT k, i, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3)",
+                &["k", "i", "r"][..],
+            ),
+            (
+                "SELECT k, i, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r NOT IN (SELECT w FROM df WHERE w > 3 AND w IS NOT NULL) \
+                 ORDER BY i DESC LIMIT 50",
+                &["k", "i", "r"][..],
+            ),
+            (
+                "SELECT * FROM df \
+                 QUALIFY ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) IN (SELECT w FROM df)",
+                &all[..],
+            ),
+            (
+                "SELECT DISTINCT k, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r, _POLARS_TMP_999999999 FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3)",
+                &["k", "r", LOOKALIKE][..],
+            ),
+            (
+                "SELECT * FROM (SELECT k, i, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3)) WHERE i > 1",
+                &["k", "i", "r"][..],
+            ),
+            (
+                "SELECT k, i, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3) AND i IN (SELECT w FROM df)",
+                &["k", "i", "r"][..],
+            ),
+            (
+                "WITH q AS (SELECT k, i, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3)) \
+                 SELECT * FROM q UNION ALL SELECT * FROM q",
+                &["k", "i", "r"][..],
+            ),
+            // A join suffixes the right side's copy of both polars-sql's column and
+            // the user's.
+            (
+                "WITH q AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3)) \
+                 SELECT * FROM q a JOIN q b ON a.i = b.i JOIN q c ON a.i = c.i ORDER BY a.i",
+                &[
+                    "k",
+                    "i",
+                    "w",
+                    LOOKALIKE,
+                    "r",
+                    "k:b",
+                    "i:b",
+                    "w:b",
+                    "_POLARS_TMP_999999999:b",
+                    "r:b",
+                    "k:c",
+                    "i:c",
+                    "w:c",
+                    "_POLARS_TMP_999999999:c",
+                    "r:c",
+                ][..],
+            ),
+            ("SELECT * FROM df WHERE i IN (SELECT w FROM df)", &all[..]),
+            (
+                "SELECT k, i FROM df WHERE i NOT IN (SELECT w FROM df WHERE w IS NOT NULL)",
+                &["k", "i"][..],
+            ),
+        ] {
+            let mut ctx = polars_sql::SQLContext::new();
+            ctx.register("df", df.clone().lazy());
+            let raw = ctx.execute(sql).unwrap().collect().unwrap();
+            assert!(raw.height() > 0, "{sql}");
+            let expected = raw.select(columns.iter().copied()).unwrap();
+            let mut state =
+                DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
+            state.sql_query(sql.to_string());
+            assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+            let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+            assert_eq!(names, columns, "{sql}");
+            for streaming in [false, cfg!(feature = "streaming")] {
+                let got = collect_lazy(state.lf.clone(), streaming).unwrap();
+                assert!(
+                    got.equals_missing(&expected),
+                    "{sql}, streaming {streaming}: {got:?}"
                 );
             }
         }

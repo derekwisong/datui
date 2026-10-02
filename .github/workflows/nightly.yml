@@ -332,6 +332,11 @@ jobs:
           shared-key: tests
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-nextest
+
       - name: Create virtual environment and install requirements
         run: |
           python -m venv .venv
@@ -343,10 +348,18 @@ jobs:
         run: .venv\Scripts\python.exe scripts/generate_sample_data.py
 
       - name: Build
+        timeout-minutes: 40
         run: cargo build --workspace --tests --locked
 
+      # nextest kills a test that hangs (.config/nextest.toml), so one hung test
+      # fails alone instead of running the job into its timeout.
       - name: Run tests
-        run: cargo test --workspace --locked --no-fail-fast
+        timeout-minutes: 15
+        run: cargo nextest run --workspace --locked --no-fail-fast
+
+      - name: Run doctests
+        timeout-minutes: 10
+        run: cargo test --doc --workspace --locked
 
       - name: Bundle CLI for wheel
         run: |
@@ -492,6 +505,11 @@ jobs:
           shared-key: tests
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-nextest
+
       - name: Create virtual environment and install requirements
         run: |
           python -m venv .venv
@@ -503,10 +521,18 @@ jobs:
         run: .venv/bin/python scripts/generate_sample_data.py
 
       - name: Build
+        timeout-minutes: 40
         run: cargo build --workspace --tests --locked
 
+      # nextest kills a test that hangs (.config/nextest.toml), so one hung test
+      # fails alone instead of running the job into its timeout.
       - name: Run tests
-        run: cargo test --workspace --locked --no-fail-fast
+        timeout-minutes: 15
+        run: cargo nextest run --workspace --locked --no-fail-fast
+
+      - name: Run doctests
+        timeout-minutes: 10
+        run: cargo test --doc --workspace --locked
 
       - name: Bundle CLI for wheel
         run: |

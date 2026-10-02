@@ -83,7 +83,7 @@ A `le` or `be` suffix (`u4be`, `s2le`) overrides the spec's `endian`.
 | `epoch` | `2000-01-01` | What the count is since. Default 1970-01-01 |
 | `date` | `"yyyymmdd"` | An integer such as 20240102, as a date |
 | `of_day` | `true` | With `time`, a count since midnight: a time of day |
-| `date` with `of_day` | `"header.trade_date"` | The day those times are on, from a header field: a datetime |
+| `date` with `of_day` | `"header.trade_date"` | The day those times are on, from a header field that reads as a date (`date = "yyyymmdd"`, `time = "days"`), a datetime, or text such as `2024-01-02`: a datetime |
 | `file` | `"px.dat"` | In the columns layout, the file in the directory holding the field. Default: its name |
 
 A field takes at most one of `time` (or `date`), `scale`, `factor` and `enum`.

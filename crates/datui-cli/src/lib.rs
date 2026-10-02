@@ -430,7 +430,8 @@ pub struct Args {
     pub excel_sheet: Option<String>,
 
     /// Table to open from a file that holds several. SQLite: a table or view by name.
-    /// NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences
+    /// NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences.
+    /// Hugging Face cache directories: a split (default train)
     #[arg(long = "table", value_name = "TABLE", help_heading = "Reading")]
     pub table: Option<String>,
     /// Show integer audio samples as float in [-1, 1] (default: the integers as stored)

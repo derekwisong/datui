@@ -3252,26 +3252,32 @@ fn test_csv_dialect_keys() {
 #[test]
 fn test_formats_path_adds_up_and_is_anchored_to_its_file() {
     assert!(layered(&[""]).formats_path.is_empty());
+    // Absolute on this platform, so it is kept as written.
+    let shared = if cfg!(windows) {
+        "C:/shared/formats"
+    } else {
+        "/shared/formats"
+    };
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     fs::create_dir_all(temp_dir.path().join("org")).unwrap();
     write_config(
         &temp_dir,
         "org/org.toml",
-        "formats_path = [\"specs\", \"/shared/formats\"]\n",
+        &format!("formats_path = [\"specs\", \"{shared}\"]\n"),
     );
     let root = write_config(
         &temp_dir,
         "config.toml",
-        "import = [\"org/org.toml\"]\nformats_path = [\"mine\", \"/shared/formats\"]\n",
+        &format!("import = [\"org/org.toml\"]\nformats_path = [\"mine\", \"{shared}\"]\n"),
     );
     let config = AppConfig::load_from_file(&root).expect("Config should load");
-    let anchored = |p: &str| temp_dir.path().join(p).to_string_lossy().into_owned();
+    let anchored = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
     assert_eq!(
         config.formats_path,
         [
-            anchored("org/specs"),
-            "/shared/formats".to_string(),
-            anchored("mine")
+            anchored(temp_dir.path().join("org").join("specs")),
+            shared.to_string(),
+            anchored(temp_dir.path().join("mine"))
         ]
     );
 }

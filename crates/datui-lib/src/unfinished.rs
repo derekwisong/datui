@@ -283,9 +283,10 @@ mod tests {
         assert!(!sweeper.is_finished(), "the sweep waits for the file");
         go.send(()).unwrap();
         sweeper.join().unwrap();
-        assert!(worker.is_finished(), "the writer was done before the sweep");
+        // Checked before joining the writer: its thread may still be exiting, but the
+        // file it made must already be gone.
+        assert_eq!(files_in(dir.path()), 0, "the sweep waited for the file");
         assert!(worker.join().unwrap(), "a stopped open's file is refused");
-        assert_eq!(files_in(dir.path()), 0);
     }
 
     /// A stopped or swept open creates nothing.

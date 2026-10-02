@@ -19652,3 +19652,92 @@ fn assert_drills_to_its_row(app: &mut App, keys: &[Option<String>], past: &str, 
         app.data_table_state.as_mut().unwrap().drill_up().unwrap();
     }
 }
+
+/// A Parquet file of nanosecond datetimes, naive (`n`) and in Paris (`z`): 1970,
+/// then the ends of the nanosecond range, `i64::MAX` (2262-04-11) and
+/// `i64::MIN + 1` (1677-09-21), opened.
+fn open_ns_edges(dir: &Path) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let path = dir.join("ns_edges.parquet");
+    let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+    let stamps = |name: &str, zone: Option<TimeZone>| {
+        Series::new(name.into(), [0, i64::MAX, i64::MIN + 1])
+            .cast(&DataType::Datetime(TimeUnit::Nanoseconds, zone))
+            .unwrap()
+            .into_column()
+    };
+    let mut df = DataFrame::new(3, vec![stamps("n", None), stamps("z", paris)]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+/// Date math a query does on a nanosecond datetime at the ends of its range is null
+/// where it would move the value past them, and so are the parts read in a zone's
+/// local time there, where Polars overflowed and failed the query (#517).
+#[test]
+fn nanosecond_date_math_at_the_ends_of_the_range_is_null_in_a_query() {
+    let dir = common::fixture_dir();
+    let (mut app, rx, tx) = open_ns_edges(&dir);
+    for (query, expected) in [
+        (
+            "select x: n.month_start",
+            [
+                Some("1970-01-01 00:00:00"),
+                Some("2262-04-01 23:47:16.854775807"),
+                None,
+            ],
+        ),
+        (
+            "select x: n.month_end",
+            [Some("1970-01-31 00:00:00"), None, None],
+        ),
+        (
+            "select x: z.month_start",
+            [Some("1970-01-01 01:00:00 CET"), None, None],
+        ),
+        ("select x: z.date", [Some("1970-01-01"), None, None]),
+        ("select x: z.time", [Some("01:00:00"), None, None]),
+        ("select x: z.doy", [Some("1"), None, None]),
+    ] {
+        run_query(&mut app, &rx, &tx, query);
+        let expected = expected.map(|v| v.map(String::from));
+        assert_eq!(view_text(&app, "x"), expected, "{query}");
+    }
+}
+
+/// SQL's `INTERVAL` arithmetic and date parts on a nanosecond datetime at the ends
+/// of its range are null where they would leave it, where Polars overflowed (#517).
+#[cfg(feature = "sql")]
+#[test]
+fn nanosecond_date_math_at_the_ends_of_the_range_is_null_in_sql() {
+    let dir = common::fixture_dir();
+    let (mut app, rx, tx) = open_ns_edges(&dir);
+    for (sql, expected) in [
+        (
+            "SELECT n + INTERVAL '1 day' AS x FROM df",
+            [
+                Some("1970-01-02 00:00:00"),
+                None,
+                Some("1677-09-22 00:12:43.145224193"),
+            ],
+        ),
+        (
+            "SELECT z + INTERVAL '1 month' AS x FROM df",
+            [Some("1970-02-01 01:00:00 CET"), None, None],
+        ),
+        (
+            "SELECT EXTRACT(DOY FROM z) AS x FROM df",
+            [Some("1"), None, None],
+        ),
+    ] {
+        run_sql(&mut app, &rx, &tx, sql);
+        assert_eq!(app.error_message(), None, "{sql}");
+        let expected = expected.map(|v| v.map(String::from));
+        assert_eq!(view_text(&app, "x"), expected, "{sql}");
+    }
+}

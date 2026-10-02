@@ -9461,6 +9461,7 @@ impl DataTableState {
     }
 
     /// How [`Self::query_root`] was built, as Copy as Python steps.
+    #[cfg(feature = "sql")]
     fn query_root_steps(&self) -> Vec<Step> {
         if self.grouped.is_some() {
             return self.base_steps.clone();

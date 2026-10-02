@@ -175,14 +175,46 @@ pub fn shown_names(raw: &[PlSmallStr], header: Option<&[String]>) -> Vec<String>
 
 /// `lf` with its columns named as [`shown_names`] says. Nothing is read: Polars has
 /// the schema from the scan's own inference.
+///
+/// With `header`, a file with nothing after its header lines (a log with no rows yet)
+/// is a table with those columns and no rows, as Polars reads a file that is only a
+/// header; Polars itself finds no data past the lines it skipped.
 pub fn name_columns(mut lf: LazyFrame, header: Option<&[String]>) -> PolarsResult<LazyFrame> {
-    let schema = lf.collect_schema()?;
+    let schema = match (lf.collect_schema(), header) {
+        (Err(PolarsError::NoData(_)), Some(header)) => return header_only(header),
+        (Ok(schema), Some(header)) if schema.is_empty() => return header_only(header),
+        (schema, _) => schema?,
+    };
     let raw: Vec<PlSmallStr> = schema.iter_names().cloned().collect();
     let shown = shown_names(&raw, header);
     if raw.iter().zip(&shown).all(|(r, s)| r.as_str() == s) {
         return Ok(lf);
     }
     Ok(lf.rename(raw.iter().map(|s| s.as_str()), shown.iter(), true))
+}
+
+/// No rows, a text column for each name `header` gives.
+fn header_only(header: &[String]) -> PolarsResult<LazyFrame> {
+    let raw: Vec<PlSmallStr> = (1..=header.len().max(1))
+        .map(|i| format!("column_{i}").into())
+        .collect();
+    let columns: Vec<Column> = shown_names(&raw, Some(header))
+        .into_iter()
+        .map(|name| Column::new_empty(name.into(), &DataType::String))
+        .collect();
+    Ok(DataFrame::new(0, columns)?.lazy())
+}
+
+/// An eager read of the lines after `header`'s, with nothing there read as no
+/// columns, which [`name_columns`] makes the header's columns with no rows.
+pub fn read_after_header(
+    read: PolarsResult<DataFrame>,
+    header: Option<&[String]>,
+) -> PolarsResult<DataFrame> {
+    match read {
+        Err(PolarsError::NoData(_)) if header.is_some() => Ok(DataFrame::empty()),
+        read => read,
+    }
 }
 
 /// `skipInitialSpace`: the spaces after a delimiter are not part of a text value, so

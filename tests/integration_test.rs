@@ -21231,3 +21231,53 @@ fn h_reads_header_rows_as_data_and_back() {
     settle_from(&mut app, &rx, key(KeyCode::Char('H')));
     assert_eq!(column_names(&app), ["station", "temp degC", "pressure hPa"]);
 }
+
+/// A log with nothing after its header lines yet is a table with its columns and no
+/// rows, alone, compressed or among other logs; one that ends before the header
+/// says so.
+#[test]
+fn header_rows_on_a_file_with_no_rows_yet() {
+    common::ensure_sample_data();
+    let dir = common::fixture_dir().join("dialect_no_rows");
+    std::fs::create_dir_all(&dir).unwrap();
+    let header = "#device_info\n#yyyy-mm-dd, degrees\n  Lcl Date,     Latitude\n";
+    let empty = dir.join("empty.csv");
+    std::fs::write(&empty, header).unwrap();
+    let gz = dir.join("empty.csv.gz");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut encoder, header.as_bytes()).unwrap();
+    std::fs::write(&gz, encoder.finish().unwrap()).unwrap();
+    let flags = ["--comment-char", "#", "--header-rows", "3,2"];
+    let names = ["Lcl Date yyyy-mm-dd", "Latitude degrees"];
+    for (path, in_memory) in [(&empty, false), (&gz, false), (&gz, true)] {
+        let options = OpenOptions {
+            decompress_in_memory: in_memory,
+            ..options_from_flags(&flags)
+        };
+        let df = open_dialect(vec![path.clone()], options);
+        assert_eq!(names_of(&df), names, "{path:?}, in memory: {in_memory}");
+        assert_eq!(df.height(), 0);
+    }
+
+    let logs = dir.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(logs.join("a.csv"), header).unwrap();
+    std::fs::write(
+        logs.join("b.csv"),
+        format!("{header}2024-03-01,    40.100000\n"),
+    )
+    .unwrap();
+    let df = open_dialect(vec![logs], options_from_flags(&flags));
+    assert_eq!(names_of(&df), names);
+    assert_eq!(df.height(), 1);
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![empty], options_from_flags(&["--header-rows", "5"])),
+    );
+    let message = app.error_message().expect("an error");
+    assert!(message.contains("past the end of the file"), "{message}");
+}

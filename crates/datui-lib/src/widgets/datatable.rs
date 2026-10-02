@@ -4389,9 +4389,12 @@ impl DataTableState {
                         let header = Self::csv_header_names_of(options, path, Some(compression))?;
                         let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
                         let read_options = Self::eager_csv_read_options(options, nv.as_ref());
-                        let df = read_options
-                            .try_into_reader_with_file_path(Some(path.into()))?
-                            .finish()?;
+                        let df = crate::csv_dialect::read_after_header(
+                            read_options
+                                .try_into_reader_with_file_path(Some(path.into()))?
+                                .finish(),
+                            header.as_deref(),
+                        )?;
                         (df, header)
                     }
                     CompressionFormat::Bzip2 | CompressionFormat::Xz => {
@@ -4416,9 +4419,12 @@ impl DataTableState {
                             Ok(df.schema().clone())
                         })?;
                         let read_options = Self::eager_csv_read_options(options, nv.as_ref());
-                        let df = CsvReader::new(std::io::Cursor::new(decompressed))
-                            .with_options(read_options)
-                            .finish()?;
+                        let df = crate::csv_dialect::read_after_header(
+                            CsvReader::new(std::io::Cursor::new(decompressed))
+                                .with_options(read_options)
+                                .finish(),
+                            header.as_deref(),
+                        )?;
                         (df, header)
                     }
                 };

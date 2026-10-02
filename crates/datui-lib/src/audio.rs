@@ -1173,11 +1173,7 @@ impl AudioSource {
         let h = &self.header;
         let channels = h.channels as usize;
         let (low, high) = self.full_scale_bounds();
-        let scale = if self.normalize && !h.sample.is_float() {
-            1.0 / h.sample.full_scale()
-        } else {
-            1.0
-        };
+        let scale = 1.0 / h.sample.full_scale() as f32;
         let zero_run = (h.sample_rate / 100.0).round().max(16.0) as u64;
         let mut reports: Vec<SignalReport> = h
             .channel_names
@@ -1194,14 +1190,16 @@ impl AudioSource {
         let mut clip_len = vec![0u64; channels];
         let mut zero_len = vec![0u64; channels];
         let mut sums = vec![0f64; channels];
+        // Each sample as the column holds it, so the bounds and the drill-in's
+        // predicate agree with the count: normalized, through f32 as `decode` makes it.
         let decode = |b: &[u8]| -> f64 {
             let be = h.big_endian;
-            let v = match h.sample {
+            match h.sample {
                 Sample::F32 => f32_sample(be, b) as f64,
                 Sample::F64 => f64_sample(be, b),
+                int if self.normalize => (int_sample(int, be, b) as f32 * scale) as f64,
                 int => int_sample(int, be, b) as f64,
-            };
-            v * scale
+            }
         };
         let end_run =
             |len: &mut u64, min: u64, runs: &mut u64, within: &mut u64, longest: &mut u64| {
@@ -1997,5 +1995,24 @@ mod tests {
 
         // A stop is honored.
         assert!(source.signal_report(&|| true).unwrap().is_none());
+
+        // 32-bit at its positive limit is 1.0 once normalized to f32, as the column
+        // shows it; the run counts, and the column's rows match the bounds.
+        let peak: Vec<u8> = [i32::MAX; 3].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let bytes = wav(&[chunk(b"fmt ", &fmt(1, 1, 1000, 32)), chunk(b"data", &peak)]);
+        let (_f, source) = open(&bytes, true);
+        let report = &source.signal_report(&|| false).unwrap().unwrap()[0];
+        assert_eq!(report.clip_runs, 1);
+        let column = source.window(0, 3, None).unwrap();
+        let high = report.full_scale.1 as f32;
+        assert!(
+            column
+                .column("ch1")
+                .unwrap()
+                .f32()
+                .unwrap()
+                .into_no_null_iter()
+                .all(|v| v >= high)
+        );
     }
 }

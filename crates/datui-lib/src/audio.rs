@@ -168,15 +168,9 @@ impl AudioHeader {
         self.data_len(file_len) / self.frame_bytes as u64
     }
 
-    /// Where frame `frame` sits, in nanoseconds from the start.
-    pub fn time_ns(&self, frame: u64) -> i64 {
-        let rate = self.sample_rate;
-        if rate.fract() == 0.0 && rate >= 1.0 {
-            let ns = frame as u128 * 1_000_000_000 / rate as u128;
-            i64::try_from(ns).unwrap_or(i64::MAX)
-        } else {
-            (frame as f64 * 1e9 / rate) as i64
-        }
+    /// Where frame `frame` sits, in seconds from the start.
+    pub fn seconds(&self, frame: u64) -> f64 {
+        frame as f64 / self.sample_rate
     }
 }
 
@@ -842,8 +836,10 @@ impl std::fmt::Debug for AudioSource {
 
 /// The name of the frame-number column.
 pub const FRAME: &str = "frame";
-/// The name of the time column.
-pub const TIME: &str = "time";
+/// The name of the column of each frame's time from the start, in seconds. A float
+/// rather than a Duration: it charts, compares and reads as a plain number
+/// (`12.345625`), where a Duration displays as mixed units.
+pub const SECONDS: &str = "seconds";
 /// The frame index the lazy plan decodes from; the select over it leaves it out.
 const INDEX: &str = "__datui_audio_frame";
 /// The most frames shown: Polars counts rows in 32 bits.
@@ -898,7 +894,7 @@ impl AudioSource {
 
     /// Duration of the frames on hand, in seconds.
     pub fn seconds(&self) -> f64 {
-        self.frames as f64 / self.header.sample_rate
+        self.header.seconds(self.frames)
     }
 
     /// Frames the file holds past the most datui shows, [`MAX_FRAMES`].
@@ -940,7 +936,7 @@ impl AudioSource {
     pub fn schema(&self) -> Schema {
         let mut schema = Schema::with_capacity(self.header.channels as usize + 2);
         schema.insert(FRAME.into(), DataType::Int64);
-        schema.insert(TIME.into(), DataType::Duration(TimeUnit::Nanoseconds));
+        schema.insert(SECONDS.into(), DataType::Float64);
         let dtype = self.header.sample.dtype(self.normalize);
         for name in &self.header.channel_names {
             schema.insert(name.as_str().into(), dtype.clone());
@@ -981,7 +977,7 @@ impl AudioSource {
     fn which(&self, name: &str) -> Option<Which> {
         match name {
             FRAME => Some(Which::Frame),
-            TIME => Some(Which::Time),
+            SECONDS => Some(Which::Seconds),
             other => self
                 .header
                 .channel_names
@@ -1019,12 +1015,11 @@ impl AudioSource {
                 return Int64Chunked::from_iter_options(name, frames.map(|f| f.map(|f| f as i64)))
                     .into_column();
             }
-            Which::Time => {
-                return Int64Chunked::from_iter_options(
+            Which::Seconds => {
+                return Float64Chunked::from_iter_options(
                     name,
-                    frames.map(|f| f.map(|f| self.header.time_ns(f))),
+                    frames.map(|f| f.map(|f| self.header.seconds(f))),
                 )
-                .into_duration(TimeUnit::Nanoseconds)
                 .into_column();
             }
             Which::Channel(c) => c,
@@ -1326,7 +1321,7 @@ pub struct SignalReport {
 #[derive(Debug, Clone, Copy)]
 enum Which {
     Frame,
-    Time,
+    Seconds,
     Channel(usize),
 }
 
@@ -1398,14 +1393,21 @@ mod tests {
         let df = source.window(0, 10, None).unwrap();
         assert_eq!(
             df.get_column_names(),
-            ["frame", "time", "ch1", "ch2"],
+            ["frame", "seconds", "ch1", "ch2"],
             "plain PCM names its channels by number"
         );
         assert_eq!(df.column("ch1").unwrap().dtype(), &DataType::Int16);
         assert_eq!(ints(&df, "ch1"), [0, -32768, 100]);
         assert_eq!(ints(&df, "ch2"), [1, 32767, -100]);
         // Four frames a second: a quarter second apart.
-        assert_eq!(ints(&df, "time"), [0, 250_000_000, 500_000_000]);
+        let seconds: Vec<f64> = df
+            .column("seconds")
+            .unwrap()
+            .f64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        assert_eq!(seconds, [0.0, 0.25, 0.5]);
 
         // A window deep in the file reads only its own frames, in the order asked.
         let tail = source

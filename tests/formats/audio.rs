@@ -92,17 +92,17 @@ fn a_wav_file_opens_as_its_frames() {
         "counted from the file's size"
     );
     let df = frame(&app);
-    assert_eq!(names(&df), ["frame", "time", "ch1", "ch2"]);
+    assert_eq!(names(&df), ["frame", "seconds", "ch1", "ch2"]);
     assert_eq!(df.column("ch1").unwrap().dtype(), &DataType::Int16);
-    assert_eq!(
-        df.column("time").unwrap().dtype(),
-        &DataType::Duration(TimeUnit::Nanoseconds)
-    );
+
     let ch2 = ints(&df, "ch2");
     assert_eq!(ch2[1000], 32767, "the clipped run");
     assert_eq!(ch2[2000], 0, "the silent run");
     // 8 kHz: frame 8 is a millisecond in.
-    assert_eq!(ints(&df, "time")[8], 1_000_000);
+    assert_eq!(
+        df.column("seconds").unwrap().f64().unwrap().get(8),
+        Some(0.001)
+    );
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn the_extensible_mask_names_the_channels() {
     let df = frame(&app);
     assert_eq!(
         names(&df),
-        ["frame", "time", "L", "R", "C", "LFE", "BL", "BR"]
+        ["frame", "seconds", "L", "R", "C", "LFE", "BL", "BR"]
     );
     assert_eq!(df.column("LFE").unwrap().dtype(), &DataType::Float32);
 }

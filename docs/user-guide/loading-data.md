@@ -253,7 +253,7 @@ datui take.wav --normalize      # integer samples as float in [-1, 1]
 ```
 
 An uncompressed audio file opens as a table with one row per sample frame:
-`frame`, `time` (a duration from the start), and one column per channel.
+`frame`, `seconds` from the start, and one column per channel.
 The file is mapped and only the frames on screen are decoded, so a recording
 of many gigabytes opens at once and scrolls to any point as fast as to the
 first. The row count comes from the file's size.

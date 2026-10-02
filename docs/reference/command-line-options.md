@@ -23,7 +23,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--ignore-errors[=<BOOL>]` | When reading CSV, ignore parse errors and continue with the next batch (default: false) |
 | `--null-value <VAL>` | Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount= |
 | `--compression <COMPRESSION>` | Compression format, when the extension does not say (default: auto-detected from the extension) |
-| `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, or the name of a binary format spec such as acme.l2feed |
+| `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, or the name of a binary format spec such as acme.l2feed |
 | `--spec <FILE>` | Read the file (or directory of column files) through this binary format spec, whatever else matches it |
 | `--debug` | Enable debug mode to show operational information |
 | `--log-file <PATH>` | Write the log here (default: [debug] log_file, or datui.log in the cache directory). DATUI_LOG sets the level: error, warn (default), info, debug or off |

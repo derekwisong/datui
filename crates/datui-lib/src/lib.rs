@@ -13541,7 +13541,15 @@ impl App {
             self.opened_from_home = true;
         }
         // A frame handed over has no path to go back to.
-        self.opened = paths.map(|paths| (paths, options.clone()));
+        // Without the spec read: it holds the file's map, and a decompressed copy's map
+        // keeps its disk space until the map goes, so it goes with the dataset.
+        self.opened = paths.map(|paths| {
+            let options = OpenOptions {
+                format_read: None,
+                ..options.clone()
+            };
+            (paths, options)
+        });
         // Recorded once the dataset is installed: a file that fails to load is not one
         // anybody wants to get back to.
         if let Some(path) = recent {

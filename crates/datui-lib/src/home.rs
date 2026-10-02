@@ -1097,6 +1097,9 @@ pub struct HomeState {
     /// Held across listings while rows are still arriving, since the row may not be in
     /// the first one; dropped as soon as the user moves the cursor.
     pub returning: Option<RowKey>,
+    /// How far down the list the row being returned to was when the user left it, so
+    /// it comes back on the same line rather than wherever the scroll falls.
+    pub returning_line: Option<usize>,
 }
 
 /// Where the cursor was in a listing the user went inside from.
@@ -1114,6 +1117,8 @@ pub struct Mark {
     /// running is dropped by its generation once the user leaves, so it is started
     /// again rather than kept.
     pub search: Option<SearchState>,
+    /// Rows between the top of the list and the cursor.
+    pub line: usize,
 }
 
 /// The result of one recursive walk below the working directory.
@@ -1187,6 +1192,7 @@ impl Default for HomeState {
             recent_expanded: false,
             trail: Vec::new(),
             returning: None,
+            returning_line: None,
         }
     }
 }
@@ -2268,6 +2274,8 @@ impl HomeState {
             if self.rows_still_arriving() {
                 self.returning = returning;
             }
+        } else if returning.is_some() {
+            self.scroll_to_returning_line();
         }
         self.follow_selection();
     }
@@ -2280,6 +2288,7 @@ impl HomeState {
             key: self.selected_key(),
             filter: self.filter.clone(),
             search: (!self.search.running).then(|| self.search.clone()),
+            line: self.selected.saturating_sub(self.scroll),
         };
         // A place already on the trail is being entered again from elsewhere; its
         // old mark describes a visit that is over.
@@ -2305,11 +2314,13 @@ impl HomeState {
                 self.filter = mark.filter;
                 self.search = mark.search.unwrap_or_default();
                 self.returning = mark.key;
+                self.returning_line = Some(mark.line);
             }
             None => {
                 self.filter.clear();
                 self.search.reset();
                 self.returning = from.map(RowKey::Entry);
+                self.returning_line = None;
             }
         }
     }
@@ -2331,9 +2342,17 @@ impl HomeState {
         if let Some(idx) = self.row_of(&key) {
             self.selected = idx;
             self.returning = None;
+            self.scroll_to_returning_line();
             self.follow_selection();
         } else if !self.rows_still_arriving() {
             self.returning = None;
+        }
+    }
+
+    /// Put the row just returned to on the line it was left on, when that is known.
+    fn scroll_to_returning_line(&mut self) {
+        if let Some(line) = self.returning_line.take() {
+            self.scroll = self.selected.saturating_sub(line);
         }
     }
 

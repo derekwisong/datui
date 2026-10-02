@@ -5666,6 +5666,26 @@ mod coming_back {
         assert!(app.home.trail.is_empty(), "{:?}", app.home.trail);
     }
 
+    /// The row comes back on the line it was left on, not wherever keeping it in view
+    /// would put it: here mid-screen, after the list scrolled down past it (#551).
+    #[test]
+    fn esc_puts_the_row_back_on_the_line_it_was_left_on() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d30 = tmp.path().join("d30");
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+
+        select(&mut app, &tmp.path().join("d39"));
+        select(&mut app, &d30);
+        let (offset, scroll) = (on_screen(&app), app.home.scroll);
+        assert!(scroll > 0, "the list scrolled");
+        assert!(offset > 2 && offset < 12, "mid-screen: {offset}");
+        go_into(&mut app, &rx, KeyCode::Enter, &d30);
+        go_back(&mut app, &rx, None);
+        assert_eq!(on(&app), Some(d30));
+        assert_eq!((on_screen(&app), app.home.scroll), (offset, scroll));
+    }
+
     /// Backspace goes up whether or not the user came that way; where they did not,
     /// the cursor lands on the directory just left.
     #[test]

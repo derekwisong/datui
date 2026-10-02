@@ -250,33 +250,32 @@ impl Node {
     pub fn color_dtype(&self) -> DataType {
         match self {
             Node::Native(s) => s.dtype().clone(),
-            Node::Json { .. } => match self.json() {
-                Some(Value::String(_)) => DataType::String,
-                Some(Value::Bool(_)) => DataType::Boolean,
-                Some(Value::Number(n)) if n.is_f64() => DataType::Float64,
-                Some(Value::Number(_)) => DataType::Int64,
-                Some(Value::Array(_)) => DataType::List(Box::new(DataType::Null)),
-                Some(Value::Object(_)) => DataType::Struct(Vec::new()),
-                _ => DataType::Null,
-            },
+            Node::Json { .. } => json_dtype(self.json().unwrap_or(&Value::Null)),
         }
     }
 
-    /// The columns a list of structs, or an array of objects, shows its items in:
-    /// the struct's fields, or the first object's keys. None for any other level.
-    pub fn table_columns(&self) -> Option<Vec<String>> {
+    /// The columns a list of structs, or an array of objects, shows its items in,
+    /// with the type that colors each name: the struct's fields, or the first
+    /// object's keys. None for any other level.
+    pub fn table_columns(&self) -> Option<Vec<(String, DataType)>> {
         match self.shape() {
             Shape::List => match self.items()?.dtype() {
-                DataType::Struct(fields) if !fields.is_empty() => {
-                    Some(fields.iter().map(|f| f.name().to_string()).collect())
-                }
+                DataType::Struct(fields) if !fields.is_empty() => Some(
+                    fields
+                        .iter()
+                        .map(|f| (f.name().to_string(), f.dtype().clone()))
+                        .collect(),
+                ),
                 _ => None,
             },
             Shape::Array => match self.json()? {
                 Value::Array(items) => match items.first()? {
-                    Value::Object(first) if !first.is_empty() => {
-                        Some(first.keys().cloned().collect())
-                    }
+                    Value::Object(first) if !first.is_empty() => Some(
+                        first
+                            .iter()
+                            .map(|(k, v)| (k.clone(), json_dtype(v)))
+                            .collect(),
+                    ),
                     _ => None,
                 },
                 _ => None,
@@ -329,6 +328,19 @@ fn page<T>(
     let mut back: Vec<T> = items.rev().skip(len - end).take(end - start).collect();
     back.reverse();
     back
+}
+
+/// The type a JSON value's name is colored by, as a column of that type is.
+fn json_dtype(value: &Value) -> DataType {
+    match value {
+        Value::String(_) => DataType::String,
+        Value::Bool(_) => DataType::Boolean,
+        Value::Number(n) if n.is_f64() => DataType::Float64,
+        Value::Number(_) => DataType::Int64,
+        Value::Array(_) => DataType::List(Box::new(DataType::Null)),
+        Value::Object(_) => DataType::Struct(Vec::new()),
+        Value::Null => DataType::Null,
+    }
 }
 
 /// A JSON value's kind, as the item list names it.
@@ -693,7 +705,10 @@ mod tests {
         let node = Node::Native(list);
         assert_eq!(
             node.table_columns(),
-            Some(vec!["sku".to_string(), "qty".to_string()])
+            Some(vec![
+                ("sku".to_string(), DataType::String),
+                ("qty".to_string(), DataType::Int64)
+            ])
         );
         let (_, first) = node.child(0).unwrap();
         assert_eq!(first.shape(), Shape::Struct);
@@ -713,7 +728,10 @@ mod tests {
         };
         assert_eq!(
             arr.table_columns(),
-            Some(vec!["a".to_string(), "b".to_string()])
+            Some(vec![
+                ("a".to_string(), DataType::Int64),
+                ("b".to_string(), DataType::Int64)
+            ])
         );
         assert!(arr.child(1).unwrap().1.cell("a").is_none());
     }

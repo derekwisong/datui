@@ -1339,7 +1339,7 @@ fn draw_table(
     buf: &mut Buffer,
     content: Rect,
     node: &Node,
-    columns: &[String],
+    columns: &[(String, DataType)],
     page: &[(String, Node)],
     rows: &ListRows,
     ctx: &RenderContext,
@@ -1360,7 +1360,7 @@ fn draw_table(
     };
     let mut widths = Vec::new();
     let mut used = 1 + label_w + GAP;
-    for column in columns {
+    for (column, _) in columns {
         let w = sample
             .iter()
             .map(|(_, item)| crate::glyphs::cell_width(&cell_text(item, column, TABLE_CELL_MAX).0))
@@ -1386,11 +1386,17 @@ fn draw_table(
         (text, " ".repeat(pad + GAP))
     };
     let mut head = vec![Span::raw(" ".repeat(1 + label_w + GAP))];
-    for (column, &w) in columns.iter().zip(&widths) {
+    for ((column, dtype), &w) in columns.iter().zip(&widths) {
         let (text, pad) = cell(&exact::preview(column, g), w);
+        // A column's name takes its type's color, as the table's header does.
+        let fg = if ctx.column_colors {
+            ctx.type_color(dtype)
+        } else {
+            ctx.dimmed
+        };
         head.push(Span::styled(
             text,
-            Style::default().fg(ctx.dimmed).add_modifier(Modifier::BOLD),
+            Style::default().fg(fg).add_modifier(Modifier::BOLD),
         ));
         head.push(Span::raw(pad));
     }
@@ -1430,7 +1436,7 @@ fn draw_table(
             is_selected,
             ctx,
         );
-        for (k, (column, &w)) in columns.iter().zip(&widths).enumerate() {
+        for (k, ((column, _), &w)) in columns.iter().zip(&widths).enumerate() {
             if k > 0 && item.shape() == Shape::Leaf {
                 break;
             }

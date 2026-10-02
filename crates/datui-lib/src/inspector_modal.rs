@@ -6,6 +6,7 @@
 //! selected row from the buffer the table already holds, every frame, so moving
 //! the row is moving the table's cursor and nothing is copied out of the buffer.
 
+use crate::inspector_drill::{Drill, JsonWait, Level, Node};
 use crate::widgets::datatable::InspectField;
 use crate::widgets::ui::PickerState;
 use polars::prelude::DataFrame;
@@ -78,6 +79,12 @@ pub struct InspectorModal {
     pub shown_row: Option<(u64, usize)>,
     pub read: Option<FieldRead>,
     pub body: Option<(BodyKey, crate::widgets::inspector::Body)>,
+    /// The levels opened under the focused field, when Enter drilled into it.
+    pub drill: Option<Drill>,
+    /// Text being parsed as JSON off this thread, to open as a level.
+    pub json_wait: Option<JsonWait>,
+    /// The last [`JsonWait::token`] handed out.
+    pub json_token: u64,
 }
 
 impl InspectorModal {
@@ -102,6 +109,8 @@ impl InspectorModal {
         self.read = None;
         self.body = None;
         self.shown_row = None;
+        self.drill = None;
+        self.json_wait = None;
         self.reset_pane();
     }
 
@@ -110,6 +119,8 @@ impl InspectorModal {
         self.finding = false;
         self.read = None;
         self.body = None;
+        self.drill = None;
+        self.json_wait = None;
     }
 
     /// The focused field, or None when the find text admits nothing.
@@ -127,28 +138,95 @@ impl InspectorModal {
         self.chunks = 1;
     }
 
+    /// Move the focus `delta` items in the level drilled into, or fields at the row.
+    fn step(&mut self, delta: isize) -> bool {
+        let Some(drill) = self.drill.as_mut() else {
+            return false;
+        };
+        let level = drill.level_mut();
+        let last = level.node.len().saturating_sub(1);
+        level.selected = level.selected.saturating_add_signed(delta).min(last);
+        self.reset_pane();
+        true
+    }
+
     pub fn next_field(&mut self) {
-        self.picker.move_down();
+        if !self.step(1) {
+            self.picker.move_down();
+        }
         self.reset_pane();
     }
 
     pub fn prev_field(&mut self) {
-        self.picker.move_up();
+        if !self.step(-1) {
+            self.picker.move_up();
+        }
         self.reset_pane();
     }
 
     pub fn first_field(&mut self) {
-        if let Some(&first) = self.visible().first() {
+        if !self.step(isize::MIN)
+            && let Some(&first) = self.visible().first()
+        {
             self.picker.select_original(first);
         }
         self.reset_pane();
     }
 
     pub fn last_field(&mut self) {
-        if let Some(&last) = self.visible().last() {
+        if !self.step(isize::MAX)
+            && let Some(&last) = self.visible().last()
+        {
             self.picker.select_original(last);
         }
         self.reset_pane();
+    }
+
+    /// Open `node` as a level under the one shown, or under the row's field.
+    pub fn drill_in(&mut self, frame: u64, row: usize, label: String, node: Node) {
+        let level = Level {
+            label,
+            node,
+            selected: 0,
+        };
+        match self.drill.as_mut() {
+            Some(drill) if (drill.frame, drill.row) == (frame, row) => drill.levels.push(level),
+            _ => {
+                self.drill = Some(Drill {
+                    frame,
+                    row,
+                    levels: vec![level],
+                })
+            }
+        }
+        self.json_wait = None;
+        self.reset_pane();
+    }
+
+    /// Step up one level; false at the row, where there is no level to leave.
+    pub fn drill_out(&mut self) -> bool {
+        let Some(drill) = self.drill.as_mut() else {
+            return false;
+        };
+        drill.levels.pop();
+        if drill.levels.is_empty() {
+            self.drill = None;
+        }
+        self.json_wait = None;
+        self.reset_pane();
+        true
+    }
+
+    /// A ticket for text about to be parsed as JSON off this thread.
+    pub fn wait_for_json(&mut self, frame: u64, row: usize, label: String) -> u64 {
+        self.json_token += 1;
+        self.json_wait = Some(JsonWait {
+            token: self.json_token,
+            frame,
+            row,
+            label,
+        });
+        self.json_token
     }
 
     /// A typed key while finding: narrows the fields.
@@ -187,6 +265,21 @@ impl InspectorModal {
         if self.shown_row != Some((frame, row)) {
             self.shown_row = Some((frame, row));
             self.reset_pane();
+            // A level opened under another row is not this row's.
+            if self
+                .drill
+                .as_ref()
+                .is_some_and(|d| (d.frame, d.row) != (frame, row))
+            {
+                self.drill = None;
+            }
+            if self
+                .json_wait
+                .as_ref()
+                .is_some_and(|w| (w.frame, w.row) != (frame, row))
+            {
+                self.json_wait = None;
+            }
             if self.read.as_ref().is_some_and(|r| r.key() != (frame, row)) {
                 self.read = None;
             }

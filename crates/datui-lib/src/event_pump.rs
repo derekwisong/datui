@@ -1535,6 +1535,7 @@ mod tests {
             crate::Job::Pivot,
             crate::Job::DrillRow,
             crate::Job::InspectRow { frame: 0, row: 0 },
+            crate::Job::InspectJson { token: 0 },
             crate::Job::Export,
             crate::Job::Copy,
             crate::Job::QualityReport,

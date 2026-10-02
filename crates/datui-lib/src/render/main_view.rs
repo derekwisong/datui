@@ -128,7 +128,13 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             }
             // The inspector's footer names its keys; it has nothing to cancel.
             if app.input_mode == crate::InputMode::Inspect {
-                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Close")]);
+                // Inside a drill, Esc steps up a level, as the footer says.
+                let esc = if app.inspector_modal.drill.is_some() {
+                    "Back"
+                } else {
+                    "Close"
+                };
+                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", esc)]);
             }
             // Esc stops a pivot or a view being read, like any other cancellable
             // wait. At the form only the hard escapes act meanwhile.

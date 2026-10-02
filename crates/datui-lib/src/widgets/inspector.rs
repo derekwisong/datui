@@ -5,6 +5,7 @@
 
 use crate::copy_modal::thousands;
 use crate::exact;
+use crate::inspector_drill::{Node, Shape, json_text, looks_like_json};
 use crate::inspector_modal::{BodyKey, CHUNK_BYTES, FieldRead, InspectorModal};
 use crate::render::context::RenderContext;
 use crate::widgets::datatable::{DataTableState, InspectField, InspectRow, NullKind, dtype_label};
@@ -15,6 +16,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
+use serde_json::Value as JsonValue;
 
 /// The longest line the value pane wraps to: a reading surface keeps its
 /// measure on a wide terminal.
@@ -580,6 +582,11 @@ pub fn render(
     if let Some(row) = &row {
         modal.row_shown(row.frame, row.row);
     }
+    if let (Some(row), Some(_)) = (&row, &modal.drill) {
+        let title = title(row.display_row, state);
+        render_drill(area, buf, modal, &title, ctx);
+        return;
+    }
     let content_w = area.width.saturating_sub(4) as usize;
     let measure = content_w.min(MEASURE);
 
@@ -590,9 +597,10 @@ pub fn render(
     let body = match (&row, &focused) {
         (Some(row), Some(field)) => {
             let value = shown(field, row, modal.read.as_ref(), state);
-            enter = match value {
+            enter = match &value {
                 Shown::Unread => Some("Read"),
                 Shown::Failed(_) => Some("Retry"),
+                Shown::Value(v) if value_opens(v) => Some("Open"),
                 _ => None,
             };
             let key = BodyKey {
@@ -661,7 +669,7 @@ pub fn render(
             bar = bar.hint_weighted("Enter", label, 9);
         }
         // A field not read yet has nothing to copy: `y` only says so.
-        if enter.is_none() && row.is_some() && focused.is_some() {
+        if !matches!(enter, Some("Read" | "Retry")) && row.is_some() && focused.is_some() {
             bar = bar.hint_weighted("y", "Copy", 8);
         }
         if visible.len() > 1 {
@@ -842,7 +850,29 @@ pub fn render(
     // The focused value.
     let rule_y = list_y + list_h as u16;
     let name = focused.as_ref().map(|f| f.name.clone()).unwrap_or_default();
-    let name = crate::glyphs::fit_cells(&name, width / 2, g.ellipsis);
+    draw_value(buf, content, rule_y, &name, &body, modal, ctx);
+}
+
+/// The focused value under its rule from `rule_y` to the bottom of `content`:
+/// its lines from the pane's scroll, and a last line counting what is left.
+fn draw_value(
+    buf: &mut Buffer,
+    content: Rect,
+    rule_y: u16,
+    name: &str,
+    body: &Body,
+    modal: &mut InspectorModal,
+    ctx: &RenderContext,
+) {
+    let measure = (content.width as usize).min(MEASURE);
+    let g = crate::glyphs::get();
+    let line = |y: u16| Rect {
+        y,
+        height: 1,
+        ..content
+    };
+    let width = content.width as usize;
+    let name = crate::glyphs::fit_cells(name, width / 2, g.ellipsis);
     SectionRule {
         title: &name,
         chip: (!body.facts.is_empty()).then_some(body.facts.as_str()),
@@ -865,7 +895,7 @@ pub fn render(
     {
         let y = body_y + i as u16;
         if i + 1 == body_h && below > 0 {
-            Paragraph::new(overflow_line(&body, below + 1))
+            Paragraph::new(overflow_line(body, below + 1))
                 .style(Style::default().fg(ctx.dimmed))
                 .render(line(y), buf);
             break;
@@ -882,6 +912,535 @@ pub fn render(
             },
             buf,
         );
+    }
+}
+
+/// Whether Enter opens `value` as a level: a list, array or struct, or text that
+/// reads as a JSON object or array.
+pub fn value_opens(value: &AnyValue) -> bool {
+    match value {
+        AnyValue::String(s) => looks_like_json(s),
+        AnyValue::StringOwned(s) => looks_like_json(s),
+        v => exact::is_nested_value(v),
+    }
+}
+
+/// The value pane for an item of a level drilled into, labelled `label`.
+pub fn node_body(label: &str, node: &Node, escaped: bool, chunks: usize, width: usize) -> Body {
+    match node {
+        Node::Native(series) => {
+            let field = InspectField {
+                name: label.to_string(),
+                dtype: series.dtype().clone(),
+                hidden: false,
+            };
+            let shown = match series.get(0) {
+                Ok(AnyValue::Null) | Err(_) => Shown::Null(NullKind::Null),
+                Ok(v) => Shown::Value(v),
+            };
+            body(&field, &shown, escaped, chunks, width, None)
+        }
+        Node::Json { .. } => json_body(
+            node.json().unwrap_or(&JsonValue::Null),
+            escaped,
+            chunks,
+            width,
+        ),
+    }
+}
+
+/// The value pane for a JSON value: text as text is shown, an object or array
+/// indented up to the pane's budget.
+fn json_body(value: &JsonValue, escaped: bool, chunks: usize, width: usize) -> Body {
+    let g = crate::glyphs::get();
+    let scalar = |text: String, kind: &str| {
+        let mut lines = Vec::new();
+        wrap_into(&text, width, Tone::Plain, &mut lines);
+        Body {
+            lines,
+            facts: kind.to_string(),
+            ..Body::default()
+        }
+    };
+    match value {
+        JsonValue::String(s) => {
+            let field = InspectField {
+                name: String::new(),
+                dtype: DataType::String,
+                hidden: false,
+            };
+            body(
+                &field,
+                &Shown::Value(AnyValue::String(s)),
+                escaped,
+                chunks,
+                width,
+                None,
+            )
+        }
+        JsonValue::Null => Body {
+            lines: vec![(format!("{} null", g.null), Tone::Dim)],
+            facts: "null".to_string(),
+            ..Body::default()
+        },
+        JsonValue::Bool(b) => scalar(b.to_string(), "bool"),
+        JsonValue::Number(n) => scalar(n.to_string(), "number"),
+        JsonValue::Array(_) | JsonValue::Object(_) => {
+            let (kind, count) = match value {
+                JsonValue::Object(map) => ("object", plural(map.len(), "key", "keys")),
+                JsonValue::Array(items) => ("array", plural(items.len(), "item", "items")),
+                _ => unreachable!(),
+            };
+            let budget = CHUNK_BYTES.saturating_mul(chunks.max(1));
+            let (text, cut) = json_text(value, true, budget);
+            let mut lines = Vec::new();
+            for line in text.split('\n') {
+                wrap_into(line, width, Tone::Plain, &mut lines);
+            }
+            let mut rest = Rest::None;
+            if cut {
+                lines.push((format!("{} more", g.ellipsis), Tone::Dim));
+                rest = Rest::Unknown;
+            }
+            Body {
+                lines,
+                facts: format!("{kind} {} {count}", g.middot),
+                more: cut,
+                rest,
+                escapable: false,
+            }
+        }
+    }
+}
+
+/// An item's one-line preview in a level's list, and its style.
+fn node_preview(node: &Node, room: usize, ctx: &RenderContext) -> (String, Style) {
+    let g = crate::glyphs::get();
+    let plain = Style::default().fg(ctx.text_primary);
+    let dim = Style::default().fg(ctx.dimmed);
+    let null = (g.null.to_string(), dim.add_modifier(Modifier::ITALIC));
+    let budget = room.saturating_mul(4).max(16);
+    match node {
+        Node::Native(series) => match series.get(0) {
+            Ok(AnyValue::Null) | Err(_) => null,
+            Ok(v) => match empty_preview(&v) {
+                Some(empty) => (empty, dim),
+                None => {
+                    let field = InspectField {
+                        name: series.name().to_string(),
+                        dtype: series.dtype().clone(),
+                        hidden: false,
+                    };
+                    (preview(&field, &v, room, ctx), plain)
+                }
+            },
+        },
+        Node::Json { .. } => match node.json() {
+            None | Some(JsonValue::Null) => null,
+            Some(JsonValue::String(s)) if s.is_empty() => ("\"\"".to_string(), dim),
+            Some(JsonValue::String(s)) => (
+                exact::preview(exact::prefix(s, budget), g).into_owned(),
+                plain,
+            ),
+            Some(v) => (
+                exact::preview(&json_text(v, false, budget).0, g).into_owned(),
+                plain,
+            ),
+        },
+    }
+}
+
+/// The title inside a drill: the row's, then each level's step. When it does not
+/// fit, the first steps after the row give way to an ellipsis: the row and where
+/// the drill is now stay.
+fn drill_title(root: &str, labels: &[&str], max: usize) -> String {
+    let g = crate::glyphs::get();
+    let sep = format!(" {} ", g.trail);
+    let steps: Vec<String> = labels
+        .iter()
+        .map(|l| exact::preview(l, g).into_owned())
+        .collect();
+    let joined = |skip: usize| {
+        let mut parts = vec![root.to_string()];
+        if skip > 0 {
+            parts.push(g.ellipsis.to_string());
+        }
+        parts.extend(steps[skip..].iter().cloned());
+        parts.join(&sep)
+    };
+    for skip in 0..steps.len() {
+        let title = joined(skip);
+        if crate::glyphs::cell_width(&title) <= max {
+            return title;
+        }
+    }
+    let last = joined(steps.len().saturating_sub(1));
+    crate::glyphs::fit_cells(&last, max, g.ellipsis).into_owned()
+}
+
+/// Draw a level of a drill: its items (a table, for a list of structs) and the
+/// focused item's value.
+fn render_drill(
+    area: Rect,
+    buf: &mut Buffer,
+    modal: &mut InspectorModal,
+    root_title: &str,
+    ctx: &RenderContext,
+) {
+    let g = crate::glyphs::get();
+    let Some(drill) = modal.drill.clone() else {
+        return;
+    };
+    let level = drill.level();
+    let node = &level.node;
+    let shape = node.shape();
+    let len = node.len();
+    let selected = level.selected.min(len.saturating_sub(1));
+    let focused = node.child(selected);
+    let measure = (area.width.saturating_sub(4) as usize).min(MEASURE);
+
+    let body = match &focused {
+        Some((label, child)) => {
+            let mut path: Vec<&str> = drill.levels.iter().map(|l| l.label.as_str()).collect();
+            path.push(label);
+            let key = BodyKey {
+                frame: drill.frame,
+                row: drill.row,
+                // Unit separators cannot be typed into a name, so two paths never meet.
+                field: path.join("\u{1f}"),
+                escaped: modal.escaped,
+                chunks: modal.chunks,
+                width: measure as u16,
+                state: 5,
+            };
+            match &modal.body {
+                Some((cached, body)) if *cached == key => body.clone(),
+                _ => {
+                    let built = node_body(label, child, modal.escaped, modal.chunks, measure);
+                    modal.body = Some((key, built.clone()));
+                    built
+                }
+            }
+        }
+        None => Body {
+            lines: vec![(
+                format!("No {}", shape.items_title().to_lowercase()),
+                Tone::Dim,
+            )],
+            ..Body::default()
+        },
+    };
+
+    let columns = node.table_columns();
+    let header = usize::from(columns.is_some());
+    let content_h = area.height.saturating_sub(3) as usize;
+    let avail = content_h.saturating_sub(2 + header);
+    let list_h = list_rows(len, avail);
+    let body_h = content_h.saturating_sub(list_h + 2 + header);
+    let overflows = body.lines.len() > body_h;
+    let list_overflows = len > list_h;
+    let opens = focused.as_ref().is_some_and(|(_, child)| child.opens());
+
+    let mut bar = HintBar::from_ctx(ctx);
+    if opens {
+        bar = bar.hint_weighted("Enter", "Open", 9);
+    } else if body.more {
+        bar = bar.hint_weighted("Enter", "More", 9);
+    }
+    if focused.is_some() {
+        bar = bar.hint_weighted("y", "Copy", 8);
+    }
+    if len > 1 {
+        let word = match shape {
+            Shape::Struct => "Field",
+            Shape::Object => "Key",
+            _ => "Item",
+        };
+        bar = bar.hint_weighted(g.updown, word, 7);
+    }
+    if overflows {
+        bar = bar.hint_weighted("PgUp/PgDn", "Scroll", 4);
+    }
+    if body.escapable {
+        let label = if modal.escaped { "Raw" } else { "Escaped" };
+        bar = bar.hint_weighted("e", label, 3);
+    }
+    if list_overflows {
+        bar = bar.hint_weighted("Home/End", "First/Last", 2);
+    }
+    let footer = bar.hint_weighted("Esc", "Back", 10);
+
+    let labels: Vec<&str> = drill.levels.iter().map(|l| l.label.as_str()).collect();
+    let title = drill_title(root_title, &labels, area.width.saturating_sub(4) as usize);
+    let content = Surface::new(&title).footer(&footer).render(area, buf, ctx);
+    if content.height < 4 || content.width < 12 {
+        return;
+    }
+    let line = |y: u16| Rect {
+        y,
+        height: 1,
+        ..content
+    };
+    let count = thousands(len);
+    SectionRule {
+        title: shape.items_title(),
+        chip: Some(&count),
+        focused: false,
+    }
+    .render(line(content.y), buf, ctx);
+
+    let list_y = content.y + 1;
+    let offset = selected.saturating_sub(list_h.saturating_sub(1));
+    let below = len.saturating_sub(offset + list_h);
+    let page = node.children(offset, list_h);
+    let rows = ListRows {
+        y: list_y + header as u16,
+        offset,
+        selected,
+        below,
+        list_h,
+    };
+    match columns {
+        Some(columns) => draw_table(buf, content, node, &columns, &page, &rows, ctx),
+        None => draw_items(buf, content, node, &page, &rows, ctx),
+    }
+
+    let rule_y = list_y + (header + list_h) as u16;
+    let name = focused.map(|(label, _)| label).unwrap_or_default();
+    draw_value(buf, content, rule_y, &name, &body, modal, ctx);
+}
+
+/// Where a level's items are drawn, and which of them.
+struct ListRows {
+    y: u16,
+    offset: usize,
+    selected: usize,
+    /// Items past the last row drawn.
+    below: usize,
+    list_h: usize,
+}
+
+impl ListRows {
+    /// The `i`th row drawn is the last, with items under it: it counts them instead.
+    fn more_at(&self, i: usize) -> bool {
+        i + 1 == self.list_h && self.below > 0 && self.offset + i != self.selected
+    }
+
+    fn more_line(&self) -> String {
+        format!(
+            "  {} {} more",
+            crate::glyphs::get().ellipsis,
+            thousands(self.below + 1)
+        )
+    }
+}
+
+/// The rail and the label at the start of an item's row, and the row's style.
+fn item_head(
+    label: &str,
+    label_w: usize,
+    name_style: Style,
+    is_selected: bool,
+    ctx: &RenderContext,
+) -> Vec<Span<'static>> {
+    let g = crate::glyphs::get();
+    let label = exact::preview(label, g);
+    let label = crate::glyphs::fit_cells(&label, label_w, g.ellipsis).into_owned();
+    let pad = label_w.saturating_sub(crate::glyphs::cell_width(&label));
+    let name_style = if is_selected {
+        Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
+    } else {
+        name_style
+    };
+    vec![
+        Span::styled(
+            if is_selected { g.rail } else { " " },
+            Style::default().fg(ctx.accent),
+        ),
+        Span::styled(label, name_style),
+        Span::raw(" ".repeat(pad + GAP)),
+    ]
+}
+
+/// A struct's fields, a list's items or an object's keys: name, type, preview.
+fn draw_items(
+    buf: &mut Buffer,
+    content: Rect,
+    node: &Node,
+    page: &[(String, Node)],
+    rows: &ListRows,
+    ctx: &RenderContext,
+) {
+    let g = crate::glyphs::get();
+    let width = content.width as usize;
+    let label_w = node.label_width().clamp(3, (width / 3).clamp(4, 28));
+    // Measured over the level, not the page, so scrolling moves no column.
+    let type_w = match node.shape() {
+        Shape::Object | Shape::Array => "object".len(),
+        Shape::List => node
+            .child(0)
+            .map_or(0, |(_, c)| crate::glyphs::cell_width(&c.type_label())),
+        _ => node
+            .children(0, usize::MAX)
+            .iter()
+            .map(|(_, c)| crate::glyphs::cell_width(&c.type_label()))
+            .max()
+            .unwrap_or(0),
+    }
+    .min(14);
+    let preview_w = width.saturating_sub(1 + label_w + GAP + type_w + GAP);
+    for (i, (label, child)) in page.iter().enumerate() {
+        let y = rows.y + i as u16;
+        let at = Rect {
+            y,
+            height: 1,
+            ..content
+        };
+        if rows.more_at(i) {
+            Paragraph::new(rows.more_line())
+                .style(Style::default().fg(ctx.dimmed))
+                .render(at, buf);
+            break;
+        }
+        let is_selected = rows.offset + i == rows.selected;
+        let name_style = if ctx.column_colors {
+            Style::default().fg(ctx.type_color(&child.color_dtype()))
+        } else {
+            Style::default().fg(ctx.text_primary)
+        };
+        let mut spans = item_head(label, label_w, name_style, is_selected, ctx);
+        let kind = crate::glyphs::fit_cells(&child.type_label(), type_w, g.ellipsis).into_owned();
+        let kind_pad = type_w.saturating_sub(crate::glyphs::cell_width(&kind));
+        spans.push(Span::styled(kind, Style::default().fg(ctx.dimmed)));
+        spans.push(Span::raw(" ".repeat(kind_pad + GAP)));
+        let (text, style) = node_preview(child, preview_w, ctx);
+        let text = crate::glyphs::fit_cells(&text, preview_w, g.ellipsis).into_owned();
+        spans.push(Span::styled(text, style));
+        let mut paragraph = Paragraph::new(Line::from(spans));
+        if is_selected {
+            paragraph = paragraph.style(ctx.highlight_style());
+        }
+        paragraph.render(at, buf);
+    }
+}
+
+/// Items measured for a table's column widths: the first ones, so scrolling the
+/// table moves no column.
+const TABLE_SAMPLE: usize = 32;
+/// The widest a table column grows.
+const TABLE_CELL_MAX: usize = 24;
+
+/// A list of structs or an array of objects as a table: a header of the fields,
+/// then a row per item, as many columns as fit.
+fn draw_table(
+    buf: &mut Buffer,
+    content: Rect,
+    node: &Node,
+    columns: &[String],
+    page: &[(String, Node)],
+    rows: &ListRows,
+    ctx: &RenderContext,
+) {
+    let g = crate::glyphs::get();
+    let width = content.width as usize;
+    let label_w = node.label_width().max(3);
+    let sample = node.children(0, TABLE_SAMPLE);
+    let cell_text = |item: &Node, column: &str, room: usize| -> (String, Style) {
+        if item.shape() == Shape::Leaf {
+            // A null item, or one that is not an object, fills its row's first cell.
+            return node_preview(item, room, ctx);
+        }
+        match item.cell(column) {
+            Some(cell) => node_preview(&cell, room, ctx),
+            None => (g.absent.to_string(), Style::default().fg(ctx.dimmed)),
+        }
+    };
+    let mut widths = Vec::new();
+    let mut used = 1 + label_w + GAP;
+    for column in columns {
+        let w = sample
+            .iter()
+            .map(|(_, item)| crate::glyphs::cell_width(&cell_text(item, column, TABLE_CELL_MAX).0))
+            .chain(std::iter::once(crate::glyphs::cell_width(column)))
+            .max()
+            .unwrap_or(0)
+            .clamp(3, TABLE_CELL_MAX);
+        if used + w > width {
+            break;
+        }
+        used += w + GAP;
+        widths.push(w);
+    }
+    // At least one column, cut to the room there is.
+    if widths.is_empty() {
+        widths.push(width.saturating_sub(1 + label_w + GAP).max(1));
+    }
+    let hidden = columns.len() - widths.len();
+
+    let cell = |text: &str, w: usize| {
+        let text = crate::glyphs::fit_cells(text, w, g.ellipsis).into_owned();
+        let pad = w.saturating_sub(crate::glyphs::cell_width(&text));
+        (text, " ".repeat(pad + GAP))
+    };
+    let mut head = vec![Span::raw(" ".repeat(1 + label_w + GAP))];
+    for (column, &w) in columns.iter().zip(&widths) {
+        let (text, pad) = cell(&exact::preview(column, g), w);
+        head.push(Span::styled(
+            text,
+            Style::default().fg(ctx.dimmed).add_modifier(Modifier::BOLD),
+        ));
+        head.push(Span::raw(pad));
+    }
+    if hidden > 0 {
+        head.push(Span::styled(
+            format!("+{hidden}"),
+            Style::default().fg(ctx.dimmed),
+        ));
+    }
+    Paragraph::new(Line::from(head)).render(
+        Rect {
+            // The header stands on the row above the items.
+            y: rows.y - 1,
+            height: 1,
+            ..content
+        },
+        buf,
+    );
+
+    for (i, (label, item)) in page.iter().enumerate() {
+        let at = Rect {
+            y: rows.y + i as u16,
+            height: 1,
+            ..content
+        };
+        if rows.more_at(i) {
+            Paragraph::new(rows.more_line())
+                .style(Style::default().fg(ctx.dimmed))
+                .render(at, buf);
+            break;
+        }
+        let is_selected = rows.offset + i == rows.selected;
+        let mut spans = item_head(
+            label,
+            label_w,
+            Style::default().fg(ctx.dimmed),
+            is_selected,
+            ctx,
+        );
+        for (k, (column, &w)) in columns.iter().zip(&widths).enumerate() {
+            if k > 0 && item.shape() == Shape::Leaf {
+                break;
+            }
+            let (text, style) = cell_text(item, column, w);
+            let (text, pad) = cell(&text, w);
+            spans.push(Span::styled(text, style));
+            spans.push(Span::raw(pad));
+        }
+        let mut paragraph = Paragraph::new(Line::from(spans));
+        if is_selected {
+            paragraph = paragraph.style(ctx.highlight_style());
+        }
+        paragraph.render(at, buf);
     }
 }
 
@@ -1248,6 +1807,47 @@ mod tests {
         // 60x20: 14 rows.
         assert_eq!(list_rows(14, 14), 7);
         assert_eq!(list_rows(11, 14), 11);
+    }
+
+    /// A long trail keeps the row and where the drill is now; the steps between
+    /// give way to an ellipsis.
+    #[test]
+    fn a_long_trail_drops_its_middle_steps() {
+        let g = crate::glyphs::get();
+        let t = g.trail;
+        let labels = ["customer", "address", "geo", "point"];
+        let whole = drill_title("Row 1 of 5", &labels, 200);
+        assert_eq!(
+            whole,
+            format!("Row 1 of 5 {t} customer {t} address {t} geo {t} point")
+        );
+        let cut = drill_title("Row 1 of 5", &labels, 34);
+        assert_eq!(
+            cut,
+            format!("Row 1 of 5 {t} {} {t} geo {t} point", g.ellipsis)
+        );
+        // A key with a line break is marked, not broken.
+        let marked = drill_title("Row 1", &["a\nb"], 40);
+        assert!(!marked.contains('\n'), "{marked}");
+    }
+
+    #[test]
+    fn json_values_show_as_themselves() {
+        let m = crate::glyphs::get().middot;
+        let doc: JsonValue = serde_json::from_str(r#"{"a": [1, 2], "s": "x\ny"}"#).unwrap();
+        let b = json_body(&doc, false, 1, 40);
+        assert_eq!(b.facts, format!("object {m} 2 keys"));
+        assert_eq!(texts(&b)[..2], ["{", "  \"a\": ["]);
+        let s = json_body(&doc["s"], false, 1, 40);
+        assert_eq!(texts(&s), ["x", "y"]);
+        assert!(s.escapable, "text has an escaped form");
+        let n = json_body(&JsonValue::from(1.5), false, 1, 40);
+        assert_eq!((texts(&n), n.facts.as_str()), (vec!["1.5"], "number"));
+        // An array too long for the budget is cut and says so.
+        let big: JsonValue = serde_json::from_str(&format!("[{}0]", "0,".repeat(20_000))).unwrap();
+        let b = json_body(&big, false, 1, 40);
+        assert_eq!(b.rest, Rest::Unknown);
+        assert!(b.lines.len() < 20_000);
     }
 
     #[test]

@@ -7,8 +7,9 @@ region=north. The footer offers only the keys that act on the focused field.
   Home / End:       First and last field
   ← / → (h/l):      Previous and next row; the table's cursor moves with it
   PgUp / PgDn:      Scroll a long value
-  Enter:            Show more of a long value, or read a field the table's
-                    rows do not hold (hidden and binary columns)
+  Enter:            Open a struct, a list, or text holding a JSON object or
+                    array; show more of a long value; or read a field the
+                    table's rows do not hold (hidden and binary columns)
   y:                Copy the focused field's exact value
   e:                Show text or bytes escaped (\n, \t, \\, quotes) or as
                     itself
@@ -33,6 +34,22 @@ The value:
   of a hex dump, or the lines shown then the chars not yet shown.
   The fields take the rows they need when they all fit above a short value;
   a longer list takes half the height.
+
+Nested values:
+  Enter opens a struct's fields, a list's items or a JSON document's keys and
+  items as a list of their own, one level down. The title shows the path from
+  the row: each field, key or [index] opened. A list of structs, or a JSON
+  array of objects, is a table with a column per field. Only the items on
+  screen are read, so a list of a million items opens at once. JSON text over
+  64 KB is parsed in the background; text over 4 MiB is not opened.
+
+Inside a level:
+  ↑ / ↓ (j/k):      Move between items
+  Enter / → (l):    Open the focused item
+  Esc / ← (h):      Up a level; at the row, Esc closes
+  y:                Copy the focused item: text as itself, a JSON object or
+                    array indented
+  Space:            Close
 
 Copy:
   y copies the whole value, whatever the pane shows: exact numbers, lists

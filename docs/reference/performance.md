@@ -109,6 +109,7 @@ hook.
 
 A failing night is never a baseline, so an intended slowdown keeps the guard
 failing. Accept it by hand: run Nightly on `main` with `accept_baseline` set.
+On any other branch the input is ignored, since only `main` holds baselines.
 
 ```bash
 gh workflow run nightly.yml --ref main -f accept_baseline=true

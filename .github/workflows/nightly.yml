@@ -208,8 +208,14 @@ jobs:
         run: |
           accept=()
           if [ "$ACCEPT_BASELINE" = true ]; then
-            echo "::notice::accept_baseline: $GITHUB_ACTOR accepted this build as the startup baseline by hand"
-            accept=(--accept)
+            # The baseline is looked up on main only; accepted elsewhere it would pass
+            # a regression and become nobody's baseline.
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              echo "::notice::accept_baseline: $GITHUB_ACTOR accepted this build as the startup baseline by hand"
+              accept=(--accept)
+            else
+              echo "::warning::accept_baseline ignored on $GITHUB_REF: only a run on main becomes the baseline"
+            fi
           fi
           .venv/bin/python scripts/bench/startup.py guard \
             --baseline baseline/datui \

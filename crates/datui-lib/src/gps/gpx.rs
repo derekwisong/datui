@@ -219,6 +219,10 @@ pub fn parse_time(s: &str) -> Option<i64> {
     if let Ok(t) = chrono::DateTime::parse_from_rfc3339(s) {
         return Some(t.timestamp_millis());
     }
+    // ISO 8601's basic offset, `+0200`, which RFC 3339 does not allow.
+    if let Ok(t) = chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%z") {
+        return Some(t.timestamp_millis());
+    }
     ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"]
         .iter()
         .find_map(|f| chrono::NaiveDateTime::parse_from_str(s, f).ok())
@@ -777,6 +781,11 @@ mod tests {
                 .collect();
             assert_eq!(time[1], Some(1_714_543_201_000));
             assert_eq!(time[2], Some(1_714_543_202_500), "the offset is applied");
+            assert_eq!(
+                parse_time("2024-05-01T08:00:02.500+0200"),
+                time[2],
+                "an offset without its colon"
+            );
             assert_eq!(
                 strs(&df, "hr")[1..3],
                 [Some("141".into()), Some("142".into())]

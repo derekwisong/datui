@@ -523,6 +523,29 @@ mod tests {
         }
     }
 
+    /// Fixed records have no streaming implementation in Polars 0.55 (it stops at a
+    /// `todo!`), so an export of them takes the collected route whatever is asked.
+    #[test]
+    fn fixed_records_export_with_streaming_asked_for() {
+        use crate::fixed_records::{Bytes, ColumnLayout, FixedRecords, Physical};
+        let records = || {
+            let bytes = std::sync::Arc::new(Bytes::Owned((0u8..32).collect()));
+            let column = ColumnLayout::new("a", 0, 4, Physical::Unsigned(4), 4);
+            std::sync::Arc::new(FixedRecords::new(vec![bytes], vec![column], usize::MAX).unwrap())
+                .into_lazy()
+                .unwrap()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        for format in [ExportFormat::Parquet, ExportFormat::Csv] {
+            let path = dir.path().join("out");
+            let request = request(&path, format, Overwrite::Replace);
+            let lf = records().filter(col("a").gt(lit(0x0302_0100u32)));
+            run(lf, &request, true, |_| {}).unwrap();
+            let back = read_back(std::fs::read(&path).unwrap(), format);
+            assert_eq!(back.height(), 7, "{format:?}");
+        }
+    }
+
     /// The serializer itself refuses: CSV has no list type unprepared.
     #[test]
     fn a_serializer_error_is_an_error() {

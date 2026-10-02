@@ -192,6 +192,8 @@ pub(crate) enum Phase {
         read: Arc<AtomicU64>,
         total: u64,
     },
+    /// A GPS log being read into a file the dataset scans.
+    ReadingGps,
     /// A CSV read with its string columns parsed.
     ScanningStrings,
     /// The scan; `downloaded` when it reads a download rather than what was named.
@@ -225,6 +227,7 @@ impl Phase {
                 let share = (done * 20).checked_div(*total).unwrap_or(0);
                 ("Converting Arrow stream", 10 + share as u16)
             }
+            Phase::ReadingGps => ("Reading GPS log", 30),
             Phase::ScanningStrings => ("Scanning string columns", 55),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
@@ -338,6 +341,17 @@ pub(crate) enum Step {
         writer: Writer,
         read: Arc<AtomicU64>,
     },
+    /// Read the GPS log in `file` into a file of its own through `writer`, then its
+    /// schema, reporting to `progress`; `path` names it on screen and in errors.
+    ReadGps {
+        file: PathBuf,
+        path: PathBuf,
+        options: OpenOptions,
+        writer: Writer,
+        progress: Arc<FooterProgress>,
+        /// The download `file` is, given to the dataset built from it.
+        download: Option<TempDownload>,
+    },
     /// Scan `paths`, saying `status` on the control bar; `display` names the dataset when
     /// what is scanned is a download.
     Scan {
@@ -409,6 +423,12 @@ pub(crate) enum LoadAnswer {
     /// The streams, converted to one IPC file. Dropped unused, it removes the file.
     Converted {
         file: TempDownload,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+    },
+    /// The scan found a GPS log, `file`, to read into a file of its own first.
+    Gps {
+        file: PathBuf,
         path: Option<PathBuf>,
         options: OpenOptions,
     },
@@ -929,13 +949,31 @@ impl Loader {
                 }
             }
             (
+                LoadAnswer::Gps {
+                    file,
+                    path,
+                    options,
+                },
+                Phase::Scanning { .. } | Phase::ScanningStrings,
+            ) => {
+                load.phase = Phase::ReadingGps;
+                Step::ReadGps {
+                    path: path.unwrap_or_else(|| file.clone()),
+                    file,
+                    options,
+                    writer: load.writer.clone(),
+                    progress: load.progress.clone(),
+                    download: load.download.as_ref().map(|fetched| fetched.file.clone()),
+                }
+            }
+            (
                 LoadAnswer::SchemaRead {
                     state,
                     path,
                     options,
                     debug_label,
                 },
-                Phase::ReadingSchema | Phase::Decompressing,
+                Phase::ReadingSchema | Phase::Decompressing | Phase::ReadingGps,
             ) => {
                 load.phase = Phase::FirstRows;
                 // The dataset was built holding its download (`Step::ReadSchema`); the

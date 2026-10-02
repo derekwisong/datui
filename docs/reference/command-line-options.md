@@ -35,6 +35,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--decompress-in-memory[=<BOOL>]` | Decompress into memory (default: decompress to a temp file and scan lazily) |
 | `--temp-dir <DIR>` | Directory for decompression temp files (default: system temp, e.g. TMPDIR) |
 | `--sheet <SHEET>` | Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales") |
+| `--table <TABLE>` | Table to open from a file that holds several. NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences |
 | `--clear-recents` | Forget every recently opened dataset and exit; other caches are kept |
 | `--clear-cache` | Clear all cache data and exit |
 | `--template <NAME>` | Apply a saved view by name when starting the application |

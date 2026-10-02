@@ -272,6 +272,7 @@ pub fn ensure_sample_data() {
             "models/tiny.gguf",
             "people_stream.arrow",
             "dialect_padded_log.csv",
+            "gps/drive.nmea",
         ];
 
         let needs_generation = !sample_data_dir.exists()

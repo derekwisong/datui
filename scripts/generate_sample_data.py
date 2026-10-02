@@ -14,6 +14,7 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - Pivot and Melt reshape testing (long-format for pivot, wide-format for melt)
 - Correlation matrix demo (100k rows, 10 numeric columns with varying correlations)
 - Tiny SafeTensors and GGUF model files, written by hand with struct and NumPy
+- GPS logs: an NMEA 0183 drive and a GPX ride, written as text
 
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
@@ -922,6 +923,127 @@ def generate_model_files():
     with open(sharded / "config.json", "w") as f:
         json.dump({"model_type": "tiny", "hidden_size": 8}, f)
     write_gguf(models / "tiny.gguf")
+def _nmea(body):
+    """A sentence with its checksum: the XOR of the bytes between `$` and `*`."""
+    total = 0
+    for ch in body.encode():
+        total ^= ch
+    return f"${body}*{total:02X}"
+
+
+def _nmea_coord(value, positive, negative, width):
+    """Decimal degrees as NMEA writes them: `ddmm.mmmm` and a hemisphere."""
+    hemi = positive if value >= 0 else negative
+    value = abs(value)
+    deg = int(value)
+    minutes = (value - deg) * 60
+    return f"{deg:0{width}d}{minutes:07.4f}", hemi
+
+
+def generate_nmea_drive(path):
+    """A 1 Hz drive across midnight UTC: GGA, GSA, GSV, RMC and VTG each second.
+
+    The first GGA comes before any RMC, so its date is learned from the next line. At
+    second 150 the receiver drops out for 20 s, at second 200 the speed spikes, and a
+    junk line, a sentence with a bad checksum and a vendor sentence are mixed in.
+    """
+    rng = random.Random(595)
+    start = datetime(2024, 3, 9, 23, 58, 0)
+    lat, lon = 47.3769, 8.5417
+    lines = []
+    t = start
+    for i in range(300):
+        if i == 150:
+            t += timedelta(seconds=20)
+        hhmmss = t.strftime("%H%M%S") + ".00"
+        ddmmyy = t.strftime("%d%m%y")
+        knots = 150.0 if i == 200 else 20.0 + rng.uniform(-1, 1)
+        course = 45.0 + rng.uniform(-2, 2)
+        lat += 0.00008
+        lon += 0.00011
+        la, ns = _nmea_coord(lat, "N", "S", 2)
+        lo, ew = _nmea_coord(lon, "E", "W", 3)
+        alt = 410.0 + i * 0.1
+        quality = 4 if i % 50 == 0 else 1
+        lines.append(_nmea(f"GPGGA,{hhmmss},{la},{ns},{lo},{ew},{quality},08,0.9,{alt:.1f},M,47.3,M,,"))
+        lines.append(_nmea("GPGSA,A,3,01,03,07,08,11,17,19,28,,,,,1.6,0.9,1.3"))
+        sats = [(1, 40, 83, 46), (3, 17, 308, 41), (7, 7, 344, 39), (8, 22, 228, 45),
+                (11, 61, 120, 47), (17, 33, 45, 42), (19, 12, 270, 35), (28, 55, 190, 44)]
+        for msg in range(2):
+            blocks = ",".join(f"{p:02d},{e:02d},{a:03d},{snr + rng.randint(-2, 2):02d}"
+                              for p, e, a, snr in sats[msg * 4:msg * 4 + 4])
+            lines.append(_nmea(f"GPGSV,2,{msg + 1},08,{blocks}"))
+        if i > 0:
+            lines.append(_nmea(f"GPRMC,{hhmmss},A,{la},{ns},{lo},{ew},{knots:.1f},{course:.1f},{ddmmyy},,,A"))
+        lines.append(_nmea(f"GPVTG,{course:.1f},T,,M,{knots:.1f},N,{knots * 1.852:.1f},K,A"))
+        if i == 10:
+            lines.append("logger: buffer flushed")
+        if i == 20:
+            good = _nmea(f"GPVTG,{course:.1f},T,,M,{knots:.1f},N,{knots * 1.852:.1f},K,A")
+            lines[-1] = good[:-2] + ("00" if good[-2:] != "00" else "01")
+        if i == 30:
+            lines.append(_nmea("PGRME,15.0,M,45.0,M,25.0,M"))
+        t += timedelta(seconds=1)
+    with open(path, "w", newline="") as f:
+        f.write("\r\n".join(lines) + "\r\n")
+    print(f"Generated: {path}")
+
+
+def generate_gpx_ride(path):
+    """A GPX ride: two waypoints, a track of two segments with heart rate and cadence
+    extensions (temperature only in the second), and a route of three points."""
+    rng = random.Random(1595)
+    start = datetime(2024, 5, 1, 6, 0, 0)
+    out = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<gpx version="1.1" creator="datui tests" xmlns="http://www.topografix.com/GPX/1/1"'
+        ' xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">',
+        '  <metadata><name>Morning ride</name><time>2024-05-01T06:00:00Z</time></metadata>',
+        '  <wpt lat="47.37690" lon="8.54170"><ele>408</ele><name>Start &amp; finish</name><sym>Flag</sym></wpt>',
+        '  <wpt lat="47.40000" lon="8.60000"><ele>520</ele><name>Summit</name><sym>Summit</sym></wpt>',
+        '  <trk>',
+        '    <name>Morning ride</name>',
+    ]
+    lat, lon, ele = 47.3769, 8.5417, 408.0
+    t = start
+    for seg, count in enumerate((100, 50)):
+        out.append('    <trkseg>')
+        for i in range(count):
+            lat += 0.0002
+            lon += 0.0003
+            ele += rng.uniform(-0.5, 1.5)
+            t += timedelta(seconds=1 if seg == 0 else 2)
+            hr = 120 + i % 40
+            cad = 80 + rng.randint(-5, 5)
+            temp = f"<gpxtpx:atemp>{18 + i % 3}</gpxtpx:atemp>" if seg == 1 else ""
+            out.append(
+                f'      <trkpt lat="{lat:.6f}" lon="{lon:.6f}"><ele>{ele:.1f}</ele>'
+                f'<time>{t.strftime("%Y-%m-%dT%H:%M:%SZ")}</time>'
+                f'<extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>{hr}</gpxtpx:hr>'
+                f'<gpxtpx:cad>{cad}</gpxtpx:cad>{temp}</gpxtpx:TrackPointExtension></extensions></trkpt>'
+            )
+        out.append('    </trkseg>')
+        t += timedelta(minutes=5)
+    out += [
+        '  </trk>',
+        '  <rte><name>Way home</name>',
+        '    <rtept lat="47.41" lon="8.61"><name>Turn</name></rtept>',
+        '    <rtept lat="47.39" lon="8.58"/>',
+        '    <rtept lat="47.3769" lon="8.5417"><name>Home</name></rtept>',
+        '  </rte>',
+        '</gpx>',
+    ]
+    with open(path, "w") as f:
+        f.write("\n".join(out) + "\n")
+    print(f"Generated: {path}")
+
+
+def generate_gps():
+    """GPS logs: an NMEA drive and a GPX ride."""
+    gps = OUTPUT_DIR / "gps"
+    gps.mkdir(exist_ok=True)
+    generate_nmea_drive(gps / "drive.nmea")
+    generate_gpx_ride(gps / "ride.gpx")
 
 
 def generate_csv_dialect_files():
@@ -1101,6 +1223,10 @@ def main():
     generate_model_files()
     print("\n14. Generating CSV dialect files...")
     generate_csv_dialect_files()
+
+    # GPS logs: NMEA 0183 and GPX
+    print("\n14. Generating GPS logs...")
+    generate_gps()
 
     print("\nSample data generation complete!")
 

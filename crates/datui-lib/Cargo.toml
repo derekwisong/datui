@@ -159,6 +159,8 @@ default-features = false
 
 # Polars' Avro schema and serializers, already in the tree through polars/avro:
 # its `AvroWriter` cannot name fields apart from the columns or keep a doc.
+# `io_ipc`, in the tree through polars/ipc: the IPC reader and writer behind the
+# files Arrow streams and GPS logs are converted to.
 [dependencies.polars-arrow]
 version = "0.55"
 default-features = false

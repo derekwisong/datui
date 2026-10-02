@@ -18,6 +18,8 @@ mod common;
 mod fake_s3;
 #[path = "formats/open.rs"]
 mod formats_open;
+#[path = "formats/gps.rs"]
+mod gps;
 #[path = "formats/model_files.rs"]
 mod model_files;
 #[cfg(feature = "cloud")]

@@ -164,6 +164,7 @@ mod tests {
             debug: false,
             log_file: None,
             excel_sheet: None,
+            table: None,
             clear_cache: false,
             clear_recents: false,
             template: None,

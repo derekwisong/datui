@@ -378,6 +378,8 @@ pub struct DataTableState {
     decompress_temp_file: Option<Arc<Decompressed>>,
     /// The downloaded remote file this dataset was opened from, held while it is scanned.
     download: Option<crate::download::TempDownload>,
+    /// The files a GPS log was read into, which the frame scans; held as `download` is.
+    converted: Vec<crate::download::TempDownload>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
@@ -832,6 +834,8 @@ pub struct OpenFacts {
     pub download: Option<crate::download::TempDownload>,
     /// What a model file's header said besides its tensors.
     pub model: Option<Arc<crate::model_files::ModelSummary>>,
+    /// The files a GPS log was read into, which the frame scans.
+    pub converted: Vec<crate::download::TempDownload>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1815,6 +1819,7 @@ impl DataTableState {
             partition_columns: None,
             decompress_temp_file: None,
             download: None,
+            converted: Vec::new(),
             polars_streaming,
             defer_collect: false,
             needs_recollect: false,
@@ -1950,6 +1955,7 @@ impl DataTableState {
             partition_columns,
             decompress_temp_file: None,
             download: None,
+            converted: Vec::new(),
             polars_streaming: options.polars_streaming,
             defer_collect: false,
             needs_recollect: false,
@@ -1978,6 +1984,7 @@ impl DataTableState {
             format_read,
             download,
             model,
+            converted,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2019,6 +2026,7 @@ impl DataTableState {
         self.format_read = format_read;
         self.download = download;
         self.model = model;
+        self.converted = converted;
         self
     }
 
@@ -5369,6 +5377,7 @@ impl DataTableState {
         // It scans the same file, and a view captured from it must be refused too.
         view.decompress_temp_file = self.decompress_temp_file.clone();
         view.download = self.download.clone();
+        view.converted = self.converted.clone();
         Ok(view)
     }
 
@@ -6181,7 +6190,7 @@ impl DataTableState {
     /// when the last state holding it drops, and the plan would scan a path that no
     /// longer exists.
     pub fn scans_a_temp_file(&self) -> bool {
-        self.decompress_temp_file.is_some()
+        self.decompress_temp_file.is_some() || !self.converted.is_empty()
     }
 
     /// Whether the frame scans a downloaded remote file, removed when datui lets go of
@@ -6195,6 +6204,7 @@ impl DataTableState {
     pub(crate) fn temp_files(&self) -> Vec<&Path> {
         let files = self.decompress_temp_file.iter().map(|file| file.path());
         let files = files.chain(self.download.iter().map(|download| download.path()));
+        let files = files.chain(self.converted.iter().map(|file| file.path()));
         files.collect()
     }
 

@@ -36,7 +36,7 @@ fn parse_compression(s: &str) -> PyResult<CompressionFormat> {
 fn parse_format(s: &str) -> PyResult<FileFormat> {
     FileFormat::from_extension(s).ok_or_else(|| {
         PyValueError::new_err(format!(
-            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf (got {:?})",
+            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx (got {:?})",
             s
         ))
     })
@@ -56,6 +56,8 @@ fn format_to_str(f: FileFormat) -> &'static str {
         FileFormat::Excel => "excel",
         FileFormat::Safetensors => "safetensors",
         FileFormat::Gguf => "gguf",
+        FileFormat::Nmea => "nmea",
+        FileFormat::Gpx => "gpx",
     }
 }
 
@@ -164,6 +166,7 @@ impl DatuiOptionsPy {
         decompress_in_memory=false,
         temp_dir=None,
         excel_sheet=None,
+        table=None,
         s3_endpoint_url=None,
         s3_access_key_id=None,
         s3_secret_access_key=None,
@@ -200,6 +203,7 @@ impl DatuiOptionsPy {
         decompress_in_memory: bool,
         temp_dir: Option<Bound<'_, pyo3::types::PyAny>>,
         excel_sheet: Option<Bound<'_, pyo3::types::PyAny>>,
+        table: Option<Bound<'_, pyo3::types::PyAny>>,
         s3_endpoint_url: Option<Bound<'_, pyo3::types::PyAny>>,
         s3_access_key_id: Option<Bound<'_, pyo3::types::PyAny>>,
         s3_secret_access_key: Option<Bound<'_, pyo3::types::PyAny>>,
@@ -290,6 +294,11 @@ impl DatuiOptionsPy {
         if let Some(ref a) = excel_sheet {
             if !a.is_none() {
                 opts.excel_sheet = Some(a.extract::<String>()?);
+            }
+        }
+        if let Some(ref a) = table {
+            if !a.is_none() {
+                opts.table = Some(a.extract::<String>()?);
             }
         }
         if let Some(ref a) = s3_endpoint_url {
@@ -401,6 +410,9 @@ impl DatuiOptionsPy {
         }
         if let Some(ref v) = o.excel_sheet {
             d.set_item("excel_sheet", v.as_str())?;
+        }
+        if let Some(ref v) = o.table {
+            d.set_item("table", v.as_str())?;
         }
         if let Some(ref v) = o.s3_endpoint_url_override {
             d.set_item("s3_endpoint_url", v.as_str())?;

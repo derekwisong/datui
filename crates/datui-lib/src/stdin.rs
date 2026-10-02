@@ -149,6 +149,10 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     if crate::ipc_stream::is_stream_head(head) {
         return (FileFormat::Arrow, None);
     }
+    // Before the text guesses below: a GPS log is text that says what it is.
+    if let Some(gps) = crate::gps::sniff(head) {
+        return (gps, None);
+    }
     let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
     let text = &text[text
         .iter()
@@ -243,12 +247,18 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 20] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 22] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
             (b"GGUF\x03\x00\x00\x00", FileFormat::Gguf, None),
             (
                 b"\x02\x00\x00\x00\x00\x00\x00\x00{}",
                 FileFormat::Safetensors,
+                None,
+            ),
+            (b"$GPGGA,123519,4807.038,N", FileFormat::Nmea, None),
+            (
+                b"<?xml version=\"1.0\"?>\n<gpx version=\"1.1\">",
+                FileFormat::Gpx,
                 None,
             ),
             (b"ARROW1\x00\x00", FileFormat::Arrow, None),

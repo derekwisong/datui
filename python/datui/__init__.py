@@ -39,6 +39,7 @@ _DATUI_OPTIONS_KEYS = frozenset({
     "decompress_in_memory",
     "temp_dir",
     "excel_sheet",
+    "table",
     "s3_endpoint_url",
     "s3_access_key_id",
     "s3_secret_access_key",

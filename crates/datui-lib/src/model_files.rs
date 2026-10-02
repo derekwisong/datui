@@ -1770,6 +1770,60 @@ pub(crate) mod tests {
         w.out
     }
 
+    /// A stopped open asks for nothing more: not the next range of a header, nor the
+    /// next shard.
+    #[test]
+    fn a_stopped_read_asks_for_nothing_more() {
+        let served = Served {
+            files: [("g".to_string(), llama3_sized_gguf())].into(),
+            ..Default::default()
+        };
+        let asked = served.asked.clone();
+        let stop = || !asked.borrow().is_empty();
+        let mut src = ServedFile {
+            served: served.clone(),
+            url: "g".to_string(),
+        };
+        let err = read_header_ranged_from(&mut src, FileFormat::Gguf, 1024, &stop).unwrap_err();
+        assert!(
+            matches!(err, RangeError::Failed(ref m) if m.contains("cancelled")),
+            "{err:?}"
+        );
+        assert_eq!(served.asked.borrow().len(), 1);
+
+        let st = safetensors_bytes(
+            r#"{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#,
+            4,
+        );
+        let served = Served {
+            files: [("a".to_string(), st.clone()), ("b".to_string(), st)].into(),
+            ..Default::default()
+        };
+        let asked = served.asked.clone();
+        let open = |url: &str| -> std::result::Result<Box<dyn RangeSource>, RangeError> {
+            Ok(Box::new(ServedFile {
+                served: served.clone(),
+                url: url.to_string(),
+            }))
+        };
+        let stop = || asked.borrow().len() >= 2;
+        let read = read_remote_model(
+            &["a".to_string(), "b".to_string()],
+            FileFormat::Safetensors,
+            &Remote {
+                open: &open,
+                sibling: &|_, name| name.to_string(),
+                stop: &stop,
+            },
+        );
+        assert!(read.is_err());
+        assert!(
+            served.asked.borrow().iter().all(|(url, ..)| url == "a"),
+            "{:?}",
+            served.asked.borrow()
+        );
+    }
+
     /// A vocabulary-sized header costs a handful of requests and not much more than
     /// itself on the wire. Measured at 7.2 MB: a first range of 64 KiB took 7 requests
     /// (7.9 MiB), 256 KiB 5 (7.8 MiB), 1 MiB 4 (15 MiB).

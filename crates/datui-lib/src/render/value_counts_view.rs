@@ -63,6 +63,10 @@ pub fn draw(
             ),
             None => format!("all {} rows", chrome(c.summary.rows)),
         },
+        // A count that failed says why below; the header does not claim one runs.
+        None if modal.failed.as_ref().is_some_and(|(c, _)| *c == column) => {
+            "not counted".to_string()
+        }
         None => "counting".to_string(),
     };
     let mut header = format!("Value Counts {} {column} {} {read}", g.middot, g.middot);
@@ -281,7 +285,9 @@ pub fn draw(
             &percent(line.cumulative as f64 / total),
             Style::default().fg(ctx.text_secondary),
         );
-        if bar_w > 0 {
+        // The other line sums many values: a bar beside one value's would say
+        // nothing true about it.
+        if bar_w > 0 && !matches!(line.kind, LineKind::Other(_)) {
             let eighths = ((line.rows as f64 / peak) * (bar_w * 8) as f64).round() as usize;
             let eighths = eighths.max(usize::from(line.rows > 0)).min(bar_w * 8);
             let mut bar = g.bar_eighths[7].repeat(eighths / 8);
@@ -553,6 +559,25 @@ mod tests {
         modal.failed = Some(("k".to_string(), "boom".to_string()));
         let rows = screen(&mut modal, 60, 6);
         assert!(rows[2].contains("Could not count k: boom"), "{rows:#?}");
+        assert!(!rows[0].contains("counting"), "nothing runs: {rows:#?}");
+    }
+
+    #[test]
+    fn the_other_line_has_no_bar() {
+        let ids: Vec<i64> = (0..crate::value_counts::TOP_N as i64 + 50).collect();
+        let mut modal = counted(df!("id" => ids).unwrap(), "id");
+        modal.move_to_end();
+        let rows = screen(&mut modal, 80, 8);
+        let g = crate::glyphs::get();
+        let at = rows
+            .iter()
+            .position(|r| r.contains("other (50 values)"))
+            .unwrap();
+        assert!(!rows[at].contains(g.bar_eighths[7]), "{rows:#?}");
+        assert!(
+            rows[at - 1].contains(g.bar_eighths[7]),
+            "a value's line has one: {rows:#?}"
+        );
     }
 
     #[test]

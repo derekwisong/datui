@@ -35,4 +35,5 @@ The listing:
   The 1,000 most common values, then the rest summed on one line: other
   (N values). Nulls (∅) have a line of their own: ranked by their rows
   when sorted by count, last when sorted by value. Cum % runs down the
-  list. The bar is the line's rows beside the most common value's.
+  list. The bar is the line's rows beside the most common value's;
+  the other line has none.

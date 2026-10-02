@@ -5,8 +5,8 @@ current column, with a summary of the column above them. <kbd>Esc</kbd> goes
 back.
 
 The current column is the one underlined in the header: the column
-<kbd>g</kbd> went to, or else the first column on screen. <kbd>←</kbd>
-<kbd>→</kbd> on the counts move to the previous or next column.
+<kbd>g</kbd> went to, or else the first column past any frozen ones.
+<kbd>←</kbd> <kbd>→</kbd> on the counts move to the previous or next column.
 
 ## Which carrier flies most
 
@@ -44,7 +44,7 @@ the column can be added up:
 | Summary | `Rows`, `Distinct` (null not among them) and `Nulls`; `Sum`, `Mean`, `Min` and `Max` for numbers; `Min` and `Max` for dates and times. A sample has no `Sum` |
 | Lines | Each value's rows, its percent of all of them, the running percent, and a bar beside the most common value's |
 | `∅` | The nulls, on a line of their own: ranked by their rows when sorted by count, last when sorted by value |
-| `other (N values)` | Past the 1,000 most common values, the rest on one line |
+| `other (N values)` | Past the 1,000 most common values, the rest on one line, without a bar |
 
 Values are written as the table writes them: <kbd>,</kbd> groups digits
 here too.

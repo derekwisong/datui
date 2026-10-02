@@ -126,6 +126,9 @@ pub(crate) struct OpenRequest {
     /// The path recorded as a recent if the dataset installs: the first, as named,
     /// unless it is a local path that is not there.
     pub(crate) recent: Option<PathBuf>,
+    /// What the loading screen names in place of the first path: a table inside a
+    /// database.
+    pub(crate) shown: Option<PathBuf>,
 }
 
 impl OpenRequest {
@@ -137,22 +140,44 @@ impl OpenRequest {
     /// getting back to. An object-store URL counts doubly: `s3://bucket/warehouse/events`
     /// is far more painful to retype than any local path, and it is recorded verbatim.
     /// Kept as named, since what is installed may be a download's temporary copy.
-    pub(crate) fn named(paths: Vec<PathBuf>, options: OpenOptions) -> Self {
+    ///
+    /// A table inside a SQLite database, as the home screen lists one (`app.db/users`),
+    /// is the database opened with `--table`, and is recorded as the table.
+    pub(crate) fn named(mut paths: Vec<PathBuf>, mut options: OpenOptions) -> Self {
+        let first = paths[0].clone();
+        let piped = stdin::is_stdin(&first);
+        let local = !piped && matches!(source::input_source(&first), source::InputSource::Local(_));
+        let mut table = None;
+        if local
+            && paths.len() == 1
+            && let Some((db, name)) = crate::sqlite::table_path(&first)
+        {
+            table = Some(first.clone());
+            options.table = Some(name);
+            paths = vec![db];
+        } else if local
+            && let Some(name) = options.table.as_deref()
+            && first.is_file()
+            && crate::sqlite::is_sqlite_file(&first)
+        {
+            table = Some(crate::sqlite::table_place(&first, name));
+        }
         let first = &paths[0];
-        let piped = stdin::is_stdin(first);
-        let local = !piped && matches!(source::input_source(first), source::InputSource::Local(_));
         let size = if local {
             std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
         } else {
             0
         };
         // Standard input cannot be opened again from a list.
-        let recent = (!piped && (!local || first.exists())).then(|| first.clone());
+        let recent = table
+            .clone()
+            .or_else(|| (!piped && (!local || first.exists())).then(|| first.clone()));
         Self {
             paths,
             options,
             size,
             recent,
+            shown: table,
         }
     }
 }
@@ -368,10 +393,10 @@ pub(crate) enum Step {
         writer: Writer,
         read: Arc<AtomicU64>,
     },
-    /// Read the GPS log in `file` into a file of its own through `writer`, counting
-    /// its bytes in `read`, then its schema, reporting to `progress`; `path` names it
-    /// on screen and in errors.
-    ReadGps {
+    /// Read `file`, a GPS log, into a table of its own through `writer`, counting its
+    /// progress in `read`, then its schema, reporting to `progress`; `path` names it on
+    /// screen and in errors.
+    ReadInto {
         file: PathBuf,
         path: PathBuf,
         options: OpenOptions,
@@ -402,6 +427,17 @@ pub(crate) enum Step {
     Install(Box<Loaded>),
     /// The open failed. Its load is retired.
     Failed(Failed),
+    /// The open found a SQLite database of several tables and was asked for none: the
+    /// home screen lists them. Its load is retired.
+    Tables(Tables),
+}
+
+/// A database of several tables, to be listed on the home screen.
+#[derive(Debug)]
+pub(crate) struct Tables {
+    /// The database file, as the user named it.
+    pub(crate) database: PathBuf,
+    pub(crate) from_home: bool,
 }
 
 /// A failed open: why, and whether it was chosen on the home screen.
@@ -455,13 +491,20 @@ pub(crate) enum LoadAnswer {
         path: Option<PathBuf>,
         options: OpenOptions,
     },
-    /// The scan found a GPS log, `file` of `bytes` (as stored), to read into a file of
-    /// its own first.
-    Gps {
+    /// The scan found a file to read into a table of its own first: a GPS log of
+    /// `total` bytes (as stored).
+    ReadInto {
         file: PathBuf,
-        bytes: u64,
+        total: u64,
         path: Option<PathBuf>,
         options: OpenOptions,
+    },
+    /// The scan found a SQLite database, `file`, of several tables named `tables`, and
+    /// no `--table` to say which.
+    Tables {
+        file: PathBuf,
+        tables: Vec<String>,
+        path: Option<PathBuf>,
     },
     /// The dataset, its schema read.
     SchemaRead {
@@ -725,9 +768,10 @@ impl Loader {
             options,
             size,
             recent,
+            shown,
         } = request;
         let load = self.start(false);
-        load.path = Some(stdin::named(&paths[0]));
+        load.path = Some(shown.unwrap_or_else(|| stdin::named(&paths[0])));
         load.size = size;
         load.recent = recent;
         load.paths = Some(paths.clone());
@@ -861,10 +905,12 @@ impl Loader {
             };
         }
         load.phase = Phase::Scanning { downloaded: false };
+        // A table inside a database goes by its path there, on screen and once open.
+        let display = load.path.clone().filter(|shown| *shown != paths[0]);
         Step::Scan {
             paths,
             options,
-            display: None,
+            display,
             status: "Scanning input...",
         }
     }
@@ -1007,9 +1053,9 @@ impl Loader {
                 }
             }
             (
-                LoadAnswer::Gps {
+                LoadAnswer::ReadInto {
                     file,
-                    bytes,
+                    total,
                     path,
                     options,
                 },
@@ -1017,11 +1063,11 @@ impl Loader {
             ) => {
                 let read = Arc::<AtomicU64>::default();
                 load.phase = Phase::Converting {
-                    what: "Reading GPS log",
+                    what: reading(options.format),
                     read: read.clone(),
-                    total: bytes,
+                    total,
                 };
-                Step::ReadGps {
+                Step::ReadInto {
                     path: path.unwrap_or_else(|| file.clone()),
                     file,
                     options,
@@ -1030,6 +1076,38 @@ impl Loader {
                     progress: load.progress.clone(),
                     download: load.download.as_ref().map(|fetched| fetched.file.clone()),
                 }
+            }
+            (
+                LoadAnswer::Tables { file, tables, path },
+                Phase::Scanning { .. } | Phase::ScanningStrings,
+            ) => {
+                let from_home = load.from_home;
+                let database = path.unwrap_or(file);
+                // A download or standard input has no place on the home screen to list
+                // the tables at: the table is named on the command line instead.
+                let fetched = load.download.is_some();
+                self.retire();
+                if fetched {
+                    let shown = tables.iter().take(20).cloned().collect::<Vec<_>>();
+                    let more = tables.len().saturating_sub(shown.len());
+                    let more = match more {
+                        0 => String::new(),
+                        n => format!(" and {n} more"),
+                    };
+                    return Step::Failed(Failed {
+                        message: format!(
+                            "{} holds {} tables: {}{more}. Open one with --table NAME.",
+                            database.display(),
+                            tables.len(),
+                            shown.join(", ")
+                        ),
+                        from_home,
+                    });
+                }
+                Step::Tables(Tables {
+                    database,
+                    from_home,
+                })
             }
             (
                 LoadAnswer::SchemaRead {
@@ -1175,6 +1253,14 @@ impl Drop for Loader {
     }
 }
 
+/// What the loading screen says while a file is read into a table of its own.
+fn reading(format: Option<FileFormat>) -> &'static str {
+    match format {
+        Some(FileFormat::Nmea | FileFormat::Gpx) => "Reading GPS log",
+        _ => "Reading",
+    }
+}
+
 /// The delimited format (CSV, TSV or PSV) `path` is read as, if it is one: `--format`
 /// when given, else the extension, looking through a compression suffix
 /// (`x.tsv.gz` is TSV).
@@ -1257,6 +1343,7 @@ mod tests {
             options: OpenOptions::default(),
             size: 7,
             recent: Some(PathBuf::from(path)),
+            shown: None,
         }
     }
 
@@ -1641,6 +1728,7 @@ mod tests {
             options: OpenOptions::default(),
             size: 0,
             recent: None,
+            shown: None,
         });
         assert!(matches!(step, Step::Crash(message) if message.contains("S3")));
         assert!(loader.current().is_none());
@@ -1722,9 +1810,9 @@ mod tests {
     /// and putting the load down mid-conversion stops the writer, so its file goes.
     #[test]
     fn a_gps_log_the_scan_found_is_converted() {
-        let convert = || LoadAnswer::Gps {
+        let convert = || LoadAnswer::ReadInto {
             file: PathBuf::from("drive.nmea"),
-            bytes: 200,
+            total: 200,
             path: Some(PathBuf::from("drive.nmea")),
             options: OpenOptions {
                 format: Some(FileFormat::Nmea),
@@ -1734,7 +1822,7 @@ mod tests {
         let mut loader = Loader::default();
         let _ = loader.open(request("drive.nmea"));
         let id = loader.id().unwrap();
-        let Step::ReadGps {
+        let Step::ReadInto {
             file, writer, read, ..
         } = answer(&mut loader, id, convert())
         else {
@@ -1765,12 +1853,111 @@ mod tests {
         let id = loader.id().unwrap();
         assert!(matches!(
             answer(&mut loader, id, convert()),
-            Step::ReadGps { .. }
+            Step::ReadInto { .. }
         ));
         assert!(matches!(
             answer(&mut loader, id, schema_read("drive.nmea")),
             Step::Install(_)
         ));
+    }
+
+    /// A database of several tables, opened without `--table`, puts the load down and
+    /// lands on its tables, where it was asked from; a second answer changes nothing.
+    /// Piped in, there is no place to list them, and the open fails naming them.
+    #[test]
+    fn a_database_of_several_tables_lands_on_them() {
+        let tables = |file: &str| LoadAnswer::Tables {
+            file: PathBuf::from(file),
+            tables: vec!["users".to_string(), "orders".to_string()],
+            path: Some(PathBuf::from(file)),
+        };
+        let mut loader = Loader::default();
+        let _ = loader.open(request("shop.db"));
+        let id = loader.id().unwrap();
+        let Step::Tables(landed) = answer(&mut loader, id, tables("shop.db")) else {
+            panic!("the tables are listed");
+        };
+        assert_eq!(landed.database, Path::new("shop.db"));
+        assert!(!landed.from_home);
+        assert!(loader.current().is_none(), "the load is put down");
+        assert!(matches!(
+            answer(&mut loader, id, tables("shop.db")),
+            Step::Nothing
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut loader = Loader::default();
+        let Step::Spool { .. } = loader.open(OpenRequest::named(
+            vec![PathBuf::from("-")],
+            OpenOptions::default(),
+        )) else {
+            panic!("standard input is read first");
+        };
+        let id = loader.id().unwrap();
+        let spool = TempDownload::keep(TempDownload::create(Some(dir.path()), None).unwrap());
+        let options = OpenOptions {
+            format: Some(FileFormat::Sqlite),
+            ..Default::default()
+        };
+        let Step::Scan { paths, .. } = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Spooled {
+                download: spool,
+                options,
+            },
+        ) else {
+            panic!("the spool is scanned");
+        };
+        let Step::Failed(failed) = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Tables {
+                file: paths[0].clone(),
+                tables: vec!["users".to_string(), "orders".to_string()],
+                path: Some(PathBuf::from("stdin")),
+            },
+        ) else {
+            panic!("piped in, the table has to be named");
+        };
+        assert_eq!(
+            failed.message,
+            "stdin holds 2 tables: users, orders. Open one with --table NAME."
+        );
+    }
+
+    /// A table named by its path inside a database is the database opened with
+    /// `--table`, recorded and shown as the table.
+    #[test]
+    fn a_path_inside_a_database_opens_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("shop.db");
+        let mut header = crate::sqlite::MAGIC.to_vec();
+        header.resize(512, 0);
+        std::fs::write(&db, header).unwrap();
+        let request = OpenRequest::named(vec![db.join("orders")], OpenOptions::default());
+        assert_eq!(request.paths, std::slice::from_ref(&db));
+        assert_eq!(request.options.table.as_deref(), Some("orders"));
+        assert_eq!(request.recent, Some(db.join("orders")));
+        assert_eq!(request.shown, Some(db.join("orders")));
+
+        let named = OpenRequest::named(
+            vec![db.clone()],
+            OpenOptions {
+                table: Some("users".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(named.paths, std::slice::from_ref(&db));
+        assert_eq!(
+            named.recent,
+            Some(db.join("users")),
+            "--table is recorded too"
+        );
+
+        let plain = OpenRequest::named(vec![db.clone()], OpenOptions::default());
+        assert_eq!(plain.recent, Some(db));
+        assert_eq!(plain.shown, None);
     }
 
     /// A local compressed CSV is decompressed rather than scanned; a CSV read with its

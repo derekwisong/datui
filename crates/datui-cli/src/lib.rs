@@ -42,6 +42,8 @@ pub enum FileFormat {
     Audio,
     /// Standard MIDI File (.mid, .midi, .smf, .kar, .rmi): one row per event
     Midi,
+    /// SQLite database (.db, .sqlite, .sqlite3, .db3): one table, picked with --table
+    Sqlite,
 }
 
 impl FileFormat {
@@ -85,6 +87,7 @@ impl FileFormat {
             Self::Gpx => "gpx",
             Self::Audio => "audio",
             Self::Midi => "midi",
+            Self::Sqlite => "sqlite",
         }
     }
 
@@ -97,7 +100,7 @@ impl FileFormat {
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
     /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -114,6 +117,7 @@ impl FileFormat {
         Self::Gpx,
         Self::Audio,
         Self::Midi,
+        Self::Sqlite,
     ];
 
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
@@ -134,11 +138,18 @@ impl FileFormat {
     /// is sheets rather than rows, with nothing to concatenate. Reading the first two
     /// as a list is #275 phase 4's ("never refuse"). A GPS log is read into a file of
     /// its own before it is scanned, one log per open. Audio files are recordings,
-    /// each with its own channels and rate, not parts of one table.
+    /// each with its own channels and rate, not parts of one table, and a database is
+    /// tables rather than rows.
     pub fn reads_many_files(self) -> bool {
         !matches!(
             self,
-            Self::Tsv | Self::Psv | Self::Excel | Self::Nmea | Self::Gpx | Self::Audio
+            Self::Tsv
+                | Self::Psv
+                | Self::Excel
+                | Self::Nmea
+                | Self::Gpx
+                | Self::Audio
+                | Self::Sqlite
         )
     }
 
@@ -182,6 +193,7 @@ impl FileFormat {
             "gpx" => Some(Self::Gpx),
             "wav" | "wave" | "bwf" | "rf64" | "aif" | "aiff" | "aifc" => Some(Self::Audio),
             "mid" | "midi" | "smf" | "kar" | "rmi" => Some(Self::Midi),
+            "db" | "db3" | "sqlite" | "sqlite3" => Some(Self::Sqlite),
             _ => None,
         }
     }
@@ -417,8 +429,8 @@ pub struct Args {
     #[arg(long = "sheet", value_name = "SHEET", help_heading = "Reading")]
     pub excel_sheet: Option<String>,
 
-    /// Table to open from a file that holds several. NMEA logs: fixes (default), GGA,
-    /// RMC, VTG, GSA, GSV, GLL, ZDA or sentences
+    /// Table to open from a file that holds several. SQLite: a table or view by name.
+    /// NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences
     #[arg(long = "table", value_name = "TABLE", help_heading = "Reading")]
     pub table: Option<String>,
     /// Show integer audio samples as float in [-1, 1] (default: the integers as stored)
@@ -968,7 +980,8 @@ mod format_tests {
                 | FileFormat::Nmea
                 | FileFormat::Gpx
                 | FileFormat::Audio
-                | FileFormat::Midi => FileFormat::ALL.contains(&f),
+                | FileFormat::Midi
+                | FileFormat::Sqlite => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -1000,7 +1013,8 @@ mod format_tests {
                 "nmea",
                 "gpx",
                 "audio",
-                "midi"
+                "midi",
+                "sqlite"
             ]
         );
     }

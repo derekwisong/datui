@@ -16,6 +16,7 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - Tiny SafeTensors and GGUF model files, written by hand with struct and NumPy
 - GPS logs: an NMEA 0183 drive and a GPX ride, written as text
 - Short WAV, Broadcast WAV and AIFF files: the wave module, and struct where it cannot
+- SQLite databases: one of several tables and one of a single table, with sqlite3
 
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
@@ -30,6 +31,7 @@ import random
 import gzip
 import json
 import math
+import sqlite3
 import struct
 import wave
 
@@ -1235,6 +1237,73 @@ def generate_audio_files():
     with open(audio / "loop.aiff", "wb") as f:
         f.write(b"FORM" + struct.pack(">I", len(body)) + body)
     print(f"Generated: {audio / 'loop.aiff'}")
+def generate_sqlite():
+    """SQLite databases: `shop.db` of several tables (a view, an AUTOINCREMENT table
+    and so `sqlite_sequence`, a column of mixed types) and `one.sqlite` of one."""
+    out = OUTPUT_DIR / "sqlite"
+    out.mkdir(exist_ok=True)
+    shop = out / "shop.db"
+    shop.unlink(missing_ok=True)
+    conn = sqlite3.connect(shop)
+    conn.executescript(
+        """
+        CREATE TABLE customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            city VARCHAR(40),
+            joined DATE
+        );
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            customer_id INTEGER REFERENCES customers(id),
+            amount REAL,
+            note,
+            receipt BLOB
+        );
+        CREATE VIEW big_orders AS SELECT * FROM orders WHERE amount > 100;
+        CREATE INDEX orders_by_customer ON orders(customer_id);
+        CREATE TRIGGER no_negative BEFORE INSERT ON orders
+            WHEN NEW.amount < 0 BEGIN SELECT RAISE(ABORT, 'negative'); END;
+        """
+    )
+    cities = ["Lisbon", "Oslo", "Quito", "Perth", None]
+    conn.executemany(
+        "INSERT INTO customers (name, city, joined) VALUES (?, ?, ?)",
+        [
+            (f"customer {i}", cities[i % len(cities)], f"2024-01-{i % 28 + 1:02d}")
+            for i in range(1, 51)
+        ],
+    )
+    notes = [None, "gift", 7, 2.5, b"\x00\x01"]
+    conn.executemany(
+        "INSERT INTO orders (customer_id, amount, note, receipt) VALUES (?, ?, ?, ?)",
+        [
+            (i % 50 + 1, round(i * 3.75, 2), notes[i % len(notes)], bytes([i % 256]) if i % 3 else None)
+            for i in range(1, 201)
+        ],
+    )
+    conn.commit()
+    conn.close()
+    print(f"Generated: {shop}")
+
+    one = out / "one.sqlite"
+    one.unlink(missing_ok=True)
+    conn = sqlite3.connect(one)
+    conn.executescript(
+        """
+        CREATE TABLE readings (station TEXT, at TEXT, celsius REAL, ok BOOLEAN);
+        """
+    )
+    conn.executemany(
+        "INSERT INTO readings VALUES (?, ?, ?, ?)",
+        [
+            (["north", "south"][i % 2], f"2024-05-01T{i % 24:02d}:00:00", 10 + i / 10, i % 7 != 0)
+            for i in range(120)
+        ],
+    )
+    conn.commit()
+    conn.close()
+    print(f"Generated: {one}")
 
 
 def _vlq(n):
@@ -1469,6 +1538,10 @@ def main():
     generate_audio_files()
     print("\n17. Generating MIDI files...")
     generate_midi_files()
+
+    # SQLite databases
+    print("\n18. Generating SQLite databases...")
+    generate_sqlite()
 
     print("\nSample data generation complete!")
 

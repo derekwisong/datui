@@ -110,8 +110,8 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A screenful, stopping at the first and last |
 | <kbd>Home</kbd> <kbd>End</kbd> | The first or last row |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any directory, or on a place row under `RECENT`, goes inside it |
-| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT` or the hidden files, or fold the section. The control bar names which, for the row you are on |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any directory, a SQLite database, or a place row under `RECENT`, goes inside it |
+| <kbd>Enter</kbd> | Open the dataset, enter the directory, SQLite database of several tables, cloud source, bucket or place, show the rest of `RECENT` or the hidden files, or fold the section. The control bar names which, for the row you are on |
 | <kbd>Enter</kbd> on the first row inside a directory | Read the directory as one table, as its label says: `(hive table: year, month)`, `(3 Parquet files, one schema)`, `(2 Parquet files, schemas differ)`, `(all files, mixed)`. The cursor starts there only for a hive table or one schema; hidden while a filter is typed |
 | <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
 | type | Filter by name or column name, and search below the directory you are inside |
@@ -120,7 +120,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
-| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read, or a SQLite database's internal tables |
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember the directory under the cursor so it stays listed, or forget it if remembered |
 | <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or a remembered directory on its heading, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |

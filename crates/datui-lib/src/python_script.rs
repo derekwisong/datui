@@ -862,7 +862,8 @@ pub fn source(record: &OpenRecord) -> Source {
         | FileFormat::Nmea
         | FileFormat::Gpx
         | FileFormat::Audio
-        | FileFormat::Midi => {
+        | FileFormat::Midi
+        | FileFormat::Sqlite => {
             return Source::Placeholder {
                 what: format!(
                     "{}: Polars has no reader for this format; load it here.",

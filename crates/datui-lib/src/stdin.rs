@@ -139,6 +139,9 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     if head.starts_with(b"Obj\x01") {
         return (FileFormat::Avro, None);
     }
+    if crate::sqlite::looks_like(head) {
+        return (FileFormat::Sqlite, None);
+    }
     if crate::model_files::looks_like_gguf(head) {
         return (FileFormat::Gguf, None);
     }
@@ -253,8 +256,9 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 26] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 27] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
+            (b"SQLite format 3\0\x10\x00", FileFormat::Sqlite, None),
             (b"GGUF\x03\x00\x00\x00", FileFormat::Gguf, None),
             (b"MThd\0\0\0\x06\0\x01", FileFormat::Midi, None),
             (

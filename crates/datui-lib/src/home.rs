@@ -1628,6 +1628,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         let remote = network_check(&dir);
         // A remote listing still being read shows what it has, and says so.
         let so_far = remote && !probed.contains_key(&dir) && listing_so_far.contains_key(&dir);
+        // A SQLite database is a place too, whose rows are its tables.
+        let database = !remote && dir.is_file();
         let (rows, truncated) = if remote {
             let rows = probed
                 .get(&dir)
@@ -1635,6 +1637,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 .cloned()
                 .unwrap_or_default();
             (rows, cut_short.contains(&dir))
+        } else if database {
+            (discover::database_rows(&dir), false)
         } else {
             let scan = discover::scan_dir_bounded(&dir);
             (scan.entries, scan.truncated)
@@ -1657,7 +1661,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         let unavailable = remote && unreachable.contains(&dir);
         // The first row inside any directory opens the whole of it, since `Enter` on the
         // rows below opens one file. The other door.
-        let mut door = whole_directory_row(&dir, &rows, remote);
+        let mut door = (!database)
+            .then(|| whole_directory_row(&dir, &rows, remote))
+            .flatten();
         // What an earlier run's footers made of this directory, as its row upstairs is
         // given: without it a directory of separate tables is a dataset inside and a
         // place to look into one level up. Its own mtime is the fingerprint, as there.
@@ -1724,7 +1730,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         .iter()
         // `exists()` stats the path, so a remote entry is taken on trust and
         // dropped later only if its probe says it is gone.
-        .filter(|p| network_check(p) || p.exists())
+        .filter(|p| network_check(p) || p.exists() || crate::sqlite::table_path(p).is_some())
         // No display cap. The store already bounds this, the header states the
         // count, and the section folds — an invisible limit would just hide recents
         // with nothing to say it had.
@@ -3231,7 +3237,7 @@ impl HomeState {
             let mut matched: Vec<(&Entry, i32)> = section
                 .rows
                 .iter()
-                .filter(|row| !(self.hide_unreadable && row.kind == EntryKind::Other))
+                .filter(|row| !(self.hide_unreadable && row.hidden_by_default()))
                 .filter_map(|row| match_score(&self.filter, row).map(|s| (row, s)))
                 .collect();
 
@@ -3253,7 +3259,7 @@ impl HomeState {
                     section
                         .rows
                         .iter()
-                        .filter(|row| row.kind == EntryKind::Other)
+                        .filter(|row| row.hidden_by_default())
                         .count()
                 } else {
                     0
@@ -3948,6 +3954,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         holds: Default::default(),
         opens_whole_directory: false,
         format_spec: None,
+        table: None,
     }
 }
 
@@ -3982,6 +3989,10 @@ pub fn names_a_file(path: &Path) -> bool {
 
 /// Build an entry for a path that is already known (a recent), classifying it.
 fn entry_for_path(path: &Path, remote: bool) -> Entry {
+    // A table inside a SQLite database, which nothing on disk is named.
+    if !remote && let Some(table) = discover::table_row(path) {
+        return table;
+    }
     let mut holds = discover::Holds::default();
     // Classifying reads the directory, and stat'ing gives size and mtime. Both touch
     // the filesystem, so a remote entry is listed by name alone until its probe lands.
@@ -4027,6 +4038,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         holds,
         opens_whole_directory: false,
         format_spec: None,
+        table: None,
     };
     if !remote && let Ok(meta) = std::fs::metadata(path) {
         if meta.is_file() {

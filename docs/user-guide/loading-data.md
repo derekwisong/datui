@@ -34,6 +34,7 @@ names it:
 | First bytes | Read as |
 |---|---|
 | Parquet, Arrow IPC or Avro magic number, or an Arrow IPC stream's schema message | that format |
+| `SQLite format 3` | SQLite; a database of several tables needs `--table` |
 | gzip, zstd, bzip2 or xz magic number | compressed CSV, or TSV or PSV with `--format` |
 | `[` | JSON |
 | `{`, the first line a whole object | NDJSON |
@@ -95,6 +96,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | WAV, BWF, RF64, AIFF | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | yes | |
 | MIDI | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | | |
 | [Binary records](binary-formats.md) | any, through a format spec | yes | |
+| SQLite | `.db`, `.sqlite`, `.sqlite3`, `.db3` | read in place; sort and filter run in SQLite | |
 
 **Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
 queries, sorting and analysis may read the full input. The other formats are
@@ -221,9 +223,9 @@ first one are dated back from it when it comes within the first 65,536 rows;
 when it comes later, those rows keep a null `time`. A log with neither sentence
 has no dates, and `time` is null throughout.
 
-`--table` is for any file that holds several tables. NMEA logs are the only
-ones so far; any other file opened with it is refused. Excel workbooks take
-`--sheet`.
+`--table` is for any file that holds several tables: NMEA logs and
+[SQLite databases](#sqlite-databases). Any other file opened with it is refused.
+Excel workbooks take `--sheet`.
 
 **GPX** opens as one row per `trkpt`, `rtept` and `wpt`:
 
@@ -346,6 +348,73 @@ file order.
 Press <kbd>i</kbd> for the [MIDI tab](dataset-info.md#midi): format, timing,
 length, tempo, meter, key and each track's name, events, notes and channels.
 Notes that never end are counted on the Notes tab.
+
+### SQLite databases
+
+```bash
+datui shop.db                        # its one table, or the list of its tables
+datui shop.db --table orders         # a table or view by name
+datui shop.db/orders                 # the same
+cat shop.db | datui --table orders   # from standard input
+```
+
+| The database | What happens |
+|---|---|
+| One table or view of its own | Opens it |
+| Several | Opens the home screen inside the database: a row per table and view, like a directory of tables. <kbd>Enter</kbd> opens one; <kbd>q</kbd> comes back to the list |
+| Several, downloaded or piped in | Refused with the names of its tables; `--table` picks one |
+
+SQLite's own tables (`sqlite_master`, `sqlite_sequence`, the `sqlite_stat`
+tables, a full-text index's shadow tables) are hidden until
+<kbd>Ctrl</kbd>+<kbd>A</kbd>; `--table` opens them by name. A file is known by
+its first bytes whatever it is called. The home screen labels a database with
+its tables (`3 tables`).
+
+A table is read in place; nothing is copied.
+
+| | How |
+|---|---|
+| The rows on screen | Read from SQLite a page at a time, by the table's rowid (or primary key), so the first rows show at once and <kbd>End</kbd> costs what the top does |
+| Row count | SQLite's `count(*)`, in the background |
+| Sort and filters from the sidebar | Run in SQLite as `ORDER BY` and `WHERE`, so an index on the column serves them. Ties keep the table's order and nulls sort last, as for any other file |
+| A query, analysis, Data Quality, a chart, an export | Read the columns they use from SQLite a batch at a time; what they hold is in memory, as for a JSON or Excel file. A query's simple comparisons run in SQLite |
+| Leaving the table (<kbd>Ctrl</kbd>+<kbd>O</kbd>, quit) | Stops whatever SQLite is running for it |
+
+A view is paged by position and cannot be reversed with <kbd>r</kbd> in SQLite
+(Polars does it). A sort on a column without an index has SQLite sort the
+rows for each page; SQLite may use temporary files in the temp directory to do
+so.
+
+Columns are typed by what they declare, as SQLite reads a declared type:
+
+| Declared | Column |
+|---|---|
+| `INTEGER`, `INT`, `BIGINT`, anything with `INT` | `i64` |
+| `REAL`, `FLOAT`, `DOUBLE` | `f64` |
+| `TEXT`, `VARCHAR(n)`, `CLOB` | `str` |
+| `BLOB` | `binary` |
+| nothing, `NUMERIC`, `DECIMAL`, `BOOLEAN`, `DATE` | by the values in the first 1,000 rows: whole numbers `i64`, numbers `f64`, blobs `binary`, text `str` |
+
+SQLite lets a column hold values of any type. A column whose first 1,000 rows
+hold values of several types is read as text, numbers as SQLite writes them and
+blobs as `X'0A1B'`. After the open, one pass over the table checks the rest: a
+value further on that is not a number, in a number column, reads as null, and
+the Info panel's Notes tab says how many. Dates stay text, as SQLite stores
+them.
+
+The database is only read:
+
+| | |
+|---|---|
+| Opened | Read only, with `query_only` and defensive mode. Extensions cannot be loaded, and reading a table runs no trigger |
+| A WAL database with a `-wal` file | Read through it, so what another program has committed is seen. SQLite creates the `-shm` index beside it if it is missing |
+| A WAL database without a `-wal` file | Read as the file stands (SQLite's `immutable`), writing nothing and taking no lock. A program that starts writing it during the read can make the read fail or come out wrong |
+| A `-wal` without its `-shm`, in a directory datui cannot write to | An error: read without the WAL, it would lack what was committed there |
+| A `-journal` left by a program that stopped mid-write | An error: datui does not roll it back. Opening the database once with the `sqlite3` tool does |
+| A program writing the database meanwhile | datui waits up to 2 seconds for its lock. Without WAL, the program cannot commit while datui reads, which is a page at a time except for a whole-table read |
+| Not a SQLite database, or damaged | An error |
+
+A compressed database (`shop.db.gz`) is not read; decompress it first.
 
 ### CSV options
 

@@ -18893,6 +18893,182 @@ fn test_inspector_shows_a_huge_value_a_chunk_at_a_time() {
     assert_eq!(copies.lock().unwrap().last().unwrap().len(), huge.len());
 }
 
+/// Every row of `app` drawn at `width`×`height`, one string per terminal row.
+fn rows_at(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    (0..height)
+        .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
+}
+
+/// Fourteen fields of one order, as the #548 review's table has them: an empty
+/// email, a null, a long URL, a list, a binary column and an integer first.
+fn open_orders_fixture(dir: &Path) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let path = dir.join("orders.parquet");
+    let url = format!(
+        "https://shop.example.com/orders/{}?id=1",
+        "segment/".repeat(20)
+    );
+    let tags: Vec<Series> = (0..3)
+        .map(|i| Series::new("".into(), vec![format!("t{i}")]))
+        .collect();
+    let mut df = df!(
+        "id" => [1i64, 2, 3],
+        "customer_name" => [None, Some("Customer 1"), Some("Customer 2")],
+        "email" => ["", "user1@example.com", "user2@example.com"],
+        "notes" => ["one\ntwo", "x", "y"],
+        "url" => [url.as_str(), "u", "v"],
+        "payload_json" => [r#"{"a": 1}"#, "{}", "[]"],
+        "tags" => tags,
+        "amount" => [1.5f64, 2.5, 3.5],
+        "created" => ["2024-01-01", "2024-01-02", "2024-01-03"],
+        "updated_at" => ["t1", "t2", "t3"],
+        "elapsed" => [1i64, 2, 3],
+        "point" => [1i64, 2, 3],
+        "blob" => [b"".as_slice(), b"ab", b"cd"],
+        "region" => ["north", "south", "east"],
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+/// #548 M1: the inspect chip is on the bar at 60 and 80 columns, and a binary
+/// column's type row says binary (D2, D10).
+#[test]
+fn test_inspect_chip_and_binary_type_at_narrow_and_wide_sizes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx, tx) = open_orders_fixture(dir.path());
+    for (width, height) in [(60, 20), (80, 24), (200, 50)] {
+        let text = painted(&mut app, &rx, &tx, Rect::new(0, 0, width, height));
+        let rows = rows_at(&mut app, width, height);
+        let bar = rows.last().unwrap();
+        assert!(bar.contains("Enter  Inspect"), "{width}x{height}: {bar}");
+        if width == 200 {
+            // The type row, not the `‹binary›` stub in the cells.
+            assert!(text.contains(" binary"), "{text}");
+        }
+    }
+}
+
+/// #548 M1, D11 and D5: a fourteen-field row is listed whole at 80×24 and on a
+/// wide terminal, with nothing hidden under "more", and an empty string reads
+/// `""` rather than blank. D6: `e` is offered on text, not on a number, and Find
+/// keeps its chip.
+#[test]
+fn test_inspector_lists_a_short_row_whole_and_offers_only_keys_that_act() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _rx, _tx) = open_orders_fixture(dir.path());
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.input_mode, InputMode::Inspect);
+    for (width, height) in [(80, 24), (200, 50)] {
+        let rows = rows_at(&mut app, width, height);
+        let text = rows.join("\n");
+        assert!(rows[0].contains("Row 1 of 3"), "{width}x{height}:\n{text}");
+        for name in ["id", "customer_name", "email", "point", "blob", "region"] {
+            assert!(
+                rows.iter().any(|r| r.contains(&format!(" {name} "))),
+                "{name} at {width}x{height}:\n{text}"
+            );
+        }
+        assert!(!text.contains(" more"), "{width}x{height}:\n{text}");
+        let email = rows.iter().find(|r| r.contains(" email ")).unwrap();
+        assert!(email.contains(r#""""#), "{width}x{height}: {email}");
+        // On `id`, an integer: no escaped form, and Find is on the footer.
+        let footer = &rows[height as usize - 3];
+        assert!(footer.contains("/  Find"), "{width}x{height}: {footer}");
+        assert!(!footer.contains("Escaped"), "{width}x{height}: {footer}");
+    }
+    // `e` on the number does nothing; on text it is offered and acts.
+    press_key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(!app.inspector_modal.escaped);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "email");
+    let rows = rows_at(&mut app, 80, 24);
+    assert!(rows[21].contains("e  Escaped"), "{}", rows.join("\n"));
+    press_key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    let rows = rows_at(&mut app, 80, 24);
+    assert!(rows[21].contains("e  Raw"), "{}", rows.join("\n"));
+}
+
+/// #548 M1, D9: inside a drill-down the title names the row among the group's
+/// rows and the group's key, which the takeover hides from the breadcrumb.
+#[test]
+fn test_inspector_title_names_the_group_inside_a_drill() {
+    let (mut app, rx, tx) = open_query_filter_fixture("inspect_drill_title.csv");
+    app.event(&AppEvent::Search("select n: count a by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    painted(&mut app, &rx, &tx, Rect::new(0, 0, 80, 24));
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+    painted(&mut app, &rx, &tx, Rect::new(0, 0, 80, 24));
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.input_mode, InputMode::Inspect);
+    let m = datui::glyphs::get().middot;
+    let state = app.data_table_state.as_ref().unwrap();
+    let key = state.drilled_group_key().unwrap().1[0].clone();
+    let title = format!("Row 2 of {} {m} c={key}", state.num_rows());
+    for (width, height) in [(80, 24), (200, 50)] {
+        let rows = rows_at(&mut app, width, height);
+        assert!(
+            rows[0].contains(&title),
+            "{title} at {width}x{height}: {}",
+            rows[0]
+        );
+    }
+}
+
+/// #548 M1, D3: a cut value's last line counts the whole value. A 1 MiB blob
+/// dumps 4 KiB, and the count is of all 65,536 hex lines, not the chunk's.
+#[test]
+fn test_inspector_counts_the_lines_of_the_whole_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blob.parquet");
+    let blob = vec![0x5au8; 1 << 20];
+    let mut df = df!("id" => [1i64], "blob" => [blob.as_slice()]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    rows_at(&mut app, 80, 24);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let g = datui::glyphs::get();
+    for (width, height) in [(80usize, 24usize), (200, 50)] {
+        let rows = rows_at(&mut app, width as u16, height as u16);
+        let text = rows.join("\n");
+        // The pane's rows: less the bar, the frame, the footer, two rules, two fields.
+        let shown = height - 8;
+        let more = format!(
+            "{} {} more lines",
+            g.ellipsis,
+            datui::copy_modal::thousands(65_536 - (shown - 1))
+        );
+        assert!(text.contains(&more), "{more} at {width}x{height}:\n{text}");
+        // The footer keeps Find; the scroll keys join it where there is room.
+        assert!(text.contains("/  Find"), "{width}x{height}:\n{text}");
+        if width == 200 {
+            assert!(text.contains("PgUp/PgDn  Scroll"), "{text}");
+        }
+    }
+}
+
 /// A field past a megabyte is copied off the UI thread, whole.
 #[test]
 fn test_inspector_copies_a_large_field_in_the_background() {

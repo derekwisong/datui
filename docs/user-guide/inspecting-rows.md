@@ -7,6 +7,17 @@ closes it.
 <kbd>Enter</kbd> opens it too, except on a row of a `by` query or a SQL
 `GROUP BY`, where <kbd>Enter</kbd>
 [drills into the group](querying-data.md#drill-into-a-group-by) and <kbd>Space</kbd> inspects.
+The bottom bar's first chip names the key: `Enter Inspect` or `Space Inspect`.
+
+The title counts the rows: `Row 3 of 60`. Inside a drill-down it counts the
+group's rows and names the group, `Row 3 of 20 · region=north`, since the
+inspector covers the breadcrumb.
+
+When every field fits above a few lines of value, the list shows them all;
+a longer list takes half the height and scrolls. The footer offers only the
+keys that act on the focused field: <kbd>e</kbd> on text and bytes,
+<kbd>PgUp</kbd> <kbd>PgDn</kbd> when the value runs past the pane,
+<kbd>Home</kbd> <kbd>End</kbd> when the list does.
 
 The table cuts long text at the edge of its column and rounds floats to its
 preview. The inspector shows what is stored:
@@ -17,10 +28,11 @@ preview. The inspector shows what is stored:
 | Integer | Every digit. When the table groups digits, a line under it says what the table shows |
 | Datetime | Every digit of its unit and the zone's offset: `2024-01-02 04:04:05.000120 +01:00`. One past the calendar's range shows its stored number: `-9223372036854775807 us since 1970-01-01 UTC` |
 | Text | Whole, wrapped, a line per line break; its length, line count and any spaces at either end are named on the rule above it |
-| Empty text | `empty string`, or `""` escaped |
+| Empty text | `""` in the list; `empty string` in the pane, or `""` escaped |
+| Empty bytes | `0 bytes · empty` in the list; `empty binary` in the pane |
 | Null | `∅ null`; `· absent` or `≠ conflicting` where the dataset's files differ |
 | List, struct | One item per line, text quoted |
-| Binary | A hex dump, or `b"..."` escaped |
+| Binary | A hex dump, or `b"..."` escaped. The table's type row says `binary` |
 
 Exact means the value as Polars stored it, not the spelling in a CSV file: a
 `1.50` read from CSV is the float `1.5`.
@@ -33,9 +45,9 @@ Exact means the value as Polars stored it, not the spelling in a CSV file: a
 | <kbd>Home</kbd> <kbd>End</kbd> | First and last field |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Scroll a long value |
-| <kbd>Enter</kbd> | Show more of a long value (16 KB of text at a time), or read a field the table's rows do not hold |
+| <kbd>Enter</kbd> | Show more of a long value (16 KB of text at a time), or read a field the table's rows do not hold. The last line counts the whole value: `… 65,521 more lines` for a 1 MiB hex dump, `… 205 more lines, then 2,079,786 chars` for long text |
 | <kbd>y</kbd> | Copy the focused field's exact value |
-| <kbd>e</kbd> | Show text escaped (`\n`, `\t`, `\\`, quotes) or as itself |
+| <kbd>e</kbd> | Show text or bytes escaped (`\n`, `\t`, `\\`, quotes) or as itself |
 | <kbd>/</kbd> | Find a field by name: type to narrow; <kbd>Enter</kbd> keeps the list narrowed, <kbd>Esc</kbd> clears it |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>Space</kbd> | Close; <kbd>Esc</kbd> clears a find first |

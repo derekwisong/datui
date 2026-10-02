@@ -21,6 +21,8 @@ use ratatui::widgets::{Paragraph, Widget};
 const MEASURE: usize = 100;
 /// Cells between a field's name, type and preview.
 const GAP: usize = 2;
+/// The fewest lines the value pane keeps when the field list takes the rest.
+const VALUE_MIN: usize = 3;
 
 /// What the inspector has for one field of the row.
 #[derive(Debug, Clone)]
@@ -83,6 +85,21 @@ pub enum Tone {
     Warn,
 }
 
+/// What a cut value holds past the lines formatted so far, so the pane's last
+/// line can count the whole value and not only the part formatted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Rest {
+    /// The value is formatted whole.
+    #[default]
+    None,
+    /// This many more lines, known without formatting them: a hex dump.
+    Lines(usize),
+    /// This much more of the value, in its unit: `2,031,616 chars`.
+    Units(String),
+    /// More, of a length not known without formatting it: a nested value.
+    Unknown,
+}
+
 /// The value pane: its lines, the facts for its rule, and whether Enter has
 /// more to show.
 #[derive(Debug, Clone, Default)]
@@ -90,6 +107,10 @@ pub struct Body {
     pub lines: Vec<(String, Tone)>,
     pub facts: String,
     pub more: bool,
+    /// Past the last line, when the value was cut. The last line then says so.
+    pub rest: Rest,
+    /// Whether `e` changes what the pane shows: text and bytes only.
+    pub escapable: bool,
 }
 
 /// A type as the pane names it, with the unit and zone the short label drops.
@@ -223,6 +244,7 @@ pub fn body(
     let mut lines = Vec::new();
     let mut facts = vec![kind.clone()];
     let mut more = false;
+    let mut rest = Rest::None;
     match shown {
         Shown::Unread => {
             facts.push("not read".to_string());
@@ -306,8 +328,9 @@ pub fn body(
                     raw_lines(shown_text, width, &mut lines);
                 }
                 if cut {
-                    let rest = s[shown_text.len()..].chars().count();
-                    lines.push((more_line(rest, "char", "chars"), Tone::Dim));
+                    let left = s[shown_text.len()..].chars().count();
+                    lines.push((more_line(left, "char", "chars"), Tone::Dim));
+                    rest = Rest::Units(plural(left, "char", "chars"));
                     more = true;
                 }
             }
@@ -318,6 +341,9 @@ pub fn body(
                     _ => unreachable!(),
                 };
                 facts.push(plural(bytes.len(), "byte", "bytes"));
+                if bytes.is_empty() {
+                    facts.push("empty".to_string());
+                }
                 let n = bytes.len().min(budget / 4);
                 if escaped {
                     let mut literal = exact::escaped_bytes(&bytes[..n]);
@@ -325,14 +351,28 @@ pub fn body(
                         literal.pop();
                     }
                     wrap_into(&literal, width, Tone::Plain, &mut lines);
+                    if n < bytes.len() {
+                        rest = Rest::Units(plural(bytes.len() - n, "byte", "bytes"));
+                    }
+                } else if bytes.is_empty() {
+                    lines.push(("empty binary".to_string(), Tone::Dim));
                 } else {
                     let per_line = match width {
                         w if w >= 76 => 16,
                         w if w >= 42 => 8,
                         _ => 4,
                     };
-                    for line in exact::hex_lines(&bytes[..n], per_line) {
+                    let dumps = exact::hex_lines(&bytes[..n], per_line);
+                    let first = lines.len();
+                    let count = dumps.len();
+                    for line in dumps {
                         wrap_into(&line, width, Tone::Plain, &mut lines);
+                    }
+                    // Every dump line is padded to one width, so each wraps to as many
+                    // rows, and the lines past the cut are counted, not formatted.
+                    let rows_each = (lines.len() - first) / count.max(1);
+                    if n < bytes.len() {
+                        rest = Rest::Lines((bytes.len() - n).div_ceil(per_line) * rows_each);
                     }
                 }
                 if n < bytes.len() {
@@ -355,6 +395,7 @@ pub fn body(
                 }
                 if pretty.cut {
                     lines.push((format!("{} more", g.ellipsis), Tone::Dim));
+                    rest = Rest::Unknown;
                     more = true;
                 }
             }
@@ -374,7 +415,23 @@ pub fn body(
         },
     }
     // Only text and bytes have an escaped form to be in.
-    let has_text = matches!(
+    let has_text = escapable(shown);
+    if escaped && has_text {
+        facts.push("escaped".to_string());
+    }
+    Body {
+        lines,
+        facts: facts.join(&format!(" {} ", g.middot)),
+        more,
+        rest,
+        escapable: has_text,
+    }
+}
+
+/// Whether `e` changes how `shown` reads: only text and bytes have an escaped
+/// form.
+pub fn escapable(shown: &Shown) -> bool {
+    matches!(
         shown,
         Shown::Value(
             AnyValue::String(_)
@@ -386,15 +443,59 @@ pub fn body(
                 | AnyValue::Binary(_)
                 | AnyValue::BinaryOwned(_)
         )
-    );
-    if escaped && has_text {
-        facts.push("escaped".to_string());
+    )
+}
+
+/// The pane's last line when `hidden` lines of `body` do not fit: every line
+/// left, counted over the whole value and not only the part formatted.
+fn overflow_line(body: &Body, hidden: usize) -> String {
+    let g = crate::glyphs::get();
+    // A cut value's own last line says what was cut; it is not a line of the value.
+    let content = match body.rest {
+        Rest::None => hidden,
+        _ => hidden.saturating_sub(1),
+    };
+    let cut_line = || {
+        body.lines
+            .last()
+            .map(|(t, _)| t.clone())
+            .unwrap_or_default()
+    };
+    match &body.rest {
+        Rest::None => more_line(hidden, "line", "lines"),
+        Rest::Lines(n) => more_line(content + n, "line", "lines"),
+        _ if content == 0 => cut_line(),
+        Rest::Units(units) => format!("{}, then {units}", more_line(content, "line", "lines")),
+        Rest::Unknown => format!("{} {}+ more lines", g.ellipsis, thousands(content)),
     }
-    Body {
-        lines,
-        facts: facts.join(&format!(" {} ", g.middot)),
-        more,
+}
+
+/// A preview for a value the table would show as nothing: an empty string or
+/// empty bytes, said so rather than left blank.
+fn empty_preview(value: &AnyValue) -> Option<String> {
+    let g = crate::glyphs::get();
+    match value {
+        AnyValue::String("") => Some("\"\"".to_string()),
+        AnyValue::StringOwned(s) if s.is_empty() => Some("\"\"".to_string()),
+        AnyValue::Binary([]) => Some(format!("0 bytes {} empty", g.middot)),
+        AnyValue::BinaryOwned(b) if b.is_empty() => Some(format!("0 bytes {} empty", g.middot)),
+        _ => None,
     }
+}
+
+/// Rows of the field list for `fields` visible fields in `avail` rows shared
+/// with the value: every field when they all fit beside a short value, else
+/// half. Depends on the row's fields, never on the focused one, so moving
+/// between fields moves nothing.
+pub fn list_rows(fields: usize, avail: usize) -> usize {
+    if fields + VALUE_MIN <= avail {
+        return fields.max(1);
+    }
+    fields
+        .max(1)
+        .min((avail / 2).max(3))
+        .min(avail.saturating_sub(2))
+        .max(1)
 }
 
 /// The table's one-line preview of a value, formatted as the table formats it,
@@ -437,6 +538,33 @@ fn null_glyph(kind: NullKind) -> &'static str {
         NullKind::Absent => g.absent,
         NullKind::Conflict => g.conflict,
     }
+}
+
+/// The inspector's title: the row, of how many, and the group it is in inside
+/// a drill-down, as the breadcrumb the takeover covers says it.
+fn title(display_row: usize, state: &DataTableState) -> String {
+    let g = crate::glyphs::get();
+    let mut title = format!("Row {}", thousands(display_row));
+    if let Some(total) = state.num_rows_if_valid() {
+        title.push_str(&format!(" of {}", thousands(total)));
+    }
+    if state.is_drilled_down()
+        && let Some((columns, values)) = state.drilled_group_key()
+    {
+        let key: Vec<String> = columns
+            .iter()
+            .zip(values)
+            .map(|(c, v)| format!("{c}={v}"))
+            .collect();
+        if !key.is_empty() {
+            title.push_str(&format!(
+                " {} {}",
+                g.middot,
+                key.join(&format!(" {} ", g.middot))
+            ));
+        }
+    }
+    title
 }
 
 /// Draw the inspector over `area` for the table's selected row.
@@ -508,6 +636,17 @@ pub fn render(
         },
     };
 
+    // The layout, worked out before the footer: the footer offers the scroll
+    // keys only when the value overflows its pane.
+    let visible = modal.visible();
+    // The Surface's content: inside the border, less the footer row.
+    let content_h = area.height.saturating_sub(3) as usize;
+    let avail = content_h.saturating_sub(2);
+    let list_h = list_rows(visible.len(), avail);
+    let body_h = content_h.saturating_sub(list_h + 2);
+    let overflows = body.lines.len() > body_h;
+    let list_overflows = visible.len() > list_h;
+
     let escape_label = if modal.escaped { "Raw" } else { "Escaped" };
     let footer = if modal.finding {
         HintBar::from_ctx(ctx)
@@ -515,34 +654,43 @@ pub fn render(
             .hint_weighted("type", "Find", 1)
             .hint_weighted("Esc", "Clear", 4)
     } else {
+        // Only keys that act here; the weights say which yield first on a narrow
+        // footer, the way out last.
         let mut bar = HintBar::from_ctx(ctx);
         if let Some(label) = enter.or(body.more.then_some("More")) {
-            bar = bar.hint_weighted("Enter", label, 3);
+            bar = bar.hint_weighted("Enter", label, 9);
         }
-        bar.hint_weighted("y", "Copy", 3)
-            .hint_weighted(g.updown, "Field", 2)
-            .hint_weighted(g.updown_lr, "Row", 2)
-            .hint_weighted("e", escape_label, 1)
-            .hint_weighted("/", "Find", 1)
-            .hint_weighted("Esc", "Close", 4)
+        bar = bar
+            .hint_weighted("y", "Copy", 8)
+            .hint_weighted(g.updown, "Field", 7)
+            .hint_weighted(g.updown_lr, "Row", 6)
+            .hint_weighted("/", "Find", 5);
+        if overflows {
+            bar = bar.hint_weighted("PgUp/PgDn", "Scroll", 4);
+        }
+        if body.escapable {
+            bar = bar.hint_weighted("e", escape_label, 3);
+        }
+        if list_overflows {
+            bar = bar.hint_weighted("Home/End", "First/Last", 2);
+        }
+        let esc = if modal.picker.filter.is_empty() {
+            "Close"
+        } else {
+            "Clear"
+        };
+        bar.hint_weighted("Esc", esc, 10)
     };
     let title = match &row {
-        Some(row) => format!("Row {}", thousands(row.display_row)),
+        Some(row) => title(row.display_row, state),
         None => "Row".to_string(),
     };
+    let title = crate::glyphs::fit_cells(&title, area.width.saturating_sub(4) as usize, g.ellipsis);
     let content = Surface::new(&title).footer(&footer).render(area, buf, ctx);
     if content.height < 4 || content.width < 12 {
         return;
     }
 
-    let visible = modal.visible();
-    let avail = content.height.saturating_sub(2) as usize;
-    let list_h = visible
-        .len()
-        .max(1)
-        .min((avail / 2).max(3))
-        .min(avail.saturating_sub(2))
-        .max(1);
     let line = |y: u16| Rect {
         y,
         height: 1,
@@ -644,10 +792,13 @@ pub fn render(
         let label_pad = type_w.saturating_sub(crate::glyphs::cell_width(&label));
         let (value_text, value_style) = match &row {
             Some(row) => match shown(field, row, modal.read.as_ref(), state) {
-                Shown::Value(v) => (
-                    preview(field, &v, preview_w, ctx),
-                    Style::default().fg(ctx.text_primary),
-                ),
+                Shown::Value(v) => match empty_preview(&v) {
+                    Some(empty) => (empty, Style::default().fg(ctx.dimmed)),
+                    None => (
+                        preview(field, &v, preview_w, ctx),
+                        Style::default().fg(ctx.text_primary),
+                    ),
+                },
                 Shown::Null(kind) => (
                     null_glyph(kind).to_string(),
                     Style::default()
@@ -709,7 +860,7 @@ pub fn render(
     {
         let y = body_y + i as u16;
         if i + 1 == body_h && below > 0 {
-            Paragraph::new(more_line(below + 1, "line", "lines"))
+            Paragraph::new(overflow_line(&body, below + 1))
                 .style(Style::default().fg(ctx.dimmed))
                 .render(line(y), buf);
             break;
@@ -902,6 +1053,119 @@ mod tests {
             "Not read with the table's rows; Enter reads this row's hidden and binary fields"
         );
         assert!(texts(&narrow).iter().all(|l| l.chars().count() <= 30));
+    }
+
+    /// D3: a cut value's last line counts the whole value, not only the chunk
+    /// formatted: a hex dump in lines, text in its chars past the lines shown.
+    #[test]
+    fn the_overflow_line_counts_the_whole_value() {
+        let f = field("blob", DataType::Binary);
+        let bytes = vec![7u8; 1 << 20];
+        let b = body(
+            &f,
+            &Shown::Value(AnyValue::Binary(&bytes)),
+            false,
+            1,
+            80,
+            None,
+        );
+        // 4 KiB dumped at 16 bytes a line; the rest counted, not formatted.
+        assert_eq!(b.lines.len(), 256 + 1);
+        assert_eq!(b.rest, Rest::Lines((bytes.len() - 4096) / 16));
+        // 20 lines on screen: the 19th onward of 65,536 are left.
+        let hidden = b.lines.len() - 19;
+        assert_eq!(
+            overflow_line(&b, hidden),
+            more_line(65_536 - 19, "line", "lines")
+        );
+
+        let f = field("text", DataType::String);
+        let big = "x".repeat(CHUNK_BYTES * 2);
+        let b = body(
+            &f,
+            &Shown::Value(AnyValue::String(&big)),
+            false,
+            1,
+            100,
+            None,
+        );
+        assert_eq!(b.rest, Rest::Units(plural(CHUNK_BYTES, "char", "chars")));
+        let line = overflow_line(&b, 10);
+        assert!(
+            line.ends_with(&format!(
+                "9 more lines, then {} chars",
+                thousands(CHUNK_BYTES)
+            )),
+            "{line}"
+        );
+        // Only the cut line itself left: it says what was cut.
+        assert_eq!(overflow_line(&b, 1), b.lines.last().unwrap().0);
+
+        // A value formatted whole counts its own lines.
+        let short = body(
+            &f,
+            &Shown::Value(AnyValue::String("a\nb\nc")),
+            false,
+            1,
+            40,
+            None,
+        );
+        assert_eq!(short.rest, Rest::None);
+        assert_eq!(overflow_line(&short, 2), more_line(2, "line", "lines"));
+    }
+
+    /// D5: empty text and empty bytes are said, in the list and in the pane.
+    #[test]
+    fn empty_values_are_visible() {
+        let g = crate::glyphs::get();
+        assert_eq!(
+            empty_preview(&AnyValue::String("")).as_deref(),
+            Some("\"\"")
+        );
+        assert_eq!(empty_preview(&AnyValue::String(" ")), None);
+        assert_eq!(
+            empty_preview(&AnyValue::Binary(b"")),
+            Some(format!("0 bytes {} empty", g.middot))
+        );
+        assert_eq!(empty_preview(&AnyValue::Binary(b"a")), None);
+        let f = field("b", DataType::Binary);
+        let b = body(&f, &Shown::Value(AnyValue::Binary(b"")), false, 1, 80, None);
+        assert_eq!(texts(&b), ["empty binary"]);
+        assert_eq!(b.lines[0].1, Tone::Dim);
+        assert!(b.facts.ends_with("empty"), "{}", b.facts);
+    }
+
+    /// D6: `e` acts on text and bytes only.
+    #[test]
+    fn only_text_and_bytes_are_escapable() {
+        let cases = [
+            (DataType::String, Shown::Value(AnyValue::String("a")), true),
+            (DataType::Binary, Shown::Value(AnyValue::Binary(b"a")), true),
+            (DataType::Int64, Shown::Value(AnyValue::Int64(1)), false),
+            (DataType::Date, Shown::Value(AnyValue::Date(1)), false),
+            (DataType::String, Shown::Null(NullKind::Null), false),
+            (DataType::Binary, Shown::Unread, false),
+        ];
+        for (dtype, shown, escapable) in cases {
+            let b = body(&field("f", dtype.clone()), &shown, false, 1, 40, None);
+            assert_eq!(b.escapable, escapable, "{dtype:?} {shown:?}");
+        }
+    }
+
+    /// D11: every field is listed when they all fit beside a short value; a long
+    /// list keeps half. The value always keeps its few lines.
+    #[test]
+    fn the_list_takes_the_rows_the_value_does_not_need() {
+        // 80x24: 18 rows shared by the 14-field list and the value.
+        assert_eq!(list_rows(14, 18), 14);
+        assert_eq!(list_rows(15, 18), 15);
+        assert_eq!(list_rows(16, 18), 9);
+        assert_eq!(list_rows(214, 18), 9);
+        assert_eq!(list_rows(1, 18), 1);
+        assert_eq!(list_rows(0, 18), 1);
+        // 60x20: 14 rows.
+        assert_eq!(list_rows(14, 14), 7);
+        assert_eq!(list_rows(11, 14), 11);
     }
 
     #[test]

@@ -1,4 +1,7 @@
 Every field of the table's current row, and the focused field's whole value.
+The title counts the rows, Row 3 of 20, and inside a drill-down names the
+group: Row 3 of 20 · region=north. The footer offers only the keys that act
+on the focused field.
 
   ↑ / ↓ (j/k):      Move between fields
   Home / End:       First and last field
@@ -7,7 +10,8 @@ Every field of the table's current row, and the focused field's whole value.
   Enter:            Show more of a long value, or read a field the table's
                     rows do not hold (hidden and binary columns)
   y:                Copy the focused field's exact value
-  e:                Show text escaped (\n, \t, \\, quotes) or as itself
+  e:                Show text or bytes escaped (\n, \t, \\, quotes) or as
+                    itself
   /:                Find a field by name: type to narrow, Enter or ↓ keeps
                     the list narrowed, Esc clears it
   ? / F1:           Show this help (in the find line ? types; use F1)
@@ -18,13 +22,17 @@ The value:
   decimal that reads back to it exactly, a datetime keeps every digit of its
   unit and its zone's offset. When the table rounds or groups a number, the
   line under it says what the table shows.
-  Text shows its length, its lines, and spaces at either end. A null shows
-  as ∅ null, never as an empty string; ∅ (null), · (absent) and ≠
-  (conflicting) mean what they mean in the table.
+  Text shows its length, its lines, and spaces at either end. Empty text
+  lists as "" and empty bytes as 0 bytes · empty. A null shows as ∅ null,
+  never as an empty string; ∅ (null), · (absent) and ≠ (conflicting) mean
+  what they mean in the table.
   Lists and structs show one item per line, with text quoted. Binary shows
   as a hex dump, or escaped as b"...".
   A long value shows its first 16 KB of text (4 KB of bytes); Enter shows
-  as much again each time.
+  as much again each time. The last line counts the whole value: the lines
+  of a hex dump, or the lines shown then the chars not yet shown.
+  The fields take the rows they need when they all fit above a short value;
+  a longer list takes half the height.
 
 Copy:
   y copies the whole value, whatever the pane shows: exact numbers, lists

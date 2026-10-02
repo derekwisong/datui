@@ -96,6 +96,7 @@ pub mod numfmt;
 pub mod output_file;
 pub mod past_calendar;
 pub mod pivot_melt_modal;
+pub mod pointer;
 pub mod quality_export;
 pub mod quality_intent;
 pub mod quality_report;
@@ -10430,6 +10431,8 @@ pub struct App {
     pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
+    /// What the mouse can land on in the last frame, and the last click.
+    pointer: pointer::Pointing,
     cache: CacheManager,
     template_manager: Templates,
     active_template_id: Option<String>, // ID of currently applied template
@@ -12949,6 +12952,11 @@ impl App {
     /// moments, and a background thread is moving it between them.
     fn begin_frame(&mut self) {
         self.footers_this_frame = self.footer_progress().reading();
+        // Whatever this frame does not draw cannot be clicked.
+        self.pointer.forget_drawn();
+        if let Some(state) = self.data_table_state.as_mut() {
+            state.forget_drawn();
+        }
     }
 
     /// The footer counter the screen reads: the open's own while one is on its way to
@@ -14248,6 +14256,7 @@ impl App {
             pending_quality_export: None,
             show_help: false,
             help_scroll: 0,
+            pointer: pointer::Pointing::default(),
             cache,
             template_manager,
             active_template_id: None,
@@ -26546,6 +26555,7 @@ impl Widget for &mut App {
                     .and_then(|s| s.total_rows_when_subset()),
             );
         controls.render(app_layout.control_bar, buf);
+        self.pointer.chips_drawn(controls.drawn_chips());
         if let Some(debug_area) = app_layout.debug {
             self.debug.render(debug_area, buf);
         }
@@ -26795,15 +26805,17 @@ fn conclude(
     }
 }
 
-/// Undo `run`'s terminal setup: pop the keyboard flags (a no-op where they were
-/// never pushed; a terminal that ignored the push ignores the pop too), then hand
-/// back the screen.
+/// Undo `run`'s terminal setup: let go of the mouse, pop the keyboard flags (a
+/// no-op where they were never pushed; a terminal that ignored the push ignores the
+/// pop too), then hand back the screen.
 ///
 /// Says so on stderr if that fails, but never panics: after a hangup the terminal is
 /// gone, and `ratatui::restore`'s `eprintln!` would panic on it, then panic again in
 /// the panic hook and abort.
 fn restore_terminal() {
     use std::io::Write;
+    // Whether or not it was taken: a terminal not reporting the mouse ignores this.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::PopKeyboardEnhancementFlags
@@ -27067,6 +27079,11 @@ fn run_impl(
     // doing UTF-8, box-drawing characters render as replacement boxes and make the
     // UI harder to read rather than prettier.
     glyphs::init_with_overrides(config.display.unicode, &config.glyphs.overrides);
+
+    // Taken once the settings say so; handed back with the screen.
+    if config.display.mouse {
+        let _ = crossterm::execute!(std::io::stdout(), pointer::EnableMouse);
+    }
 
     let mut app = App::new_with_templates(tx.clone(), rt_handle, theme, config, templates);
     app.startup_template = opts.template.clone();

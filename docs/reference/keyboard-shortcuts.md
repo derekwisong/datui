@@ -406,6 +406,30 @@ held, and held keys die with the screen they were typed at. At the loading
 screen nothing is held: the allowed keys act, the rest are dropped. While a
 view is being applied, <kbd>Esc</kbd> stops it and keeps the table as it was.
 
+## Mouse
+
+The mouse is a shortcut to the keys: it never does what no key does.
+
+| Action | Effect |
+|---|---|
+| Wheel | <kbd>↑</kbd> <kbd>↓</kbd> three rows a notch, in whatever has the keys: the table, help, the inspector, a sidebar. On the home screen it moves the selection and stops at the first and last row |
+| <kbd>Shift</kbd>+wheel, or a sideways wheel | <kbd>←</kbd> <kbd>→</kbd>: the column cursor, at the table only |
+| Click a cell | Puts the cursor on its row and column; on a header, its column |
+| Click a home row | Selects it |
+| Double-click | <kbd>Enter</kbd> on the row: inspect or drill at the table, open on the home screen |
+| Click a chip on the bottom bar | Presses its key |
+
+In a text field the wheel does nothing, so it cannot recall history.
+
+Mouse input is never queued. While datui is busy, the sideways wheel and the
+busy bar's chips act as their keys would; the wheel down and a click on the
+table are dropped, as is a click behind keys already queued.
+
+While datui has the mouse, the terminal's own text selection needs its bypass
+modifier: <kbd>Shift</kbd>+drag in most terminals, <kbd>Option</kbd>+drag in
+iTerm2. `mouse = false` under `[display]`, or
+`--mouse=false`, leaves the mouse to the terminal.
+
 ## Terminal notes
 
 If <kbd>F1</kbd> does nothing in Alacritty, it is bound in

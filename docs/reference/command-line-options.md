@@ -44,6 +44,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `--column-colors[=<BOOL>]` | Color table cells by column type (default: true) |
 | `--number-format <FORMAT>` | Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press , to toggle while running |
 | `--align-numeric-right[=<BOOL>]` | Right-align numeric columns and their headers (default: true) |
+| `--mouse[=<BOOL>]` | Take the mouse: wheel scrolls, click selects (default: true). --mouse=false leaves it to the terminal |
 | `--generate-config` | Write the default configuration to ~/.config/datui/config.toml and exit |
 | `--force` | Overwrite an existing config file (with --generate-config) |
 | `--s3-endpoint-url <URL>` | S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000 |

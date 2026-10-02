@@ -27,6 +27,7 @@ datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins
 |---|---|
 | Arrow keys or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move around |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
+| Wheel, click | Scroll; put the cursor on a cell. A double-click inspects the row |
 | <kbd>i</kbd> | Inspect columns and file details |
 | <kbd>?</kbd> | Show help for this screen |
 | <kbd>Esc</kbd> | Close a panel or go back |

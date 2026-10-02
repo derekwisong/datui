@@ -198,6 +198,8 @@ pub struct DataTableState {
     page_trail: Vec<(usize, usize)>,
     /// Which columns the last draw showed, while some are off screen.
     on_screen: Option<OnScreen>,
+    /// Where the last frame drew the rows and columns, for a click.
+    drawn: Option<DrawnTable>,
     error: Option<PolarsError>,
     pub suppress_error_display: bool, // When true, don't show errors in main view (e.g., when query input is active)
     schema: Arc<Schema>,
@@ -1721,6 +1723,7 @@ impl DataTableState {
             column_moves: Vec::new(),
             page_trail: Vec::new(),
             on_screen: None,
+            drawn: None,
             error: None,
             suppress_error_display: false,
             schema,
@@ -1851,6 +1854,7 @@ impl DataTableState {
             column_moves: Vec::new(),
             page_trail: Vec::new(),
             on_screen: None,
+            drawn: None,
             error: None,
             suppress_error_display: false,
             schema,
@@ -9877,6 +9881,7 @@ impl DataTable {
             cap: self.text_cap(area.width),
         };
         self.render_scrolling(df, area, buf, state, leading_gap, sizing)
+            .0
     }
 
     /// The cap on automatic text widths, from the terminal's width when known.
@@ -9899,7 +9904,7 @@ impl DataTable {
         state: &mut TableState,
         leading_gap: bool,
         mut sizing: Sizing,
-    ) -> usize {
+    ) -> (usize, Vec<(u16, u16, String)>, usize) {
         let rows = df
             .height()
             .min((area.height as usize).saturating_sub(self.header_height() as usize));
@@ -9914,8 +9919,8 @@ impl DataTable {
                 .table_cell_padding
                 .saturating_mul(u16::try_from(shown.saturating_sub(1)).unwrap_or(u16::MAX));
         fitted.hint_cell = shown > 0 && shown < df.width() && used >= area.width;
-        self.draw_columns(&fitted, area, buf, state, leading_gap);
-        shown
+        let (columns, rows) = self.draw_columns(&fitted, area, buf, state, leading_gap);
+        (shown, columns, rows)
     }
 
     /// The frozen columns that fit beside a usable scrolling column, with their widths.
@@ -10135,7 +10140,7 @@ impl DataTable {
         buf: &mut Buffer,
         state: &mut TableState,
         leading_gap: bool,
-    ) {
+    ) -> (Vec<(u16, u16, String)>, usize) {
         let g = self.glyphs;
         let fit = |text: &str, width: u16| -> String {
             crate::glyphs::fit_cells(text, usize::from(width), g.ellipsis).into_owned()
@@ -10284,6 +10289,34 @@ impl DataTable {
         state.select_column(cursor);
         StatefulWidget::render(table, area, buf, state);
         state.select_column(None);
+        // Where the Table put each column: past the gap's selection column, laid out
+        // as it lays them out, so a click finds the column it drew.
+        let lead = u16::from(leading_gap).min(area.width);
+        let columns_area = Rect {
+            x: area.x + lead,
+            width: area.width - lead,
+            ..area
+        };
+        let spans = ratatui::layout::Layout::horizontal(
+            fitted
+                .widths
+                .iter()
+                .map(|&w| ratatui::layout::Constraint::Length(w)),
+        )
+        .flex(ratatui::layout::Flex::Start)
+        .spacing(self.table_cell_padding)
+        .split(columns_area);
+        let columns = spans
+            .iter()
+            .zip(&fitted.cols)
+            .map(|(span, col)| (span.x, span.right(), col.name.clone()))
+            .collect();
+        (
+            columns,
+            fitted.rows.min(usize::from(
+                area.height.saturating_sub(self.header_height()),
+            )),
+        )
     }
 
     /// The width a scrolling column is drawn at: the width it was last drawn at in
@@ -10416,6 +10449,69 @@ impl DataTable {
     }
 }
 
+/// The table as the last frame drew it: what a click on it lands on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DrawnTable {
+    /// The whole table, rail and header included.
+    area: Rect,
+    header: u16,
+    /// The first row drawn and how many under the header.
+    start_row: usize,
+    rows: usize,
+    /// Each column drawn: its cells across, `[from, to)`, and its name.
+    columns: Vec<(u16, u16, String)>,
+}
+
+/// What a click on the table lands on: the row on screen, counted from the top (none
+/// on the header), and the column (none on the rail or the row numbers).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellHit {
+    pub row: Option<usize>,
+    pub column: Option<String>,
+}
+
+impl DataTableState {
+    /// Forget where the table was drawn: a frame that does not draw it leaves nothing
+    /// there to click.
+    pub fn forget_drawn(&mut self) {
+        self.drawn = None;
+    }
+
+    /// What the cell at `(x, y)` showed in the last frame. `None` off the table, or
+    /// below its last row.
+    pub fn drawn_cell(&self, x: u16, y: u16) -> Option<CellHit> {
+        let drawn = self.drawn.as_ref()?;
+        if !drawn.area.contains(ratatui::layout::Position { x, y }) {
+            return None;
+        }
+        let below_header = usize::from(y - drawn.area.y).checked_sub(usize::from(drawn.header));
+        let row = match below_header {
+            Some(row) if row >= drawn.rows => return None,
+            row => row,
+        };
+        let column = drawn
+            .columns
+            .iter()
+            .find(|(from, to, _)| (*from..*to).contains(&x))
+            .map(|(_, _, name)| name.clone());
+        Some(CellHit { row, column })
+    }
+
+    /// Put the cursor on what a click landed on: the row, when the rows drawn are
+    /// still the view's, and the column.
+    pub fn point_at(&mut self, hit: &CellHit) {
+        if let (Some(row), Some(drawn)) = (hit.row, self.drawn.as_ref())
+            && drawn.start_row == self.start_row
+            && row < drawn.rows
+        {
+            self.table_state.select(Some(row));
+        }
+        if let Some(name) = &hit.column {
+            self.set_current_column(name);
+        }
+    }
+}
+
 impl StatefulWidget for DataTable {
     type State = DataTableState;
 
@@ -10430,6 +10526,8 @@ impl StatefulWidget for DataTable {
         // the left" hint in the header, so no header name ever gets a character
         // overwritten.
         let cap = self.text_cap(area.width);
+        let whole = area;
+        state.drawn = None;
         let rail_area = Rect {
             x: area.x,
             y: area.y,
@@ -10533,6 +10631,8 @@ impl StatefulWidget for DataTable {
             if state.row_numbers {
                 self.render_row_numbers(row_num_area, buf, row_number_params);
             }
+            let mut drawn_columns = Vec::new();
+            let mut drawn_rows = 0;
             let mut scroll_area = data_area;
             let mut leading_gap = false;
             if let Some(locked) = locked_slice {
@@ -10565,7 +10665,10 @@ impl StatefulWidget for DataTable {
                         width: columns_width.saturating_add(1).min(data_area.width),
                         ..data_area
                     };
-                    self.draw_columns(&fitted, frozen_area, buf, &mut state.table_state, false);
+                    let (columns, rows) =
+                        self.draw_columns(&fitted, frozen_area, buf, &mut state.table_state, false);
+                    drawn_columns.extend(columns);
+                    drawn_rows = drawn_rows.max(rows);
                     separator_x = frozen_area.right();
                 }
                 if separator_x < data_area.right() {
@@ -10606,7 +10709,7 @@ impl StatefulWidget for DataTable {
                 .and_then(|df| visible_slice(df, offset, state.visible_rows))
             {
                 let total_cols = sliced_df.width();
-                let shown = self.render_scrolling(
+                let (shown, columns, rows) = self.render_scrolling(
                     &sliced_df,
                     scroll_area,
                     buf,
@@ -10618,6 +10721,8 @@ impl StatefulWidget for DataTable {
                         cap,
                     },
                 );
+                drawn_columns.extend(columns);
+                drawn_rows = drawn_rows.max(rows);
                 let more_left = state.termcol_index > 0;
                 let more_right = total_cols.saturating_sub(shown);
                 let first = state.frozen_shown() + state.termcol_index + 1;
@@ -10651,6 +10756,13 @@ impl StatefulWidget for DataTable {
                             total,
                         });
             }
+            state.drawn = Some(DrawnTable {
+                area: whole,
+                header: header_h,
+                start_row,
+                rows: drawn_rows,
+                columns: drawn_columns,
+            });
         } else if !state.column_order.is_empty() {
             // Empty result (0 rows) but we have a schema - show empty table with header, no rows
             let empty_columns: Vec<_> = state
@@ -16571,6 +16683,79 @@ mod tests {
         let header = row_string(buf, area, 0);
         let at = header.find(name).expect("the column is drawn") as u16;
         at..at + name.len() as u16
+    }
+
+    /// A click finds the cell drawn under it, at 80×24 and on a wide screen: each
+    /// column where its heading is, frozen or scrolling, and each row where its cells
+    /// are, with row numbers on and the view scrolled down.
+    #[test]
+    fn a_click_finds_the_cell_drawn_under_it() {
+        for (width, height) in [(80, 24), (200, 50)] {
+            let n = 400;
+            let mut columns = vec![Column::new("id".into(), (0..n).collect::<Vec<i64>>())];
+            for c in 0..30 {
+                columns.push(Column::new(
+                    format!("col_{c:02}").as_str().into(),
+                    (0..n).map(|i| format!("v{i}_{c}")).collect::<Vec<_>>(),
+                ));
+            }
+            let lf = DataFrame::new_infer_height(columns).unwrap().lazy();
+            let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+            state.set_locked_columns(1);
+            state.toggle_row_numbers();
+            let area = Rect::new(0, 0, width, height);
+            let render = |state: &mut DataTableState| {
+                let mut buf = Buffer::empty(area);
+                DataTable::default().render(area, &mut buf, state);
+                buf
+            };
+            // The first frame sets how many rows fit; the rows are read for it.
+            render(&mut state);
+            state.collect();
+            for scrolled in [false, true] {
+                if scrolled {
+                    state.page_down();
+                    state.collect();
+                }
+                let buf = render(&mut state);
+                let drawn = state.drawn.clone().expect("the table was drawn");
+                let header = row_string(&buf, area, 0);
+                assert!(drawn.columns.len() > 3, "{width}x{height}: {header:?}");
+                assert_eq!(drawn.columns[0].2, "id", "the frozen column first");
+                for (_, _, name) in &drawn.columns {
+                    // In cells, not bytes: the frozen separator is a wide glyph.
+                    let at = header.find(name.as_str()).expect("heading drawn");
+                    let from = header[..at].chars().count() as u16;
+                    for x in [from, from + name.len() as u16 - 1] {
+                        let hit = state.drawn_cell(x, 0).expect("on the table");
+                        assert_eq!(hit.row, None, "the header is no row");
+                        assert_eq!(hit.column.as_deref(), Some(name.as_str()), "at {x}");
+                    }
+                }
+                // The rail and the row numbers are no column, but are the row.
+                let y = drawn.header + 5;
+                assert_eq!(
+                    state.drawn_cell(0, y),
+                    Some(CellHit {
+                        row: Some(5),
+                        column: None
+                    })
+                );
+                // A cell: the row and column whose value is drawn there.
+                let (from, to, name) = drawn.columns[2].clone();
+                let c: usize = name["col_".len()..].parse().unwrap();
+                let hit = state.drawn_cell(from, y).expect("a cell");
+                let row = drawn.start_row + 5;
+                let text: String = (from..to).map(|x| buf[(x, y)].symbol()).collect();
+                assert_eq!(text.trim(), format!("v{row}_{c}"), "{width}x{height}");
+                state.point_at(&hit);
+                assert_eq!(state.table_state.selected(), Some(5));
+                assert_eq!(state.current_column(), Some(name.as_str()));
+                // Off the table's right or bottom edge is nothing.
+                assert_eq!(state.drawn_cell(width, y), None);
+                assert_eq!(state.drawn_cell(0, height), None);
+            }
+        }
     }
 
     /// The column cursor at 80×24: its header and cells take the column tint, the

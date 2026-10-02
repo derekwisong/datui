@@ -457,6 +457,27 @@ fn test_notes_accent_follows_the_last_file_that_sets_it() {
 }
 
 #[test]
+fn test_mouse_is_on_unless_a_file_turns_it_off() {
+    use datui::config::DisplayConfig;
+
+    assert!(
+        DisplayConfig::default().mouse,
+        "taken unless asked otherwise"
+    );
+    assert!(layered(&[""]).display.mouse);
+    let off = "[display]\nmouse = false\n";
+    let on = "[display]\nmouse = true\n";
+    let silent = "[display]\nrow_numbers = true\n";
+    assert!(!layered(&[off]).display.mouse, "false is honored");
+    assert!(
+        !layered(&[off, silent]).display.mouse,
+        "silence keeps it off"
+    );
+    assert!(layered(&[off, on]).display.mouse, "an explicit true wins");
+    assert!(!layered(&[on, off]).display.mouse);
+}
+
+#[test]
 fn test_explicit_defaults_override_and_omitted_keys_keep() {
     use datui::config::QueryMode;
     use datui::glyphs::UnicodeMode;

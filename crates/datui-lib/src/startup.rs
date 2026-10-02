@@ -140,6 +140,9 @@ fn apply_args(config: &mut AppConfig, args: &Args) {
     if let Some(ar) = args.align_numeric_right {
         config.display.align_numeric_right = ar;
     }
+    if let Some(mouse) = args.mouse {
+        config.display.mouse = mouse;
+    }
     if let Some(rows) = args.sample_rows {
         config.performance.analysis_sample_rows = rows;
     }
@@ -186,4 +189,29 @@ pub(crate) fn draw_waiting(frame: &mut Frame, path: Option<&Path>) {
             ..area
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// `--mouse=false` leaves the mouse to the terminal over a config that takes it,
+    /// `--mouse` takes it over one that does not, and no flag keeps the config's.
+    #[test]
+    fn the_mouse_flag_overrides_the_config() {
+        let after = |flags: &[&str], configured: bool| {
+            let args = Args::try_parse_from(std::iter::once("datui").chain(flags.iter().copied()))
+                .expect("parses");
+            let mut config = AppConfig::default();
+            config.display.mouse = configured;
+            apply_args(&mut config, &args);
+            config.display.mouse
+        };
+        assert!(!after(&["--mouse=false"], true));
+        assert!(after(&["--mouse"], false));
+        assert!(after(&["--mouse=true"], false));
+        assert!(after(&[], true));
+        assert!(!after(&[], false));
+    }
 }

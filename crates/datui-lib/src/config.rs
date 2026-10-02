@@ -1572,6 +1572,10 @@ pub struct DisplayConfig {
     /// way; this only decides whether the control bar points at them.
     #[serde(default = "default_true")]
     pub notes_accent: bool,
+    /// Take the mouse: the wheel scrolls and a click selects. The terminal's own text
+    /// selection then needs its bypass modifier (Shift in most terminals).
+    #[serde(default = "default_true")]
+    pub mouse: bool,
     /// Optional fixed width for all sidebars (Info, Sort & Filter, Template, Pivot & Melt). When None, use built-in defaults per sidebar.
     #[serde(default)]
     pub sidebar_width: Option<u16>,
@@ -1869,6 +1873,11 @@ D toggles it for the session",
         "notes_accent",
         "Accent the i key when datui has noticed something about the data and the Info
 panel has not been opened since. The Notes tab is there either way",
+    ),
+    (
+        "mouse",
+        "Wheel scrolls, click selects, double-click is Enter. Set false to leave the mouse
+to the terminal. While it is on, Shift-drag selects text in most terminals",
     ),
     (
         "sidebar_width",
@@ -2693,6 +2702,7 @@ impl Default for DisplayConfig {
             column_colors: true,
             dtype_row: true,
             notes_accent: true,
+            mouse: true,
             sidebar_width: None,
             align_numeric_right: true,
             number_format: NumberFormatConfig::default(),

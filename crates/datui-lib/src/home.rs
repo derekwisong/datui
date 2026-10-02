@@ -3860,6 +3860,15 @@ impl HomeState {
         }
     }
 
+    /// Put the selection on row `index` of what is listed, as a click does.
+    pub fn select(&mut self, index: usize) {
+        if index < self.visible().len() {
+            self.returning = None;
+            self.landing = false;
+            self.selected = index;
+        }
+    }
+
     pub fn move_selection(&mut self, delta: isize) {
         self.returning = None;
         self.landing = false;

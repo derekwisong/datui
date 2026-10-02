@@ -368,6 +368,11 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         .get(app.home.scroll)
         .copied()
         .unwrap_or(first_line);
+    // Which row each line of the list shows, for a click; a spacer shows none.
+    let lines_drawn = (0..height)
+        .map(|dy| row_lines.binary_search(&(first_line + dy)).ok())
+        .collect();
+    app.pointer.home_list_drawn(area, lines_drawn);
 
     // Nothing is read here. Rows carry whatever a worker has measured so far, and
     // the request for more is made after the frame, not during it.

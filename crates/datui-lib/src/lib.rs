@@ -109,6 +109,8 @@ pub mod quality_export;
 pub mod quality_intent;
 pub mod quality_report;
 pub mod quality_trends;
+#[cfg(any(feature = "http", feature = "cloud"))]
+mod remote_model;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
 pub mod sample_modal;
@@ -13237,7 +13239,10 @@ impl App {
                 // spinner would read as progress. The loader holds the generation
                 // meanwhile.
                 self.confirmation_modal
-                    .show(Self::download_confirmation_message(&pending));
+                    .show(Self::download_confirmation_message(
+                        &pending,
+                        self.loading.download_note(),
+                    ));
                 None
             }
             step => {
@@ -15743,6 +15748,11 @@ impl App {
     fn cloud_prefix_format(
         holds: &discover::Holds,
     ) -> Option<(FileFormat, Vec<(FileFormat, usize)>)> {
+        // A model's weights beside its config and tokenizer JSON: the prefix is the
+        // model, as a directory on disk is, and the JSON is not data passed over.
+        if let Some((name, _)) = holds.model_weights() {
+            return FileFormat::from_name(name).map(|format| (format, Vec::new()));
+        }
         let (name, _) = holds.formats.first()?;
         let format = FileFormat::from_name(name).filter(|f| f.reads_many_files())?;
         // And what taking the commonest passes over. The local read reports its own —
@@ -16759,6 +16769,56 @@ impl App {
         let job = Job::Load(load);
         match step {
             #[cfg(any(feature = "http", feature = "cloud"))]
+            Step::ReadHeaders {
+                url,
+                format,
+                options,
+                writer,
+            } => {
+                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
+                self.spawn_job(job, Some("Reading headers..."), move |_| {
+                    let read = crate::remote_model::read(&url, format, &cloud, &runtime, &|| {
+                        writer.stopped()
+                    });
+                    let (lf, summary) = match read {
+                        Ok(read) => read,
+                        Err(crate::model_files::RangeError::NoRanges) => {
+                            return Ok(Answer::Load(Box::new(LoadAnswer::NoRanges { options })));
+                        }
+                        // The URL in the message may carry a password or a signature.
+                        Err(crate::model_files::RangeError::Failed(message)) => {
+                            return Err(crate::logging::redact(&message, &[]));
+                        }
+                    };
+                    let model = Some(Arc::new(summary));
+                    let options = OpenOptions {
+                        format: Some(format),
+                        model: model.clone(),
+                        ..options
+                    };
+                    // The table is the headers, in memory: nothing is left to scan.
+                    let state = Self::schema_state_from_full_scan(
+                        lf,
+                        None,
+                        &OpenOptions {
+                            hive: false,
+                            ..options.clone()
+                        },
+                    )
+                    .map_err(|e| crate::error_display::user_message_from_report(&e, Some(&url)))?
+                    .with_open(OpenFacts {
+                        model,
+                        ..Default::default()
+                    });
+                    Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
+                        state: Box::new(state),
+                        path: Some(url),
+                        options,
+                        debug_label: Some("model headers (ranged)".to_string()),
+                    })))
+                });
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
             Step::Probe(pending) => {
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
@@ -17134,7 +17194,10 @@ impl App {
 
     /// What the user is being asked to agree to before a remote file is downloaded.
     #[cfg(any(feature = "http", feature = "cloud"))]
-    fn download_confirmation_message(pending: &loading::PendingDownload) -> String {
+    fn download_confirmation_message(
+        pending: &loading::PendingDownload,
+        note: Option<&str>,
+    ) -> String {
         let (url, size, options) = pending.parts();
         let size_str = size
             .map(Self::format_bytes)
@@ -17144,8 +17207,9 @@ impl App {
             .as_deref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| std::env::temp_dir().display().to_string());
+        let note = note.map(|note| format!("{note}\n\n")).unwrap_or_default();
         format!(
-            "URL: {url}\nFile size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
+            "{note}URL: {url}\nFile size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
         )
     }
 

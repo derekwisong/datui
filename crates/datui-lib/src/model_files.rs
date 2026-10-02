@@ -244,13 +244,9 @@ pub fn looks_like_gguf(head: &[u8]) -> bool {
     head.starts_with(b"GGUF")
 }
 
-/// Read one SafeTensors header from `reader`, which holds `len` bytes in all.
-pub fn read_safetensors<R: Read>(reader: R, len: u64) -> Result<Header> {
-    let mut reader = reader;
-    let mut prefix = [0u8; 8];
-    reader
-        .read_exact(&mut prefix)
-        .map_err(|_| eyre!("SafeTensors: the file is shorter than its header length"))?;
+/// The header length a SafeTensors file's first eight bytes state, refused when it is
+/// more than the spec allows or than the `len`-byte file holds.
+fn safetensors_header_len(prefix: [u8; 8], len: u64) -> Result<u64> {
     let header_len = u64::from_le_bytes(prefix);
     if header_len > MAX_SAFETENSORS_HEADER {
         return Err(eyre!(
@@ -263,6 +259,17 @@ pub fn read_safetensors<R: Read>(reader: R, len: u64) -> Result<Header> {
             len.saturating_sub(8)
         ));
     }
+    Ok(header_len)
+}
+
+/// Read one SafeTensors header from `reader`, which holds `len` bytes in all.
+pub fn read_safetensors<R: Read>(reader: R, len: u64) -> Result<Header> {
+    let mut reader = reader;
+    let mut prefix = [0u8; 8];
+    reader
+        .read_exact(&mut prefix)
+        .map_err(|_| eyre!("SafeTensors: the file is shorter than its header length"))?;
+    let header_len = safetensors_header_len(prefix, len)?;
     let mut json = Vec::new();
     reader
         .take(header_len)
@@ -816,27 +823,281 @@ fn read_index(path: &Path) -> Result<(Vec<PathBuf>, Metadata)> {
     }
     let mut text = Vec::new();
     file.take(MAX_INDEX_JSON).read_to_end(&mut text)?;
-    let index: StIndex = serde_json::from_slice(&text)
-        .map_err(|e| eyre!("{}: not a SafeTensors index: {e}", path.display()))?;
+    let (names, metadata) = parse_index(&text, &path.display().to_string())?;
     let dir = path.parent().unwrap_or(Path::new(""));
+    Ok((names.iter().map(|name| dir.join(name)).collect(), metadata))
+}
+
+/// An index's shard names, each once and in name order, and its metadata. `named` is
+/// what errors call the index.
+fn parse_index(text: &[u8], named: &str) -> Result<(Vec<String>, Metadata)> {
+    let index: StIndex =
+        serde_json::from_slice(text).map_err(|e| eyre!("{named}: not a SafeTensors index: {e}"))?;
     let names: std::collections::BTreeSet<String> = index.weight_map.into_values().collect();
     if names.len() > MAX_SHARDS {
-        return Err(eyre!("{}: the index names too many shards", path.display()));
+        return Err(eyre!("{named}: the index names too many shards"));
     }
-    let mut shards: Vec<PathBuf> = Vec::with_capacity(names.len());
-    for name in names {
+    for name in &names {
         // A shard is a file beside its index, never a path out of the directory.
-        let named = Path::new(&name);
-        if named.components().count() != 1 || named.file_name().is_none() {
+        let path = Path::new(name);
+        if path.components().count() != 1 || path.file_name().is_none() || name.contains('\\') {
             return Err(eyre!(
-                "{}: the index names {name:?}, which is not a file beside it",
-                path.display()
+                "{named}: the index names {name:?}, which is not a file beside it"
             ));
         }
-        shards.push(dir.join(named));
     }
     let metadata = index.metadata.map(|StMetadata(m)| m).unwrap_or_default();
-    Ok((shards, metadata))
+    Ok((names.into_iter().collect(), metadata))
+}
+
+/// Bytes of one remote object, fetched a range at a time: an HTTP server, or an object
+/// in a store.
+pub trait RangeSource {
+    /// Bytes `start..end` of the object, fewer only where the object ends first, and
+    /// the object's whole length. `start` is inside the object.
+    fn get(&mut self, start: u64, end: u64) -> std::result::Result<(Vec<u8>, u64), RangeError>;
+}
+
+/// Why a ranged read stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RangeError {
+    /// The server sent the whole file where a range was asked for: the header cannot be
+    /// read on its own, and the file is downloaded instead.
+    NoRanges,
+    /// Anything else, as the user is told it.
+    Failed(String),
+}
+
+impl From<color_eyre::Report> for RangeError {
+    fn from(e: color_eyre::Report) -> Self {
+        RangeError::Failed(e.to_string())
+    }
+}
+
+/// The first range a GGUF header is read in. Each read after it is twice the one
+/// before, up to [`MAX_RANGE`], so a header of a few KB costs one request and one with
+/// a vocabulary (5 to 10 MB) four or five. Larger, fewer requests fetch up to twice
+/// the header; see `a_vocabulary_sized_gguf_header_takes_a_few_ranges`.
+pub const FIRST_GGUF_RANGE: u64 = 256 * 1024;
+/// The most one ranged request asks for.
+const MAX_RANGE: u64 = 16 * 1024 * 1024;
+/// The first read of a remote index; one larger than this takes a second.
+const FIRST_INDEX_RANGE: u64 = 1024 * 1024;
+
+/// `start..end` of `src`, checked: exactly the bytes asked for up to the object's end,
+/// and the same length the first answer gave, if there was one.
+fn fetch(
+    src: &mut dyn RangeSource,
+    start: u64,
+    end: u64,
+    known_len: Option<u64>,
+) -> std::result::Result<(Vec<u8>, u64), RangeError> {
+    let (bytes, len) = src.get(start, end)?;
+    if known_len.is_some_and(|known| known != len) {
+        return Err(RangeError::Failed(format!(
+            "the file changed size while its header was read ({} then {len} bytes)",
+            known_len.unwrap_or_default()
+        )));
+    }
+    let want = end.min(len).saturating_sub(start);
+    if bytes.len() as u64 != want {
+        return Err(RangeError::Failed(format!(
+            "asked for bytes {start}..{} and got {} bytes",
+            end.min(len),
+            bytes.len()
+        )));
+    }
+    Ok((bytes, len))
+}
+
+/// A remote object read forward through ranged requests that grow as the read goes on,
+/// and never past `limit`. One range is held at a time.
+struct Ranged<'a> {
+    src: &'a mut dyn RangeSource,
+    len: u64,
+    limit: u64,
+    buf: Vec<u8>,
+    buf_start: u64,
+    pos: u64,
+    next: u64,
+    stop: &'a dyn Fn() -> bool,
+}
+
+impl Read for Ranged<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.limit || out.is_empty() {
+            return Ok(0);
+        }
+        let buf_end = self.buf_start + self.buf.len() as u64;
+        if self.pos < self.buf_start || self.pos >= buf_end {
+            if (self.stop)() {
+                return Err(std::io::Error::other("cancelled"));
+            }
+            let end = self.pos.saturating_add(self.next).min(self.limit);
+            let (bytes, _) = fetch(self.src, self.pos, end, Some(self.len)).map_err(|e| {
+                std::io::Error::other(match e {
+                    RangeError::NoRanges => "the server stopped serving byte ranges".to_string(),
+                    RangeError::Failed(message) => message,
+                })
+            })?;
+            self.buf = bytes;
+            self.buf_start = self.pos;
+            self.next = (self.next * 2).min(MAX_RANGE);
+        }
+        let at = (self.pos - self.buf_start) as usize;
+        let n = out.len().min(self.buf.len() - at);
+        out[..n].copy_from_slice(&self.buf[at..at + n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+/// Read one model header from `src` with ranged requests: SafeTensors as its length
+/// and then exactly its JSON, GGUF forward in growing ranges until its tensor infos
+/// end. Every bound the file readers keep is kept. `stop` is asked before each request.
+pub fn read_header_ranged(
+    src: &mut dyn RangeSource,
+    format: FileFormat,
+    stop: &dyn Fn() -> bool,
+) -> std::result::Result<Header, RangeError> {
+    read_header_ranged_from(src, format, FIRST_GGUF_RANGE, stop)
+}
+
+/// As [`read_header_ranged`], with the first GGUF range `first`: small, for the fuzz
+/// target and the tests, so a header crosses many ranges.
+pub fn read_header_ranged_from(
+    src: &mut dyn RangeSource,
+    format: FileFormat,
+    first: u64,
+    stop: &dyn Fn() -> bool,
+) -> std::result::Result<Header, RangeError> {
+    if format == FileFormat::Gguf {
+        let (head, len) = fetch(src, 0, first.max(1), None)?;
+        let reader = Ranged {
+            src,
+            len,
+            limit: len.min(MAX_GGUF_HEADER),
+            buf: head,
+            buf_start: 0,
+            pos: 0,
+            next: first.max(1).saturating_mul(2).min(MAX_RANGE),
+            stop,
+        };
+        return Ok(read_gguf(reader, len)?);
+    }
+    let (prefix, len) = fetch(src, 0, 8, None)?;
+    let prefix: [u8; 8] = prefix
+        .try_into()
+        .map_err(|_| eyre!("SafeTensors: the file is shorter than its header length"))?;
+    let header_len = safetensors_header_len(prefix, len)?;
+    if stop() {
+        return Err(RangeError::Failed("cancelled".to_string()));
+    }
+    let json = if header_len == 0 {
+        Vec::new()
+    } else {
+        fetch(src, 8, 8 + header_len, Some(len))?.0
+    };
+    Ok(parse_safetensors_json(&json, len - 8 - header_len)?)
+}
+
+/// A remote index: its shard names and metadata, read whole within
+/// [`MAX_INDEX_JSON`].
+fn read_index_ranged(
+    src: &mut dyn RangeSource,
+    named: &str,
+) -> std::result::Result<(Vec<String>, Metadata), RangeError> {
+    let (mut text, len) = fetch(src, 0, FIRST_INDEX_RANGE, None)?;
+    if len > MAX_INDEX_JSON {
+        return Err(RangeError::Failed(format!(
+            "{named}: the index is {len} bytes, more than datui reads"
+        )));
+    }
+    if len > text.len() as u64 {
+        text.extend(fetch(src, text.len() as u64, len, Some(len))?.0);
+    }
+    Ok(parse_index(&text, named)?)
+}
+
+/// A ranged source for a URL.
+pub type OpenRanges<'a> =
+    dyn Fn(&str) -> std::result::Result<Box<dyn RangeSource>, RangeError> + 'a;
+
+/// How a remote model's files are reached: a source for a URL, and the URL of a file
+/// named beside another.
+pub struct Remote<'a> {
+    pub open: &'a OpenRanges<'a>,
+    pub sibling: &'a dyn Fn(&str, &str) -> String,
+    pub stop: &'a dyn Fn() -> bool,
+}
+
+/// The last segment of a URL, without a query: what a file's row and its errors call it.
+pub fn url_file_name(url: &str) -> &str {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Read `urls` — remote model files, or SafeTensors indexes that name them — as one
+/// table of tensors, as [`read_model`] reads files on disk, fetching only their
+/// headers. [`RangeError::NoRanges`] only for one file named on its own, which can be
+/// downloaded instead; for shards it is an error that says so.
+pub fn read_remote_model(
+    urls: &[String],
+    format: FileFormat,
+    remote: &Remote,
+) -> std::result::Result<(LazyFrame, ModelSummary), RangeError> {
+    let no_ranges = |url: &str| {
+        RangeError::Failed(format!(
+            "{url}: the server does not serve byte ranges, which reading a sharded model's headers needs"
+        ))
+    };
+    let mut files: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut metadata: Metadata = Vec::new();
+    for url in urls {
+        if format == FileFormat::Safetensors && is_safetensors_index(Path::new(url_file_name(url)))
+        {
+            let mut src = (remote.open)(url)?;
+            let (names, index_meta) =
+                read_index_ranged(src.as_mut(), url).map_err(|e| match e {
+                    RangeError::NoRanges => no_ranges(url),
+                    e => e,
+                })?;
+            merge_metadata(&mut metadata, index_meta);
+            for name in names {
+                let shard = (remote.sibling)(url, &name);
+                if seen.insert(shard.clone()) {
+                    files.push(shard);
+                }
+            }
+        } else if seen.insert(url.clone()) {
+            files.push(url.clone());
+        }
+    }
+    if files.is_empty() {
+        return Err(RangeError::Failed("No model files to read".to_string()));
+    }
+    // Named on its own, a file the server sends whole is downloaded instead.
+    let alone = files.len() == 1 && urls.len() == 1 && files[0] == urls[0];
+    let mut headers = Vec::with_capacity(files.len());
+    for file in &files {
+        if (remote.stop)() {
+            return Err(RangeError::Failed("cancelled".to_string()));
+        }
+        let header = (remote.open)(file)
+            .and_then(|mut src| read_header_ranged(src.as_mut(), format, remote.stop))
+            .map_err(|e| match e {
+                RangeError::NoRanges if alone => RangeError::NoRanges,
+                RangeError::NoRanges => no_ranges(file),
+                RangeError::Failed(message) if files.len() > 1 => {
+                    RangeError::Failed(format!("{}: {message}", url_file_name(file)))
+                }
+                e => e,
+            })?;
+        headers.push(header);
+    }
+    let names: Vec<String> = files.iter().map(|f| url_file_name(f).to_string()).collect();
+    Ok(build(&headers, &names, metadata)?)
 }
 
 /// Read `paths` — model files, or SafeTensors indexes that name them — as one table of
@@ -1282,6 +1543,461 @@ pub(crate) mod tests {
             summary.metadata[0].1,
             MetaValue::Text("0".into()),
             "the first"
+        );
+    }
+
+    /// Bytes served by range, counting what is asked of them.
+    #[derive(Clone, Default)]
+    pub(crate) struct Served {
+        pub files: std::collections::BTreeMap<String, Vec<u8>>,
+        /// Each request: the file, and the range.
+        pub asked: std::rc::Rc<std::cell::RefCell<Vec<(String, u64, u64)>>>,
+        pub no_ranges: bool,
+    }
+
+    struct ServedFile {
+        served: Served,
+        url: String,
+    }
+
+    impl RangeSource for ServedFile {
+        fn get(&mut self, start: u64, end: u64) -> std::result::Result<(Vec<u8>, u64), RangeError> {
+            let bytes = self
+                .served
+                .files
+                .get(&self.url)
+                .ok_or_else(|| RangeError::Failed(format!("{}: 404", self.url)))?;
+            if self.served.no_ranges {
+                return Err(RangeError::NoRanges);
+            }
+            self.served
+                .asked
+                .borrow_mut()
+                .push((self.url.clone(), start, end));
+            let len = bytes.len() as u64;
+            let (from, to) = (start.min(len) as usize, end.min(len) as usize);
+            Ok((bytes[from..to].to_vec(), len))
+        }
+    }
+
+    impl Served {
+        fn bytes(&self) -> u64 {
+            self.asked.borrow().iter().map(|(_, a, b)| b - a).sum()
+        }
+
+        /// The one GGUF file `url`, its header read from a first range of `first`.
+        fn read_gguf_from(&self, url: &str, first: u64) -> Header {
+            let mut src = ServedFile {
+                served: self.clone(),
+                url: url.to_string(),
+            };
+            read_header_ranged_from(&mut src, FileFormat::Gguf, first, &|| false).unwrap()
+        }
+
+        fn read(
+            &self,
+            urls: &[&str],
+            format: FileFormat,
+        ) -> std::result::Result<(LazyFrame, ModelSummary), RangeError> {
+            let open = |url: &str| -> std::result::Result<Box<dyn RangeSource>, RangeError> {
+                Ok(Box::new(ServedFile {
+                    served: self.clone(),
+                    url: url.to_string(),
+                }))
+            };
+            let sibling = |url: &str, name: &str| {
+                format!("{}/{name}", url.rsplit_once('/').map_or(url, |(d, _)| d))
+            };
+            let urls: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+            read_remote_model(
+                &urls,
+                format,
+                &Remote {
+                    open: &open,
+                    sibling: &sibling,
+                    stop: &|| false,
+                },
+            )
+        }
+    }
+
+    fn ranged(
+        bytes: &[u8],
+        format: FileFormat,
+        first: u64,
+    ) -> std::result::Result<Header, RangeError> {
+        let served = Served {
+            files: [("f".to_string(), bytes.to_vec())].into(),
+            ..Default::default()
+        };
+        let mut src = ServedFile {
+            served,
+            url: "f".to_string(),
+        };
+        read_header_ranged_from(&mut src, format, first, &|| false)
+    }
+
+    fn sample_gguf() -> Vec<u8> {
+        let mut w = GgufWriter::new(2, 3);
+        w.kv_str("general.architecture", "llama")
+            .kv_u32("llama.context_length", 4096)
+            .kv_strings("tokenizer.ggml.tokens", &["token"; 300]);
+        w.tensor("token_embd.weight", &[256, 4], 12, 0).tensor(
+            "output_norm.weight",
+            &[256],
+            0,
+            576,
+        );
+        w.data(576 + 1024);
+        w.out
+    }
+
+    /// Read by range, a header is the same header the file reader finds, however small
+    /// the ranges; and so is the error, for a header cut short anywhere.
+    #[test]
+    fn a_ranged_read_finds_what_the_file_reader_finds() {
+        let st = safetensors_bytes(
+            r#"{"__metadata__":{"format":"pt"},"x":{"dtype":"F16","shape":[2,2],"data_offsets":[0,8]}}"#,
+            8,
+        );
+        let gguf = sample_gguf();
+        for first in [1, 3, 64, FIRST_GGUF_RANGE] {
+            assert_eq!(
+                ranged(&gguf, FileFormat::Gguf, first).unwrap(),
+                parse_header(&gguf).unwrap(),
+                "first range {first}"
+            );
+        }
+        assert_eq!(
+            ranged(&st, FileFormat::Safetensors, 1).unwrap(),
+            parse_header(&st).unwrap()
+        );
+        for cut in 1..gguf.len() / 4 {
+            assert!(
+                ranged(&gguf[..cut], FileFormat::Gguf, 7).is_err(),
+                "cut at {cut}"
+            );
+        }
+        for cut in 1..st.len() {
+            assert!(
+                ranged(&st[..cut], FileFormat::Safetensors, 7).is_err(),
+                "cut at {cut}"
+            );
+        }
+    }
+
+    /// SafeTensors asks for its length, then exactly its JSON: never a byte of tensor
+    /// data. A GGUF header stops being read where its tensor infos end, give or take
+    /// the last range.
+    #[test]
+    fn only_the_header_is_fetched() {
+        let json = r#"{"x":{"dtype":"F32","shape":[1024],"data_offsets":[0,4096]}}"#;
+        let st = safetensors_bytes(json, 4096);
+        let served = Served {
+            files: [("s3://b/m.safetensors".to_string(), st)].into(),
+            ..Default::default()
+        };
+        assert!(
+            served
+                .read(&["s3://b/m.safetensors"], FileFormat::Safetensors)
+                .is_ok()
+        );
+        assert_eq!(
+            *served.asked.borrow(),
+            vec![
+                ("s3://b/m.safetensors".to_string(), 0, 8),
+                ("s3://b/m.safetensors".to_string(), 8, 8 + json.len() as u64)
+            ]
+        );
+
+        // Megabytes of data after a header of a few KB.
+        let mut gguf = sample_gguf();
+        gguf.resize(gguf.len() + 8 * 1024 * 1024, 0);
+        let served = Served {
+            files: [("https://h/m.gguf".to_string(), gguf)].into(),
+            ..Default::default()
+        };
+        assert!(served.read(&["https://h/m.gguf"], FileFormat::Gguf).is_ok());
+        assert_eq!(
+            served.asked.borrow().len(),
+            1,
+            "one range for a small header"
+        );
+        assert!(served.bytes() <= FIRST_GGUF_RANGE, "{}", served.bytes());
+    }
+
+    /// The lengths a hostile header states are refused before they are fetched.
+    #[test]
+    fn a_hostile_remote_header_is_refused_before_it_is_fetched() {
+        // A SafeTensors length past the file, or past the spec.
+        for claim in [50_000_000u64, MAX_SAFETENSORS_HEADER + 1, u64::MAX] {
+            let mut st = safetensors_bytes("{}", 64);
+            st[..8].copy_from_slice(&claim.to_le_bytes());
+            let served = Served {
+                files: [("u".to_string(), st)].into(),
+                ..Default::default()
+            };
+            assert!(served.read(&["u"], FileFormat::Safetensors).is_err());
+            assert_eq!(served.bytes(), 8, "only the length, for {claim}");
+        }
+        // A GGUF string or count longer than the file: one range, then the error.
+        let mut w = GgufWriter::new(0, 1);
+        w.u64(u64::MAX - 3);
+        w.out.resize(1 << 20, 0);
+        let served = Served {
+            files: [("g".to_string(), w.out)].into(),
+            ..Default::default()
+        };
+        assert!(served.read(&["g"], FileFormat::Gguf).is_err());
+        assert_eq!(served.asked.borrow().len(), 1);
+        let w = GgufWriter::new(u64::MAX, 0);
+        assert!(ranged(&w.out, FileFormat::Gguf, 4).is_err());
+    }
+
+    /// A GGUF header the size of a Llama 3 vocabulary (128k tokens, 280k merges, about
+    /// 7 MB), at the front of a much larger file.
+    fn llama3_sized_gguf() -> Vec<u8> {
+        let tokens = vec!["tok_ab"; 128_256];
+        let merges = vec!["Ġab Ġcdefg"; 280_147];
+        let mut w = GgufWriter::new(291, 3);
+        w.kv_str("general.architecture", "llama")
+            .kv_strings("tokenizer.ggml.tokens", &tokens)
+            .kv_strings("tokenizer.ggml.merges", &merges);
+        for i in 0..291 {
+            w.tensor(&format!("blk.{i}.attn_q.weight"), &[1], 0, i * 32);
+        }
+        w.data(291 * 32 + (32 << 20));
+        w.out
+    }
+
+    /// A stopped open asks for nothing more: not the next range of a header, nor the
+    /// next shard.
+    #[test]
+    fn a_stopped_read_asks_for_nothing_more() {
+        let served = Served {
+            files: [("g".to_string(), llama3_sized_gguf())].into(),
+            ..Default::default()
+        };
+        let asked = served.asked.clone();
+        let stop = || !asked.borrow().is_empty();
+        let mut src = ServedFile {
+            served: served.clone(),
+            url: "g".to_string(),
+        };
+        let err = read_header_ranged_from(&mut src, FileFormat::Gguf, 1024, &stop).unwrap_err();
+        assert!(
+            matches!(err, RangeError::Failed(ref m) if m.contains("cancelled")),
+            "{err:?}"
+        );
+        assert_eq!(served.asked.borrow().len(), 1);
+
+        let st = safetensors_bytes(
+            r#"{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#,
+            4,
+        );
+        let served = Served {
+            files: [("a".to_string(), st.clone()), ("b".to_string(), st)].into(),
+            ..Default::default()
+        };
+        let asked = served.asked.clone();
+        let open = |url: &str| -> std::result::Result<Box<dyn RangeSource>, RangeError> {
+            Ok(Box::new(ServedFile {
+                served: served.clone(),
+                url: url.to_string(),
+            }))
+        };
+        let stop = || asked.borrow().len() >= 2;
+        let read = read_remote_model(
+            &["a".to_string(), "b".to_string()],
+            FileFormat::Safetensors,
+            &Remote {
+                open: &open,
+                sibling: &|_, name| name.to_string(),
+                stop: &stop,
+            },
+        );
+        assert!(read.is_err());
+        assert!(
+            served.asked.borrow().iter().all(|(url, ..)| url == "a"),
+            "{:?}",
+            served.asked.borrow()
+        );
+    }
+
+    /// A vocabulary-sized header costs a handful of requests and not much more than
+    /// itself on the wire. Measured at 7.2 MB: a first range of 64 KiB took 7 requests
+    /// (7.9 MiB), 256 KiB 5 (7.8 MiB), 1 MiB 4 (15 MiB).
+    #[test]
+    fn a_vocabulary_sized_gguf_header_takes_a_few_ranges() {
+        let gguf = llama3_sized_gguf();
+        let served = Served {
+            files: [("g".to_string(), gguf.clone())].into(),
+            ..Default::default()
+        };
+        let header = served.read_gguf_from("g", FIRST_GGUF_RANGE);
+        assert_eq!(header.tensors.len(), 291);
+        // The header and its few bytes of tensor data, before the padding.
+        let end = (gguf.len() - (32 << 20)) as u64;
+        assert!(
+            served.asked.borrow().len() <= 5,
+            "{:?}",
+            served.asked.borrow()
+        );
+        assert!(served.bytes() < end * 2, "{} for {end}", served.bytes());
+    }
+
+    /// A source that answers with more or fewer bytes than were asked for, or whose
+    /// length changes between requests, is an error rather than a header.
+    #[test]
+    fn a_lying_source_is_an_error() {
+        struct Liar(u32);
+        impl RangeSource for Liar {
+            fn get(
+                &mut self,
+                start: u64,
+                end: u64,
+            ) -> std::result::Result<(Vec<u8>, u64), RangeError> {
+                self.0 += 1;
+                let st = safetensors_bytes(
+                    r#"{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#,
+                    4,
+                );
+                let bytes = st[start as usize..end.min(st.len() as u64) as usize].to_vec();
+                Ok(match self.0 {
+                    // More than asked.
+                    1 => ([bytes, vec![0; 4]].concat(), st.len() as u64),
+                    2 => (bytes, st.len() as u64),
+                    // A length that changed.
+                    _ => (bytes, 1 << 30),
+                })
+            }
+        }
+        let err = read_header_ranged(&mut Liar(0), FileFormat::Safetensors, &|| false).unwrap_err();
+        assert!(
+            matches!(err, RangeError::Failed(ref m) if m.contains("got")),
+            "{err:?}"
+        );
+        let err = read_header_ranged(&mut Liar(1), FileFormat::Safetensors, &|| false).unwrap_err();
+        assert!(
+            matches!(err, RangeError::Failed(ref m) if m.contains("changed size")),
+            "{err:?}"
+        );
+    }
+
+    /// An index names its shards beside its own URL, each read once; a name that leaves
+    /// the directory is refused.
+    #[test]
+    fn a_remote_index_resolves_its_shards_beside_it() {
+        let shard = |n: u64| {
+            safetensors_bytes(
+                &format!(r#"{{"t{n}":{{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}}}"#),
+                8,
+            )
+        };
+        let index = r#"{"metadata":{"total_size":16},"weight_map":{
+            "t1":"model-00001-of-00002.safetensors","t2":"model-00002-of-00002.safetensors"}}"#;
+        let served = Served {
+            files: [
+                (
+                    "gs://b/m/model.safetensors.index.json".to_string(),
+                    index.as_bytes().to_vec(),
+                ),
+                (
+                    "gs://b/m/model-00001-of-00002.safetensors".to_string(),
+                    shard(1),
+                ),
+                (
+                    "gs://b/m/model-00002-of-00002.safetensors".to_string(),
+                    shard(2),
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let (lf, summary) = served
+            .read(
+                &[
+                    "gs://b/m/model.safetensors.index.json",
+                    "gs://b/m/model-00001-of-00002.safetensors",
+                ],
+                FileFormat::Safetensors,
+            )
+            .unwrap();
+        assert_eq!((summary.files, summary.tensors), (2, 2));
+        assert_eq!(summary.metadata[0].0, "total_size");
+        let df = lf.collect().unwrap();
+        let files: Vec<&str> = df
+            .column("file")
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter()
+            .map(|v| v.unwrap())
+            .collect();
+        assert_eq!(
+            files,
+            [
+                "model-00001-of-00002.safetensors",
+                "model-00002-of-00002.safetensors"
+            ]
+        );
+
+        for bad in [
+            "../x.safetensors",
+            "a/b.safetensors",
+            "..",
+            "a\\\\b.safetensors",
+        ] {
+            let index = format!(r#"{{"weight_map":{{"t":"{bad}"}}}}"#);
+            let served = Served {
+                files: [(
+                    "i/model.safetensors.index.json".to_string(),
+                    index.into_bytes(),
+                )]
+                .into(),
+                ..Default::default()
+            };
+            let err = served
+                .read(&["i/model.safetensors.index.json"], FileFormat::Safetensors)
+                .err()
+                .expect("an error");
+            assert!(
+                matches!(err, RangeError::Failed(ref m) if m.contains("not a file beside it")),
+                "{bad}: {err:?}"
+            );
+        }
+    }
+
+    /// A server that sends whole files: one file named on its own is downloaded
+    /// instead; shards cannot be, and say why.
+    #[test]
+    fn no_ranges_is_a_download_for_one_file_only() {
+        let served = Served {
+            files: [
+                ("h/m.safetensors".to_string(), safetensors_bytes("{}", 0)),
+                (
+                    "h/model.safetensors.index.json".to_string(),
+                    br#"{"weight_map":{}}"#.to_vec(),
+                ),
+            ]
+            .into(),
+            no_ranges: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            served
+                .read(&["h/m.safetensors"], FileFormat::Safetensors)
+                .err()
+                .expect("an error"),
+            RangeError::NoRanges
+        );
+        let err = served
+            .read(&["h/model.safetensors.index.json"], FileFormat::Safetensors)
+            .err()
+            .expect("an error");
+        assert!(
+            matches!(err, RangeError::Failed(ref m) if m.contains("byte ranges")),
+            "{err:?}"
         );
     }
 

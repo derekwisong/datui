@@ -326,3 +326,301 @@ fn a_corrupt_header_is_an_error_not_a_crash() {
         );
     }
 }
+
+/// Remote model files, read by their headers over HTTP and from S3, served by the
+/// in-process stand-in (`common/fake_s3.rs`), which counts every byte it sends.
+#[cfg(feature = "cloud")]
+mod remote {
+    use super::{frame, models, strings};
+    use crate::common::{next_event, pump_open_until_loaded};
+    use crate::fake_s3::FakeS3;
+    use datui::{App, AppConfig, AppEvent, OpenOptions};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+
+    /// Data past the header, so a download would show on the wire.
+    const PADDING: usize = 4 << 20;
+
+    fn padded(name: &str) -> Vec<u8> {
+        let mut bytes = std::fs::read(models().join(name)).unwrap();
+        bytes.resize(bytes.len() + PADDING, 0);
+        bytes
+    }
+
+    fn serve(objects: &[(&str, Vec<u8>)]) -> FakeS3 {
+        FakeS3::serve(
+            "lake",
+            objects
+                .iter()
+                .map(|(key, bytes)| (key.to_string(), bytes.clone()))
+                .collect::<BTreeMap<_, _>>(),
+        )
+    }
+
+    fn app(s3: &FakeS3) -> (App, mpsc::Receiver<AppEvent>) {
+        let config = AppConfig {
+            cloud: s3.cloud_config(),
+            ..AppConfig::default()
+        };
+        let theme = datui::Theme::from_config(&config.theme).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let app = App::new_with_config(tx, crate::common::test_runtime(), theme, config);
+        (app, rx)
+    }
+
+    fn open(s3: &FakeS3, url: &str) -> App {
+        let (mut app, rx) = app(s3);
+        pump_open_until_loaded(
+            &mut app,
+            &rx,
+            vec![PathBuf::from(url)],
+            OpenOptions::default(),
+        );
+        app
+    }
+
+    /// The header length a SafeTensors file starts with.
+    fn header_len(bytes: &[u8]) -> u64 {
+        u64::from_le_bytes(bytes[..8].try_into().unwrap())
+    }
+
+    /// From S3, a SafeTensors file costs two ranged GETs: its length, then its JSON.
+    /// Not a byte of tensor data crosses the wire, and the table is the local one's.
+    #[test]
+    fn an_s3_safetensors_file_is_read_by_its_header_alone() {
+        let bytes = padded("tiny.safetensors");
+        let s3 = serve(&[("models/tiny.safetensors", bytes.clone())]);
+        let app = open(&s3, "s3://lake/models/tiny.safetensors");
+        assert_eq!(app.error_message(), None);
+        let wire = s3.wire.count();
+        assert_eq!(wire.gets, 2, "{wire:?}");
+        assert_eq!(wire.bytes, 8 + header_len(&bytes), "{wire:?}");
+        assert_eq!(frame(&app).height(), 4);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.model().unwrap().tensors, 4);
+        assert!(!app.awaiting_download_confirmation(), "nothing to download");
+    }
+
+    /// Over HTTP, a GGUF header is read forward in ranges until its tensor infos end:
+    /// a small fraction of the file.
+    #[cfg(feature = "http")]
+    #[test]
+    fn an_http_gguf_file_is_read_by_its_header_alone() {
+        let bytes = padded("tiny.gguf");
+        let s3 = serve(&[("models/tiny.gguf", bytes.clone())]);
+        let url = format!("{}/lake/models/tiny.gguf", s3.endpoint);
+        let app = open(&s3, &url);
+        assert_eq!(app.error_message(), None);
+        let wire = s3.wire.count();
+        assert!(
+            wire.bytes < (bytes.len() - PADDING) as u64 + (1 << 20),
+            "{wire:?} of {} bytes",
+            bytes.len()
+        );
+        assert_eq!(frame(&app).height(), 3);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.model().unwrap().kind.label().starts_with("GGUF"));
+        assert_eq!(
+            app.open_path(),
+            Some(std::path::Path::new(&url)),
+            "named by its URL"
+        );
+    }
+
+    /// The sharded fixture, at `prefix` in the bucket.
+    fn sharded(prefix: &str) -> Vec<(String, Vec<u8>)> {
+        std::fs::read_dir(models().join("sharded"))
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                let mut bytes = std::fs::read(&path).unwrap();
+                if name.ends_with(".safetensors") {
+                    bytes.resize(bytes.len() + PADDING, 0);
+                }
+                (format!("{prefix}{name}"), bytes)
+            })
+            .collect()
+    }
+
+    fn shards_read(app: &App) {
+        assert_eq!(app.error_message(), None);
+        assert_eq!(
+            strings(&frame(app), "file"),
+            [
+                "model-00001-of-00002.safetensors",
+                "model-00002-of-00002.safetensors",
+                "model-00002-of-00002.safetensors"
+            ]
+        );
+        let model = app.data_table_state.as_ref().unwrap().model().unwrap();
+        assert_eq!((model.files, model.tensors), (2, 3));
+        assert!(model.metadata.iter().any(|(k, _)| k == "total_size"));
+    }
+
+    /// A remote index names its shards beside its own URL: they are read there, by
+    /// their headers, not beside a downloaded copy.
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_remote_index_reads_its_shards_beside_it() {
+        let objects = sharded("org/m/resolve/main/");
+        let s3 = FakeS3::serve("lake", objects.iter().cloned().collect());
+        let url = format!(
+            "{}/lake/org/m/resolve/main/model.safetensors.index.json?download=true",
+            s3.endpoint
+        );
+        let app = open(&s3, &url);
+        shards_read(&app);
+        let headers: u64 = objects
+            .iter()
+            .filter(|(k, _)| k.ends_with(".safetensors"))
+            .map(|(_, bytes)| 8 + header_len(bytes))
+            .sum();
+        let index = objects
+            .iter()
+            .find(|(k, _)| k.ends_with(".index.json"))
+            .unwrap()
+            .1
+            .len() as u64;
+        assert_eq!(s3.wire.count().bytes, index + headers);
+    }
+
+    /// A prefix holding a checkpoint, named on the command line, opens as the model
+    /// rather than falling through to the Parquet scan.
+    #[test]
+    fn a_prefix_of_model_files_opens_as_the_model() {
+        // The JSON beside the shards outnumbers them, as a tokenizer's does.
+        let mut objects = sharded("ckpt/");
+        for name in [
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "generation_config.json",
+            "special_tokens_map.json",
+        ] {
+            objects.push((format!("ckpt/{name}"), b"{}".to_vec()));
+        }
+        let s3 = FakeS3::serve("lake", objects.into_iter().collect());
+        let (mut app, rx) = app(&s3);
+        let mut next = Some(AppEvent::OpenNamed(
+            vec![PathBuf::from("s3://lake/ckpt/")],
+            OpenOptions::default(),
+        ));
+        while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+            next = app.event(&event);
+        }
+        shards_read(&app);
+        assert!(
+            s3.wire.count().bytes < PADDING as u64,
+            "{:?}",
+            s3.wire.count()
+        );
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(!state.has_notes(), "{:?}", state.notes());
+    }
+
+    /// A server that sends the whole file where a range was asked for: the open falls
+    /// back to the download, saying why, and the downloaded file opens as the model.
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_server_without_ranges_falls_back_to_the_download() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let s3 = serve(&[("tiny.safetensors", padded("tiny.safetensors"))]);
+        s3.whole_files();
+        let (mut app, rx) = app(&s3);
+        let dir = tempfile::tempdir().unwrap();
+        let options = OpenOptions {
+            temp_dir: Some(dir.path().to_path_buf()),
+            ..OpenOptions::default()
+        };
+        let url = format!("{}/lake/tiny.safetensors", s3.endpoint);
+        let mut next = Some(AppEvent::Open(vec![PathBuf::from(&url)], options));
+        // The question holds the open, so the wait is for it rather than for quiet.
+        while app.error_message().is_none() && !app.awaiting_download_confirmation() {
+            let event = next
+                .take()
+                .or_else(|| next_event(&app, &rx))
+                .expect("the open asks about the download");
+            next = app.event(&event);
+        }
+        assert_eq!(app.error_message(), None);
+        assert!(
+            app.confirmation_modal.message.contains("byte ranges"),
+            "{}",
+            app.confirmation_modal.message
+        );
+        let mut next = Some(AppEvent::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+            next = app.event(&event);
+        }
+        assert_eq!(app.error_message(), None);
+        assert_eq!(frame(&app).height(), 4);
+        assert_eq!(
+            app.data_table_state
+                .as_ref()
+                .unwrap()
+                .model()
+                .unwrap()
+                .tensors,
+            4
+        );
+    }
+
+    /// A hostile header over the network is refused by the lengths it states, before
+    /// they are fetched.
+    #[test]
+    fn a_hostile_remote_header_is_an_error_after_a_few_bytes() {
+        let mut claims_too_much = 50_000_000u64.to_le_bytes().to_vec();
+        claims_too_much.extend_from_slice(b"{}");
+        claims_too_much.resize(PADDING, b' ');
+        let mut long_string = b"GGUF".to_vec();
+        long_string.extend_from_slice(&3u32.to_le_bytes());
+        long_string.extend_from_slice(&0u64.to_le_bytes());
+        long_string.extend_from_slice(&1u64.to_le_bytes());
+        long_string.extend_from_slice(&(u64::MAX - 3).to_le_bytes());
+        long_string.resize(PADDING, 0);
+        for (key, bytes, why) in [
+            ("x.safetensors", claims_too_much, "claims"),
+            ("x.gguf", long_string, "longer than datui reads"),
+        ] {
+            let s3 = serve(&[(key, bytes)]);
+            let (mut app, rx) = app(&s3);
+            let message = super::super::pump_open_until_error(
+                &mut app,
+                &rx,
+                vec![PathBuf::from(format!("s3://lake/{key}"))],
+                OpenOptions::default(),
+            )
+            .unwrap_or_else(|| panic!("{key} opens with an error"));
+            assert!(message.contains(why), "{key}: {message}");
+            assert!(
+                s3.wire.count().bytes <= 256 * 1024,
+                "{key}: {:?}",
+                s3.wire.count()
+            );
+        }
+    }
+
+    /// A failed read names the URL without its password or signature.
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_failed_remote_read_does_not_show_credentials() {
+        let s3 = serve(&[("other.safetensors", padded("tiny.safetensors"))]);
+        let (mut app, rx) = app(&s3);
+        let url = s3.endpoint.replacen("://", "://alice:hunter2@", 1)
+            + "/lake/missing.safetensors?X-Amz-Signature=s3cr3tsig";
+        let message = super::super::pump_open_until_error(
+            &mut app,
+            &rx,
+            vec![PathBuf::from(&url)],
+            OpenOptions::default(),
+        )
+        .expect("a missing file is an error");
+        assert!(message.contains("missing.safetensors"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
+        assert!(!message.contains("s3cr3tsig"), "{message}");
+    }
+}

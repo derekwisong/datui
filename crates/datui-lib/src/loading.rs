@@ -170,14 +170,21 @@ pub(crate) enum Phase {
     LookingAtPaths,
     /// What a directory named on the command line holds, before it is opened.
     LookingAtDirectory,
-    /// The size of a remote file, to put the download to the user.
+    /// A remote model's headers, read by range rather than downloaded.
     #[cfg(any(feature = "http", feature = "cloud"))]
-    CheckingSize,
+    ReadingHeaders,
+    /// The size of a remote file, to put the download to the user; `note` says why it
+    /// is downloaded when it would not have been.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    CheckingSize {
+        note: Option<&'static str>,
+    },
     /// Waiting on the user to agree to the download. Holds the generation meanwhile:
     /// nothing is running, and the open is very much unfinished.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Confirming {
         pending: Box<PendingDownload>,
+        note: Option<&'static str>,
         _hold: Hold,
     },
     #[cfg(any(feature = "http", feature = "cloud"))]
@@ -216,7 +223,9 @@ impl Phase {
             Phase::LookingAtPaths => ("Scanning input", 10),
             Phase::LookingAtDirectory => (crate::App::LOOKING_AT_A_DIRECTORY, 5),
             #[cfg(any(feature = "http", feature = "cloud"))]
-            Phase::CheckingSize | Phase::Confirming { .. } => ("Checking size", 0),
+            Phase::ReadingHeaders => ("Reading headers", 20),
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Phase::CheckingSize { .. } | Phase::Confirming { .. } => ("Checking size", 0),
             #[cfg(any(feature = "http", feature = "cloud"))]
             Phase::Downloading => ("Downloading", 20),
             Phase::Spooling { .. } => ("Reading stdin", 5),
@@ -232,6 +241,16 @@ impl Phase {
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
             Phase::ReadingSchema => ("Caching schema", 40),
             Phase::FirstRows => ("Loading buffer", 70),
+        }
+    }
+
+    /// Whether this phase's worker answers with the dataset itself.
+    fn builds_the_dataset(&self) -> bool {
+        match self {
+            Phase::ReadingSchema | Phase::Decompressing | Phase::Converting { .. } => true,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Phase::ReadingHeaders => true,
+            _ => false,
         }
     }
 
@@ -302,6 +321,15 @@ pub(crate) enum Step {
     Nothing,
     /// The open cannot be read at all, and the session ends saying why.
     Crash(String),
+    /// Read the headers of the remote model at `url` as `format`, by range; `writer`
+    /// carries the load's stop flag.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    ReadHeaders {
+        url: PathBuf,
+        format: FileFormat,
+        options: OpenOptions,
+        writer: Writer,
+    },
     /// Find the remote file's size.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Probe(PendingDownload),
@@ -442,6 +470,9 @@ pub(crate) enum LoadAnswer {
         options: OpenOptions,
         debug_label: Option<String>,
     },
+    /// The remote model's server sends whole files, not ranges: it is downloaded.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    NoRanges { options: OpenOptions },
     /// The remote file's size.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Sized(PendingDownload),
@@ -539,6 +570,15 @@ impl Loader {
         #[cfg(not(any(feature = "http", feature = "cloud")))]
         {
             false
+        }
+    }
+
+    /// Why the download being asked about is a download, when it would not have been.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    pub(crate) fn download_note(&self) -> Option<&'static str> {
+        match self.load.as_ref().map(|load| &load.phase) {
+            Some(Phase::Confirming { note, .. }) => *note,
+            _ => None,
         }
     }
 
@@ -790,10 +830,24 @@ impl Loader {
         {
             return self.read_download(kept, options);
         }
+        // A remote model's headers are all it needs: read by range, not downloaded.
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        if paths.len() == 1
+            && let Some(format) = crate::remote_model::model_format(&first, options.format)
+        {
+            let load = self.load.as_mut().expect("an open has a load");
+            load.phase = Phase::ReadingHeaders;
+            return Step::ReadHeaders {
+                url: first,
+                format,
+                options,
+                writer: load.writer.clone(),
+            };
+        }
         #[cfg(any(feature = "http", feature = "cloud"))]
         if let Some(pending) = remote_download(&src, &options) {
             let load = self.load.as_mut().expect("an open has a load");
-            load.phase = Phase::CheckingSize;
+            load.phase = Phase::CheckingSize { note: None };
             return Step::Probe(pending);
         }
         let load = self.load.as_mut().expect("an open has a load");
@@ -984,8 +1038,8 @@ impl Loader {
                     options,
                     debug_label,
                 },
-                Phase::ReadingSchema | Phase::Decompressing | Phase::Converting { .. },
-            ) => {
+                phase,
+            ) if phase.builds_the_dataset() => {
                 load.phase = Phase::FirstRows;
                 // The dataset was built holding its download (`Step::ReadSchema`); the
                 // loader keeps it too, to be read again.
@@ -1006,9 +1060,25 @@ impl Loader {
                 }))
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
-            (LoadAnswer::Sized(pending), Phase::CheckingSize) => {
+            (LoadAnswer::NoRanges { options }, Phase::ReadingHeaders) => {
+                let first = load.paths.as_ref().and_then(|paths| paths.first().cloned());
+                match first
+                    .and_then(|first| remote_download(&source::input_source(&first), &options))
+                {
+                    Some(pending) => {
+                        load.phase = Phase::CheckingSize {
+                            note: Some(NO_RANGES),
+                        };
+                        Step::Probe(pending)
+                    }
+                    None => self.failed(id, NO_RANGES),
+                }
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            (LoadAnswer::Sized(pending), Phase::CheckingSize { note }) => {
                 load.phase = Phase::Confirming {
                     pending: Box::new(pending.clone()),
+                    note: *note,
                     _hold: jobs.hold(),
                 };
                 Step::Ask(pending)
@@ -1117,6 +1187,10 @@ pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<Fil
     })?;
     format.separator().is_some().then_some(format)
 }
+
+/// Why a remote model is downloaded rather than read by its headers.
+#[cfg(any(feature = "http", feature = "cloud"))]
+pub(crate) const NO_RANGES: &str = "The server does not send byte ranges, so the model's header cannot be read without downloading the whole file.";
 
 /// The download a remote source needs before it can be read, if it needs one: an HTTP
 /// file always, and one object of a store that cannot be scanned in place.
@@ -1758,6 +1832,62 @@ mod tests {
         let mut file = TempDownload::create(Some(dir), Some(extension)).unwrap();
         file.write_all(body.as_bytes()).unwrap();
         TempDownload::keep(file)
+    }
+
+    /// A remote model's headers are read by range, and that worker's dataset installs
+    /// under the URL. A server without byte ranges sends it to the download question,
+    /// which says why.
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_remote_model_reads_its_headers_or_falls_back_to_the_download() {
+        let url = "https://example.com/m/model.safetensors";
+        let jobs = jobs();
+        let mut loader = Loader::default();
+        let Step::ReadHeaders {
+            url: read, format, ..
+        } = loader.open(request(url))
+        else {
+            panic!("the headers are read, not downloaded");
+        };
+        assert_eq!(
+            (read.as_path(), format),
+            (Path::new(url), FileFormat::Safetensors)
+        );
+        let id = loader.id().unwrap();
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Reading headers", 20)
+        );
+        assert!(loader.waits());
+        let Step::Install(loaded) = loader.answered(id, schema_read(url), &jobs) else {
+            panic!("the headers are the dataset");
+        };
+        assert_eq!(loaded.recent.as_deref(), Some(Path::new(url)));
+
+        let mut loader = Loader::default();
+        let _ = loader.open(request(url));
+        let id = loader.id().unwrap();
+        let Step::Probe(pending) = loader.answered(
+            id,
+            LoadAnswer::NoRanges {
+                options: OpenOptions::default(),
+            },
+            &jobs,
+        ) else {
+            panic!("no ranges: the file is sized for its download");
+        };
+        assert_eq!(pending.parts().0, url);
+        assert_eq!(loader.download_note(), None, "not asked yet");
+        assert!(matches!(
+            loader.answered(id, LoadAnswer::Sized(pending), &jobs),
+            Step::Ask(_)
+        ));
+        assert_eq!(loader.download_note(), Some(NO_RANGES));
+        // An answer for a phase it has left changes nothing.
+        assert!(matches!(
+            loader.answered(id, schema_read(url), &jobs),
+            Step::Nothing
+        ));
     }
 
     /// A remote file is sized, put to the user, downloaded, then scanned under its URL;

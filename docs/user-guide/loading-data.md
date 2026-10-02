@@ -134,6 +134,8 @@ datui model.safetensors
 datui Llama-3-8B-Q4_K_M.gguf
 datui model.safetensors.index.json     # a sharded checkpoint, as one table
 datui path/to/checkpoint/              # the same, from its directory
+datui https://huggingface.co/ORG/MODEL/resolve/main/model.safetensors.index.json
+datui s3://bucket/checkpoints/llama/   # a prefix of shards, read where it is
 ```
 
 A SafeTensors or GGUF file opens as a table with one row per tensor. Only the
@@ -162,7 +164,20 @@ count, size, the dtype or quantization mix, and the header's metadata
 (`__metadata__`, or GGUF's key/value pairs).
 
 A header that is corrupt, or a tensor that reaches past the end of the file
-(a download cut short), is refused with an error. Remote model files are downloaded whole before they open.
+(a download cut short), is refused with an error.
+
+Remote model files are not downloaded. Only their headers are fetched, with
+ranged requests:
+
+| Source | Read |
+|---|---|
+| HTTP(S), S3, GCS, Azure file | SafeTensors: 8 bytes, then the header. GGUF: growing ranges until the tensor list ends |
+| `model.safetensors.index.json` | The index, then each shard's header, beside the index's URL |
+| S3, GCS or Azure prefix | Every SafeTensors or GGUF file directly under it, as a directory on disk |
+
+A server that does not send byte ranges gets the download question instead,
+which says why, and the file is downloaded whole. Shards named by an index
+cannot be downloaded this way, and the open says so.
 
 ### GPS logs
 

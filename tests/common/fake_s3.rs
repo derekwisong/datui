@@ -23,6 +23,9 @@ pub struct Wire {
     /// Milliseconds each GET waits before it answers: a slow bucket, for a test
     /// that cancels a read partway.
     get_delay_ms: AtomicU64,
+    /// Every GET is answered with the whole object, `Range` or not: a web server that
+    /// does not serve byte ranges.
+    whole: AtomicBool,
 }
 
 /// One reading of [`Wire`].
@@ -137,6 +140,12 @@ impl FakeS3 {
         self.wire.get_delay_ms.store(ms, Ordering::SeqCst);
     }
 
+    /// Answer every GET with the whole object, as a server without byte ranges does.
+    #[allow(dead_code)]
+    pub fn whole_files(&self) {
+        self.wire.whole.store(true, Ordering::SeqCst);
+    }
+
     /// The configuration that points datui at this bucket.
     #[allow(dead_code)]
     pub fn cloud_config(&self) -> datui::config::CloudConfig {
@@ -222,6 +231,7 @@ fn answer(stream: TcpStream, bucket: &str, objects: &RwLock<Objects>, wire: &Wir
                 if delay > 0 {
                     std::thread::sleep(std::time::Duration::from_millis(delay));
                 }
+                let range = range.filter(|_| !wire.whole.load(Ordering::SeqCst));
                 let (start, end) = byte_range(range.as_deref(), bytes.len());
                 let body = &bytes[start..end];
                 wire.bytes.fetch_add(body.len() as u64, Ordering::SeqCst);

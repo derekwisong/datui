@@ -1910,6 +1910,8 @@ impl Spec {
         let mut header: Option<HeaderValues> = None;
         let mut notes = Vec::new();
         let mut counts: Vec<(String, u64)> = Vec::new();
+        // Each file's own header size: a size read from the header may differ by file.
+        let mut starts = Vec::new();
         for field in &self.records.fields {
             let file_name = field
                 .file
@@ -1938,6 +1940,7 @@ impl Spec {
                 ));
             }
             counts.push((file_name, room.checked_div(cell).unwrap_or(0)));
+            starts.push(read.size as usize);
             if header.is_none() {
                 header = Some(read);
             }
@@ -1965,7 +1968,10 @@ impl Spec {
             }
             rows = rows.min(count);
         }
-        let (columns, _) = self.record_columns(&header, header.size as usize, None)?;
+        let (mut columns, _) = self.record_columns(&header, 0, None)?;
+        for column in &mut columns {
+            column.start = starts[column.source];
+        }
         let records =
             FixedRecords::new(sources, columns, rows as usize).map_err(|e| e.to_string())?;
         Ok(Opened {
@@ -3018,6 +3024,32 @@ fields = [{ name = "price", type = "f8" }, { name = "size", type = "s4", file = 
         let registry = Registry::of(vec![spec]);
         assert_eq!(registry.by_glob(Path::new("/db/trades"), true).len(), 1);
         assert!(registry.by_glob(Path::new("/db/trades"), false).is_empty());
+    }
+
+    /// A header sized by its own field may differ from file to file; each column
+    /// starts after its own file's header.
+    #[test]
+    fn each_column_file_starts_after_its_own_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = r#"name = "t.cols"
+layout = "columns"
+[header]
+fields = [{ name = "len", type = "u1" }]
+size = "len"
+[records]
+fields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]"#;
+        let spec = Spec::parse(text, None).unwrap();
+        std::fs::write(dir.path().join("a"), [2, 0, 7, 8]).unwrap();
+        std::fs::write(dir.path().join("b"), [4, 0, 0, 0, 9, 10]).unwrap();
+        let df = collect(&spec.open(dir.path(), "t").unwrap());
+        assert_eq!(
+            df.column("a").unwrap().u8().unwrap().to_vec(),
+            [Some(7), Some(8)]
+        );
+        assert_eq!(
+            df.column("b").unwrap().u8().unwrap().to_vec(),
+            [Some(9), Some(10)]
+        );
     }
 
     #[test]

@@ -306,9 +306,20 @@ fn markup_end(bytes: &[u8]) -> Option<usize> {
     } else if bytes.starts_with(b"<!") {
         // A DOCTYPE, whose internal subset holds `>` of its own.
         let gt = bytes.iter().position(|&b| b == b'>')?;
-        match bytes[..gt].iter().position(|&b| b == b'[') {
-            Some(open) => after(open, b"]>").or_else(|| after(open, b"]\n>")),
-            None => Some(gt + 1),
+        let Some(open) = bytes[..gt].iter().position(|&b| b == b'[') else {
+            return Some(gt + 1);
+        };
+        // The subset ends at a `]` followed, past any whitespace, by the `>`.
+        let mut at = open;
+        loop {
+            at += 1 + bytes.get(at + 1..)?.iter().position(|&b| b == b']')?;
+            let rest = &bytes[at + 1..];
+            let space = rest.iter().take_while(|b| b.is_ascii_whitespace()).count();
+            match rest.get(space) {
+                Some(b'>') => return Some(at + 1 + space + 1),
+                Some(_) => {}
+                None => return None,
+            }
         }
     } else {
         // A tag: its `>`, outside quoted attribute values.
@@ -853,6 +864,16 @@ mod tests {
         let mut reader = GpxReader::new();
         assert!(reader.push(format!("<gpx>{deep}").as_bytes()).is_err());
         assert_eq!(unescape(b"&#x41;&#66;&bogus;&"), "AB&bogus;&");
+        // A DOCTYPE's entities are never expanded, wherever its subset closes.
+        let laughs = br#"<?xml version="1.0"?>
+<!DOCTYPE gpx [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+] >
+<gpx><wpt lat="1" lon="2"><name>&lol2;</name></wpt></gpx>"#;
+        let (df, reader) = read_in(laughs, 7);
+        assert_eq!(strs(&df, "name"), [Some("&lol2;".into())]);
+        assert!(!reader.stats().truncated);
         // Not a reference, with a character of several bytes where its end would be.
         assert_eq!(
             unescape("a &\u{fffd}\u{fffd}\u{fffd}\u{fffd};".as_bytes()),

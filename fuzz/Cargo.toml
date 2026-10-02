@@ -109,3 +109,10 @@ path = "fuzz_targets/format_spec.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "gps_parse"
+path = "fuzz_targets/gps_parse.rs"
+test = false
+doc = false
+bench = false

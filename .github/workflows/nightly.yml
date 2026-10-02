@@ -542,6 +542,7 @@ jobs:
           - config_parse
           - model_header
           - format_spec
+          - gps_parse
     env:
       # The deep configuration. AddressSanitizer can reach the unsafe code inside polars
       # and arrow that these targets feed, which the pull request checks skip

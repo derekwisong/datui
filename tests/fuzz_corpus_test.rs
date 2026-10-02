@@ -17,6 +17,8 @@ mod format_spec;
 mod fuzzy_match;
 #[path = "../fuzz/src/glob_match.rs"]
 mod glob_match;
+#[path = "../fuzz/src/gps_parse.rs"]
+mod gps_parse;
 #[path = "../fuzz/src/ipc_stream_head.rs"]
 mod ipc_stream_head;
 #[path = "../fuzz/src/model_header.rs"]
@@ -116,6 +118,7 @@ fn every_corpus_input_passes_its_target() {
         fuzz::<&[u8]>(b, ipc_stream_head::run)
     });
     replay("model_header", &mut failures, model_header::run);
+    replay("gps_parse", &mut failures, gps_parse::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
     });
@@ -152,6 +155,7 @@ fn every_corpus_has_a_replay() {
         "glob_match",
         "ipc_stream_head",
         "model_header",
+        "gps_parse",
         "number_format",
         "parse_query",
         "sql_group_plan",

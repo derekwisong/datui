@@ -16,6 +16,7 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and color strings that get sliced by byte offset after a byte-length check. |
 | `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Hand-written readers for model file headers that allocate and skip by lengths read from the file. Every input goes to both; a corrupt header must be an error, never a panic or an allocation sized by the file, and a header that parses must build its table. |
 | `format_spec` | `formats::Spec`, `fixed_records` | A binary format spec and a file it reads, split at the first NUL byte. A spec parses or fails with a line and column; a file reads or fails; every row the reader counts decodes, and a window of the rows matches the same rows read from the start. |
+| `gps_parse` | `gps::nmea::NmeaReader`, `gps::gpx::GpxReader` | Hand-written readers for GPS logs that take the file a piece at a time. The first byte picks the NMEA table and the size of the pieces, so every line, tag and entity is cut somewhere. Never a panic, a frame of another schema, or a coordinate off the globe; every length is bounded by the reader. |
 
 ## Layout
 
@@ -97,6 +98,10 @@ minimized inputs from a real run, capped at 64 files each.
 `model_header` takes the bytes as they are. Its seeds are small model file headers:
 SafeTensors with and without `__metadata__`, GGUF v3 in both byte orders with strings,
 arrays and tensors of several types, and GGUF v2.
+`gps_parse` takes the bytes as they are. Its seeds are a short NMEA log (every sentence
+type it reads, a prefixed line, a vendor sentence, out-of-range coordinates) and a GPX
+file (a DOCTYPE, CDATA, entities, namespaced extensions), each behind several first
+bytes, and a nesting past the depth bound.
 
 Commit a `regression-*` input for each fixed crash. Keep routine coverage inputs
 in the fuzzing cache. Minimize any additional seeds before committing them:

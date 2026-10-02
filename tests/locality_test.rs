@@ -155,6 +155,7 @@ fn test_a_recorded_filesystem_name_classifies_the_same_way() {
 /// the test has to assert on. Counting inside datui would only prove datui's own
 /// bookkeeping agrees with itself — an implementation that went back to reading the
 /// file some other way would slip straight past it.
+#[cfg(target_os = "linux")]
 fn reads_so_far() -> u64 {
     std::fs::read_to_string("/proc/self/io")
         .ok()

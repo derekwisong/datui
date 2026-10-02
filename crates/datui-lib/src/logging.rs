@@ -563,6 +563,10 @@ fn install_panic_hook() {
         // from here, so an earlier session's hook further down the chain (the Python
         // binding, run from another thread) passes the report on instead of keeping it.
         TUI_ACTIVE.store(false, Ordering::SeqCst);
+        // The hooks below hand back the screen but not the mouse, whose reporting
+        // outlives the alternate screen: the shell would read every click as text.
+        // Unlike popping the keyboard flags, this is safe to repeat.
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         BACKGROUND_PANIC
             .lock()
             .unwrap_or_else(|e| e.into_inner())

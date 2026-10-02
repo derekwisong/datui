@@ -84,6 +84,7 @@ pub mod glyphs;
 pub mod gps;
 pub(crate) mod help_strings;
 pub mod home;
+pub mod inspector_drill;
 pub mod inspector_modal;
 pub mod intent_modal;
 pub mod ipc_stream;
@@ -6816,6 +6817,7 @@ pub mod tests {
             Job::Pivot,
             Job::DrillRow,
             Job::InspectRow { frame: 0, row: 0 },
+            Job::InspectJson { token: 0 },
             Job::Export,
             Job::Copy,
             Job::QualityReport,
@@ -13346,6 +13348,10 @@ impl App {
     /// Above this a field is copied off the UI thread: a long list's JSON can take
     /// a moment to write.
     const FIELD_COPY_INLINE_BYTES: usize = 1024 * 1024;
+    /// The most JSON a copy of a JSON value writes where the clipboard sets no cap.
+    const JSON_COPY_MAX_BYTES: usize = 64 * 1024 * 1024;
+    /// The wait while the inspector parses long text as JSON.
+    const READING_JSON: &'static str = "Reading JSON...";
 
     /// The wait while a pivot reads the view.
     const COMPUTING_PIVOT: &'static str = "Computing pivot...";
@@ -25045,6 +25051,24 @@ impl App {
                 }
                 None
             }
+            Answer::JsonParsed(root) => {
+                // Superseded means something replaced the view, which owns the wait.
+                let Job::InspectJson { token } = job else {
+                    return None;
+                };
+                if !current || !self.inspector_modal.active {
+                    return None;
+                }
+                let modal = &mut self.inspector_modal;
+                if let Some(wait) = modal.json_wait.take_if(|w| w.token == token) {
+                    let node = inspector_drill::Node::Json {
+                        root,
+                        path: Vec::new(),
+                    };
+                    modal.drill_in(wait.frame, wait.row, wait.label, node);
+                }
+                None
+            }
             Answer::Exported(path) => {
                 if current {
                     self.export_progress = None;
@@ -25160,6 +25184,17 @@ impl App {
                         "Could not drill in; see the log".to_string()
                     } else {
                         format!("Could not drill in: {message}")
+                    });
+                }
+            }
+            Job::InspectJson { token } => {
+                let modal = &mut self.inspector_modal;
+                if current && let Some(wait) = modal.json_wait.take_if(|w| w.token == *token) {
+                    modal.not_json = Some((wait.frame, wait.row, wait.path));
+                    self.flash_note(if panicked {
+                        "Could not read the JSON; see the log".to_string()
+                    } else {
+                        sentence(message)
                     });
                 }
             }
@@ -26209,6 +26244,9 @@ impl App {
         {
             return None;
         }
+        if modal.drill.is_some() {
+            return self.drill_key(event);
+        }
         match event.code {
             KeyCode::Esc if !modal.picker.filter.is_empty() => modal.clear_find(),
             KeyCode::Esc | KeyCode::Char(' ') => self.close_inspector(),
@@ -26227,6 +26265,163 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// The inspector's keys inside a level drilled into: the same moves as at the
+    /// row, but `→` and Enter open the focused item and `←` and Esc step back up.
+    fn drill_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let modal = &mut self.inspector_modal;
+        match event.code {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
+                modal.drill_out();
+            }
+            KeyCode::Char(' ') => self.close_inspector(),
+            KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
+            KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
+            KeyCode::Home => modal.first_field(),
+            KeyCode::End => modal.last_field(),
+            KeyCode::PageDown => modal.scroll_by(modal.page.saturating_sub(1).max(1) as isize),
+            KeyCode::PageUp => modal.scroll_by(-(modal.page.saturating_sub(1).max(1) as isize)),
+            KeyCode::Char('e') => {
+                let escapable = modal.body.as_ref().is_some_and(|(_, body)| body.escapable);
+                if escapable {
+                    modal.toggle_escaped();
+                }
+            }
+            KeyCode::Char('y') => self.copy_drilled_item(),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                let drill = modal.drill.as_ref()?;
+                let (frame, row) = (drill.frame, drill.row);
+                let (label, node) = drill.level().focused()?;
+                let path = drill.item_key(&label);
+                if node.opens() && !modal.known_not_json(frame, row, &path) {
+                    self.inspector_open(frame, row, label, path, node);
+                } else if event.code == KeyCode::Enter
+                    && modal.body.as_ref().is_some_and(|(_, body)| body.more)
+                {
+                    modal.more();
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Open `node` as a level under the one shown: a list or struct at once, text as
+    /// the JSON it holds, parsed here when short and on a worker when long. `path`
+    /// is the text's place, remembered when it does not parse.
+    fn inspector_open(
+        &mut self,
+        frame: u64,
+        row: usize,
+        label: String,
+        path: String,
+        node: inspector_drill::Node,
+    ) {
+        use inspector_drill::{JSON_INLINE_BYTES, Node, Shape};
+        if node.shape() != Shape::Leaf {
+            self.inspector_modal.drill_in(frame, row, label, node);
+            return;
+        }
+        let Some(len) = node
+            .with_text(|s| inspector_drill::opens_as_json(s).then_some(s.len()))
+            .flatten()
+        else {
+            return;
+        };
+        // Short text is parsed on this key.
+        if len <= JSON_INLINE_BYTES {
+            match node.with_text(inspector_drill::parse_json) {
+                Some(Ok(value)) => {
+                    let node = Node::Json {
+                        root: std::sync::Arc::new(value),
+                        path: Vec::new(),
+                    };
+                    self.inspector_modal.drill_in(frame, row, label, node);
+                }
+                Some(Err(e)) => {
+                    self.inspector_modal.not_json = Some((frame, row, path));
+                    self.flash_note(sentence(&e));
+                }
+                None => {}
+            }
+            return;
+        }
+        let token = self.inspector_modal.wait_for_json(frame, row, label, path);
+        // The worker reads the text where it is: the node is a one-row slice or a
+        // shared document, so nothing up to the 4 MiB cap is copied to hand it over.
+        self.spawn_job(
+            Job::InspectJson { token },
+            Some(Self::READING_JSON),
+            move |_| match node.with_text(inspector_drill::parse_json) {
+                Some(parsed) => parsed.map(|value| Answer::JsonParsed(std::sync::Arc::new(value))),
+                None => Err("not JSON: not text".to_string()),
+            },
+        );
+    }
+
+    /// `y` inside a drill: the focused item's whole value, exact, as `y` copies a
+    /// field; a JSON object or array as indented JSON.
+    fn copy_drilled_item(&mut self) {
+        use inspector_drill::Node;
+        let Some(drill) = self.inspector_modal.drill.as_ref() else {
+            return;
+        };
+        let Some((label, node)) = drill.level().focused() else {
+            return;
+        };
+        let g = crate::glyphs::get();
+        let mut path: Vec<&str> = drill.levels.iter().map(|l| l.label.as_str()).collect();
+        path.push(&label);
+        let display_row = self
+            .data_table_state
+            .as_ref()
+            .and_then(|s| s.inspect_row())
+            .map_or(drill.row + 1, |r| r.display_row);
+        let message = format!(
+            "Copied {} of row {}",
+            path.join(&format!(" {} ", g.trail)),
+            copy_modal::thousands(display_row)
+        );
+        match node {
+            Node::Native(series) => self.copy_value(polars::prelude::Column::from(series), message),
+            Node::Json { .. } => {
+                let limit = match self.copy_destination() {
+                    Ok(destination) => destination.accepts().base64_limit,
+                    Err(e) => {
+                        self.error_modal.show(e);
+                        return;
+                    }
+                };
+                // Formatted here up to a size that is quick; past it, on a worker.
+                let cap = limit.map_or(Self::JSON_COPY_MAX_BYTES, |limit| limit / 4 * 3);
+                let quick = cap.min(Self::FIELD_COPY_INLINE_BYTES);
+                let null = serde_json::Value::Null;
+                let value = node.json().unwrap_or(&null);
+                if let Some(text) = inspector_drill::json_copy_text(value, quick) {
+                    self.finish_copy(clipboard::Payload::text(text), message);
+                    return;
+                }
+                if let Some(limit) = limit.filter(|_| cap <= Self::FIELD_COPY_INLINE_BYTES) {
+                    self.error_modal
+                        .show(clipboard::over_osc52_limit(None, limit));
+                    return;
+                }
+                // The worker resolves the path itself: the document is shared, not copied.
+                self.spawn_job(Job::Copy, Some("Copying..."), move |_| {
+                    let value = node.json().unwrap_or(&serde_json::Value::Null);
+                    let text =
+                        inspector_drill::json_copy_text(value, cap).ok_or_else(|| match limit {
+                            Some(limit) => clipboard::over_osc52_limit(None, limit),
+                            None => "Copy failed: the value is too large to copy".to_string(),
+                        })?;
+                    Ok(Answer::Copied {
+                        payload: clipboard::Payload::text(text),
+                        message,
+                    })
+                });
+            }
+        }
     }
 
     /// `e` in the inspector: escaped text or as itself, only where the focused
@@ -26272,6 +26467,26 @@ impl App {
         match shown {
             // A failed read is asked again: the pane said why, and Enter is the retry.
             Shown::Unread | Shown::Failed(_) => self.read_inspected_fields(&row),
+            Shown::Value(ref v)
+                if crate::widgets::inspector::value_opens(v)
+                    && !self
+                        .inspector_modal
+                        .known_not_json(row.frame, row.row, &field.name) =>
+            {
+                let column = if field.buffered() {
+                    row.values.column(&field.name).ok()
+                } else {
+                    self.inspector_modal
+                        .read_values(row.frame, row.row)
+                        .and_then(|values| values.column(&field.name).ok())
+                };
+                if let Some(column) = column {
+                    let node =
+                        inspector_drill::Node::Native(column.as_materialized_series().clone());
+                    let path = inspector_drill::path_key([field.name.as_str()]);
+                    self.inspector_open(row.frame, row.row, field.name.clone(), path, node);
+                }
+            }
             // Only while the pane, as last drawn for this field, has more to show.
             Shown::Value(_)
                 if self
@@ -26378,6 +26593,11 @@ impl App {
             field.name,
             thousands(row.display_row)
         );
+        self.copy_value(column, message);
+    }
+
+    /// Copy the one value of `column`, exact, and flash `message`.
+    fn copy_value(&mut self, column: polars::prelude::Column, message: String) {
         // Destination first, as the copy dialog's: a value over the terminal's cap
         // is refused before it is formatted, here or on a worker.
         let limit = match self.copy_destination() {
@@ -28645,6 +28865,15 @@ mod startup_reads_tests {
     }
 }
 
+/// `text` as a sentence for a flash: its first letter capitalized.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// The row inspector's reads of the fields the buffer does not hold.
 #[cfg(test)]
 mod inspector_tests {
@@ -28760,6 +28989,99 @@ mod inspector_tests {
         let screen = draw(&mut app);
         assert!(screen.contains("Could not read the field"));
         assert!(screen.contains("Retry"), "the footer says Enter retries");
+    }
+
+    /// #615: long JSON text is parsed on a worker; once the cursor moves to another
+    /// row, its answer opens nothing.
+    #[test]
+    fn a_json_parse_for_another_row_is_let_go() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let long = format!("[{}0]", "0, ".repeat(40_000));
+        let df = df!("j" => [long.clone(), long]).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.set_column_order(vec!["j".to_string()]);
+        app.data_table_state = Some(state);
+        draw(&mut app);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.inspector_modal.json_wait.is_some());
+        assert!(app.is_busy());
+        let answer = loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+                Ok(event @ AppEvent::JobEnded(ticket)) if ticket.kind() == JobKind::InspectJson => {
+                    break event;
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("no answer from the worker: {e}"),
+            }
+        };
+        app.jobs.quiet(|job| matches!(job, Job::InspectJson { .. }));
+        press(&mut app, KeyCode::Right);
+        draw(&mut app);
+        assert!(app.inspector_modal.json_wait.is_none());
+        app.event(&answer);
+        assert!(app.inspector_modal.drill.is_none(), "nothing opened");
+
+        // Asked again on this row, the answer opens the array.
+        press(&mut app, KeyCode::Enter);
+        let answer = loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+                Ok(event @ AppEvent::JobEnded(ticket)) if ticket.kind() == JobKind::InspectJson => {
+                    break event;
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("no answer from the worker: {e}"),
+            }
+        };
+        app.event(&answer);
+        let drill = app.inspector_modal.drill.as_ref().expect("opened");
+        assert_eq!(drill.row, 1);
+        assert_eq!(drill.level().node.len(), 40_001);
+    }
+
+    /// #615: text too long to open as JSON, or that did not parse, keeps Enter as
+    /// More: the footer stops offering Open, and Enter shows the next chunk.
+    #[test]
+    fn json_text_that_cannot_open_keeps_enter_as_more() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let huge = format!(
+            "[{}0]",
+            "0,".repeat(inspector_drill::JSON_MAX_BYTES / 2 + 1)
+        );
+        let bad = format!("{{{}}}", "x".repeat(40 * 1024));
+        let df = df!("huge" => [huge], "bad" => [bad]).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.set_column_order(vec!["huge".to_string(), "bad".to_string()]);
+        app.data_table_state = Some(state);
+        draw(&mut app);
+        press(&mut app, KeyCode::Char(' '));
+        let screen = draw(&mut app);
+        assert!(
+            screen.contains("More") && !screen.contains("Open"),
+            "{screen}"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.inspector_modal.chunks, 2, "Enter is More over the cap");
+        assert!(app.inspector_modal.drill.is_none());
+
+        press(&mut app, KeyCode::Down);
+        let screen = draw(&mut app);
+        assert!(screen.contains("Open"), "{screen}");
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.flash_message()
+                .is_some_and(|m| m.starts_with("Not JSON"))
+        );
+        let screen = draw(&mut app);
+        assert!(
+            screen.contains("More") && !screen.contains("Open"),
+            "{screen}"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.inspector_modal.chunks, 2, "then Enter is More");
+        assert!(app.inspector_modal.drill.is_none());
     }
 
     /// The footer names what Enter does on a field not read yet.
@@ -28879,6 +29201,111 @@ mod inspector_layout_tests {
             // The value keeps its lines under the list, and its rule follows the list.
             let rule = rows.iter().position(|r| r.contains("note  str")).unwrap();
             assert!(rows.len() - 3 - rule > 3, "{width}x{height}:\n{text}");
+        }
+    }
+
+    /// An object's keys past the thousand measured for the name column are whole
+    /// when the page shows them, not cut to the width of `k999`.
+    #[test]
+    fn keys_past_the_measured_ones_are_not_cut() {
+        use polars::prelude::{IntoLazy, df};
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let keys: Vec<String> = (0..2000).map(|i| format!("\"k{i}\": {i}")).collect();
+        let df = df!("doc" => [format!("{{{}}}", keys.join(", "))]).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.set_column_order(vec!["doc".to_string()]);
+        app.data_table_state = Some(state);
+        rows_at(&mut app, 80, 24);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::End);
+        let rows = rows_at(&mut app, 80, 24);
+        let rail = crate::glyphs::get().rail;
+        assert!(
+            rows.iter().any(|r| r.contains(&format!("{rail}k1999 "))),
+            "{}",
+            rows.join("\n")
+        );
+    }
+
+    /// #615: a row whose `order` is a struct holding a list of structs, drilled
+    /// into twice: the title is the breadcrumb, the list is a table of its fields,
+    /// and one frame holds it all, the way back on its footer and the control bar.
+    #[test]
+    fn a_drill_titles_its_trail_and_tables_a_list_of_structs() {
+        use polars::prelude::{DataFrame, IntoColumn, IntoSeries, NamedFrom, Series, df};
+        let g = crate::glyphs::get();
+        for (width, height) in [(80, 24), (60, 20), (120, 30)] {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(tx, crate::tests::test_runtime());
+            let item = df!("sku" => ["A1", "B7", "C3"], "qty" => [2i64, 1, 5])
+                .unwrap()
+                .into_struct("".into())
+                .into_series();
+            let lines = Series::new("lines".into(), [item]);
+            let order = DataFrame::new(
+                1,
+                vec![
+                    polars::prelude::Column::new("id".into(), [7i64]),
+                    lines.into_column(),
+                ],
+            )
+            .unwrap()
+            .into_struct("order".into())
+            .into_series();
+            let df = DataFrame::new(1, vec![order.into_column()]).unwrap();
+            let mut state =
+                DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+            state.set_column_order(state.headers());
+            app.data_table_state = Some(state);
+            rows_at(&mut app, width, height);
+            press(&mut app, KeyCode::Char(' '));
+            press(&mut app, KeyCode::Enter);
+            press(&mut app, KeyCode::Down);
+            press(&mut app, KeyCode::Enter);
+            let rows = rows_at(&mut app, width, height);
+            let text = rows.join("\n");
+            assert!(
+                rows[0].contains(&format!("Row 1 of 1 {} order {} lines", g.trail, g.trail)),
+                "{width}x{height}:\n{text}"
+            );
+            assert!(rows[1].contains("Items"), "{width}x{height}:\n{text}");
+            assert!(
+                rows[2].contains("sku") && rows[2].contains("qty"),
+                "the table's header: {width}x{height}:\n{text}"
+            );
+            assert!(
+                rows[3].contains(g.rail) && rows[3].contains("[0]") && rows[3].contains("A1"),
+                "{width}x{height}:\n{text}"
+            );
+            for row in &rows[1..rows.len() - 2] {
+                let inside: String = row.chars().skip(1).take(row.chars().count() - 2).collect();
+                assert!(
+                    !inside.contains(g.border.top_left) && !inside.contains(g.border.bottom_left),
+                    "{width}x{height}: a border inside the surface:\n{text}"
+                );
+            }
+            let footer = &rows[rows.len() - 3];
+            assert!(
+                footer.contains("Enter") && footer.contains("Open"),
+                "{width}x{height}:\n{text}"
+            );
+            assert!(
+                footer.contains("Esc") && footer.contains("Back"),
+                "{width}x{height}:\n{text}"
+            );
+            assert!(
+                rows[rows.len() - 1].contains("Back"),
+                "the control bar's Esc: {width}x{height}:\n{text}"
+            );
+            // Esc climbs to the row, then closes.
+            press(&mut app, KeyCode::Esc);
+            press(&mut app, KeyCode::Esc);
+            assert!(app.inspector_modal.drill.is_none());
+            assert_eq!(app.input_mode, InputMode::Inspect);
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.input_mode, InputMode::Normal);
         }
     }
 }

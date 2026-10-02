@@ -11338,6 +11338,210 @@ fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
     assert!(state.lf().clone().collect().unwrap().height() > 0);
 }
 
+/// #615: in the row inspector, Enter drills into a struct, a list of structs (shown
+/// as a table) and JSON held as text, long text parsed on a worker. The title is the
+/// breadcrumb; `→` opens and `←`/Esc climb back to the row, where Esc closes. `y`
+/// copies the focused item, a JSON object as indented JSON.
+#[test]
+fn test_inspector_drills_into_nested_values_and_json_text() {
+    use datui::clipboard::{Destination, Payload};
+    use std::sync::{Arc, Mutex};
+
+    struct Capture(Arc<Mutex<Vec<Payload>>>);
+    impl Destination for Capture {
+        fn write(&mut self, payload: Payload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+        fn describe(&self) -> &'static str {
+            "test"
+        }
+    }
+
+    let dir = common::fixture_dir().join("inspector_nested_615");
+    let address = df!("street" => ["1 Main St", "2 Elm St"], "city" => ["Boston", "Austin"])
+        .unwrap()
+        .into_struct("address".into())
+        .into_series();
+    let customer = DataFrame::new(
+        2,
+        vec![
+            Column::new("name".into(), ["ann", "bob"]),
+            address.into_column(),
+        ],
+    )
+    .unwrap()
+    .into_struct("customer".into())
+    .into_series();
+    let item = df!("sku" => ["A1", "B7"], "qty" => [2i64, 1])
+        .unwrap()
+        .into_struct("".into())
+        .into_series();
+    let items = Series::new("items".into(), [item.clone(), item]);
+    // Over the size parsed on the key, so a worker parses it.
+    let rows: Vec<String> = (0..20_000).map(|i| format!("{{\"id\": {i}}}")).collect();
+    let big = format!("{{\"rows\": [{}]}}", rows.join(", "));
+    assert!(big.len() > 64 * 1024);
+    let df = DataFrame::new(
+        2,
+        vec![
+            customer.into_column(),
+            items.into_column(),
+            Column::new("payload".into(), [big, "{\"a\": [1, 2]}".to_string()]),
+            Column::new("bad".into(), ["{oops}", "{oops}"]),
+        ],
+    )
+    .unwrap();
+    write_parquet(&dir, "", df);
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![dir.join("data.parquet")],
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    let copies: Arc<Mutex<Vec<Payload>>> = Arc::new(Mutex::new(Vec::new()));
+    app.set_clipboard_destination(Box::new(Capture(copies.clone())));
+    let last_copy = || copies.lock().unwrap().last().unwrap().text.clone();
+    let area = Rect::new(0, 0, 80, 24);
+    let t = datui::glyphs::get().trail;
+    let levels = |app: &App| -> Vec<String> {
+        app.inspector_modal.drill.as_ref().map_or(Vec::new(), |d| {
+            d.levels.iter().map(|l| l.label.clone()).collect()
+        })
+    };
+
+    // The row, on its first field; Enter opens the struct.
+    painted(&mut app, &rx, &tx, area);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(app.input_mode, InputMode::Inspect);
+    let root = painted(&mut app, &rx, &tx, area);
+    assert!(root.contains(" Enter  Open "), "{root}");
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    let screen = painted(&mut app, &rx, &tx, area);
+    assert!(
+        screen.contains(&format!("Row 1 of 2 {t} customer")),
+        "{screen}"
+    );
+    assert!(screen.contains(" Esc  Back "), "{screen}");
+
+    // `j` then `→` into the address; `y` copies the street.
+    press_and_send(&mut app, &tx, KeyCode::Char('j'));
+    press_and_send(&mut app, &tx, KeyCode::Right);
+    let screen = painted(&mut app, &rx, &tx, area);
+    assert!(
+        screen.contains(&format!("Row 1 of 2 {t} customer {t} address")),
+        "{screen}"
+    );
+    assert!(screen.contains("1 Main St"), "{screen}");
+    press_and_send(&mut app, &tx, KeyCode::Char('y'));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(last_copy(), "1 Main St");
+
+    // Esc and ← climb a level each, back to the row.
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(levels(&app), ["customer"]);
+    press_and_send(&mut app, &tx, KeyCode::Left);
+    assert!(levels(&app).is_empty());
+    assert_eq!(app.input_mode, InputMode::Inspect);
+
+    // A list of structs is a table of its fields.
+    press_and_send(&mut app, &tx, KeyCode::Char('j'));
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    let screen = painted(&mut app, &rx, &tx, area);
+    let header = screen
+        .lines()
+        .find(|l| l.contains("sku"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    assert!(header.contains("qty"), "{screen}");
+    assert!(
+        screen
+            .lines()
+            .any(|l| l.contains("[1]") && l.contains("B7")),
+        "{screen}"
+    );
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+
+    // Long JSON text is parsed on a worker, then drilled like a struct.
+    press_and_send(&mut app, &tx, KeyCode::Char('j'));
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert!(app.is_busy(), "the parse is a job the user waits on");
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(levels(&app), ["payload"]);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    press_and_send(&mut app, &tx, KeyCode::End);
+    let screen = painted(&mut app, &rx, &tx, area);
+    assert!(
+        screen.contains(&format!("payload {t} rows")) && screen.contains("20,000"),
+        "{screen}"
+    );
+    assert!(screen.contains("[19999]"), "{screen}");
+    press_and_send(&mut app, &tx, KeyCode::Char('y'));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(last_copy(), "{\n  \"id\": 19999\n}");
+
+    // Text that is not JSON stays where it is and says why.
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    press_and_send(&mut app, &tx, KeyCode::Char('j'));
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    assert!(levels(&app).is_empty());
+    assert!(
+        app.flash_message()
+            .is_some_and(|m| m.starts_with("Not JSON")),
+        "{:?}",
+        app.flash_message()
+    );
+
+    // Esc at the row closes the inspector.
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
+/// #615: NDJSON objects load as structs and lists, and drill the same way.
+#[test]
+fn test_inspector_drills_into_ndjson_objects() {
+    let dir = common::fixture_dir().join("inspector_ndjson_615");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("events.ndjson");
+    std::fs::write(
+        &path,
+        "{\"id\": 1, \"user\": {\"name\": \"u1\", \"roles\": [\"admin\", \"dev\"]}}\n\
+         {\"id\": 2, \"user\": {\"name\": \"u2\", \"roles\": []}}\n",
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 80, 24);
+    painted(&mut app, &rx, &tx, area);
+    press_and_send(&mut app, &tx, KeyCode::Char('l'));
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    press_and_send(&mut app, &tx, KeyCode::Char('j'));
+    press_and_send(&mut app, &tx, KeyCode::Enter);
+    let t = datui::glyphs::get().trail;
+    let screen = painted(&mut app, &rx, &tx, area);
+    assert!(
+        screen.contains(&format!("Row 1 of 2 {t} user {t} roles")),
+        "{screen}"
+    );
+    assert!(
+        screen
+            .lines()
+            .any(|l| l.contains("[1]") && l.contains("dev")),
+        "{screen}"
+    );
+    for _ in 0..3 {
+        press_and_send(&mut app, &tx, KeyCode::Esc);
+    }
+    assert_eq!(app.input_mode, InputMode::Normal);
+}
+
 /// Salaries by department, 40 rows: `dept` cycles eng, ops, sales and a null every
 /// fourth row; `salary` climbs by 5,000 from 60,000; `ts` is the hour `i % 24`.
 #[cfg(feature = "sql")]

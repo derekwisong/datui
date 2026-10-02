@@ -69,6 +69,7 @@ pub enum JobKind {
     ViewPivot,
     DrillRow,
     InspectRow,
+    InspectJson,
     Export,
     Copy,
     QualityReport,
@@ -133,6 +134,9 @@ pub(crate) enum Job {
     /// The inspector's fields of one row that the buffer does not hold: row `row` of
     /// frame `frame`.
     InspectRow { frame: u64, row: usize },
+    /// The inspector's text parsed as JSON to drill into: the
+    /// [`crate::inspector_drill::JsonWait`] it answers.
+    InspectJson { token: u64 },
     /// An export, from plan to committed file.
     Export,
     /// Collecting and formatting the view for a copy.
@@ -195,6 +199,7 @@ impl Job {
             Job::ViewPivot(_) => JobKind::ViewPivot,
             Job::DrillRow => JobKind::DrillRow,
             Job::InspectRow { .. } => JobKind::InspectRow,
+            Job::InspectJson { .. } => JobKind::InspectJson,
             Job::Export => JobKind::Export,
             Job::Copy => JobKind::Copy,
             Job::QualityReport => JobKind::QualityReport,
@@ -308,6 +313,8 @@ pub(crate) enum Answer {
     DrillRow { group_index: usize, row: DataFrame },
     /// [`Job::InspectRow`]: the fields read.
     FieldsRead(DataFrame),
+    /// [`Job::InspectJson`]: the document.
+    JsonParsed(std::sync::Arc<serde_json::Value>),
     /// [`Job::Export`]: the file, committed.
     Exported(PathBuf),
     /// [`Job::Copy`]: the view or a field, formatted, and the flash that says what was

@@ -47,7 +47,7 @@ Exact means the value as Polars stored it, not the spelling in a CSV file: a
 | <kbd>Home</kbd> <kbd>End</kbd> | First and last field |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Scroll a long value |
-| <kbd>Enter</kbd> | Show more of a long value (16 KB of text at a time), or read a field the table's rows do not hold. The last line counts the whole value: `… 65,521 more lines` for a 1 MiB hex dump, `… 205 more lines, then 2,079,786 chars` for long text |
+| <kbd>Enter</kbd> | Open a struct, a list or JSON text ([below](#drill-into-nested-values)); show more of a long value (16 KB of text at a time); or read a field the table's rows do not hold. The last line counts the whole value: `… 65,521 more lines` for a 1 MiB hex dump, `… 205 more lines, then 2,079,786 chars` for long text |
 | <kbd>y</kbd> | Copy the focused field's exact value |
 | <kbd>e</kbd> | Show text or bytes escaped (`\n`, `\t`, `\\`, quotes) or as itself |
 | <kbd>/</kbd> | Find a field by name: type to narrow; <kbd>Enter</kbd> keeps the list narrowed, <kbd>Esc</kbd> clears it |
@@ -56,6 +56,37 @@ Exact means the value as Polars stored it, not the spelling in a CSV file: a
 
 Escaped text tells a line break (`\n`) from a backslash followed by `n`
 (`\\n`), and shows invisible characters such as a no-break space as `\u{a0}`.
+
+## Drill into nested values
+
+<kbd>Enter</kbd> on a struct, a list or an array opens it one level down:
+a struct's fields, or a list's items as `[0]`, `[1]`, … with their types and
+previews. Text that holds a JSON object or array opens the same way, its keys
+in the document's order. The footer says `Enter Open` where it applies.
+
+| Key | Action |
+|---|---|
+| <kbd>Enter</kbd> or <kbd>→</kbd> <kbd>l</kbd> | Open the focused item |
+| <kbd>Esc</kbd> or <kbd>←</kbd> <kbd>h</kbd> | Up a level; at the row, <kbd>Esc</kbd> closes |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd>, <kbd>Home</kbd> <kbd>End</kbd> | Move between items |
+| <kbd>y</kbd> | Copy the focused item; a JSON object or array as indented JSON |
+| <kbd>Space</kbd> | Close |
+
+The title is the path from the row: `Row 42 of 60 › customer › address`.
+On a narrow terminal the middle steps give way to `…`. A list of structs,
+or a JSON array of objects, shows as a table with a column per field (the
+first object's keys); `+3` after the header counts the columns that do not
+fit, and the focused item's whole value is under the table.
+
+| Limit | |
+|---|---|
+| Items | Only the items on screen are read: a list of a million items opens at once, and `End` reaches the last |
+| JSON text | Up to 64 KB is parsed on the key; longer text in the background, with the spinner. Text over 4 MiB is not opened; <kbd>Enter</kbd> shows more of it |
+| Depth | JSON nested deeper than 128 levels does not open |
+
+Text that does not parse stays where it is, and the bottom bar says why:
+`Not JSON: key must be a string at line 1 column 2`. From then on
+<kbd>Enter</kbd> on it shows more of the text, as on any long value.
 
 ## Copying a field
 

@@ -2825,7 +2825,7 @@ impl ColorConfig {
             column_separator: "#a8aecb".to_string(),
             table_selected: "#b6bfe2".to_string(),
             column_cursor: "#cbd3f2".to_string(),
-            cell_cursor: "#a4b1e6".to_string(),
+            cell_cursor: "#a0aef0".to_string(),
             sidebar_border: "#6172b0".to_string(),
             modal_border_active: "#2e7de9".to_string(),
             modal_border_error: "#f52a65".to_string(),

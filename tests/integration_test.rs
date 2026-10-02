@@ -21326,6 +21326,26 @@ fn a_stream_behind_an_ipc_file_opens_with_it() {
         copy < file + stream / 2 && copy >= stream / 2,
         "the stream only: {copy}"
     );
+/// A directory of CSV opened as one table counts its rows by a scan. The Parquet
+/// footer count it was given found no Parquet, and the count stayed unknown.
+#[test]
+fn a_directory_of_csv_counts_its_rows() {
+    let dir = common::fixture_dir().join("csv_directory_count");
+    std::fs::create_dir_all(&dir).unwrap();
+    for part in ["a", "b"] {
+        let rows: String = (0..3_000).map(|i| format!("{i},{part}\n")).collect();
+        std::fs::write(dir.join(format!("{part}.csv")), format!("n,part\n{rows}")).unwrap();
+    }
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let options = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    settle_from(&mut app, &rx, AppEvent::Open(vec![dir], options));
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let state = app.data_table_state.as_ref().expect("a dataset");
+    assert_eq!(state.num_rows_if_valid(), Some(6_000));
 }
 
 /// The table a CSV opens as, collected, with `options`.

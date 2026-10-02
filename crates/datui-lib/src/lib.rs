@@ -18310,7 +18310,10 @@ impl App {
         };
         // The cheap footer-sum row count, for a local Parquet hive directory. Asked
         // here because a stat on a mount that has stopped answering hangs its thread.
+        // A directory read as another format counts its rows by a scan: its footers
+        // are not Parquet's.
         if options.hive
+            && options.format.is_none_or(|f| f == FileFormat::Parquet)
             && let Some(dir) = path.filter(|p| !source::is_remote_url(p) && p.is_dir())
         {
             facts.parquet_count_dir = Some(dir.to_path_buf());

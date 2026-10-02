@@ -1,15 +1,18 @@
 Navigation:
-  Arrows, h/j/k/l:  Scroll table
-  [ / ]:            A page of columns left or right (Shift+←/→ too)
-  { / }:            First column, last page of columns
-  g:                Go to a column by name; it becomes the current
-                    column until the columns scroll
+  ↑ / ↓ (j/k):      Move the row cursor
+  ← / → (h/l):      Move the column cursor, frozen columns included; the
+                    columns scroll only when it would leave the screen
+  [ / ]:            A page of columns left or right, the cursor on the
+                    page's first column (Shift+←/→ too)
+  { / }:            First column, last column
+  g:                Go to a column by name; the cursor goes with it
   PgUp/PgDn:        Scroll pages (Ctrl+F down, Ctrl+B up)
   Home/End:         Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:    Half page down/up
   ::                Go to line number (e.g. :0 Enter for top)
-  f:                Find text or a regex in the view; the cursor goes to
-                    the first match at or after it
+  f:                Find text or a regex in the view; the cursor, column
+                    cursor and all, goes to the first match at or after
+                    its row
   n / N:            Next / previous match, wrapping round the view
   Enter:            On a row of a by query or a SQL GROUP BY, drill into
                     its rows (Esc comes back); elsewhere, inspect the row
@@ -20,15 +23,16 @@ Navigation:
 Data Operations:
   /:                Query: SQL, Search or q-style
   c:                Open charts
-  s:                Open the Sort & Filter sidebar (tabs: Columns, Filters)
-  F:                Value counts of the current column, underlined in
-                    the header: each value's rows, percent and a bar,
-                    with a summary
+  s:                Open the Sort & Filter sidebar (tabs: Columns, Filters),
+                    on the cursor's column
+  F:                Value counts of the cursor's column: each value's
+                    rows, percent and a bar, with a summary
   a:                Open Statistical Analysis. In a Data Quality evidence
                     drill a is disabled; Esc returns to the observation
   p:                Open Pivot & Melt
   e:                Export data to file
-  y:                Copy to the clipboard (cell, row, view or table)
+  y:                Copy to the clipboard (cell, row, view or table); a
+                    cell is the cursor's
   r:                Reverse sort order (sorted columns carry a direction
                     mark in the header); with no sort, reverse the row order
   R:                Reset table: clear the query, filters, sort, column
@@ -76,9 +80,9 @@ While busy:
 Wide tables:
   ] starts the next page at the first column not shown whole, so a column
   cut at the edge is read whole there; the last page is always full, and
-  [ right after ] goes back to the page it left. While
-  columns are off screen the bar names those on it: cols 41-47 of 300,
-  counting the columns shown, frozen first and hidden ones not at all.
+  [ right after ] goes back to the page it left. The bar says where the
+  column cursor is: col 43 of 300, counting the columns shown, frozen
+  first and hidden ones not at all.
 
 Wide columns:
   A column keeps the width it was first drawn at, so paging and scrolling

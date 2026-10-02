@@ -323,6 +323,8 @@ fn test_theme_with_custom_colors() {
         row_numbers: "dark_gray".to_string(),
         column_separator: "cyan".to_string(),
         table_selected: "reversed".to_string(),
+        column_cursor: "indexed(237)".to_string(),
+        cell_cursor: "indexed(239)".to_string(),
         sidebar_border: "cyan".to_string(),
         modal_border_active: "yellow".to_string(),
         modal_border_error: "red".to_string(),

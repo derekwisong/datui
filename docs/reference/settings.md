@@ -215,6 +215,8 @@ darkened. Set any slot to change it.
 | `alternate_row_color` | Every other row (`"default"` turns the stripe off) | `#1e2030` |
 | `table_selected` | Tint under the current row (`"reversed"` swaps fg and bg instead) | `#283457` |
 | `find_match` | Behind the cell a find (<kbd>f</kbd>) landed on; its text is black or white, whichever reads | `#e0af68` |
+| `column_cursor` | Tint under the column cursor's cells | `#292e42` |
+| `cell_cursor` | The column cursor's header and the current cell, in bold; reversed where it cannot show (16 colors, `NO_COLOR`) | `#3b4261` |
 | `column_separator` | Rule after frozen columns, rules beside section titles | `#3b4261` |
 | `sidebar_border`, `modal_border_active`, `modal_border_error` | Borders | `#565f89`, `#7dcfff`, `#f7768e` |
 | `str_col`, `int_col`, `float_col`, `bool_col`, `temporal_col`, `binary_col` | Cells and headers by type | `#9ece6a`, `#7aa2f7`, `#2ac3de`, `#e0af68`, `#bb9af7`, `#565f89` |

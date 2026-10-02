@@ -7191,6 +7191,9 @@ fn test_a_uniform_dataset_shows_no_absent_or_conflicting_cells() {
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let text = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 20));
+    // The table, without the control bar (the last row), whose separator is the
+    // same dot.
+    let text: String = text.chars().take(100 * 19).collect();
     assert!(text.contains(g.null), "the real null still shows");
     assert!(!text.contains(g.absent), "nothing is absent here");
     assert!(!text.contains(g.conflict), "nothing conflicts here");
@@ -16383,8 +16386,9 @@ fn showing_a_hidden_column_puts_it_back_in_place() {
     );
 
     // Hide c and apply; reopened, it is still listed second and comes back there.
-    // The cursor stays on the second row across opens.
+    // The sidebar opens on the column cursor's column, a.
     open_list(&mut app);
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char('v'));
     apply(&mut app);
     assert_eq!(
@@ -16397,7 +16401,13 @@ fn showing_a_hidden_column_puts_it_back_in_place() {
         .1
         .name
         .clone();
-    assert_eq!(under_cursor, "c", "the hidden column keeps its row");
+    assert_eq!(under_cursor, "a", "the sidebar opens on the column cursor");
+    assert_eq!(
+        modal.filtered_columns()[1].1.name,
+        "c",
+        "the hidden column keeps its row"
+    );
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char('v'));
     apply(&mut app);
     assert_eq!(
@@ -16407,7 +16417,6 @@ fn showing_a_hidden_column_puts_it_back_in_place() {
 
     // Hiding a leaves the rows where they were, so Down v hides c.
     open_list(&mut app);
-    press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char('v'));
@@ -18012,12 +18021,18 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     key(&mut app, KeyCode::Enter); // copy
     assert_eq!(copies.lock().unwrap()[2].text, "700000");
 
-    // Scope and column are sticky, and a null cell copies as empty.
+    // The scope is sticky; the column is the column cursor's, which `l` moves to
+    // pop, and a null cell copies as empty.
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Char('y'));
     key(&mut app, KeyCode::Enter);
-    assert_eq!(copies.lock().unwrap()[3].text, "");
+    assert_eq!(copies.lock().unwrap()[3].text, "Quito");
+    key(&mut app, KeyCode::Char('l'));
+    key(&mut app, KeyCode::Char('y'));
+    assert_eq!(app.copy_modal.column.as_deref(), Some("pop"));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(copies.lock().unwrap()[4].text, "");
 
     // The table scope collects off-thread, then lands on the same destination
     // with the header the scope defaults to.
@@ -18032,9 +18047,9 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     pump_until_idle(&mut app, &rx, &tx);
     {
         let copies = copies.lock().unwrap();
-        assert_eq!(copies.len(), 5, "the background copy landed");
+        assert_eq!(copies.len(), 6, "the background copy landed");
         assert_eq!(
-            copies[4].text,
+            copies[5].text,
             "city\tpop\nOslo\t700000\nParis\t2100000\nQuito\t"
         );
     }
@@ -18948,8 +18963,8 @@ fn open_orders_fixture(dir: &Path) -> (App, mpsc::Receiver<AppEvent>, mpsc::Send
     (app, rx, tx)
 }
 
-/// #548 M1: the inspect chip leads the bar from 80 columns up; at 60×20 Help keeps
-/// its place and Inspect yields. A binary column's type row says binary (D2, D10).
+/// #548 M1: the inspect chip leads the bar, at 60×20 too beside a short column
+/// position, with Help kept. A binary column's type row says binary (D2, D10).
 #[test]
 fn test_inspect_chip_and_binary_type_at_narrow_and_wide_sizes() {
     let dir = tempfile::tempdir().unwrap();
@@ -18959,14 +18974,11 @@ fn test_inspect_chip_and_binary_type_at_narrow_and_wide_sizes() {
         let rows = rows_at(&mut app, width, height);
         let bar = rows.last().unwrap();
         assert!(bar.contains("?  Help"), "{width}x{height}: {bar}");
-        if width >= 80 {
-            assert!(
-                bar.trim_start().starts_with("Enter  Inspect"),
-                "{width}x{height}: {bar}"
-            );
-        } else {
-            assert!(!bar.contains("Inspect"), "{width}x{height}: {bar}");
-        }
+        // At 60 too: the column cursor's `col 1/14` leaves Inspect its room.
+        assert!(
+            bar.trim_start().starts_with("Enter  Inspect"),
+            "{width}x{height}: {bar}"
+        );
         if width == 200 {
             // The type row, not the `‹binary›` stub in the cells.
             assert!(text.contains(" binary"), "{text}");
@@ -19552,6 +19564,21 @@ fn columns_shown(app: &App) -> Option<datui::widgets::column_paging::OnScreen> {
     app.data_table_state.as_ref().unwrap().columns_on_screen()
 }
 
+/// The scrolling columns on screen, first and last, counted from 1 with frozen ones.
+fn range_shown(app: &App) -> Option<(usize, usize)> {
+    columns_shown(app).map(|on| (on.first, on.last))
+}
+
+/// The column cursor's place, counted from 1, as the bar says it.
+fn cursor_at(app: &App) -> usize {
+    app.data_table_state
+        .as_ref()
+        .unwrap()
+        .current_column_index()
+        .unwrap()
+        + 1
+}
+
 /// The header row: the line that names the columns.
 fn header_line(screen: &str) -> &str {
     screen.lines().next().unwrap_or("")
@@ -19559,7 +19586,9 @@ fn header_line(screen: &str) -> &str {
 
 /// Wide-table navigation across 300 columns (#462): `]` pages right through every
 /// column with no gap and always moves; `[` pages back the same way; `}` fills the
-/// last page and `{` returns; the bar names the range; `g` finds a column by name.
+/// last page and `{` returns; the bar names the cursor's column; `g` finds a column
+/// by name. The column cursor (#574) rides along: on each page's first column, and
+/// the view follows `h` `l` only at the edges.
 #[test]
 fn wide_table_pages_across_300_columns() {
     let size = (80, 24);
@@ -19570,23 +19599,26 @@ fn wide_table_pages_across_300_columns() {
     let screen = draw_sized(&mut app, size);
     let bar = screen.lines().last().unwrap();
     assert!(
-        bar.contains(&format!("cols 1-{}/300", first.last)),
-        "the bar names the range: {bar}"
+        bar.contains("col 1/300"),
+        "the bar names the cursor's column: {bar}"
     );
 
     // Right to the end, a page at a time: each page starts no later than the column
-    // after the last one shown, so nothing is skipped, and always moves.
+    // after the last one shown, so nothing is skipped, and always moves. The cursor
+    // starts each page.
     let mut pages = vec![first];
     loop {
         press_and_draw(&mut app, KeyCode::Char(']'), size);
         let now = columns_shown(&app).unwrap();
         let before = *pages.last().unwrap();
-        if now == before {
+        if (now.first, now.last) == (before.first, before.last) {
+            assert_eq!(now.cursor, 300, "] on the last page: its last column");
             break;
         }
         assert!(now.first > before.first, "{before:?} -> {now:?}");
         assert!(now.first <= before.last + 1, "a gap: {before:?} -> {now:?}");
         assert!(now.last - now.first >= 2, "an 80-wide page shows several");
+        assert_eq!(now.cursor, now.first, "the cursor starts the page");
         pages.push(now);
     }
     let last = *pages.last().unwrap();
@@ -19594,17 +19626,29 @@ fn wide_table_pages_across_300_columns() {
     assert!(pages.len() > 20, "{} pages", pages.len());
     let screen = draw_sized(&mut app, size);
     assert!(header_line(&screen).contains("code_299"), "{screen}");
+    assert!(screen.lines().last().unwrap().contains("col 300/300"));
 
     // And back, through the same pages: `[` after `]` goes back to the page it left.
     let mut back = pages.clone();
     back.pop();
     while let Some(expected) = back.pop() {
         press_and_draw(&mut app, KeyCode::Char('['), size);
-        assert_eq!(columns_shown(&app), Some(expected));
+        assert_eq!(range_shown(&app), Some((expected.first, expected.last)));
+        assert_eq!(cursor_at(&app), expected.first);
     }
-    // Paged back from somewhere `]` did not go, `[` still leaves no gap.
+    // Paged back from somewhere `]` did not go, `[` still leaves no gap. `h` walks
+    // the cursor across the last page, and one more scrolls it a column.
     press_and_draw(&mut app, KeyCode::Char('}'), size);
-    press_and_draw(&mut app, KeyCode::Char('h'), size);
+    assert_eq!(cursor_at(&app), 300);
+    for _ in last.first..=last.last {
+        press_and_draw(&mut app, KeyCode::Char('h'), size);
+    }
+    assert_eq!(cursor_at(&app), last.first - 1);
+    assert_eq!(
+        range_shown(&app).unwrap().0,
+        last.first - 1,
+        "the view scrolls only at the edge"
+    );
     loop {
         let before = columns_shown(&app).unwrap();
         press_and_draw(&mut app, KeyCode::Char('['), size);
@@ -19617,19 +19661,44 @@ fn wide_table_pages_across_300_columns() {
     }
 
     press_and_draw(&mut app, KeyCode::Char('}'), size);
-    assert_eq!(columns_shown(&app), Some(last), "}} lands on the last page");
+    assert_eq!(
+        range_shown(&app),
+        Some((last.first, last.last)),
+        "}} lands on the last page"
+    );
+    assert_eq!(cursor_at(&app), 300);
     press_and_draw(&mut app, KeyCode::Char('{'), size);
     assert_eq!(columns_shown(&app).unwrap().first, 1);
+    assert_eq!(cursor_at(&app), 1);
 
-    // Shift+arrows page too; the plain arrows still move one column.
+    // Shift+arrows page too; the plain arrows move the cursor one column, and the
+    // view only when the cursor would leave it.
     press_key(&mut app, KeyCode::Right, KeyModifiers::SHIFT);
     draw_sized(&mut app, size);
     let paged = columns_shown(&app).unwrap();
     assert!(paged.first > 2, "{paged:?}");
     press_and_draw(&mut app, KeyCode::Char('l'), size);
-    assert_eq!(columns_shown(&app).unwrap().first, paged.first + 1);
-    press_and_draw(&mut app, KeyCode::Left, size);
     assert_eq!(columns_shown(&app).unwrap().first, paged.first);
+    assert_eq!(cursor_at(&app), paged.first + 1);
+    press_and_draw(&mut app, KeyCode::Left, size);
+    press_and_draw(&mut app, KeyCode::Left, size);
+    assert_eq!(cursor_at(&app), paged.first - 1);
+    assert_eq!(
+        columns_shown(&app).unwrap().first,
+        paged.first - 1,
+        "one column left past the edge scrolls one"
+    );
+    for _ in paged.first - 1..paged.last {
+        press_and_draw(&mut app, KeyCode::Char('l'), size);
+    }
+    assert_eq!(cursor_at(&app), paged.last);
+    assert_eq!(
+        columns_shown(&app).unwrap().last,
+        paged.last,
+        "past the right edge: scrolled just enough to show it whole"
+    );
+    press_key(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+    draw_sized(&mut app, size);
     press_key(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
     draw_sized(&mut app, size);
     assert_eq!(columns_shown(&app).unwrap().first, 1);
@@ -19643,12 +19712,14 @@ fn wide_table_pages_across_300_columns() {
     let screen = press_and_draw(&mut app, KeyCode::Enter, size);
     assert_eq!(app.input_mode, InputMode::Normal);
     assert_eq!(columns_shown(&app).unwrap().first, 151);
+    assert_eq!(cursor_at(&app), 151, "g moves the cursor");
     assert!(header_line(&screen).contains("label_150"), "{screen}");
     // A column already whole on screen does not move the view.
     press_and_draw(&mut app, KeyCode::Char('g'), size);
     type_and_draw(&mut app, "id_152", size);
     press_and_draw(&mut app, KeyCode::Enter, size);
     assert_eq!(columns_shown(&app).unwrap().first, 151);
+    assert_eq!(cursor_at(&app), 153);
     // A name nothing matches keeps the picker open; Esc leaves the view as it was.
     press_and_draw(&mut app, KeyCode::Char('g'), size);
     type_and_draw(&mut app, "zzz", size);
@@ -19662,7 +19733,8 @@ fn wide_table_pages_across_300_columns() {
     press_and_draw(&mut app, KeyCode::Char('g'), size);
     type_and_draw(&mut app, "code_299", size);
     press_and_draw(&mut app, KeyCode::Enter, size);
-    assert_eq!(columns_shown(&app), Some(last));
+    assert_eq!(range_shown(&app), Some((last.first, last.last)));
+    assert_eq!(cursor_at(&app), 300);
 }
 
 /// Paging keeps frozen columns on screen, counts them first, and pages only the
@@ -19701,7 +19773,8 @@ fn wide_table_pages_beside_frozen_and_hidden_columns() {
     assert!(header_line(&screen).contains("label_118"), "{screen}");
     assert!(header_line(&screen).contains(&moved), "{screen}");
     press_and_draw(&mut app, KeyCode::Char('{'), size);
-    assert_eq!(columns_shown(&app), Some(start));
+    assert_eq!(range_shown(&app), Some((start.first, start.last)));
+    assert_eq!(cursor_at(&app), 1, "{{ is the first column, a frozen one");
 
     // The picker lists the shown columns in order, never a hidden one.
     press_and_draw(&mut app, KeyCode::Char('g'), size);
@@ -19709,7 +19782,8 @@ fn wide_table_pages_beside_frozen_and_hidden_columns() {
     // A frozen column is on screen already: choosing it moves nothing.
     type_and_draw(&mut app, "id_000", size);
     press_and_draw(&mut app, KeyCode::Enter, size);
-    assert_eq!(columns_shown(&app), Some(start));
+    assert_eq!(range_shown(&app), Some((start.first, start.last)));
+    assert_eq!(cursor_at(&app), 2);
 
     // Every column frozen: nothing scrolls, and the keys do nothing.
     run_and_settle(
@@ -19722,8 +19796,62 @@ fn wide_table_pages_beside_frozen_and_hidden_columns() {
     for key in ['[', ']', '{', '}'] {
         press_and_draw(&mut app, KeyCode::Char(key), size);
         assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
-        assert_eq!(columns_shown(&app), None, "everything is on screen");
     }
+    // The cursor still walks them.
+    press_and_draw(&mut app, KeyCode::Char('{'), size);
+    let screen = press_and_draw(&mut app, KeyCode::Char('l'), size);
+    assert_eq!(cursor_at(&app), 2);
+    assert!(
+        screen.lines().last().unwrap().contains("col 2/3"),
+        "{screen}"
+    );
+}
+
+/// The column cursor follows its column by name through reorder, freeze and hide,
+/// and the view follows it at the next draw (#574).
+#[test]
+fn column_cursor_follows_reorder_freeze_and_hide() {
+    let size = (80, 24);
+    let (mut app, rx, tx) = open_wide_table("cursor_follows.parquet", 120, size);
+    let current = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .current_column()
+            .unwrap()
+            .to_string()
+    };
+    press_and_draw(&mut app, KeyCode::Char('g'), size);
+    type_and_draw(&mut app, "label_062", size);
+    press_and_draw(&mut app, KeyCode::Enter, size);
+    assert_eq!(current(&app), "label_062");
+    let mut order = app.data_table_state.as_ref().unwrap().headers();
+
+    // Moved to the front and frozen: still on it, at the left.
+    order.retain(|c| c != "label_062");
+    order.insert(0, "label_062".to_string());
+    run_and_settle(&mut app, AppEvent::ColumnOrder(order.clone(), 1), &rx, &tx);
+    draw_sized(&mut app, size);
+    assert_eq!(current(&app), "label_062");
+    assert_eq!(cursor_at(&app), 1);
+
+    // Moved to the end, unfrozen: the view goes there with it.
+    order.remove(0);
+    order.push("label_062".to_string());
+    run_and_settle(&mut app, AppEvent::ColumnOrder(order.clone(), 0), &rx, &tx);
+    let screen = draw_sized(&mut app, size);
+    assert_eq!(current(&app), "label_062");
+    assert_eq!(cursor_at(&app), 120);
+    assert_eq!(range_shown(&app).unwrap().1, 120, "{screen}");
+    assert!(header_line(&screen).contains("label_062"), "{screen}");
+
+    // Hidden: the column now in its place takes the cursor, here the last one.
+    order.pop();
+    let last = order.last().unwrap().clone();
+    run_and_settle(&mut app, AppEvent::ColumnOrder(order.clone(), 0), &rx, &tx);
+    draw_sized(&mut app, size);
+    assert_eq!(current(&app), last);
+    assert_eq!(cursor_at(&app), 119);
 }
 
 /// A narrow terminal: a column wider than the window still pages one column at a
@@ -19765,13 +19893,28 @@ fn wide_table_pages_in_a_narrow_window() {
         columns_shown(&app).map(|o| o.first),
         Some(narrow_last.first)
     );
+    // A resize narrower than the cursor's place scrolls just enough to keep it.
+    press_and_draw(&mut app, KeyCode::Char('{'), wide_size);
+    press_and_draw(&mut app, KeyCode::Char('l'), wide_size);
+    press_and_draw(&mut app, KeyCode::Char('l'), wide_size);
+    assert_eq!(cursor_at(&app), 3);
+    assert_eq!(columns_shown(&app).unwrap().first, 1, "whole at 120");
+    draw_sized(&mut app, small);
+    assert_eq!(
+        range_shown(&app),
+        Some((3, 3)),
+        "cut at 60, so the wide column is brought on alone"
+    );
+    draw_sized(&mut app, wide_size);
+    press_and_draw(&mut app, KeyCode::Char('{'), wide_size);
+    press_and_draw(&mut app, KeyCode::Char('}'), wide_size);
     press_and_draw(&mut app, KeyCode::Char('}'), wide_size);
     let wide_last = columns_shown(&app).unwrap();
     assert!(wide_last.first < narrow_last.first, "{wide_last:?}");
     assert_eq!(wide_last.last, 12);
     // The bar has the room for the long form there.
     let screen = draw_sized(&mut app, wide_size);
-    let expected = format!("cols {}-12 of 12", wide_last.first);
+    let expected = "col 12 of 12".to_string();
     assert!(
         screen.lines().last().unwrap().contains(&expected),
         "{screen}"
@@ -19792,7 +19935,7 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.headers(), ["id_000", "price_001"]);
     assert_eq!(state.termcol_index, 0, "the new schema starts at the left");
-    assert_eq!(columns_shown(&app), None);
+    assert_eq!(range_shown(&app), Some((1, 2)), "both on screen");
 
     app.event(&AppEvent::Search("select id_000".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
@@ -20257,7 +20400,7 @@ fn counts_screen(app: &mut App, width: u16, height: u16) -> String {
         .join("\n")
 }
 
-/// F counts the current column: by count, nulls on their own line, the summary
+/// F counts the column cursor's column: by count, nulls on their own line, the summary
 /// over them; ← → step columns, s sorts by value, Esc goes back.
 #[test]
 fn test_value_counts_count_the_column_and_step_columns() {
@@ -20541,10 +20684,10 @@ fn test_comma_toggles_digit_grouping() {
     );
 }
 
-/// The current column is the one `g` chose, underlined in the header, until the
-/// columns scroll; then it is the first column on screen again.
+/// `F` counts the column cursor's column: `g` and `h` move the cursor, the header
+/// carries its style, and stepping columns in Value Counts takes the cursor along.
 #[test]
-fn test_value_counts_follow_the_column_g_chose() {
+fn test_value_counts_count_the_column_cursors_column() {
     let (mut app, rx, tx) = open_csv_with(
         "value_counts_current.csv",
         COUNTS_CSV,
@@ -20559,37 +20702,91 @@ fn test_value_counts_follow_the_column_g_chose() {
             .current_column()
             .map(str::to_string)
     };
-    assert_eq!(current(&app).as_deref(), Some("pay"));
+    assert_eq!(current(&app).as_deref(), Some("pay"), "the first column");
     press_and_send(&mut app, &tx, KeyCode::Char('g'));
     for c in "id".chars() {
         press_and_send(&mut app, &tx, KeyCode::Char(c));
     }
     press_and_send(&mut app, &tx, KeyCode::Enter);
-    assert_eq!(
-        current(&app).as_deref(),
-        Some("id"),
-        "on screen already, and chosen"
-    );
-    // The header says which: the name is underlined.
+    assert_eq!(current(&app).as_deref(), Some("id"), "g moves the cursor");
+    // The header says which: the cursor's style is on its name.
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    let underlined: String = (0..area.width)
-        .map(|x| &buffer[(x, 0)])
-        .filter(|cell| cell.modifier.contains(ratatui::style::Modifier::UNDERLINED))
-        .map(|cell| cell.symbol().to_string())
-        .collect();
-    assert_eq!(underlined, "id");
+    assert_eq!(header_in_cursor_style(&buffer, area.width), "id");
     counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
     assert_eq!(app.value_counts.column(), Some("id"));
     press_and_send(&mut app, &tx, KeyCode::Esc);
 
-    press_and_send(&mut app, &tx, KeyCode::Right);
+    press_and_send(&mut app, &tx, KeyCode::Char('h'));
     painted(&mut app, &rx, &tx, area);
-    assert_eq!(
-        current(&app).as_deref(),
-        Some("amount"),
-        "a scroll lets go of it"
-    );
+    assert_eq!(current(&app).as_deref(), Some("amount"), "h moves it back");
     counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
     assert_eq!(app.value_counts.column(), Some("amount"));
+    // Stepping columns in Value Counts moves the cursor with it.
+    counts_key(&mut app, &rx, &tx, KeyCode::Left);
+    assert_eq!(app.value_counts.column(), Some("pay"));
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(current(&app).as_deref(), Some("pay"));
+}
+
+/// The per-column keys act on the column cursor's column: the sidebar opens on it
+/// (its Columns row, and a new filter's column), the inspector focuses its field, and
+/// a cell copy takes it.
+#[test]
+fn test_the_column_cursor_drives_the_per_column_keys() {
+    let (mut app, rx, tx) = open_csv_with("cursor_keys.csv", COUNTS_CSV, OpenOptions::default());
+    painted(&mut app, &rx, &tx, Rect::new(0, 0, 80, 24));
+    press_and_send(&mut app, &tx, KeyCode::Char('l'));
+
+    press_and_send(&mut app, &tx, KeyCode::Char('s'));
+    assert_eq!(app.input_mode, InputMode::SortFilter);
+    let sort = &app.sort_filter_modal.sort;
+    let row = sort.table_state.selected().unwrap();
+    assert_eq!(sort.filtered_columns()[row].1.name, "amount");
+    press_and_send(&mut app, &tx, KeyCode::Right); // Columns -> Filters
+    press_and_send(&mut app, &tx, KeyCode::Tab); // the add row
+    press_and_send(&mut app, &tx, KeyCode::Enter); // a new filter
+    let filter = &app.sort_filter_modal.filter;
+    let editor = filter.editor.as_ref().expect("the editor is open");
+    let chosen = editor.column.selected_original().unwrap();
+    assert_eq!(filter.available_columns[chosen], "amount");
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    press_and_send(&mut app, &tx, KeyCode::Char('l'));
+    press_and_send(&mut app, &tx, KeyCode::Char(' '));
+    assert_eq!(app.input_mode, InputMode::Inspect);
+    assert_eq!(app.inspector_modal.focused().unwrap().name, "id");
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    press_and_send(&mut app, &tx, KeyCode::Char('h'));
+    press_and_send(&mut app, &tx, KeyCode::Char('y'));
+    assert_eq!(app.copy_modal.column.as_deref(), Some("amount"));
+    press_and_send(&mut app, &tx, KeyCode::Esc);
+}
+
+/// The theme's style for the column cursor's header and the current cell.
+fn cell_cursor_style() -> ratatui::style::Style {
+    datui::config::Theme::from_config(&datui::config::ThemeConfig::default())
+        .unwrap()
+        .cell_cursor_style()
+}
+
+/// Whether a drawn cell carries `style`: its background and its modifiers.
+fn carries(cell: &ratatui::buffer::Cell, style: ratatui::style::Style) -> bool {
+    style.bg.is_none_or(|bg| cell.bg == bg) && cell.modifier.contains(style.add_modifier)
+}
+
+/// The header text drawn in the column cursor's style, trimmed.
+fn header_in_cursor_style(buffer: &Buffer, width: u16) -> String {
+    let style = cell_cursor_style();
+    (0..width)
+        .map(|x| &buffer[(x, 0)])
+        .filter(|cell| carries(cell, style))
+        .map(|cell| cell.symbol().to_string())
+        .collect::<String>()
+        .trim()
+        .to_string()
 }

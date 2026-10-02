@@ -135,6 +135,7 @@ mod tests {
         let mut modal = CopyModal::new();
         modal.open(
             vec!["city".into(), "pop".into()],
+            None,
             CopyContext {
                 row_number: 1235,
                 view_rows: 42,
@@ -154,6 +155,7 @@ mod tests {
         let mut modal = CopyModal::new();
         modal.open(
             vec!["city".into(), "population".into()],
+            None,
             CopyContext::default(),
         );
         modal.scope = CopyScope::Cell;

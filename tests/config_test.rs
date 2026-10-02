@@ -1569,6 +1569,29 @@ fn test_light_mode_selects_light_chrome() {
     assert_eq!(config.theme.colors, ColorConfig::light());
 }
 
+/// The current cell, the cursor's column and the current row stay three shades on a
+/// 256-color terminal, in both modes, and the column is not the stripe.
+#[test]
+fn test_cursor_tints_stay_apart_at_256_colors() {
+    let index = |hex: &str| {
+        let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).expect("hex colour");
+        datui::config::rgb_to_256_color((v >> 16) as u8, (v >> 8) as u8, v as u8)
+    };
+    for (mode, colors) in [
+        ("dark", ColorConfig::dark()),
+        ("light", ColorConfig::light()),
+    ] {
+        let row = index(&colors.table_selected);
+        let column = index(&colors.column_cursor);
+        let cell = index(&colors.cell_cursor);
+        let stripe = index(&colors.alternate_row_color);
+        assert!(
+            row != column && row != cell && column != cell && column != stripe,
+            "{mode}: row {row}, column {column}, cell {cell}, stripe {stripe}"
+        );
+    }
+}
+
 #[test]
 fn test_light_chrome_inverts_rather_than_lightens() {
     // The bug this fixes: fixed dark shades on a light terminal. The light set's
@@ -1585,6 +1608,8 @@ fn test_light_chrome_inverts_rather_than_lightens() {
         ("alternate_row_color", &light.alternate_row_color),
         ("controls_bg", &light.controls_bg),
         ("table_selected", &light.table_selected),
+        ("column_cursor", &light.column_cursor),
+        ("cell_cursor", &light.cell_cursor),
     ] {
         assert!(
             luma(value) >= 170,
@@ -1597,6 +1622,8 @@ fn test_light_chrome_inverts_rather_than_lightens() {
         ("alternate_row_color", &dark.alternate_row_color),
         ("controls_bg", &dark.controls_bg),
         ("table_selected", &dark.table_selected),
+        ("column_cursor", &dark.column_cursor),
+        ("cell_cursor", &dark.cell_cursor),
     ] {
         assert!(
             luma(value) <= 80,

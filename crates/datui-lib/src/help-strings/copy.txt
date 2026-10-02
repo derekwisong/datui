@@ -19,7 +19,8 @@ Copy data to the clipboard.
   Markdown format, where it has no meaning.
 
 Scopes:
-  Cell:   The current row's value in one column, as plain text
+  Cell:   The current row's value in one column, as plain text: the
+          column cursor's, unless another is picked
   Row:    The current row
   View:   The rows on screen, with every displayed column
   Table:  Everything the view holds, as exported — rows and columns as

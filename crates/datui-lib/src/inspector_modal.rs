@@ -85,12 +85,12 @@ impl InspectorModal {
         Self::default()
     }
 
-    /// Open over the table's selected row. The field and the text mode carry
-    /// over from the last open while the field still exists.
-    pub fn open(&mut self, fields: Vec<InspectField>) {
-        let keep = self
-            .focused()
-            .map(|f| f.name.clone())
+    /// Open over the table's selected row, focused on `current`, the table's column
+    /// cursor; without one, the last field focused while it still exists.
+    pub fn open(&mut self, fields: Vec<InspectField>, current: Option<&str>) {
+        let keep = current
+            .map(str::to_string)
+            .or_else(|| self.focused().map(|f| f.name.clone()))
             .and_then(|name| fields.iter().position(|f| f.name == name));
         self.picker = PickerState::new(fields.iter().map(|f| f.name.clone()).collect());
         if let Some(index) = keep {
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn find_narrows_and_keeps_the_focused_field() {
         let mut m = InspectorModal::new();
-        m.open(fields(&["id", "description", "amount", "status"]));
+        m.open(fields(&["id", "description", "amount", "status"]), None);
         m.next_field();
         assert_eq!(m.focused().unwrap().name, "description");
         m.find_key('a', KeyModifiers::NONE);
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn a_new_row_starts_at_the_top_and_drops_the_last_read() {
         let mut m = InspectorModal::new();
-        m.open(fields(&["a"]));
+        m.open(fields(&["a"]), None);
         m.row_shown(1, 5);
         m.scroll = 7;
         m.chunks = 3;
@@ -256,13 +256,25 @@ mod tests {
     #[test]
     fn reopening_keeps_the_field_while_it_exists() {
         let mut m = InspectorModal::new();
-        m.open(fields(&["a", "b", "c"]));
+        m.open(fields(&["a", "b", "c"]), None);
         m.last_field();
         m.close();
-        m.open(fields(&["c", "a"]));
+        m.open(fields(&["c", "a"]), None);
         assert_eq!(m.focused().unwrap().name, "c");
         m.close();
-        m.open(fields(&["x", "y"]));
+        m.open(fields(&["x", "y"]), None);
         assert_eq!(m.focused().unwrap().name, "x");
+    }
+
+    #[test]
+    fn opens_on_the_column_cursors_field() {
+        let mut m = InspectorModal::new();
+        m.open(fields(&["a", "b", "c"]), Some("b"));
+        assert_eq!(m.focused().unwrap().name, "b");
+        m.last_field();
+        m.close();
+        // The cursor wins over the field focused last time.
+        m.open(fields(&["a", "b", "c"]), Some("a"));
+        assert_eq!(m.focused().unwrap().name, "a");
     }
 }

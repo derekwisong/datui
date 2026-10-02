@@ -2294,6 +2294,12 @@ pub struct ColorConfig {
     pub row_numbers: String,
     pub column_separator: String,
     pub table_selected: String,
+    /// Tint under the column cursor's cells. Absent from older configs.
+    #[serde(default = "default_column_cursor")]
+    pub column_cursor: String,
+    /// The column cursor's header and the current cell (the cursor's row and column).
+    #[serde(default = "default_cell_cursor")]
+    pub cell_cursor: String,
     pub sidebar_border: String,
     pub modal_border_active: String,
     pub modal_border_error: String,
@@ -2351,6 +2357,12 @@ fn default_true() -> bool {
 fn default_cursor_text() -> String {
     ColorConfig::default().cursor_text
 }
+fn default_column_cursor() -> String {
+    ColorConfig::default().column_cursor
+}
+fn default_cell_cursor() -> String {
+    ColorConfig::default().cell_cursor
+}
 fn default_accent() -> String {
     ColorConfig::default().accent
 }
@@ -2404,6 +2416,11 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     (
         "find_match",
         "Behind the cell a find (f) landed on; its text is black or white by contrast",
+    ),
+    ("column_cursor", "Tint under the column cursor's cells"),
+    (
+        "cell_cursor",
+        "The column cursor's header and the current cell",
     ),
     ("sidebar_border", "Sidebar borders"),
     ("modal_border_active", "Active modal elements"),
@@ -2737,6 +2754,10 @@ impl ColorConfig {
             row_numbers: "#565f89".to_string(),
             column_separator: "#3b4261".to_string(),
             table_selected: "#283457".to_string(),
+            // A grey a step off the stripe for the column, and a lighter one where it
+            // crosses the current row, so the cell stands out from both.
+            column_cursor: "#292e42".to_string(),
+            cell_cursor: "#3b4261".to_string(),
             // Box titles are drawn in the border colour, so this has to read as text:
             // the theme's comment grey, not the hairline shade the rules use.
             sidebar_border: "#565f89".to_string(),
@@ -2803,6 +2824,8 @@ impl ColorConfig {
             row_numbers: "#848cb5".to_string(),
             column_separator: "#a8aecb".to_string(),
             table_selected: "#b6bfe2".to_string(),
+            column_cursor: "#cbd3f2".to_string(),
+            cell_cursor: "#a0aef0".to_string(),
             sidebar_border: "#6172b0".to_string(),
             modal_border_active: "#2e7de9".to_string(),
             modal_border_error: "#f52a65".to_string(),
@@ -3472,6 +3495,8 @@ impl ColorConfig {
         validate_color!(&self.row_numbers, "row_numbers");
         validate_color!(&self.column_separator, "column_separator");
         validate_color!(&self.table_selected, "table_selected");
+        validate_color!(&self.column_cursor, "column_cursor");
+        validate_color!(&self.cell_cursor, "cell_cursor");
         validate_color!(&self.sidebar_border, "sidebar_border");
         validate_color!(&self.modal_border_active, "modal_border_active");
         validate_color!(&self.modal_border_error, "modal_border_error");
@@ -3783,6 +3808,14 @@ impl Theme {
                 parser.parse(&config.colors.table_selected)?,
             );
         }
+        colors.insert(
+            "column_cursor".to_string(),
+            parser.parse(&config.colors.column_cursor)?,
+        );
+        colors.insert(
+            "cell_cursor".to_string(),
+            parser.parse(&config.colors.cell_cursor)?,
+        );
         let sidebar_border = parser.parse(&config.colors.sidebar_border)?;
         colors.insert("sidebar_border".to_string(), sidebar_border);
         // Every sidebar and the input strip draw their resting border from
@@ -3923,6 +3956,17 @@ impl Theme {
         }
     }
 
+    /// Style of the column cursor's cells; see [`column_cursor_style`].
+    pub fn column_cursor_style(&self) -> ratatui::style::Style {
+        column_cursor_style(self.get_optional("column_cursor"))
+    }
+
+    /// Style of the column cursor's header and the current cell; see
+    /// [`cell_cursor_style`].
+    pub fn cell_cursor_style(&self) -> ratatui::style::Style {
+        cell_cursor_style(self.get_optional("cell_cursor"))
+    }
+
     /// Style of selected text in a field: the highlight tint, or reversed video
     /// where the tint could match the terminal's own background. A 16-color
     /// terminal turns the default tints into black or white and `NO_COLOR` into
@@ -3954,6 +3998,32 @@ impl Theme {
             Color::Reset => contrasting_text(cursor),
             configured => configured,
         }
+    }
+}
+
+/// Whether a tint can be told from the terminal's own background: a 16-color terminal
+/// turns the default tints into black or white, and `NO_COLOR` into none.
+fn tint_shows(tint: Option<Color>) -> Option<Color> {
+    tint.filter(|c| !matches!(c, Color::Reset | Color::Black | Color::White))
+}
+
+/// Style of the column cursor's cells: the `column_cursor` tint, or nothing where the
+/// tint would not show; the header and the current cell still mark the column there.
+pub fn column_cursor_style(tint: Option<Color>) -> ratatui::style::Style {
+    match tint_shows(tint) {
+        Some(bg) => ratatui::style::Style::default().bg(bg),
+        None => ratatui::style::Style::default(),
+    }
+}
+
+/// Style of the column cursor's header and of the current cell: the `cell_cursor`
+/// tint in bold, or reversed video where the tint would not show, so the cell is
+/// marked on any terminal.
+pub fn cell_cursor_style(tint: Option<Color>) -> ratatui::style::Style {
+    use ratatui::style::{Modifier, Style};
+    match tint_shows(tint) {
+        Some(bg) => Style::default().bg(bg).add_modifier(Modifier::BOLD),
+        None => Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
     }
 }
 

@@ -45,7 +45,7 @@ rows; **View** includes only the rows on screen.
 
 | Scope | What it copies |
 |---|---|
-| Cell | The current row's value in one column, as plain text |
+| Cell | The current row's value in one column, as plain text: the column cursor's, unless you pick another |
 | Row | The current row |
 | View | The rows on screen, with every displayed column |
 | Table | Everything the view holds, as an export would: rows and columns as queried, filtered and sorted |

@@ -108,12 +108,17 @@ columns and widths, frozen columns, pivot/melt, drill-down and the applied view.
 
 ## Move across a wide table
 
+The table has a column cursor as well as a row cursor: the cursor's column is
+tinted from header to last row, and the cell where it crosses the current row
+stands out from both. On a 16-color terminal, or with `NO_COLOR`, its header
+and that cell are drawn reversed.
+
 | Key | Moves |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | One column |
-| <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | A page of columns |
-| <kbd>{</kbd> <kbd>}</kbd> | To the first column, or to the last page |
-| <kbd>g</kbd> | To a column you name: type to narrow the list, <kbd>Enter</kbd> goes |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | The cursor one column. The columns scroll only when it would leave the screen |
+| <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | A page of columns; the cursor goes to its first column |
+| <kbd>{</kbd> <kbd>}</kbd> | The cursor to the first column, or to the last on the last page |
+| <kbd>g</kbd> | The cursor to a column you name: type to narrow the list, <kbd>Enter</kbd> goes |
 
 - <kbd>]</kbd> starts the next page at the first column not shown whole, so
   a column cut at the edge is read whole there. A column wider than the
@@ -124,14 +129,29 @@ columns and widths, frozen columns, pivot/melt, drill-down and the applied view.
   shown.
 - <kbd>g</kbd> leaves a column already whole on screen where it is; another
   becomes the first after the frozen ones, or lands on the last page.
-- Frozen columns stay put; hidden ones are not listed by <kbd>g</kbd>.
-- The current column is underlined in the header: the one <kbd>g</kbd> went
-  to, until the columns scroll, and otherwise the first column past any
-  frozen ones. [Value counts](value-counts.md) (<kbd>F</kbd>) count it.
+- Frozen columns stay put, and the cursor walks them too: <kbd>h</kbd> from
+  the first scrolling column goes to the last frozen one, and <kbd>l</kbd>
+  back goes to the first scrolling column, scrolling back to it.
+- At the last page, <kbd>]</kbd> takes the cursor to the last column; at the
+  first, <kbd>[</kbd> takes it to the page's first column, then the first.
+- The cursor stays on its column when columns are hidden, moved or frozen in
+  the sidebar; when its own column is hidden, the column that takes its place
+  takes the cursor.
+- Hidden columns are not listed by <kbd>g</kbd>.
 
-While some columns are off screen, the bottom bar names the ones on it:
-`cols 41-47 of 300` (`cols 41-47/300` on a bar under 100 cells). It counts
-the columns the table shows, frozen first; hidden columns are not counted.
+The keys that act on one column act on the cursor's:
+
+| Key | On the cursor's column |
+|---|---|
+| <kbd>F</kbd> | [Value counts](value-counts.md) |
+| <kbd>s</kbd> | The sidebar opens with its Columns cursor there, and a new filter starts on it |
+| <kbd>y</kbd> | The Cell scope [copies](copying.md) its value in the current row |
+| <kbd>Space</kbd> | The [inspector](inspecting-rows.md) opens on its field |
+| <kbd>f</kbd> | <kbd>Ctrl</kbd>+<kbd>L</kbd> in the prompt [finds](finding.md) in it alone; a match moves the cursor to its column |
+
+The bottom bar says where the cursor is: `col 43 of 300` (`col 43/300` on a
+bar under 100 cells). It counts the columns the table shows, frozen first;
+hidden columns are not counted.
 
 ## Filters tab
 

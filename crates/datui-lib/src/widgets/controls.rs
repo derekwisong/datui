@@ -55,8 +55,8 @@ pub struct Controls {
     /// the number it changed; `R` takes it away. Rule 6: a view mutated with
     /// nothing on screen saying so is unfinished.
     pub reshaped: Option<&'static str>,
-    /// Which columns the table shows, while some are off screen. Drawn before the
-    /// row count: `cols 41-47 of 300`, or `cols 41-47/300` on a narrow bar.
+    /// The column cursor's place among the shown columns. Drawn before the row
+    /// count: `col 43 of 300`, or `col 43/300` on a narrow bar.
     pub columns: Option<crate::widgets::column_paging::OnScreen>,
     /// The find in effect: its pattern, and which match the cursor is on when that is
     /// known. Plain text beside the chips, since it is state, not an alarm.
@@ -268,8 +268,8 @@ impl Widget for &Controls {
             }
         };
 
-        // The column range leads the count while some columns are off screen; a bar
-        // short of room takes the compact form, so the keys keep theirs.
+        // The column cursor's place leads the count; a bar short of room takes the
+        // compact form, so the keys keep theirs.
         let compact = area.width < 100;
         let columns_on = self.columns.filter(|_| self.caption.is_none());
         let with_gap = |label: String| {
@@ -284,8 +284,8 @@ impl Widget for &Controls {
             let columns = columns.as_deref().unwrap_or("");
             format!("{columns}{}", rows_text(count))
         };
-        // The room the range is given is its widest for this table, so paging changes
-        // the numbers and never which chips fit beside them.
+        // The room the position is given is its widest for this table, so moving the
+        // cursor changes the number and never which chips fit beside it.
         let columns_room = columns_on
             .map(|on| {
                 let widest = with_gap(on.widest_label(compact)).chars().count();
@@ -813,78 +813,85 @@ mod tests {
         assert!(!out.contains(" of "), "got: {out:?}");
     }
 
-    /// While columns are off screen the bar names the ones on it before the rows, in
-    /// the short form on a narrow bar; the way out keeps its chip at 60 columns.
+    /// The bar names the column cursor's place before the rows, in the short form on
+    /// a narrow bar; the way out keeps its chip at 60 columns.
     #[test]
-    fn the_column_range_leads_the_row_count() {
+    fn the_cursor_column_leads_the_row_count() {
         use crate::widgets::column_paging::OnScreen;
         let on = Some(OnScreen {
             first: 41,
             last: 47,
+            cursor: 43,
             total: 300,
         });
         let dot = crate::glyphs::get().middot;
         let wide = render_to_string(&with_row_count(200).with_columns(on), 120);
         assert!(
-            wide.ends_with(&format!("cols 41-47 of 300  {dot}  200 rows")),
+            wide.ends_with(&format!("col 43 of 300  {dot}  200 rows")),
             "got: {wide:?}"
         );
         let narrow = render_to_string(&with_row_count(200).with_columns(on), 60);
         assert!(
-            narrow.ends_with(&format!("cols 41-47/300 {dot} 200 rows")),
+            narrow.ends_with(&format!("col 43/300 {dot} 200 rows")),
             "got: {narrow:?}"
         );
         assert!(narrow.contains("q  Quit"), "got: {narrow:?}");
         let none = render_to_string(&with_row_count(200), 80);
-        assert!(!none.contains("cols"), "got: {none:?}");
+        assert!(!none.contains("col "), "got: {none:?}");
 
-        // Paging changes the numbers, never which chips fit beside them.
+        // Moving the cursor changes the number, never which chips fit beside it.
         for width in [60, 80, 100, 120] {
-            let at = |first, last| {
+            let at = |cursor| {
                 let on = OnScreen {
-                    first,
-                    last,
+                    first: 1,
+                    last: 6,
+                    cursor,
                     total: 300,
                 };
                 let bar = render_to_string(&with_row_count(200).with_columns(Some(on)), width);
-                let cut = bar.find("cols").expect("the range is drawn");
+                let cut = bar.find("col ").expect("the position is drawn");
                 bar[..cut].trim_end().to_string()
             };
-            assert_eq!(at(1, 6), at(295, 300), "at {width}");
-            assert_eq!(at(1, 6), at(41, 47), "at {width}");
+            assert_eq!(at(1), at(300), "at {width}");
+            assert_eq!(at(1), at(43), "at {width}");
         }
     }
 
     /// The first chip names what Enter does: Inspect, or Drill where Enter drills.
-    /// It leads from 80 columns up; at 60 beside the column range Help keeps its
-    /// place and Inspect yields.
+    /// It leads from 80 columns up; at 60 it leads beside a short column position,
+    /// and beside a wide one Help keeps its place and Inspect yields.
     #[test]
     fn the_enter_chip_leads_and_yields_to_help_at_60() {
         use crate::widgets::column_paging::OnScreen;
-        let on = Some(OnScreen {
-            first: 1,
-            last: 5,
-            total: 14,
-        });
-        for width in [60, 80, 120] {
-            for (drills, chip, other) in [
-                (false, "Enter  Inspect", "Drill"),
-                (true, "Enter  Drill", "Inspect"),
-            ] {
-                let bar = render_to_string(
-                    &with_row_count(60)
-                        .with_columns(on)
-                        .with_enter_drills(drills),
-                    width,
-                );
-                assert!(bar.contains("?  Help"), "at {width}: {bar:?}");
-                assert!(bar.contains("q  Quit"), "at {width}: {bar:?}");
-                assert!(!bar.contains(other), "at {width}: {bar:?}");
-                // The shorter Drill chip still fits beside Help at 60.
-                if width >= 80 || drills {
-                    assert!(bar.trim_start().starts_with(chip), "at {width}: {bar:?}");
-                } else {
-                    assert!(!bar.contains(chip), "at {width}: {bar:?}");
+        for total in [14, 3_000] {
+            let on = Some(OnScreen {
+                first: 1,
+                last: 5,
+                cursor: 3,
+                total,
+            });
+            for width in [60, 80, 120] {
+                for (drills, chip, other) in [
+                    (false, "Enter  Inspect", "Drill"),
+                    (true, "Enter  Drill", "Inspect"),
+                ] {
+                    let bar = render_to_string(
+                        &with_row_count(60)
+                            .with_columns(on)
+                            .with_enter_drills(drills),
+                        width,
+                    );
+                    let at = format!("{total} at {width}: {bar:?}");
+                    assert!(bar.contains("?  Help"), "{at}");
+                    assert!(bar.contains("q  Quit"), "{at}");
+                    assert!(!bar.contains(other), "{at}");
+                    // `col 3/14` leaves Inspect room at 60; `col 3/3000` (reserved as
+                    // `col 3000/3000`) leaves the shorter Drill chip room alone.
+                    if width >= 80 || drills || total < 100 {
+                        assert!(bar.trim_start().starts_with(chip), "{at}");
+                    } else {
+                        assert!(!bar.contains(chip), "{at}");
+                    }
                 }
             }
         }

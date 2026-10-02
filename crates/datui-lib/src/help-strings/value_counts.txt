@@ -1,12 +1,12 @@
 How often each value of one column occurs in the view, with the query,
-filters and drill-down applied. F at the table opens it on the current
-column, the one underlined in the header: the column g went to, or else
-the first column the scroll shows.
+filters and drill-down applied. F at the table opens it on the column
+cursor's column.
 
   ↑ / ↓ (j/k):      Move
   PgUp/PgDn:        A page
   Home/End:         First and last line
-  ← / → (h/l):      The previous or next column
+  ← / → (h/l):      The previous or next column; the table's column
+                    cursor moves with it
   Enter:            The rows holding the value, as a drill-down; Esc
                     there comes back here
   s:                Sort by count or by value

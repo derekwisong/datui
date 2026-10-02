@@ -12730,13 +12730,11 @@ impl App {
             || self.input_mode == InputMode::Home
     }
 
-    /// The table's sideways paging keys: `[` `]` (or Shift+←→) a page of columns,
-    /// `{` `}` the first and last. `Some(None)` is the first column, which needs no
-    /// plan. Never with Ctrl or Alt: Ctrl+[ is Esc on a terminal.
-    fn column_page_key(
-        key: &KeyEvent,
-    ) -> Option<Option<crate::widgets::column_paging::ColumnMove>> {
-        use crate::widgets::column_paging::ColumnMove;
+    /// The table's column cursor keys: `h` `l` (←→) a column, `[` `]` (or Shift+←→)
+    /// a page of columns, `{` `}` the first and last. Never with Ctrl or Alt: Ctrl+[
+    /// is Esc on a terminal.
+    fn column_cursor_key(key: &KeyEvent) -> Option<crate::widgets::column_paging::CursorMove> {
+        use crate::widgets::column_paging::CursorMove;
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -12745,12 +12743,14 @@ impl App {
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Char('[') => Some(Some(ColumnMove::PageLeft)),
-            KeyCode::Char(']') => Some(Some(ColumnMove::PageRight)),
-            KeyCode::Left if shift => Some(Some(ColumnMove::PageLeft)),
-            KeyCode::Right if shift => Some(Some(ColumnMove::PageRight)),
-            KeyCode::Char('{') => Some(None),
-            KeyCode::Char('}') => Some(Some(ColumnMove::Last)),
+            KeyCode::Char('[') => Some(CursorMove::PageLeft),
+            KeyCode::Char(']') => Some(CursorMove::PageRight),
+            KeyCode::Left if shift => Some(CursorMove::PageLeft),
+            KeyCode::Right if shift => Some(CursorMove::PageRight),
+            KeyCode::Left | KeyCode::Char('h') => Some(CursorMove::Left),
+            KeyCode::Right | KeyCode::Char('l') => Some(CursorMove::Right),
+            KeyCode::Char('{') => Some(CursorMove::First),
+            KeyCode::Char('}') => Some(CursorMove::Last),
             _ => None,
         }
     }
@@ -12759,10 +12759,10 @@ impl App {
     /// loop applies the extra "nothing queued" condition for the second group.
     ///
     /// The hard escapes always qualify. Beyond them, in the plain Normal-mode table view
-    /// (no text field, no modal), the harmless view keys act — quit, column scroll and
-    /// help — because the first key held in that view cannot be part of a typed
-    /// `/query`. Harmless means reads nothing: column scroll re-slices the buffer it
-    /// already holds through `rescroll_columns`, never `collect`, which counts the rows
+    /// (no text field, no modal), the harmless view keys act — quit, the column cursor
+    /// and help — because the first key held in that view cannot be part of a typed
+    /// `/query`. Harmless means reads nothing: the column cursor re-slices the buffer
+    /// it already holds through `rescroll_columns`, never `collect`, which counts the rows
     /// when the count has not landed. Admitting a key that can count would put a
     /// metadata read per object of a cloud hive on this very thread —
     /// `a_key_that_acts_while_busy_reads_nothing` holds the line. Everything else,
@@ -19112,54 +19112,23 @@ impl App {
             return None;
         }
 
-        // Main table: left/right scroll columns (before help/mode blocks so column scroll always works in Normal).
-        // No is_press()/is_release() check: some terminals do not report key kind correctly.
-        // Exclude template/analysis modals so they can handle Left/Right themselves.
+        // Main table: the column cursor keys (before help/mode blocks so they always work
+        // in Normal). No is_press()/is_release() check: some terminals do not report key
+        // kind correctly. Exclude template/analysis modals so they can handle Left/Right
+        // themselves.
         let in_main_table = !(self.input_mode != InputMode::Normal
             || self.show_help
             || self.template_modal.active
             || self.analysis_modal.active);
-        if in_main_table {
-            if let Some(mv) = Self::column_page_key(event)
-                && let Some(state) = self.data_table_state.as_mut()
-            {
-                match mv {
-                    None => state.scroll_to_first_column(),
-                    Some(mv) => state.scroll_columns(mv),
-                }
-                if self.debug.enabled {
-                    self.debug.last_action = format!("scroll_columns({mv:?})");
-                }
-                return None;
+        if in_main_table
+            && let Some(mv) = Self::column_cursor_key(event)
+            && let Some(state) = self.data_table_state.as_mut()
+        {
+            state.move_cursor(mv);
+            if self.debug.enabled {
+                self.debug.last_action = format!("move_cursor({mv:?})");
             }
-            let did_scroll = match event.code {
-                KeyCode::Right | KeyCode::Char('l') => {
-                    if let Some(ref mut state) = self.data_table_state {
-                        state.scroll_right();
-                        if self.debug.enabled {
-                            self.debug.last_action = "scroll_right".to_string();
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    if let Some(ref mut state) = self.data_table_state {
-                        state.scroll_left();
-                        if self.debug.enabled {
-                            self.debug.last_action = "scroll_left".to_string();
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
-            };
-            if did_scroll {
-                return None;
-            }
+            return None;
         }
 
         if self.show_help
@@ -21823,21 +21792,13 @@ impl App {
                 // (Info modal handles Esc in its own block)
                 None
             }
-            code if RIGHT_KEYS.contains(&code) => {
+            code if RIGHT_KEYS.contains(&code) || LEFT_KEYS.contains(&code) => {
                 if let Some(ref mut state) = self.data_table_state {
-                    state.scroll_right();
-                    if self.debug.enabled {
-                        self.debug.last_action = "scroll_right".to_string();
-                    }
-                }
-                None
-            }
-            code if LEFT_KEYS.contains(&code) => {
-                if let Some(ref mut state) = self.data_table_state {
-                    state.scroll_left();
-                    if self.debug.enabled {
-                        self.debug.last_action = "scroll_left".to_string();
-                    }
+                    state.move_cursor(if RIGHT_KEYS.contains(&code) {
+                        crate::widgets::column_paging::CursorMove::Right
+                    } else {
+                        crate::widgets::column_paging::CursorMove::Left
+                    });
                 }
                 None
             }
@@ -22111,7 +22072,16 @@ impl App {
                     // held last time: an edit staged and then canceled must not arrive
                     // pre-staged, one Apply away from committing silently.
                     self.sync_sort_filter_modal();
-                    self.sort_filter_modal.open(self.history_limit, &self.theme);
+                    let current = self
+                        .data_table_state
+                        .as_ref()
+                        .and_then(|state| state.current_column())
+                        .map(str::to_string);
+                    self.sort_filter_modal.open(
+                        self.history_limit,
+                        &self.theme,
+                        current.as_deref(),
+                    );
                     self.input_mode = InputMode::SortFilter;
                 }
                 None
@@ -22246,7 +22216,8 @@ impl App {
                         view_cols: columns.len(),
                         total_rows: state.num_rows_if_valid(),
                     };
-                    self.copy_modal.open(columns, context);
+                    let current = state.current_column().map(str::to_string);
+                    self.copy_modal.open(columns, current.as_deref(), context);
                     self.input_mode = InputMode::Copy;
                 }
                 None
@@ -25317,11 +25288,12 @@ impl App {
             self.flash_note("No row to inspect".to_string());
             return;
         }
-        self.inspector_modal.open(state.inspect_fields());
+        self.inspector_modal
+            .open(state.inspect_fields(), state.current_column());
         self.input_mode = InputMode::Inspect;
     }
 
-    /// `F` at the table: Value Counts for the current column, the one underlined.
+    /// `F` at the table: Value Counts for the column cursor's column.
     fn open_value_counts(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -25456,8 +25428,7 @@ impl App {
                     if let (Some(state), Some(column)) =
                         (self.data_table_state.as_mut(), self.value_counts.column())
                     {
-                        state.scroll_to_column(column);
-                        state.choose_column(column);
+                        state.set_current_column(column);
                     }
                     self.count_values(false);
                 }
@@ -25583,8 +25554,8 @@ impl App {
         self.input_mode = InputMode::Export;
     }
 
-    /// `g` at the table: pick a shown column by name, bring it on screen and make it
-    /// the current column. Starts on the current column, so ↑↓ move from there.
+    /// `g` at the table: pick a shown column by name, bring it on screen and put the
+    /// column cursor on it. Starts on the cursor's column, so ↑↓ move from there.
     fn open_go_to_column(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -25615,8 +25586,7 @@ impl App {
                 // By name: the order may have changed under the picker since it opened.
                 let name = self.go_to_column.items()[index].clone();
                 if let Some(state) = self.data_table_state.as_mut() {
-                    state.reveal_column(&name);
-                    state.choose_column(&name);
+                    state.go_to_column(&name);
                 }
                 self.input_mode = InputMode::Normal;
             }

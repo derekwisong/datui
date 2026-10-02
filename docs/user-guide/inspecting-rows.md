@@ -1,8 +1,8 @@
 # Inspect a row
 
 Press <kbd>Space</kbd> at the table to see every field of the current row,
-and the focused field's whole value. <kbd>Esc</kbd> or <kbd>Space</kbd>
-closes it.
+and the focused field's whole value. It opens on the field of the column
+cursor's column. <kbd>Esc</kbd> or <kbd>Space</kbd> closes it.
 
 <kbd>Enter</kbd> opens it too, except on a row of a `by` query or a SQL
 `GROUP BY`, where <kbd>Enter</kbd>

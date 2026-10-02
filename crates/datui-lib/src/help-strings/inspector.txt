@@ -1,7 +1,7 @@
 Every field of the table's current row, and the focused field's whole value.
-The title counts the rows, Row 3 of 20, and inside a drill-down names the
-group: Row 3 of 20 · region=north. The footer offers only the keys that act
-on the focused field.
+It opens on the field of the table's column cursor. The title counts the
+rows, Row 3 of 20, and inside a drill-down names the group: Row 3 of 20 ·
+region=north. The footer offers only the keys that act on the focused field.
 
   ↑ / ↓ (j/k):      Move between fields
   Home / End:       First and last field

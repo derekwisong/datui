@@ -3612,10 +3612,18 @@ impl ColorParser {
     pub fn new() -> Self {
         let no_color = std::env::var("NO_COLOR").is_ok();
         let support = supports_color::on(Stream::Stdout);
+        #[cfg(windows)]
+        let console = windows_console_true_color(
+            std::env::var_os("TERM").is_some(),
+            std::io::IsTerminal::is_terminal(&std::io::stdout()),
+            crossterm::ansi_support::supports_ansi,
+        );
+        #[cfg(not(windows))]
+        let console = false;
 
         Self {
-            supports_true_color: support.as_ref().map(|s| s.has_16m).unwrap_or(false),
-            supports_256: support.as_ref().map(|s| s.has_256).unwrap_or(false),
+            supports_true_color: console || support.as_ref().is_some_and(|s| s.has_16m),
+            supports_256: console || support.as_ref().is_some_and(|s| s.has_256),
             no_color,
         }
     }
@@ -3695,6 +3703,17 @@ impl ColorParser {
             rgb_to_basic_ansi(r, g, b)
         }
     }
+}
+
+/// Whether a Windows console draws 24-bit color, where `supports_color` cannot tell.
+/// It reads `TERM` and `COLORTERM`, which Windows Terminal and conhost do not set, and
+/// so takes both for a terminal without color. Both draw 24-bit color once virtual
+/// terminal processing is on, which crossterm turns on where it can (`vt`); a legacy
+/// console refuses it and keeps the 16 colors. With `TERM` set (mintty, an MSYS2
+/// shell) its answer stands.
+#[cfg(windows)]
+fn windows_console_true_color(term_set: bool, terminal: bool, vt: impl FnOnce() -> bool) -> bool {
+    !term_set && terminal && vt()
 }
 
 impl Default for ColorParser {
@@ -4263,6 +4282,22 @@ mod tests {
         // A backslash is part of a name off Windows.
         #[cfg(not(windows))]
         assert_eq!(expand(r"~\a.csv"), PathBuf::from(r"~\a.csv"));
+    }
+
+    /// Windows Terminal and conhost set no `TERM`; with virtual terminal processing
+    /// on, they take 24-bit color. A legacy console, or a terminal that sets `TERM`
+    /// for `supports_color` to read, is left to it.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_console_with_vt_takes_true_color() {
+        use super::windows_console_true_color as rule;
+        assert!(rule(false, true, || true));
+        assert!(!rule(false, true, || false), "a legacy console");
+        assert!(
+            !rule(true, true, || true),
+            "TERM set: supports_color decides"
+        );
+        assert!(!rule(false, false, || true), "not a terminal");
     }
 
     #[test]

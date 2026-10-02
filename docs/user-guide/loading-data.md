@@ -34,7 +34,7 @@ names it:
 | First bytes | Read as |
 |---|---|
 | Parquet, Arrow IPC or Avro magic number | that format |
-| gzip, zstd, bzip2 or xz magic number | compressed CSV |
+| gzip, zstd, bzip2 or xz magic number | compressed CSV, or TSV or PSV with `--format` |
 | `[` | JSON |
 | `{`, the first line a whole object | NDJSON |
 | `{`, the object open past the first line | JSON |

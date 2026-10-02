@@ -1464,7 +1464,7 @@ impl CloudConfig {
 pub struct FileLoadingConfig {
     /// When true, CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime. Default: true.
     pub parse_dates: Option<bool>,
-    /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
+    /// When true, decompress a compressed CSV, TSV or PSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
     pub decompress_in_memory: Option<bool>,
     /// Directory for decompression temp files. Unset = system default (e.g. TMPDIR).
     pub temp_dir: Option<String>,
@@ -1514,7 +1514,7 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     ),
     (
         "decompress_in_memory",
-        "When true, decompress compressed CSV into memory (eager). When false (default), decompress to a temp file and use lazy scan",
+        "When true, decompress a compressed CSV, TSV or PSV into memory (eager). When false (default), decompress to a temp file and use lazy scan",
     ),
     (
         "temp_dir",

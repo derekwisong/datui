@@ -24,8 +24,17 @@ const MEASURED: usize = 1000;
 pub enum Node {
     /// One value of a column, as a one-row slice: drilling copies nothing.
     Native(Series),
-    /// A value in a JSON document parsed from text: each step's position.
-    Json { root: Arc<Value>, path: Vec<usize> },
+    /// A value in a JSON document parsed from text: the steps from its root.
+    Json { root: Arc<Value>, path: Vec<Step> },
+}
+
+/// One step into a JSON document. An object's step is its key, not its position:
+/// serde_json's map has no lookup by position, and walking to the 500,000th key of
+/// a large object for every item drawn, on every frame, is what a key avoids.
+#[derive(Debug, Clone)]
+pub enum Step {
+    Key(Arc<str>),
+    Index(usize),
 }
 
 /// What a node holds, as the drill sees it.
@@ -57,10 +66,10 @@ impl Node {
             return None;
         };
         let mut at: &Value = root;
-        for &i in path {
-            at = match at {
-                Value::Object(map) => map.values().nth(i)?,
-                Value::Array(items) => items.get(i)?,
+        for step in path {
+            at = match (at, step) {
+                (Value::Object(map), Step::Key(key)) => map.get(&**key)?,
+                (Value::Array(items), Step::Index(i)) => items.get(*i)?,
                 _ => return None,
             };
         }
@@ -129,12 +138,12 @@ impl Node {
         self.len() == 0
     }
 
-    fn json_child(&self, i: usize) -> Node {
+    fn json_child(&self, step: Step) -> Node {
         let Node::Json { root, path } = self else {
             unreachable!("only a JSON node has JSON children")
         };
         let mut path = path.clone();
-        path.push(i);
+        path.push(step);
         Node::Json {
             root: Arc::clone(root),
             path,
@@ -163,19 +172,16 @@ impl Node {
                     .collect()
             }
             Shape::Object => match self.json() {
-                Some(Value::Object(map)) => map
-                    .keys()
-                    .enumerate()
-                    .skip(start)
-                    .take(count)
-                    .map(|(i, key)| (key.clone(), self.json_child(i)))
+                Some(Value::Object(map)) => page(map.keys(), start, count)
+                    .into_iter()
+                    .map(|key| (key.clone(), self.json_child(Step::Key(key.as_str().into()))))
                     .collect(),
                 _ => Vec::new(),
             },
             Shape::Array => {
                 let end = self.len().min(start.saturating_add(count));
                 (start..end)
-                    .map(|i| (format!("[{i}]"), self.json_child(i)))
+                    .map(|i| (format!("[{i}]"), self.json_child(Step::Index(i))))
                     .collect()
             }
             Shape::Leaf => Vec::new(),
@@ -283,21 +289,46 @@ impl Node {
     /// item has no such field or key.
     pub fn cell(&self, column: &str) -> Option<Node> {
         match self.shape() {
-            Shape::Struct => self
-                .fields()?
-                .into_iter()
-                .find(|s| s.name().as_str() == column)
-                .map(Node::Native),
+            // One field made, not all of them for each cell of a row.
+            Shape::Struct => match self {
+                Node::Native(s) => s
+                    .struct_()
+                    .ok()?
+                    .field_by_name(column)
+                    .ok()
+                    .map(Node::Native),
+                Node::Json { .. } => None,
+            },
             Shape::Object => match self.json()? {
-                Value::Object(map) => map
-                    .keys()
-                    .position(|k| k == column)
-                    .map(|i| self.json_child(i)),
+                Value::Object(map) if map.contains_key(column) => {
+                    Some(self.json_child(Step::Key(column.into())))
+                }
                 _ => None,
             },
             _ => None,
         }
     }
+}
+
+/// Items `start..start + count` of `items`, walked to from the nearer end: an
+/// object's keys can only be stepped through, and `End` on a large one is then as
+/// quick as `Home`.
+fn page<T>(
+    items: impl DoubleEndedIterator<Item = T> + ExactSizeIterator,
+    start: usize,
+    count: usize,
+) -> Vec<T> {
+    let len = items.len();
+    let end = len.min(start.saturating_add(count));
+    if start >= end {
+        return Vec::new();
+    }
+    if start <= len - end {
+        return items.skip(start).take(end - start).collect();
+    }
+    let mut back: Vec<T> = items.rev().skip(len - end).take(end - start).collect();
+    back.reverse();
+    back
 }
 
 /// A JSON value's kind, as the item list names it.
@@ -550,6 +581,37 @@ mod tests {
         assert_eq!(obj.shape(), Shape::Object);
         assert_eq!(obj.cell("k").unwrap().json(), Some(&Value::from("v")));
         assert_eq!(a.child(1).unwrap().1.shape(), Shape::Leaf);
+    }
+
+    /// A step into an object is its key: the items near the end of a large object
+    /// are found without walking to them, in the document's order.
+    #[test]
+    fn a_large_objects_last_keys_resolve_by_key() {
+        let n = 200_000;
+        let text = format!(
+            "{{{}}}",
+            (0..n)
+                .map(|i| format!("\"k{i}\": {i}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let node = Node::Json {
+            root: Arc::new(parse_json(&text).unwrap()),
+            path: Vec::new(),
+        };
+        let tail = node.children(n - 3, 10);
+        let labels: Vec<_> = tail.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["k199997", "k199998", "k199999"]);
+        assert_eq!(tail[2].1.json(), Some(&Value::from(n - 1)));
+        let Node::Json { path, .. } = &tail[2].1 else {
+            panic!("a JSON item");
+        };
+        assert!(matches!(&path[..], [Step::Key(k)] if &**k == "k199999"));
+        let head = node.children(1, 2);
+        assert_eq!(head[1].0, "k2");
+        assert_eq!(page(0..10, 7, 5), [7, 8, 9]);
+        assert_eq!(page(0..10, 2, 3), [2, 3, 4]);
+        assert!(page(0..10, 10, 3).is_empty());
     }
 
     #[test]

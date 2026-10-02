@@ -33,6 +33,9 @@ struct Files {
     /// the path is not known until the file exists.
     creating: usize,
     swept: bool,
+    /// Set by a sweep as it starts waiting, so a test can tell it is blocked.
+    #[cfg(test)]
+    sweep_waiting: bool,
 }
 
 impl Files {
@@ -84,6 +87,13 @@ impl Unfinished {
             if left.is_zero() {
                 break;
             }
+            // Set under the lock that `wait_timeout` releases, so whoever sees it next
+            // sees a sweep already waiting.
+            #[cfg(test)]
+            {
+                files.sweep_waiting = true;
+                released.notify_all();
+            }
             files = released
                 .wait_timeout(files, left)
                 .unwrap_or_else(|e| e.into_inner())
@@ -92,6 +102,16 @@ impl Unfinished {
         files.swept = true;
         for path in files.claimed.drain(..) {
             let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Block until a sweep is waiting on a busy writer.
+    #[cfg(test)]
+    fn until_a_sweep_waits(&self) {
+        let (_, released) = &*self.0;
+        let mut files = self.lock();
+        while !files.sweep_waiting {
+            files = released.wait(files).unwrap_or_else(|e| e.into_inner());
         }
     }
 
@@ -279,13 +299,15 @@ mod tests {
             let unfinished = unfinished.clone();
             std::thread::spawn(move || unfinished.sweep(Instant::now() + Duration::from_secs(30)))
         };
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(!sweeper.is_finished(), "the sweep waits for the file");
+        unfinished.until_a_sweep_waits();
+        assert!(unfinished.writing(), "the sweep waits for the file");
+        assert!(!sweeper.is_finished());
         go.send(()).unwrap();
         sweeper.join().unwrap();
         // Checked before joining the writer: its thread may still be exiting, but the
         // file it made must already be gone.
         assert_eq!(files_in(dir.path()), 0, "the sweep waited for the file");
+        assert!(!unfinished.writing());
         assert!(worker.join().unwrap(), "a stopped open's file is refused");
     }
 

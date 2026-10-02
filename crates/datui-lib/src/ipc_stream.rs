@@ -194,10 +194,17 @@ fn write_file(
             }
         }
         let (writer, _, _) = file.as_mut().expect("set just above");
-        for state in StreamReader::new(reader, metadata, None) {
+        let mut batches = StreamReader::new(reader, metadata, None);
+        loop {
             if stopped() {
                 return Ok(false);
             }
+            // Polars also panics on some malformed record batches, rather than erring.
+            let Some(state) = crate::logging::catch_panic(|| batches.next())
+                .map_err(|_| unreadable(&"a record batch in it is damaged"))?
+            else {
+                break;
+            };
             match state.map_err(|e| unreadable(&e))? {
                 StreamState::Some(batch) => writer.write(&batch, None)?,
                 // The end of a stream written without its end-of-stream marker.
@@ -477,6 +484,46 @@ mod tests {
             "{error}"
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// A record batch Polars panics on, rather than erring, is a stream it cannot read,
+    /// refused by name with nothing left behind.
+    #[test]
+    fn a_damaged_record_batch_is_refused() {
+        let df = df!(
+            "id" => (0..50i64).collect::<Vec<_>>(),
+            "t" => (0..50).map(|i| format!("r{i}")).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        let mut out = StreamWriter::new(&mut bytes, WriteOptions { compression: None });
+        out.start(&df.schema().to_arrow(CompatLevel::newest()), None)
+            .unwrap();
+        for batch in df.iter_chunks(CompatLevel::newest(), false) {
+            out.write(&batch, None).unwrap();
+        }
+        out.finish().unwrap();
+        // In the record batch's message, so that Polars cannot read its length, which
+        // it unwraps (found by mutating this stream).
+        assert_eq!(bytes[251], 0);
+        bytes[251] = 0x21;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("damaged.arrow");
+        std::fs::write(&path, &bytes).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let error = convert(
+            &[path],
+            Some(out.path()),
+            &writer(false),
+            &AtomicU64::new(0),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("damaged.arrow is not a readable Arrow IPC stream"),
+            "{error}"
+        );
+        assert!(std::fs::read_dir(out.path()).unwrap().next().is_none());
     }
 
     /// Streams mixed with IPC files are not one table; IPC files alone are not streams.

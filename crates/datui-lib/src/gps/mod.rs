@@ -156,10 +156,15 @@ impl<'a> Segments<'a> {
             .ok_or_else(|| eyre!("Nothing was read."))?;
         let mut frames = Vec::with_capacity(self.done.len());
         for (file, schema) in &self.done {
+            // The temp directory is the user's to name, `[` and all.
+            let args = UnifiedScanArgs {
+                glob: crate::source::expands_as_glob(file.path()),
+                ..Default::default()
+            };
             let lf = LazyFrame::scan_ipc(
                 PlRefPath::try_from_path(file.path())?,
                 Default::default(),
-                Default::default(),
+                args,
             )?;
             let columns: Vec<Expr> = full
                 .iter()
@@ -528,6 +533,32 @@ mod tests {
         assert_eq!(hr.null_count(), gpx::BATCH_ROWS + 5000);
         drop(converted);
         assert_eq!(std::fs::read_dir(out_dir.path()).unwrap().count(), 0);
+    }
+
+    /// A temp directory named like a glob holds the segments, and they are read
+    /// from there, not from what its name would match (#625).
+    #[test]
+    fn segments_in_a_temp_directory_named_like_a_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nmea");
+        std::fs::write(
+            &path,
+            "$GPRMC,120000,A,4807.038,N,01131.000,E,1.0,0.0,010124,,,A\n",
+        )
+        .unwrap();
+        let temp = dir.path().join("t[1]");
+        std::fs::create_dir(&temp).unwrap();
+        std::fs::create_dir(dir.path().join("t1")).unwrap();
+        let converted = convert(
+            &path,
+            &path,
+            FileFormat::Nmea,
+            &options(&temp),
+            &Writer::default(),
+            &AtomicU64::default(),
+        )
+        .unwrap();
+        assert_eq!(converted.lf.clone().collect().unwrap().height(), 1);
     }
 
     #[test]

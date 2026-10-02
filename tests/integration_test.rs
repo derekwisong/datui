@@ -22263,3 +22263,21 @@ fn a_pattern_that_matches_nothing_says_so() {
         );
     }
 }
+
+/// Copy as Python reads a file named like a glob as that file too: the script's
+/// scan matches it alone, in each format the script scans (#625).
+#[test]
+fn copy_as_python_reads_a_file_named_like_a_glob_as_itself() {
+    common::isolate_cache();
+    let tmp = tempfile::TempDir::new().unwrap();
+    for ext in ["csv", "parquet", "arrow", "jsonl"] {
+        let literal = tmp.path().join(format!("d[1].{ext}"));
+        write_marker(&literal, "literal");
+        write_marker(&tmp.path().join(format!("d1.{ext}")), "sibling");
+        let (app, _) = open_and_collect(vec![literal], OpenOptions::default());
+        let Some((rows, script)) = run_python_script(&app) else {
+            return;
+        };
+        assert_eq!(rows, "v\nliteral\n", "{ext}:\n{script}");
+    }
+}

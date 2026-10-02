@@ -173,15 +173,22 @@ pub(crate) fn polars_literal_path(
     // Escaped as Polars will read it: on Windows that text has `/` separators and no
     // `\\?\` prefix, so neither a separator nor the prefix's `?` is touched.
     let text = polars::prelude::PlRefPath::try_from_path(path)?;
-    let mut escaped = String::with_capacity(text.as_str().len() + 8);
-    for c in text.as_str().chars() {
+    Ok(polars::prelude::PlRefPath::new(
+        escape_glob(text.as_str()).as_str(),
+    ))
+}
+
+/// `text` as a glob that matches only itself: each glob character in brackets.
+pub(crate) fn escape_glob(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
         if matches!(c, '*' | '?' | '[' | ']') {
             escaped.extend(['[', c, ']']);
         } else {
             escaped.push(c);
         }
     }
-    Ok(polars::prelude::PlRefPath::new(escaped.as_str()))
+    escaped
 }
 
 /// True when the path names an object-store location datui scans in place, with range

@@ -201,7 +201,8 @@ Loggers often write comments and a units line above a padded header:
 `--header-rows` counts lines before anything is skipped, and a named line that
 starts with the comment character loses it. `--skip-lines` counts from the same
 top; `--skip-rows` counts data rows after the header. <kbd>H</kbd> reads the
-named lines as data.
+named lines as data. A file with nothing after its header lines opens with its
+columns and no rows.
 
 Padded numbers become numbers with or without `--skip-initial-space`, as long
 as string parsing is on (the default). With the flag, cells of spaces are null

@@ -193,8 +193,8 @@ impl EventPump {
     /// would land on something else later. The wheel's arrows and a chip's key act
     /// where a typed key would act at once and are dropped where it would wait, so the
     /// wheel across moves the column cursor at a busy table, as ←→ do, and the wheel
-    /// down waits for nothing. A click on the table moves the cursor only when the app
-    /// is idle with nothing held; the home screen takes one whenever it has the keys.
+    /// down waits for nothing. A click moves the cursor where ↓ would act at once: at
+    /// an idle table with nothing held, and on the home screen, which keeps its keys.
     /// Returns whether the app changed.
     pub fn terminal_mouse(&mut self, mouse: MouseEvent) -> Result<bool> {
         self.discard_stale();
@@ -202,7 +202,10 @@ impl EventPump {
             Pointer::Nothing => Ok(false),
             Pointer::Keys(keys) => self.press_now(keys),
             Pointer::Point(target, then) => {
-                if !self.held.is_empty() || !self.app.pointer_acts() {
+                let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+                if !matches!(self.classify(&down), Act::Now) {
+                    // Not a click the next one can make a double click of.
+                    self.app.forget_click();
                     return Ok(false);
                 }
                 self.app.point(&target);
@@ -1110,6 +1113,20 @@ mod tests {
         assert_eq!(cell(&p).0, Some(1), "the held j, and no click");
         assert!(p.terminal_mouse(click(alan)).unwrap());
         assert_eq!(cell(&p).0, Some(2));
+    }
+
+    /// A click dropped while busy is not the first of a double click: the next click
+    /// on the same cell only moves the cursor, and does not inspect.
+    #[test]
+    fn a_dropped_click_does_not_make_the_next_a_double_click() {
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        p.app.busy = true;
+        assert!(!p.terminal_mouse(click(alan)).unwrap());
+        p.app.busy = false;
+        assert!(p.terminal_mouse(click(alan)).unwrap());
+        assert_eq!(cell(&p).0, Some(2));
+        assert_eq!(p.app.input_mode, InputMode::Normal, "one click, no Enter");
     }
 
     /// A chip on the control bar presses its key, as typed: Help opens help, and

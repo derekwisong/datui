@@ -190,10 +190,9 @@ impl App {
         }
     }
 
-    /// Whether a click may move the cursor now: the app is idle, or the home screen
-    /// has the keys, which it keeps however busy the work behind it is.
-    pub fn pointer_acts(&self) -> bool {
-        !self.is_busy() || self.home_has_the_keys()
+    /// Forget the last click: it was dropped, so the next is not its second.
+    pub fn forget_click(&mut self) {
+        self.pointer.last_click = None;
     }
 
     /// Move the cursor to what a click or the wheel landed on.

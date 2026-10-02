@@ -428,6 +428,7 @@ fn read_wave(bytes: &[u8]) -> Result<AudioHeader> {
             let stated = match (container, size) {
                 (Container::Rf64, 0xFFFF_FFFF) => ds64_data,
                 (_, 0 | 0xFFFF_FFFF) => None,
+                (Container::Wav, size) => Some(unwrapped_size(size, len - start)),
                 (_, size) => Some(size),
             };
             // A data size of 0 or a placeholder means it runs to the end of the file:
@@ -513,6 +514,16 @@ fn read_wave(bytes: &[u8]) -> Result<AudioHeader> {
         metadata,
         markers,
     })
+}
+
+/// A plain RIFF data size, which is 32 bits: a writer that runs past 4 GiB without
+/// switching to RF64 leaves the size modulo 2^32. With more than 4 GiB after the
+/// chunk's start, the true size is the largest `stated + k * 2^32` that fits.
+fn unwrapped_size(stated: u64, available: u64) -> u64 {
+    if available <= u32::MAX as u64 || stated > available {
+        return stated;
+    }
+    stated + ((available - stated) >> 32 << 32)
 }
 
 /// The Broadcast WAV fields worth reading, by their fixed offsets.
@@ -1556,6 +1567,24 @@ mod tests {
         let df = source.window(0, 1, None).unwrap();
         assert_eq!(ints(&df, "ch1"), [0x0001_0000 << 8]);
         assert_eq!(ints(&df, "ch2"), [-256]);
+    }
+
+    /// A RIFF writer that ran past 4 GiB leaves the data size modulo 2^32.
+    #[test]
+    fn a_data_size_that_wrapped_past_4_gib_is_unwrapped() {
+        const GIB4: u64 = 1 << 32;
+        assert_eq!(unwrapped_size(100, 1_000), 100, "a small file as stated");
+        assert_eq!(unwrapped_size(100, GIB4 + 100), GIB4 + 100);
+        assert_eq!(
+            unwrapped_size(100, 2 * GIB4 + 150),
+            2 * GIB4 + 100,
+            "chunks after the data are not samples"
+        );
+        assert_eq!(
+            unwrapped_size(GIB4 - 2, GIB4 + 10),
+            GIB4 - 2,
+            "fits as stated"
+        );
     }
 
     #[test]

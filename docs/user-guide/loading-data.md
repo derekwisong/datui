@@ -270,7 +270,8 @@ first. The row count comes from the file's size.
   float samples are never rescaled.
 - A data size of 0 or a placeholder, as a recorder writes until it stops, is
   read as everything to the end of the file. A size past the end of the file
-  is cut to what the file holds, and the Audio tab says so.
+  is cut to what the file holds, and the Audio tab says so. A plain WAV past
+  4 GiB, whose 32-bit data size wrapped, is read to its whole length.
 - Files are recognized by their first bytes too, so a WAV or AIFF with any
   name opens.
 - Compressed audio (A-law, mu-law, ADPCM, MP3, FLAC) is refused with its name.

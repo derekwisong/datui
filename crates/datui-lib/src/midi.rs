@@ -245,7 +245,8 @@ pub fn parse(bytes: &[u8]) -> Result<Smf<'_>> {
     while tracks.len() < declared {
         if r.left() < 8 {
             return Err(eyre!(
-                "MIDI header says {declared} tracks; the file holds {}",
+                "MIDI header says {declared} {}; the file holds {}",
+                if declared == 1 { "track" } else { "tracks" },
                 tracks.len()
             ));
         }

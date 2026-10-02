@@ -38,6 +38,7 @@ jobs:
   cargo-deny:
     name: cargo-deny (${{ matrix.checks }})
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     strategy:
@@ -81,6 +82,7 @@ jobs:
   zizmor:
     name: zizmor (workflow analysis)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       # Findings go to the Security tab rather than dying in a log line, so they

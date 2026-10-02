@@ -302,7 +302,16 @@ fn read_fmt(body: &[u8]) -> Result<Fmt> {
         tag = le16(body, 24);
         encoding.push_str("extensible ");
     }
-    let sample = match (tag, bits.div_ceil(8)) {
+    // Plain PCM may hold each sample in a wider container than its bits round to (24
+    // bits in 4 bytes); the block alignment says so, and the bits are the high ones,
+    // as in an extensible file.
+    let container = match block_align.checked_rem(channels) {
+        Some(0) if tag == 1 && (9..=32).contains(&bits) => {
+            (block_align / channels).clamp(bits.div_ceil(8), 4)
+        }
+        _ => bits.div_ceil(8),
+    };
+    let sample = match (tag, container) {
         (1, 1) => Sample::U8,
         (1, 2) => Sample::I16,
         (1, 3) => Sample::I24,
@@ -1530,6 +1539,25 @@ mod tests {
         assert_eq!(channel_names(3, 0x4), ["C", "ch2", "ch3"]);
     }
 
+    /// A plain PCM header whose block alignment gives each 24-bit sample 4 bytes:
+    /// the samples are read 4 bytes apart, as 32-bit with 24 valid bits.
+    #[test]
+    fn a_wider_container_in_the_block_alignment_is_honored() {
+        let mut body = fmt(1, 2, 8000, 24);
+        body[12..14].copy_from_slice(&8u16.to_le_bytes());
+        let samples: Vec<u8> = [0x0001_0000i32 << 8, -256]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let bytes = wav(&[chunk(b"fmt ", &body), chunk(b"data", &samples)]);
+        let (_f, source) = open(&bytes, false);
+        assert_eq!(source.header().sample, Sample::I32);
+        assert_eq!(source.header().valid_bits, 24);
+        let df = source.window(0, 1, None).unwrap();
+        assert_eq!(ints(&df, "ch1"), [0x0001_0000 << 8]);
+        assert_eq!(ints(&df, "ch2"), [-256]);
+    }
+
     #[test]
     fn a_recording_in_progress_is_counted_by_the_file_and_grows() {
         // A placeholder data size: the frames are what the file holds, and a partial
@@ -1809,6 +1837,10 @@ mod tests {
         refused(
             &wav(&[chunk(b"fmt ", &fmt(7, 1, 8000, 8)), chunk(b"data", &[])]),
             "mu-law",
+        );
+        refused(
+            &wav(&[chunk(b"fmt ", &fmt(1, 1, 8000, 40)), chunk(b"data", &[])]),
+            "40-bit",
         );
         // A frame size that cannot hold the samples.
         let mut small = fmt(1, 2, 8000, 16);

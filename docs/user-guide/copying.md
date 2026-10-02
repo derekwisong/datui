@@ -113,8 +113,10 @@ they were applied:
 | Filters, sort, <kbd>r</kbd> | `.filter`, `.sort(..., nulls_last=True, maintain_order=True)`, `.reverse()` |
 | Hidden and moved columns | `.select([...])` |
 
-Data piped in on standard input, or in a format Polars has no reader for
-(ORC, SafeTensors, GGUF, bzip2 or xz), starts from `df = ...` for you to
+Data piped in on standard input, in a format Polars has no reader for
+(ORC, SafeTensors, GGUF, NMEA, GPX, bzip2 or xz), read through a
+[binary format spec](binary-formats.md), or read with `--comment-char`,
+`--header-rows` or `--skip-initial-space`, starts from `df = ...` for you to
 fill in. A step the script cannot repeat, such as a drill into a group whose
 rows are lists, is a comment, and the steps after it are commented out.
 An S3 endpoint and region go into `storage_options`; credentials never do.

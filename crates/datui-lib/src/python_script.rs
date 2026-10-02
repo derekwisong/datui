@@ -485,6 +485,8 @@ pub struct OpenRecord<'a> {
     pub s3_region: Option<String>,
     /// Columns read as text from every file.
     pub read_as_text: Vec<String>,
+    /// The binary format spec the data was read through, by name.
+    pub spec: Option<String>,
 }
 
 fn is_url(path: &Path) -> bool {
@@ -654,6 +656,21 @@ pub fn source(record: &OpenRecord) -> Source {
             what: "The data datui read from standard input: load it here.".to_string(),
         };
     }
+    let spec = record.spec.clone().or_else(|| {
+        let options = record.options;
+        options
+            .spec_name
+            .clone()
+            .or_else(|| options.spec_file.as_ref().map(|f| f.display().to_string()))
+    });
+    if let Some(spec) = spec {
+        return Source::Placeholder {
+            what: format!(
+                "datui read this through the format spec {spec}, which it cannot write as \
+                 Python: load it here."
+            ),
+        };
+    }
     let targets: Option<Vec<(String, FileFormat, bool)>> =
         paths.iter().map(|p| reader_target(p, record)).collect();
     let Some(targets) = targets.filter(|t| !t.is_empty()) else {
@@ -713,6 +730,23 @@ pub fn source(record: &OpenRecord) -> Source {
             "pl.scan_parquet"
         }
         FileFormat::Csv | FileFormat::Tsv | FileFormat::Psv => {
+            let dialect: Vec<&str> = [
+                (options.comment_char.is_some(), "--comment-char"),
+                (options.header_rows().is_some(), "--header-rows"),
+                (options.skip_initial_space, "--skip-initial-space"),
+            ]
+            .into_iter()
+            .filter_map(|(set, flag)| set.then_some(flag))
+            .collect();
+            if !dialect.is_empty() {
+                return Source::Placeholder {
+                    what: format!(
+                        "{}: datui read it with {}, which it cannot write as Python: load it here.",
+                        names.join(", "),
+                        dialect.join(", ")
+                    ),
+                };
+            }
             let separator = options
                 .delimiter
                 .or_else(|| format.separator())
@@ -800,7 +834,11 @@ pub fn source(record: &OpenRecord) -> Source {
             );
             "pl.read_excel"
         }
-        FileFormat::Orc | FileFormat::Safetensors | FileFormat::Gguf => {
+        FileFormat::Orc
+        | FileFormat::Safetensors
+        | FileFormat::Gguf
+        | FileFormat::Nmea
+        | FileFormat::Gpx => {
             return Source::Placeholder {
                 what: format!(
                     "{}: Polars has no reader for this format; load it here.",
@@ -1175,6 +1213,7 @@ mod tests {
             s3_endpoint: None,
             s3_region: None,
             read_as_text: Vec::new(),
+            spec: None,
         };
         let Source::Read { call, after, .. } = source(&record) else {
             panic!("a CSV has a reader");
@@ -1188,6 +1227,47 @@ mod tests {
             after,
             vec![".filter(pl.int_range(pl.len()) < pl.len() - 1)"]
         );
+    }
+
+    /// Reads datui does its own way are not written as a Polars reader that would
+    /// give other rows: a format spec, a GPS log, and the CSV dialect flags.
+    #[test]
+    fn reads_python_cannot_repeat_leave_a_placeholder() {
+        let schema = Schema::default();
+        let placeholder = |paths: &[PathBuf], options: &OpenOptions, spec: Option<&str>| {
+            let record = OpenRecord {
+                paths: Some(paths),
+                options,
+                schema: &schema,
+                remote_objects: Vec::new(),
+                s3_endpoint: None,
+                s3_region: None,
+                read_as_text: Vec::new(),
+                spec: spec.map(str::to_string),
+            };
+            match source(&record) {
+                Source::Placeholder { what } => what,
+                Source::Read { call, .. } => panic!("a reader was written: {call}"),
+            }
+        };
+        let plain = OpenOptions::new();
+        let what = placeholder(&[PathBuf::from("a.l2")], &plain, Some("acme.l2feed"));
+        assert!(what.contains("acme.l2feed"), "{what}");
+        let mut named = OpenOptions::new();
+        named.spec_name = Some("acme.l2feed".into());
+        placeholder(&[PathBuf::from("a.bin")], &named, None);
+        placeholder(&[PathBuf::from("track.gpx")], &plain, None);
+        placeholder(&[PathBuf::from("drive.nmea")], &plain, None);
+        let csv = [PathBuf::from("log.csv")];
+        let mut comment = OpenOptions::new();
+        comment.comment_char = Some("#".into());
+        assert!(placeholder(&csv, &comment, None).contains("--comment-char"));
+        let mut rows = OpenOptions::new();
+        rows.header_rows = vec![3, 2];
+        assert!(placeholder(&csv, &rows, None).contains("--header-rows"));
+        let mut space = OpenOptions::new();
+        space.skip_initial_space = true;
+        assert!(placeholder(&csv, &space, None).contains("--skip-initial-space"));
     }
 
     #[test]
@@ -1213,6 +1293,7 @@ mod tests {
             s3_endpoint: Some("http://key:secret@localhost:9000".into()),
             s3_region: None,
             read_as_text: Vec::new(),
+            spec: None,
         };
         let text = Script {
             source: source(&record),
@@ -1240,6 +1321,7 @@ mod tests {
             s3_endpoint: Some("http://localhost:9000".into()),
             s3_region: None,
             read_as_text: Vec::new(),
+            spec: None,
         };
         let stdin: &'static [PathBuf] = Box::leak(stdin.into_boxed_slice());
         assert!(matches!(source(&record(stdin)), Source::Placeholder { .. }));

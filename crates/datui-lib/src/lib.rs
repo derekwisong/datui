@@ -25817,6 +25817,7 @@ impl App {
             s3_endpoint: cloud.s3_endpoint_url.filter(|s| !s.trim().is_empty()),
             s3_region: cloud.s3_region.filter(|s| !s.trim().is_empty()),
             read_as_text: state.read_as_text().iter().map(|c| c.to_string()).collect(),
+            spec: state.format_read().map(|read| read.spec.name.clone()),
         };
         python_script::Script {
             source: python_script::source(&record),

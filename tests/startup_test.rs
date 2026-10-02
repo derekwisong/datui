@@ -438,23 +438,29 @@ fn parquet() -> Vec<u8> {
 }
 
 /// CSV, gzipped CSV, NDJSON and Parquet piped to `datui -` each open, their format
-/// read from their first bytes; keys reach the app through the terminal meanwhile,
-/// and the spooled file is gone once it quits.
+/// read from their first bytes, and a gzipped TSV as `--format tsv` says (#567); keys
+/// reach the app through the terminal meanwhile, and the spooled file is gone once it
+/// quits.
 #[test]
 fn data_piped_in_opens_in_its_format() {
     let csv = b"id,label\n0,ROWMARK\n1,second\n".to_vec();
+    let tsv = b"id\tlabel\n0\tROWMARK\n1\tsecond\n".to_vec();
+    let dash: &[&Path] = &[Path::new("-")];
+    let as_tsv: &[&Path] = &[Path::new("--format"), Path::new("tsv"), Path::new("-")];
     let cases = [
-        ("csv", csv.clone()),
-        ("gzip csv", gzipped(&csv)),
+        ("csv", dash, csv.clone()),
+        ("gzip csv", dash, gzipped(&csv)),
+        ("gzip tsv", as_tsv, gzipped(&tsv)),
         (
             "ndjson",
+            dash,
             b"{\"id\": 0, \"label\": \"ROWMARK\"}\n{\"id\": 1, \"label\": \"x\"}\n".to_vec(),
         ),
-        ("parquet", parquet()),
+        ("parquet", dash, parquet()),
     ];
-    for (name, body) in cases {
+    for (name, args, body) in cases {
         let dirs = Dirs::new();
-        let (mut session, mut pipe) = dirs.spawn_piped(&[Path::new("-")]);
+        let (mut session, mut pipe) = dirs.spawn_piped(args);
         pipe.write_all(&body).unwrap();
         drop(pipe);
         session.wait_for_screen("ROWMARK");

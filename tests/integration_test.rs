@@ -22002,3 +22002,105 @@ fn test_copy_as_python_divides_integers_as_datui_does() {
         assert_eq!(rows, view_csv(&app), "{query}:\n{script}");
     }
 }
+
+/// Names and values with quotes, backslashes, line breaks, triple quotes and
+/// non-ASCII text: the script is valid Python that computes datui's rows, and a
+/// name that reads as code in a comment stays in the comment.
+#[test]
+fn test_copy_as_python_escapes_names_and_values() {
+    use datui::filter_modal::{FilterOperator, LogicalOperator};
+    let python = Path::new(".venv/bin/python");
+    if !python.exists() {
+        eprintln!("skipped: no .venv to write the file with");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("odd names.parquet");
+    let written = std::process::Command::new(python)
+        .arg("-c")
+        .arg(
+            r#"import sys, datetime, polars as pl
+pl.DataFrame({
+    'na"me': ['O\'Brien "x"', 'C:\\dir\\', 'line1\nline2', '"""', '日本'],
+    'pa\\th': [1, 2, 3, 4, 5],
+    'multi\nline': ['a', 'b', 'a', 'b', 'a'],
+    'when\nraise SystemExit(3)': [datetime.datetime(2024, 1, d) for d in range(1, 6)],
+}).write_parquet(sys.argv[1])"#,
+        )
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(written.success());
+    type Build = Box<dyn Fn(&mut datui::widgets::datatable::DataTableState)>;
+    let views: Vec<(&str, Build)> = vec![
+        (
+            "filters, a sort and the columns shown",
+            Box::new(|s| {
+                s.filter(vec![python_filter(
+                    "na\"me",
+                    FilterOperator::NotContains,
+                    "\\",
+                    LogicalOperator::And,
+                )]);
+                s.sort_by(vec!["pa\\th".into()], vec![true]);
+                s.set_column_order(vec!["multi\nline".into(), "na\"me".into()]);
+            }),
+        ),
+        (
+            "a drill into a value with a line break and quotes",
+            Box::new(|s| {
+                s.drill_into_value("na\"me", AnyValue::StringOwned("line1\nline2".into()))
+                    .unwrap();
+            }),
+        ),
+        (
+            "SQL over lines, ending in a quoted name",
+            Box::new(|s| {
+                s.sql_query(
+                    "SELECT \"na\"\"me\", \"multi\nline\"\nFROM df\nORDER BY \"na\"\"me\"".into(),
+                );
+            }),
+        ),
+    ];
+    for (what, build) in views {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+        pump_until_idle(&mut app, &rx, &tx);
+        build(app.data_table_state.as_mut().unwrap());
+        pump_until_idle(&mut app, &rx, &tx);
+        assert!(
+            app.data_table_state.as_ref().unwrap().error().is_none(),
+            "{what}: {:?}",
+            app.data_table_state.as_ref().unwrap().error()
+        );
+        let (rows, script) = run_python_script(&app).unwrap();
+        assert!(
+            !script.contains("# "),
+            "{what}: a step was not written:\n{script}"
+        );
+        assert_eq!(rows, view_csv(&app), "{what}:\n{script}");
+    }
+
+    // A drill into a timestamp is a comment, and the column's name in it is text.
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let first = 1_704_067_200_000_000; // 2024-01-01 in microseconds
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .drill_into_value(
+            "when\nraise SystemExit(3)",
+            AnyValue::Datetime(first, TimeUnit::Microseconds, None),
+        )
+        .unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    let (_, script) = run_python_script(&app).unwrap();
+    assert!(
+        script.lines().all(|l| !l.trim_start().starts_with("raise")),
+        "{script}"
+    );
+    assert!(script.contains("when\\nraise SystemExit(3)"), "{script}");
+}

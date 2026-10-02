@@ -4428,10 +4428,9 @@ impl DataTableState {
                     "{blank_null}.str.to_time({}strict=False)",
                     format_arg(&time_fmt)
                 ),
-                InferredType::Duration => format!(
-                    "# {}: datui reads these as durations (\"1d2h\"); Polars has no parser for them",
-                    col_name
-                ),
+                InferredType::Duration => crate::python_script::py_comment(&format!(
+                    "{col_name}: datui reads these as durations (\"1d2h\"); Polars has no parser for them"
+                )),
                 InferredType::Int64 => {
                     format!("{blank_null}.cast(pl.Int64, strict=False)")
                 }

@@ -33,6 +33,26 @@ pub(crate) fn py_str(s: &str) -> String {
     out
 }
 
+/// `text` as a Python comment line. A line break or other control character in
+/// it (a column name, a value, a path) is written escaped, so the text cannot end
+/// the comment and run as code.
+pub(crate) fn py_comment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push_str("# ");
+    for c in text.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push('\t'),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => {
+                out.push_str(&format!("\\u{:04x}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `f` as a Python float literal: always with a point or an exponent, so Python
 /// reads a float, as Polars was given one.
 pub(crate) fn py_float(f: f64) -> String {
@@ -299,28 +319,35 @@ impl Step {
                     nodes.resolve_division(input);
                     nodes.python_steps(keys)
                 }
-                Err(e) => vec![format!("# the query did not parse: {e}")],
+                Err(e) => vec![py_comment(&format!("the query did not parse: {e}"))],
             },
             Step::QueryRows { query, input } => match crate::query::parse_nodes(query) {
                 Ok(mut nodes) => {
                     nodes.resolve_division(input);
                     nodes.python_filter().into_iter().collect()
                 }
-                Err(e) => vec![format!("# the query did not parse: {e}")],
+                Err(e) => vec![py_comment(&format!("the query did not parse: {e}"))],
             },
             Step::Sql { sql, ordered_by } => {
                 let sql = sql.trim();
-                let mut lines =
-                    if sql.contains('\n') && !sql.contains("\"\"\"") && !sql.contains('\\') {
-                        vec![
-                            ".sql(".to_string(),
-                            format!("    \"\"\"{sql}\"\"\","),
-                            "    table_name=\"df\",".to_string(),
-                            ")".to_string(),
-                        ]
-                    } else {
-                        vec![format!(".sql({}, table_name=\"df\")", py_str(sql))]
-                    };
+                // Triple quotes keep a statement's lines, where nothing in it could end
+                // or change the string early.
+                let verbatim = sql.contains('\n')
+                    && !sql.contains("\"\"\"")
+                    && !sql.ends_with('"')
+                    && sql
+                        .chars()
+                        .all(|c| c == '\n' || c == '\t' || (c != '\\' && !c.is_control()));
+                let mut lines = if verbatim {
+                    vec![
+                        ".sql(".to_string(),
+                        format!("    \"\"\"{sql}\"\"\","),
+                        "    table_name=\"df\",".to_string(),
+                        ")".to_string(),
+                    ]
+                } else {
+                    vec![format!(".sql({}, table_name=\"df\")", py_str(sql))]
+                };
                 if !ordered_by.is_empty() {
                     lines.push(sort_call(ordered_by, &vec![false; ordered_by.len()]));
                 }
@@ -423,7 +450,7 @@ impl Step {
                 };
                 vec![format!(".filter({})", terms.join(" & "))]
             }
-            Step::Unreproducible(what) => vec![format!("# {what}")],
+            Step::Unreproducible(what) => vec![py_comment(what)],
         }
     }
 }
@@ -846,12 +873,14 @@ impl Script {
         let (head, mut lines) = match &self.source {
             Source::Read { call, after, notes } => {
                 for note in notes {
-                    out.push_str(&format!("# {note}\n"));
+                    out.push_str(&py_comment(note));
+                    out.push('\n');
                 }
                 (call.clone(), after.clone())
             }
             Source::Placeholder { what } => {
-                out.push_str(&format!("# {what}\ndf = ...\n\n"));
+                out.push_str(&py_comment(what));
+                out.push_str("\ndf = ...\n\n");
                 ("df.lazy()".to_string(), Vec::new())
             }
         };
@@ -861,13 +890,16 @@ impl Script {
         for step in &self.steps {
             let calls = step.python();
             if stopped {
-                lines.extend(calls.into_iter().map(|c| {
-                    if c.starts_with('#') {
-                        c
-                    } else {
-                        format!("# {c}")
-                    }
-                }));
+                // Line by line: a call can span lines, as a triple-quoted SQL does.
+                for call in &calls {
+                    lines.extend(call.lines().map(|c| {
+                        if c.starts_with('#') {
+                            c.to_string()
+                        } else {
+                            format!("# {c}")
+                        }
+                    }));
+                }
             } else {
                 stopped = matches!(step, Step::Unreproducible(_));
                 lines.extend(calls);
@@ -920,6 +952,49 @@ mod tests {
         assert_eq!(py_float(0.1), "0.1");
         assert_eq!(py_float(1e20), "1e20");
         assert_eq!(py_float(f64::NAN), "float(\"nan\")");
+    }
+
+    #[test]
+    fn text_in_a_comment_cannot_end_it() {
+        assert_eq!(
+            py_comment("a\nimport os\r\u{2028}x"),
+            "# a\\nimport os\\r\\u2028x"
+        );
+        let text = script(vec![Step::Unreproducible("where k is \"\nboom()".into())]);
+        assert!(text.contains("    # where k is \"\\nboom()\n"), "{text}");
+    }
+
+    #[test]
+    fn sql_is_triple_quoted_only_where_nothing_in_it_ends_the_string() {
+        let sql = |sql: &str| {
+            Step::Sql {
+                sql: sql.into(),
+                ordered_by: Vec::new(),
+            }
+            .python()
+        };
+        assert_eq!(
+            sql("SELECT *\nFROM df"),
+            vec![
+                ".sql(",
+                "    \"\"\"SELECT *\nFROM df\"\"\",",
+                "    table_name=\"df\",",
+                ")"
+            ]
+        );
+        assert_eq!(
+            sql("SELECT *\nFROM df ORDER BY \"a\""),
+            vec![".sql(\"SELECT *\\nFROM df ORDER BY \\\"a\\\"\", table_name=\"df\")"]
+        );
+        // Commented out, every line of it is a comment.
+        let text = script(vec![
+            Step::Unreproducible("drilled into a group held as lists".into()),
+            Step::Sql {
+                sql: "SELECT *\nFROM df".into(),
+                ordered_by: Vec::new(),
+            },
+        ]);
+        assert!(text.contains("    # FROM df\"\"\",\n"), "{text}");
     }
 
     #[test]

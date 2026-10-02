@@ -371,11 +371,12 @@ mod read {
     fn immutable_uri(path: &Path) -> String {
         let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         let text = absolute.to_string_lossy().replace('\\', "/");
-        // A Windows drive path is `file:/C:/...`.
+        // An empty authority, so a path that starts `//` is not read as a host; a
+        // Windows drive path is `file:///C:/...`.
         let mut uri = String::from(if text.starts_with('/') {
-            "file:"
+            "file://"
         } else {
-            "file:/"
+            "file:///"
         });
         for byte in text.bytes() {
             match byte {

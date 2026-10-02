@@ -490,7 +490,7 @@ fn a_wal_that_cannot_be_read_is_not_ignored() {
 #[test]
 fn an_immutable_uri_escapes_what_sqlite_would_read_as_its_own() {
     let uri = immutable_uri_for_tests(Path::new("/data/a?b#c%d é.db"));
-    assert_eq!(uri, "file:/data/a%3Fb%23c%25d %C3%A9.db?immutable=1");
+    assert_eq!(uri, "file:///data/a%3Fb%23c%25d %C3%A9.db?immutable=1");
 }
 
 #[test]

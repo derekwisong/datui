@@ -94,6 +94,8 @@ pub fn run(
     mut written: impl FnMut(u64) + Send + 'static,
 ) -> Result<()> {
     let lf = request.format.prepare(lf)?;
+    // A fixed-record scan has no streaming implementation in Polars 0.55.
+    let polars_streaming = crate::fixed_records::may_stream(&lf, polars_streaming);
     // Before the plan runs, so a destination that cannot be written fails first.
     let mut out = OutputFile::create(&request.path, request.overwrite)?;
     match request.route(polars_streaming) {

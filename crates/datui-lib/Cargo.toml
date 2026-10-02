@@ -74,6 +74,9 @@ polars-sql = { version = "0.55", optional = true }
 # The parser polars-sql uses, at its version: reads a GROUP BY statement to drill into.
 sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
 ignore = "0.4.33"
+# Fixed-record binary files are read through a memory map. Already in the tree
+# through polars-io.
+memmap2 = "0.9"
 # The log facade, for the log file. Already in the tree through Polars and ureq.
 log = "0.4"
 # Where `polars_warn!` goes (`set_warning_function`); Polars' own error crate.
@@ -113,6 +116,11 @@ features = [
     "dtype-datetime",
     "dtype-time",
     "dtype-duration",
+    # Fixed-record binary files carry one- and two-byte integers.
+    "dtype-i8",
+    "dtype-i16",
+    "dtype-u8",
+    "dtype-u16",
     "ipc",
     # Key-like columns drill in to the rows whose value is not the only one of its
     # kind, which is `is_duplicated` and nothing else expresses in one pass.

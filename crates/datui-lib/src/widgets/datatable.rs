@@ -342,6 +342,11 @@ pub struct DataTableState {
     /// What a SafeTensors or GGUF header said besides its tensors. See
     /// [`crate::OpenOptions::model`].
     model: Option<Arc<crate::model_files::ModelSummary>>,
+    /// What a read through a format spec found: the spec, why, and its notes.
+    format_read: Option<Arc<crate::formats::Read>>,
+    /// The fixed records the data as loaded is, while it still is: a window of a
+    /// pristine view starts its columns at the window rather than decoding from row 0.
+    fixed_window: Option<Arc<crate::fixed_records::FixedRecords>>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -821,6 +826,8 @@ pub struct OpenFacts {
     /// The lake format whose plain files this dataset is. See
     /// [`DataTableState::not_the_table`].
     pub not_the_table: Option<&'static str>,
+    /// What a read through a format spec found.
+    pub format_read: Option<Arc<crate::formats::Read>>,
     /// The downloaded file the frame scans, held for as long as the state lives.
     pub download: Option<crate::download::TempDownload>,
     /// What a model file's header said besides its tensors.
@@ -1554,11 +1561,17 @@ fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, 
 fn window_of(
     lf: &LazyFrame,
     files: Option<&RemoteFiles>,
+    records: Option<&crate::fixed_records::FixedRecords>,
     read_as_text: &[PlSmallStr],
     start: usize,
     len: usize,
     all_columns: Vec<Expr>,
 ) -> PolarsResult<LazyFrame> {
+    // Polars gives an anonymous scan no row offset, so a slice deep in the view would
+    // decode every row before it; the records start the window there instead.
+    if let Some(records) = records {
+        return Ok(records.window(start, len)?.select(all_columns));
+    }
     if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
         && let Some((first, last)) = files_holding(offsets, start, len)
     {
@@ -1579,6 +1592,8 @@ fn window_of(
 pub(crate) struct ViewRows {
     lf: LazyFrame,
     files: Option<RemoteFiles>,
+    /// See [`DataTableState::fixed_window`].
+    records: Option<Arc<crate::fixed_records::FixedRecords>>,
     read_as_text: Vec<PlSmallStr>,
     /// The buffer on hand and the view row it starts at.
     pub(crate) buffer: Option<(DataFrame, usize)>,
@@ -1629,6 +1644,7 @@ impl ViewRows {
         window_of(
             &self.lf,
             self.files.as_ref(),
+            self.records.as_deref(),
             &self.read_as_text,
             start,
             len,
@@ -1644,6 +1660,7 @@ impl ViewRows {
             reads_up_to: reads_up_to_a_window(&lf),
             lf,
             files: None,
+            records: None,
             read_as_text: Vec::new(),
             buffer,
             num_rows: None,
@@ -1775,6 +1792,8 @@ impl DataTableState {
             open_notes: Vec::new(),
             not_the_table: None,
             model: None,
+            format_read: None,
+            fixed_window: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -1908,6 +1927,8 @@ impl DataTableState {
             open_notes: Vec::new(),
             not_the_table: None,
             model: None,
+            format_read: None,
+            fixed_window: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -1954,6 +1975,7 @@ impl DataTableState {
             measurements,
             open_notes,
             not_the_table,
+            format_read,
             download,
             model,
         } = facts;
@@ -1993,6 +2015,8 @@ impl DataTableState {
         self.measurements = measurements;
         self.open_notes = open_notes;
         self.not_the_table = not_the_table;
+        self.fixed_window = format_read.as_ref().map(|read| read.records.clone());
+        self.format_read = format_read;
         self.download = download;
         self.model = model;
         self
@@ -2003,6 +2027,8 @@ impl DataTableState {
     /// read through the old root are dropped, and checkpoints taken over it no longer
     /// apply.
     fn replace_root(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
+        // The records no longer stand for the root.
+        self.fixed_window = None;
         self.root_generation = next_len_generation();
         self.invalidate_num_rows();
         self.original_schema = schema.clone();
@@ -4359,6 +4385,42 @@ impl DataTableState {
         Self::from_delimited(path, b',', options)
     }
 
+    /// A compressed file a format spec reads: decompressed to a temporary file the
+    /// state holds, then read through the spec chosen for it (`options.spec_choice`).
+    pub(crate) fn from_compressed_spec(
+        path: &Path,
+        named: &str,
+        options: &OpenOptions,
+        writer: &Writer,
+    ) -> Result<(Self, Arc<crate::formats::Read>)> {
+        let choice = options
+            .spec_choice
+            .clone()
+            .ok_or_else(|| color_eyre::eyre::eyre!("no format spec was chosen"))?;
+        let compression = options
+            .compression
+            .or_else(|| CompressionFormat::from_extension(path))
+            .ok_or_else(|| color_eyre::eyre::eyre!("{named} is not compressed"))?;
+        let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
+        let temp = Self::decompress_compressed_csv_to_temp(path, compression, &temp_dir, writer)?;
+        let read = crate::formats::read(temp.path(), named, choice)
+            .map_err(|e| color_eyre::eyre::eyre!(e))?;
+        let read = Arc::new(read);
+        let mut state = Self::new(
+            read.records.clone().into_lazy()?,
+            options.pages_lookahead,
+            options.pages_lookback,
+            options.max_buffered_rows,
+            options.max_buffered_mb,
+            options.polars_streaming,
+        )?;
+        state.row_numbers = options.row_numbers;
+        state.row_start_index = options.row_start_index;
+        // The records map the copy; it goes when the state does.
+        state.decompress_temp_file = Some(Arc::new(temp));
+        Ok((state, read))
+    }
+
     /// As [`Self::from_delimited`], for an open: a compressed file is decompressed
     /// through `writer`, so the open's stop and quitting reach the copy.
     pub(crate) fn from_delimited_for_open(
@@ -6227,6 +6289,17 @@ impl DataTableState {
         self.model.as_deref()
     }
 
+    /// What a read through a format spec found, when the dataset was read through one.
+    pub fn format_read(&self) -> Option<&Arc<crate::formats::Read>> {
+        self.format_read.as_ref()
+    }
+
+    /// The records a window of the view may start in, while the view is the data as
+    /// loaded.
+    fn fixed_window_now(&self) -> Option<&Arc<crate::fixed_records::FixedRecords>> {
+        self.fixed_window.as_ref().filter(|_| self.is_pristine())
+    }
+
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked
     /// — whether to offer the tab — without building the list to find out.
     pub fn has_notes(&self) -> bool {
@@ -6587,6 +6660,7 @@ impl DataTableState {
         window_of(
             &self.lf,
             self.remote_files.as_ref().filter(|_| self.remote_window()),
+            self.fixed_window_now().map(|r| r.as_ref()),
             &self.read_as_text,
             start,
             len,
@@ -6604,6 +6678,7 @@ impl DataTableState {
                 .as_ref()
                 .filter(|_| self.remote_window())
                 .cloned(),
+            records: self.fixed_window_now().cloned(),
             read_as_text: self.read_as_text.clone(),
             buffer: self
                 .buffered_df

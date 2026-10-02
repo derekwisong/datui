@@ -563,6 +563,29 @@ pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
     Some((reads, (!skips.is_empty()).then(|| skips.join(", "))))
 }
 
+/// List a file a format spec's glob names as data, under the spec's name. Its name is
+/// all that is asked: the listing reads nothing more for it.
+pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
+    if formats.is_empty() {
+        return;
+    }
+    let mut named = false;
+    for row in rows
+        .iter_mut()
+        .filter(|r| r.kind == EntryKind::Other && r.format_spec.is_none())
+    {
+        if let Some(spec) = formats.by_glob(&row.path, false).first() {
+            row.kind = EntryKind::File;
+            row.format_spec = Some(spec.name.clone());
+            named = true;
+        }
+    }
+    // Data sorts first, and these rows are data now.
+    if named {
+        discover::sort_entries(rows);
+    }
+}
+
 /// Whether a directory holds nothing a `(all files)` row could read.
 ///
 /// The door's own test, named so the details pane can ask it too: the pane tells the user
@@ -1167,6 +1190,9 @@ pub struct HomeState {
     /// Leave out files datui has no reader for. `Ctrl+A` flips it; they are hidden by
     /// default.
     pub hide_unreadable: bool,
+    /// The format specs on the search path: a file one of them names by its glob is
+    /// listed as data, under the spec's name.
+    pub formats: std::sync::Arc<crate::formats::Registry>,
     /// The lake table being browsed, and its format. Said on its heading for as long as
     /// the browse lasts, since it is a fact about the directory rather than an event.
     pub lake_here: Option<(PathBuf, &'static str)>,
@@ -1339,6 +1365,7 @@ impl Default for HomeState {
             missing: Default::default(),
             filter: String::new(),
             hide_unreadable: true,
+            formats: Default::default(),
             lake_here: None,
             selected: 0,
             scroll: 0,
@@ -2439,6 +2466,10 @@ impl HomeState {
         let previous = returning.clone().or_else(|| self.selected_key());
         // Rows landing above the cursor move the list, not the cursor.
         let line = self.selected.saturating_sub(self.scroll);
+        let mut listing = listing;
+        for section in &mut listing.sections {
+            name_by_spec(&self.formats, &mut section.rows);
+        }
         self.sections = listing.sections;
         self.missing = listing.missing;
         // Browsing, the first section is the directory browsed.
@@ -3914,6 +3945,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         cost: Default::default(),
         holds: Default::default(),
         opens_whole_directory: false,
+        format_spec: None,
     }
 }
 
@@ -3992,6 +4024,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         cost: Default::default(),
         holds,
         opens_whole_directory: false,
+        format_spec: None,
     };
     if !remote && let Ok(meta) = std::fs::metadata(path) {
         if meta.is_file() {

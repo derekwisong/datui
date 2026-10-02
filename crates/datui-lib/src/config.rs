@@ -413,6 +413,9 @@ pub struct AppConfig {
     pub import: Vec<String>,
     /// Configuration format version (for future compatibility)
     pub version: String,
+    /// Directories (or files) of binary format specs, searched after the config
+    /// directory's `formats` and `$DATUI_FORMATS_PATH`. Adds up across imports.
+    pub formats_path: Vec<String>,
     /// Named collections of datasets, `[[sources]]`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceConfig>,
@@ -445,6 +448,13 @@ const APP_COMMENTS: &[(&str, &str)] = &[
     (
         "version",
         "Configuration format version (for future compatibility)",
+    ),
+    (
+        "formats_path",
+        "Directories of binary format specs (*.toml), searched after ~/.config/datui/formats\n\
+         and $DATUI_FORMATS_PATH; the first spec of a name wins. Adds up across imports.\n\
+         A relative path is relative to the config file that names it.\n\
+         Example: formats_path = [\"~/src/acme-formats\"]",
     ),
 ];
 
@@ -2690,6 +2700,7 @@ impl Default for AppConfig {
         let mut config = Self {
             import: Vec::new(),
             version: "0.2".to_string(),
+            formats_path: Vec::new(),
             sources: Vec::new(),
             cloud: CloudConfig::default(),
             file_loading: FileLoadingConfig::default(),
@@ -2957,7 +2968,7 @@ fn path_place(path: &Path) -> PathBuf {
     place
 }
 
-fn expand_path(raw: &str) -> PathBuf {
+pub(crate) fn expand_path(raw: &str) -> PathBuf {
     let mut expanded = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
 
@@ -3037,6 +3048,7 @@ enum Combine {
 /// The keys that do not follow "a later layer's value replaces the earlier one".
 /// Tables merge key by key; everything else not listed here is replaced whole.
 const COMBINED_KEYS: &[(&str, Combine)] = &[
+    ("formats_path", Combine::Union),
     ("sources", Combine::ByName),
     ("cloud.connections", Combine::ByName),
     ("cloud.hide", Combine::Union),
@@ -3110,6 +3122,16 @@ impl ConfigLayer {
     /// Resolve relative dataset `path`s against `dir`, the directory of the file that
     /// named them, before a layer from another directory can be merged with them.
     fn anchor_paths(&mut self, dir: &Path) {
+        if let Some(toml::Value::Array(entries)) = self.table.get_mut("formats_path") {
+            for entry in entries {
+                if let toml::Value::String(path) = entry
+                    && !path.trim().is_empty()
+                    && expand_path(path).is_relative()
+                {
+                    *path = dir.join(expand_path(path)).to_string_lossy().into_owned();
+                }
+            }
+        }
         let Some(toml::Value::Array(sources)) = self.table.get_mut("sources") else {
             return;
         };

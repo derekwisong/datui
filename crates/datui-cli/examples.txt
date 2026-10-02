@@ -15,6 +15,10 @@ Examples:
       A glob, read as one partitioned table
   datui --format csv --no-header raw.txt
       Headerless text, whatever the extension
+  datui --format acme.l2feed capture.bin
+      A binary file, read through the format spec of that name
+  datui formats check acme.l2feed capture.bin
+      Check a format spec and print the first rows it reads
   datui --generate-config
       Write ~/.config/datui/config.toml
 

@@ -3,7 +3,7 @@
 ## Usage
 
 ```
-Usage: datui [OPTIONS] [PATH]...
+Usage: datui [OPTIONS] [PATH]... [COMMAND]
 ```
 
 ## Options
@@ -23,7 +23,8 @@ Usage: datui [OPTIONS] [PATH]...
 | `--ignore-errors[=<BOOL>]` | When reading CSV, ignore parse errors and continue with the next batch (default: false) |
 | `--null-value <VAL>` | Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount= |
 | `--compression <COMPRESSION>` | Compression format, when the extension does not say (default: auto-detected from the extension) |
-| `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension) |
+| `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, or the name of a binary format spec such as acme.l2feed |
+| `--spec <FILE>` | Read the file (or directory of column files) through this binary format spec, whatever else matches it |
 | `--debug` | Enable debug mode to show operational information |
 | `--log-file <PATH>` | Write the log here (default: [debug] log_file, or datui.log in the cache directory). DATUI_LOG sets the level: error, warn (default), info, debug or off |
 | `--hive` | Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file |
@@ -56,6 +57,13 @@ Usage: datui [OPTIONS] [PATH]...
 | `--s3-region <REGION>` | S3 region (overrides config and AWS_REGION). Example: us-east-1 |
 | `--cloud-discover <WHICH>` | Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Entries in [[cloud.connections]] always appear |
 
+## Commands
+
+| Command | Does |
+|---------|------|
+| `datui formats` | List the binary format specs on the search path: each one's name, what it matches, the file it came from, and the copies it overrides |
+| `datui formats check SPEC [FILE]` | Check a spec, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error |
+
 ## Examples
 
 | Command | Does |
@@ -68,4 +76,6 @@ Usage: datui [OPTIONS] [PATH]...
 | `curl -s https://example.com/data.csv.gz \| datui` | Data piped in; the format is read from its first bytes |
 | `datui --hive "/data/events/**/*.parquet"` | A glob, read as one partitioned table |
 | `datui --format csv --no-header raw.txt` | Headerless text, whatever the extension |
+| `datui --format acme.l2feed capture.bin` | A binary file, read through the format spec of that name |
+| `datui formats check acme.l2feed capture.bin` | Check a format spec and print the first rows it reads |
 | `datui --generate-config` | Write ~/.config/datui/config.toml |

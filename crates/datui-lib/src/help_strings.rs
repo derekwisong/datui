@@ -28,6 +28,10 @@ pub fn find() -> &'static str {
     include_help!("find")
 }
 
+pub fn format_picker() -> &'static str {
+    include_help!("format_picker")
+}
+
 pub fn go_to_column() -> &'static str {
     include_help!("go_to_column")
 }

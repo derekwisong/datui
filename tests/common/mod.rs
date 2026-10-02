@@ -180,6 +180,8 @@ pub fn isolate_cache() {
         // reading the environment; accepted in tests and never done outside them.
         unsafe { std::env::set_var("DATUI_CACHE_DIR", &dir) };
         unsafe { std::env::set_var("DATUI_CONFIG_DIR", &config_dir) };
+        // A developer's own format specs would change how a test's files open.
+        unsafe { std::env::remove_var("DATUI_FORMATS_PATH") };
     });
 }
 

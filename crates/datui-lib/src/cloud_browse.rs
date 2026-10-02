@@ -1261,6 +1261,7 @@ async fn list_level(
             cost: Default::default(),
             holds: Default::default(),
             opens_whole_directory: false,
+            format_spec: None,
         });
     }
 
@@ -1290,6 +1291,7 @@ async fn list_level(
             cost: Default::default(),
             holds: Default::default(),
             opens_whole_directory: false,
+            format_spec: None,
         });
     }
 
@@ -1356,6 +1358,7 @@ async fn list_azure_objects(
             cost: Default::default(),
             holds: Default::default(),
             opens_whole_directory: false,
+            format_spec: None,
         });
     }
     Ok(rows)

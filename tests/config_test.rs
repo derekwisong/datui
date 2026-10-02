@@ -3246,3 +3246,32 @@ fn test_csv_dialect_keys() {
         assert!(err.contains("comment_char"), "{bad}: {err}");
     }
 }
+
+/// `formats_path` adds up across imports, each entry relative to the file that names
+/// it, and is empty when no file names one.
+#[test]
+fn test_formats_path_adds_up_and_is_anchored_to_its_file() {
+    assert!(layered(&[""]).formats_path.is_empty());
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    fs::create_dir_all(temp_dir.path().join("org")).unwrap();
+    write_config(
+        &temp_dir,
+        "org/org.toml",
+        "formats_path = [\"specs\", \"/shared/formats\"]\n",
+    );
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"org/org.toml\"]\nformats_path = [\"mine\", \"/shared/formats\"]\n",
+    );
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+    let anchored = |p: &str| temp_dir.path().join(p).to_string_lossy().into_owned();
+    assert_eq!(
+        config.formats_path,
+        [
+            anchored("org/specs"),
+            "/shared/formats".to_string(),
+            anchored("mine")
+        ]
+    );
+}

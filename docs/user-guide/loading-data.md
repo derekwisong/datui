@@ -88,6 +88,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | ORC | `.orc` | | |
 | SafeTensors | `.safetensors`, `model.safetensors.index.json` | header only | |
 | GGUF | `.gguf` | header only | |
+| [Binary records](binary-formats.md) | any, through a format spec | yes | |
 
 **Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
 queries, sorting and analysis may read the full input. The other formats are

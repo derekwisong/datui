@@ -75,6 +75,8 @@ pub mod export_modal;
 pub mod filter_modal;
 pub mod find;
 mod first_rows_trace;
+pub mod fixed_records;
+pub mod formats;
 pub mod fuzzy;
 #[cfg(feature = "cloud")]
 pub mod gcloud;
@@ -8498,6 +8500,14 @@ pub struct OpenOptions {
     /// totals, for the Info panel. Found by the scan, which reads the header once, and
     /// carried to the dataset as `left_out` is. `None` for every other open.
     pub model: Option<Arc<crate::model_files::ModelSummary>>,
+    /// `--spec FILE`: read the path through this format spec, whatever else matches it.
+    pub spec_file: Option<PathBuf>,
+    /// The format spec named by `--format NAME`, or picked with `b`.
+    pub spec_name: Option<String>,
+    /// The spec a compressed file was matched to, read once the file is decompressed.
+    pub spec_choice: Option<crate::formats::Choice>,
+    /// What a read through a format spec found, carried from the scan to the dataset.
+    pub format_read: Option<Arc<crate::formats::Read>>,
 }
 
 impl OpenOptions {
@@ -8544,6 +8554,10 @@ impl OpenOptions {
             header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
             skip_initial_space: false,
             debug: false,
+            spec_file: None,
+            spec_name: None,
+            spec_choice: None,
+            format_read: None,
         }
     }
 }
@@ -8647,8 +8661,14 @@ impl OpenOptions {
         // Compression: CLI only (auto-detect from extension when not specified)
         opts.compression = args.compression;
 
-        // Format: CLI only (auto-detect from extension when not specified)
-        opts.format = args.format;
+        // Format: CLI only (auto-detect from extension when not specified). A spec's
+        // name is looked up on the search path when the file is opened.
+        opts.format = args.format.as_ref().and_then(cli::FormatChoice::builtin);
+        opts.spec_name = args
+            .format
+            .as_ref()
+            .and_then(|f| f.spec().map(str::to_string));
+        opts.spec_file = args.spec.clone();
 
         // Display options: CLI args override config
         opts.pages_lookahead = args
@@ -9178,6 +9198,8 @@ pub struct ReadReport {
     pub format: Option<FileFormat>,
     /// What a model file's header said besides its tensors. See [`OpenOptions::model`].
     pub model: Option<Arc<crate::model_files::ModelSummary>>,
+    /// What a read through a format spec found. See `OpenOptions::format_read`.
+    pub format_read: Option<Arc<crate::formats::Read>>,
 }
 
 /// What a scan built: the frame, or what the load has to turn into a file it can scan
@@ -9190,6 +9212,11 @@ pub(crate) enum Scan {
     },
     /// Arrow IPC streams, which the load converts to one IPC file before it scans.
     Streams(Vec<PathBuf>),
+    /// A compressed file a format spec matched, to decompress and then read with it.
+    DecompressSpec {
+        file: PathBuf,
+        choice: crate::formats::Choice,
+    },
 }
 
 impl From<LazyFrame> for Scan {
@@ -9226,6 +9253,8 @@ pub enum InputMode {
     Inspect,
     /// The column picker over the table: type a column's name to go to it.
     GoToColumn,
+    /// The format picker over a table read through a spec: read it with another.
+    PickFormat,
     Info,
     Chart,
     /// Value Counts: how often each value of one column occurs in the view.
@@ -10436,6 +10465,8 @@ pub struct App {
     pub value_counts: value_counts_modal::ValueCountsModal,
     /// The counts the export dialog writes, when it was opened from Value Counts.
     export_counts: Option<polars::prelude::DataFrame>,
+    /// The specs `b` offers for the dataset on screen.
+    pub format_picker: crate::widgets::ui::PickerState,
     /// Where copies go. Built at the first copy and kept for the run: on
     /// Wayland and X11 the clipboard offer dies with the process that owns it,
     /// so this handle must live as long as the copy should.
@@ -10570,6 +10601,8 @@ pub struct App {
     status_message: Option<String>,
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
+    /// The format specs on the search path, read when the app was built.
+    formats: Arc<crate::formats::Registry>,
 }
 
 impl App {
@@ -12869,6 +12902,7 @@ impl App {
             InputMode::Inspect => self.inspector_modal.finding,
             // The Picker narrows by typing, so it types.
             InputMode::GoToColumn => true,
+            InputMode::PickFormat => true,
             InputMode::SortFilter => {
                 self.sort_filter_modal.focus == SortFilterFocus::Body
                     && match self.sort_filter_modal.active_tab {
@@ -13507,7 +13541,15 @@ impl App {
             self.opened_from_home = true;
         }
         // A frame handed over has no path to go back to.
-        self.opened = paths.map(|paths| (paths, options.clone()));
+        // Without the spec read: it holds the file's map, and a decompressed copy's map
+        // keeps its disk space until the map goes, so it goes with the dataset.
+        self.opened = paths.map(|paths| {
+            let options = OpenOptions {
+                format_read: None,
+                ..options.clone()
+            };
+            (paths, options)
+        });
         // Recorded once the dataset is installed: a file that fails to load is not one
         // anybody wants to get back to.
         if let Some(path) = recent {
@@ -14199,6 +14241,12 @@ impl App {
             cache_dir: std::env::temp_dir().join(APP_NAME),
         });
         let jobs = Jobs::new(events.clone());
+        let formats = Arc::new(crate::formats::Registry::load(
+            &crate::formats::search_path_for(&app_config),
+        ));
+        for error in &formats.errors {
+            log::warn!("format spec skipped: {error}");
+        }
 
         App {
             path: None,
@@ -14207,6 +14255,7 @@ impl App {
             footers_this_frame: None,
             home: home::HomeState {
                 hide_unreadable: !app_config.data.show_unreadable_files,
+                formats: formats.clone(),
                 ..Default::default()
             },
             home_probes_inflight: Vec::new(),
@@ -14278,6 +14327,7 @@ impl App {
             go_to_column: crate::widgets::ui::PickerState::default(),
             value_counts: value_counts_modal::ValueCountsModal::default(),
             export_counts: None,
+            format_picker: crate::widgets::ui::PickerState::default(),
             clipboard: None,
             pending_copy: None,
             chart_cache: ChartCache::default(),
@@ -14343,7 +14393,16 @@ impl App {
             status_message: None,
             analysis_computation: None,
             app_config,
+            formats,
         }
+    }
+
+    /// Use `registry` as the format specs on the search path, for hosts and tests that
+    /// have their specs in hand.
+    pub fn set_formats(&mut self, registry: crate::formats::Registry) {
+        let registry = Arc::new(registry);
+        self.home.formats = registry.clone();
+        self.formats = registry;
     }
 
     pub fn enable_debug(&mut self) {
@@ -15831,7 +15890,13 @@ impl App {
         // Said here, where the file was named, rather than after a download and a load
         // that could only end the same way. A row would be dimmed; a typed path has no
         // row, so the line says it.
-        if kind == discover::EntryKind::File && discover::unreadable_by_name(&path) {
+        // A format spec may read it: by its glob, or by magic the open looks for.
+        let a_spec_may_read = !self.formats.by_glob(&path, false).is_empty()
+            || self.formats.specs.iter().any(|f| !f.spec.magic.is_empty());
+        if kind == discover::EntryKind::File
+            && discover::unreadable_by_name(&path)
+            && !a_spec_may_read
+        {
             self.home.status = Some(discover::NO_READER.to_string());
             return None;
         }
@@ -15860,6 +15925,16 @@ impl App {
     /// worker ([`AppEvent::OpenNamed`]). Returns the event that carries the open on:
     /// `LookThenOpenDirectory` or `Open`.
     pub fn route_named_paths(paths: Vec<PathBuf>, options: OpenOptions) -> AppEvent {
+        Self::route_named_paths_with(paths, options, &crate::formats::Registry::default())
+    }
+
+    /// [`Self::route_named_paths`], with the format specs on the search path: a
+    /// directory a spec reads as column files is opened, not looked at.
+    pub fn route_named_paths_with(
+        paths: Vec<PathBuf>,
+        options: OpenOptions,
+        formats: &crate::formats::Registry,
+    ) -> AppEvent {
         if let Some(event) = Self::route_named_without_looking(&paths, &options) {
             return event;
         }
@@ -15869,6 +15944,13 @@ impl App {
         let Some(dir) = single.filter(|p| p.is_dir()) else {
             return AppEvent::Open(paths, options);
         };
+        // A format spec named for it, or one whose glob names it, reads it as columns.
+        if options.spec_file.is_some()
+            || options.spec_name.is_some()
+            || !formats.by_glob(&dir, true).is_empty()
+        {
+            return AppEvent::Open(paths, options);
+        }
         // Looking at a directory reads its footers, or the front of a spread of its
         // files. For a directory of large Parquet that is seconds — 4.6 of them on a real
         // one — so it goes to a worker, and the answer comes back as an event like every
@@ -16708,6 +16790,45 @@ impl App {
                 options,
                 writer,
                 download,
+            } if options.spec_choice.is_some() => {
+                self.spawn_job(job, Some("Decompressing..."), move |_| {
+                    let named = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let (state, read) =
+                        DataTableState::from_compressed_spec(&file, &named, &options, &writer)
+                            .map_err(|e| {
+                                crate::error_display::user_message_from_report(
+                                    &e,
+                                    Some(path.as_path()),
+                                )
+                            })?;
+                    let state = state.with_open(OpenFacts {
+                        download,
+                        open_notes: read.notes(),
+                        format_read: Some(read.clone()),
+                        ..Default::default()
+                    });
+                    let options = OpenOptions {
+                        format_read: Some(read),
+                        spec_choice: None,
+                        ..options
+                    };
+                    Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
+                        state: Box::new(state),
+                        path: Some(path),
+                        options,
+                        debug_label: Some("decompressed format spec".to_string()),
+                    })))
+                });
+            }
+            Step::Decompress {
+                file,
+                path,
+                options,
+                writer,
+                download,
             } => {
                 // Only delimited text comes this way, its format said by the loader;
                 // CSV when not, so it can have its header turned off.
@@ -16765,6 +16886,7 @@ impl App {
                 status,
             } => {
                 let cloud = self.app_config.cloud.clone();
+                let formats = self.formats.clone();
                 // A download is scanned from a temp path the user never typed and would not
                 // recognise; the URL they did type is what names the dataset.
                 let path = display.or_else(|| paths.first().cloned());
@@ -16781,12 +16903,14 @@ impl App {
                         files_disagree: options.files_disagree,
                         format: None,
                         model: None,
+                        format_read: None,
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
                         &paths,
                         &options,
                         &mut report,
+                        &formats,
                     )
                     // Named as the dataset is: a download by its URL, not its temp file.
                     .map_err(|e| {
@@ -16796,12 +16920,15 @@ impl App {
                         Scan::Frame(_) => report.format.or(options.format),
                         Scan::Decompress { format, .. } => Some(*format),
                         Scan::Streams(_) => Some(FileFormat::Arrow),
+                        Scan::DecompressSpec { .. } => None,
                     };
                     let options = OpenOptions {
                         left_out: report.left_out,
                         files_disagree: report.files_disagree,
                         format,
                         model: report.model,
+                        format_read: report.format_read,
+                        spec_choice: None,
                         ..options
                     };
                     Ok(Answer::Load(Box::new(match scan {
@@ -16820,6 +16947,14 @@ impl App {
                             files,
                             path,
                             options,
+                        },
+                        Scan::DecompressSpec { file, choice } => LoadAnswer::Compressed {
+                            file,
+                            path,
+                            options: OpenOptions {
+                                spec_choice: Some(choice),
+                                ..options
+                            },
                         },
                     })))
                 });
@@ -17784,6 +17919,10 @@ impl App {
         // count of the files and a wrong one of the table.
         facts.not_the_table = options.read_as_plain_files_of;
         facts.model = options.model.clone();
+        if let Some(read) = &options.format_read {
+            facts.open_notes.extend(read.notes());
+            facts.format_read = Some(read.clone());
+        }
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         facts.remote_source = path.is_some_and(source::scans_in_place);
@@ -18149,6 +18288,20 @@ impl App {
         }
     }
 
+    /// A format spec reads a local file (or a downloaded copy); an object store path
+    /// that is scanned in place would otherwise open without it and say nothing.
+    fn refuse_spec_in_place(path: &Path, options: &OpenOptions) -> Result<()> {
+        if source::is_remote_url(path)
+            && (options.spec_file.is_some() || options.spec_name.is_some())
+        {
+            return Err(color_eyre::eyre::eyre!(
+                "format specs read local files; download {} first",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+
     /// `found` is what the read has to say about itself, for the caller to put in the
     /// dataset's notes: which data files it passed over, and whether the files it did
     /// read carry the same columns. Written here rather than worked out by the caller
@@ -18159,11 +18312,13 @@ impl App {
         paths: &[PathBuf],
         options: &OpenOptions,
         report: &mut ReadReport,
+        formats: &crate::formats::Registry,
     ) -> Result<Scan> {
         // Only the cloud readers below take the settings.
         #[cfg(not(feature = "cloud"))]
         let _ = cloud;
         let path = &paths[0];
+        Self::refuse_spec_in_place(path, options)?;
         match source::input_source(path) {
             source::InputSource::Http(_url) => {
                 #[cfg(feature = "http")]
@@ -18324,7 +18479,7 @@ impl App {
             }
             source::InputSource::Local(_) => {}
         }
-        Self::build_local_lazyframe(paths, options, report)
+        Self::build_local_lazyframe(paths, options, report, formats)
     }
 
     /// The local half of `build_lazyframe_from_paths_with`. A directory resolves to
@@ -18333,8 +18488,43 @@ impl App {
         paths: &[PathBuf],
         options: &OpenOptions,
         report: &mut ReadReport,
+        formats: &crate::formats::Registry,
     ) -> Result<Scan> {
         let path = &paths[0];
+
+        // A format spec: one asked for, or one whose glob or magic the path matches. A
+        // path whose name or bytes already say what it is opens as it always has.
+        if let [one] = paths
+            && !options.hive
+        {
+            let asked = crate::formats::Asked {
+                spec_file: options.spec_file.clone(),
+                spec_name: options.spec_name.clone(),
+                spec: None,
+                builtin: options.format.is_some(),
+                compression: options.compression,
+            };
+            match crate::formats::route(one, &asked, formats)
+                .map_err(|e| color_eyre::eyre::eyre!(e))?
+            {
+                crate::formats::Route::Elsewhere => {}
+                crate::formats::Route::Read(read) => {
+                    let lf = read.records.clone().into_lazy()?;
+                    report.format_read = Some(Arc::new(*read));
+                    return Ok(lf.into());
+                }
+                crate::formats::Route::Decompress(choice) => {
+                    return Ok(Scan::DecompressSpec {
+                        file: one.clone(),
+                        choice,
+                    });
+                }
+            }
+        } else if options.spec_file.is_some() || options.spec_name.is_some() {
+            return Err(color_eyre::eyre::eyre!(
+                "a format spec reads one file, or one directory of column files"
+            ));
+        }
 
         // One path that is a directory, whether or not `--hive` said so: naming a
         // directory is the request to read it, and the dispatch below is what picks the
@@ -18395,7 +18585,7 @@ impl App {
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
-                            return Self::build_local_lazyframe(&files, &nested, report);
+                            return Self::build_local_lazyframe(&files, &nested, report, formats);
                         }
                         crate::discover::DirectoryFormat::Mixed {
                             format: found,
@@ -18413,7 +18603,7 @@ impl App {
                                 format: Some(options.format.unwrap_or(found)),
                                 ..options.clone()
                             };
-                            let lf = Self::build_local_lazyframe(&files, &nested, report)?;
+                            let lf = Self::build_local_lazyframe(&files, &nested, report, formats)?;
                             // After the call, which reads a flat directory of one format
                             // and leaves nothing out of its own. A model's config and
                             // tokenizer JSON are not data the read passed over, and the
@@ -19859,6 +20049,10 @@ impl App {
         if self.input_mode == InputMode::GoToColumn {
             self.go_to_column_key(event);
             return None;
+        }
+
+        if self.input_mode == InputMode::PickFormat {
+            return self.format_picker_key(event);
         }
 
         if self.input_mode == InputMode::Copy {
@@ -22386,6 +22580,12 @@ impl App {
                 }
                 None
             }
+            KeyCode::Char('b') if event.is_press() => {
+                if self.input_mode == InputMode::Normal {
+                    self.open_format_picker();
+                }
+                None
+            }
             KeyCode::Char('y') => {
                 if self.input_mode == InputMode::Normal
                     && let Some(state) = self.data_table_state.as_ref()
@@ -23382,6 +23582,7 @@ impl App {
                     return Some(event);
                 }
                 let (paths, options) = (paths.clone(), options.clone());
+                let formats = self.formats.clone();
                 // The open's first phase. Unleased, as the look is: an answer for an open
                 // the user has left (Ctrl+O) is thrown away by the loader, not waited for.
                 self.make_way_for_an_open();
@@ -23390,14 +23591,14 @@ impl App {
                     if let Some(missing) = Self::missing_named_path(&paths) {
                         return Ok(Answer::NamedPathMissing(missing));
                     }
-                    let (paths, options, directory) = match Self::route_named_paths(paths, options)
-                    {
-                        AppEvent::LookThenOpenDirectory(dir, options) => {
-                            (Vec::new(), options, Some(dir))
-                        }
-                        AppEvent::Open(paths, options) => (paths, options, None),
-                        _ => unreachable!("a named path is opened or looked at"),
-                    };
+                    let (paths, options, directory) =
+                        match Self::route_named_paths_with(paths, options, &formats) {
+                            AppEvent::LookThenOpenDirectory(dir, options) => {
+                                (Vec::new(), options, Some(dir))
+                            }
+                            AppEvent::Open(paths, options) => (paths, options, None),
+                            _ => unreachable!("a named path is opened or looked at"),
+                        };
                     Ok(Answer::NamedPaths {
                         paths,
                         options: Box::new(options),
@@ -25776,6 +25977,68 @@ impl App {
         }
     }
 
+    /// `b` at a table read through a format spec: the specs that could read it, the
+    /// ones that matched first, to read it again with another.
+    fn open_format_picker(&mut self) {
+        let Some(read) = self
+            .data_table_state
+            .as_ref()
+            .and_then(|s| s.format_read())
+            .cloned()
+        else {
+            // Only a file read through a spec has a format to pick.
+            return;
+        };
+        let mut names = vec![read.spec.name.clone()];
+        names.extend(read.also.iter().cloned());
+        for found in &self.formats.specs {
+            if found.spec.layout == read.spec.layout && !names.contains(&found.spec.name) {
+                names.push(found.spec.name.clone());
+            }
+        }
+        self.format_picker = crate::widgets::ui::PickerState::new(names);
+        self.input_mode = InputMode::PickFormat;
+    }
+
+    /// The format picker owns the keys: type to narrow, ↑↓ move, Enter reads the file
+    /// again with the spec chosen, Esc closes.
+    fn format_picker_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        match event.code {
+            KeyCode::Esc => self.input_mode = InputMode::Normal,
+            KeyCode::Enter => {
+                let index = self.format_picker.selected_original()?;
+                let name = self.format_picker.items()[index].clone();
+                self.input_mode = InputMode::Normal;
+                let current = self
+                    .data_table_state
+                    .as_ref()
+                    .and_then(|s| s.format_read())
+                    .map(|read| read.spec.name.clone());
+                if current.as_deref() == Some(name.as_str()) {
+                    return None;
+                }
+                let (paths, options) = self.opened.clone()?;
+                let options = OpenOptions {
+                    spec_name: Some(name),
+                    spec_file: None,
+                    spec_choice: None,
+                    format_read: None,
+                    format: None,
+                    ..options
+                };
+                self.set_loading_phase("Scanning input", 10);
+                self.name_what_is_loading(paths[0].clone());
+                return Some(AppEvent::Open(paths, options));
+            }
+            KeyCode::Up => self.format_picker.move_up(),
+            KeyCode::Down => self.format_picker.move_down(),
+            KeyCode::Backspace => self.format_picker.backspace(),
+            KeyCode::Char(c) => self.format_picker.filter_key(c, event.modifiers),
+            _ => {}
+        }
+        None
+    }
+
     fn close_inspector(&mut self) {
         self.inspector_modal.close();
         self.input_mode = InputMode::Normal;
@@ -26310,6 +26573,7 @@ impl App {
             InputMode::Copy => ("Copy Help", help_strings::copy()),
             InputMode::Inspect => ("Inspector Help", help_strings::inspector()),
             InputMode::GoToColumn => ("Go to Column", help_strings::go_to_column()),
+            InputMode::PickFormat => ("Format Help", help_strings::format_picker()),
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
             InputMode::Home => ("Home Help", help_strings::home()),
@@ -26501,6 +26765,11 @@ impl Widget for &mut App {
             self.data_table_state
                 .as_ref()
                 .and_then(|s| s.not_the_table()),
+        );
+        let format_read = self.data_table_state.as_ref().and_then(|s| s.format_read());
+        controls = controls.with_format(
+            format_read.is_some(),
+            format_read.map(|read| read.also.len()),
         );
         controls = controls.with_notes_pending(
             self.app_config.display.notes_accent
@@ -27724,6 +27993,49 @@ mod background_read_tests {
             .map(|name| name.to_string())
             .collect();
         assert_eq!(shown, ["b", "a"]);
+    }
+}
+
+#[cfg(test)]
+mod spec_source_tests {
+    use super::*;
+
+    /// A spec asked for on an object store path scanned in place is refused, saying
+    /// why, rather than dropped; a local path and a plain remote open are not.
+    #[test]
+    fn a_spec_on_a_remote_path_is_refused() {
+        let asked = [
+            OpenOptions {
+                spec_name: Some("acme.l2feed".into()),
+                ..OpenOptions::default()
+            },
+            OpenOptions {
+                spec_file: Some(PathBuf::from("l2feed.toml")),
+                ..OpenOptions::default()
+            },
+        ];
+        for url in ["s3://bucket/day.l2", "gs://bucket/day.l2", "az://c/day.l2"] {
+            for options in &asked {
+                let e = App::build_lazyframe_from_paths_with(
+                    &crate::config::CloudConfig::default(),
+                    &[PathBuf::from(url)],
+                    options,
+                    &mut ReadReport::default(),
+                    &crate::formats::Registry::default(),
+                )
+                .err()
+                .unwrap_or_else(|| panic!("{url} opened"));
+                assert!(
+                    e.to_string().contains("format specs read local files"),
+                    "{url}: {e}"
+                );
+            }
+        }
+        assert!(App::refuse_spec_in_place(Path::new("/data/day.l2"), &asked[0]).is_ok());
+        assert!(
+            App::refuse_spec_in_place(Path::new("s3://bucket/day.l2"), &OpenOptions::default())
+                .is_ok()
+        );
     }
 }
 

@@ -17,7 +17,8 @@ pub fn collect_lazy(
 ) -> std::result::Result<DataFrame, PolarsError> {
     #[cfg(feature = "streaming")]
     {
-        if use_streaming {
+        // A fixed-record scan has no streaming implementation in Polars 0.55.
+        if crate::fixed_records::may_stream(&lf, use_streaming) {
             // A plain collect is always one frame; `Multiple` only comes from sink_multiple.
             lf.collect_with_engine(Engine::Streaming)
                 .map(|result| result.unwrap_single())

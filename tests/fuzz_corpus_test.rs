@@ -11,6 +11,8 @@ extern crate datui as datui_lib;
 
 #[path = "../fuzz/src/config_parse.rs"]
 mod config_parse;
+#[path = "../fuzz/src/format_spec.rs"]
+mod format_spec;
 #[path = "../fuzz/src/fuzzy_match.rs"]
 mod fuzzy_match;
 #[path = "../fuzz/src/glob_match.rs"]
@@ -103,6 +105,7 @@ fn every_corpus_input_passes_its_target() {
     replay("config_parse", &mut failures, |b| {
         fuzz::<config_parse::Input>(b, config_parse::run)
     });
+    replay("format_spec", &mut failures, format_spec::run);
     replay("fuzzy_match", &mut failures, |b| {
         fuzz::<(&str, &str)>(b, fuzzy_match::run)
     });
@@ -144,6 +147,7 @@ fn every_corpus_has_a_replay() {
         .collect();
     let replayed: BTreeSet<String> = [
         "config_parse",
+        "format_spec",
         "fuzzy_match",
         "glob_match",
         "ipc_stream_head",

@@ -63,6 +63,12 @@ pub struct Controls {
     pub find: Option<String>,
     /// The chips the last render drew and where, for a click: see [`Self::drawn_chips`].
     drawn: std::cell::RefCell<Vec<(Rect, &'static str)>>,
+    /// The table was read through a format spec: `b` picks another, and the bar
+    /// offers it.
+    pub format_key: bool,
+    /// How many specs matched the file as well as the one it was read with. Drawn as
+    /// a chip beside the row count: the file was read one of several ways.
+    pub formats_tied: Option<usize>,
 }
 
 impl Controls {
@@ -187,6 +193,13 @@ impl Controls {
         self
     }
 
+    /// Offer `b`, and say how many other specs matched. See [`Self::format_key`].
+    pub fn with_format(mut self, read: bool, tied: Option<usize>) -> Self {
+        self.format_key = read;
+        self.formats_tied = tied.filter(|n| *n > 0);
+        self
+    }
+
     pub fn with_not_the_table(mut self, format: Option<&'static str>) -> Self {
         self.not_the_table = format;
         self
@@ -222,6 +235,8 @@ impl Controls {
             columns: None,
             find: None,
             drawn: Default::default(),
+            format_key: false,
+            formats_tied: None,
         }
     }
 }
@@ -333,6 +348,9 @@ impl Widget for &Controls {
             .not_the_table
             .map(|format| format!(" not the {format} table "));
         let reshaped = self.reshaped.map(|verb| format!(" {verb} "));
+        let tied = self
+            .formats_tied
+            .map(|others| format!(" {} formats match ", others + 1));
         let find = self.find.as_ref().map(|mark| format!("{mark} "));
         let chip_width = not_the_table
             .as_ref()
@@ -345,6 +363,10 @@ impl Widget for &Controls {
             + find
                 .as_ref()
                 .map(|text| crate::glyphs::display_width(text) as u16 + 1)
+                .unwrap_or(0)
+            + tied
+                .as_ref()
+                .map(|text| text.chars().count() as u16 + 1)
                 .unwrap_or(0);
 
         // The chip: the bar's accent behind the bar's own colour, the same cut-out a
@@ -362,6 +384,10 @@ impl Widget for &Controls {
                 spans.push(ratatui::text::Span::raw(" "));
             }
             if let Some(text) = &reshaped {
+                spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &tied {
                 spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
                 spans.push(ratatui::text::Span::raw(" "));
             }
@@ -403,6 +429,14 @@ impl Widget for &Controls {
                 // Where Enter drills, the bar names what Enter does; Space still
                 // inspects, and help says so.
                 defaults[0].1 = "Drill";
+            }
+            if self.format_key {
+                // Beside Info, whose Notes say which spec read the file and why.
+                let at = defaults
+                    .iter()
+                    .position(|(key, _)| *key == "i")
+                    .map_or(defaults.len(), |i| i + 1);
+                defaults.insert(at, ("b", "Format"));
             }
             defaults
         };
@@ -969,6 +1003,25 @@ mod tests {
         assert!(
             out.find(" pivoted ").unwrap() < out.find("7 rows").unwrap(),
             "the chip sits beside the count it is about: {out:?}"
+        );
+    }
+
+    /// A table read through a spec offers `b` beside Info, and a file several specs
+    /// matched says so beside the count.
+    #[test]
+    fn a_format_read_offers_b_and_a_tie_says_so() {
+        let plain = render_to_string(&with_row_count(7), 120);
+        assert!(!plain.contains("Format"), "got: {plain:?}");
+        let read = render_to_string(&with_row_count(7).with_format(true, Some(0)), 120);
+        assert!(
+            read.find("Info").unwrap() < read.find("Format").unwrap(),
+            "got: {read:?}"
+        );
+        assert!(!read.contains("formats match"), "got: {read:?}");
+        let tied = render_to_string(&with_row_count(7).with_format(true, Some(1)), 120);
+        assert!(
+            tied.find(" 2 formats match ").unwrap() < tied.find("7 rows").unwrap(),
+            "got: {tied:?}"
         );
     }
 

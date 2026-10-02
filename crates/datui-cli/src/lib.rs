@@ -3,7 +3,7 @@
 //! Used by the main application and by the build script (manpage) and
 //! gen_docs binary (command-line-options markdown).
 
-use clap::{CommandFactory, Parser, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::Path;
 
 /// File format for data files (used to bypass extension-based detection).
@@ -340,9 +340,13 @@ pub struct Args {
     #[arg(long = "compression", value_enum, help_heading = "Reading")]
     pub compression: Option<CompressionFormat>,
 
-    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension)
-    #[arg(long = "format", value_enum, help_heading = "Reading")]
-    pub format: Option<FileFormat>,
+    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, or the name of a binary format spec such as acme.l2feed
+    #[arg(long = "format", value_name = "FORMAT", value_parser = parse_format, help_heading = "Reading")]
+    pub format: Option<FormatChoice>,
+
+    /// Read the file (or directory of column files) through this binary format spec, whatever else matches it
+    #[arg(long = "spec", value_name = "FILE", help_heading = "Reading")]
+    pub spec: Option<std::path::PathBuf>,
 
     /// Enable debug mode to show operational information
     #[arg(long = "debug", action)]
@@ -492,6 +496,81 @@ pub struct Args {
     /// Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Entries in [[cloud.connections]] always appear
     #[arg(long = "cloud-discover", value_name = "WHICH", value_parser = parse_cloud_discover, help_heading = "Cloud")]
     pub cloud_discover: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// What `--format` names: a format datui reads, or a binary format spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatChoice {
+    Builtin(FileFormat),
+    /// A spec on the search path, by its namespaced name.
+    Spec(String),
+}
+
+impl FormatChoice {
+    /// The built-in format, when that is what was named.
+    pub fn builtin(&self) -> Option<FileFormat> {
+        match self {
+            Self::Builtin(format) => Some(*format),
+            Self::Spec(_) => None,
+        }
+    }
+
+    /// The spec's name, when a spec was named.
+    pub fn spec(&self) -> Option<&str> {
+        match self {
+            Self::Builtin(_) => None,
+            Self::Spec(name) => Some(name),
+        }
+    }
+}
+
+/// A built-in format's name, or a spec's: namespaced (`acme.l2feed`), so one can never
+/// be taken for the other.
+fn parse_format(text: &str) -> Result<FormatChoice, String> {
+    if let Ok(format) = <FileFormat as ValueEnum>::from_str(text, true) {
+        return Ok(FormatChoice::Builtin(format));
+    }
+    let spec_like = text.contains('.')
+        && !text.starts_with('.')
+        && !text.ends_with('.')
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if spec_like {
+        return Ok(FormatChoice::Spec(text.to_string()));
+    }
+    let names: Vec<&str> = FileFormat::ALL.iter().map(|f| f.name()).collect();
+    Err(format!(
+        "\"{text}\" is not a format: {}, or a spec name such as acme.l2feed (`datui formats` lists them)",
+        names.join(", ")
+    ))
+}
+
+/// Commands besides opening data.
+#[derive(Clone, Debug, Subcommand)]
+pub enum Command {
+    /// List the binary format specs on the search path: each one's name, what it matches, the file it came from, and the copies it overrides
+    Formats {
+        #[command(subcommand)]
+        action: Option<FormatsAction>,
+    },
+}
+
+/// What `datui formats` does besides listing.
+#[derive(Clone, Debug, Subcommand)]
+pub enum FormatsAction {
+    /// Check a spec, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error
+    Check {
+        /// A spec name on the search path, or a spec file
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        /// A file (or directory of column files) to read with it
+        #[arg(value_name = "FILE")]
+        file: Option<std::path::PathBuf>,
+    },
 }
 
 /// `all`, `none`, or kinds from `s3`, `gcs` and `azure` separated by commas. The same
@@ -617,6 +696,41 @@ pub fn render_options_markdown() -> String {
         out.push_str(&format!("| `{option_str}` | {help} |\n"));
     }
 
+    out.push_str("\n## Commands\n\n| Command | Does |\n|---------|------|\n");
+    for sub in cmd.get_subcommands().filter(|c| c.get_name() != "help") {
+        let about = |c: &clap::Command| {
+            c.get_about()
+                .map(|a| escape_table_cell(&a.to_string()))
+                .unwrap_or_default()
+        };
+        out.push_str(&format!(
+            "| `datui {}` | {} |\n",
+            sub.get_name(),
+            about(sub)
+        ));
+        for action in sub.get_subcommands().filter(|c| c.get_name() != "help") {
+            let operands: Vec<String> = action
+                .get_arguments()
+                .filter(|a| a.is_positional())
+                .filter_map(|a| {
+                    let name = a.get_value_names()?.first()?.to_string();
+                    Some(if a.is_required_set() {
+                        name
+                    } else {
+                        format!("[{name}]")
+                    })
+                })
+                .collect();
+            out.push_str(&format!(
+                "| `datui {} {} {}` | {} |\n",
+                sub.get_name(),
+                action.get_name(),
+                operands.join(" "),
+                about(action)
+            ));
+        }
+    }
+
     out.push_str("\n## Examples\n\n| Command | Does |\n|---------|------|\n");
     for example in examples() {
         out.push_str(&format!(
@@ -661,11 +775,43 @@ mod tests {
     fn a_dash_names_standard_input() {
         let args = Args::try_parse_from(["datui", "-", "--format", "jsonl"]).unwrap();
         assert_eq!(args.paths, vec![std::path::PathBuf::from("-")]);
-        assert_eq!(args.format, Some(FileFormat::Jsonl));
+        assert_eq!(args.format, Some(FormatChoice::Builtin(FileFormat::Jsonl)));
         let args = Args::try_parse_from(["datui", "--delimiter", "59", "-"]).unwrap();
         assert_eq!(args.paths, vec![std::path::PathBuf::from("-")]);
         assert_eq!(args.delimiter, Some(b';'));
         assert!(EXAMPLES.contains("| datui"), "the help shows a pipe");
+    }
+
+    /// `--format` takes a built-in format or a spec's namespaced name, and nothing else.
+    #[test]
+    fn a_format_is_built_in_or_a_spec_name() {
+        let args = Args::try_parse_from(["datui", "x.l2", "--format", "acme.l2feed"]).unwrap();
+        assert_eq!(args.format, Some(FormatChoice::Spec("acme.l2feed".into())));
+        let args = Args::try_parse_from(["datui", "x", "--format", "CSV"]).unwrap();
+        assert_eq!(args.format, Some(FormatChoice::Builtin(FileFormat::Csv)));
+        let refused = Args::try_parse_from(["datui", "x", "--format", "cvs"]).unwrap_err();
+        assert!(refused.to_string().contains("spec name"), "{refused}");
+    }
+
+    /// `datui formats` is a command; any other first word is still a path.
+    #[test]
+    fn formats_is_a_command_and_paths_stay_paths() {
+        let args = Args::try_parse_from(["datui", "formats"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Formats { action: None })
+        ));
+        let args = Args::try_parse_from(["datui", "formats", "check", "a.b", "f.bin"]).unwrap();
+        let Some(Command::Formats {
+            action: Some(FormatsAction::Check { spec, file }),
+        }) = args.command
+        else {
+            panic!("a check");
+        };
+        assert_eq!((spec.as_str(), file), ("a.b", Some("f.bin".into())));
+        let args = Args::try_parse_from(["datui", "data.csv", "--spec", "s.toml"]).unwrap();
+        assert_eq!(args.paths, vec![std::path::PathBuf::from("data.csv")]);
+        assert!(args.command.is_none());
     }
 
     #[test]

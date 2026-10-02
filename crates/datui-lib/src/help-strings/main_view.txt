@@ -47,6 +47,8 @@ Display:
   #:                Toggle row numbers
   ,:                Toggle number formatting (digit grouping)
   D:                Toggle the type row under the column headers
+  b:                A binary file read through a format spec: read it again
+                    with another spec. Clears the query, filters and sort
   H:                CSV, TSV, PSV: read the first row as data, under column_1,
                     column_2, …; again to read it as column names. Reads the
                     file again, so the query, filters and sort are cleared

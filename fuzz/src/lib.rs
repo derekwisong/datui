@@ -5,6 +5,7 @@
 //! and replays every committed corpus input through them as an ordinary test, so a
 //! check added to `run` reaches both.
 pub mod config_parse;
+pub mod format_spec;
 pub mod fuzzy_match;
 pub mod glob_match;
 pub mod ipc_stream_head;

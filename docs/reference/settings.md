@@ -28,6 +28,17 @@ temp_dir = "/tmp"             # Where that temp file goes. Omit for the system d
 single_spine_schema = true    # Partitioned Parquet: every column any file has, from the footers
 ```
 
+## Binary formats
+
+Where [format specs](../user-guide/binary-formats.md) are found, after
+`~/.config/datui/formats/` and `$DATUI_FORMATS_PATH`. The first spec of a name
+wins. Lists add up across imported files, and a relative path is relative to the
+file that names it.
+
+```toml
+formats_path = ["~/src/acme-formats"]
+```
+
 ## Display
 
 ```toml

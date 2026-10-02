@@ -39,6 +39,7 @@ pub fn run(bytes: &[u8]) {
             .window(from, WINDOW, None)
             .expect("the last frames decode");
         assert_eq!(tail.height() as u64, frames - from);
-        source.markers_frame().expect("the markers make a table");
+        let reports = source.signal_report(&|| false).expect("nothing stops it");
+        assert_eq!(reports.len(), channels);
     }
 }

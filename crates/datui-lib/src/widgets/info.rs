@@ -376,6 +376,16 @@ pub(crate) fn audio_detail(
             plain,
         ));
     }
+    let past = audio.frames_past_limit();
+    if past > 0 {
+        lines.push((
+            format!(
+                "The last {} frames are past the most a table holds and are not shown",
+                group_u64(past)
+            ),
+            warn,
+        ));
+    }
     let trailing = audio.trailing_bytes();
     if trailing > 0 {
         lines.push((

@@ -63,7 +63,7 @@ opens on the Audio tab:
 | Format | `WAV`, `WAV (Broadcast WAV)`, `RF64`, `AIFF` or `AIFF-C`, the channel count and the sample rate |
 | Samples | `24-bit integer`, with the valid bits when fewer; the encoding; and whether `--normalize` is on |
 | Frames | The frame count, the length (`1:02:03.250`) and the size of the sample data |
-| Warnings | A data size the file does not hold, or bytes after the last whole frame |
+| Warnings | A data size the file does not hold, frames past the 4,294,967,295 a table holds, or bytes after the last whole frame |
 | Metadata | `bext.*` (description, originator, origination, time reference, coding history), `ixml.*` (project, scene, take, tape, note) and the iXML document itself, `info.*` from `LIST INFO`, AIFF's name and annotation, then each marker: its time, frame, region length and label |
 
 A data size of 0 or a placeholder, as a recorder leaves it, says so: the

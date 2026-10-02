@@ -1237,35 +1237,6 @@ impl AudioSource {
         }
         Some(reports)
     }
-
-    /// The markers as a table: `id`, `sample`, `time`, `label`, and `length` when any
-    /// marker is a region.
-    pub fn markers_frame(&self) -> PolarsResult<DataFrame> {
-        let m = &self.header.markers;
-        let mut columns = vec![
-            UInt32Chunked::from_iter_values("id".into(), m.iter().map(|m| m.id)).into_column(),
-            Int64Chunked::from_iter_values("sample".into(), m.iter().map(|m| m.sample as i64))
-                .into_column(),
-            Int64Chunked::from_iter_values(
-                "time".into(),
-                m.iter().map(|m| self.header.time_ns(m.sample)),
-            )
-            .into_duration(TimeUnit::Nanoseconds)
-            .into_column(),
-            StringChunked::from_iter_values("label".into(), m.iter().map(|m| m.label.as_str()))
-                .into_column(),
-        ];
-        if m.iter().any(|m| m.length.is_some()) {
-            columns.push(
-                Int64Chunked::from_iter_options(
-                    "length".into(),
-                    m.iter().map(|m| m.length.map(|l| l as i64)),
-                )
-                .into_column(),
-            );
-        }
-        DataFrame::new(m.len(), columns)
-    }
 }
 
 /// An integer sample's value from its bytes. 8-bit WAV is unsigned around 128 and is
@@ -1668,12 +1639,6 @@ mod tests {
             ],
             "cue points after the data are found, labeled from adtl"
         );
-        let markers = source.markers_frame().unwrap();
-        assert_eq!(
-            markers.get_column_names(),
-            ["id", "sample", "time", "label", "length"]
-        );
-        assert_eq!(ints(&markers, "time"), [0, 500_000_000]);
     }
 
     /// An AIFF file: big-endian chunks, an 80-bit sample rate, signed 8-bit.

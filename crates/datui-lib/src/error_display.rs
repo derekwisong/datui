@@ -260,10 +260,65 @@ pub fn sql_error_message(err: &PolarsError, rows: Option<usize>) -> String {
     }
 }
 
+/// What a file another program holds says after its name.
+const HELD: &str =
+    "is open in another program that does not allow reading it; close it there and reopen";
+
+/// Whether `err` is Windows refusing a file another program holds: a sharing
+/// violation (32), as from a spreadsheet app with the workbook open, or a locked
+/// region (33). Polars rewraps an open's error with the path in its text, keeping
+/// the OS's words but not the code, so the text is read too. Off Windows those
+/// codes mean something else.
+pub fn held_by_another_program(err: &io::Error) -> bool {
+    held_on(cfg!(windows), err)
+}
+
+fn held_on(windows: bool, err: &io::Error) -> bool {
+    windows && (matches!(err.raw_os_error(), Some(32 | 33)) || says_held(&err.to_string()))
+}
+
+/// Whether an error's text carries the code of a file another program holds.
+fn says_held(text: &str) -> bool {
+    text.contains("(os error 32)") || text.contains("(os error 33)")
+}
+
+/// Whether anything in `report` is a file another program holds: an `io::Error`, one
+/// inside a Polars error, or, on `windows`, the text of one an error turned into words.
+fn report_held(windows: bool, report: &color_eyre::eyre::Report) -> bool {
+    fn polars_held(windows: bool, err: &PolarsError) -> bool {
+        match err {
+            PolarsError::IO { error, .. } => held_on(windows, error),
+            PolarsError::Context { error, .. } => polars_held(windows, error),
+            _ => false,
+        }
+    }
+    windows
+        && report.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|e| held_on(windows, e))
+                || cause
+                    .downcast_ref::<PolarsError>()
+                    .is_some_and(|e| polars_held(windows, e))
+                || says_held(&cause.to_string())
+        })
+}
+
+/// What a file another program holds says, named by `path` when it is known.
+fn held_message(path: Option<&Path>) -> String {
+    match path {
+        Some(path) => format!("{} {HELD}.", path.display()),
+        None => format!("The file {HELD}."),
+    }
+}
+
 /// Format an io::Error as a user-facing message by matching on ErrorKind.
 pub fn user_message_from_io(err: &io::Error, context: Option<&str>) -> String {
     use std::io::ErrorKind;
 
+    if held_by_another_program(err) {
+        return held_message(None);
+    }
     let base: String = match err.kind() {
         ErrorKind::NotFound => "File or directory not found.".to_string(),
         ErrorKind::PermissionDenied => "Permission denied. Check read access.".to_string(),
@@ -378,6 +433,13 @@ pub fn named_by_source(message: &str, file: &Path, source: &Path) -> String {
 /// Format a color_eyre Report by downcasting to known error types.
 /// Walks the cause chain to find PolarsError or io::Error.
 pub fn user_message_from_report(report: &color_eyre::eyre::Report, path: Option<&Path>) -> String {
+    report_message(cfg!(windows), report, path)
+}
+
+fn report_message(windows: bool, report: &color_eyre::eyre::Report, path: Option<&Path>) -> String {
+    if report_held(windows, report) {
+        return held_message(path);
+    }
     for cause in report.chain() {
         if let Some(pe) = cause.downcast_ref::<PolarsError>() {
             let msg = user_message_from_polars(pe);
@@ -714,6 +776,50 @@ mod tests {
             "expected 'not found', got: {}",
             msg
         );
+    }
+
+    /// A file a spreadsheet app holds is named, with what to do, whichever way the
+    /// sharing violation arrives: from datui's own open, or rewrapped by Polars with
+    /// the path in its text.
+    #[test]
+    fn a_file_another_program_holds_says_so() {
+        let path = Path::new(r"C:\data\book.xlsx");
+        let held = format!(
+            "{} is open in another program that does not allow reading it; close it there \
+             and reopen.",
+            path.display()
+        );
+        let raw = || io::Error::from_raw_os_error(32);
+        let rewrapped = || {
+            io::Error::other(format!(
+                "The process cannot access the file because it is being used by another \
+                 process. (os error 32): {}",
+                path.display()
+            ))
+        };
+        for report in [
+            color_eyre::eyre::Report::new(raw()),
+            color_eyre::eyre::Report::new(PolarsError::from(rewrapped())),
+            color_eyre::eyre::Report::new(PolarsError::from(raw()).context("scan".into())),
+            color_eyre::eyre::eyre!("{}", PolarsError::from(rewrapped())),
+        ] {
+            assert_eq!(
+                report_message(true, &report, Some(path)),
+                held,
+                "{report:?}"
+            );
+            // Off Windows the codes mean something else. (On Windows the io message
+            // inside says so whatever `report_message` is told.)
+            if !cfg!(windows) {
+                let elsewhere = report_message(false, &report, Some(path));
+                assert!(!elsewhere.contains("another program"), "{elsewhere}");
+            }
+        }
+        assert!(held_on(true, &raw()));
+        assert!(held_on(true, &io::Error::from_raw_os_error(33)));
+        assert!(!held_on(true, &io::Error::from_raw_os_error(5)));
+        // EPIPE off Windows.
+        assert!(!held_on(false, &raw()));
     }
 
     #[test]

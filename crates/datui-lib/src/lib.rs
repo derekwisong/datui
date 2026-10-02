@@ -25935,6 +25935,10 @@ impl App {
                 // kinds such as InvalidInput with the destination checks.
                 let msg = match (crate::output_file::Refused::of(io_err), io_err.kind()) {
                     (Some(refused), _) => format!("{refused}."),
+                    // A CSV open in a spreadsheet app, on Windows.
+                    (None, _) if crate::error_display::held_by_another_program(io_err) => {
+                        "it is open in another program; close it there and try again.".to_string()
+                    }
                     (None, ErrorKind::PermissionDenied) => "permission denied.".to_string(),
                     (None, ErrorKind::IsADirectory) => "it is a directory.".to_string(),
                     (None, _) => crate::error_display::user_message_from_io(io_err, None),

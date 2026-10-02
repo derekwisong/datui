@@ -58,9 +58,11 @@ after a much longer build.
 
 ## What CI does
 
-**Every pull request** runs `replay` in the `CI` workflow. It is a regression gate: it
-re-runs the inputs already known to be interesting and fails if one of them starts
-crashing again. It does not look for new bugs.
+**Every pull request** replays the corpus through `tests/fuzz_corpus_test.rs`, as part
+of the test suite. It is a regression gate: it re-runs the inputs already known to be
+interesting and fails if one of them starts crashing again. It does not look for new
+bugs. The `Fuzz targets` job runs `cargo check --manifest-path fuzz/Cargo.toml --locked`
+so the fuzz crate keeps compiling.
 
 **The Nightly workflow** runs each target for ten minutes against fresh input, with
 AddressSanitizer on, as a matrix so one slow target does not consume another's budget.
@@ -117,7 +119,7 @@ checking dependency memory errors or running a longer fuzzing session:
 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
 ```
 
-The Nightly and Release workflows run this configuration; the pull request job does not.
+The Nightly and Release workflows run this configuration; pull requests do not.
 
 Sanitizer builds use substantial memory. Nightly and Release limit parallel
 compilation to two jobs; use the same limit if your build is killed:

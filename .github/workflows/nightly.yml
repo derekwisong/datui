@@ -422,9 +422,9 @@ jobs:
         run: . .venv/bin/activate && pytest python/tests/ -v
 
   # The fuzzers proper: each target gets a timed run that generates new input, rather
-  # than the corpus replay CI does on every pull request. Targets run as a matrix so a
-  # slow or failing one does not eat the others' budget, and `fail-fast: false` keeps a
-  # crash in one from hiding results in the rest.
+  # than the corpus replay the test suite does on every pull request. Targets run as a
+  # matrix so a slow or failing one does not eat the others' budget, and
+  # `fail-fast: false` keeps a crash in one from hiding results in the rest.
   fuzz:
     name: Fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
@@ -441,7 +441,7 @@ jobs:
           - config_parse
     env:
       # The deep configuration. AddressSanitizer can reach the unsafe code inside polars
-      # and arrow that these targets feed, which the pull request job deliberately skips
+      # and arrow that these targets feed, which the pull request checks skip
       # because it doubles build size and slows execution. See scripts/code/fuzz.sh.
       DATUI_FUZZ_SANITIZER: address
       # Memory, not disk, is what limits this build. cargo-fuzz forces codegen-units=1, so

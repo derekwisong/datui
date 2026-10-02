@@ -2,12 +2,14 @@
 
 ```bash
 ./scripts/dev/setup-test-data.sh   # once: creates .venv and generates the fixtures
-./scripts/dev/test.sh full         # cargo test --workspace --locked --no-fail-fast, as CI runs it
+./scripts/dev/test.sh full         # cargo test --workspace --locked --no-fail-fast
 ./scripts/dev/test.sh --help       # the scoped commands
 ```
 
 `cargo test` alone runs only the root package. `--workspace` adds `datui-lib`
-and `datui-cli`, which is what CI runs. The Python bindings are tested
+and `datui-cli`. CI runs the same tests with
+`cargo nextest run --workspace --locked --no-fail-fast`, one process per test,
+then `cargo test --doc --workspace --locked`. The Python bindings are tested
 separately; see [Python Bindings](python-bindings.md#testing).
 
 ## Select the checks

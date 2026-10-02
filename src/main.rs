@@ -4,6 +4,26 @@ use datui::{APP_NAME, Args, RunInput, error_display};
 use datui::{ConfigManager, TemplateManager};
 
 fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
+    if let Some(datui::cli::Command::Formats { action }) = &args.command {
+        let config = match datui::AppConfig::load(APP_NAME) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!(
+                    "Error: {}",
+                    error_display::user_message_from_report(&e, None)
+                );
+                std::process::exit(1);
+            }
+        };
+        let (text, code) = datui::formats::command(action.as_ref(), &config);
+        if code == 0 {
+            print!("{text}");
+        } else {
+            eprint!("{text}");
+        }
+        std::process::exit(code);
+    }
+
     if args.generate_config {
         match ConfigManager::new(APP_NAME) {
             Ok(config_manager) => match config_manager.write_default_config(args.force) {
@@ -171,6 +191,8 @@ mod tests {
             s3_secret_access_key: None,
             s3_region: None,
             cloud_discover: None,
+            spec: None,
+            command: None,
             polars_streaming: None,
             workaround_pivot_date_index: None,
             infer_schema_length: None,

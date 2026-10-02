@@ -1613,6 +1613,9 @@ fn kind_words(
     }
     match entry.kind {
         EntryKind::File => match crate::FileFormat::from_path(&entry.path) {
+            _ if entry.format_spec.is_some() => {
+                format!("{} file", entry.format_spec.as_deref().unwrap_or_default())
+            }
             Some(format) => format!("{} file", format.name()),
             // Named nothing, and found by its bytes to be data.
             None => "data file".to_string(),
@@ -2231,6 +2234,7 @@ mod tests {
             cost: Default::default(),
             holds: Default::default(),
             opens_whole_directory: false,
+            format_spec: None,
         }
     }
 

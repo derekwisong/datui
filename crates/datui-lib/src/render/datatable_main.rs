@@ -237,6 +237,16 @@ pub fn render(
         render_go_to_column(data_area, buf, &app.go_to_column, ctx);
     }
 
+    if app.input_mode == crate::InputMode::PickFormat {
+        render_picker(
+            data_area,
+            buf,
+            &app.format_picker,
+            ("Format", "Read", "No format matches"),
+            ctx,
+        );
+    }
+
     if app.copy_modal.active {
         // A commitment like export: compact and centered. The dialog holds
         // its rows, the spec and the footer; an open Picker earns the room
@@ -307,6 +317,24 @@ fn render_go_to_column(
     picker: &crate::widgets::ui::PickerState,
     ctx: &RenderContext,
 ) {
+    render_picker(
+        area,
+        buf,
+        picker,
+        ("Go to Column", "Go", "No column matches"),
+        ctx,
+    );
+}
+
+/// A short pick-one list over the table: `(title, what Enter does, what an empty
+/// narrowing says)`.
+fn render_picker(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    picker: &crate::widgets::ui::PickerState,
+    (title, enter, none): (&str, &str, &str),
+    ctx: &RenderContext,
+) {
     use ratatui::text::{Line, Span};
     let all = picker.items();
     let widest = all
@@ -327,8 +355,8 @@ fn render_go_to_column(
         width,
         height,
     };
-    let footer = HintBar::from_ctx(ctx).hints(&[("Enter", "Go"), ("Esc", "Cancel")]);
-    let inner = crate::widgets::ui::Surface::new("Go to Column")
+    let footer = HintBar::from_ctx(ctx).hints(&[("Enter", enter), ("Esc", "Cancel")]);
+    let inner = crate::widgets::ui::Surface::new(title)
         .footer(&footer)
         .render(popup, buf, ctx);
     let filter = if picker.filter.is_empty() {
@@ -346,11 +374,8 @@ fn render_go_to_column(
         ..inner
     };
     if items.is_empty() {
-        Paragraph::new(Span::styled(
-            "No column matches",
-            Style::default().fg(ctx.dimmed),
-        ))
-        .render(Rect { height: 1, ..list }, buf);
+        Paragraph::new(Span::styled(none, Style::default().fg(ctx.dimmed)))
+            .render(Rect { height: 1, ..list }, buf);
         return;
     }
     crate::widgets::ui::Picker::from_state(picker, true).render(list, buf, ctx);

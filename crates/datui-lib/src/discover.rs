@@ -324,6 +324,9 @@ impl Entry {
             EntryKind::Directory | EntryKind::MultiFile if !self.holds.is_empty() => {
                 self.holds.label().into()
             }
+            EntryKind::File if self.format_spec.is_some() => {
+                self.format_spec.clone().unwrap_or_default().into()
+            }
             kind => kind.label().into(),
         }
     }
@@ -368,6 +371,8 @@ pub struct Entry {
     /// parquet` beside it would name two of the twenty it is about to read. The name
     /// says what it does; the numbers beside it, once measured, say how much.
     pub opens_whole_directory: bool,
+    /// The format spec whose glob names this file, which reads it.
+    pub format_spec: Option<String>,
 }
 
 /// What pressing Enter on a dataset will actually cost.
@@ -450,6 +455,7 @@ impl Entry {
             cost: Cost::default(),
             holds: Default::default(),
             opens_whole_directory: false,
+            format_spec: None,
         }
     }
 
@@ -1435,7 +1441,7 @@ pub fn scan_dir_progressive(dir: &Path, mut progress: impl FnMut(&[Entry])) -> S
 /// Which is the point: a kind arriving later never moves the row, because a row that
 /// moves out from under the cursor while you are scrolling is worse than a label that
 /// is late.
-fn sort_entries(entries: &mut [Entry]) {
+pub(crate) fn sort_entries(entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
         // Data, then directories, then what datui cannot read.
         let group = |k: EntryKind| match k {
@@ -3033,6 +3039,7 @@ mod classification_tests {
             cost: Cost::default(),
             holds: Default::default(),
             opens_whole_directory: false,
+            format_spec: None,
         };
         enrich(&mut entry);
         assert_eq!(entry.rows, Some(1), "its footer was read");
@@ -3471,6 +3478,7 @@ mod classification_tests {
             cost: Cost::default(),
             holds,
             opens_whole_directory: false,
+            format_spec: None,
         };
         enrich(&mut entry);
         entry

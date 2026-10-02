@@ -16,6 +16,8 @@ mod common;
 #[cfg(feature = "cloud")]
 #[path = "common/fake_s3.rs"]
 mod fake_s3;
+#[path = "formats/open.rs"]
+mod formats_open;
 #[path = "formats/model_files.rs"]
 mod model_files;
 #[cfg(feature = "cloud")]

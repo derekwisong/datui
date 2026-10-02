@@ -1562,6 +1562,7 @@ fn entry_with_columns(name: &str, columns: &[&str]) -> datui::discover::Entry {
         cost: Default::default(),
         holds: Default::default(),
         opens_whole_directory: false,
+        format_spec: None,
     }
 }
 
@@ -2170,6 +2171,7 @@ fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
         cost: Default::default(),
         holds: Default::default(),
         opens_whole_directory: false,
+        format_spec: None,
     }
 }
 
@@ -6647,4 +6649,27 @@ fn test_a_mixed_prefix_says_it_reads_below() {
         ))
     );
     assert!(!home.selection_is_the_door());
+}
+
+/// A file a format spec's glob names is listed as data under the spec's name, from its
+/// name alone; the other files stay as they were.
+#[test]
+fn a_file_a_spec_names_is_listed_under_the_spec() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("day.l2"), [0u8, 1, 2]).unwrap();
+    std::fs::write(tmp.path().join("notes.xyz"), "text").unwrap();
+    let spec = datui::formats::Spec::parse(
+        "name = \"acme.l2feed\"\nmatch = { glob = \"*.l2\" }\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]",
+        None,
+    )
+    .unwrap();
+    let registry = datui::formats::Registry::of(vec![spec]);
+    let mut rows = discover::scan_dir(tmp.path());
+    datui::home::name_by_spec(&registry, &mut rows);
+    let day = rows.iter().find(|r| r.name == "day.l2").unwrap();
+    assert_eq!(day.kind, EntryKind::File);
+    assert_eq!(day.label(), "acme.l2feed");
+    let notes = rows.iter().find(|r| r.name == "notes.xyz").unwrap();
+    assert_eq!(notes.kind, EntryKind::Other);
+    assert_eq!(rows[0].name, "day.l2", "data sorts first");
 }

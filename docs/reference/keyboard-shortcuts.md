@@ -24,7 +24,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
 | <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md) |
-| <kbd>F</kbd> | [Value counts](../user-guide/value-counts.md) of the current column: the one underlined, which <kbd>g</kbd> went to, or else the first on screen |
+| <kbd>F</kbd> | [Value counts](../user-guide/value-counts.md) of the current column: the one underlined, which <kbd>g</kbd> went to, or else the first past any frozen columns |
 | <kbd>r</kbd> | Reverse the sort; with no sort, reverse the row order |
 | <kbd>R</kbd> | Reset: clear query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
 | <kbd>c</kbd> | [Chart](../user-guide/charting.md) |

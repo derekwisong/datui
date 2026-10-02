@@ -18,7 +18,7 @@ the [home screen](home-screen.md), and needs no flag:
 | The directory | What happens |
 |---|---|
 | A hive tree, or files that are one table | Opens as one table |
-| Separate tables, more than one format, or no data directly inside | Opens the directory browser; choose a file or the **(all files)** row |
+| Separate tables, more than one format, or no data directly inside | Opens the directory browser; choose a file or the first row, which reads them all |
 | A Delta, Iceberg or Hudi root | Opens the directory browser with a warning that transaction logs are not applied |
 
 `--hive` means: read this as partitioned, which is the answer for a glob and

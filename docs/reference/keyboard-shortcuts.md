@@ -69,10 +69,10 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Home</kbd> <kbd>End</kbd> | The first or last row |
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any directory, or on a place row under `RECENT`, goes inside it |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source, bucket or place, show the rest of `RECENT` or the hidden files, or fold the section. The control bar names which, for the row you are on |
-| <kbd>Enter</kbd> on `(all files)` | Read the whole directory as one table, whatever its label. The first row inside a directory with something openable — `(all partitions)` in a hive directory; hidden while a filter is typed |
+| <kbd>Enter</kbd> on the first row inside a directory | Read the directory as one table, as its label says: `(hive table: year, month)`, `(3 Parquet files, one schema)`, `(2 Parquet files, schemas differ)`, `(all files, mixed)`. The cursor starts there only for a hive table or one schema; hidden while a filter is typed |
 | <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
 | type | Filter by name or column name, and search below the directory you are inside |
-| <kbd>~</kbd> | While the filter is empty, type a path or URL. The prompt is a plain editor: characters, <kbd>Backspace</kbd>, <kbd>Ctrl</kbd>+<kbd>U</kbd> clears, <kbd>Tab</kbd> completes, <kbd>Enter</kbd> opens, <kbd>Esc</kbd> closes |
+| <kbd>~</kbd> | While the filter is empty, type a path or URL. The prompt is a plain editor: characters, <kbd>Backspace</kbd>, <kbd>Ctrl</kbd>+<kbd>U</kbd> clears, <kbd>Tab</kbd> completes, <kbd>Enter</kbd> opens a file or browses a directory, <kbd>Esc</kbd> closes |
 | <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows — the control bar names the order in effect |
 | <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |

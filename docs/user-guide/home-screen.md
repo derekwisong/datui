@@ -11,7 +11,8 @@ selected row. The details pane previews its schema when available.
 3. To browse inside a directory instead of combining its files, press <kbd>→</kbd>.
 
 To enter a path, clear the filter and press <kbd>~</kbd>. Type the path, use
-<kbd>Tab</kbd> to complete it, then press <kbd>Enter</kbd>.
+<kbd>Tab</kbd> to complete it, then press <kbd>Enter</kbd>. A file opens; a
+directory is browsed, as <kbd>→</kbd> does.
 
 <kbd>Ctrl</kbd>+<kbd>D</kbd> remembers a directory as its own section.
 <kbd>Ctrl</kbd>+<kbd>O</kbd> returns home from an open table.
@@ -163,18 +164,32 @@ in the bottom bar:
 | Open | Load the selected file |
 | Look | Inspect the directory, then choose the appropriate action |
 
-Inside a directory, the first row is **(all files)** or **(all partitions)**.
-Use it to combine the contents explicitly, even when Enter on the parent row
-would browse. A label such as `15 parquet` describes the files, not whether
-they form a single table.
+Inside a directory, the first row combines its contents into one table, even
+when Enter on the parent row would browse. Its label says what Enter there
+opens:
+
+| Directory | First row | Cursor starts on |
+|---|---|---|
+| Hive partitions | `sales (hive table: year, month)` | this row |
+| Files of one format and one schema | `same (3 Parquet files, one schema)` | this row |
+| Files of one format whose columns differ | `diff (2 Parquet files, schemas differ)` | the first file |
+| One data file | `notes (1 CSV file)` | the first file |
+| Several formats, files beside subdirectories, or only subdirectories | `data (all files, mixed)` | the first row inside |
+| Delta, Iceberg or Hudi | `tbl (Delta files, not the table)` | the first row inside |
+
+The cursor starts on the first row only when it opens the directory as one
+dataset, the same thing Enter on the directory's own row opens. On a mixed
+directory the details pane names what is read and what is skipped
+(`reads 1 parquet`, `skips 1 csv, 1 directory`). The row hides while a filter
+is typed.
 
 ### Combining files
 
 <a id="the-door-does-not-refuse"></a>
 
-The **(all files)** or **(all partitions)** row combines a directory into one
-table. [Files and formats](loading-data.md#directories) explains format selection
+[Files and formats](loading-data.md#directories) explains format selection
 and [schema differences](loading-data.md#files-that-disagree).
+A hive table's row counts its partition columns in its width (`12 × 4`).
 For Delta, Iceberg and Hudi, datui reads raw files without the transaction log;
 the result may contain deleted rows or superseded versions.
 
@@ -310,7 +325,7 @@ These commands do not delete data files.
 | <kbd>→</kbd> | Browse inside a directory, including a Hive dataset; unfold a section |
 | <kbd>←</kbd> | Fold a section |
 | type | Filter names and known column names |
-| <kbd>~</kbd> with an empty filter | Enter a path or URL; <kbd>Tab</kbd> completes paths |
+| <kbd>~</kbd> with an empty filter | Enter a path or URL; <kbd>Tab</kbd> completes paths. <kbd>Enter</kbd> opens a file and browses a directory |
 | <kbd>Tab</kbd> | Cycle sort: natural, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |

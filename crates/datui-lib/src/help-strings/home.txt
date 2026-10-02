@@ -29,8 +29,9 @@ Finding:
                     and the listed bucket names; matches appear under "Found"
   ~:                While the filter is empty: type a path or URL by hand.
                     The prompt is a plain editor: characters, Backspace,
-                    Ctrl+U clears, Tab completes, Enter opens, Esc closes.
-                    With a filter typed, ~ types into it
+                    Ctrl+U clears, Tab completes, Enter opens a file or
+                    goes inside a directory, Esc closes. With a filter
+                    typed, ~ types into it
   Ctrl+U:           Clear the filter or path input
   Ctrl+R:           List again what is on screen
   Ctrl+A:           Show or hide files datui cannot read
@@ -61,10 +62,13 @@ Reading a row:
   A directory's label says what is directly inside: a count and format
   ("12 parquet"), hive, delta, iceberg, hudi, "mixed", or "dir". A label of
   … has not been looked at yet; labels fill in as you scroll. Inside a
-  directory with something openable, the first row is "(all files)" — or
-  "(all partitions)" in a hive directory — and Enter there reads the whole
-  directory as one table whatever the label says. The row hides while a
-  filter is typed, and is absent when nothing inside is openable. Inside a
+  directory with something openable, the first row reads the whole
+  directory as one table, and says how: "(hive table: year, month)",
+  "(3 Parquet files, one schema)", "(2 Parquet files, schemas differ)",
+  "(all files, mixed)" or "(Delta files, not the table)". The cursor
+  starts on it only for a hive table or one schema, and on the first row
+  inside otherwise. The row hides while a filter is typed, and is absent
+  when nothing inside is openable. Inside a
   directory, the last row counts the files datui can't open; Enter on it
   shows them. The Notes tab says what a read had to decide. In a
   collection, "dataset" marks a remote directory not listed until you

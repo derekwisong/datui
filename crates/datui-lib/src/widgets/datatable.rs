@@ -1557,6 +1557,20 @@ pub(crate) struct ViewRows {
     /// The view's row count, when it is known.
     pub(crate) num_rows: Option<usize>,
     pub(crate) streaming: bool,
+    /// Any window of the view reads all of it: see [`sees_every_row_first`].
+    pub(crate) whole: bool,
+}
+
+/// Whether `lf` has to see every row before it gives its first: a sort, a group by or a
+/// pivot under it. Then a window of it costs as much as all of it.
+pub(crate) fn sees_every_row_first(lf: &LazyFrame) -> bool {
+    use polars::lazy::dsl::DslPlan;
+    lf.logical_plan.into_iter().any(|node| {
+        matches!(
+            node,
+            DslPlan::Sort { .. } | DslPlan::GroupBy { .. } | DslPlan::Pivot { .. }
+        )
+    })
 }
 
 impl ViewRows {
@@ -1581,6 +1595,7 @@ impl ViewRows {
     #[cfg(test)]
     pub(crate) fn of(lf: LazyFrame, buffer: Option<(DataFrame, usize)>) -> Self {
         Self {
+            whole: sees_every_row_first(&lf),
             lf,
             files: None,
             read_as_text: Vec::new(),
@@ -6481,6 +6496,7 @@ impl DataTableState {
                 .map(|df| (df.clone(), self.buffered_start_row)),
             num_rows: self.num_rows_valid.then_some(self.num_rows),
             streaming: self.polars_streaming,
+            whole: sees_every_row_first(&self.lf),
         }
     }
 

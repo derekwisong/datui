@@ -25,10 +25,13 @@ const ROW: &str = "__datui_find_row";
 /// The rows a window held.
 const ROWS: &str = "__datui_find_rows";
 /// Rows in the first window read past the buffer. Each window after it is twice the
-/// one before: a view that cannot skip to a window (a filter, a sort, a CSV) reads up
-/// to it every time, and doubling keeps that within twice the rows a single pass
-/// would read, while a match a page past the buffer costs one small read.
+/// one before: a view that cannot skip to a window (a filter, a CSV) reads up to it
+/// every time, and doubling keeps that within twice the rows a single pass would
+/// read, while a match a page past the buffer costs one small read. A view that sees
+/// every row before its first (a sort) is read in one window instead.
 const FIRST_WINDOW: usize = 65_536;
+/// The most rows one window reads: a slice's length is a `u32`.
+const LARGEST_WINDOW: usize = u32::MAX as usize;
 
 /// What a find looks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,9 +133,35 @@ fn text_of(name: &str, dtype: &DataType) -> Option<Expr> {
     let column = col(name);
     Some(if dtype.is_string() {
         column
+    } else if let DataType::Duration(unit) = dtype {
+        // Polars has no cast from a duration to text; written as the table shows it.
+        duration_text(column, *unit)
+    } else if crate::past_calendar::can_leave_calendar(dtype) {
+        // A plain cast panics on a date past the calendar; this writes it as its
+        // stored number, as the table does.
+        crate::past_calendar::text_expr(column, polars::chunked_array::cast::CastOptions::NonStrict)
     } else {
         column.cast(DataType::String)
     })
+}
+
+/// A duration column as the text the table shows for it, such as `1d 2h`.
+fn duration_text(column: Expr, unit: TimeUnit) -> Expr {
+    column.map_with_fmt_str(
+        move |c| {
+            let text = c
+                .as_materialized_series()
+                .to_physical_repr()
+                .i64()?
+                .apply_into_string_amortized(|v, out| {
+                    use std::fmt::Write;
+                    let _ = write!(out, "{}", AnyValue::Duration(v, unit));
+                });
+            Ok(text.with_name(c.name().clone()).into_column())
+        },
+        |_: &Schema, field: &Field| Ok(Field::new(field.name().clone(), DataType::String)),
+        "find_duration_text",
+    )
 }
 
 /// The columns a find over `order` reads, in that order, and the match of each.
@@ -222,6 +251,12 @@ impl Search {
         {
             rows.buffer = None;
         }
+        // A sort costs a whole pass for any window, so it gets one.
+        let window = if rows.whole {
+            LARGEST_WINDOW
+        } else {
+            FIRST_WINDOW
+        };
         Self {
             rows,
             columns: names,
@@ -229,7 +264,7 @@ impl Search {
             stop,
             report: Box::new(report),
             read: 0,
-            window: FIRST_WINDOW,
+            window,
         }
     }
 
@@ -384,7 +419,7 @@ impl Search {
         {
             stop = stop.min(start);
         }
-        self.window = self.window.saturating_mul(2);
+        self.window = self.window.saturating_mul(2).min(LARGEST_WINDOW);
         (stop - at, false)
     }
 
@@ -402,7 +437,7 @@ impl Search {
         {
             start = start.max(stop);
         }
-        self.window = self.window.saturating_mul(2);
+        self.window = self.window.saturating_mul(2).min(LARGEST_WINDOW);
         (start, false)
     }
 
@@ -548,18 +583,10 @@ impl App {
     /// `f` at the table: the find prompt, holding the last pattern, selected so that
     /// typing replaces it.
     pub(crate) fn open_find(&mut self) {
-        let Some(state) = self.data_table_state.as_ref() else {
+        if self.data_table_state.is_none() {
             return;
-        };
-        let names = state.get_column_order();
-        let on_hit = self
-            .find_hit()
-            .filter(|(row, _)| *row == state.cursor_row());
-        let column = on_hit.map(|(_, name)| name).or_else(|| {
-            let at = state.frozen_shown() + state.termcol_index;
-            names.get(at.min(names.len().saturating_sub(1))).cloned()
-        });
-        self.find.column = column;
+        }
+        self.find.column = self.find_column();
         self.find.error = None;
         match self.find.active.as_ref() {
             Some(active) => {
@@ -572,6 +599,21 @@ impl App {
         self.find.input.set_focused(true);
         self.input_mode = InputMode::Editing;
         self.input_type = Some(InputType::Find);
+    }
+
+    /// The column a find limited to one column searches: the found cell's while the
+    /// cursor is on its row, else the first scrolling column on screen. The one place
+    /// that decides, so a column cursor can answer here instead.
+    pub(crate) fn find_column(&self) -> Option<String> {
+        let state = self.data_table_state.as_ref()?;
+        let on_hit = self
+            .find_hit()
+            .filter(|(row, _)| *row == state.cursor_row());
+        on_hit.map(|(_, name)| name).or_else(|| {
+            let names = state.get_column_order();
+            let at = state.frozen_shown() + state.termcol_index;
+            names.get(at.min(names.len().saturating_sub(1))).cloned()
+        })
     }
 
     fn close_find_prompt(&mut self) {
@@ -702,6 +744,9 @@ impl App {
         let columns = searched_columns(state.get_column_order(), state.schema(), &spec);
         if columns.is_empty() {
             self.flash_note(match &spec.column {
+                Some(column) if !state.get_column_order().contains(column) => {
+                    format!("Nothing to find in {column}: it is not shown")
+                }
                 Some(column) => format!("Nothing to find in {column}: it holds no text"),
                 None => "No column to find in".to_string(),
             });
@@ -1139,6 +1184,80 @@ mod tests {
         }
     }
 
+    /// A date past the calendar, on which a plain cast panics, is its stored number;
+    /// durations and times are text too, so no type fails the whole find.
+    #[test]
+    fn a_date_past_the_calendar_and_durations_are_text() {
+        let d = Series::new("d".into(), [19_860i32, i32::MAX])
+            .cast(&DataType::Date)
+            .unwrap();
+        let t = Series::new("t".into(), [3_600_000_000_000i64, 0])
+            .cast(&DataType::Time)
+            .unwrap();
+        let dur = Series::new("dur".into(), [86_400_000i64, 1])
+            .cast(&DataType::Duration(TimeUnit::Milliseconds))
+            .unwrap();
+        let df = DataFrame::new_infer_height(vec![d.into(), t.into(), dur.into()]).unwrap();
+        let start = Start {
+            row: 0,
+            column: None,
+        };
+        let past = walk(&df, &spec("since", false), None, start, Direction::Next, 1);
+        assert_eq!(cells(&past), [(1, "d")]);
+        let time = walk(&df, &spec("01:00", false), None, start, Direction::Next, 1);
+        assert_eq!(cells(&time), [(0, "t")]);
+        let dur = walk(&df, &spec("1d", false), None, start, Direction::Next, 1);
+        assert_eq!(cells(&dur), [(0, "dur")]);
+    }
+
+    /// A sorted view costs a whole pass for any window, so it is read in one: the
+    /// match far down is found with one read past the buffer, not a window per
+    /// doubling.
+    #[test]
+    fn a_sorted_view_is_read_in_one_window() {
+        let n = 300_000usize;
+        let values: Vec<String> = (0..n)
+            .map(|i| {
+                if i == 7 {
+                    "needle".to_string()
+                } else {
+                    format!("hay{i}")
+                }
+            })
+            .collect();
+        let df = df!("k" => (0..n as i64).collect::<Vec<_>>(), "v" => values).unwrap();
+        // Descending: the needle (k = 7) is view row n - 8.
+        let lf = df.lazy().sort(
+            ["k"],
+            SortMultipleOptions::default().with_order_descending(true),
+        );
+        let buffer = lf.clone().slice(0, 100).collect().unwrap();
+        let columns = searched_columns(
+            &["k".to_string(), "v".to_string()],
+            &lf.clone().collect_schema().unwrap(),
+            &spec("needle", false),
+        );
+        let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = reads.clone();
+        let rows = ViewRows::of(lf, Some((buffer, 0)));
+        assert!(rows.whole);
+        let search = Search::new(rows, columns, Arc::default(), move |read| {
+            seen.lock().unwrap().push(read)
+        });
+        let found = search
+            .run(
+                Start {
+                    row: 0,
+                    column: None,
+                },
+                Direction::Next,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.row, found.column.as_str()), (n - 8, "v"));
+        assert_eq!(reads.lock().unwrap().as_slice(), [100, n]);
+    }
+
     #[test]
     fn bytes_and_nested_columns_are_skipped() {
         let schema = Schema::from_iter([
@@ -1408,12 +1527,42 @@ mod app_tests {
         assert!(!app.data_table_state.as_ref().unwrap().row_numbers());
     }
 
+    /// After the view changes under it, `n` starts from the cursor in the new view:
+    /// the cell it landed on belongs to a frame that is gone.
+    #[test]
+    fn n_after_the_view_changes_starts_from_the_cursor_in_the_new_view() {
+        let (mut app, rx) = app_over(haystack(1_000, &[5, 700]));
+        find(&mut app, &rx, "needle");
+        assert_eq!(app.find_hit(), Some((5, "v".to_string())));
+        let state = app.data_table_state.as_mut().unwrap();
+        state.sort(vec!["id".to_string()], false);
+        settle(&mut app, &rx);
+        assert_eq!(app.find_hit(), None, "the old cell is not this view's");
+        assert_eq!(app.find_mark().as_deref(), Some("find \"needle\""));
+        let from = cursor(&app);
+        key(&mut app, KeyCode::Char('n'));
+        settle(&mut app, &rx);
+        // Descending: id 700 is view row 299, id 5 row 994.
+        let expected = if from <= 299 { 299 } else { 994 };
+        assert_eq!(app.find_hit(), Some((expected, "v".to_string())));
+        assert_eq!(cursor(&app), expected);
+    }
+
     /// The found cell is drawn in the theme's find slot, on the cursor's row, and
-    /// nowhere once the cursor moves off it.
+    /// nowhere once the cursor moves off it; with row numbers shown too.
     #[test]
     fn the_found_cell_is_highlighted_on_the_cursor_row() {
+        for row_numbers in [false, true] {
+            found_cell_is_highlighted(row_numbers);
+        }
+    }
+
+    fn found_cell_is_highlighted(row_numbers: bool) {
         use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
         let (mut app, rx) = app_over(haystack(30, &[4]));
+        if row_numbers {
+            key(&mut app, KeyCode::Char('#'));
+        }
         find(&mut app, &rx, "needle 4");
         let style = app.theme.find_match_style();
         let draw = |app: &mut App| {

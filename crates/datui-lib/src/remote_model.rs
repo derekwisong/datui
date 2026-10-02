@@ -36,10 +36,7 @@ pub(crate) fn read(
                 .build()
                 .into();
             let open = |url: &str| -> Result<Box<dyn RangeSource>, RangeError> {
-                Ok(Box::new(Http {
-                    agent: agent.clone(),
-                    url: url.to_string(),
-                }))
+                Ok(Box::new(Http::new(agent.clone(), url)))
             };
             let remote = Remote {
                 open: &open,
@@ -111,16 +108,31 @@ fn http_sibling(url: &str, name: &str) -> String {
 #[cfg(feature = "http")]
 struct Http {
     agent: ureq::Agent,
+    /// Where requests go: the URL given, then wherever its first answer came from.
     url: String,
+    /// What errors call the file: the URL given.
+    named: String,
+}
+
+#[cfg(feature = "http")]
+impl Http {
+    fn new(agent: ureq::Agent, url: &str) -> Self {
+        Self {
+            agent,
+            url: url.to_string(),
+            named: url.to_string(),
+        }
+    }
 }
 
 #[cfg(feature = "http")]
 impl RangeSource for Http {
     fn get(&mut self, start: u64, end: u64) -> Result<(Vec<u8>, u64), RangeError> {
         use std::io::Read;
-        let failed = |e: &dyn std::fmt::Display| {
-            RangeError::Failed(format!("Could not read {}: {e}", self.url))
-        };
+        use ureq::ResponseExt;
+        let named = self.named.clone();
+        let failed =
+            |e: &dyn std::fmt::Display| RangeError::Failed(format!("Could not read {named}: {e}"));
         // Identity, so a length is the file's and not a compressed body's.
         let response = self
             .agent
@@ -129,6 +141,7 @@ impl RangeSource for Http {
             .header("Accept-Encoding", "identity")
             .call()
             .map_err(|e| failed(&e))?;
+        let landed = response.get_uri().to_string();
         let header = |name: &str| {
             response
                 .headers()
@@ -173,6 +186,9 @@ impl RangeSource for Http {
             .take(end.saturating_sub(start) + 1)
             .read_to_end(&mut body)
             .map_err(|e| failed(&e))?;
+        // A redirect (Hugging Face sends each file to its CDN) is followed once: the
+        // ranges after the first go straight to where it led.
+        self.url = landed;
         Ok((body, len))
     }
 }
@@ -328,5 +344,130 @@ mod tests {
             http_sibling("http://h/a/index.json", "a b?#.safetensors"),
             "http://h/a/a%20b%3F%23.safetensors"
         );
+    }
+
+    /// A server on a local port that answers each request with `answer(request)`, one
+    /// connection per request, and keeps every request it was sent.
+    fn scripted(
+        answer: impl Fn(&str) -> Vec<u8> + Send + 'static,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut request = String::new();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    request.push_str(&line);
+                }
+                let _ = stream.write_all(&answer(&request));
+                kept.lock().unwrap().push(request);
+            }
+        });
+        (base, seen)
+    }
+
+    /// A ranged answer from `bytes` for the request's `Range`, as a server sends it.
+    fn partial(request: &str, bytes: &[u8]) -> Vec<u8> {
+        let range = request
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("range: bytes=")
+                    .or(l.strip_prefix("Range: bytes="))
+            })
+            .unwrap();
+        let (a, b) = range.trim().split_once('-').unwrap();
+        let (a, b): (usize, usize) = (a.parse().unwrap(), b.parse().unwrap());
+        let b = b.min(bytes.len() - 1);
+        let mut out = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{b}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len(),
+            b + 1 - a
+        )
+        .into_bytes();
+        out.extend_from_slice(&bytes[a..=b]);
+        out
+    }
+
+    fn agent() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .into()
+    }
+
+    /// A redirect is followed once, and the ranges after it go where it led. Every
+    /// request asks for the file as it is, not compressed.
+    #[test]
+    fn a_redirect_is_followed_once() {
+        let bytes: Vec<u8> = (0..64).collect();
+        let (base, seen) = scripted(move |request| {
+            if request.starts_with("GET /resolve/") {
+                b"HTTP/1.1 302 Found\r\nLocation: /cdn/m.gguf?sig=x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+            } else {
+                partial(request, &bytes)
+            }
+        });
+        let mut http = Http::new(agent(), &format!("{base}/resolve/m.gguf"));
+        assert_eq!(http.get(0, 8).unwrap(), ((0..8).collect(), 64));
+        assert_eq!(http.get(8, 16).unwrap(), ((8..16).collect(), 64));
+        let seen = seen.lock().unwrap();
+        let lines: Vec<&str> = seen.iter().map(|r| r.lines().next().unwrap()).collect();
+        assert_eq!(
+            lines,
+            [
+                "GET /resolve/m.gguf HTTP/1.1",
+                "GET /cdn/m.gguf?sig=x HTTP/1.1",
+                "GET /cdn/m.gguf?sig=x HTTP/1.1"
+            ]
+        );
+        assert!(
+            seen.iter()
+                .all(|r| r.to_ascii_lowercase().contains("accept-encoding: identity")),
+            "{seen:?}"
+        );
+    }
+
+    /// What a server answers in place of the range asked for: another range is an
+    /// error, the whole file or an unknown length is a download.
+    #[test]
+    fn a_server_that_does_not_send_the_range_asked_for() {
+        let cases: [(&[u8], Option<RangeError>); 4] = [
+            (
+                b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-11/64\r\nContent-Length: 8\r\nConnection: close\r\n\r\n01234567",
+                None,
+            ),
+            (
+                b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-7/*\r\nContent-Length: 8\r\nConnection: close\r\n\r\n01234567",
+                Some(RangeError::NoRanges),
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\nConnection: close\r\n\r\n0123456789012345678901234567890123456789012345678901234567890123",
+                Some(RangeError::NoRanges),
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n8\r\n01234567\r\n0\r\n\r\n",
+                Some(RangeError::NoRanges),
+            ),
+        ];
+        for (answer, want) in cases {
+            let (base, _) = scripted(move |_| answer.to_vec());
+            let got = Http::new(agent(), &format!("{base}/m.gguf")).get(0, 8);
+            match want {
+                Some(want) => assert_eq!(got, Err(want)),
+                None => assert!(
+                    matches!(got, Err(RangeError::Failed(ref m)) if m.contains("4-11")),
+                    "{got:?}"
+                ),
+            }
+        }
     }
 }

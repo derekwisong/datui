@@ -723,6 +723,17 @@ def save_ipc_streams(df):
     )
     print(f"Generated: {shards_dir}")
 
+    # IPC files with a stream among them, which is not first.
+    import pyarrow as pa
+
+    mixed_dir = OUTPUT_DIR / "arrow_mixed"
+    mixed_dir.mkdir(exist_ok=True)
+    with pa.OSFile(str(mixed_dir / "a.arrow"), "wb") as sink:
+        with pa.ipc.new_file(sink, table.schema) as writer:
+            writer.write_table(table.slice(0, 500), max_chunksize=7)
+    _write_stream(table.slice(500), mixed_dir / "b.arrow")
+    print(f"Generated: {mixed_dir}")
+
 
 def _polars_dtype_to_avro(dtype):
     """Map Polars dtype to Avro schema (nullable union). Date/Datetime use logical types."""

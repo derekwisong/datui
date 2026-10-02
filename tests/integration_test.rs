@@ -21161,6 +21161,22 @@ fn a_directory_of_arrow_ipc_stream_shards_opens_as_one_table() {
     assert_eq!(files_in(scratch.path()), 1, "one copy of all three");
 }
 
+/// A stream among IPC files, not first, is found when the scan fails on it, and the
+/// files are converted together.
+#[test]
+fn a_stream_behind_an_ipc_file_opens_with_it() {
+    common::ensure_sample_data();
+    let scratch = tempfile::tempdir().unwrap();
+    let (app, _rx, _tx) = open_with_scratch(
+        vec![PathBuf::from("tests/sample-data/arrow_mixed")],
+        scratch.path(),
+    );
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("the files open");
+    assert_eq!(state.num_rows(), 1000);
+    assert_eq!(files_in(scratch.path()), 1, "one copy of both");
+}
+
 /// The table a CSV opens as, collected, with `options`.
 fn open_dialect(paths: Vec<PathBuf>, options: OpenOptions) -> DataFrame {
     common::ensure_sample_data();

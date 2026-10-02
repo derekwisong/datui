@@ -19060,10 +19060,14 @@ impl App {
                     options.row_start_index,
                 )?,
                 Some(FileFormat::Arrow) => {
-                    if let Some(streams) = crate::ipc_stream::streams_among(paths) {
-                        return Ok(Scan::Streams(streams?));
+                    // The first file says: a `datasets` cache is all streams, and the
+                    // conversion reads each file anyway.
+                    if crate::ipc_stream::starts_with_stream(paths) {
+                        return Ok(Scan::Streams(paths.to_vec()));
                     }
-                    DataTableState::from_ipc_paths(
+                    // Polars reads every IPC file's footer for the schema, and fails on
+                    // a stream among them: only then is each file looked at.
+                    match DataTableState::from_ipc_paths(
                         paths,
                         options.pages_lookahead,
                         options.pages_lookback,
@@ -19071,7 +19075,13 @@ impl App {
                         options.max_buffered_mb,
                         options.row_numbers,
                         options.row_start_index,
-                    )?
+                    ) {
+                        Ok(state) => state,
+                        Err(_) if crate::ipc_stream::any_stream(paths) => {
+                            return Ok(Scan::Streams(paths.to_vec()));
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 Some(FileFormat::Avro) => DataTableState::from_avro_paths(
                     paths,
@@ -19165,8 +19175,8 @@ impl App {
                     options.row_start_index,
                 )?,
                 Some(FileFormat::Arrow) => {
-                    if let Some(streams) = crate::ipc_stream::streams_among(paths) {
-                        return Ok(Scan::Streams(streams?));
+                    if crate::ipc_stream::starts_with_stream(paths) {
+                        return Ok(Scan::Streams(paths.to_vec()));
                     }
                     DataTableState::from_ipc(
                         path,

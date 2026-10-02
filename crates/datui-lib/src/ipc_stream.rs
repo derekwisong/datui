@@ -14,10 +14,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use color_eyre::{Result, eyre::eyre};
+use polars_arrow::array::Array;
 use polars_arrow::io::ipc::format::ipc::planus::ReadAsRoot;
 use polars_arrow::io::ipc::format::ipc::{MessageHeaderRef, MessageRef};
-use polars_arrow::io::ipc::read::{StreamReader, StreamState, read_stream_metadata};
+use polars_arrow::io::ipc::read::{
+    FileReader, StreamReader, StreamState, read_file_metadata, read_stream_metadata,
+};
 use polars_arrow::io::ipc::write::{FileWriter, WriteOptions};
+use polars_arrow::record_batch::RecordBatchT;
 
 use crate::download::TempDownload;
 use crate::unfinished::Writer;
@@ -107,26 +111,23 @@ fn begins_schema(message: &[u8]) -> bool {
     )
 }
 
-/// The Arrow `paths` that are streams, when they all are, or the reason a mix of
-/// streams and IPC files cannot be read as one table. `None` when none is a stream.
-pub fn streams_among(paths: &[PathBuf]) -> Option<Result<Vec<PathBuf>>> {
-    let streams: Vec<bool> = paths.iter().map(|p| is_stream_file(p)).collect();
-    if !streams.iter().any(|s| *s) {
-        return None;
-    }
-    if let Some(at) = streams.iter().position(|s| !s) {
-        return Some(Err(eyre!(
-            "{} is an Arrow IPC file among Arrow IPC streams. Open the streams or the files on their own.",
-            paths[at].display()
-        )));
-    }
-    Some(Ok(paths.to_vec()))
+/// Whether the Arrow `paths` are read by converting them to one IPC file: when the
+/// first is a stream. Only the first is opened. The conversion reads the rest, IPC files
+/// among them; a stream behind an IPC file is found by [`any_stream`] once the scan,
+/// which reads every IPC file's footer, has failed on it.
+pub fn starts_with_stream(paths: &[PathBuf]) -> bool {
+    paths.first().is_some_and(|p| is_stream_file(p))
 }
 
-/// Convert the streams at `paths`, in order, into one IPC file in `temp_dir` (the
-/// system temp directory when `None`), created and claimed through `writer` and
-/// removed if the open stops or this fails. `read` counts the bytes of the streams
-/// read so far.
+/// Whether any of `paths` is a stream: asked once a scan of them as IPC files failed.
+pub fn any_stream(paths: &[PathBuf]) -> bool {
+    paths.iter().any(|p| is_stream_file(p))
+}
+
+/// Convert the Arrow streams at `paths`, and any IPC files among them, in order, into
+/// one IPC file in `temp_dir` (the system temp directory when `None`), created and
+/// claimed through `writer` and removed if the open stops or this fails. `read` counts
+/// the bytes read so far.
 ///
 /// One record batch is in memory at a time. Buffers compressed with LZ4 or ZSTD are
 /// written out uncompressed, so the file maps and scans like any other.
@@ -136,7 +137,6 @@ pub(crate) fn convert(
     writer: &Writer,
     read: &AtomicU64,
 ) -> Result<TempDownload> {
-    let stopped = || eyre!("Converting the Arrow stream was stopped.");
     let dir = temp_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir);
@@ -146,22 +146,199 @@ pub(crate) fn convert(
         .map(|m| m.len())
         .sum();
     room(size, crate::local_copy::free_space(&dir), &dir)?;
-    let Some((file, claim)) = writer.create(|| TempDownload::create(temp_dir, Some("arrow")))?
-    else {
-        return Err(stopped());
-    };
-    match write_file(paths, file.as_file(), &|| writer.stopped(), read) {
-        Ok(true) => Ok(TempDownload::held(file, Some(claim))),
-        unfinished => {
-            // The file before the claim, so a sweep never finds it let go but there.
-            drop(file);
-            drop(claim);
-            Err(unfinished
-                .err()
-                .map(|e| out_of_room(e, &dir))
-                .unwrap_or_else(stopped))
+    let mut merge = Merge::create(temp_dir, writer)?;
+    for path in paths {
+        merge.append(path, path, read)?;
+    }
+    merge.finish()
+}
+
+/// One IPC file being written from the batches of Arrow streams and IPC files,
+/// appended one at a time: what a conversion writes, and what a bucket's Arrow files
+/// are gathered into as each is downloaded. Dropped unfinished, the file goes.
+pub(crate) struct Merge<'a> {
+    /// The writer, the first input's name and its columns, once one is appended. Its
+    /// handle on the file is let go before the file is removed.
+    out: Option<(FileWriter<BufWriter<File>>, PathBuf, Columns)>,
+    /// The file, then its claim: dropped in that order.
+    file: tempfile::NamedTempFile,
+    claim: crate::unfinished::Claim,
+    dir: PathBuf,
+    writer: &'a Writer,
+    /// The bytes of the inputs appended so far.
+    before: u64,
+}
+
+type Columns = Vec<(
+    polars::prelude::PlSmallStr,
+    polars_arrow::datatypes::ArrowDataType,
+)>;
+
+fn columns(schema: &polars_arrow::datatypes::ArrowSchema) -> Columns {
+    schema
+        .iter_values()
+        .map(|f| (f.name.clone(), f.dtype.clone()))
+        .collect()
+}
+
+impl<'a> Merge<'a> {
+    /// The empty file, in `temp_dir`, claimed through `writer`.
+    pub(crate) fn create(temp_dir: Option<&Path>, writer: &'a Writer) -> Result<Self> {
+        let Some((file, claim)) =
+            writer.create(|| TempDownload::create(temp_dir, Some("arrow")))?
+        else {
+            return Err(stopped());
+        };
+        Ok(Self {
+            file,
+            claim,
+            dir: temp_dir
+                .map(Path::to_path_buf)
+                .unwrap_or_else(std::env::temp_dir),
+            writer,
+            out: None,
+            before: 0,
+        })
+    }
+
+    /// Append the batches of the stream or IPC file at `path`, which errors call
+    /// `name`, counting its bytes into `read` after those of the inputs before it.
+    pub(crate) fn append(&mut self, path: &Path, name: &Path, read: &AtomicU64) -> Result<()> {
+        let appended = self.batches(path, name, read);
+        match appended {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(stopped()),
+            Err(e) => Err(out_of_room(e, &self.dir)),
         }
     }
+
+    /// The finished file, held with its claim.
+    pub(crate) fn finish(self) -> Result<TempDownload> {
+        let Some((mut out, _, _)) = self.out else {
+            return Err(eyre!("No Arrow IPC stream to read."));
+        };
+        let finished = out
+            .finish()
+            .map_err(color_eyre::Report::from)
+            .and_then(|()| Ok(out.into_inner().flush()?));
+        if let Err(e) = finished {
+            return Err(out_of_room(e, &self.dir));
+        }
+        Ok(TempDownload::held(self.file, Some(self.claim)))
+    }
+
+    /// `false` when the open was stopped first.
+    fn batches(&mut self, path: &Path, name: &Path, read: &AtomicU64) -> Result<bool> {
+        let source = File::open(path)?;
+        let size = source.metadata()?.len();
+        let mut reader = BufReader::with_capacity(
+            1 << 20,
+            Counting {
+                inner: source,
+                at: 0,
+                before: self.before,
+                read,
+            },
+        );
+        let mut magic = [0u8; 6];
+        let file = reader.read_exact(&mut magic).is_ok() && magic == *b"ARROW1";
+        reader.seek(SeekFrom::Start(0))?;
+        let what = if file { "file" } else { "stream" };
+        let unreadable = move |e: &dyn std::fmt::Display| {
+            eyre!("{} is not a readable Arrow IPC {what}: {e}", name.display())
+        };
+        // Polars panics on a column type it has not implemented, such as run-end
+        // encoding: that is a stream it cannot read, not a crash.
+        let cannot = |_| unreadable(&"it has a column type Polars cannot read");
+        let mut batches: Box<dyn Iterator<Item = Result<RecordBatchT<Box<dyn Array>>>> + '_> =
+            if file {
+                let metadata = crate::logging::catch_panic(|| read_file_metadata(&mut reader))
+                    .map_err(cannot)?
+                    .map_err(|e| unreadable(&e))?;
+                self.start(
+                    name,
+                    &metadata.schema,
+                    &metadata.ipc_schema.fields,
+                    metadata.custom_schema_metadata.as_deref(),
+                )?;
+                let reader = FileReader::new(reader, metadata, None, None);
+                Box::new(reader.map(move |batch| batch.map_err(|e| unreadable(&e))))
+            } else {
+                let metadata = crate::logging::catch_panic(|| read_stream_metadata(&mut reader))
+                    .map_err(cannot)?
+                    .map_err(|e| unreadable(&e))?;
+                self.start(
+                    name,
+                    &metadata.schema,
+                    &metadata.ipc_schema.fields,
+                    metadata.custom_schema_metadata.as_ref(),
+                )?;
+                let mut reader = StreamReader::new(reader, metadata, None);
+                Box::new(std::iter::from_fn(move || {
+                    match reader.next()? {
+                        Ok(StreamState::Some(batch)) => Some(Ok(batch)),
+                        // The end of a stream written without its end-of-stream marker.
+                        Ok(StreamState::Waiting) => None,
+                        Err(e) => Some(Err(unreadable(&e))),
+                    }
+                }))
+            };
+        let (out, _, _) = self.out.as_mut().expect("started just above");
+        loop {
+            if self.writer.stopped() {
+                return Ok(false);
+            }
+            // Polars also panics on some malformed record batches, rather than erring.
+            let Some(batch) = crate::logging::catch_panic(|| batches.next())
+                .map_err(|_| unreadable(&"a record batch in it is damaged"))?
+            else {
+                break;
+            };
+            out.write(&batch?, None)?;
+        }
+        self.before += size;
+        read.store(self.before, Ordering::Relaxed);
+        Ok(true)
+    }
+
+    /// Start the file with the first input's schema, or check a later one has the same
+    /// columns.
+    fn start(
+        &mut self,
+        name: &Path,
+        schema: &polars_arrow::datatypes::ArrowSchema,
+        fields: &[polars_arrow::io::ipc::IpcField],
+        custom: Option<&polars_arrow::datatypes::Metadata>,
+    ) -> Result<()> {
+        match &self.out {
+            None => {
+                let mut out = FileWriter::try_new(
+                    BufWriter::with_capacity(1 << 20, self.file.as_file().try_clone()?),
+                    Arc::new(schema.clone()),
+                    Some(fields.to_vec()),
+                    WriteOptions { compression: None },
+                )?;
+                if let Some(custom) = custom {
+                    out.set_custom_schema_metadata(Arc::new(custom.clone()));
+                }
+                self.out = Some((out, name.to_path_buf(), columns(schema)));
+            }
+            Some((_, first, first_columns)) => {
+                if columns(schema) != *first_columns {
+                    return Err(eyre!(
+                        "{} has different columns from {}, so they cannot be read as one table.",
+                        name.display(),
+                        first.display()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn stopped() -> color_eyre::Report {
+    eyre!("Converting the Arrow stream was stopped.")
 }
 
 /// What to do about a temp directory too small for the copy.
@@ -196,95 +373,6 @@ fn out_of_room(error: color_eyre::Report, dir: &Path) -> color_eyre::Report {
     } else {
         error
     }
-}
-
-/// Write the batches of every stream at `paths` to `out` as one IPC file. `false`
-/// when `stopped` said so first.
-fn write_file(
-    paths: &[PathBuf],
-    out: &File,
-    stopped: &dyn Fn() -> bool,
-    read: &AtomicU64,
-) -> Result<bool> {
-    let columns = |schema: &polars_arrow::datatypes::ArrowSchema| {
-        schema
-            .iter_values()
-            .map(|f| (f.name.clone(), f.dtype.clone()))
-            .collect::<Vec<_>>()
-    };
-    let mut file: Option<(FileWriter<BufWriter<&File>>, &Path, Vec<_>)> = None;
-    let mut before = 0u64;
-    for path in paths {
-        let unreadable = |e: &dyn std::fmt::Display| {
-            eyre!("{} is not a readable Arrow IPC stream: {e}", path.display())
-        };
-        let source = File::open(path)?;
-        let size = source.metadata()?.len();
-        let mut reader = BufReader::with_capacity(
-            1 << 20,
-            Counting {
-                inner: source,
-                at: 0,
-                before,
-                read,
-            },
-        );
-        // Polars panics on a column type it has not implemented, such as run-end
-        // encoding: that is a stream it cannot read, not a crash.
-        let metadata = crate::logging::catch_panic(|| read_stream_metadata(&mut reader))
-            .map_err(|_| unreadable(&"it has a column type Polars cannot read"))?
-            .map_err(|e| unreadable(&e))?;
-        match &file {
-            None => {
-                let mut writer = FileWriter::try_new(
-                    BufWriter::with_capacity(1 << 20, out),
-                    Arc::new(metadata.schema.clone()),
-                    Some(metadata.ipc_schema.fields.clone()),
-                    WriteOptions { compression: None },
-                )?;
-                if let Some(custom) = &metadata.custom_schema_metadata {
-                    writer.set_custom_schema_metadata(Arc::new(custom.clone()));
-                }
-                file = Some((writer, path, columns(&metadata.schema)));
-            }
-            Some((_, first, first_columns)) => {
-                if columns(&metadata.schema) != *first_columns {
-                    return Err(eyre!(
-                        "{} has different columns from {}, so they cannot be read as one table.",
-                        path.display(),
-                        first.display()
-                    ));
-                }
-            }
-        }
-        let (writer, _, _) = file.as_mut().expect("set just above");
-        let mut batches = StreamReader::new(reader, metadata, None);
-        loop {
-            if stopped() {
-                return Ok(false);
-            }
-            // Polars also panics on some malformed record batches, rather than erring.
-            let Some(state) = crate::logging::catch_panic(|| batches.next())
-                .map_err(|_| unreadable(&"a record batch in it is damaged"))?
-            else {
-                break;
-            };
-            match state.map_err(|e| unreadable(&e))? {
-                StreamState::Some(batch) => writer.write(&batch, None)?,
-                // The end of a stream written without its end-of-stream marker.
-                StreamState::Waiting => break,
-            }
-        }
-        before += size;
-        read.store(before, Ordering::Relaxed);
-    }
-    let Some((mut writer, _, _)) = file else {
-        return Err(eyre!("No Arrow IPC stream to read."));
-    };
-    writer.finish()?;
-    let mut out = writer.into_inner();
-    out.flush()?;
-    Ok(true)
 }
 
 /// A stream being read, counting its bytes into the open's progress.
@@ -652,24 +740,37 @@ mod tests {
         assert_eq!(other, "something else");
     }
 
-    /// Streams mixed with IPC files are not one table; IPC files alone are not streams.
+    /// Only the first file says whether a list of Arrow files is converted. The
+    /// conversion takes IPC files among the streams, in order, whichever comes first.
     #[test]
-    fn streams_among_ipc_files() {
+    fn streams_and_ipc_files_convert_together() {
         let dir = tempfile::tempdir().unwrap();
         let streamed = dir.path().join("s.arrow");
         std::fs::write(&streamed, stream(&frame(0, 3), None, false)).unwrap();
         let file = dir.path().join("f.arrow");
         polars::io::ipc::IpcWriter::new(std::fs::File::create(&file).unwrap())
-            .finish(&mut frame(0, 3))
+            .finish(&mut frame(3, 4))
             .unwrap();
-        assert!(streams_among(std::slice::from_ref(&file)).is_none());
-        assert_eq!(
-            streams_among(std::slice::from_ref(&streamed))
-                .unwrap()
-                .unwrap(),
-            std::slice::from_ref(&streamed)
-        );
-        let error = streams_among(&[streamed, file]).unwrap().unwrap_err();
-        assert!(error.to_string().contains("f.arrow is an Arrow IPC file"));
+        assert!(!starts_with_stream(std::slice::from_ref(&file)));
+        assert!(starts_with_stream(&[streamed.clone(), file.clone()]));
+        assert!(!starts_with_stream(&[file.clone(), streamed.clone()]));
+        assert!(any_stream(&[file.clone(), streamed.clone()]));
+        assert!(!any_stream(std::slice::from_ref(&file)));
+        let out = tempfile::tempdir().unwrap();
+        for (paths, first) in [
+            ([streamed.clone(), file.clone()], 0),
+            ([file.clone(), streamed.clone()], 3),
+        ] {
+            let read = AtomicU64::new(0);
+            let converted = convert(&paths, Some(out.path()), &writer(false), &read).unwrap();
+            let df = rows(converted.path());
+            assert_eq!(df.height(), 7);
+            assert_eq!(df.column("id").unwrap().i64().unwrap().get(0), Some(first));
+            let total: u64 = paths
+                .iter()
+                .map(|p| std::fs::metadata(p).unwrap().len())
+                .sum();
+            assert_eq!(read.load(Ordering::Relaxed), total);
+        }
     }
 }

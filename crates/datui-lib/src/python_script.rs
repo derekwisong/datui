@@ -640,9 +640,11 @@ fn ipc_streams(paths: &[PathBuf]) -> Option<Vec<String>> {
             files.push(path.clone());
         }
     }
-    let streams = crate::ipc_stream::streams_among(&files)?.ok()?;
+    if files.is_empty() || !files.iter().all(|f| crate::ipc_stream::is_stream_file(f)) {
+        return None;
+    }
     Some(
-        streams
+        files
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect(),

@@ -370,6 +370,66 @@ fn a_wal_database_in_a_read_only_directory_still_opens() {
     assert_eq!(df.height(), 1);
 }
 
+/// A database left mid-write, its hot journal beside it, is refused: read as it stands
+/// it would give rows of a transaction that never committed. Nothing is rolled back.
+#[test]
+fn a_database_left_mid_write_is_refused() {
+    let dir = temp();
+    let path = dir.path().join("live.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE t (a INTEGER);
+         WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000)
+         INSERT INTO t SELECT x FROM c;
+         PRAGMA cache_size = 1;
+         BEGIN; UPDATE t SET a = a + 1000000;",
+    )
+    .unwrap();
+    // Copies taken mid-transaction are what a crash leaves: pages of the change spilled
+    // into the database, and the journal that undoes them, with no writer holding it.
+    let crashed = dir.path().join("crashed.db");
+    let journal = dir.path().join("crashed.db-journal");
+    std::fs::copy(&path, &crashed).unwrap();
+    std::fs::copy(dir.path().join("live.db-journal"), &journal).unwrap();
+    drop(conn);
+    let before = std::fs::read(&crashed).unwrap();
+    let message = format!("{:#}", tables(&crashed).unwrap_err());
+    assert!(message.contains("left mid-write"), "{message}");
+    assert_eq!(std::fs::read(&crashed).unwrap(), before);
+    assert!(journal.exists());
+}
+
+/// A `-wal` with no `-shm` in a directory datui cannot write to is refused rather than
+/// read without the WAL, which would leave out what was committed there.
+#[cfg(unix)]
+#[test]
+fn a_wal_that_cannot_be_read_is_not_ignored() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp();
+    let path = dir.path().join("live.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;
+         CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1), (2);",
+    )
+    .unwrap();
+    let sub = dir.path().join("ro");
+    std::fs::create_dir(&sub).unwrap();
+    let copy = sub.join("live.db");
+    std::fs::copy(&path, &copy).unwrap();
+    std::fs::copy(dir.path().join("live.db-wal"), sub.join("live.db-wal")).unwrap();
+    drop(conn);
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Root writes anyway, and then the ordinary open reads the WAL.
+    let writable = std::fs::File::create(sub.join("probe")).is_ok();
+    let result = tables(&copy);
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !writable {
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("-wal file"), "{message}");
+    }
+}
+
 #[test]
 fn an_immutable_uri_escapes_what_sqlite_would_read_as_its_own() {
     let uri = immutable_uri_for_tests(Path::new("/data/a?b#c%d é.db"));

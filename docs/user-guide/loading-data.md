@@ -394,8 +394,10 @@ The database is only read:
 | | |
 |---|---|
 | Opened | Read only, with `query_only` and defensive mode. Extensions cannot be loaded, and reading a table runs no trigger |
-| A WAL database with a `-wal` file | Read through it, so what another program has committed is seen. SQLite creates the `-shm` file beside it if it is missing |
-| A WAL database without one, or in a directory datui cannot write to | Read as the file stands, writing nothing |
+| A WAL database with a `-wal` file | Read through it, so what another program has committed is seen. SQLite creates the `-shm` index beside it if it is missing |
+| A WAL database without a `-wal` file | Read as the file stands (SQLite's `immutable`), writing nothing and taking no lock. A program that starts writing it during the read can make the read fail or come out wrong |
+| A `-wal` without its `-shm`, in a directory datui cannot write to | An error: read without the WAL, it would lack what was committed there |
+| A `-journal` left by a program that stopped mid-write | An error: datui does not roll it back. Opening the database once with the `sqlite3` tool does |
 | A program writing the database meanwhile | datui waits up to 2 seconds for its lock. Without WAL, the program cannot commit while a table is read |
 | Not a SQLite database, or damaged | An error |
 

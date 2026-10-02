@@ -12,10 +12,11 @@
 //!
 //! Nothing is written to the database. It is opened read only, with `query_only`,
 //! defensive mode and an untrusted schema, and with extension loading left out of the
-//! build. Reading a table runs no trigger. A database in WAL mode is read through its
-//! `-wal` and `-shm` files, which SQLite creates beside it if they are missing and
-//! removes when datui lets go; where it cannot (a read-only directory), the file is
-//! read as it stands, without the WAL.
+//! build. Reading a table runs no trigger. A database in WAL mode with a `-wal` file is
+//! read through it, and SQLite creates the `-shm` index beside it if that is missing; one
+//! with no `-wal` is read as it stands (`immutable=1`), writing nothing. A database that
+//! cannot be read without writing beside it (a hot journal, or a `-wal` without its
+//! `-shm` in a read-only directory) is refused rather than read wrong.
 
 use std::path::{Path, PathBuf};
 
@@ -273,8 +274,12 @@ mod read {
     ///
     /// A WAL database is read through its WAL when it has one, as another program may
     /// be writing it. One with no `-wal` beside it has nothing there to read, and is
-    /// read as it stands: opened the ordinary way, SQLite would create the `-wal` and
-    /// `-shm` files, and a read-only connection cannot remove them again.
+    /// read as it stands (`immutable=1`): opened the ordinary way, SQLite would create
+    /// the `-wal` and `-shm` files, and a read-only connection cannot remove them again.
+    /// Immutable takes no lock, so a program that starts writing it mid-read can make
+    /// the read fail or come out wrong; with no `-wal`, nothing was writing it a moment
+    /// ago. Immutable is never used where a `-wal` or a hot `-journal` is beside the
+    /// file, which it would ignore.
     fn open(path: &Path) -> Result<Connection> {
         let not_a_database = |e: rusqlite::Error| match e.sqlite_error_code() {
             Some(rusqlite::ErrorCode::NotADatabase) => {
@@ -285,8 +290,25 @@ mod read {
         if !(is_wal(path) && !beside(path, "-wal").exists()) {
             match plain(path) {
                 Ok(conn) => return Ok(conn),
-                // A WAL database in a directory datui cannot write to, or a journal left
-                // by a writer that crashed, which a reader may not roll back.
+                // A journal left by a writer that stopped mid-write, which a reader may
+                // not roll back: the file holds half a transaction, and read as it
+                // stands it would give rows that were never committed together.
+                Err(e) if cannot_open(&e) && beside(path, "-journal").exists() => {
+                    return Err(eyre!(
+                        "{} was left mid-write by a program that stopped: its -journal has to be rolled back first, which datui does not do. Opening it once with the sqlite3 tool rolls it back.",
+                        path.display()
+                    ));
+                }
+                // A WAL whose index (`-shm`) is missing and cannot be made here (a
+                // read-only directory). Read without it, the database would lack what
+                // was committed to the WAL.
+                Err(e) if cannot_open(&e) && beside(path, "-wal").exists() => {
+                    return Err(eyre!(
+                        "{} has a -wal file that cannot be read from here without a -shm file beside it, and its directory is read only. Copy the database and its -wal to a writable directory.",
+                        path.display()
+                    ));
+                }
+                // A file in a directory datui cannot write to, with nothing beside it.
                 Err(e) if cannot_open(&e) => {}
                 Err(e) => return Err(not_a_database(e)),
             }

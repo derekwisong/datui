@@ -523,6 +523,9 @@ fn ggml_type(id: u32) -> Option<(&'static str, u64, u64)> {
     })
 }
 
+/// Where tensor data starts when `general.alignment` does not say.
+const GGUF_DEFAULT_ALIGNMENT: u64 = 32;
+
 /// GGUF metadata value types.
 const GGUF_STRING: u32 = 8;
 const GGUF_ARRAY: u32 = 9;
@@ -725,6 +728,29 @@ pub fn read_gguf<R: Read>(reader: R, len: u64) -> Result<Header> {
             offset,
             offset_end: None,
         });
+    }
+    // The tensor data starts at the next multiple of the alignment after the header,
+    // and every tensor whose size is known must end inside the file: a download cut
+    // short is an error, not a table that looks whole.
+    let alignment = metadata
+        .iter()
+        .find(|(k, _)| k == "general.alignment")
+        .and_then(|(_, v)| match v {
+            MetaValue::Text(t) => t.parse::<u64>().ok(),
+            MetaValue::List { .. } => None,
+        })
+        .filter(|a| a.is_power_of_two())
+        .unwrap_or(GGUF_DEFAULT_ALIGNMENT);
+    let data_start = r.pos.next_multiple_of(alignment);
+    let data_len = len.saturating_sub(data_start);
+    for t in &tensors {
+        let end = t.bytes.and_then(|b| t.offset.checked_add(b));
+        if t.bytes.is_some() && end.is_none_or(|end| end > data_len) {
+            return Err(eyre!(
+                "GGUF: tensor {:?} runs past the end of the file ({data_len} bytes of data)",
+                t.name
+            ));
+        }
     }
     Ok(Header {
         kind: ModelKind::Gguf { version },
@@ -994,6 +1020,12 @@ pub(crate) mod tests {
             self.out.extend_from_slice(&v.to_le_bytes());
             self
         }
+        /// Pad to the default alignment, then `n` bytes of tensor data.
+        pub(crate) fn data(&mut self, n: usize) -> &mut Self {
+            let padded = self.out.len().next_multiple_of(32);
+            self.out.resize(padded + n, 0);
+            self
+        }
         pub(crate) fn kv_str(&mut self, key: &str, value: &str) -> &mut Self {
             self.str(key).u32(GGUF_STRING).str(value)
         }
@@ -1119,6 +1151,7 @@ pub(crate) mod tests {
             0,
             576,
         );
+        w.data(576 + 1024);
         let header = parse_header(&w.out).unwrap();
         assert_eq!(header.kind, ModelKind::Gguf { version: 3 });
         assert_eq!(header.metadata[0].1, MetaValue::Text("llama".into()));
@@ -1150,6 +1183,7 @@ pub(crate) mod tests {
         out.extend_from_slice(&8u64.to_be_bytes());
         out.extend_from_slice(&1u32.to_be_bytes());
         out.extend_from_slice(&0u64.to_be_bytes());
+        out.resize(out.len().next_multiple_of(32) + 16, 0);
         let header = parse_header(&out).unwrap();
         assert_eq!(header.tensors[0].shape, vec![8]);
         assert_eq!(header.tensors[0].dtype, "F16");
@@ -1182,10 +1216,39 @@ pub(crate) mod tests {
         assert!(parse_header(&w.out).is_err());
         // Cut short anywhere.
         let mut w = GgufWriter::new(1, 1);
-        w.kv_str("general.name", "tiny").tensor("t", &[4, 4], 0, 0);
+        w.kv_str("general.name", "tiny")
+            .tensor("t", &[4, 4], 0, 0)
+            .data(64);
         for cut in 0..w.out.len() {
             assert!(parse_header(&w.out[..cut]).is_err(), "cut at {cut}");
         }
+        assert!(parse_header(&w.out).is_ok());
+    }
+
+    /// A GGUF whose tensor data is cut short is refused, measured from where the data
+    /// starts: after the header, at `general.alignment` or 32.
+    #[test]
+    fn a_gguf_tensor_must_end_inside_the_file() {
+        let tensor = |w: &mut GgufWriter| {
+            w.tensor("t", &[4], 0, 0);
+        };
+        let mut w = GgufWriter::new(1, 0);
+        tensor(&mut w);
+        w.data(15);
+        let err = parse_header(&w.out).unwrap_err().to_string();
+        assert!(err.contains("past the end"), "{err}");
+        w.data(16);
+        assert!(parse_header(&w.out).is_ok());
+
+        // A wider alignment moves the start of the data further on.
+        let mut w = GgufWriter::new(1, 1);
+        w.kv_u32("general.alignment", 256);
+        tensor(&mut w);
+        let header_end = w.out.len();
+        w.data(16);
+        w.out.truncate(header_end.next_multiple_of(256) + 15);
+        assert!(parse_header(&w.out).is_err(), "measured from 256");
+        w.out.resize(header_end.next_multiple_of(256) + 16, 0);
         assert!(parse_header(&w.out).is_ok());
     }
 

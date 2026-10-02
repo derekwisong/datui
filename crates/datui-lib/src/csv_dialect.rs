@@ -28,28 +28,48 @@ pub fn check_comment_char(c: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The longest header line [`header_names`] reads: far wider than any real header,
+/// and a bound on what a file with no line breaks can make it hold.
+const MAX_HEADER_LINE: u64 = 16 << 20;
+
 /// The names of the columns, from the lines `rows` names (1-based, counted from the top
 /// of the file before anything is skipped), each split on `separator` and trimmed.
 ///
 /// A column's name is its pieces from those lines, in the order `rows` gives them,
 /// joined with `join`; a blank piece adds nothing. A line that starts with `comment`
 /// is a header line all the same, since the user named it, and loses the prefix. A
-/// file shorter than the last line named has nothing there.
+/// file that ends before the last line named is an error: it has no header there.
 pub fn header_names(
     mut source: impl BufRead,
     rows: &[usize],
     join: &str,
     separator: u8,
     comment: Option<&str>,
-) -> std::io::Result<Vec<String>> {
+) -> color_eyre::Result<Vec<String>> {
+    use std::io::Read;
     let last = rows.iter().copied().max().unwrap_or(0);
-    let mut lines: Vec<Vec<u8>> = Vec::with_capacity(last);
-    while lines.len() < last {
-        let mut line = Vec::new();
-        if source.read_until(b'\n', &mut line)? == 0 {
-            break;
+    // Only the named lines are kept; the others are passed over without being held.
+    let mut lines: Vec<Vec<u8>> = vec![Vec::new(); last];
+    for (i, line) in lines.iter_mut().enumerate() {
+        let n = i + 1;
+        let read = if rows.contains(&n) {
+            (&mut source)
+                .take(MAX_HEADER_LINE + 1)
+                .read_until(b'\n', line)?
+        } else {
+            source.skip_until(b'\n')?
+        };
+        if read == 0 {
+            return Err(color_eyre::eyre::eyre!(
+                "--header-rows names line {last}, past the end of the file"
+            ));
         }
-        lines.push(line);
+        if line.len() as u64 > MAX_HEADER_LINE {
+            return Err(color_eyre::eyre::eyre!(
+                "header line {n} is longer than {} MiB",
+                MAX_HEADER_LINE >> 20
+            ));
+        }
     }
     let mut columns: Vec<Vec<String>> = Vec::new();
     for &row in rows {
@@ -240,9 +260,22 @@ mod tests {
     }
 
     #[test]
-    fn a_line_past_the_end_adds_nothing() {
-        assert_eq!(names("a,b\n", &[1, 5], None), ["a", "b"]);
-        assert!(names("", &[1], None).is_empty());
+    fn a_file_that_ends_before_the_header_is_an_error() {
+        let err = header_names("a,b\n".as_bytes(), &[1, 5], " ", b',', None).unwrap_err();
+        assert!(err.to_string().contains("past the end"), "{err}");
+        assert!(header_names("".as_bytes(), &[1], " ", b',', None).is_err());
+        // The last line needs no line break.
+        assert_eq!(names("#u\na,b", &[2], None), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_header_line_is_read_up_to_a_bound() {
+        let wide = "x".repeat(MAX_HEADER_LINE as usize + 1);
+        let err = header_names(wide.as_bytes(), &[1], " ", b',', None).unwrap_err();
+        assert!(err.to_string().contains("header line 1"), "{err}");
+        // A line that is not named is passed over however long it is.
+        let text = format!("{wide}\na,b\n");
+        assert_eq!(names(&text, &[2], None), ["a", "b"]);
     }
 
     #[test]

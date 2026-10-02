@@ -10,13 +10,14 @@ columns shown — and is never changed.
 | <kbd>f</kbd> | Find. The prompt holds the last pattern, selected, so typing replaces it |
 | <kbd>n</kbd> | Next match after the cursor's cell, left to right then down |
 | <kbd>N</kbd> | Previous match before the cursor's cell |
-| <kbd>Esc</kbd> | While a find reads, stop it; the cursor stays where it was |
+| <kbd>Esc</kbd> | While a find reads, stop it and the <kbd>n</kbd> <kbd>N</kbd> typed behind it; the cursor stays where it was |
 
 <kbd>n</kbd> and <kbd>N</kbd> start from the cursor's cell, as in vim: move
 the column cursor along a found row and <kbd>n</kbd> finds the next match to
 its right. Past the last match <kbd>n</kbd> comes round to the first, and the
 bar says `Wrapped to the top`; <kbd>N</kbd> comes round the other way. Each
 <kbd>n</kbd> typed while a find reads runs in turn: five move five matches.
+<kbd>Esc</kbd> stops them all.
 
 ## In the prompt
 

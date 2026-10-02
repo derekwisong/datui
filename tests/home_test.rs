@@ -5726,7 +5726,13 @@ mod coming_back {
     fn esc_from_a_collection_dataset_puts_the_cursor_back_on_it() {
         let tmp = TempDir::new().unwrap();
         many_directories(tmp.path());
-        let mut config = datui::config::AppConfig::default();
+        // A directory section long enough to scroll, in place of the working
+        // directory. Other tests in this binary open files meanwhile, and a recent
+        // they leave lands above the collection; a list that fits the screen cannot
+        // scroll to keep the cursor's line, so the line moved and this failed.
+        let listed = TempDir::new().unwrap();
+        many_directories(listed.path());
+        let mut config = local_config(listed.path());
         config.sources = vec![datui::config::SourceConfig {
             name: "lab".to_string(),
             label: Some("Lab".to_string()),

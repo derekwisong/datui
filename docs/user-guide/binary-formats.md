@@ -118,9 +118,9 @@ a repository of specs can run it in CI.
 |---|---|
 | `--spec FILE` | That spec, whatever the file is called |
 | `--format NAME` | The spec of that name |
-| A name or bytes datui already reads (`.csv`, `.parquet`, Parquet magic) | Read as it is, as before |
+| A name datui already reads (`.csv`, `.parquet`) | Read as it is, as before |
 | A `glob` matches | That spec |
-| A `magic` matches | That spec |
+| A `magic` matches, in a file whose bytes are no format datui reads (such as Parquet) | That spec |
 
 A spec with `match.where` matches only a file whose header holds those values,
 so one spec per version can share a glob and a magic:

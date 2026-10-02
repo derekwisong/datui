@@ -104,8 +104,9 @@ winget install derekwisong.datui
 
 | | On Windows |
 |---|---|
-| Terminal | Windows Terminal draws datui's glyphs and 24-bit color. The classic console window draws ASCII unless its code page is UTF-8 (`chcp 65001`); `[display] unicode` overrides either way ([Glyphs or ASCII](../reference/settings.md#glyphs-or-ascii)) |
+| Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Windows Terminal draws datui's glyphs; the classic console draws ASCII unless its code page is UTF-8 (`chcp 65001`). `[display] unicode` overrides either way ([Glyphs or ASCII](../reference/settings.md#glyphs-or-ascii)) |
 | Config file | `%APPDATA%\datui\config.toml` |
+| Format specs | `%APPDATA%\datui\formats` ([Binary formats](../user-guide/binary-formats.md)) |
 | Cache and log | `%LOCALAPPDATA%\datui` |
 | `~` | `datui ~\data\a.csv` opens from your user folder in cmd and PowerShell too |
 | Mouse | <kbd>Shift</kbd>+drag selects text in Windows Terminal while datui has the mouse ([Mouse and text selection](../user-guide/configuration.md#mouse-and-text-selection)) |

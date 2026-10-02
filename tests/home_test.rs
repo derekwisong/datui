@@ -6249,8 +6249,13 @@ mod landing {
         config.data.search.enabled = false;
         let (mut app, rx) = home_app(config);
         let measured = ["sales_hive", "same_schema", "diff_schema"].map(|d| root.join(d));
+        // Not just listed in `enriched`: a look sends a row's kind before its footers,
+        // and a door named from that record alone lists only the keys on screen. Both
+        // passes done, every record is the measured one.
         settle(&mut app, &rx, |app| {
-            measured.iter().all(|d| app.home.enriched.contains_key(d))
+            !app.home.measure_in_flight
+                && !app.home.classify_in_flight
+                && measured.iter().all(|d| app.home.enriched.contains_key(d))
         });
         (app, rx)
     }

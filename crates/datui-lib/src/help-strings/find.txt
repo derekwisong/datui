@@ -15,8 +15,10 @@ never changed; each value is matched as text. Binary and nested columns
 are skipped.
 
 At the table:
-  n / N:            Next / previous match. Past the last match the find
-                    comes round to the first, and the bar says so
+  n / N:            Next / previous match from the cursor's cell. Past
+                    the last match the find comes round to the first,
+                    and the bar says so. Each one typed while a find
+                    reads runs in turn
   f:                Find again, the last pattern ready to edit
 
 The bar shows the pattern, and which match the cursor is on when the finds

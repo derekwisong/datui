@@ -13,7 +13,8 @@ Navigation:
   f:                Find text or a regex in the view; the cursor, column
                     cursor and all, goes to the first match at or after
                     its row
-  n / N:            Next / previous match, wrapping round the view
+  n / N:            Next / previous match from the cursor's cell,
+                    wrapping round the view
   Enter:            On a row of a by query or a SQL GROUP BY, drill into
                     its rows (Esc comes back); elsewhere, inspect the row
   Space:            Inspect the row: every field, each value whole and

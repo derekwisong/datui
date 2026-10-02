@@ -1591,9 +1591,9 @@ fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, 
 
 /// Rows `[start, start + len)` of `lf` as `all_columns`. With `files` counted, a scan
 /// of only the files holding them, so a window deep in a remote dataset does not read
-/// every file before it. With `audio`, the frames read straight from the file: a scan
-/// can only stop early, not start late, so the window at the end of a long recording
-/// would otherwise decode every frame before it.
+/// every file before it. With `audio`, the frames read straight from the file: the
+/// in-memory engine builds the plan's frame index from row 0 up to a slice's end, so
+/// the window at the end of a long recording would cost 4 bytes per frame before it.
 fn window_of(
     lf: &LazyFrame,
     files: Option<&RemoteFiles>,
@@ -6451,10 +6451,6 @@ impl DataTableState {
         )
     }
 
-    /// The lake format whose plain files this dataset is, if it is one.
-    ///
-    /// For the chip in the control bar. The note says the same at length; this is what
-    /// keeps the row count from reading as the table's.
     /// The audio file the dataset is, when it is one.
     pub fn audio(&self) -> Option<&crate::audio::AudioSource> {
         self.audio.as_ref().map(|(source, _)| source.as_ref())
@@ -6482,6 +6478,10 @@ impl DataTableState {
             .flatten()
     }
 
+    /// The lake format whose plain files this dataset is, if it is one.
+    ///
+    /// For the chip in the control bar. The note says the same at length; this is what
+    /// keeps the row count from reading as the table's.
     pub fn not_the_table(&self) -> Option<&'static str> {
         self.not_the_table
     }

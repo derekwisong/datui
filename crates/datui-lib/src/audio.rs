@@ -1070,9 +1070,11 @@ impl AudioSource {
     ///
     /// The plan is a frame index over nothing — a frame with no columns, only a
     /// height — and one elementwise expression per column that decodes its samples
-    /// from the index. So a slice anywhere in the file reads only its own frames, a
+    /// from the index. So a slice anywhere in the file decodes only its own frames, a
     /// query that names one channel decodes only that channel, and the streaming
-    /// engine decodes a morsel at a time. A Polars `AnonymousScan` gives none of
+    /// engine decodes a morsel at a time. The in-memory engine still builds the index
+    /// whole up to a slice's end, 4 bytes a frame, which is why an untouched view reads
+    /// its window through [`Self::window`]. A Polars `AnonymousScan` gives none of
     /// these: it cannot start a slice late, and the streaming engine cannot run it.
     pub fn lazy(self: &Arc<Self>) -> LazyFrame {
         let base = DataFrame::empty_with_height(self.frames as usize)

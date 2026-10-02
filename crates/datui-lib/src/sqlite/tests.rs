@@ -84,6 +84,29 @@ fn the_magic_and_paths_inside_a_database() {
         Some((db.clone(), "a/b".to_string())),
         "a name with a slash in it"
     );
+    // Any name reads back whole from the path the home screen and recents give it, one
+    // that looks absolute or has empty or dotted parts included.
+    for name in [
+        "users",
+        "/etc",
+        "a//b",
+        "a/./b",
+        "a/../b",
+        "..",
+        "with \"quotes\"",
+    ] {
+        let place = table_place(&db, name);
+        assert!(place.starts_with(&db), "{name} stays inside the database");
+        assert_eq!(
+            table_path(&place),
+            Some((db.clone(), name.to_string())),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        table_path(&db.join("users/")),
+        Some((db.clone(), "users".to_string()))
+    );
     let text = dir.path().join("notes.db");
     std::fs::write(&text, "not a database").unwrap();
     assert_eq!(table_path(&text.join("users")), None);

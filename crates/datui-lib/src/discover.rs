@@ -2093,7 +2093,7 @@ fn table_entry(
     table: crate::sqlite::Table,
     modified: Option<std::time::SystemTime>,
 ) -> Entry {
-    let mut entry = Entry::new(db.join(&table.name), EntryKind::File);
+    let mut entry = Entry::new(crate::sqlite::table_place(db, &table.name), EntryKind::File);
     entry.name = table.name;
     entry.modified = modified;
     entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
@@ -2285,10 +2285,10 @@ pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 /// `None` when the entry is neither, `Some(None)` when it is and has nothing to show.
 fn sqlite_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
     let (db, name) = match &entry.table {
-        Some(_) => (
-            entry.path.parent()?.to_path_buf(),
-            Some(entry.name.as_str()),
-        ),
+        Some(_) => match crate::sqlite::table_path(&entry.path) {
+            Some((db, _)) => (db, Some(entry.name.as_str())),
+            None => return Some(None),
+        },
         None if is_regular_file(&entry.path) && crate::sqlite::is_sqlite_file(&entry.path) => {
             (entry.path.clone(), None)
         }

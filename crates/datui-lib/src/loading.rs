@@ -160,7 +160,7 @@ impl OpenRequest {
             && first.is_file()
             && crate::sqlite::is_sqlite_file(&first)
         {
-            table = Some(first.join(name));
+            table = Some(crate::sqlite::table_place(&first, name));
         }
         let first = &paths[0];
         let size = if local {

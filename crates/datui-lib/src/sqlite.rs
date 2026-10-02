@@ -38,9 +38,19 @@ pub fn is_sqlite_file(path: &Path) -> bool {
         && looks_like(&head)
 }
 
-/// The database and the table a path inside a database names: `app.db/users` is the
-/// table `users` of `app.db`, and `app.db/a/b` the table `a/b`. `None` for a path that
-/// is there, or that is inside no SQLite file.
+/// The path of `table` inside the database `db`, as the home screen lists it and recents
+/// record it: `app.db/users`. The name is appended as it is, so a name that looks like a
+/// path (`/etc`, `a/../b`) stays inside the database and reads back whole.
+pub fn table_place(db: &Path, table: &str) -> PathBuf {
+    let mut place = db.as_os_str().to_owned();
+    place.push("/");
+    place.push(table);
+    place.into()
+}
+
+/// The database and the table a path inside a database names, the inverse of
+/// [`table_place`]: `app.db/users` is the table `users` of `app.db`, and `app.db/a/b`
+/// the table `a/b`. `None` for a path that is there, or that is inside no SQLite file.
 pub fn table_path(path: &Path) -> Option<(PathBuf, String)> {
     if path.exists() {
         return None;
@@ -53,13 +63,13 @@ pub fn table_path(path: &Path) -> Option<(PathBuf, String)> {
     if !is_sqlite_file(db) {
         return None;
     }
-    let table: Vec<&str> = path
-        .strip_prefix(db)
-        .ok()?
-        .components()
-        .map(|c| c.as_os_str().to_str())
-        .collect::<Option<_>>()?;
-    Some((db.to_path_buf(), table.join("/")))
+    // What follows the database's name, less the one separator after it, as written:
+    // a parent is a prefix of the path's own text.
+    let rest = path.to_str()?.strip_prefix(db.to_str()?)?;
+    let mut chars = rest.chars();
+    chars.next().filter(|c| std::path::is_separator(*c))?;
+    let table = chars.as_str().trim_end_matches(std::path::is_separator);
+    (!table.is_empty()).then(|| (db.to_path_buf(), table.to_string()))
 }
 
 /// Whether a table is SQLite's own: the schema, `sqlite_sequence`, the statistics

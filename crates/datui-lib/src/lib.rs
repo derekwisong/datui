@@ -18756,7 +18756,7 @@ impl App {
         };
         let converted = crate::sqlite::convert(file, path, &table, &tables, options, writer, read)?;
         let name = if own > 1 || table.internal {
-            path.join(&table.name)
+            crate::sqlite::table_place(path, &table.name)
         } else {
             path.to_path_buf()
         };

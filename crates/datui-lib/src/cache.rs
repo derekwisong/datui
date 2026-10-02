@@ -405,11 +405,10 @@ impl CacheManager {
             // A table inside a SQLite database is no file of its own: its database is
             // made absolute and the name kept.
             crate::canonical::canonicalize(path)
-                .or_else(|e| match (path.parent(), path.file_name()) {
-                    (Some(db), Some(table)) if !db.as_os_str().is_empty() => {
-                        crate::canonical::canonicalize(db).map(|db| db.join(table))
-                    }
-                    _ => Err(e),
+                .or_else(|e| match crate::sqlite::table_path(path) {
+                    Some((db, table)) => crate::canonical::canonicalize(&db)
+                        .map(|db| crate::sqlite::table_place(&db, &table)),
+                    None => Err(e),
                 })
                 .unwrap_or_else(|_| path.to_path_buf())
         };

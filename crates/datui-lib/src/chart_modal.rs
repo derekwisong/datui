@@ -201,16 +201,16 @@ pub struct ChartModal {
     /// The dataset the choices were made on (`App::dataset_generation`). Reopening the
     /// chart on the same dataset — after a sort or a filter — keeps them.
     pub dataset: Option<u64>,
-    /// The dataset's units, from a delimited spec's unit row: the axis titles name
+    /// Each column's unit, from a delimited spec's unit row: the axis titles name
     /// them. Set as the chart is drawn.
-    pub units: Option<std::sync::Arc<crate::delimited_spec::DelimitedRead>>,
+    pub units: Vec<(String, String)>,
 }
 
 impl ChartModal {
     /// An axis title for `column`: its name, and its unit when it has one.
     pub fn axis_title(&self, column: &str) -> String {
-        match self.units.as_ref().and_then(|read| read.unit_of(column)) {
-            Some(unit) => format!("{column} ({unit})"),
+        match self.units.iter().find(|(name, _)| name == column) {
+            Some((_, unit)) => format!("{column} ({unit})"),
             None => column.to_string(),
         }
     }
@@ -814,17 +814,9 @@ mod tests {
     /// An axis is titled with its column's unit, when a delimited spec read one.
     #[test]
     fn an_axis_title_names_the_unit() {
-        let spec =
-            crate::formats::Spec::parse("name = \"a.b\"\nkind = \"delimited\"", None).unwrap();
-        let mut read = crate::delimited_spec::DelimitedRead::chosen(
-            std::sync::Arc::new(spec),
-            crate::formats::Chosen::Named,
-            Vec::new(),
-        );
-        read.units = vec![("cht1".to_string(), "deg F".to_string())];
         let mut modal = ChartModal::default();
         assert_eq!(modal.axis_title("cht1"), "cht1");
-        modal.units = Some(std::sync::Arc::new(read));
+        modal.units = vec![("cht1".to_string(), "deg F".to_string())];
         assert_eq!(modal.axis_title("cht1"), "cht1 (deg F)");
         assert_eq!(modal.axis_title("volts"), "volts");
     }

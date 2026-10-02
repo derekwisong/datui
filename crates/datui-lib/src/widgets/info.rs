@@ -1128,10 +1128,7 @@ impl<'a> DataTableInfo<'a> {
         // re-proportion when it lands.
         let has_comp = self.ctx.parquet_file || compression.as_ref().is_some_and(|c| !c.is_empty());
         // A delimited spec's unit row: each column's unit, beside its type.
-        let has_units = self
-            .state
-            .delimited_read()
-            .is_some_and(|read| !read.units.is_empty());
+        let has_units = !self.state.units().is_empty();
         let mut header_cells = vec!["Column", "Type"];
         if has_units {
             header_cells.push("Unit");

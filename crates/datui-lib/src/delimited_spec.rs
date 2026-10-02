@@ -283,7 +283,9 @@ impl Delimited {
             let unit_fields =
                 crate::csv_dialect::header_fields(line(unit), unit, separator, comment);
             for (name, unit) in shown.into_iter().zip(unit_fields) {
-                if !unit.is_empty() {
+                // A derived column of the same name takes the column's place, and the
+                // unit was the text's.
+                if !unit.is_empty() && !self.columns.iter().any(|d| d.name == name) {
                     units.push((name, unit));
                 }
             }
@@ -653,6 +655,25 @@ mod tests {
         let metadata = metadata.unwrap();
         assert_eq!(metadata.title.as_deref(), Some("device_info"));
         assert_eq!(metadata.pairs, [("version".to_string(), "2".to_string())]);
+    }
+
+    #[test]
+    fn a_derived_column_that_takes_a_name_does_not_take_its_unit() {
+        let text = "#m=1\nyyyy-mm-dd, hh:mm\nDate, Time\n";
+        let spec = Delimited {
+            columns: vec![Derived {
+                name: "Time".into(),
+                from: vec!["Date".into(), "Time".into()],
+                kind: DerivedKind::Datetime,
+                format: None,
+            }],
+            ..spec()
+        };
+        let facts = spec.facts(text.as_bytes(), b',', " ").unwrap();
+        assert_eq!(
+            facts.units,
+            [("Date".to_string(), "yyyy-mm-dd".to_string())]
+        );
     }
 
     #[test]

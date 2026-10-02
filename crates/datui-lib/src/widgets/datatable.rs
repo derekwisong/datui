@@ -393,6 +393,10 @@ pub struct DataTableState {
     read_python: Vec<String>,
     /// How `reshaped_lf` was built, while there is one: what SQL runs over.
     reshape_steps: Option<Vec<Step>>,
+    /// Which loaded column each column of the base is (see [`Lineage`]).
+    lineage: Lineage,
+    /// The same for the pivot or melt in effect, which SQL runs against.
+    reshape_lineage: Lineage,
     /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
     partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
@@ -435,6 +439,44 @@ enum ExcelColType {
     Datetime,
 }
 
+/// Which loaded column each shown column is, as (shown name, loaded name), so a
+/// delimited spec's unit stays on a column that holds the loaded values, renamed or
+/// not, and never lands on a computed column that reuses a name. `None` while every
+/// column is the loaded column of its name.
+type Lineage = Option<Arc<Vec<(String, String)>>>;
+
+/// `pairs`, each a shown name and the name of a column of a frame whose lineage is
+/// `root`, traced back to the loaded columns. A name `root` does not know is dropped.
+fn traced(root: &Lineage, pairs: Vec<(String, String)>) -> Lineage {
+    let pairs = match root {
+        None => pairs,
+        Some(root) => pairs
+            .into_iter()
+            .filter_map(|(shown, from)| {
+                root.iter()
+                    .find(|(name, _)| *name == from)
+                    .map(|(_, loaded)| (shown, loaded.clone()))
+            })
+            .collect(),
+    };
+    Some(Arc::new(pairs))
+}
+
+/// Each of `exprs` that is a column unchanged, renamed or not: its output name and
+/// the column's.
+fn passed_through(exprs: &[Expr]) -> Vec<(String, String)> {
+    exprs
+        .iter()
+        .filter_map(|e| {
+            let Expr::Column(from) = e.clone().meta().undo_aliases() else {
+                return None;
+            };
+            let shown = e.clone().meta().output_name().ok()?;
+            Some((shown.to_string(), from.to_string()))
+        })
+        .collect()
+}
+
 /// The grouped view and the pipeline state that produced it, saved by a drill-down so
 /// filters and sort inside the group work on the group and `drill_up` restores the
 /// grouped view as it was.
@@ -465,6 +507,7 @@ struct GroupedView {
     by_value: bool,
     /// How `base_lf` was built, for Copy as Python.
     base_steps: Vec<Step>,
+    lineage: Lineage,
 }
 
 /// The rows a grouped result was computed from and how its keys were computed, so a
@@ -486,6 +529,8 @@ struct GroupSource {
     /// Python code, aliases undone. None where the script cannot say.
     python_rows: Option<Vec<Step>>,
     python_keys: Vec<Option<String>>,
+    /// Which loaded column each column of `rows` is.
+    lineage: Lineage,
 }
 
 /// One field the row inspector lists: a column of the frame on screen.
@@ -546,6 +591,8 @@ struct GroupRows {
     lead: Vec<String>,
     /// How `lf` is built, as Copy as Python steps.
     steps: Vec<Step>,
+    /// Which loaded column each column of `lf` is.
+    lineage: Lineage,
 }
 
 /// The view as it stood before a query or view replaced it: a checkpoint. A query plans
@@ -593,6 +640,8 @@ pub struct ViewRollback {
     reshape_source: Option<ReshapeSource>,
     base_steps: Vec<Step>,
     reshape_steps: Option<Vec<Step>>,
+    lineage: Lineage,
+    reshape_lineage: Lineage,
     group_source: Option<GroupSource>,
     drilled_down_group_index: Option<usize>,
     drilled_down_group_key: Option<Vec<String>>,
@@ -1871,6 +1920,8 @@ impl DataTableState {
             base_steps: Vec::new(),
             read_python: Vec::new(),
             reshape_steps: None,
+            lineage: None,
+            reshape_lineage: None,
             partition_columns: None,
             decompress_temp_file: None,
             download: None,
@@ -2016,6 +2067,8 @@ impl DataTableState {
             base_steps: Vec::new(),
             read_python: Vec::new(),
             reshape_steps: None,
+            lineage: None,
+            reshape_lineage: None,
             partition_columns,
             decompress_temp_file: None,
             download: None,
@@ -2161,6 +2214,8 @@ impl DataTableState {
         )];
         self.schema = schema;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+        // No column is a loaded one until the caller says which are.
+        self.lineage = Some(Arc::default());
         self.settle_cursor();
         // A query that groups records its source after installing its result.
         self.group_source = None;
@@ -2224,6 +2279,7 @@ impl DataTableState {
     /// The view no longer shows the pivot or melt, so nothing may run against it.
     fn forget_reshape(&mut self) {
         self.reshaped_lf = None;
+        self.reshape_lineage = None;
         self.reshape_steps = None;
         self.last_pivot_spec = None;
         self.last_melt_spec = None;
@@ -2242,6 +2298,8 @@ impl DataTableState {
         self.install_base(self.original_lf.clone(), schema);
         self.base_steps = Vec::new();
         self.reshape_steps = None;
+        self.lineage = None;
+        self.reshape_lineage = None;
         // A reset is a return to the data as opened, so the rows stand for files again
         // and what datui noticed about them applies once more.
         self.drift_column_present = self.drift_at_open;
@@ -6599,10 +6657,30 @@ impl DataTableState {
         self.delimited.as_ref()
     }
 
-    /// The unit of the column named `column`, from a delimited spec's unit row. Kept
-    /// by name, so a query, filter or sort that keeps the column keeps its unit.
+    /// The unit of the column named `column`, from a delimited spec's unit row. A
+    /// filter, sort, drill or query that keeps the loaded column, renamed or not, keeps
+    /// its unit; a column a query computes has none, whatever it is called.
     pub fn unit_of(&self, column: &str) -> Option<&str> {
-        self.delimited.as_ref()?.unit_of(column)
+        let read = self.delimited.as_ref()?;
+        let loaded = match &self.lineage {
+            None => column,
+            Some(lineage) => lineage
+                .iter()
+                .find(|(shown, _)| shown == column)
+                .map(|(_, loaded)| loaded.as_str())?,
+        };
+        read.unit_of(loaded)
+    }
+
+    /// Each column of the view that has a unit, with it.
+    pub fn units(&self) -> Vec<(String, String)> {
+        if self.delimited.is_none() {
+            return Vec::new();
+        }
+        self.schema
+            .iter_names()
+            .filter_map(|name| Some((name.to_string(), self.unit_of(name)?.to_string())))
+            .collect()
     }
 
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked
@@ -8182,6 +8260,8 @@ impl DataTableState {
             reshape_source: self.reshape_source.clone(),
             base_steps: self.base_steps.clone(),
             reshape_steps: self.reshape_steps.clone(),
+            lineage: self.lineage.clone(),
+            reshape_lineage: self.reshape_lineage.clone(),
             group_source: self.group_source.clone(),
             drilled_down_group_index: self.drilled_down_group_index,
             drilled_down_group_key: self.drilled_down_group_key.clone(),
@@ -8247,6 +8327,8 @@ impl DataTableState {
         self.reshape_source = saved.reshape_source;
         self.base_steps = saved.base_steps;
         self.reshape_steps = saved.reshape_steps;
+        self.lineage = saved.lineage;
+        self.reshape_lineage = saved.reshape_lineage;
         self.group_source = saved.group_source;
         self.drilled_down_group_index = saved.drilled_down_group_index;
         self.drilled_down_group_key = saved.drilled_down_group_key;
@@ -8835,7 +8917,12 @@ impl DataTableState {
             return Err(color_eyre::eyre::eyre!("Group index out of bounds"));
         }
         let mut group = if self.drills_lists() {
-            Self::group_from_lists(row, self.group_key_columns(), self.group_value_columns())?
+            Self::group_from_lists(
+                row,
+                self.group_key_columns(),
+                self.group_value_columns(),
+                self.lineage.clone(),
+            )?
         } else if let Some(source) = &self.group_source {
             Self::group_from_source(source, row)?
         } else {
@@ -8883,6 +8970,7 @@ impl DataTableState {
             key_values: vec![label],
             lead: vec![column.to_string()],
             steps,
+            lineage: self.lineage.clone(),
         };
         if !self.is_drilled_down() {
             let index = self.start_row + self.table_state.selected().unwrap_or(0);
@@ -8903,6 +8991,7 @@ impl DataTableState {
         self.sort_ascending = true;
         self.install_base(group.lf, schema);
         self.base_steps = group.steps;
+        self.lineage = group.lineage;
         self.column_order = order;
         self.start_row = 0;
         self.termcol_index = 0;
@@ -8946,10 +9035,12 @@ impl DataTableState {
             selected: self.table_state.selected(),
             by_value,
             base_steps: std::mem::take(&mut self.base_steps),
+            lineage: self.lineage.clone(),
         });
         self.sort_ascending = true;
         self.install_base(group.lf, schema);
         self.base_steps = group.steps;
+        self.lineage = group.lineage;
         // Led by the keys, as a group drilled from lists is.
         let rest: Vec<String> = std::mem::take(&mut self.column_order)
             .into_iter()
@@ -8973,6 +9064,7 @@ impl DataTableState {
         row: &DataFrame,
         key_columns: Vec<String>,
         value_columns: Vec<String>,
+        lineage: Lineage,
     ) -> Result<GroupRows> {
         if value_columns.is_empty() {
             return Err(color_eyre::eyre::eyre!("No value columns in grouped data"));
@@ -9011,6 +9103,8 @@ impl DataTableState {
                 "drilled into the group {group}, read from the grouped result's lists: \
                  not written as Python"
             ))],
+            // The lists keep the result's names.
+            lineage,
         })
     }
 
@@ -9085,6 +9179,7 @@ impl DataTableState {
             key_values,
             lead,
             steps,
+            lineage: source.lineage.clone(),
         })
     }
 
@@ -9103,6 +9198,7 @@ impl DataTableState {
         self.unsorted_lf = None;
         self.base_lf = view.base_lf;
         self.base_steps = view.base_steps;
+        self.lineage = view.lineage;
         self.filters = view.filters;
         self.sort_columns = view.sort_columns;
         self.sort_descending = view.sort_descending;
@@ -9174,6 +9270,7 @@ impl DataTableState {
         } else {
             spec.index.clone()
         };
+        let kept = index.clone();
         let step = Step::Pivot {
             index,
             on: spec.pivot_column.clone(),
@@ -9182,7 +9279,7 @@ impl DataTableState {
         };
         self.last_pivot_spec = Some(spec.clone());
         self.last_melt_spec = None;
-        self.replace_lf_after_reshape(pivoted.lazy(), step)
+        self.replace_lf_after_reshape(pivoted.lazy(), step, &kept)
     }
 
     /// Pivot the view here and now, reading it on this thread. The Pivot & Melt modal
@@ -9211,7 +9308,7 @@ impl DataTableState {
         };
         self.last_melt_spec = Some(spec.clone());
         self.last_pivot_spec = None;
-        self.replace_lf_after_reshape(lf, step)?;
+        self.replace_lf_after_reshape(lf, step, &spec.index)?;
         Ok(())
     }
 
@@ -9250,8 +9347,19 @@ impl DataTableState {
         })
     }
 
-    fn replace_lf_after_reshape(&mut self, lf: LazyFrame, step: Step) -> Result<()> {
+    /// Show `lf`, the view reshaped, as the new pipeline root. `kept` are the view's
+    /// columns it carries as they were: a pivot's index, a melt's id columns.
+    fn replace_lf_after_reshape(
+        &mut self,
+        lf: LazyFrame,
+        step: Step,
+        kept: &[String],
+    ) -> Result<()> {
         let schema = lf.clone().collect_schema()?;
+        let lineage = traced(
+            &self.lineage,
+            kept.iter().map(|c| (c.clone(), c.clone())).collect(),
+        );
         let mut steps = self.view_steps();
         steps.push(step);
         // Taken before the view state below is reset. Over an earlier reshape there is
@@ -9270,6 +9378,8 @@ impl DataTableState {
         self.install_base(lf, schema);
         self.base_steps = steps.clone();
         self.reshape_steps = Some(steps);
+        self.lineage = lineage.clone();
+        self.reshape_lineage = lineage;
         self.reset_view_state(0);
         self.error = None;
         self.df = None;
@@ -9496,6 +9606,26 @@ impl DataTableState {
             }) => {
                 let mut lf = self.query_source();
                 let mut schema_opt: Option<Arc<Schema>> = None;
+                // The query runs over the data as loaded: a column selected as it is, or
+                // renamed, is still a loaded one; a computed one is not.
+                let lineage = if cols.is_empty() && group_by_cols.is_empty() {
+                    None
+                } else {
+                    let mut kept = passed_through(&group_by_cols);
+                    if cols.is_empty() {
+                        // Every other column, as each group's list of its values.
+                        kept.extend(
+                            source_schema
+                                .iter()
+                                .flat_map(|schema| schema.iter_names())
+                                .filter(|n| !group_by_col_names.iter().any(|g| g == n.as_str()))
+                                .map(|n| (n.to_string(), n.to_string())),
+                        );
+                    } else {
+                        kept.extend(passed_through(&cols));
+                    }
+                    Some(Arc::new(kept))
+                };
 
                 // Apply filter first (where clause)
                 if let Some(f) = filter {
@@ -9598,6 +9728,7 @@ impl DataTableState {
                     input,
                 }]);
                 self.install_query_result(lf, schema, ActiveQuery::Dsl(query), locked, steps);
+                self.lineage = lineage;
                 if !keys.is_empty() {
                     self.group_source = Some(GroupSource {
                         rows: group_rows,
@@ -9606,6 +9737,8 @@ impl DataTableState {
                         rows_in_lists: true,
                         python_rows,
                         python_keys,
+                        // The data as loaded, filtered.
+                        lineage: None,
                     });
                 }
                 self.forget_reshape();
@@ -9638,6 +9771,18 @@ impl DataTableState {
                 .clone()
                 .unwrap_or_else(|| self.original_lf.clone()),
         )
+    }
+
+    /// Which loaded column each column of [`Self::query_root`] is.
+    #[cfg(feature = "sql")]
+    fn root_lineage(&self) -> Lineage {
+        if self.grouped.is_some() {
+            self.lineage.clone()
+        } else if self.reshaped_lf.is_some() {
+            self.reshape_lineage.clone()
+        } else {
+            None
+        }
     }
 
     /// How [`Self::query_root`] was built, as Copy as Python steps.
@@ -9702,6 +9847,16 @@ impl DataTableState {
                             strict: true,
                         });
                     }
+                    let root_lineage = self.root_lineage();
+                    let lineage = {
+                        let columns = root.clone().collect_schema().unwrap_or_default();
+                        let names: Vec<&str> = columns.iter_names().map(|n| n.as_str()).collect();
+                        let shown: Vec<&str> = schema.iter_names().map(|n| n.as_str()).collect();
+                        traced(
+                            &root_lineage,
+                            crate::sql_group::passed_through(trimmed, &names, &shown),
+                        )
+                    };
                     let group_source = Self::sql_group_source(
                         &mut ctx,
                         trimmed,
@@ -9709,6 +9864,7 @@ impl DataTableState {
                         &root_steps,
                         &mut result_lf,
                         &schema,
+                        root_lineage,
                     );
                     // Groups sorted by their keys have no ties, and a statement simple
                     // enough to trace holds nothing else that gives rows in any order.
@@ -9731,6 +9887,7 @@ impl DataTableState {
                         ordered_by,
                     });
                     self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql), 0, steps);
+                    self.lineage = lineage;
                     self.install_sql_group_source(group_source.map(|(source, _)| source));
                 }
                 Err(e) => {
@@ -9761,6 +9918,7 @@ impl DataTableState {
         root_steps: &[Step],
         result_lf: &mut LazyFrame,
         result: &Schema,
+        lineage: Lineage,
     ) -> Option<(GroupSource, bool)> {
         use crate::sql_group::KeySource;
         let columns = root.clone().collect_schema().ok()?;
@@ -9814,6 +9972,8 @@ impl DataTableState {
             rows_in_lists: false,
             python_rows: Some(python_rows),
             python_keys,
+            // `SELECT *` of the root, the scratch keys left out of a drill.
+            lineage,
         };
         Some((source, !plan.ordered))
     }
@@ -9886,6 +10046,8 @@ impl DataTableState {
             columns: string_cols.clone(),
         }];
         self.install_query_result(lf, schema, ActiveQuery::Fuzzy(query), 0, steps);
+        // Rows of the data as loaded, every column as it is.
+        self.lineage = None;
         self.forget_reshape();
         self.collect();
     }
@@ -9967,9 +10129,9 @@ pub struct DataTable {
     pub find_style: Style,
     /// The found cell's column, while the cursor is on its row: set at render.
     find_column: Option<String>,
-    /// What a delimited spec's read found, for the units on the type row: set at
+    /// Each column's unit from a delimited spec's unit row, for the type row: set at
     /// render.
-    delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
+    units: Vec<(String, String)>,
 }
 
 impl Default for DataTable {
@@ -10007,7 +10169,7 @@ impl Default for DataTable {
             find_cell: None,
             find_style: Style::default(),
             find_column: None,
-            delimited: None,
+            units: Vec::new(),
         }
     }
 }
@@ -10725,8 +10887,8 @@ impl DataTable {
             } else {
                 dtype_label(dtype)
             };
-            match self.delimited.as_ref().and_then(|read| read.unit_of(name)) {
-                Some(unit) => format!("{label} {} {unit}", self.glyphs.middot),
+            match self.units.iter().find(|(column, _)| column == name) {
+                Some((_, unit)) => format!("{label} {} {unit}", self.glyphs.middot),
                 None => label,
             }
         });
@@ -11150,7 +11312,7 @@ impl StatefulWidget for DataTable {
         self.sort_columns = state.view_sort_columns().to_vec();
         self.sort_descending = state.view_sort_descending().to_vec();
         self.current_column = state.current_column().map(str::to_string);
-        self.delimited = state.delimited_read().cloned();
+        self.units = state.units();
         // One column on the left is the rail: blank on every row but the one the
         // cursor is on, where it carries the accent. It also holds the "columns off to
         // the left" hint in the header, so no header name ever gets a character

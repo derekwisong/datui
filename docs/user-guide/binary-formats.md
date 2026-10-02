@@ -197,8 +197,9 @@ and the metadata line are the only lines read apart from the CSV reader.
 
 A unit sits beside its column's type on the table's type row
 (`f64 · deg F`), in a **Unit** column on the Info panel's Schema tab, and in
-chart axis titles (`T1 Temp (deg F)`). Units follow column names, so a query,
-filter or sort that keeps a column keeps its unit.
+chart axis titles (`T1 Temp (deg F)`). A filter, sort or drill keeps them, and
+so does a query, pivot or melt for each column it carries unchanged, renamed or
+not. A column a query computes has no unit, even under the name of one that had.
 
 ### Metadata
 
@@ -217,7 +218,8 @@ as it is. For a directory, the first file's line is shown.
 `format = "%Y-%m-%d %H:%M:%S"` gives the strftime format of the text, a date
 and a time joined with a space; without it the format is inferred. A value that
 does not parse is null. The column goes before the first column it is made
-from, which stays. There is no expression language: anything more is a
+from, which stays; one named after a column it is made from replaces that
+column, and its unit. There is no expression language: anything more is a
 [query](querying-data.md).
 
 ### Matching

@@ -157,6 +157,90 @@ fn units_are_kept_through_a_sort_and_a_query() {
     );
 }
 
+/// A unit stays on the loaded column, renamed or not, and never lands on a column a
+/// query computes under a name that has one.
+#[test]
+fn a_computed_column_that_reuses_a_name_has_no_unit() {
+    let path = common::fixture_dir().join("delimited_spec_computed.csv");
+    std::fs::write(&path, log_text("2024-03-01", 6)).unwrap();
+    let (mut app, rx, tx) = app_with_spec();
+    open(&mut app, &rx, path, OpenOptions::default());
+    let unit = |app: &App, column: &str| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .unit_of(column)
+            .map(str::to_string)
+    };
+
+    run_query(
+        &mut app,
+        &rx,
+        &tx,
+        "select v: volts, volts: volts * 1000, cht1",
+    );
+    assert_eq!(unit(&app, "v").as_deref(), Some("volts"), "renamed");
+    assert_eq!(unit(&app, "volts"), None, "computed");
+    assert_eq!(unit(&app, "cht1").as_deref(), Some("deg F"));
+    let shown = screen(&mut app);
+    assert!(!shown.contains("f64 · volts  f64 · volts"), "{shown}");
+
+    run_query(&mut app, &rx, &tx, "select cht1: count volts by UTCOfst");
+    assert_eq!(unit(&app, "cht1"), None, "a count");
+    assert_eq!(unit(&app, "UTCOfst").as_deref(), Some("hh:mm"), "a key");
+
+    // A melt carries its id columns; its value column is not any one of them.
+    let melt = datui::pivot_melt_modal::MeltSpec {
+        index: vec!["UTCOfst".to_string()],
+        value_columns: vec!["volts".to_string(), "cht1".to_string()],
+        variable_name: "variable".to_string(),
+        value_name: "Latitude".to_string(),
+    };
+    run_query(&mut app, &rx, &tx, "select UTCOfst, volts, cht1");
+    app.data_table_state.as_mut().unwrap().melt(&melt).unwrap();
+    assert_eq!(unit(&app, "UTCOfst").as_deref(), Some("hh:mm"));
+    assert_eq!(unit(&app, "Latitude"), None, "the melt's values");
+
+    run_query(&mut app, &rx, &tx, "");
+    assert_eq!(unit(&app, "volts").as_deref(), Some("volts"), "reset");
+}
+
+#[cfg(feature = "sql")]
+#[test]
+fn sql_keeps_units_only_on_columns_it_passes_through() {
+    let path = common::fixture_dir().join("delimited_spec_sql.csv");
+    std::fs::write(&path, log_text("2024-03-01", 6)).unwrap();
+    let (mut app, rx, tx) = app_with_spec();
+    open(&mut app, &rx, path, OpenOptions::default());
+    let sql = |app: &mut App, statement: &str| {
+        app.event(&AppEvent::SqlSearch(statement.to_string()));
+        pump_until_idle(app, &rx, &tx);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(state.error().is_none(), "{statement}: {:?}", state.error());
+    };
+    let unit = |app: &App, column: &str| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .unit_of(column)
+            .map(str::to_string)
+    };
+
+    sql(&mut app, "SELECT * FROM df WHERE cht1 > 182");
+    assert_eq!(unit(&app, "cht1").as_deref(), Some("deg F"));
+    assert_eq!(unit(&app, "volts").as_deref(), Some("volts"));
+
+    sql(
+        &mut app,
+        "SELECT cht1 * 2 AS cht1, volts AS v, COUNT(*) AS volts FROM df GROUP BY cht1, volts",
+    );
+    assert_eq!(unit(&app, "cht1"), None);
+    assert_eq!(unit(&app, "v").as_deref(), Some("volts"));
+    assert_eq!(unit(&app, "volts"), None);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.units(), [("v".to_string(), "volts".to_string())]);
+}
+
 #[test]
 fn the_info_panel_shows_the_metadata_and_the_units() {
     let path = common::fixture_dir().join("delimited_spec_info.csv");

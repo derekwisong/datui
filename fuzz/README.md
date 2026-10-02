@@ -3,7 +3,8 @@
 Coverage-guided fuzzing with [cargo-fuzz] and libFuzzer. The targets cover the
 hand-written parsers and matchers that run on untrusted input: the query language, the
 number renderer, the fuzzy matcher, the config glob matcher, config loading, the
-SafeTensors and GGUF header readers, and the NMEA and GPX readers.
+SafeTensors and GGUF header readers, the NMEA and GPX readers, and the WAV and AIFF
+chunk walker.
 
 ## Setup
 
@@ -47,6 +48,7 @@ scripts/dev/test.sh integration fuzz_corpus_test
 | `fuzzy_match` | `fuzzy::best_match` | Returned positions must be valid, strictly ascending character indices into the haystack, one per needle character. The home screen highlights by indexing with them. |
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher. Checked for hangs and for the wildcard-free fast path agreeing with equality. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and colour strings that are sliced by byte offset after a byte-length check. |
+| `audio_header` | `audio::read_header`, `audio::AudioSource` | WAV, RF64 and AIFF headers and samples read by sizes and offsets the file states. A corrupt header must be an error, never a panic or an allocation sized by the file. |
 | `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Model file headers read by lengths the file states. A corrupt header must be an error, never a panic or an allocation sized by the file. |
 | `gps_parse` | `gps::nmea::NmeaReader`, `gps::gpx::GpxReader` | GPS logs read a piece at a time, with line, markup, text and depth bounds. The first byte picks the NMEA table and the piece size. Frames must keep their schema and every coordinate must be on the globe. |
 

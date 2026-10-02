@@ -9,6 +9,8 @@
 // The bodies name the library as the fuzz crate does.
 extern crate datui as datui_lib;
 
+#[path = "../fuzz/src/audio_header.rs"]
+mod audio_header;
 #[path = "../fuzz/src/config_parse.rs"]
 mod config_parse;
 #[path = "../fuzz/src/format_spec.rs"]
@@ -119,6 +121,7 @@ fn every_corpus_input_passes_its_target() {
     });
     replay("model_header", &mut failures, model_header::run);
     replay("gps_parse", &mut failures, gps_parse::run);
+    replay("audio_header", &mut failures, audio_header::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
     });
@@ -149,6 +152,7 @@ fn every_corpus_has_a_replay() {
         })
         .collect();
     let replayed: BTreeSet<String> = [
+        "audio_header",
         "config_parse",
         "format_spec",
         "fuzzy_match",

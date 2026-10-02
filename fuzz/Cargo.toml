@@ -97,6 +97,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "audio_header"
+path = "fuzz_targets/audio_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "model_header"
 path = "fuzz_targets/model_header.rs"
 test = false

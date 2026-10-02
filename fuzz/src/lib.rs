@@ -4,6 +4,7 @@
 //! here. `tests/fuzz_corpus_test.rs` in the main workspace includes these same files
 //! and replays every committed corpus input through them as an ordinary test, so a
 //! check added to `run` reaches both.
+pub mod audio_header;
 pub mod config_parse;
 pub mod format_spec;
 pub mod fuzzy_match;

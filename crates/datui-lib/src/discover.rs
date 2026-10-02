@@ -213,10 +213,27 @@ impl Holds {
         }
     }
 
+    /// The weights' format and file count, when this directory is a model: weights of
+    /// one format with nothing beside them but JSON. See [`is_model_directory`].
+    pub fn model_weights(&self) -> Option<(&str, usize)> {
+        if !is_model_directory(counts_names(self)) {
+            return None;
+        }
+        self.formats
+            .iter()
+            .find(|(name, _)| is_weights(name))
+            .map(|(name, count)| (name.as_str(), *count))
+    }
+
     /// The label a directory's row carries when its kind does not name itself: `12
     /// parquet`, `mixed`, or `dir` for a directory with no data directly inside.
     pub fn label(&self) -> String {
         let more = if self.truncated { "+" } else { "" };
+        // A model's weights beside its config and tokenizer JSON: the directory is the
+        // model, and its label says so rather than `mixed`.
+        if let Some((name, count)) = self.model_weights() {
+            return format!("{count}{more} {name}");
+        }
         match self.formats.as_slice() {
             // `dir` says there is no data file inside. A listing cut short cannot say
             // that — it found none among the entries it read, and more files can
@@ -499,22 +516,11 @@ mod parquet_key_tests {
 /// CSV and JSON are deliberately absent: they have no signature, and guessing from the
 /// first line is a parse rather than a look.
 pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
-    use std::io::Read;
-    let mut head = [0u8; 8];
-    let read = {
-        let mut file = std::fs::File::open(path).ok()?;
-        // A short read is the whole file: a signature that does not fit is not one.
-        let mut filled = 0;
-        loop {
-            match file.read(&mut head[filled..]) {
-                Ok(0) => break,
-                Ok(n) => filled += n,
-                Err(_) => return None,
-            }
-        }
-        filled
-    };
-    let head = &head[..read];
+    let mut head = [0u8; 16];
+    let head = read_head(path, &mut head)?;
+    if let Some(model) = model_format_of(head) {
+        return Some(model);
+    }
     if head.starts_with(b"PAR1") {
         // Both ends, because `PAR1` at the front alone is a truncated write — the
         // footer is what a Parquet reader actually needs.
@@ -530,6 +536,47 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
         return Some(crate::FileFormat::Orc);
     }
     None
+}
+
+/// The first bytes of `path`, as many as fit in `buf`. A short read is the whole file:
+/// a signature that does not fit is not one.
+fn read_head<'a>(path: &Path, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut filled = 0;
+    loop {
+        match file.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => return None,
+        }
+        if filled == buf.len() {
+            break;
+        }
+    }
+    Some(&buf[..filled])
+}
+
+/// A model file by its first bytes: GGUF's magic, or a SafeTensors header's length and
+/// the `{` after it.
+fn model_format_of(head: &[u8]) -> Option<crate::FileFormat> {
+    if crate::model_files::looks_like_gguf(head) {
+        Some(crate::FileFormat::Gguf)
+    } else if crate::model_files::looks_like_safetensors(head) {
+        Some(crate::FileFormat::Safetensors)
+    } else {
+        None
+    }
+}
+
+/// Whether a file whose name says nothing is a SafeTensors or GGUF model, by its first
+/// bytes. Checkpoints are often saved as `.bin` or with no extension at all.
+///
+/// Only these two: their signatures are specific enough to trust on a file of any
+/// name, where `ORC` at the front of a text file is a word, not a format.
+pub fn sniff_model_format(path: &Path) -> Option<crate::FileFormat> {
+    let mut head = [0u8; 16];
+    model_format_of(read_head(path, &mut head)?)
 }
 
 /// How many extension-less files one listing looks inside. A directory of Spark output
@@ -634,6 +681,10 @@ pub fn unreadable_by_name(path: &Path) -> bool {
 /// own is what keeps the home screen from offering a file the reader has no route for,
 /// which is how `.txt` came to be listed and refused and `.psv` readable and invisible.
 pub fn data_format(path: &Path) -> Option<crate::FileFormat> {
+    // A sharded checkpoint's index is the model, not a JSON table.
+    if crate::model_files::is_safetensors_index(path) {
+        return Some(crate::FileFormat::Safetensors);
+    }
     crate::FileFormat::from_extension(&data_extension(path)?)
 }
 
@@ -699,6 +750,34 @@ pub fn is_bookkeeping(name: &str) -> bool {
         return false;
     }
     name.starts_with(['_', '.'])
+}
+
+/// Whether a format, by name, is model weights.
+fn is_weights(name: &str) -> bool {
+    name == crate::FileFormat::Safetensors.name() || name == crate::FileFormat::Gguf.name()
+}
+
+/// Whether formats found side by side in one directory are a model: weights of one
+/// format, with nothing else beside them but JSON (a config, a tokenizer). Such a
+/// directory is the model, however many JSON files outnumber the shards.
+pub(crate) fn is_model_directory<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut weights = None;
+    for name in names {
+        if is_weights(name) {
+            if weights.is_some_and(|w| w != name) {
+                return false;
+            }
+            weights = Some(name);
+        } else if name != crate::FileFormat::Json.name() {
+            return false;
+        }
+    }
+    weights.is_some()
+}
+
+/// The format names `holds` counted.
+fn counts_names(holds: &Holds) -> impl Iterator<Item = &str> {
+    holds.formats.iter().map(|(name, _)| name.as_str())
 }
 
 /// Whether a name is a hive partition (`year=2024`): `key=value`, with a non-empty key.
@@ -844,6 +923,15 @@ pub fn directory_format(dir: &Path) -> DirectoryFormat {
     // The one order every route ranks a directory's formats by, so the reader this picks
     // is the format the label names.
     by_format.sort_by(|a, b| rank_formats((a.0.name(), a.1.len()), (b.0.name(), b.1.len())));
+    // A directory holding model weights is the model. Its config and tokenizer JSON
+    // sit beside the shards and often outnumber them, which does not make it a table
+    // of JSON; the JSON is what the read passes over.
+    if is_model_directory(by_format.iter().map(|(f, _)| f.name()))
+        && let Some(at) = by_format.iter().position(|(f, _)| is_weights(f.name()))
+    {
+        let weights = by_format.remove(at);
+        by_format.insert(0, weights);
+    }
     let mut by_format = by_format.into_iter();
     let Some((format, mut files)) = by_format.next() else {
         return DirectoryFormat::Deeper;
@@ -1037,6 +1125,14 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                 partitions += 1;
             }
         } else if let Some(found) = data_format(&entry_path)
+            // A sharded checkpoint's index is counted as the JSON it is, so the label
+            // counts the shards; the read still takes it, for the metadata it carries.
+            .map(
+                |found| match crate::model_files::is_safetensors_index(&entry_path) {
+                    true => crate::FileFormat::Json,
+                    false => found,
+                },
+            )
             // Data by where it sits rather than by its name: see [`is_data_file`].
             .or_else(|| {
                 is_parquet_key(&directory_and_name(&entry_path))
@@ -1104,7 +1200,10 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     // be offered as a dataset, which is worse than useless: it hides the directory.
     let homogeneous = data_files > 1 && !mixed_formats && readable_as_one;
     let mostly_data = data_files * 2 >= seen;
-    let kind = if homogeneous && mostly_data {
+    // A model directory opens as the model: its shards as one table, the JSON beside
+    // them left out. One file of weights is a model too.
+    let model = partitions == 0 && is_model_directory(counts_names(&holds));
+    let kind = if (homogeneous && mostly_data) || model {
         EntryKind::MultiFile
     } else {
         // Everything else — including a directory holding a single data file — is a
@@ -3055,6 +3154,72 @@ mod classification_tests {
             EntryKind::Directory,
             "two broken symlinks are not a dataset"
         );
+    }
+
+    /// A checkpoint directory is the model: its shards are the table, the config and
+    /// tokenizer JSON beside them are passed over however many there are, and the label
+    /// names the weights rather than calling the directory mixed.
+    #[test]
+    fn a_model_directory_is_its_weights() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
+            "config.json",
+            "generation_config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let DirectoryFormat::Mixed {
+            format,
+            files,
+            passed_over,
+        } = directory_format(dir.path())
+        else {
+            panic!("weights and JSON are two formats");
+        };
+        assert_eq!(format, crate::FileFormat::Safetensors);
+        assert_eq!(files.len(), 3, "the shards, and the index for its metadata");
+        assert_eq!(passed_over, [(crate::FileFormat::Json, 4)]);
+        let (kind, holds) = look_at_directory(dir.path());
+        assert_eq!(kind, EntryKind::MultiFile, "opened as one");
+        assert_eq!(holds.label(), "2 safetensors", "the shards, not the index");
+
+        // The index is the model too, named by what it is rather than its extension.
+        assert_eq!(
+            data_format(Path::new("model.safetensors.index.json")),
+            Some(crate::FileFormat::Safetensors)
+        );
+        // Weights beside another table format are not a model directory.
+        std::fs::write(dir.path().join("data.parquet"), b"x").unwrap();
+        let (kind, holds) = look_at_directory(dir.path());
+        assert_eq!(
+            (kind, holds.label().as_str()),
+            (EntryKind::Directory, "mixed")
+        );
+    }
+
+    /// A model file is known by its first bytes under any name.
+    #[test]
+    fn model_files_are_sniffed_by_their_first_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let gguf = dir.path().join("weights");
+        std::fs::write(&gguf, b"GGUF\x03\x00\x00\x00").unwrap();
+        let st = dir.path().join("checkpoint.bin");
+        let mut bytes = 2u64.to_le_bytes().to_vec();
+        bytes.extend_from_slice(b"{}");
+        std::fs::write(&st, &bytes).unwrap();
+        let text = dir.path().join("notes");
+        std::fs::write(&text, b"just some text").unwrap();
+        assert_eq!(sniff_format(&gguf), Some(crate::FileFormat::Gguf));
+        assert_eq!(
+            sniff_model_format(&st),
+            Some(crate::FileFormat::Safetensors)
+        );
+        assert_eq!(sniff_model_format(&text), None);
     }
 
     /// A directory is offered as one dataset only when its format can be read as many

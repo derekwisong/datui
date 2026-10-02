@@ -86,6 +86,8 @@ The format is taken from the extension, or from `--format` when there is none.
 | Avro | `.avro` | | |
 | Excel | `.xlsx`, `.xlsm`, `.xlsb`, `.xls` | | |
 | ORC | `.orc` | | |
+| SafeTensors | `.safetensors`, `model.safetensors.index.json` | header only | |
+| GGUF | `.gguf` | header only | |
 
 **Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
 queries, sorting and analysis may read the full input. The other formats are
@@ -94,6 +96,43 @@ a bucket, which is scanned.
 
 **Excel** opens the first sheet unless `--sheet` names another, by index
 (`--sheet 0`) or name (`--sheet Sales`).
+
+### Model files
+
+```bash
+datui model.safetensors
+datui Llama-3-8B-Q4_K_M.gguf
+datui model.safetensors.index.json     # a sharded checkpoint, as one table
+datui path/to/checkpoint/              # the same, from its directory
+```
+
+A SafeTensors or GGUF file opens as a table with one row per tensor. Only the
+header is read, so a 70 GB model opens as fast as a small one.
+
+| Format | Columns |
+|---|---|
+| SafeTensors | `name`, `dtype`, `shape`, `params`, `bytes`, `offset_start`, `offset_end` |
+| GGUF | `name`, `type`, `shape`, `params`, `bytes`, `offset` |
+
+- `shape` is a list; `params` is its product.
+- GGUF `type` is the quantization type (`Q4_K`, `Q8_0`, `F16`). `bytes` is
+  null for a type datui does not know the size of.
+- GGUF `shape` lists dimensions as the file does, fastest-varying first.
+- Offsets are as the file records them, from the start of the tensor data.
+  SafeTensors rows are in data order; GGUF rows are in file order.
+- A sharded checkpoint opens from its `model.safetensors.index.json` or its
+  directory, with a `file` column first. Several model files named together
+  open the same way.
+- Files are recognized by their first bytes too, so a `.bin` or a file with
+  no extension opens when it is SafeTensors or GGUF. GGUF versions 2 and 3
+  are read, in either byte order.
+
+Press <kbd>i</kbd> for the [Model tab](dataset-info.md#model): parameter
+count, size, the dtype or quantization mix, and the header's metadata
+(`__metadata__`, or GGUF's key/value pairs).
+
+A header that is corrupt, or a tensor that reaches past the end of the file
+(a download cut short), is refused with an error. Remote model files are downloaded whole before they open.
 
 ### CSV options
 

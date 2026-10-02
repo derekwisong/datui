@@ -337,6 +337,9 @@ pub struct DataTableState {
     /// The lake format whose plain files this dataset is, if it is one. See
     /// [`crate::OpenOptions::read_as_plain_files_of`].
     not_the_table: Option<&'static str>,
+    /// What a SafeTensors or GGUF header said besides its tensors. See
+    /// [`crate::OpenOptions::model`].
+    model: Option<Arc<crate::model_files::ModelSummary>>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -818,6 +821,8 @@ pub struct OpenFacts {
     pub not_the_table: Option<&'static str>,
     /// The downloaded file the frame scans, held for as long as the state lives.
     pub download: Option<crate::download::TempDownload>,
+    /// What a model file's header said besides its tensors.
+    pub model: Option<Arc<crate::model_files::ModelSummary>>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1748,6 +1753,7 @@ impl DataTableState {
             notes: Vec::new(),
             open_notes: Vec::new(),
             not_the_table: None,
+            model: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -1879,6 +1885,7 @@ impl DataTableState {
             notes: Vec::new(),
             open_notes: Vec::new(),
             not_the_table: None,
+            model: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -1926,6 +1933,7 @@ impl DataTableState {
             open_notes,
             not_the_table,
             download,
+            model,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -1964,6 +1972,7 @@ impl DataTableState {
         self.open_notes = open_notes;
         self.not_the_table = not_the_table;
         self.download = download;
+        self.model = model;
         self
     }
 
@@ -6138,6 +6147,11 @@ impl DataTableState {
     /// keeps the row count from reading as the table's.
     pub fn not_the_table(&self) -> Option<&'static str> {
         self.not_the_table
+    }
+
+    /// The model file's metadata and totals, when the dataset is a model's tensors.
+    pub fn model(&self) -> Option<&crate::model_files::ModelSummary> {
+        self.model.as_deref()
     }
 
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked

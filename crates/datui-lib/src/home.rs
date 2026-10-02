@@ -450,6 +450,8 @@ fn format_title(name: &str) -> String {
         "arrow" => "Arrow".to_string(),
         "avro" => "Avro".to_string(),
         "excel" => "Excel".to_string(),
+        "safetensors" => "SafeTensors".to_string(),
+        "gguf" => "GGUF".to_string(),
         other => other.to_ascii_uppercase(),
     }
 }
@@ -494,9 +496,13 @@ pub fn door_name(door: &Entry, rows: &[Entry]) -> String {
                 format!("hive table: {}", keys.join(", "))
             }
         }
-        DoorKind::OneSchema => match holds.one_format() {
-            Some(format) => format!("{}, one schema", files(format)),
-            None => "one table".to_string(),
+        DoorKind::OneSchema => match (holds.model_weights(), holds.one_format()) {
+            (Some((format, count)), _) => {
+                let word = if count == 1 { "file" } else { "files" };
+                format!("model, {count}{more} {} {word}", format_title(format))
+            }
+            (None, Some(format)) => format!("{}, one schema", files(format)),
+            (None, None) => "one table".to_string(),
         },
         DoorKind::SchemasDiffer => {
             format!(

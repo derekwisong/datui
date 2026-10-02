@@ -30,11 +30,25 @@ pub enum FileFormat {
     Orc,
     /// Excel (.xls, .xlsx, .xlsm, .xlsb)
     Excel,
+    /// SafeTensors model weights: the tensor list, read from the header
+    Safetensors,
+    /// GGUF model weights: the tensor list, read from the header
+    Gguf,
 }
 
 impl FileFormat {
     /// Detect file format from path extension. Returns None when extension is missing or unknown.
+    ///
+    /// A sharded checkpoint's `model.safetensors.index.json` is SafeTensors: it is read
+    /// as the shards it names, not as JSON.
     pub fn from_path(path: &Path) -> Option<Self> {
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.to_ascii_lowercase().ends_with(".safetensors.index.json"))
+        {
+            return Some(Self::Safetensors);
+        }
         path.extension()
             .and_then(|e| e.to_str())
             .and_then(Self::from_extension)
@@ -57,6 +71,8 @@ impl FileFormat {
             Self::Avro => "avro",
             Self::Orc => "orc",
             Self::Excel => "excel",
+            Self::Safetensors => "safetensors",
+            Self::Gguf => "gguf",
         }
     }
 
@@ -69,7 +85,7 @@ impl FileFormat {
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
     /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -80,6 +96,8 @@ impl FileFormat {
         Self::Avro,
         Self::Orc,
         Self::Excel,
+        Self::Safetensors,
+        Self::Gguf,
     ];
 
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
@@ -137,6 +155,8 @@ impl FileFormat {
             "avro" => Some(Self::Avro),
             "orc" => Some(Self::Orc),
             "xls" | "xlsx" | "xlsm" | "xlsb" => Some(Self::Excel),
+            "safetensors" => Some(Self::Safetensors),
+            "gguf" => Some(Self::Gguf),
             _ => None,
         }
     }
@@ -657,6 +677,23 @@ mod tests {
             FileFormat::from_path(Path::new("file.NDJSON")),
             Some(FileFormat::Jsonl)
         );
+        assert_eq!(
+            FileFormat::from_path(Path::new("model.gguf")),
+            Some(FileFormat::Gguf)
+        );
+        assert_eq!(
+            FileFormat::from_path(Path::new("model-00001-of-00002.safetensors")),
+            Some(FileFormat::Safetensors)
+        );
+        assert_eq!(
+            FileFormat::from_path(Path::new("model.safetensors.index.json")),
+            Some(FileFormat::Safetensors),
+            "an index is read as the shards it names"
+        );
+        assert_eq!(
+            FileFormat::from_path(Path::new("config.json")),
+            Some(FileFormat::Json)
+        );
     }
 }
 
@@ -681,7 +718,9 @@ mod format_tests {
                 | FileFormat::Arrow
                 | FileFormat::Avro
                 | FileFormat::Orc
-                | FileFormat::Excel => FileFormat::ALL.contains(&f),
+                | FileFormat::Excel
+                | FileFormat::Safetensors
+                | FileFormat::Gguf => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -698,7 +737,18 @@ mod format_tests {
         assert_eq!(
             FileFormat::ALL.map(|f| f.name()),
             [
-                "parquet", "csv", "tsv", "psv", "json", "jsonl", "arrow", "avro", "orc", "excel"
+                "parquet",
+                "csv",
+                "tsv",
+                "psv",
+                "json",
+                "jsonl",
+                "arrow",
+                "avro",
+                "orc",
+                "excel",
+                "safetensors",
+                "gguf"
             ]
         );
     }

@@ -139,6 +139,12 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     if head.starts_with(b"Obj\x01") {
         return (FileFormat::Avro, None);
     }
+    if crate::model_files::looks_like_gguf(head) {
+        return (FileFormat::Gguf, None);
+    }
+    if crate::model_files::looks_like_safetensors(head) {
+        return (FileFormat::Safetensors, None);
+    }
     let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
     let text = &text[text
         .iter()
@@ -233,8 +239,14 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 17] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 19] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
+            (b"GGUF\x03\x00\x00\x00", FileFormat::Gguf, None),
+            (
+                b"\x02\x00\x00\x00\x00\x00\x00\x00{}",
+                FileFormat::Safetensors,
+                None,
+            ),
             (b"ARROW1\x00\x00", FileFormat::Arrow, None),
             (b"Obj\x01\x04", FileFormat::Avro, None),
             (

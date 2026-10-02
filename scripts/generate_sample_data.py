@@ -13,6 +13,7 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - Error case testing
 - Pivot and Melt reshape testing (long-format for pivot, wide-format for melt)
 - Correlation matrix demo (100k rows, 10 numeric columns with varying correlations)
+- Tiny SafeTensors and GGUF model files, written by hand with struct and NumPy
 
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
@@ -25,6 +26,8 @@ import numpy as np
 from datetime import date, datetime, timedelta
 import random
 import gzip
+import json
+import struct
 
 # Optional deps for extra formats (fail gracefully if missing)
 try:
@@ -743,6 +746,133 @@ def save_excel(df, filename):
     print(f"Generated: {filepath}")
 
 
+def write_safetensors(path, tensors, metadata=None):
+    """A SafeTensors file: the header length, the JSON header, then the data.
+
+    Written by hand rather than with the `safetensors` package, which the tests
+    otherwise have no use for. `tensors` maps a name to a NumPy array.
+    """
+    dtypes = {np.dtype("float32"): "F32", np.dtype("float16"): "F16", np.dtype("int64"): "I64"}
+    header = {}
+    if metadata:
+        header["__metadata__"] = metadata
+    data = b""
+    for name, array in tensors.items():
+        raw = np.ascontiguousarray(array).tobytes()
+        header[name] = {
+            "dtype": dtypes[array.dtype],
+            "shape": list(array.shape),
+            "data_offsets": [len(data), len(data) + len(raw)],
+        }
+        data += raw
+    text = json.dumps(header, separators=(",", ":")).encode()
+    # Padded with spaces to eight bytes, as the reference writer does.
+    text += b" " * (-len(text) % 8)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<Q", len(text)))
+        f.write(text)
+        f.write(data)
+    print(f"Generated: {path}")
+
+
+def _gguf_str(s):
+    raw = s.encode()
+    return struct.pack("<Q", len(raw)) + raw
+
+
+def write_gguf(path):
+    """A GGUF v3 file with llama-style metadata, a vocabulary and three tensors."""
+    STRING, ARRAY, UINT32, FLOAT32 = 8, 9, 4, 6
+    kvs = [
+        ("general.architecture", STRING, "llama"),
+        ("general.name", STRING, "tiny"),
+        ("llama.context_length", UINT32, 2048),
+        ("llama.rope.freq_base", FLOAT32, 10000.0),
+        ("tokenizer.ggml.model", STRING, "llama"),
+        ("tokenizer.ggml.tokens", ARRAY, [f"tok{i}" for i in range(100)]),
+        (
+            "tokenizer.chat_template",
+            STRING,
+            "{% for message in messages %}\n{{ message['role'] }}: {{ message['content'] }}\n{% endfor %}",
+        ),
+    ]
+    # name, dims (fastest first, as GGML writes them), GGML type
+    tensors = [
+        ("token_embd.weight", [256, 100], 12),  # Q4_K
+        ("blk.0.attn_q.weight", [256, 256], 8),  # Q8_0
+        ("output_norm.weight", [256], 0),  # F32
+    ]
+    sizes = {12: (256, 144), 8: (32, 34), 0: (1, 4)}
+    out = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kvs))
+    for key, kind, value in kvs:
+        out += _gguf_str(key) + struct.pack("<I", kind)
+        if kind == STRING:
+            out += _gguf_str(value)
+        elif kind == UINT32:
+            out += struct.pack("<I", value)
+        elif kind == FLOAT32:
+            out += struct.pack("<f", value)
+        else:
+            out += struct.pack("<IQ", STRING, len(value))
+            out += b"".join(_gguf_str(v) for v in value)
+    offset = 0
+    data_sizes = []
+    for name, dims, ggml_type in tensors:
+        out += _gguf_str(name) + struct.pack("<I", len(dims))
+        out += b"".join(struct.pack("<Q", d) for d in dims)
+        out += struct.pack("<IQ", ggml_type, offset)
+        block, size = sizes[ggml_type]
+        n = int(np.prod(dims)) // block * size
+        data_sizes.append(n)
+        offset += n + (-n % 32)
+    out += b"\0" * (-len(out) % 32)
+    out += b"\0" * offset
+    with open(path, "wb") as f:
+        f.write(out)
+    print(f"Generated: {path}")
+
+
+def generate_model_files():
+    """Tiny model files: one SafeTensors file, a sharded checkpoint with its index,
+    and a GGUF."""
+    models = OUTPUT_DIR / "models"
+    models.mkdir(exist_ok=True)
+    rng = np.random.default_rng(42)
+    write_safetensors(
+        models / "tiny.safetensors",
+        {
+            "embed.weight": rng.standard_normal((16, 8)).astype(np.float32),
+            "layer.0.weight": rng.standard_normal((8, 8)).astype(np.float16),
+            "layer.0.bias": np.zeros(8, dtype=np.float32),
+            "step": np.array(7, dtype=np.int64),
+        },
+        metadata={"format": "pt", "note": "tiny test model"},
+    )
+    sharded = models / "sharded"
+    sharded.mkdir(exist_ok=True)
+    shards = {
+        "model-00001-of-00002.safetensors": {
+            "embed.weight": rng.standard_normal((16, 8)).astype(np.float32),
+        },
+        "model-00002-of-00002.safetensors": {
+            "layer.0.weight": rng.standard_normal((8, 8)).astype(np.float16),
+            "layer.0.bias": np.zeros(8, dtype=np.float32),
+        },
+    }
+    weight_map = {}
+    total = 0
+    for shard, tensors in shards.items():
+        write_safetensors(sharded / shard, tensors, metadata={"format": "pt"})
+        for name, array in tensors.items():
+            weight_map[name] = shard
+            total += array.nbytes
+    with open(sharded / "model.safetensors.index.json", "w") as f:
+        json.dump({"metadata": {"total_size": total}, "weight_map": weight_map}, f, indent=2)
+    with open(sharded / "config.json", "w") as f:
+        json.dump({"model_type": "tiny", "hidden_size": 8}, f)
+    write_gguf(models / "tiny.gguf")
+
+
 def main():
     print("Generating sample data files...")
     print(f"Output directory: {OUTPUT_DIR}")
@@ -857,6 +987,10 @@ def main():
     print("\n12. Generating infer schema length demo data...")
     infer_schema_length_data = generate_infer_schema_length_data()
     save_infer_schema_length_data(infer_schema_length_data, "infer_schema_length_data.csv")
+
+    # Model files: SafeTensors (one file and a sharded checkpoint) and GGUF
+    print("\n13. Generating model files...")
+    generate_model_files()
 
     print("\nSample data generation complete!")
 

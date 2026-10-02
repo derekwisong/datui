@@ -517,6 +517,7 @@ jobs:
           - fuzzy_match
           - glob_match
           - config_parse
+          - model_header
     env:
       # The deep configuration. AddressSanitizer can reach the unsafe code inside polars
       # and arrow that these targets feed, which the pull request checks skip

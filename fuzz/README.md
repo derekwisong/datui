@@ -2,7 +2,8 @@
 
 Coverage-guided fuzzing with [cargo-fuzz] and libFuzzer. The targets cover the
 hand-written parsers and matchers that run on untrusted input: the query language, the
-number renderer, the fuzzy matcher, the config glob matcher, and config loading.
+number renderer, the fuzzy matcher, the config glob matcher, config loading, and the
+SafeTensors and GGUF header readers.
 
 ## Setup
 
@@ -46,6 +47,7 @@ scripts/dev/test.sh integration fuzz_corpus_test
 | `fuzzy_match` | `fuzzy::best_match` | Returned positions must be valid, strictly ascending character indices into the haystack, one per needle character. The home screen highlights by indexing with them. |
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher. Checked for hangs and for the wildcard-free fast path agreeing with equality. |
 | `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and colour strings that are sliced by byte offset after a byte-length check. |
+| `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Model file headers read by lengths the file states. A corrupt header must be an error, never a panic or an allocation sized by the file. |
 
 ## Corpus
 

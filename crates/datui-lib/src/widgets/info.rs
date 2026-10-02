@@ -133,6 +133,160 @@ pub(crate) fn wrap_to(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// `n` comma-grouped, for the panel's own labels.
+fn group_u64(n: u64) -> String {
+    let mut out = String::new();
+    crate::numfmt::NumberFormat::CHROME.write_u64(n, &mut out);
+    out
+}
+
+/// `n` and the noun for it: `1 tensor`, `291 tensors`.
+fn count_of(n: u64, one: &str, many: &str) -> String {
+    format!("{} {}", group_u64(n), if n == 1 { one } else { many })
+}
+
+/// A parameter count as a model card says it: `8.0B`, `124.4M`, `950`.
+pub(crate) fn short_count(n: u64) -> String {
+    const STEPS: [(u64, &str); 4] = [
+        (1_000_000_000_000, "T"),
+        (1_000_000_000, "B"),
+        (1_000_000, "M"),
+        (1_000, "K"),
+    ];
+    for (size, suffix) in STEPS {
+        if n >= size {
+            return format!("{:.1}{suffix}", n as f64 / size as f64);
+        }
+    }
+    n.to_string()
+}
+
+/// Each type's share of the parameters, most first: `Q4_K 87% · Q6_K 12% · F32 <1%`.
+/// By tensors when no tensor has a parameter count.
+fn type_mix(types: &[crate::model_files::TypeShare], sep: &str) -> String {
+    let by_params = types.iter().any(|t| t.params > 0);
+    let total: u64 = if by_params {
+        types.iter().map(|t| t.params).fold(0, u64::saturating_add)
+    } else {
+        types.iter().map(|t| t.tensors as u64).sum()
+    };
+    types
+        .iter()
+        .map(|t| {
+            let part = if by_params {
+                t.params
+            } else {
+                t.tensors as u64
+            };
+            let pct = if total == 0 {
+                0.0
+            } else {
+                part as f64 * 100.0 / total as f64
+            };
+            if pct > 0.0 && pct < 1.0 {
+                format!("{} <1%", t.name)
+            } else {
+                format!("{} {:.0}%", t.name, pct)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// One metadata value as text: an array that was listed, or how long it is.
+pub(crate) fn meta_text(value: &crate::model_files::MetaValue) -> String {
+    use crate::model_files::MetaValue;
+    match value {
+        MetaValue::Text(text) => text.clone(),
+        MetaValue::List { of, len, items } if items.len() as u64 == *len && *len > 0 => {
+            let quote = *of == "strings";
+            let items: Vec<String> = items
+                .iter()
+                .map(|i| if quote { format!("{i:?}") } else { i.clone() })
+                .collect();
+            format!("[{}]", items.join(", "))
+        }
+        MetaValue::List { of, len, .. } => format!("[{} {of}]", group_u64(*len)),
+    }
+}
+
+/// The most of one metadata value the Model tab draws. A chat template is a few KB and
+/// is shown whole; a GGUF can carry a whole `tokenizer.json` as one string, megabytes
+/// that would be wrapped again on every frame.
+pub(crate) const VALUE_SHOWN_BYTES: usize = 64 * 1024;
+
+/// The metadata as drawn lines: the key on a value's first line, blank under it, and
+/// each value cut at its own newlines and wrapped to what is left of `width`. A value
+/// past [`VALUE_SHOWN_BYTES`] ends with a line saying how much more there is.
+pub(crate) fn metadata_lines(
+    metadata: &[(String, crate::model_files::MetaValue)],
+    width: usize,
+) -> Vec<(String, String)> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let longest = metadata.iter().map(|(k, _)| k.width()).max().unwrap_or(0);
+    // Two columns between key and value; the key takes no more than two fifths.
+    let key_width = longest.min(width * 2 / 5).max(1);
+    let value_width = width.saturating_sub(key_width + 2).max(1);
+    let mut out = Vec::new();
+    for (key, value) in metadata {
+        let key_cell = format!("{:<w$}  ", clip(key, key_width), w = key_width);
+        let blank = " ".repeat(key_width + 2);
+        // Borrowed, not copied: this runs every frame.
+        let listed;
+        let text = match value {
+            crate::model_files::MetaValue::Text(text) => text.as_str(),
+            other => {
+                listed = meta_text(other);
+                listed.as_str()
+            }
+        };
+        let cut = text.floor_char_boundary(VALUE_SHOWN_BYTES);
+        let (text, more) = (&text[..cut], text.len() - cut);
+        let mut first = true;
+        for raw in text.split('\n') {
+            // Tabs as a space and other control characters dropped, so the widths
+            // measured here are the widths drawn.
+            let clean: String = raw
+                .chars()
+                .filter_map(|c| match c {
+                    '\t' => Some(' '),
+                    c if c.is_control() => None,
+                    c => Some(c),
+                })
+                .collect();
+            let mut line = String::new();
+            let mut line_width = 0;
+            let mut push = |line: &mut String, out: &mut Vec<(String, String)>| {
+                let k = if first {
+                    key_cell.clone()
+                } else {
+                    blank.clone()
+                };
+                first = false;
+                out.push((k, std::mem::take(line)));
+            };
+            for c in clean.chars() {
+                let w = c.width().unwrap_or(0);
+                if line_width + w > value_width && !line.is_empty() {
+                    push(&mut line, &mut out);
+                    line_width = 0;
+                }
+                line.push(c);
+                line_width += w;
+            }
+            push(&mut line, &mut out);
+        }
+        if more > 0 {
+            let g = crate::glyphs::get();
+            out.push((
+                blank,
+                format!("{} {} more", g.ellipsis, format_bytes(more as u64)),
+            ));
+        }
+    }
+    out
+}
+
 /// Human-readable byte size (e.g. "1.2 MiB", "456 KiB").
 pub fn format_bytes(n: u64) -> String {
     const K: u64 = 1024;
@@ -153,20 +307,50 @@ pub fn format_bytes(n: u64) -> String {
 pub enum InfoTab {
     #[default]
     Schema,
+    /// A SafeTensors or GGUF model's totals and metadata.
+    Model,
     Resources,
     Partitions,
     Notes,
 }
 
+/// Which of the optional tabs the dataset on screen offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TabsOffered {
+    /// The dataset is a model file's tensors.
+    pub model: bool,
+    pub partitions: bool,
+    pub notes: bool,
+}
+
+impl TabsOffered {
+    /// What `state` offers.
+    pub fn of(state: &DataTableState) -> Self {
+        Self {
+            model: state.model().is_some(),
+            partitions: state
+                .partition_columns()
+                .map(|v| !v.is_empty())
+                .unwrap_or(false),
+            notes: state.has_notes(),
+        }
+    }
+}
+
 impl InfoTab {
-    /// The tabs on offer, in order: Partitions only for a partitioned dataset, Notes
-    /// only when datui has something to say about the data.
-    pub fn visible(has_partitions: bool, has_notes: bool) -> Vec<InfoTab> {
-        let mut tabs = vec![InfoTab::Schema, InfoTab::Resources];
-        if has_partitions {
+    /// The tabs on offer, in order: Model only for a model file, beside the schema it
+    /// explains; Partitions only for a partitioned dataset; Notes only when datui has
+    /// something to say about the data.
+    pub fn visible(offered: TabsOffered) -> Vec<InfoTab> {
+        let mut tabs = vec![InfoTab::Schema];
+        if offered.model {
+            tabs.push(InfoTab::Model);
+        }
+        tabs.push(InfoTab::Resources);
+        if offered.partitions {
             tabs.push(InfoTab::Partitions);
         }
-        if has_notes {
+        if offered.notes {
             tabs.push(InfoTab::Notes);
         }
         tabs
@@ -175,6 +359,7 @@ impl InfoTab {
     pub fn title(self) -> &'static str {
         match self {
             InfoTab::Schema => "Schema",
+            InfoTab::Model => "Model",
             InfoTab::Resources => "Resources",
             InfoTab::Partitions => "Partitions",
             InfoTab::Notes => "Notes",
@@ -182,21 +367,21 @@ impl InfoTab {
     }
 
     /// Next tab, wrapping. A tab that is not on offer starts from the first.
-    pub fn next(self, has_partitions: bool, has_notes: bool) -> Self {
-        let tabs = Self::visible(has_partitions, has_notes);
-        let at = self.index(has_partitions, has_notes);
+    pub fn next(self, offered: TabsOffered) -> Self {
+        let tabs = Self::visible(offered);
+        let at = self.index(offered);
         tabs[(at + 1) % tabs.len()]
     }
 
-    pub fn prev(self, has_partitions: bool, has_notes: bool) -> Self {
-        let tabs = Self::visible(has_partitions, has_notes);
-        let at = self.index(has_partitions, has_notes);
+    pub fn prev(self, offered: TabsOffered) -> Self {
+        let tabs = Self::visible(offered);
+        let at = self.index(offered);
         tabs[(at + tabs.len() - 1) % tabs.len()]
     }
 
     /// Where this tab sits among the ones on offer; 0 when it is not among them.
-    pub fn index(self, has_partitions: bool, has_notes: bool) -> usize {
-        Self::visible(has_partitions, has_notes)
+    pub fn index(self, offered: TabsOffered) -> usize {
+        Self::visible(offered)
             .iter()
             .position(|tab| *tab == self)
             .unwrap_or(0)
@@ -226,6 +411,10 @@ pub struct InfoModal {
     /// The first row of the notes list on screen; the render keeps the selected note
     /// inside the window.
     pub notes_scroll_offset: usize,
+    /// The first line of the Model tab's metadata on screen. The render clamps it.
+    pub model_scroll: usize,
+    /// The metadata lines the Model tab last had room for; set during render.
+    pub model_visible: usize,
 }
 
 impl InfoModal {
@@ -248,6 +437,7 @@ impl InfoModal {
         self.schema_table_state.select(Some(0));
         self.notes_selected_index = 0;
         self.notes_scroll_offset = 0;
+        self.model_scroll = 0;
     }
 
     pub fn close(&mut self) {
@@ -268,9 +458,9 @@ impl InfoModal {
         };
     }
 
-    /// Switch to next tab; `has_partitions` determines whether Partitions tab is available.
-    pub fn switch_tab(&mut self, has_partitions: bool, has_notes: bool) {
-        self.active_tab = self.active_tab.next(has_partitions, has_notes);
+    /// Switch to the next of the tabs on offer.
+    pub fn switch_tab(&mut self, offered: TabsOffered) {
+        self.active_tab = self.active_tab.next(offered);
         if self.active_tab == InfoTab::Schema {
             self.schema_selected_index = 0;
             self.schema_scroll_offset = 0;
@@ -280,9 +470,9 @@ impl InfoModal {
         }
     }
 
-    /// Switch to previous tab; `has_partitions` determines whether Partitions tab is available.
-    pub fn switch_tab_prev(&mut self, has_partitions: bool, has_notes: bool) {
-        self.active_tab = self.active_tab.prev(has_partitions, has_notes);
+    /// Switch to the previous of the tabs on offer.
+    pub fn switch_tab_prev(&mut self, offered: TabsOffered) {
+        self.active_tab = self.active_tab.prev(offered);
         if self.active_tab == InfoTab::Schema {
             self.schema_selected_index = 0;
             self.schema_scroll_offset = 0;
@@ -290,6 +480,17 @@ impl InfoModal {
         } else {
             self.focus = InfoFocus::TabBar;
         }
+    }
+
+    /// Scroll the Model tab's metadata by `delta` lines; the render keeps it in range.
+    pub fn model_scroll_by(&mut self, delta: isize) {
+        self.model_scroll = self.model_scroll.saturating_add_signed(delta);
+    }
+
+    /// Scroll the Model tab's metadata by a page.
+    pub fn model_page(&mut self, down: bool) {
+        let page = self.model_visible.max(1) as isize;
+        self.model_scroll_by(if down { page } else { -page });
     }
 
     /// Move the cursor through the notes. Returns true when something changed.
@@ -625,6 +826,8 @@ impl<'a> DataTableInfo<'a> {
         let dataset = self.state.dataset_schema();
         let src = match dataset {
             Some(dataset) => dataset.origin.to_string(),
+            // A model's columns are datui's own, the same for every file of its format.
+            None if self.state.model().is_some() => "Known".to_string(),
             None => self.ctx.schema_source().to_string(),
         };
         // Per column, how many of the footers read carry it. Only a dataset of files
@@ -1052,6 +1255,127 @@ impl<'a> DataTableInfo<'a> {
         }
     }
 
+    /// A model file's totals, then its metadata as key and value, every value whole: a
+    /// chat template wraps over as many lines as it takes, and the list scrolls.
+    fn render_model_tab(&mut self, area: Rect, buf: &mut Buffer) {
+        let Some(model) = self.state.model() else {
+            return;
+        };
+        if area.height == 0 || area.width < 8 {
+            return;
+        }
+        let g = crate::glyphs::get();
+        let sep = format!(" {} ", g.middot);
+        let mut head = model.kind.label();
+        head.push_str(&sep);
+        head.push_str(&count_of(model.tensors as u64, "tensor", "tensors"));
+        if model.files > 1 {
+            head.push_str(&sep);
+            head.push_str(&count_of(model.files as u64, "file", "files"));
+        }
+        let mut lines = vec![
+            head,
+            format!(
+                "Parameters: {}{}{sep}Size: {}",
+                group_u64(model.params),
+                // The short form only where it is shorter.
+                if model.params >= 1000 {
+                    format!(" ({})", short_count(model.params))
+                } else {
+                    String::new()
+                },
+                format_bytes(model.bytes)
+            ),
+        ];
+        if !model.types.is_empty() {
+            lines.push(format!("Types: {}", type_mix(&model.types, &sep)));
+        }
+        let width = area.width as usize;
+        let mut y = area.y;
+        let bottom = area.y + area.height;
+        for line in &lines {
+            if y >= bottom {
+                return;
+            }
+            Paragraph::new(clip(line, width)).render(
+                Rect {
+                    y,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
+            y += 1;
+        }
+        // A blank line, then the rule, then at least one line of metadata, or none.
+        if y + 2 >= bottom {
+            return;
+        }
+        y += 1;
+        let count = group_u64(model.metadata.len() as u64);
+        SectionRule {
+            title: "Metadata",
+            chip: Some(&count),
+            focused: self.modal.focus == InfoFocus::Body,
+        }
+        .render(
+            Rect {
+                y,
+                height: 1,
+                ..area
+            },
+            buf,
+            self.theme,
+        );
+        y += 1;
+
+        let rows = metadata_lines(&model.metadata, width);
+        let room = (bottom - y) as usize;
+        let fits = rows.len() <= room;
+        // The last row says what is out of view when not everything fits.
+        let shown = if fits { room } else { room.saturating_sub(1) };
+        self.modal.model_visible = shown;
+        let max_scroll = rows.len().saturating_sub(shown);
+        self.modal.model_scroll = self.modal.model_scroll.min(max_scroll);
+        let first = self.modal.model_scroll;
+        let key_style = Style::default().fg(self.theme.text_secondary);
+        for (key, value) in rows.iter().skip(first).take(shown) {
+            Paragraph::new(Line::from(vec![
+                Span::styled(key.clone(), key_style),
+                Span::raw(value.clone()),
+            ]))
+            .render(
+                Rect {
+                    y,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
+            y += 1;
+        }
+        if !fits && shown > 0 {
+            let above = first;
+            let below = rows.len().saturating_sub(first + shown);
+            let text = match (above, below) {
+                (0, n) => format!("{} below", group_chrome(n)),
+                (n, 0) => format!("{} above", group_chrome(n)),
+                (a, b) => format!("{} above, {} below", group_chrome(a), group_chrome(b)),
+            };
+            Paragraph::new(text)
+                .style(Style::default().fg(self.theme.dimmed))
+                .alignment(ratatui::layout::Alignment::Right)
+                .render(
+                    Rect {
+                        y: bottom - 1,
+                        height: 1,
+                        ..area
+                    },
+                    buf,
+                );
+        }
+    }
+
     /// What datui noticed: each note's summary and the line saying what it is based on.
     ///
     /// Whole notes only. A note half on screen is worse than one left off: a claim with
@@ -1352,12 +1676,7 @@ fn columns_by_type(schema: &Schema) -> String {
 impl<'a> Widget for &mut DataTableInfo<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let ctx = self.theme;
-        let has_partitions = self
-            .state
-            .partition_columns()
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        let has_notes = self.state.has_notes();
+        let offered = TabsOffered::of(self.state);
         let tab = self.modal.active_tab;
         let on_tab_bar = self.modal.focus == InfoFocus::TabBar;
 
@@ -1366,7 +1685,8 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let g = crate::glyphs::get();
         let scrolls = match tab {
             InfoTab::Schema => !on_tab_bar,
-            InfoTab::Notes => has_notes,
+            InfoTab::Notes => offered.notes,
+            InfoTab::Model => offered.model,
             _ => false,
         };
         let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
@@ -1397,8 +1717,8 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         // Tab line: the active tab carries the accent, and the rail sits beside
         // its name while the tab bar holds focus. The slot is reserved either
         // way, so focus arriving or leaving moves nothing.
-        let tabs = InfoTab::visible(has_partitions, has_notes);
-        let active = tabs[tab.index(has_partitions, has_notes)];
+        let tabs = InfoTab::visible(offered);
+        let active = tabs[tab.index(offered)];
         let mut spans = Vec::new();
         for (i, t) in tabs.iter().enumerate() {
             let is_active = *t == active;
@@ -1435,9 +1755,14 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         match tab {
             InfoTab::Schema => self.render_schema_tab(body, buf),
             InfoTab::Resources => self.render_resources_tab(body, buf),
-            InfoTab::Partitions if has_partitions => self.render_partitioned_data_tab(body, buf),
-            InfoTab::Notes if has_notes => self.render_notes_tab(body, buf),
-            InfoTab::Partitions | InfoTab::Notes => self.render_schema_tab(body, buf),
+            InfoTab::Model if offered.model => self.render_model_tab(body, buf),
+            InfoTab::Partitions if offered.partitions => {
+                self.render_partitioned_data_tab(body, buf)
+            }
+            InfoTab::Notes if offered.notes => self.render_notes_tab(body, buf),
+            InfoTab::Model | InfoTab::Partitions | InfoTab::Notes => {
+                self.render_schema_tab(body, buf)
+            }
         }
     }
 }
@@ -1452,6 +1777,15 @@ pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The optional tabs, as the tests before the Model tab named them.
+    fn offer(partitions: bool, notes: bool) -> TabsOffered {
+        TabsOffered {
+            model: false,
+            partitions,
+            notes,
+        }
+    }
 
     /// What a file says about itself: a size and, for Parquet, a footer; a directory
     /// has no size of its own to give; a file that is gone, or whose footer is not
@@ -1946,11 +2280,11 @@ mod tests {
     #[test]
     fn the_tabs_on_offer_depend_on_the_dataset() {
         assert_eq!(
-            InfoTab::visible(false, false),
+            InfoTab::visible(offer(false, false)),
             [InfoTab::Schema, InfoTab::Resources]
         );
         assert_eq!(
-            InfoTab::visible(true, true),
+            InfoTab::visible(offer(true, true)),
             [
                 InfoTab::Schema,
                 InfoTab::Resources,
@@ -1959,38 +2293,128 @@ mod tests {
             ]
         );
         assert_eq!(
-            InfoTab::visible(false, true),
+            InfoTab::visible(offer(false, true)),
             [InfoTab::Schema, InfoTab::Resources, InfoTab::Notes],
             "notes without partitions still sit last"
         );
     }
 
     #[test]
+    fn the_model_tab_sits_beside_the_schema() {
+        let offered = TabsOffered {
+            model: true,
+            partitions: false,
+            notes: true,
+        };
+        assert_eq!(
+            InfoTab::visible(offered),
+            [
+                InfoTab::Schema,
+                InfoTab::Model,
+                InfoTab::Resources,
+                InfoTab::Notes
+            ]
+        );
+        assert_eq!(InfoTab::Schema.next(offered), InfoTab::Model);
+        assert_eq!(InfoTab::Model.index(offer(false, false)), 0, "not offered");
+    }
+
+    /// Each value is drawn whole: its own newlines kept, wrapped under the key, a short
+    /// array listed and a long one counted.
+    #[test]
+    fn metadata_values_wrap_whole_under_their_key() {
+        use crate::model_files::MetaValue;
+        let meta = vec![
+            (
+                "a".to_string(),
+                MetaValue::Text("line one\nsecond line that is long".to_string()),
+            ),
+            (
+                "tokens".to_string(),
+                MetaValue::List {
+                    of: "strings",
+                    len: 151_936,
+                    items: vec![],
+                },
+            ),
+            (
+                "tags".to_string(),
+                MetaValue::List {
+                    of: "strings",
+                    len: 2,
+                    items: vec!["x".to_string(), "y".to_string()],
+                },
+            ),
+        ];
+        let lines = metadata_lines(&meta, 20);
+        let key = |s: &str| format!("{s:<6}  ");
+        let blank = " ".repeat(8);
+        assert_eq!(
+            lines,
+            [
+                (key("a"), "line one".to_string()),
+                (blank.clone(), "second line ".to_string()),
+                (blank.clone(), "that is long".to_string()),
+                (key("tokens"), "[151,936 str".to_string()),
+                (blank.clone(), "ings]".to_string()),
+                (key("tags"), "[\"x\", \"y\"]".to_string()),
+            ]
+        );
+        // A value of megabytes is drawn to its first 64 KiB, and says what is left.
+        let huge = vec![(
+            "tokenizer.huggingface.json".to_string(),
+            MetaValue::Text("x".repeat(VALUE_SHOWN_BYTES + 2048)),
+        )];
+        let lines = metadata_lines(&huge, 80);
+        let last = &lines.last().unwrap().1;
+        assert!(last.ends_with("2.0 KiB more"), "{last}");
+        let drawn: usize = lines[..lines.len() - 1].iter().map(|(_, v)| v.len()).sum();
+        assert_eq!(drawn, VALUE_SHOWN_BYTES);
+        assert_eq!(short_count(8_030_261_248), "8.0B");
+        assert_eq!(short_count(950), "950");
+    }
+
+    #[test]
     fn tab_navigation_wraps_through_what_is_on_offer() {
         // Nothing optional: two tabs, back and forth.
-        assert_eq!(InfoTab::Schema.next(false, false), InfoTab::Resources);
-        assert_eq!(InfoTab::Resources.next(false, false), InfoTab::Schema);
-        assert_eq!(InfoTab::Schema.prev(false, false), InfoTab::Resources);
+        assert_eq!(
+            InfoTab::Schema.next(offer(false, false)),
+            InfoTab::Resources
+        );
+        assert_eq!(
+            InfoTab::Resources.next(offer(false, false)),
+            InfoTab::Schema
+        );
+        assert_eq!(
+            InfoTab::Schema.prev(offer(false, false)),
+            InfoTab::Resources
+        );
 
         // Both optional tabs present.
-        assert_eq!(InfoTab::Resources.next(true, true), InfoTab::Partitions);
-        assert_eq!(InfoTab::Partitions.next(true, true), InfoTab::Notes);
-        assert_eq!(InfoTab::Notes.next(true, true), InfoTab::Schema);
-        assert_eq!(InfoTab::Schema.prev(true, true), InfoTab::Notes);
+        assert_eq!(
+            InfoTab::Resources.next(offer(true, true)),
+            InfoTab::Partitions
+        );
+        assert_eq!(InfoTab::Partitions.next(offer(true, true)), InfoTab::Notes);
+        assert_eq!(InfoTab::Notes.next(offer(true, true)), InfoTab::Schema);
+        assert_eq!(InfoTab::Schema.prev(offer(true, true)), InfoTab::Notes);
 
         // Notes only.
-        assert_eq!(InfoTab::Resources.next(false, true), InfoTab::Notes);
-        assert_eq!(InfoTab::Notes.prev(false, true), InfoTab::Resources);
+        assert_eq!(InfoTab::Resources.next(offer(false, true)), InfoTab::Notes);
+        assert_eq!(InfoTab::Notes.prev(offer(false, true)), InfoTab::Resources);
     }
 
     /// A tab that is no longer on offer must not strand the cursor: it reads as the
     /// first tab, so moving on from it goes somewhere real.
     #[test]
     fn a_tab_that_is_no_longer_offered_falls_back_to_the_first() {
-        assert_eq!(InfoTab::Notes.index(false, false), 0);
-        assert_eq!(InfoTab::Notes.next(false, false), InfoTab::Resources);
-        assert_eq!(InfoTab::Partitions.index(false, false), 0);
-        assert_eq!(InfoTab::Partitions.prev(false, false), InfoTab::Resources);
+        assert_eq!(InfoTab::Notes.index(offer(false, false)), 0);
+        assert_eq!(InfoTab::Notes.next(offer(false, false)), InfoTab::Resources);
+        assert_eq!(InfoTab::Partitions.index(offer(false, false)), 0);
+        assert_eq!(
+            InfoTab::Partitions.prev(offer(false, false)),
+            InfoTab::Resources
+        );
     }
 
     /// The window's three promises, checked over every shape that fits in a terminal.

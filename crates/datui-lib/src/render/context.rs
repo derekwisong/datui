@@ -42,6 +42,9 @@ pub struct RenderContext {
     pub table_selected: Option<Color>,
     /// The cell a find landed on, from the theme's `find_match_style`.
     pub find_match: ratatui::style::Style,
+    /// The column cursor: its cells' tint, and its header's and the current cell's.
+    pub column_cursor: Option<Color>,
+    pub cell_cursor: Option<Color>,
     /// Whether the data table shows its second header row of column types.
     pub dtype_row: bool,
 
@@ -78,6 +81,17 @@ impl RenderContext {
                 ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED)
             }
         }
+    }
+
+    /// Style of the column cursor's cells, from the theme's helper.
+    pub fn column_cursor_style(&self) -> ratatui::style::Style {
+        crate::config::column_cursor_style(self.column_cursor)
+    }
+
+    /// Style of the column cursor's header and the current cell, from the theme's
+    /// helper.
+    pub fn cell_cursor_style(&self) -> ratatui::style::Style {
+        crate::config::cell_cursor_style(self.cell_cursor)
     }
 
     /// A column type's color, from the palette the table uses, so a column reads
@@ -142,6 +156,8 @@ impl RenderContext {
             alternate_row_color: theme.get_optional("alternate_row_color"),
             table_selected: theme.get_optional("table_selected"),
             find_match: theme.find_match_style(),
+            column_cursor: theme.get_optional("column_cursor"),
+            cell_cursor: theme.get_optional("cell_cursor"),
             dtype_row: true,
 
             str_col: if column_colors {

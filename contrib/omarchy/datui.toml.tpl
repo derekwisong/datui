@@ -54,6 +54,9 @@ row_numbers         = "{{ muted }}"
 # A tint under the current row. "reversed" is still accepted and swaps fg/bg.
 table_selected      = "{{ mix background accent 30% }}"
 find_match          = "{{ yellow }}"
+# The column cursor's cells, and its header and the current cell.
+column_cursor       = "{{ mix background foreground 9% }}"
+cell_cursor         = "{{ mix background foreground 22% }}"
 
 # --- Cursor / modals -------------------------------------------------------
 cursor_focused      = "{{ accent }}"

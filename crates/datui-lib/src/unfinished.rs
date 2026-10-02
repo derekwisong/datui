@@ -105,14 +105,16 @@ impl Unfinished {
         }
     }
 
-    /// Block until a sweep is waiting on a busy writer.
+    /// Whether a sweep starts waiting on a busy writer within `limit`. Bounded, so a
+    /// sweep that never waits fails the test instead of hanging it.
     #[cfg(test)]
-    fn until_a_sweep_waits(&self) {
+    fn a_sweep_waits_within(&self, limit: Duration) -> bool {
         let (_, released) = &*self.0;
-        let mut files = self.lock();
-        while !files.sweep_waiting {
-            files = released.wait(files).unwrap_or_else(|e| e.into_inner());
-        }
+        released
+            .wait_timeout_while(self.lock(), limit, |files| !files.sweep_waiting)
+            .unwrap_or_else(|e| e.into_inner())
+            .0
+            .sweep_waiting
     }
 
     fn lock(&self) -> MutexGuard<'_, Files> {
@@ -299,8 +301,11 @@ mod tests {
             let unfinished = unfinished.clone();
             std::thread::spawn(move || unfinished.sweep(Instant::now() + Duration::from_secs(30)))
         };
-        unfinished.until_a_sweep_waits();
-        assert!(unfinished.writing(), "the sweep waits for the file");
+        assert!(
+            unfinished.a_sweep_waits_within(Duration::from_secs(30)),
+            "the sweep waits for the file"
+        );
+        assert!(unfinished.writing());
         assert!(!sweeper.is_finished());
         go.send(()).unwrap();
         sweeper.join().unwrap();

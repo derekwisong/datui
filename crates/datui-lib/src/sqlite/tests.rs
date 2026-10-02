@@ -835,6 +835,56 @@ fn filters_and_sorts_run_in_sqlite_as_polars_would() {
     );
 }
 
+/// Text in a column that declares a number (a `DATETIME`, an `INT` holding words)
+/// compares as text, as Polars compares it, though the value looks like a number.
+#[test]
+fn text_in_a_number_column_compares_as_text() {
+    let dir = temp();
+    let db = database(
+        dir.path(),
+        "d.db",
+        "CREATE TABLE t (d DATETIME, w INT);
+         INSERT INTO t VALUES ('2023-05-01', '-x'), ('2025-01-01', 'abc'), (NULL, NULL);",
+    );
+    let (whole, opened) = read_table(&db, "t");
+    assert_eq!(whole.schema().get("d"), Some(&DataType::String));
+    use FilterOperator::*;
+    use LogicalOperator::*;
+    let cases = [
+        (filter("d", Lt, "2024", And), col("d").lt(lit("2024"))),
+        (filter("d", Gt, "2024", And), col("d").gt(lit("2024"))),
+        (filter("w", Gt, "10", And), col("w").gt(lit("10"))),
+    ];
+    // Read through what the frame shows, then as stored once the census finds the
+    // columns clean.
+    for census in [false, true] {
+        if census {
+            census_for_tests(&opened);
+        }
+        for (f, predicate) in &cases {
+            let expected = whole
+                .clone()
+                .lazy()
+                .filter(predicate.clone())
+                .collect()
+                .unwrap();
+            let view = opened
+                .pushdown
+                .view(std::slice::from_ref(f), &[], false)
+                .unwrap();
+            let got = view.lf.collect().unwrap();
+            assert!(got.equals_missing(&expected), "{f:?} {census}\n{got}");
+            let pushed = opened
+                .lf
+                .clone()
+                .filter(predicate.clone())
+                .collect()
+                .unwrap();
+            assert!(pushed.equals_missing(&expected), "{predicate:?} {census}");
+        }
+    }
+}
+
 /// Once the census finds a column clean, a filter or sort on it reads it as stored, so
 /// SQLite uses an index on it rather than sorting the table.
 #[test]

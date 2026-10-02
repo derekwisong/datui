@@ -700,6 +700,10 @@ mod read {
         kind: Kind,
         /// The sample found values of several types, read as text.
         mixed: bool,
+        /// Text in a column that declares a number: compared as stored, SQLite would
+        /// make a number of a value that looks like one (`'2024'`), and text sorts
+        /// after every number.
+        numeric_text: bool,
     }
 
     /// What a pass over the whole table found: its rows, and each column's values that
@@ -840,6 +844,11 @@ mod read {
                         name: name.into(),
                         kind,
                         mixed,
+                        numeric_text: kind == Kind::Text
+                            && matches!(
+                                affinity,
+                                Affinity::Integer | Affinity::Real | Affinity::Numeric
+                            ),
                     }
                 })
                 .collect();
@@ -893,6 +902,17 @@ mod read {
             }
         }
 
+        /// Column `i` as a comparison with a value reads it: as [`Self::column_sql`],
+        /// without the affinity that would turn a text value into a number first.
+        fn compared_sql(&self, i: usize) -> String {
+            let e = self.column_sql(i);
+            if self.columns[i].numeric_text {
+                format!("+{e}")
+            } else {
+                e
+            }
+        }
+
         fn index_of(&self, name: &str) -> Option<usize> {
             self.columns.iter().position(|c| c.name == name)
         }
@@ -921,7 +941,7 @@ mod read {
         }
 
         fn atom_sql(&self, atom: &Atom, params: &mut Vec<Value>) -> String {
-            let e = self.column_sql(atom.column);
+            let e = self.compared_sql(atom.column);
             // Text compares byte for byte, as Polars does, whatever the column declares.
             let collate = if self.columns[atom.column].kind == Kind::Text {
                 " COLLATE BINARY"
@@ -1333,7 +1353,7 @@ mod read {
                         ""
                     };
                     params.push(value);
-                    Some(format!("{} {sign} ?{collate}", self.column_sql(i)))
+                    Some(format!("{} {sign} ?{collate}", self.compared_sql(i)))
                 }
                 _ => None,
             }

@@ -611,13 +611,23 @@ pub fn relative_location(path: &Path) -> Option<String> {
 /// text less any trailing slash, which is how a directory's URL may or may not end,
 /// and with its scheme in either case, as datui opens it.
 pub fn exact_path_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
-    let Some(stored) = criteria.exact_path.as_deref() else {
+    let Some(stored) = criteria
+        .exact_path
+        .as_deref()
+        .filter(|_| has_a_path(file_path))
+    else {
         return false;
     };
     if crate::source::is_remote_url(stored) || crate::source::is_remote_url(file_path) {
         return url_key(stored) == url_key(file_path);
     }
     stored == file_path || stored == exact_location(file_path)
+}
+
+/// Whether `file_path` is a path a path criterion can fit: not standard input's `-`,
+/// which views match by its columns alone.
+fn has_a_path(file_path: &Path) -> bool {
+    !crate::stdin::is_stdin(file_path)
 }
 
 fn url_key(path: &Path) -> String {
@@ -631,32 +641,35 @@ fn url_key(path: &Path) -> String {
 
 /// Whether the view's relative path names the dataset at `file_path`.
 pub fn relative_path_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
-    criteria.relative_path.as_deref().is_some_and(|stored| {
-        relative_location(file_path).is_some_and(|rel| Path::new(&rel) == Path::new(stored))
-    })
+    has_a_path(file_path)
+        && criteria.relative_path.as_deref().is_some_and(|stored| {
+            relative_location(file_path).is_some_and(|rel| Path::new(&rel) == Path::new(stored))
+        })
 }
 
 /// Whether the view's path pattern fits `file_path`, as opened or as the save form
 /// spells it: a file opened by a relative path or through a link is still under the
 /// resolved directory its pattern was suggested from.
 pub fn path_pattern_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
-    criteria.path_pattern.as_deref().is_some_and(|pattern| {
-        let fits = |p: &Path| {
-            p.to_str()
-                .is_some_and(|text| matches_pattern(text, pattern))
-        };
-        fits(file_path) || fits(&exact_location(file_path))
-    })
+    has_a_path(file_path)
+        && criteria.path_pattern.as_deref().is_some_and(|pattern| {
+            let fits = |p: &Path| {
+                p.to_str()
+                    .is_some_and(|text| matches_pattern(text, pattern))
+            };
+            fits(file_path) || fits(&exact_location(file_path))
+        })
 }
 
 /// Whether the view's filename pattern fits the name of `file_path`.
 pub fn filename_pattern_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
-    criteria.filename_pattern.as_deref().is_some_and(|pattern| {
-        file_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| matches_pattern(name, pattern))
-    })
+    has_a_path(file_path)
+        && criteria.filename_pattern.as_deref().is_some_and(|pattern| {
+            file_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| matches_pattern(name, pattern))
+        })
 }
 
 /// Whether the template's own criteria match this file: a path or pattern hit,
@@ -948,6 +961,38 @@ mod tests {
             },
         );
         assert!(criteria_match(&fits, path, &schema));
+    }
+
+    /// Data piped in matches by its columns alone: no path or pattern fits `-`, even
+    /// a pattern of `*` or a view saved with that name as its path.
+    #[test]
+    fn stdin_matches_by_schema_only() {
+        use polars::prelude::DataType;
+        let schema = Schema::from_iter([("a".into(), DataType::Int64)]);
+        let stdin = Path::new(crate::stdin::PATH);
+        let by_path = a_template(
+            "every path",
+            MatchCriteria {
+                exact_path: Some(PathBuf::from("-")),
+                relative_path: Some("-".to_string()),
+                path_pattern: Some("*".to_string()),
+                filename_pattern: Some("*".to_string()),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(match_reason(&by_path, stdin, &schema), None);
+        assert!(calculate_relevance(&by_path, stdin, &schema) < 50.0);
+        let by_schema = a_template(
+            "by schema",
+            MatchCriteria {
+                schema_columns: Some(vec!["a".to_string()]),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&by_schema, stdin, &schema),
+            Some(MatchReason::SameColumns)
+        );
     }
 
     /// A template's schema criterion asks for its columns to be present; a file

@@ -10,7 +10,7 @@ Usage: datui [OPTIONS] [PATH]...
 
 | Option | Description |
 |--------|-------------|
-| `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table. With no PATH, datui opens its home screen so you can pick a dataset |
+| `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table. `-` reads data piped to standard input, as does no PATH when something is piped in. With no PATH and nothing piped in, datui opens its home screen so you can pick a dataset |
 | `--skip-lines <N>` | Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows |
 | `--skip-rows <N>` | Skip this many CSV rows at the start of the file; the header is read after them. Quote-aware: a row with embedded newlines counts once. Compare --skip-lines |
 | `--skip-tail-rows <N>` | Skip this many rows at the end of the file, such as a vendor footer or trailing garbage. Needs the row count first, which reads the whole file; on a directory in a bucket, every file |
@@ -61,6 +61,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/` | NOAA daily highs for 2024, one table from public S3 |
 | `datui abfss://release@overturemapswestus2.dfs.core.windows.net/` | Browse Overture Maps releases in public Azure storage |
 | `datui jan.csv feb.csv mar.csv` | Files of the same shape, as one table |
+| `curl -s https://example.com/data.csv.gz \| datui` | Data piped in; the format is read from its first bytes |
 | `datui --hive "/data/events/**/*.parquet"` | A glob, read as one partitioned table |
 | `datui --format csv --no-header raw.txt` | Headerless text, whatever the extension |
 | `datui --generate-config` | Write ~/.config/datui/config.toml |

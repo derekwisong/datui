@@ -1,10 +1,10 @@
-//! Remote files downloaded to local ones.
+//! Remote files downloaded to local ones, and standard input spooled to one.
 //!
 //! A download is read on one side and written on the thread that asked, never on a
 //! runtime worker, with at most [`QUEUED_CHUNKS`] waiting between the two: a full
 //! queue stops the reading, so a slow disk holds the transfer back instead of the
 //! file piling up in memory. A store's stream is polled on the app's runtime; a
-//! blocking HTTP reader runs on a thread of its own.
+//! blocking reader (HTTP, standard input) runs on a thread of its own.
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -271,7 +271,6 @@ where
 }
 
 /// Bytes asked of a blocking reader at a time.
-#[cfg(feature = "http")]
 const READ_CHUNK: usize = 64 * 1024;
 
 /// Run `open` on a thread of its own and hand each chunk read from the reader it
@@ -282,7 +281,6 @@ const READ_CHUNK: usize = 64 * 1024;
 /// stops sending holds that thread and not this one: `stop` is checked between
 /// chunks and every [`STALL_CHECK`] while nothing arrives. The reading thread ends at
 /// its next chunk once this side has gone.
-#[cfg(feature = "http")]
 pub fn read_into<R: std::io::Read>(
     open: impl FnOnce() -> Opened<R> + Send + 'static,
     stop: impl Fn() -> bool,
@@ -350,6 +348,29 @@ pub(crate) fn read_to_temp<R: std::io::Read>(
 ) -> std::result::Result<TempDownload, StreamError> {
     fill_temp(dir, extension, writer, |write| {
         read_into(open, || writer.stopped(), write)
+    })
+}
+
+/// Read what `open` answers with into a new file in `dir` until it ends or `writer`'s
+/// open stops, adding each chunk's length to `read` as it lands; see [`read_into`].
+/// Any failure, and a stop, removes the partial file before this returns.
+pub(crate) fn spool_to_temp<R: std::io::Read>(
+    dir: Option<&Path>,
+    open: impl FnOnce() -> Opened<R> + Send + 'static,
+    writer: &Writer,
+    read: &std::sync::atomic::AtomicU64,
+) -> std::result::Result<TempDownload, StreamError> {
+    use std::sync::atomic::Ordering;
+    fill_temp(dir, None, writer, |write| {
+        read_into(
+            open,
+            || writer.stopped(),
+            |chunk| {
+                write(chunk)?;
+                read.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                Ok(())
+            },
+        )
     })
 }
 

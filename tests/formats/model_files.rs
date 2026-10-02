@@ -597,7 +597,7 @@ mod remote {
             .unwrap_or_else(|| panic!("{key} opens with an error"));
             assert!(message.contains(why), "{key}: {message}");
             assert!(
-                s3.wire.count().bytes <= 64 * 1024,
+                s3.wire.count().bytes <= 256 * 1024,
                 "{key}: {:?}",
                 s3.wire.count()
             );

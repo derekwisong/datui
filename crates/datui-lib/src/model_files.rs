@@ -875,9 +875,10 @@ impl From<color_eyre::Report> for RangeError {
 }
 
 /// The first range a GGUF header is read in. Each read after it is twice the one
-/// before, up to [`MAX_RANGE`], so a header of a few KB costs one request and one of
-/// tens of MB (a vocabulary) a handful.
-pub const FIRST_GGUF_RANGE: u64 = 64 * 1024;
+/// before, up to [`MAX_RANGE`], so a header of a few KB costs one request and one with
+/// a vocabulary (5 to 10 MB) four or five. Larger, fewer requests fetch up to twice
+/// the header; see `a_vocabulary_sized_gguf_header_takes_a_few_ranges`.
+pub const FIRST_GGUF_RANGE: u64 = 256 * 1024;
 /// The most one ranged request asks for.
 const MAX_RANGE: u64 = 16 * 1024 * 1024;
 /// The first read of a remote index; one larger than this takes a second.
@@ -1584,6 +1585,15 @@ pub(crate) mod tests {
             self.asked.borrow().iter().map(|(_, a, b)| b - a).sum()
         }
 
+        /// The one GGUF file `url`, its header read from a first range of `first`.
+        fn read_gguf_from(&self, url: &str, first: u64) -> Header {
+            let mut src = ServedFile {
+                served: self.clone(),
+                url: url.to_string(),
+            };
+            read_header_ranged_from(&mut src, FileFormat::Gguf, first, &|| false).unwrap()
+        }
+
         fn read(
             &self,
             urls: &[&str],
@@ -1742,6 +1752,44 @@ pub(crate) mod tests {
         assert_eq!(served.asked.borrow().len(), 1);
         let w = GgufWriter::new(u64::MAX, 0);
         assert!(ranged(&w.out, FileFormat::Gguf, 4).is_err());
+    }
+
+    /// A GGUF header the size of a Llama 3 vocabulary (128k tokens, 280k merges, about
+    /// 7 MB), at the front of a much larger file.
+    fn llama3_sized_gguf() -> Vec<u8> {
+        let tokens = vec!["tok_ab"; 128_256];
+        let merges = vec!["Ġab Ġcdefg"; 280_147];
+        let mut w = GgufWriter::new(291, 3);
+        w.kv_str("general.architecture", "llama")
+            .kv_strings("tokenizer.ggml.tokens", &tokens)
+            .kv_strings("tokenizer.ggml.merges", &merges);
+        for i in 0..291 {
+            w.tensor(&format!("blk.{i}.attn_q.weight"), &[1], 0, i * 32);
+        }
+        w.data(291 * 32 + (32 << 20));
+        w.out
+    }
+
+    /// A vocabulary-sized header costs a handful of requests and not much more than
+    /// itself on the wire. Measured at 7.2 MB: a first range of 64 KiB took 7 requests
+    /// (7.9 MiB), 256 KiB 5 (7.8 MiB), 1 MiB 4 (15 MiB).
+    #[test]
+    fn a_vocabulary_sized_gguf_header_takes_a_few_ranges() {
+        let gguf = llama3_sized_gguf();
+        let served = Served {
+            files: [("g".to_string(), gguf.clone())].into(),
+            ..Default::default()
+        };
+        let header = served.read_gguf_from("g", FIRST_GGUF_RANGE);
+        assert_eq!(header.tensors.len(), 291);
+        // The header and its few bytes of tensor data, before the padding.
+        let end = (gguf.len() - (32 << 20)) as u64;
+        assert!(
+            served.asked.borrow().len() <= 5,
+            "{:?}",
+            served.asked.borrow()
+        );
+        assert!(served.bytes() < end * 2, "{} for {end}", served.bytes());
     }
 
     /// A source that answers with more or fewer bytes than were asked for, or whose

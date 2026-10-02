@@ -8681,17 +8681,25 @@ mod tests {
         let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = Arc::clone(&stages);
         let watch = QualityWatch::new(move |phase| seen.lock().unwrap().push(phase));
+        // Cancel from inside the read, as the source yields its second batch: that
+        // batch has yet to reach the watch above it, so the read is still under way
+        // whatever the machine's load. A thread that waited to cancel lost the race
+        // to a read that had finished meanwhile.
         let stopper = watch.clone();
-        let cancel = std::thread::spawn(move || {
-            // Cancel once the first pass has counted rows, while it is still reading.
-            while stopper.read().rows_seen().is_none_or(|rows| rows == 0) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            stopper.cancel();
-        });
+        let batches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lf = lf.map(
+            move |df: DataFrame| {
+                if batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+                    stopper.cancel();
+                }
+                Ok(df)
+            },
+            OptFlags::PROJECTION_PUSHDOWN | OptFlags::PREDICATE_PUSHDOWN | OptFlags::STREAMING,
+            None,
+            Some("cancel inside the read"),
+        );
         let (results, _) =
             compute_data_quality_watched(&lf, Some(ROWS), &plan, None, true, None, &watch);
-        cancel.join().unwrap();
         assert_eq!(results.unwrap_err().to_string(), crate::sampling::CANCELLED);
         let stages = stages.lock().unwrap().clone();
         let last = stages.last().unwrap();

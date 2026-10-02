@@ -1063,25 +1063,49 @@ fn count_subquery_values_once(plan: &mut polars::lazy::dsl::DslPlan) {
     for_each_input(plan, &mut count_subquery_values_once);
 }
 
-/// The columns polars-sql added to hold `IN` subqueries' values (see
-/// [`subquery_value_columns`]) that are still among `plan`'s columns, `schema`. A
-/// WHERE's projection drops them, but a QUALIFY keeps them in its result, a list of
-/// every value on every row, and a statement reading its result as a table carries
-/// them on (#519). Matched by the name polars-sql gave them, which is unique to the
-/// process, so no column of the user's is taken for one.
+/// The columns of `schema`, `plan`'s columns, that carry what polars-sql added to
+/// hold `IN` subqueries' values (see [`subquery_value_columns`]). A WHERE's projection
+/// drops them, but a QUALIFY keeps them in its result, a list of every value on every
+/// row, and a statement reading its result as a table carries them on (#519), under
+/// a join's suffix when both sides hold one. Matched by the name polars-sql gave
+/// them, which is unique to the process, so no column of the user's is taken for one.
 #[cfg(feature = "sql")]
 fn leftover_subquery_value_columns(
-    plan: &polars::lazy::dsl::DslPlan,
+    plan: &mut polars::lazy::dsl::DslPlan,
     schema: &Schema,
 ) -> Vec<PlSmallStr> {
-    let mut names: Vec<PlSmallStr> = Vec::new();
-    for name in plan.into_iter().flat_map(subquery_value_columns) {
-        // A plan can read one subtree twice.
-        if schema.contains(&name) && !names.contains(&name) {
-            names.push(name);
+    use polars::lazy::dsl::DslPlan;
+    fn find(plan: &mut DslPlan, values: &mut Vec<PlSmallStr>, suffixes: &mut Vec<PlSmallStr>) {
+        match plan {
+            DslPlan::IR { dsl, .. } => {
+                let mut inner = Arc::unwrap_or_clone(dsl.clone());
+                find(&mut inner, values, suffixes);
+                return;
+            }
+            DslPlan::Join { options, .. } => suffixes.push(options.args.suffix().clone()),
+            _ => {}
         }
+        values.extend(subquery_value_columns(plan));
+        for_each_input(plan, &mut |input| find(input, values, suffixes));
     }
-    names
+    fn carries(name: &str, values: &[PlSmallStr], suffixes: &[PlSmallStr]) -> bool {
+        values.iter().any(|v| v == name)
+            || suffixes.iter().any(|s| {
+                name.strip_suffix(s.as_str())
+                    .is_some_and(|rest| carries(rest, values, suffixes))
+            })
+    }
+    let (mut values, mut suffixes) = (Vec::new(), Vec::new());
+    find(plan, &mut values, &mut suffixes);
+    if values.is_empty() {
+        return Vec::new();
+    }
+    suffixes.retain(|s| !s.is_empty());
+    schema
+        .iter_names()
+        .filter(|name| carries(name, &values, &suffixes))
+        .cloned()
+        .collect()
 }
 
 /// Whether `node` filters on a question of an `IN` subquery's values that the
@@ -8571,7 +8595,7 @@ impl DataTableState {
                         }
                     };
                     let leftover =
-                        leftover_subquery_value_columns(&result_lf.logical_plan, &schema);
+                        leftover_subquery_value_columns(&mut result_lf.logical_plan, &schema);
                     if !leftover.is_empty() {
                         let shown = Arc::make_mut(&mut schema);
                         for name in &leftover {
@@ -12098,6 +12122,41 @@ mod tests {
                 "SELECT * FROM (SELECT k, i, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
                  QUALIFY r IN (SELECT w FROM df WHERE w < 3)) WHERE i > 1",
                 &["k", "i", "r"][..],
+            ),
+            (
+                "SELECT k, i, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3) AND i IN (SELECT w FROM df)",
+                &["k", "i", "r"][..],
+            ),
+            (
+                "WITH q AS (SELECT k, i, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3)) \
+                 SELECT * FROM q UNION ALL SELECT * FROM q",
+                &["k", "i", "r"][..],
+            ),
+            // A join suffixes the right side's copy of both polars-sql's column and
+            // the user's.
+            (
+                "WITH q AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS r FROM df \
+                 QUALIFY r IN (SELECT w FROM df WHERE w < 3)) \
+                 SELECT * FROM q a JOIN q b ON a.i = b.i JOIN q c ON a.i = c.i ORDER BY a.i",
+                &[
+                    "k",
+                    "i",
+                    "w",
+                    LOOKALIKE,
+                    "r",
+                    "k:b",
+                    "i:b",
+                    "w:b",
+                    "_POLARS_TMP_999999999:b",
+                    "r:b",
+                    "k:c",
+                    "i:c",
+                    "w:c",
+                    "_POLARS_TMP_999999999:c",
+                    "r:c",
+                ][..],
             ),
             ("SELECT * FROM df WHERE i IN (SELECT w FROM df)", &all[..]),
             (

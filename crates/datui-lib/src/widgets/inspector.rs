@@ -1276,7 +1276,17 @@ fn draw_items(
 ) {
     let g = crate::glyphs::get();
     let width = content.width as usize;
-    let label_w = node.label_width().clamp(3, (width / 3).clamp(4, 28));
+    // An object's keys are measured only up to its first thousand, so a page past
+    // them is measured too: a wider key there would be cut to the same few cells.
+    let page_w = page
+        .iter()
+        .map(|(label, _)| crate::glyphs::cell_width(&exact::preview(label, g)))
+        .max()
+        .unwrap_or(0);
+    let label_w = node
+        .label_width()
+        .max(page_w)
+        .clamp(3, (width / 3).clamp(4, 28));
     // Measured over the level, not the page, so scrolling moves no column.
     let type_w = match node.shape() {
         Shape::Object | Shape::Array => "object".len(),

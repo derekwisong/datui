@@ -29204,6 +29204,31 @@ mod inspector_layout_tests {
         }
     }
 
+    /// An object's keys past the thousand measured for the name column are whole
+    /// when the page shows them, not cut to the width of `k999`.
+    #[test]
+    fn keys_past_the_measured_ones_are_not_cut() {
+        use polars::prelude::{IntoLazy, df};
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let keys: Vec<String> = (0..2000).map(|i| format!("\"k{i}\": {i}")).collect();
+        let df = df!("doc" => [format!("{{{}}}", keys.join(", "))]).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.set_column_order(vec!["doc".to_string()]);
+        app.data_table_state = Some(state);
+        rows_at(&mut app, 80, 24);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::End);
+        let rows = rows_at(&mut app, 80, 24);
+        let rail = crate::glyphs::get().rail;
+        assert!(
+            rows.iter().any(|r| r.contains(&format!("{rail}k1999 "))),
+            "{}",
+            rows.join("\n")
+        );
+    }
+
     /// #615: a row whose `order` is a struct holding a list of structs, drilled
     /// into twice: the title is the breadcrumb, the list is a table of its fields,
     /// and one frame holds it all, the way back on its footer and the control bar.

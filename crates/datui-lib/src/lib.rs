@@ -84,6 +84,7 @@ pub mod gcloud;
 pub mod glyphs;
 pub mod gps;
 pub(crate) mod help_strings;
+pub mod hf_splits;
 pub mod home;
 pub mod inspector_drill;
 pub mod inspector_modal;
@@ -8524,6 +8525,10 @@ pub struct OpenOptions {
     /// totals, for the Info panel. Found by the scan, which reads the header once, and
     /// carried to the dataset as `left_out` is. `None` for every other open.
     pub model: Option<Arc<crate::model_files::ModelSummary>>,
+    /// The split of a Hugging Face cache directory this read chose, the others and the
+    /// `map()` files it left out. Found by the read, or by a bucket listing, and carried
+    /// to the dataset as `left_out` is. `None` for every other open.
+    pub splits: Option<Arc<crate::hf_splits::Splits>>,
     /// `--spec FILE`: read the path through this format spec, whatever else matches it.
     pub spec_file: Option<PathBuf>,
     /// The format spec named by `--format NAME`, or picked with `b`.
@@ -8603,6 +8608,7 @@ impl OpenOptions {
             normalize: false,
             audio: None,
             sqlite: None,
+            splits: None,
         }
     }
 }
@@ -9259,6 +9265,8 @@ pub struct ReadReport {
     pub midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A SQLite table opened in place. See `OpenOptions::sqlite`.
     pub sqlite: Option<Arc<SqliteOpen>>,
+    /// The split a Hugging Face cache directory was read as. See `OpenOptions::splits`.
+    pub splits: Option<Arc<crate::hf_splits::Splits>>,
 }
 
 /// A SQLite table opened in place, carried from the scan to the dataset.
@@ -17157,6 +17165,7 @@ impl App {
                         audio: None,
                         midi: None,
                         sqlite: None,
+                        splits: options.splits.clone(),
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
@@ -17185,6 +17194,7 @@ impl App {
                         model: report.model,
                         format_read: report.format_read,
                         sqlite: report.sqlite,
+                        splits: report.splits,
                         spec_choice: None,
                         read_python: report.read_python,
                         audio: report.audio,
@@ -18193,6 +18203,12 @@ impl App {
         // count of the files and a wrong one of the table.
         facts.not_the_table = options.read_as_plain_files_of;
         facts.model = options.model.clone();
+        if let Some(splits) = &options.splits {
+            facts.other_tables = splits.others.clone();
+            facts
+                .open_notes
+                .extend(crate::notes::map_caches(splits.caches));
+        }
         if let Some(read) = &options.format_read {
             facts.open_notes.extend(read.notes());
             facts.format_read = Some(read.clone());
@@ -18510,6 +18526,34 @@ impl App {
         }
         Self::schema_state_from_full_scan(lf, path, options)
             .map(|state| (state, OpenFacts::default(), "full scan".to_string()))
+    }
+
+    /// The files of one split, when `dir` is a Hugging Face `datasets` cache: its
+    /// `dataset_info.json` or `state.json` beside Arrow files. What was chosen and left
+    /// out goes in `report`. Any other directory reads every file.
+    fn hugging_face_split(
+        dir: &Path,
+        format: FileFormat,
+        files: Vec<PathBuf>,
+        options: &OpenOptions,
+        report: &mut ReadReport,
+    ) -> Result<Vec<PathBuf>> {
+        let metadata = || {
+            ["dataset_info.json", "state.json"]
+                .iter()
+                .any(|name| dir.join(name).is_file())
+        };
+        if format != FileFormat::Arrow || !metadata() {
+            return Ok(files);
+        }
+        let names: Vec<&str> = files
+            .iter()
+            .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or_default())
+            .collect();
+        let (chosen, splits) = crate::hf_splits::choose(&names, options.table.as_deref())
+            .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", dir.display()))?;
+        report.splits = Some(Arc::new(splits));
+        Ok(chosen.into_iter().map(|i| files[i].clone()).collect())
     }
 
     /// Build the LazyFrame for `paths`.
@@ -18886,10 +18930,14 @@ impl App {
                             // list of files typed on the command line goes through. An
                             // explicit `--format` is the user's own answer and outranks
                             // what the names say.
+                            let format = options.format.unwrap_or(found);
+                            let files =
+                                Self::hugging_face_split(path, format, files, options, report)?;
                             report.files_disagree = Self::files_disagree(&files, options, found);
                             let nested = OpenOptions {
                                 hive: false,
-                                format: Some(options.format.unwrap_or(found)),
+                                format: Some(format),
+                                splits: report.splits.clone(),
                                 ..options.clone()
                             };
                             return Self::build_local_lazyframe(&files, &nested, report, formats);
@@ -18904,10 +18952,14 @@ impl App {
                             // and refusing the whole of it over the stray was datui
                             // deciding that a directory it could read was not worth
                             // reading.
+                            let format = options.format.unwrap_or(found);
+                            let files =
+                                Self::hugging_face_split(path, format, files, options, report)?;
                             report.files_disagree = Self::files_disagree(&files, options, found);
                             let nested = OpenOptions {
                                 hive: false,
-                                format: Some(options.format.unwrap_or(found)),
+                                format: Some(format),
+                                splits: report.splits.clone(),
                                 ..options.clone()
                             };
                             let lf = Self::build_local_lazyframe(&files, &nested, report, formats)?;
@@ -18985,6 +19037,7 @@ impl App {
                 effective_format,
                 Some(FileFormat::Nmea | FileFormat::Sqlite)
             )
+            && options.splits.is_none()
         {
             let what = effective_format
                 .map_or("This file".to_string(), |f| format!("A {} file", f.name()));

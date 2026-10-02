@@ -21161,6 +21161,66 @@ fn a_directory_of_arrow_ipc_stream_shards_opens_as_one_table() {
     assert_eq!(files_in(scratch.path()), 1, "one copy of all three");
 }
 
+/// A Hugging Face cache opens its train split, both shards, and names the other
+/// splits; `--table` opens another. The files `map()` wrote, with columns of their
+/// own, are left out and said to be. A split that is not there is refused by name.
+#[test]
+fn a_hugging_face_cache_opens_one_split() {
+    common::ensure_sample_data();
+    let cache = PathBuf::from("tests/sample-data/hf_cache");
+    let open = |table: Option<&str>| {
+        let scratch = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        let options = OpenOptions {
+            temp_dir: Some(scratch.path().to_path_buf()),
+            table: table.map(str::to_string),
+            ..OpenOptions::default()
+        };
+        settle_from(&mut app, &rx, AppEvent::Open(vec![cache.clone()], options));
+        (app, scratch)
+    };
+
+    let (app, _scratch) = open(None);
+    assert_eq!(app.error_message(), None);
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the train split opens");
+    assert_eq!(state.num_rows(), 600, "train's two shards");
+    let rows = state.lf().clone().collect().unwrap();
+    assert_eq!(
+        rows.column("id").unwrap().get(0).unwrap(),
+        AnyValue::Int64(1),
+        "shard 0 first"
+    );
+    assert_eq!(state.other_tables(), ["test", "validation"]);
+    let notes: Vec<String> = state.notes().into_iter().map(|n| n.summary).collect();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n == "2 cache files written by map() not read"),
+        "{notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|n| n.contains("commonest")),
+        "the JSON is the cache's own: {notes:?}"
+    );
+
+    let (app, _scratch) = open(Some("validation"));
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("validation opens");
+    assert_eq!(state.num_rows(), 200);
+    assert_eq!(state.other_tables(), ["test", "train"]);
+
+    let (app, _scratch) = open(Some("dev"));
+    let message = app.error_message().expect("no split named dev");
+    assert!(
+        message.contains("No split named dev; this directory holds test, train, validation"),
+        "{message}"
+    );
+}
+
 /// A stream among IPC files, not first, is found when the scan fails on it, and the
 /// files are converted together.
 #[test]
@@ -21980,6 +22040,32 @@ fn test_copy_as_python_reads_an_arrow_stream() {
     pump_until_idle(&mut app, &rx, &tx);
     let (rows, script) = run_python_script(&app).unwrap();
     assert!(script.contains("pl.read_ipc_stream("), "{script}");
+    assert_eq!(rows, view_csv(&app), "{script}");
+}
+
+/// A Hugging Face cache's script reads the split on screen, not every file.
+#[test]
+fn test_copy_as_python_reads_one_hugging_face_split() {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let options = OpenOptions {
+        table: Some("test".to_string()),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/hf_cache")],
+        options,
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    let Some((rows, script)) = run_python_script(&app) else {
+        eprintln!("skipped: no .venv to run the scripts with");
+        return;
+    };
+    assert!(script.contains("people-test.arrow"), "{script}");
+    assert!(!script.contains("people-train"), "{script}");
     assert_eq!(rows, view_csv(&app), "{script}");
 }
 

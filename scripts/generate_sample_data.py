@@ -723,6 +723,23 @@ def save_ipc_streams(df):
     )
     print(f"Generated: {shards_dir}")
 
+    # A `datasets` cache directory: a file per split, the train split in two shards,
+    # and the `cache-*.arrow` files `map()` writes beside them with columns of their own.
+    # Rows 0-599 are train, 600-799 test, 800-999 validation.
+    cache_dir = OUTPUT_DIR / "hf_cache"
+    cache_dir.mkdir(exist_ok=True)
+    _write_stream(table.slice(0, 300), cache_dir / "people-train-00000-of-00002.arrow")
+    _write_stream(table.slice(300, 300), cache_dir / "people-train-00001-of-00002.arrow")
+    _write_stream(table.slice(600, 200), cache_dir / "people-test.arrow")
+    _write_stream(table.slice(800, 200), cache_dir / "people-validation.arrow")
+    mapped = table.slice(0, 5).select([table.column_names[0]])
+    _write_stream(mapped, cache_dir / "cache-0f3c2a1b9d8e7f60.arrow")
+    _write_stream(mapped, cache_dir / "cache-5e4d3c2b1a09f8e7.arrow")
+    (cache_dir / "dataset_info.json").write_text(
+        json.dumps({"builder_name": "people", "splits": {"train": {}, "test": {}, "validation": {}}})
+    )
+    print(f"Generated: {cache_dir}")
+
     # IPC files with a stream among them, which is not first.
     import pyarrow as pa
 

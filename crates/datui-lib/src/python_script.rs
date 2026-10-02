@@ -620,8 +620,8 @@ fn scans_by_pattern(format: FileFormat) -> bool {
 }
 
 /// The Arrow files the paths name, local and in order, when they are IPC streams
-/// rather than IPC files.
-fn ipc_streams(paths: &[PathBuf]) -> Option<Vec<String>> {
+/// rather than IPC files: of a Hugging Face cache directory, the split the open read.
+fn ipc_streams(paths: &[PathBuf], table: Option<&str>) -> Option<Vec<String>> {
     let mut files = Vec::new();
     for path in paths {
         if is_url(path) {
@@ -635,6 +635,17 @@ fn ipc_streams(paths: &[PathBuf]) -> Option<Vec<String>> {
                 .filter(|p| p.is_file() && FileFormat::from_path(p) == Some(FileFormat::Arrow))
                 .collect();
             inside.sort();
+            let cache = ["dataset_info.json", "state.json"]
+                .iter()
+                .any(|name| path.join(name).is_file());
+            if cache {
+                let names: Vec<&str> = inside
+                    .iter()
+                    .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or_default())
+                    .collect();
+                let (chosen, _) = crate::hf_splits::choose(&names, table).ok()?;
+                inside = chosen.into_iter().map(|i| inside[i].clone()).collect();
+            }
             files.extend(inside);
         } else {
             files.push(path.clone());
@@ -828,7 +839,7 @@ pub fn source(record: &OpenRecord) -> Source {
         }
         FileFormat::Jsonl => "pl.scan_ndjson",
         FileFormat::Json => "pl.read_json",
-        FileFormat::Arrow => match ipc_streams(paths) {
+        FileFormat::Arrow => match ipc_streams(paths, options.table.as_deref()) {
             // A stream has no footer to scan: read it whole, as datui converts it.
             Some(streams) => {
                 let call = match streams.as_slice() {

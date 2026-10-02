@@ -97,8 +97,8 @@ The Nightly workflow's **Startup guard** job runs:
 | Rule | Value |
 |---|---|
 | Files | Generated 5M-row Parquet and CSV, warm cache |
-| Runs | 7 per build, baseline and candidate interleaved |
-| Baseline | The build from the last Nightly on `main` whose guard passed; the latest release before there is one |
+| Runs | 7 per build, baseline and candidate interleaved, alternating which goes first; peak RSS through 3 s after the first rows |
+| Baseline | The build from the last Nightly on `main` whose guard passed and whose build is still kept; the latest release before there is one |
 | Fails when | The candidate's median first rows is 2× the baseline's and 100 ms slower, or its median peak RSS is 2× and 128 MiB larger, or the hook writes nothing |
 
 Both builds run on the same runner in the same job, so runner speed cancels out.

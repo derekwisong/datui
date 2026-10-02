@@ -29,7 +29,8 @@ Usage:
         [--rows 5M] [--runs N] [--ratio 2.0]
 
 `table` prints the markdown table in docs/reference/performance.md. `guard`
-compares two builds on the same generated files, runs interleaved, and exits
+compares two builds on the same generated files, runs interleaved in
+alternating order, and exits
 non-zero when the candidate's median time to first rows, or its median peak
 RSS, is RATIO times the baseline's or more and past an absolute floor, so noise
 on a small number cannot fail it.
@@ -489,9 +490,12 @@ def cmd_guard(opts) -> int:
     ]
     for path in files.values():
         runs: dict[str, list[Run]] = {"baseline": [], "candidate": []}
-        run_once(cand, str(path), scratch, 0, opts.timeout)  # warm the page cache
-        for _ in range(opts.runs):
-            for v in (base, cand):
+        # Warm the page cache with the file and with each binary.
+        for v in (base, cand):
+            run_once(v, str(path), scratch, 0, opts.timeout)
+        for i in range(opts.runs):
+            # Alternating which goes first, so neither always follows the other.
+            for v in (base, cand) if i % 2 == 0 else (cand, base):
                 runs[v.name].append(run_once(v, str(path), scratch, opts.settle, opts.timeout))
         (b_ms, b_mib, _), (c_ms, c_mib, c_fail) = summary(runs["baseline"]), summary(runs["candidate"])
         report.append(f"| {path.name} | {fmt_ms(b_ms)} | {fmt_ms(c_ms)} | {fmt_mib(b_mib)} | {fmt_mib(c_mib)} |")
@@ -546,7 +550,9 @@ def main() -> int:
     g.add_argument("--ratio", type=float, default=2.0, help="fail at this multiple of the baseline (default 2)")
     g.add_argument("--floor-ms", type=float, default=100.0, help="and at least this much slower (default 100)")
     g.add_argument("--floor-mib", type=float, default=128.0, help="and at least this much larger (default 128)")
-    g.add_argument("--settle", type=float, default=1.0)
+    # Long enough for the CSV row count to finish in both builds: a faster build that
+    # finished it inside the window while a slower one had not would read as bigger.
+    g.add_argument("--settle", type=float, default=3.0, help="seconds kept open after the first rows (default 3)")
     g.add_argument("--timeout", type=float, default=60.0)
     gen = sub.add_parser("generate", help=argparse.SUPPRESS)
     gen.add_argument("data")

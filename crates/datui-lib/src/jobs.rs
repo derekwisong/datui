@@ -387,6 +387,10 @@ pub(crate) struct Ended {
 #[cfg(test)]
 pub(crate) type WorkerDies = Box<dyn FnMut(&Job) -> bool + Send>;
 
+/// Picks the jobs whose worker waits before its work starts; see [`Jobs::worker_waits`].
+#[cfg(test)]
+pub(crate) type WorkerWaits = Box<dyn FnMut(&Job) -> Option<std::sync::mpsc::Receiver<()>> + Send>;
+
 type Slot = Arc<Mutex<Option<Outcome>>>;
 
 /// The record of one job: the only marker the app keeps for it.
@@ -437,6 +441,8 @@ pub(crate) struct Started {
     ended: bool,
     #[cfg(test)]
     dies: bool,
+    #[cfg(test)]
+    waits: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 impl Started {
@@ -461,6 +467,11 @@ impl Started {
             };
             #[cfg(test)]
             let dies = started.dies;
+            // A send or a dropped sender both let it go, so a failing test frees it.
+            #[cfg(test)]
+            if let Some(gate) = started.waits.take() {
+                let _ = gate.recv();
+            }
             let ran = logging::catch_panic(|| {
                 #[cfg(test)]
                 if dies {
@@ -579,6 +590,10 @@ pub(crate) struct Jobs {
     /// leaves behind.
     #[cfg(test)]
     pub(crate) worker_dies: Option<WorkerDies>,
+    /// Which jobs' workers wait, before their work starts, on the receiver it returns:
+    /// for tests that need a job still running at a given step, with no race.
+    #[cfg(test)]
+    pub(crate) worker_waits: Option<WorkerWaits>,
 }
 
 impl Jobs {
@@ -591,6 +606,8 @@ impl Jobs {
             holds: Arc::default(),
             #[cfg(test)]
             worker_dies: None,
+            #[cfg(test)]
+            worker_waits: None,
         }
     }
 
@@ -614,6 +631,8 @@ impl Jobs {
         let ticket = self.ticket(&job);
         #[cfg(test)]
         let dies = self.worker_dies.as_mut().is_some_and(|dies| dies(&job));
+        #[cfg(test)]
+        let waits = self.worker_waits.as_mut().and_then(|waits| waits(&job));
         let slot = Slot::default();
         self.records.push(Record {
             ticket,
@@ -630,6 +649,8 @@ impl Jobs {
             ended: false,
             #[cfg(test)]
             dies,
+            #[cfg(test)]
+            waits,
         }
     }
 
@@ -1320,6 +1341,25 @@ mod tests {
         assert!(matches!(
             jobs.end(ticket).map(|e| e.outcome),
             Some(Outcome::Failed { panicked: true, .. })
+        ));
+    }
+
+    /// A worker picked to wait does no work until it is let go.
+    #[test]
+    fn a_worker_picked_to_wait_runs_once_let_go() {
+        let (mut jobs, rx) = jobs();
+        let (waits, release) = crate::tests::worker_waits_once(|job| matches!(job, Job::Pivot));
+        jobs.worker_waits = waits;
+        let ticket = spawn(&mut jobs, Job::Pivot, |_| {
+            Ok(Answer::Exported(PathBuf::from("done")))
+        });
+        assert!(rx.try_recv().is_err(), "it waits");
+        assert!(jobs.is_current(ticket));
+        release.send(()).unwrap();
+        assert_eq!(ended(&rx), ticket);
+        assert!(matches!(
+            jobs.end(ticket).map(|e| e.outcome),
+            Some(Outcome::Answered(_))
         ));
     }
 }

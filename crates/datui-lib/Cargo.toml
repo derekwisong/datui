@@ -154,7 +154,7 @@ default-features = false
 [dependencies.polars-arrow]
 version = "0.55"
 default-features = false
-features = ["io_avro"]
+features = ["io_avro", "io_ipc"]
 
 [dev-dependencies]
 tempfile = "3.8"

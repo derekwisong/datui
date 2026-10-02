@@ -48,7 +48,7 @@ impl TempDownload {
         Self::held(file, None)
     }
 
-    fn held(file: tempfile::NamedTempFile, claim: Option<Claim>) -> TempDownload {
+    pub(crate) fn held(file: tempfile::NamedTempFile, claim: Option<Claim>) -> TempDownload {
         TempDownload(Arc::new(Held {
             path: file.into_temp_path(),
             _claim: claim,

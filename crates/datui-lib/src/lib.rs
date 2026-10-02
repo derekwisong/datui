@@ -82,6 +82,7 @@ pub(crate) mod help_strings;
 pub mod home;
 pub mod inspector_modal;
 pub mod intent_modal;
+pub mod ipc_stream;
 mod jobs;
 mod loading;
 pub mod local_copy;
@@ -9143,11 +9144,16 @@ pub struct ReadReport {
     pub model: Option<Arc<crate::model_files::ModelSummary>>,
 }
 
-/// What a scan built: the frame, or one compressed delimited file for the load to
-/// decompress, since the copy has to outlive the scan.
+/// What a scan built: the frame, or what the load has to turn into a file it can scan
+/// first, since the copy has to outlive the scan.
 pub(crate) enum Scan {
     Frame(Box<LazyFrame>),
-    Decompress { file: PathBuf, format: FileFormat },
+    Decompress {
+        file: PathBuf,
+        format: FileFormat,
+    },
+    /// Arrow IPC streams, which the load converts to one IPC file before it scans.
+    Streams(Vec<PathBuf>),
 }
 
 impl From<LazyFrame> for Scan {
@@ -16681,6 +16687,32 @@ impl App {
                     })))
                 });
             }
+            Step::Convert {
+                files,
+                path,
+                options,
+                writer,
+                read,
+            } => {
+                // The load's stop flag ends it at the next record batch, removing the
+                // file; quitting removes it even if the process ends first.
+                self.spawn_job(job, Some("Converting Arrow stream..."), move |_| {
+                    let file = crate::ipc_stream::convert(
+                        &files,
+                        options.temp_dir.as_deref(),
+                        &writer,
+                        &read,
+                    )
+                    .map_err(|e| {
+                        crate::error_display::user_message_from_report(&e, path.as_deref())
+                    })?;
+                    Ok(Answer::Load(Box::new(LoadAnswer::Converted {
+                        file,
+                        path,
+                        options,
+                    })))
+                });
+            }
             Step::Scan {
                 paths,
                 options,
@@ -16718,6 +16750,7 @@ impl App {
                     let format = match &scan {
                         Scan::Frame(_) => report.format.or(options.format),
                         Scan::Decompress { format, .. } => Some(*format),
+                        Scan::Streams(_) => Some(FileFormat::Arrow),
                     };
                     let options = OpenOptions {
                         left_out: report.left_out,
@@ -16730,6 +16763,16 @@ impl App {
                         Scan::Frame(lf) => LoadAnswer::Scanned { lf, path, options },
                         Scan::Decompress { file, .. } => LoadAnswer::Compressed {
                             file,
+                            path,
+                            options,
+                        },
+                        Scan::Streams(files) => LoadAnswer::Streams {
+                            bytes: files
+                                .iter()
+                                .filter_map(|f| std::fs::metadata(f).ok())
+                                .map(|m| m.len())
+                                .sum(),
+                            files,
                             path,
                             options,
                         },
@@ -18349,6 +18392,12 @@ impl App {
                 path.is_file()
                     .then(|| crate::discover::sniff_model_format(path))
                     .flatten()
+            })
+            .or_else(|| {
+                (path.extension().is_none()
+                    && path.is_file()
+                    && crate::ipc_stream::is_stream_file(path))
+                .then_some(FileFormat::Arrow)
             });
         report.format = effective_format;
 
@@ -18398,15 +18447,20 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(FileFormat::Arrow) => DataTableState::from_ipc_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
+                Some(FileFormat::Arrow) => {
+                    if let Some(streams) = crate::ipc_stream::streams_among(paths) {
+                        return Ok(Scan::Streams(streams?));
+                    }
+                    DataTableState::from_ipc_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
                 Some(FileFormat::Avro) => DataTableState::from_avro_paths(
                     paths,
                     options.pages_lookahead,
@@ -18486,15 +18540,20 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(FileFormat::Arrow) => DataTableState::from_ipc(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
+                Some(FileFormat::Arrow) => {
+                    if let Some(streams) = crate::ipc_stream::streams_among(paths) {
+                        return Ok(Scan::Streams(streams?));
+                    }
+                    DataTableState::from_ipc(
+                        path,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
                 Some(FileFormat::Avro) => DataTableState::from_avro(
                     path,
                     options.pages_lookahead,

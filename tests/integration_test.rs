@@ -20792,3 +20792,89 @@ fn header_in_cursor_style(buffer: &Buffer, width: u16) -> String {
         .trim()
         .to_string()
 }
+
+/// Open `paths` with temp files written to `scratch`, and wait until the table is up.
+fn open_with_scratch(
+    paths: Vec<PathBuf>,
+    scratch: &Path,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let options = OpenOptions {
+        temp_dir: Some(scratch.to_path_buf()),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, paths, options);
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+fn files_in(dir: &Path) -> usize {
+    std::fs::read_dir(dir).unwrap().count()
+}
+
+/// Arrow IPC streams, the format of a Hugging Face `datasets` cache, open: plain, with
+/// LZ4 and ZSTD buffers, and in the legacy layout without a name to go on. Each is
+/// converted once to an IPC file in the temp directory, which goes with the dataset.
+#[test]
+fn arrow_ipc_streams_open() {
+    common::ensure_sample_data();
+    let sample = Path::new("tests/sample-data");
+    let people = LazyFrame::scan_ipc(
+        PlRefPath::try_from_path(&sample.join("people.arrow")).unwrap(),
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap()
+    .collect()
+    .unwrap();
+    let columns: Vec<String> = people
+        .get_column_names()
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    for name in [
+        "people_stream.arrow",
+        "people_stream_lz4.arrow",
+        "people_stream_zstd.arrow",
+        "people_stream_legacy",
+    ] {
+        let scratch = tempfile::tempdir().unwrap();
+        let (mut app, rx, tx) = open_with_scratch(vec![sample.join(name)], scratch.path());
+        let state = app
+            .data_table_state
+            .as_ref()
+            .unwrap_or_else(|| panic!("{name} opens"));
+        assert_eq!(state.num_rows(), people.height(), "{name}");
+        assert_eq!(state.headers(), columns, "{name}");
+        assert_eq!(files_in(scratch.path()), 1, "{name}: the converted copy");
+
+        pump_open_until_loaded(
+            &mut app,
+            &rx,
+            vec![sample.join("people.arrow")],
+            OpenOptions::default(),
+        );
+        pump_until_idle(&mut app, &rx, &tx);
+        assert_eq!(
+            files_in(scratch.path()),
+            0,
+            "{name}: the copy went with its dataset"
+        );
+    }
+}
+
+/// A directory of Hugging Face shards opens as one table, its JSON files left aside.
+#[test]
+fn a_directory_of_arrow_ipc_stream_shards_opens_as_one_table() {
+    common::ensure_sample_data();
+    let scratch = tempfile::tempdir().unwrap();
+    let (app, _rx, _tx) = open_with_scratch(
+        vec![PathBuf::from("tests/sample-data/hf_shards")],
+        scratch.path(),
+    );
+    let state = app.data_table_state.as_ref().expect("the shards open");
+    assert_eq!(state.num_rows(), 1000);
+    assert!(state.headers().contains(&"first_name".to_string()));
+    assert_eq!(files_in(scratch.path()), 1, "one copy of all three");
+}

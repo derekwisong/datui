@@ -268,6 +268,7 @@ pub fn ensure_sample_data() {
             "pivot_long.parquet",
             "melt_wide.parquet",
             "models/tiny.gguf",
+            "people_stream.arrow",
         ];
 
         let needs_generation = !sample_data_dir.exists()

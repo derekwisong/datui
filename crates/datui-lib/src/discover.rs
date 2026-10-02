@@ -535,6 +535,10 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     if head.starts_with(b"ORC") {
         return Some(crate::FileFormat::Orc);
     }
+    // An Arrow IPC stream has no magic, only its schema message, read whole to be sure.
+    if crate::ipc_stream::is_stream_file(path) {
+        return Some(crate::FileFormat::Arrow);
+    }
     None
 }
 
@@ -718,6 +722,15 @@ pub(crate) fn rank_formats(a: (&str, usize), b: (&str, usize)) -> std::cmp::Orde
     b.1.cmp(&a.1)
         .then_with(|| (a.0 != "parquet").cmp(&(b.0 != "parquet")))
         .then_with(|| a.0.cmp(b.0))
+}
+
+/// Whether a file is one Hugging Face `datasets` writes beside a dataset's Arrow
+/// shards to describe them: `save_to_disk` writes both, and its cache the first. They
+/// are the dataset's metadata, not its data, where `.arrow` files sit beside them; two
+/// JSON files would otherwise outnumber a dataset of one shard and be read instead of
+/// it.
+pub(crate) fn is_hugging_face_metadata(name: &str) -> bool {
+    matches!(name, "dataset_info.json" | "state.json")
 }
 
 fn order_formats(counts: &mut [(crate::FileFormat, usize)]) {
@@ -912,6 +925,23 @@ pub fn directory_format(dir: &Path) -> DirectoryFormat {
         }
     }
 
+    // A Hugging Face dataset's own JSON files, beside its shards.
+    if by_format
+        .iter()
+        .any(|(f, _)| *f == crate::FileFormat::Arrow)
+    {
+        for (format, files) in &mut by_format {
+            if *format == crate::FileFormat::Json {
+                files.retain(|f| {
+                    !f.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(is_hugging_face_metadata)
+                });
+            }
+        }
+        by_format.retain(|(_, files)| !files.is_empty());
+    }
+
     // Decided after the whole listing rather than at the first entry that could settle
     // it, so the answer does not depend on the order a directory read happens to
     // return. One `key=value` below and the directory stops being the whole story: a hive
@@ -1065,6 +1095,8 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
     // as extensions, so `.ipc` beside `.arrow` is one kind of thing and not two.
     let mut format: Option<crate::FileFormat> = None;
     let mut mixed_formats = false;
+    // Counted as data until the listing is done; see `is_hugging_face_metadata`.
+    let mut hugging_face: Vec<String> = Vec::new();
 
     // Bounded where the entries come from rather than after they are counted: a
     // Hadoop-style output directory is a `.crc` per data file, and skipping those before
@@ -1146,6 +1178,9 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
             })
             .filter(|_| is_file)
         {
+            if found == crate::FileFormat::Json && is_hugging_face_metadata(&name) {
+                hugging_face.push(name.clone());
+            }
             data_files += 1;
             match counts.iter_mut().find(|(f, _)| *f == found) {
                 Some((_, n)) => *n += 1,
@@ -1165,6 +1200,25 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
             holds.not_read += 1;
         }
         seen += 1;
+    }
+
+    // A Hugging Face dataset's own JSON files are its writer's, like `_SUCCESS`.
+    if !hugging_face.is_empty() && counts.iter().any(|(f, _)| *f == crate::FileFormat::Arrow) {
+        let n = hugging_face.len();
+        for (format, count) in &mut counts {
+            if *format == crate::FileFormat::Json {
+                *count -= n;
+            }
+        }
+        counts.retain(|(_, count)| *count > 0);
+        data_files -= n;
+        seen -= n;
+        holds.skipped += n;
+        holds.skipped_names.extend(hugging_face);
+        holds.skipped_names.sort();
+        holds.skipped_names.truncate(SKIPPED_NAMES_SHOWN);
+        mixed_formats = counts.len() > 1;
+        format = counts.first().map(|(f, _)| *f);
     }
 
     holds.partitions = partitions;
@@ -2708,6 +2762,47 @@ mod classification_tests {
             ),
             other => panic!("a directory of two formats is mixed, got {other:?}"),
         }
+    }
+
+    /// A Hugging Face dataset saved to disk is one shard and two JSON files that
+    /// describe it: a dataset of Arrow, labelled and read as one, the JSON its writer's
+    /// own. Beside no Arrow, the same names are data.
+    #[test]
+    fn a_hugging_face_dataset_is_its_shards() {
+        use crate::FileFormat;
+        let tmp = tempfile::TempDir::new().unwrap();
+        for name in [
+            "data-00000-of-00002.arrow",
+            "data-00001-of-00002.arrow",
+            "dataset_info.json",
+            "state.json",
+        ] {
+            std::fs::write(tmp.path().join(name), b"x").unwrap();
+        }
+        let (kind, holds) = look_at_directory(tmp.path());
+        assert_eq!(kind, EntryKind::MultiFile);
+        assert_eq!(holds.formats, [("arrow".to_string(), 2)]);
+        assert_eq!(holds.skipped, 2);
+        assert_eq!(holds.skipped_names, ["dataset_info.json", "state.json"]);
+        match directory_format(tmp.path()) {
+            DirectoryFormat::One(FileFormat::Arrow, files) => assert_eq!(files.len(), 2),
+            other => panic!("the shards are the dataset, got {other:?}"),
+        }
+
+        std::fs::remove_file(tmp.path().join("data-00001-of-00002.arrow")).unwrap();
+        assert!(matches!(
+            directory_format(tmp.path()),
+            DirectoryFormat::One(FileFormat::Arrow, _)
+        ));
+
+        let json = tempfile::TempDir::new().unwrap();
+        for name in ["state.json", "other.json"] {
+            std::fs::write(json.path().join(name), b"{}").unwrap();
+        }
+        assert_eq!(
+            look_at_directory(json.path()).1.formats,
+            [("json".to_string(), 2)]
+        );
     }
 
     #[test]

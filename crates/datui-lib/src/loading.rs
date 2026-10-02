@@ -2,25 +2,26 @@
 //!
 //! [`Loader`] holds the open in flight ([`Load`]): where it was asked from, the paths it
 //! was asked for, the phase it is in, what the loading screen says about it, and what
-//! it holds — its stop flag and footer counter, the download it fetched, and the hold
-//! on the generation while the user is asked about a download. The app tells it what
-//! happened (an open asked for, a phase's worker answering or failing, the user's answer
-//! to the download question) and it says what to do next ([`Step`]). The app carries the
-//! step out, runs the workers and installs the dataset. Nothing else keeps a copy of the
-//! open's state.
+//! it holds — its stop flag and footer counter, the download it fetched, the IPC file
+//! its Arrow streams were converted to, and the hold on the generation while the user
+//! is asked about a download. The app tells it what happened (an open asked for, a
+//! phase's worker answering or failing, the user's answer to the download question) and
+//! it says what to do next ([`Step`]). The app carries the step out, runs the workers
+//! and installs the dataset. Nothing else keeps a copy of the open's state.
 //!
 //! - **Identity.** Every load has a [`LoadId`], and the jobs of its phases carry it. An
 //!   answer is taken only while its load is the one in flight and in the phase that asked
 //!   for it: one from an open that was abandoned or replaced installs nothing and changes
 //!   no title, and its payload is dropped with it.
 //! - **Retirement.** Abandoning, replacing or failing a load drops what it holds: its
-//!   stop flag is raised, so a download stops at its next chunk and removes its file and a
-//!   footer pass stops issuing reads; its download is let go; its hold is released.
-//! - **Handover.** The dataset is built holding the load's download, with everything else
-//!   the open found ([`crate::widgets::datatable::OpenFacts`]), and on install takes the
-//!   load's footer counter. From then on they are the dataset's: what is left of the load
-//!   is the read of the first rows ([`Phase::FirstRows`]), and abandoning that stops
-//!   neither.
+//!   stop flag is raised, so a download or a conversion stops at its next chunk and
+//!   removes its file and a footer pass stops issuing reads; its download and converted
+//!   file are let go; its hold is released.
+//! - **Handover.** The dataset is built holding the load's download or converted file,
+//!   with everything else the open found ([`crate::widgets::datatable::OpenFacts`]), and
+//!   on install takes the load's footer counter. From then on they are the dataset's:
+//!   what is left of the load is the read of the first rows ([`Phase::FirstRows`]), and
+//!   abandoning that stops neither.
 //!
 //! The home screen's looks at a path, analyses and charts are not loads, and are not here.
 
@@ -186,6 +187,11 @@ pub(crate) enum Phase {
         read: Arc<AtomicU64>,
     },
     Decompressing,
+    /// Arrow IPC streams being converted to one IPC file: `read` of their `total` bytes.
+    Converting {
+        read: Arc<AtomicU64>,
+        total: u64,
+    },
     /// A CSV read with its string columns parsed.
     ScanningStrings,
     /// The scan; `downloaded` when it reads a download rather than what was named.
@@ -213,6 +219,12 @@ impl Phase {
             Phase::Downloading => ("Downloading", 20),
             Phase::Spooling { .. } => ("Reading stdin", 5),
             Phase::Decompressing => ("Decompressing", 30),
+            Phase::Converting { read, total } => {
+                let done = read.load(Ordering::Relaxed).min(*total);
+                // Up to the scan of the converted file that follows.
+                let share = (done * 20).checked_div(*total).unwrap_or(0);
+                ("Converting Arrow stream", 10 + share as u16)
+            }
             Phase::ScanningStrings => ("Scanning string columns", 55),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
@@ -258,6 +270,8 @@ pub(crate) struct Load {
     /// The stop flag again, for the workers that write files, and where they claim them.
     writer: Writer,
     download: Option<Fetched>,
+    /// The IPC file its Arrow streams were converted to, which the dataset scans.
+    converted: Option<TempDownload>,
 }
 
 impl Load {
@@ -314,6 +328,15 @@ pub(crate) enum Step {
         writer: Writer,
         /// The download `file` is, given to the dataset built from it.
         download: Option<TempDownload>,
+    },
+    /// Convert the Arrow IPC streams `files` to one IPC file, writing through `writer`
+    /// and counting the bytes read in `read`; `path` names them on screen and in errors.
+    Convert {
+        files: Vec<PathBuf>,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+        writer: Writer,
+        read: Arc<AtomicU64>,
     },
     /// Scan `paths`, saying `status` on the control bar; `display` names the dataset when
     /// what is scanned is a download.
@@ -372,6 +395,20 @@ pub(crate) enum LoadAnswer {
     /// The scan found one compressed delimited file, `file`, to decompress first.
     Compressed {
         file: PathBuf,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+    },
+    /// The scan found Arrow IPC streams, `bytes` in all, which have to be converted
+    /// before they can be scanned.
+    Streams {
+        files: Vec<PathBuf>,
+        bytes: u64,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+    },
+    /// The streams, converted to one IPC file. Dropped unused, it removes the file.
+    Converted {
+        file: TempDownload,
         path: Option<PathBuf>,
         options: OpenOptions,
     },
@@ -551,6 +588,7 @@ impl Loader {
                 writer: self.unfinished.writer(progress.cancel_flag()),
                 progress,
                 download: None,
+                converted: None,
             });
         }
         let load = self.load.as_mut().expect("started just above");
@@ -810,12 +848,61 @@ impl Loader {
                 Phase::Scanning { .. } | Phase::ScanningStrings,
             ) => {
                 load.phase = Phase::ReadingSchema;
+                // What the frame scans: the converted streams, else the download.
+                let download = load
+                    .converted
+                    .clone()
+                    .or_else(|| load.download.as_ref().map(|fetched| fetched.file.clone()));
                 Step::ReadSchema {
                     lf,
                     path,
                     options,
                     progress: load.progress.clone(),
-                    download: load.download.as_ref().map(|fetched| fetched.file.clone()),
+                    download,
+                }
+            }
+            (
+                LoadAnswer::Streams {
+                    files,
+                    bytes,
+                    path,
+                    options,
+                },
+                Phase::Scanning { .. },
+            ) if load.converted.is_none() => {
+                let read = Arc::<AtomicU64>::default();
+                load.phase = Phase::Converting {
+                    read: read.clone(),
+                    total: bytes,
+                };
+                Step::Convert {
+                    files,
+                    path,
+                    options,
+                    writer: load.writer.clone(),
+                    read,
+                }
+            }
+            (
+                LoadAnswer::Converted {
+                    file,
+                    path,
+                    options,
+                },
+                Phase::Converting { .. },
+            ) => {
+                let paths = vec![file.path().to_path_buf()];
+                load.converted = Some(file);
+                load.phase = Phase::Scanning { downloaded: true };
+                Step::Scan {
+                    paths,
+                    options: OpenOptions {
+                        format: Some(FileFormat::Arrow),
+                        hive: false,
+                        ..options
+                    },
+                    display: path,
+                    status: "Scanning...",
                 }
             }
             (
@@ -904,7 +991,7 @@ impl Loader {
         let from_home = load.from_home;
         // A download is read from a temp file the user never typed: the reason names
         // the URL they did, or `stdin`.
-        let message = match &load.download {
+        let mut message = match &load.download {
             Some(fetched) => crate::error_display::named_by_source(
                 message,
                 fetched.file.path(),
@@ -912,6 +999,10 @@ impl Loader {
             ),
             None => message.to_string(),
         };
+        // So is the IPC file streams were converted to.
+        if let (Some(converted), Some(path)) = (&load.converted, &load.path) {
+            message = crate::error_display::named_by_source(&message, converted.path(), path);
+        }
         self.retire();
         Step::Failed(Failed { message, from_home })
     }
@@ -1124,6 +1215,101 @@ mod tests {
 
         loader.first_rows_settled();
         assert!(loader.current().is_none(), "the open is done");
+    }
+
+    /// Arrow IPC streams found by the scan are converted, counting their bytes, and the
+    /// IPC file they become is scanned and held by the dataset, named by what was asked
+    /// for; a failure names that too, and putting the load down lets the file go.
+    #[test]
+    fn streams_are_converted_then_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut loader = Loader::default();
+        let _ = loader.open(request("cache.arrow"));
+        let id = loader.id().unwrap();
+        let Step::Convert {
+            files, path, read, ..
+        } = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Streams {
+                files: vec![PathBuf::from("cache.arrow")],
+                bytes: 200,
+                path: Some(PathBuf::from("cache.arrow")),
+                options: OpenOptions::default(),
+            },
+        )
+        else {
+            panic!("the streams are converted");
+        };
+        assert_eq!(files, [PathBuf::from("cache.arrow")]);
+        assert_eq!(path.as_deref(), Some(Path::new("cache.arrow")));
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Converting Arrow stream", 10)
+        );
+        read.store(100, Ordering::Relaxed);
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Converting Arrow stream", 20),
+            "the bar moves with the bytes read"
+        );
+        assert!(loader.waits());
+
+        let converted =
+            TempDownload::keep(TempDownload::create(Some(dir.path()), Some("arrow")).unwrap());
+        let temp = converted.path().to_path_buf();
+        let Step::Scan {
+            paths,
+            options,
+            display,
+            ..
+        } = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Converted {
+                file: converted,
+                path: Some(PathBuf::from("cache.arrow")),
+                options: OpenOptions::default(),
+            },
+        )
+        else {
+            panic!("the IPC file is scanned");
+        };
+        assert_eq!(paths, std::slice::from_ref(&temp));
+        assert_eq!(options.format, Some(FileFormat::Arrow));
+        assert_eq!(display.as_deref(), Some(Path::new("cache.arrow")));
+        assert!(
+            matches!(
+                answer(
+                    &mut loader,
+                    id,
+                    LoadAnswer::Streams {
+                        files: vec![temp.clone()],
+                        bytes: 1,
+                        path: None,
+                        options: OpenOptions::default(),
+                    },
+                ),
+                Step::Nothing
+            ),
+            "converted once"
+        );
+        let Step::ReadSchema { download, .. } = answer(&mut loader, id, scanned("cache.arrow"))
+        else {
+            panic!("the schema is read");
+        };
+        assert_eq!(
+            download.as_ref().map(|d| d.path().to_path_buf()),
+            Some(temp.clone()),
+            "the dataset holds the converted file"
+        );
+        drop(download);
+        let Step::Failed(failed) = loader.failed(id, &format!("could not read {}", temp.display()))
+        else {
+            panic!("the open fails");
+        };
+        assert_eq!(failed.message, "could not read cache.arrow");
+        assert!(!temp.exists(), "the retired load let the file go");
     }
 
     /// An answer from a load that is no longer in flight, or from a phase it has left,

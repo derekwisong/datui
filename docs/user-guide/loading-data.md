@@ -33,7 +33,7 @@ names it:
 
 | First bytes | Read as |
 |---|---|
-| Parquet, Arrow IPC or Avro magic number | that format |
+| Parquet, Arrow IPC or Avro magic number, or an Arrow IPC stream's schema message | that format |
 | gzip, zstd, bzip2 or xz magic number | compressed CSV, or TSV or PSV with `--format` |
 | `[` | JSON |
 | `{`, the first line a whole object | NDJSON |
@@ -93,6 +93,28 @@ The format is taken from the extension, or from `--format` when there is none.
 queries, sorting and analysis may read the full input. The other formats are
 loaded in full before the table appears, except a directory of NDJSON files in
 a bucket, which is scanned.
+
+**Arrow IPC streams**, the format of a Hugging Face `datasets` cache, are told
+from IPC files by their first bytes: a `.arrow`, `.ipc` or `.feather` file, one
+with no extension, or one read with `--format arrow`. A stream has
+no index of its rows, so it is converted once to an IPC file in the temp
+directory, then scanned lazily like any other:
+
+```bash
+datui ~/.cache/huggingface/datasets/imdb/plain_text/0.0.0/abc123/imdb-train.arrow
+datui my_dataset/                 # save_to_disk shards: data-00000-of-00004.arrow ...
+```
+
+| What | How it opens |
+|---|---|
+| One stream | Converted, then scanned |
+| A directory of stream shards | Converted together into one file, in name order; shards with different columns fail |
+| `dataset_info.json`, `state.json` beside `.arrow` files | Left aside as the dataset's metadata |
+| LZ4 or ZSTD buffers | Read; written out uncompressed, so the copy can be larger than the stream |
+
+The loading screen shows how far the conversion has got;
+<kbd>Ctrl</kbd>+<kbd>O</kbd> stops it and removes the partial file. `--temp-dir`
+chooses where the copy goes, and it is removed with the dataset.
 
 **Excel** opens the first sheet unless `--sheet` names another, by index
 (`--sheet 0`) or name (`--sheet Sales`).
@@ -182,12 +204,12 @@ the file and reads the whole thing into memory instead.
 
 ### Temporary files
 
-A decompressed text file or a downloaded file lives in the temp directory while datui
-uses it.
+A decompressed text file, a converted Arrow stream or a downloaded file lives in the
+temp directory while datui uses it.
 
 | Exit | Temporary files |
 |---|---|
-| `q`, Ctrl+Q, Ctrl+C, an error | Removed, including a partial file mid-download or mid-decompression |
+| `q`, Ctrl+Q, Ctrl+C, an error | Removed, including a partial file mid-download, mid-decompression or mid-conversion |
 | SIGTERM, SIGHUP (closing the terminal) | Removed by the `datui` command, which quits as for `q` and exits with status 128 + the signal. Left by `datui.view()` in Python, which leaves signals to Python |
 | SIGKILL | Left in the temp directory |
 

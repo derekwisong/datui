@@ -1347,6 +1347,58 @@ mod tests {
         assert!(loader.awaiting_dataset());
     }
 
+    /// A conversion put down mid-way is told to stop through its writer, and its file,
+    /// answered late or for a phase the load is not in, is dropped and so removed.
+    #[test]
+    fn a_converted_file_nobody_wants_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let converted = || {
+            let file =
+                TempDownload::keep(TempDownload::create(Some(dir.path()), Some("arrow")).unwrap());
+            let path = file.path().to_path_buf();
+            (
+                LoadAnswer::Converted {
+                    file,
+                    path: Some(PathBuf::from("cache.arrow")),
+                    options: OpenOptions::default(),
+                },
+                path,
+            )
+        };
+        let mut loader = Loader::default();
+        let _ = loader.open(request("cache.arrow"));
+        let first = loader.id().unwrap();
+
+        let (early, early_path) = converted();
+        assert!(matches!(answer(&mut loader, first, early), Step::Nothing));
+        assert!(!early_path.exists(), "not converting yet");
+
+        let Step::Convert { writer, .. } = answer(
+            &mut loader,
+            first,
+            LoadAnswer::Streams {
+                files: vec![PathBuf::from("cache.arrow")],
+                bytes: 1,
+                path: Some(PathBuf::from("cache.arrow")),
+                options: OpenOptions::default(),
+            },
+        ) else {
+            panic!("the streams are converted");
+        };
+        assert!(!writer.stopped());
+        assert!(loader.make_way().is_some(), "the conversion is work");
+        assert!(writer.stopped(), "Ctrl+O or another open stops it");
+
+        let _ = loader.open(request("other.csv"));
+        let (late, late_path) = converted();
+        assert!(matches!(answer(&mut loader, first, late), Step::Nothing));
+        assert!(!late_path.exists(), "the replaced load's file");
+        assert_eq!(
+            loader.current().unwrap().path(),
+            Some(Path::new("other.csv"))
+        );
+    }
+
     /// Opening something new replaces a load doing work, and stops it: its footer pass
     /// and its download read the stop flag.
     #[test]

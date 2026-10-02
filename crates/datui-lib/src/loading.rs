@@ -1632,6 +1632,52 @@ mod tests {
         ));
     }
 
+    /// A GPS log the scan found is converted under the name the open was asked for;
+    /// a second answer for the phase it left changes nothing, the schema read installs,
+    /// and putting the load down mid-conversion stops the writer, so its file goes.
+    #[test]
+    fn a_gps_log_the_scan_found_is_converted() {
+        let convert = || LoadAnswer::Gps {
+            file: PathBuf::from("drive.nmea"),
+            path: Some(PathBuf::from("drive.nmea")),
+            options: OpenOptions {
+                format: Some(FileFormat::Nmea),
+                ..OpenOptions::default()
+            },
+        };
+        let mut loader = Loader::default();
+        let _ = loader.open(request("drive.nmea"));
+        let id = loader.id().unwrap();
+        let Step::ReadGps { file, writer, .. } = answer(&mut loader, id, convert()) else {
+            panic!("the log is converted");
+        };
+        assert_eq!(file, Path::new("drive.nmea"));
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Reading GPS log", 30)
+        );
+        assert!(loader.waits());
+        assert!(matches!(answer(&mut loader, id, convert()), Step::Nothing));
+        assert!(!writer.stopped());
+        loader.retire();
+        assert!(
+            writer.stopped(),
+            "Ctrl+O or another open stops the conversion"
+        );
+
+        let mut loader = Loader::default();
+        let _ = loader.open(request("drive.nmea"));
+        let id = loader.id().unwrap();
+        assert!(matches!(
+            answer(&mut loader, id, convert()),
+            Step::ReadGps { .. }
+        ));
+        assert!(matches!(
+            answer(&mut loader, id, schema_read("drive.nmea")),
+            Step::Install(_)
+        ));
+    }
+
     /// A local compressed CSV is decompressed rather than scanned; a CSV read with its
     /// strings parsed scans saying so; a frame handed over goes straight to its schema
     /// and has no path to open again.

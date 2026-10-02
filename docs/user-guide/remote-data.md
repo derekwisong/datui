@@ -330,7 +330,8 @@ exits, including a quit mid-download; see
 | Cloud Parquet file, prefix or glob | Reads metadata and required row groups in place |
 | Cloud CSV or JSONL directory | Scans the files in place |
 | SafeTensors or GGUF, any source | Reads the header only, with ranged requests |
-| Cloud Arrow prefix (IPC files or streams) | Downloads the files into one temporary IPC file, after asking; a Hugging Face cache downloads one split, as on disk |
+| Cloud Arrow IPC file, prefix or glob | Scans the files in place; nothing is downloaded |
+| Cloud Arrow streams, one or a prefix | Asks, then converts each stream to one temporary IPC file as it downloads; IPC files beside them are scanned in place. A Hugging Face cache reads one split, as on disk |
 | HTTP(S), or other download routes | Downloads the file before opening |
 
 Paging reuses buffered rows and reads ahead. Leaving the buffer can require

@@ -131,8 +131,8 @@ Press <kbd>i</kbd> for the [Model tab](dataset-info.md#model): parameter
 count, size, the dtype or quantization mix, and the header's metadata
 (`__metadata__`, or GGUF's key/value pairs).
 
-A header that is corrupt, or claims more than the file holds, is refused
-with an error. Remote model files are downloaded whole before they open.
+A header that is corrupt, or a tensor that reaches past the end of the file
+(a download cut short), is refused with an error. Remote model files are downloaded whole before they open.
 
 ### CSV options
 

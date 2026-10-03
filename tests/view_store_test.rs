@@ -483,9 +483,9 @@ fn a_reader_never_sees_a_broken_view() {
 fn a_write_killed_before_its_rename_breaks_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (_a, _b, id) = two_instances(dir.path());
-    let views = dir.path().join("templates");
+    let views = dir.path().join("views");
     std::fs::write(
-        views.join(format!("template_{id}.json.999.0.tmp")),
+        views.join(format!("view_{id}.json.999.0.tmp")),
         "{\"id\": \"half",
     )
     .unwrap();

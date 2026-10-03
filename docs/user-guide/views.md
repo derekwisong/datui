@@ -116,7 +116,7 @@ overwrites what it carries.
 auto_apply = true   # apply the best match when a file opens
 ```
 
-Views are JSON files in the `templates/` directory beside your
+Views are JSON files in the `views/` directory beside your
 [config file](configuration.md).
 
 ```bash

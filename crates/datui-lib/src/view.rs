@@ -290,7 +290,7 @@ impl ViewManager {
     pub fn new(config: &ConfigManager) -> Result<Self> {
         // Don't create directories on startup - be sensitive to constrained environments
         // Directories will be created lazily when actually needed (e.g., saving views)
-        let views_dir = config.config_dir().join("templates");
+        let views_dir = config.config_dir().join("views");
 
         let mut manager = Self {
             config: config.clone(),
@@ -311,7 +311,7 @@ impl ViewManager {
         Self {
             config: config.clone(),
             views: Vec::new(),
-            views_dir: config.config_dir().join("templates"),
+            views_dir: config.config_dir().join("views"),
             broken_views: Vec::new(),
         }
     }
@@ -358,7 +358,7 @@ impl ViewManager {
     }
 
     fn view_path(&self, id: &str) -> PathBuf {
-        self.views_dir.join(format!("template_{id}.json"))
+        self.views_dir.join(format!("view_{id}.json"))
     }
 
     /// Run `work` holding the views' lock, which every write and delete takes, so
@@ -594,7 +594,7 @@ impl ViewManager {
                         && path
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .map(|s| s.starts_with("template_") && s.ends_with(".json"))
+                            .map(|s| s.starts_with("view_") && s.ends_with(".json"))
                             .unwrap_or(false)
                     {
                         fs::remove_file(&path)?;
@@ -1398,7 +1398,7 @@ mod tests {
     fn a_view_saved_with_a_mangled_url_loads_with_the_url() {
         let dir = tempfile::tempdir().unwrap();
         let config = ConfigManager::with_dir(dir.path().to_path_buf());
-        let views = dir.path().join("templates");
+        let views = dir.path().join("views");
         fs::create_dir_all(&views).unwrap();
         let json = r#"{
             "id": "old",
@@ -1421,7 +1421,7 @@ mod tests {
                 "locked_columns_count": 0
             }
         }"#;
-        fs::write(views.join("template_old.json"), json).unwrap();
+        fs::write(views.join("view_old.json"), json).unwrap();
 
         let manager = ViewManager::new(&config).unwrap();
         assert!(manager.broken_views.is_empty());

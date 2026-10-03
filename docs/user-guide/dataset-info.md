@@ -12,6 +12,7 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 | **Audio** | An audio file's format, length, metadata and markers; appears for audio files |
 | **MIDI** | A MIDI file's format, timing, length, tempo and tracks; appears for MIDI files |
 | **Metadata** | The metadata line a [delimited format spec](binary-formats.md#delimited-text) names, as key and value; appears for files read through one |
+| **VCD**, **FIX**, **SDF** | A value change dump's header and signals, a FIX log's versions, dictionaries and tags, or an SDF file's fields; appears for those files |
 | **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
@@ -27,8 +28,8 @@ directories, globs and datasets of several files have no file size.
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch tabs |
 | <kbd>Tab</kbd> | Move between the Schema tab bar and its column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, the model's, audio file's or delimited file's metadata, or the MIDI tracks |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's, audio file's or delimited file's metadata or the MIDI tracks |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, the model's, audio file's or delimited file's metadata, the MIDI tracks, or the VCD signals, FIX tags or SDF fields |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's, audio file's or delimited file's metadata, the MIDI tracks, or the VCD, FIX or SDF list |
 | <kbd>Enter</kbd> | Apply a note's offered action, when available |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
@@ -86,6 +87,20 @@ tab, or on Notes first when a note never ends or a file could not be read:
 
 For a directory of songs, the lines are totals and the tempo range, and the
 list is the files that could not be read, with why.
+
+## VCD, FIX and SDF
+
+For a [VCD dump](loading-data.md#vcd-value-change-dumps), <kbd>i</kbd> opens on the
+VCD tab; for a [FIX log](loading-data.md#fix-logs) or an
+[SDF file](loading-data.md#sdf-compound-files) the tab sits beside Schema.
+
+| Tab | Lines | List |
+|---|---|---|
+| VCD | Timescale, signal and scope counts; value changes and their time span; `$date`, `$version`, `$comment` | Signals: each path with its type, width and identifier |
+| FIX | Messages per BeginString; the dictionaries read with the log, each with what it matches and how many messages | Tags: each column with its tag number and the names the dictionaries give it, each dictionary's when they differ |
+| SDF | Records, fields, and how many records are V3000 | Fields: each one's type and how many records hold it |
+
+A list of more than 10,000 shows the first 10,000 and how many more there are.
 
 ## Notes
 

@@ -229,6 +229,13 @@ fn parse_message(bytes: &[u8], eof: bool, layers: &Layers) -> Option<Message> {
     Some(m)
 }
 
+/// The lines of `text` (newline-separated) that are not blank.
+fn blank_free_lines(text: &[u8]) -> u64 {
+    text.split(|&b| b == b'\n')
+        .filter(|line| !line.trim_ascii().is_empty())
+        .count() as u64
+}
+
 /// `in` or `out`, from the words of a log line's prefix.
 fn direction(prefix: &str) -> Option<&'static str> {
     prefix
@@ -409,19 +416,18 @@ impl FixReader {
     fn scan(&mut self, eof: bool) {
         while self.pos < self.buf.len() {
             let rest = &self.buf[self.pos..];
-            let line_end = rest.iter().position(|&b| b == b'\n');
-            let Some(at) = find_begin(&rest[..line_end.unwrap_or(rest.len())]) else {
-                match line_end {
+            // The next message, and the whole lines before it that hold none. Found
+            // before any newline is looked for, so a capture of messages back to back,
+            // with no newlines at all, is read in one pass.
+            let Some(at) = find_begin(rest) else {
+                let last = rest.iter().rposition(|&b| b == b'\n');
+                match last {
                     Some(end) => {
-                        if !rest[..end].trim_ascii().is_empty() {
-                            self.stats.skipped_lines += 1;
-                        }
+                        self.stats.skipped_lines += blank_free_lines(&rest[..end]);
                         self.pos += end + 1;
                     }
                     None if eof => {
-                        if !rest.trim_ascii().is_empty() {
-                            self.stats.skipped_lines += 1;
-                        }
+                        self.stats.skipped_lines += blank_free_lines(rest);
                         self.pos = self.buf.len();
                     }
                     // A line with no `8=FIX` in its first MiB: passed over, keeping
@@ -434,6 +440,15 @@ impl FixReader {
                 }
                 continue;
             };
+            let line_start = rest[..at]
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map_or(0, |i| i + 1);
+            if line_start > 0 {
+                self.stats.skipped_lines += blank_free_lines(&rest[..line_start - 1]);
+                self.pos += line_start;
+                continue;
+            }
             let long = rest.len() - at > MAX_MESSAGE;
             let window = &rest[at..rest.len().min(at + MAX_MESSAGE)];
             let Some(message) = parse_message(window, eof || long, &self.layers) else {

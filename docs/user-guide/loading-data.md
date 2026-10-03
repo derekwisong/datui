@@ -1108,8 +1108,12 @@ arrives, when they land. Until then:
 - Notes state the partial metadata scope.
 - A query, pivot or drill-down defers the new columns until you return to the original data.
 
-Above 20,000 files the background pass reads a sample. The control bar
-reports footer-reading progress.
+Above 20,000 files the background pass reads a sample, and the row count reads
+the footers the sample skipped. Once every footer is read, the dataset is cached
+and a reopen reads none. The control bar reports footer-reading progress.
+
+A large S3 or Google Cloud prefix is listed in parallel key ranges. While it is
+listed, the loading screen counts the objects found: `Listing files: 412,000`.
 
 The Notes tab also flags storage layouts that may explain a slow open:
 

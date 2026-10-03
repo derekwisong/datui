@@ -2001,7 +2001,7 @@ fn a_job_puts_down_the_keys_and_the_line_it_held() {
     assert!(app.is_busy(), "the open's wait goes on into its next phase");
     assert_eq!(
         app.status_message.as_deref(),
-        Some("Caching schema..."),
+        Some("Reading schema..."),
         "under the next phase's line"
     );
 }
@@ -2162,7 +2162,7 @@ fn a_superseded_scan_does_not_continue_the_load() {
     );
     assert_eq!(
         app.load_shown().map(|shown| shown.0),
-        Some("Caching schema")
+        Some("Reading schema")
     );
 }
 

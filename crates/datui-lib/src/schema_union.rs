@@ -41,6 +41,28 @@ impl Drop for Pass<'_> {
     }
 }
 
+/// A listing counting the objects it finds against a [`FooterProgress`], which stops
+/// saying so however it ends.
+pub struct Listing<'a>(&'a FooterProgress);
+
+impl Listing<'_> {
+    /// One more object listed.
+    pub fn advance(&self) {
+        self.0.listed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The count itself, for listing tasks that outlive the borrow.
+    pub fn counter(&self) -> std::sync::Arc<AtomicUsize> {
+        self.0.listed.clone()
+    }
+}
+
+impl Drop for Listing<'_> {
+    fn drop(&mut self) {
+        self.0.listing.store(false, Ordering::Release);
+    }
+}
+
 /// What became of a footer pass, after it has finished saying so.
 ///
 /// Hidden from the docs: nothing on screen reads it, and it is public only so the
@@ -59,7 +81,7 @@ pub struct PassCount {
 /// How far a dataset's footer pass has got, for the loading screen to read.
 ///
 /// Opening a directory of many files reads a footer from each before a row is shown, and
-/// on a few thousand files that is seconds of a screen that says only "Caching schema".
+/// on a few thousand files that is seconds of a screen that says only "Reading schema".
 /// The count is what makes the wait legible: a number that climbs is a wait, and a
 /// number that stops is a problem.
 ///
@@ -78,9 +100,27 @@ pub struct FooterProgress {
     /// The load this counter belongs to was abandoned: passes stop issuing
     /// reads. Shared out to the read tasks through [`Self::cancel_flag`].
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Objects a listing has found so far, while `listing` is set. A listing of a large
+    /// prefix is the longest wait before any footer, and it has no total to count to.
+    listed: std::sync::Arc<AtomicUsize>,
+    listing: std::sync::atomic::AtomicBool,
 }
 
 impl FooterProgress {
+    /// Begin a listing. Its count starts from nothing and is shown until the guard drops.
+    pub fn listing(&self) -> Listing<'_> {
+        self.listed.store(0, Ordering::Relaxed);
+        self.listing.store(true, Ordering::Release);
+        Listing(self)
+    }
+
+    /// Objects listed so far while a listing is running, `None` when none is.
+    pub fn listed(&self) -> Option<usize> {
+        self.listing
+            .load(Ordering::Acquire)
+            .then(|| self.listed.load(Ordering::Relaxed))
+    }
+
     /// Begin a pass over `total` footers. Any earlier pass's count is forgotten.
     pub fn begin(&self, total: usize) {
         self.read.store(0, Ordering::Relaxed);

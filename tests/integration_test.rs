@@ -7165,7 +7165,7 @@ fn test_each_open_counts_its_own_footers() {
     for _ in 0..4102 {
         counter_of_the_first.advance();
     }
-    app.set_loading_phase("Caching schema", 40);
+    app.set_loading_phase("Reading schema", 40);
     let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 100, 24));
     app.render(Rect::new(0, 0, 100, 24), &mut buf);
     let frame: String = (0..24)
@@ -7177,7 +7177,7 @@ fn test_each_open_counts_its_own_footers() {
         })
         .collect();
     assert!(
-        frame.contains("Caching schema"),
+        frame.contains("Reading schema"),
         "the app is on its loading screen, where the counter is read:\n{frame}"
     );
     assert!(
@@ -7199,7 +7199,7 @@ fn test_each_open_counts_its_own_footers() {
 fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    app.set_loading_phase("Caching schema", 40);
+    app.set_loading_phase("Reading schema", 40);
     app.footer_progress().begin(6541);
     for _ in 0..1203 {
         app.footer_progress().advance();
@@ -7229,6 +7229,41 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
     assert!(
         !bar.contains('%'),
         "a real fraction is not to be shown beside a made-up percentage: {bar:?}"
+    );
+}
+
+/// The bar counts a listing as the loading screen does, with no percentage beside it.
+#[test]
+fn test_the_control_bar_counts_a_listing_without_a_percentage() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_loading_phase("Reading schema", 40);
+    let progress = app.footer_progress().clone();
+    let listing = progress.listing();
+    for _ in 0..1500 {
+        listing.advance();
+    }
+
+    let area = Rect::new(0, 0, 100, 24);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect()
+        })
+        .collect();
+    assert!(
+        rows.iter().any(|r| r.contains("Listing files: 1,500")),
+        "the body counts them:\n{}",
+        rows.join("\n")
+    );
+    let bar = rows.last().expect("a control bar");
+    assert!(bar.contains("Listing files: 1,500"), "{bar:?}");
+    assert!(
+        !bar.contains('%'),
+        "a listing has no fraction to show: {bar:?}"
     );
 }
 
@@ -7332,7 +7367,7 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
 fn test_one_frame_says_one_number_while_the_footers_are_still_arriving() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    app.set_loading_phase("Caching schema", 40);
+    app.set_loading_phase("Reading schema", 40);
     app.footer_progress().begin(200_000);
 
     // A reader, going as fast as the real ones do between two paints.

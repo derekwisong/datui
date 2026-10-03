@@ -1487,7 +1487,7 @@ pub struct FileLoadingConfig {
     pub decompress_in_memory: Option<bool>,
     /// Directory for decompression temp files. Unset = system default (e.g. TMPDIR).
     pub temp_dir: Option<String>,
-    /// When true (default), infer Hive/partitioned Parquet schema from one file (single-spine) for faster "Caching schema". When false, use Polars collect_schema() over all files.
+    /// When true (default), infer Hive/partitioned Parquet schema from one file (single-spine) for faster "Reading schema". When false, use Polars collect_schema() over all files.
     pub single_spine_schema: Option<bool>,
     /// CSV null values: list of strings. Plain string = treat as null in all columns; "COL=VAL" = treat VAL as null only in column COL (first "=" separates). Example: ["NA", "amount="].
     pub null_values: Option<Vec<String>>,

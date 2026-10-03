@@ -168,19 +168,35 @@ pub fn prefix_of_glob(key: &str) -> &str {
 /// gets — the schema union over every footer, the row count, the notes and the
 /// measurements. Handing the star to the object store instead matches nothing, because
 /// a listing prefix is a literal string and `*` is a character like any other.
+#[cfg(test)]
 pub async fn list_dataset_files(
     store: &Arc<dyn ObjectStore>,
     prefix: &str,
     pattern: Option<&globset::GlobMatcher>,
 ) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
-    use futures::TryStreamExt;
+    list_dataset_files_reporting(
+        store,
+        prefix,
+        pattern,
+        ListShards::ONE,
+        &crate::schema_union::FooterProgress::default(),
+    )
+    .await
+}
+
+/// As [`list_dataset_files`], counting each object off against `progress` as it is
+/// listed. A prefix of a few hundred thousand objects is hundreds of pages, and this
+/// count is all the loading screen has to say about them.
+pub async fn list_dataset_files_reporting(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+    pattern: Option<&globset::GlobMatcher>,
+    plan: ListShards,
+    progress: &crate::schema_union::FooterProgress,
+) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
     let prefix = prefix.trim_matches('/');
     let prefix_path = (!prefix.is_empty()).then(|| crate::cloud_browse::object_path(prefix));
-    let objects: Vec<object_store::ObjectMeta> = store
-        .list(prefix_path.as_ref())
-        .try_collect()
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))?;
+    let objects = list_objects(store, prefix_path.as_ref(), plan, progress).await?;
     // Counted as they are passed over rather than walked again: the listing is the one
     // place that sees every name, and a note that says how many objects were not read
     // costs nothing here and a second listing anywhere else.
@@ -278,6 +294,415 @@ pub async fn list_dataset_files(
     let mut files: Vec<DatasetFile> = all.into_iter().filter(|f| keep_of(f)).collect();
     files.sort_by(|a, b| a.key.cmp(&b.key));
     Ok((files, skipped))
+}
+
+/// How a listing is shared out among concurrent requests.
+///
+/// A listing is a chain of pages, each request naming where the last one stopped, so
+/// one prefix of 842,000 objects is 843 round trips one after another. Split into
+/// ranges of keys, each range is its own chain and they run side by side.
+#[derive(Debug, Clone, Copy)]
+pub struct ListShards {
+    /// Ranges listed at once.
+    pub at_once: usize,
+    /// Ranges made in all. Each costs at least one request, and its last page usually
+    /// runs past its end into keys the next range lists.
+    pub most: usize,
+    /// Keys a range lists before it looks to divide what is left of it: one page.
+    pub split_after: usize,
+    /// New ranges one range divides off at a time, room allowing.
+    pub split_into: usize,
+}
+
+impl ListShards {
+    /// One range, listed from start to end.
+    pub const ONE: Self = Self {
+        at_once: 1,
+        most: 1,
+        split_after: usize::MAX,
+        split_into: 0,
+    };
+    /// For a store that starts a listing from a key itself (S3, Google Cloud). One that
+    /// does not lists everything and filters, so each range would cost a whole listing.
+    ///
+    /// Tuned against `by_station`'s 842,225 keys, replayed with 110 ms a page: 64 at
+    /// once, four at a time, lists it in 3 to 4 s and about 1,400 pages where one range
+    /// takes 843 pages and 93 s. The cap on ranges made bounds the extra pages; with it
+    /// too low, a busy range can no longer divide and the listing waits on it.
+    pub const PARALLEL: Self = Self {
+        at_once: 64,
+        most: 1024,
+        split_after: 1000,
+        split_into: 4,
+    };
+
+    /// How to list the prefix at `url`: in parallel where the store lists from an
+    /// offset itself. Azure's emulator and S3 Express do not, and are not told apart
+    /// from the real thing by the URL alone, so Azure lists in one range, as does S3
+    /// Express by its bucket suffix.
+    pub fn for_url(url: &str) -> Self {
+        let Some((scheme, rest)) = url.split_once("://") else {
+            return Self::ONE;
+        };
+        let bucket = rest.split('/').next().unwrap_or("");
+        match scheme.to_ascii_lowercase().as_str() {
+            "s3" | "s3a" if !bucket.ends_with("--x-s3") => Self::PARALLEL,
+            "gs" | "gcs" => Self::PARALLEL,
+            _ => Self::ONE,
+        }
+    }
+}
+
+/// A range of keys to list: those after `after`, up to and including `through`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyRange {
+    after: Option<String>,
+    through: Option<String>,
+}
+
+/// Characters a split point is made from, in byte order. A key may hold others; it
+/// still falls in exactly one range, since ranges are bounded by these points and not
+/// by what the keys contain.
+const SPLIT_ALPHABET: &[u8] = b"-.0123456789=ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+/// Characters past the part a range's keys share that a split point is placed by.
+const SPLIT_DEPTH: usize = 6;
+
+/// The characters a key may hold at one position, judged from the keys that do: the
+/// whole class (digits, capitals, lower case) of each one seen there, and any of the
+/// alphabet's punctuation seen there as itself. A station ID is capitals then digits,
+/// and a point made with a lower-case letter there would be a range with nothing in it.
+fn alphabet_at(seen: &[u8]) -> Vec<u8> {
+    let any = |test: fn(&u8) -> bool| seen.iter().any(test);
+    let (digits, upper, lower) = (
+        any(u8::is_ascii_digit),
+        any(u8::is_ascii_uppercase),
+        any(u8::is_ascii_lowercase),
+    );
+    SPLIT_ALPHABET
+        .iter()
+        .copied()
+        .filter(|c| {
+            (digits && c.is_ascii_digit())
+                || (upper && c.is_ascii_uppercase())
+                || (lower && c.is_ascii_lowercase())
+                || (!c.is_ascii_alphanumeric() && seen.contains(c))
+        })
+        .collect()
+}
+
+/// Where to divide the keys after `last`, up to `through`, into `n` more ranges.
+///
+/// Nothing is known of the keys ahead but the shape of those behind, so the remaining
+/// range is cut evenly, reading the characters past the part every key in it shares
+/// (`last` and `through` agree on that much, and nothing inside a listing prefix of
+/// `fixed` bytes or a partition's `name=` varies) as the digits of a number. Each
+/// position counts only the kinds of character `first`, `last` and `through` have
+/// there, so a run of digits is cut among digits.
+///
+/// Even cuts of a skewed range are uneven in keys: past `STATION=`, 72% of
+/// `by_station`'s keys begin with `U`. That is why a range divides again after every
+/// page while there is room, rather than once: a busy part is cut again where it is
+/// busy, and an empty one costs one request.
+fn split_points(
+    first: &str,
+    last: &str,
+    through: Option<&str>,
+    fixed: usize,
+    n: usize,
+) -> Vec<String> {
+    fn common(a: &str, b: &str) -> usize {
+        a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
+    }
+    let mut shared = through.map_or(0, |t| common(last, t)).max(fixed);
+    while !last.is_char_boundary(shared.min(last.len())) {
+        shared -= 1;
+    }
+    // Past a partition's name: every key in the range has the same one.
+    let segment = last[..shared.min(last.len())]
+        .rfind('/')
+        .map_or(0, |slash| slash + 1);
+    if let Some(equals) = last[segment..]
+        .find(['=', '/'])
+        .map(|at| segment + at)
+        .filter(|&at| last.as_bytes()[at] == b'=' && shared <= at)
+    {
+        shared = equals + 1;
+    }
+    if n == 0 || shared >= last.len() {
+        return Vec::new();
+    }
+    let base = &last[..shared];
+    let digits_of = |key: &str| -> Vec<u8> {
+        key.strip_prefix(base)
+            .map(|rest| rest.bytes().take(SPLIT_DEPTH).collect())
+            .unwrap_or_default()
+    };
+    let keys = [
+        digits_of(first),
+        digits_of(last),
+        through.map(digits_of).unwrap_or_default(),
+    ];
+    let mut alphabets: Vec<Vec<u8>> = (0..SPLIT_DEPTH)
+        .map(|i| {
+            alphabet_at(
+                &keys
+                    .iter()
+                    .filter_map(|k| k.get(i).copied())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    // Past the end of every key seen, whatever comes next is a guess; the class of the
+    // last position known stands in for it.
+    for i in 1..SPLIT_DEPTH {
+        if alphabets[i].is_empty() {
+            alphabets[i] = alphabets[i - 1].clone();
+        }
+    }
+    if alphabets[0].is_empty() {
+        return Vec::new();
+    }
+    // A key's place under `base` as a fraction: its characters as the digits of a
+    // number whose radix at each position is that position's alphabet. A character
+    // between two of the alphabet's sits half way.
+    let value = |key: &str| -> f64 {
+        let Some(rest) = key.strip_prefix(base) else {
+            return if key < base { 0.0 } else { 1.0 };
+        };
+        let (mut v, mut scale) = (0.0, 1.0);
+        for (c, alphabet) in rest.bytes().zip(&alphabets) {
+            scale /= alphabet.len() as f64;
+            let at = alphabet.partition_point(|&a| a < c);
+            let digit = if alphabet.get(at) == Some(&c) {
+                at as f64
+            } else {
+                at as f64 - 0.5
+            };
+            v += digit * scale;
+        }
+        v
+    };
+    let point_at = |mut v: f64| -> String {
+        let mut point = base.to_string();
+        for alphabet in &alphabets {
+            v *= alphabet.len() as f64;
+            let digit = (v.floor().max(0.0) as usize).min(alphabet.len() - 1);
+            point.push(alphabet[digit] as char);
+            v -= digit as f64;
+            if v <= 0.0 {
+                break;
+            }
+        }
+        point
+    };
+    let (from, to) = (value(last), through.map_or(1.0, value));
+    if to <= from {
+        return Vec::new();
+    }
+    let mut points: Vec<String> = (1..=n)
+        .map(|i| point_at(from + (to - from) * i as f64 / (n + 1) as f64))
+        .filter(|p| p.as_str() > last && through.is_none_or(|t| p.as_str() < t))
+        .filter(|p| OsPath::parse(p).is_ok())
+        .collect();
+    points.sort();
+    points.dedup();
+    points
+}
+
+/// The listing's bookkeeping: ranges running and ranges made, against the plan's
+/// limits.
+struct Sharing {
+    plan: ListShards,
+    counts: std::sync::Mutex<(usize, usize)>,
+}
+
+impl Sharing {
+    /// Room for up to `want` more ranges, taken now.
+    fn take(&self, want: usize) -> usize {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let (running, made) = *counts;
+        let room = want
+            .min(self.plan.at_once.saturating_sub(running))
+            .min(self.plan.most.saturating_sub(made));
+        *counts = (running + room, made + room);
+        room
+    }
+
+    /// `n` ranges taken and not used, or finished.
+    fn give_back(&self, n: usize, made: bool) {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        counts.0 = counts.0.saturating_sub(n);
+        if !made {
+            counts.1 = counts.1.saturating_sub(n);
+        }
+    }
+}
+
+/// What every range of one listing shares.
+#[derive(Clone)]
+struct RangeLister {
+    store: Arc<dyn ObjectStore>,
+    prefix: Option<OsPath>,
+    /// Bytes of every key that are the prefix and its `/`.
+    fixed: usize,
+    sharing: Arc<Sharing>,
+    /// Where a range sends the ranges it divides off.
+    more: tokio::sync::mpsc::UnboundedSender<KeyRange>,
+    listed: Arc<std::sync::atomic::AtomicUsize>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// List one range, dividing what is left of it into new ranges while there is room
+/// for them.
+async fn list_range(lister: RangeLister, range: KeyRange) -> Result<Vec<object_store::ObjectMeta>> {
+    use futures::StreamExt;
+    use std::sync::atomic::Ordering;
+    let RangeLister {
+        store,
+        prefix,
+        fixed,
+        sharing,
+        more,
+        listed,
+        cancelled,
+    } = lister;
+    let mut stream = match &range.after {
+        None => store.list(prefix.as_ref()),
+        Some(after) => {
+            let offset = OsPath::parse(after)
+                .map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))?;
+            store.list_with_offset(prefix.as_ref(), &offset)
+        }
+    };
+    let mut through = range.through;
+    let mut objects: Vec<object_store::ObjectMeta> = Vec::new();
+    let mut first: Option<String> = None;
+    let mut since = 0usize;
+    while let Some(object) = stream.next().await {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(color_eyre::eyre::eyre!("Cloud list cancelled"));
+        }
+        let object = object.map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))?;
+        let key = object.location.as_ref();
+        // The rest belongs to the next range. Listings come back in key order, which
+        // is the order the ranges are cut in.
+        if through.as_deref().is_some_and(|through| key > through) {
+            break;
+        }
+        if first.is_none() {
+            first = Some(key.to_string());
+        }
+        since += 1;
+        if since >= sharing.plan.split_after {
+            since = 0;
+            let room = sharing.take(sharing.plan.split_into);
+            if room > 0 {
+                let points = split_points(
+                    first.as_deref().unwrap_or(key),
+                    key,
+                    through.as_deref(),
+                    fixed,
+                    room,
+                );
+                sharing.give_back(room - points.len(), false);
+                if let Some(nearest) = points.first().cloned() {
+                    let ends: Vec<Option<String>> = points
+                        .iter()
+                        .skip(1)
+                        .cloned()
+                        .map(Some)
+                        .chain(std::iter::once(through.take()))
+                        .collect();
+                    for (after, through) in points.into_iter().zip(ends) {
+                        let _ = more.send(KeyRange {
+                            after: Some(after),
+                            through,
+                        });
+                    }
+                    through = Some(nearest);
+                }
+            }
+        }
+        objects.push(object);
+        listed.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(objects)
+}
+
+/// Every object under `prefix`, in no particular order, listed in ranges as `plan`
+/// allows: each range is a key past where the one before it ends, so together they
+/// list every object once.
+///
+/// Stops at the first page after the load is abandoned: a listing nobody is waiting on
+/// is hundreds of requests for nothing.
+async fn list_objects(
+    store: &Arc<dyn ObjectStore>,
+    prefix: Option<&OsPath>,
+    plan: ListShards,
+    progress: &crate::schema_union::FooterProgress,
+) -> Result<Vec<object_store::ObjectMeta>> {
+    use futures::future::{Either, select};
+    let listing = progress.listing();
+    // Split points never fall inside the prefix, nor its `/`.
+    let fixed = prefix.map_or(0, |p| p.as_ref().len() + 1);
+    let sharing = Arc::new(Sharing {
+        plan,
+        counts: std::sync::Mutex::new((1, 1)),
+    });
+    let (more_tx, mut more_rx) = tokio::sync::mpsc::unbounded_channel::<KeyRange>();
+    // Dropped with this future, which aborts every range still listing.
+    let mut running = tokio::task::JoinSet::new();
+    let lister = RangeLister {
+        store: store.clone(),
+        prefix: prefix.cloned(),
+        fixed,
+        sharing: sharing.clone(),
+        more: more_tx,
+        listed: listing.counter(),
+        cancelled: progress.cancel_flag(),
+    };
+    let spawn = |running: &mut tokio::task::JoinSet<Result<Vec<object_store::ObjectMeta>>>,
+                 range: KeyRange| {
+        running.spawn(list_range(lister.clone(), range));
+    };
+    spawn(
+        &mut running,
+        KeyRange {
+            after: None,
+            through: None,
+        },
+    );
+    let mut objects = Vec::new();
+    loop {
+        let next = {
+            let joined = std::pin::pin!(running.join_next());
+            let divided = std::pin::pin!(more_rx.recv());
+            match select(joined, divided).await {
+                Either::Left((joined, _)) => Either::Left(joined),
+                Either::Right((range, _)) => Either::Right(range),
+            }
+        };
+        match next {
+            Either::Right(Some(range)) => spawn(&mut running, range),
+            // The lister holds a sender, so the channel outlives the loop.
+            Either::Right(None) => break,
+            Either::Left(Some(joined)) => {
+                sharing.give_back(1, true);
+                let found =
+                    joined.map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))??;
+                objects.extend(found);
+            }
+            // A range sends what it divides off before it finishes, so anything it
+            // sent is waiting here by the time the last one is joined.
+            Either::Left(None) => match more_rx.try_recv() {
+                Ok(range) => spawn(&mut running, range),
+                Err(_) => break,
+            },
+        }
+    }
+    let made = sharing.counts.lock().map(|c| c.1).unwrap_or_default();
+    log::debug!(target: "datui", "listed {} objects in {made} ranges", objects.len());
+    Ok(objects)
 }
 
 /// The schema to scan a dataset's files with, and its partition columns.
@@ -469,12 +894,24 @@ pub async fn footers_of_files_reporting(
         });
     }
     let mut out = vec![None; read.len()];
+    // One schema shared by every footer that has it. A prefix of 842,000 files usually
+    // has a handful, and the count holds every footer until it has them all.
+    let mut schemas: Vec<Arc<Schema>> = Vec::new();
     while let Some(joined) = reads.join_next().await {
         // Counted as it lands, whether or not it read: a footer that will not parse is
         // one the open is no longer waiting on.
         pass.advance();
         if let Ok((slot, footer)) = joined {
-            out[slot] = footer;
+            out[slot] = footer.map(|mut footer: FileFooter| {
+                match schemas.iter().find(|s| **s == footer.schema) {
+                    Some(same) => footer.schema = same.clone(),
+                    // Bounded, so a prefix whose every file differs is not searched
+                    // end to end for each one.
+                    None if schemas.len() < 64 => schemas.push(footer.schema.clone()),
+                    None => {}
+                }
+                footer
+            });
         }
     }
     drop(pass);
@@ -484,43 +921,125 @@ pub async fn footers_of_files_reporting(
     out
 }
 
-/// The rows in each row group of every file, in file order. Files whose footer cannot
-/// be read count as zero rows, as they always have.
+/// The footers of `files` at `read`, in that order, as the pass that settles the row
+/// count. A footer that cannot be read is `None`, and counts as no rows.
 ///
-/// Metered like any other footer pass, because that is what it is: a dataset whose open
-/// could not settle the count re-reads every footer to take it, and those reads cost
-/// exactly what the open's did. Left unmetered, a staged cloud open — which is every
-/// prefix past a wave of objects — would report about half the requests it made.
-pub async fn row_groups_of_files(
+/// Metered like any other footer pass, because that is what it is. Left unmetered, a
+/// staged cloud open — which is every prefix past a wave of objects — would report
+/// about half the requests it made.
+pub async fn footers_for_count(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
+    read: &[usize],
     meter: &Arc<crate::measurements::Meter>,
-) -> Result<Vec<Vec<usize>>> {
+) -> Vec<Option<FileFooter>> {
     // Counted as the pass that settles the row count, which is recorded once: this runs
     // again every time the count is invalidated, and a dataset explored for a few
     // minutes would otherwise report an open that kept getting more expensive.
     let counting = Arc::new(crate::measurements::Meter::default());
     let began = std::time::Instant::now();
-    let groups = footers_of_files(
-        store,
-        files,
-        &(0..files.len()).collect::<Vec<_>>(),
-        &counting,
-    )
-    .await;
+    let footers = footers_of_files(store, files, read, &counting).await;
     // Against a meter of its own first, so that a pass the one-shot declines adds
     // nothing to the dataset's figures.
     let wire = counting.footers().and_then(|c| c.over_the_wire);
     // Not recorded when nothing parsed, the same as the local count: a pass that
     // settled nothing must not take the one measurement this gets, or the pass that
     // eventually succeeds is declined and never reported.
-    if groups.iter().any(Option::is_some) {
-        meter.counted_rows(began.elapsed(), Some(files.len()), wire);
+    if footers.iter().any(Option::is_some) {
+        meter.counted_rows(began.elapsed(), Some(read.len()), wire);
     }
-    Ok(groups
-        .into_iter()
-        .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
-        .collect())
+    footers
+}
+
+/// A remote dataset's row count, taken from its footers, each read once.
+///
+/// It starts from the footers the open already read — the two ends, or a sample of
+/// twenty thousand — and reads only the rest. Once every file's footer is in, the
+/// whole set is handed back once, for the cache, so a reopen reads none.
+pub struct FooterCount {
+    files: Arc<Vec<DatasetFile>>,
+    /// The files the count answers for, as indices into `files`, in order: those whose
+    /// footer the open could read.
+    counted: Vec<usize>,
+    /// Every file's footer, where read. Emptied once the count is whole.
+    footers: tokio::sync::Mutex<Vec<Option<FileFooter>>>,
+}
+
+/// What a count found.
+pub struct Counted {
+    /// The rows in each row group of each counted file, in order.
+    pub row_groups: Vec<Vec<usize>>,
+    /// Every file's footer, the first time all of them are in.
+    pub whole: Option<Vec<Option<FileFooter>>>,
+}
+
+impl FooterCount {
+    /// A count of `counted`, starting from the footers `known` already holds, given as
+    /// each one's index into `files`.
+    pub fn new(
+        files: Arc<Vec<DatasetFile>>,
+        counted: Vec<usize>,
+        known: impl IntoIterator<Item = (usize, Option<FileFooter>)>,
+    ) -> Self {
+        let mut footers = vec![None; files.len()];
+        for (index, footer) in known {
+            if let Some(slot) = footers.get_mut(index) {
+                *slot = footer;
+            }
+        }
+        Self {
+            files,
+            counted,
+            footers: tokio::sync::Mutex::new(footers),
+        }
+    }
+
+    /// Count, reading the footers not yet in. One that would not read before is tried
+    /// again: a read can fail for a moment's throttling as well as a broken file.
+    pub async fn count(
+        &self,
+        store: &Arc<dyn ObjectStore>,
+        meter: &Arc<crate::measurements::Meter>,
+    ) -> Counted {
+        let mut footers = self.footers.lock().await;
+        if footers.is_empty() {
+            // Already whole once; asked again, read again.
+            *footers = vec![None; self.files.len()];
+        }
+        let missing: Vec<usize> = self
+            .counted
+            .iter()
+            .copied()
+            .filter(|&index| footers[index].is_none())
+            .collect();
+        if !missing.is_empty() {
+            let read = footers_for_count(store, &self.files, &missing, meter).await;
+            for (index, footer) in missing.into_iter().zip(read) {
+                footers[index] = footer;
+            }
+        }
+        let row_groups: Vec<Vec<usize>> = self
+            .counted
+            .iter()
+            .map(|&index| {
+                footers[index]
+                    .as_ref()
+                    .map(|f| f.row_group_rows.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let whole = if footers.iter().all(Option::is_some) {
+            Some(std::mem::take(&mut *footers))
+        } else {
+            if self.counted.iter().all(|&index| footers[index].is_some()) {
+                // Counted, but a file the open could not read stays unread, so there
+                // is nothing whole to keep and nothing more to hold on to.
+                footers.clear();
+            }
+            None
+        };
+        Counted { row_groups, whole }
+    }
 }
 
 /// Read a range, counting the request against `meter` and the bytes it returned.
@@ -696,6 +1215,221 @@ mod tests {
     /// the ones it exists for.
     /// An abandoned load's footer pass stops issuing reads: with the counter
     /// cancelled, the pass returns empty-handed and requests nothing.
+    /// Split points lie strictly between the last key listed and the range's end, in
+    /// order, and never inside the prefix or a partition's name.
+    #[test]
+    fn split_points_follow_the_keys_down() {
+        let prefix = "parquet/by_station/";
+        let first = "parquet/by_station/STATION=ACW00011604/ELEMENT=PGTM/a.parquet";
+        let last = "parquet/by_station/STATION=AEM00041217/ELEMENT=TMAX/b.parquet";
+        let points = split_points(first, last, None, prefix.len(), 3);
+        assert_eq!(points.len(), 3, "{points:?}");
+        assert!(points.windows(2).all(|w| w[0] < w[1]), "sorted, no repeats");
+        assert!(points.iter().all(|p| p.as_str() > last));
+        // Past the prefix and the partition's name, and among capitals, which is all
+        // either key has there: a point made of digits or lower case would sit in
+        // keys nobody has.
+        for point in &points {
+            let id = point
+                .strip_prefix("parquet/by_station/STATION=")
+                .unwrap_or_else(|| panic!("{point}"));
+            assert!(id.starts_with(|c: char| c.is_ascii_uppercase()), "{point}");
+        }
+
+        // A busy range inside one country is cut inside it, among what its keys hold.
+        let first = "parquet/by_station/STATION=US009052008/ELEMENT=PRCP/a.parquet";
+        let last = "parquet/by_station/STATION=US1AKAB0001/ELEMENT=PRCP/a.parquet";
+        let through = "parquet/by_station/STATION=US2";
+        let points = split_points(first, last, Some(through), prefix.len(), 4);
+        assert_eq!(points.len(), 4, "{points:?}");
+        assert!(points.windows(2).all(|w| w[0] < w[1]));
+        for point in &points {
+            assert!(point.as_str() > last && point.as_str() < through, "{point}");
+            assert!(
+                point.starts_with("parquet/by_station/STATION=US1"),
+                "{point}"
+            );
+        }
+
+        assert!(split_points(first, last, Some(through), prefix.len(), 0).is_empty());
+        // Nothing between a key and the key after it.
+        assert!(split_points(first, last, Some(&format!("{last}0")), prefix.len(), 4).is_empty());
+    }
+
+    /// Keys shaped like `by_station`, skewed the way it is, plus keys a split point
+    /// lands on exactly, odd characters, and neighbours outside the prefix.
+    fn skewed_keys() -> Vec<String> {
+        let mut keys = Vec::new();
+        let elements = ["PRCP", "SNOW", "TMAX"];
+        let mut station = |code: String| {
+            for element in elements {
+                keys.push(format!(
+                    "p/by_station/STATION={code}/ELEMENT={element}/x_0.snappy.parquet"
+                ));
+            }
+        };
+        for i in 0..60 {
+            station(format!("AC{i:09}"));
+        }
+        for country in ["BR", "CA", "GM", "SF", "UK"] {
+            for i in 0..40 {
+                station(format!("{country}{i:09}"));
+            }
+        }
+        for kind in ["1AK", "1CA", "1TX", "C00", "W00"] {
+            for i in 0..300 {
+                station(format!("US{kind}{i:06}"));
+            }
+        }
+        for odd in [
+            "p/by_station/STATION=B",
+            "p/by_station/STATION=U",
+            "p/by_station/STATION=US1B",
+            "p/by_station/STATION=Z~tilde/a.parquet",
+            "p/by_station/STATION=ü/a.parquet",
+            "p/by_station/_SUCCESS",
+            "p/by_station/zz/a.parquet",
+        ] {
+            keys.push(odd.to_string());
+        }
+        keys
+    }
+
+    /// Listing in ranges finds exactly what one listing does: every key once, none
+    /// missing, none outside the prefix.
+    #[test]
+    fn a_listing_in_ranges_finds_what_one_listing_does() {
+        use object_store::PutPayload;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let keys = skewed_keys();
+        rt.block_on(async {
+            for key in keys.iter().map(String::as_str).chain([
+                "p/by_stationx/a.parquet",
+                "p/a.parquet",
+                "q/b.parquet",
+            ]) {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(b"x".to_vec()))
+                    .await
+                    .unwrap();
+            }
+            let prefix = OsPath::from("p/by_station");
+            let progress = crate::schema_union::FooterProgress::default();
+            let keys_of = |objects: Vec<object_store::ObjectMeta>| {
+                let mut keys: Vec<String> = objects
+                    .into_iter()
+                    .map(|o| o.location.as_ref().to_string())
+                    .collect();
+                keys.sort();
+                keys
+            };
+            let one = keys_of(
+                list_objects(&store, Some(&prefix), ListShards::ONE, &progress)
+                    .await
+                    .unwrap(),
+            );
+            let mut expected: Vec<String> = keys
+                .iter()
+                .map(|k| OsPath::from(k.as_str()).to_string())
+                .collect();
+            expected.sort();
+            assert_eq!(one, expected);
+            for (at_once, most, split_after, split_into) in [
+                (2, 8, 10, 1),
+                (8, 64, 25, 4),
+                (64, 512, 7, 64),
+                (4, 1000, 1, 2),
+                (64, 1024, 30, 4),
+            ] {
+                let plan = ListShards {
+                    at_once,
+                    most,
+                    split_after,
+                    split_into,
+                };
+                let ranges = keys_of(
+                    list_objects(&store, Some(&prefix), plan, &progress)
+                        .await
+                        .unwrap(),
+                );
+                assert_eq!(ranges.len(), one.len(), "{plan:?}: a key twice or missing");
+                assert_eq!(ranges, one, "{plan:?}");
+            }
+
+            // And through the whole listing, the dataset files come out the same.
+            let (whole, skipped) = list_dataset_files(&store, "p/by_station", None)
+                .await
+                .unwrap();
+            let (shared, shared_skipped) = list_dataset_files_reporting(
+                &store,
+                "p/by_station",
+                None,
+                ListShards {
+                    at_once: 8,
+                    most: 64,
+                    split_after: 20,
+                    split_into: 4,
+                },
+                &progress,
+            )
+            .await
+            .unwrap();
+            assert_eq!(whole, shared);
+            assert_eq!(skipped, shared_skipped);
+        });
+    }
+
+    /// Only stores that start a listing from a key themselves list in ranges.
+    #[test]
+    fn only_stores_that_list_from_an_offset_list_in_ranges() {
+        let parallel = |url: &str| ListShards::for_url(url).at_once > 1;
+        assert!(parallel("s3://noaa-ghcn-pds/parquet/by_station/"));
+        assert!(parallel("gs://bucket/data/"));
+        assert!(!parallel("s3://my-bucket--usw2-az1--x-s3/data/"));
+        assert!(!parallel("az://container/data/"));
+        assert!(!parallel("https://example.com/data/"));
+    }
+
+    /// A listing counts every object it passes over, data or not, and stops saying so
+    /// when it ends; a cancelled one stops.
+    #[test]
+    fn a_listing_counts_what_it_finds() {
+        use object_store::PutPayload;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for key in ["data/a.parquet", "data/b.parquet", "data/_SUCCESS"] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(b"PAR1".to_vec()))
+                    .await
+                    .unwrap();
+            }
+            let progress = crate::schema_union::FooterProgress::default();
+            let (files, _skipped) =
+                list_dataset_files_reporting(&store, "data/", None, ListShards::ONE, &progress)
+                    .await
+                    .unwrap();
+            assert_eq!(files.len(), 2);
+            assert_eq!(progress.listed(), None, "a finished listing shows no count");
+            let listing = progress.listing();
+            assert_eq!(
+                progress.listed(),
+                Some(0),
+                "a new listing starts from nothing"
+            );
+            drop(listing);
+
+            progress.cancel();
+            assert!(
+                list_dataset_files_reporting(&store, "data/", None, ListShards::ONE, &progress)
+                    .await
+                    .is_err(),
+                "an abandoned load stops listing"
+            );
+        });
+    }
+
     #[test]
     fn a_cancelled_pass_reads_no_footers() {
         use object_store::PutPayload;
@@ -970,7 +1704,7 @@ mod tests {
         // As the open leaves it: a count belongs to an open this meter measured.
         meter.listed(std::time::Duration::from_millis(1), Some(1), false);
         rt.block_on(async {
-            row_groups_of_files(&store, &files, &meter).await.unwrap();
+            footers_for_count(&store, &files, &[0], &meter).await;
         });
         assert_eq!(
             meter.footers(),
@@ -993,10 +1727,13 @@ mod tests {
             stamp: 0,
             etag: None,
         }];
-        let groups =
-            rt.block_on(async { row_groups_of_files(&store, &files, &meter).await.unwrap() });
+        let footers = rt.block_on(async { footers_for_count(&store, &files, &[0], &meter).await });
         assert_eq!(
-            groups.iter().flatten().sum::<usize>(),
+            footers
+                .iter()
+                .flatten()
+                .flat_map(|f| f.row_group_rows.iter())
+                .sum::<usize>(),
             3,
             "and it counts the three rows"
         );
@@ -2004,13 +2741,17 @@ mod tests {
                 ]
             );
 
-            let groups = row_groups_of_files(
+            let footers = footers_for_count(
                 &store,
                 &files,
+                &[0, 1],
                 &Arc::new(crate::measurements::Meter::default()),
             )
-            .await
-            .unwrap();
+            .await;
+            let groups: Vec<Vec<usize>> = footers
+                .into_iter()
+                .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
+                .collect();
             assert_eq!(groups, [vec![2], vec![5]]);
 
             let (dataset, partitions) = schema_of(&store, &files).await;
@@ -2266,6 +3007,107 @@ mod tests {
             all.is_err(),
             "left in, it takes the readable files down with it"
         );
+    }
+
+    /// The count reads only the footers the open did not, and once it has them all the
+    /// dataset is remembered, so a reopen reads no footers.
+    #[test]
+    fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let files = rt.block_on(async {
+            for day in 1..=5i64 {
+                let mut frame = df!("id" => (0..day).collect::<Vec<i64>>()).unwrap();
+                let mut bytes = Vec::new();
+                ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+                store
+                    .put(
+                        &OsPath::from(format!("data/date=2024-01-0{day}/a.parquet")),
+                        PutPayload::from(bytes),
+                    )
+                    .await
+                    .unwrap();
+            }
+            list_dataset_files(&store, "data/", None).await.unwrap().0
+        });
+        let files = Arc::new(files);
+        let full = "memory://data/";
+        let fingerprint = crate::cache::DatasetShape::fingerprint_of(
+            files
+                .iter()
+                .map(|f| (f.key.as_str(), f.size, f.stamp, f.etag.as_deref())),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
+        let meter = Arc::new(crate::measurements::Meter::default());
+        meter.listed(std::time::Duration::from_millis(1), Some(5), false);
+
+        // As a sampled open leaves it: two footers read. The first is planted with a
+        // count it does not have, so a count that read it again would say so.
+        let sampled = rt.block_on(footers_of_files(
+            &store,
+            &files,
+            &[0, 4],
+            &Arc::new(crate::measurements::Meter::default()),
+        ));
+        let mut planted = sampled[0].clone().unwrap();
+        planted.row_group_rows = vec![999];
+        let count = crate::App::cloud_file_counter(
+            rt.handle(),
+            store.clone(),
+            meter.clone(),
+            FooterCount::new(
+                files.clone(),
+                (0..5).collect(),
+                [(0, Some(planted)), (4, sampled[1].clone())],
+            ),
+            crate::App::shape_keeper(Some(cache.clone()), full, &fingerprint, files.clone()),
+        );
+        let groups = count().unwrap();
+        assert_eq!(groups, [vec![999], vec![2], vec![3], vec![4], vec![5]]);
+        assert_eq!(
+            meter.footers().and_then(|c| c.files),
+            Some(3),
+            "the count read the three footers the open had not"
+        );
+        assert_eq!(
+            meter
+                .footers()
+                .and_then(|c| c.over_the_wire)
+                .map(|w| w.requests),
+            Some(3),
+            "one request each, and none for the two it was given"
+        );
+        let shape = cache
+            .dataset_shape(full, &fingerprint)
+            .expect("every footer is in, so the dataset is remembered");
+        assert_eq!(shape.files.len(), 5);
+
+        // A reopen finds it, and reads no footers.
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let reopen = Arc::new(crate::measurements::Meter::default());
+        let (state, facts) = crate::App::schema_state_from_cloud_hive_with(
+            full.to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &crate::measurements::OpenReport {
+                progress: progress.clone(),
+                meter: reopen.clone(),
+                remembered: Some(cache),
+            },
+        )
+        .expect("the reopen opens");
+        assert_eq!(progress.last_pass().begun, 0, "no footer pass");
+        assert!(reopen.footers().is_none(), "and no footer read");
+        assert!(facts.footers_pending.is_none(), "nor one behind the open");
+        let state = state.with_open(facts);
+        assert_eq!(state.num_rows_if_valid(), Some(999 + 2 + 3 + 4 + 5));
     }
 
     /// The dataset a corrupt object leaves behind still counts itself.

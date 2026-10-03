@@ -8,22 +8,16 @@
 //! readers of packed values (audio samples, CAN signals). The sources are kept, so a
 //! viewer of the raw bytes can read them too.
 //!
-//! The frame is a Polars anonymous scan: only the projected columns are decoded, and
-//! only the first `n_rows` of them. Polars hands an anonymous scan no row offset, so a
-//! window deeper in the file is read through [`FixedRecords::window`], which starts
-//! the columns further in rather than decoding from row 0.
-//!
-//! Polars 0.55's streaming engine cannot run an anonymous scan (it stops at a
-//! `todo!`), so [`in_plan`] tells the places that pick an engine to use the in-memory
-//! one.
+//! The frame is decoded over a row index ([`crate::row_index`]): a query decodes only
+//! the columns and rows it reaches, and runs on the streaming engine. A window of an
+//! untouched view is read through [`FixedRecords::window`], which starts the columns
+//! further in and builds no index.
 
+use crate::row_index::RowSource;
 use polars::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-
-/// The name the scan carries in a plan, and what [`in_plan`] looks for.
-pub const SCAN_NAME: &str = "FIXED RECORDS";
 
 /// Nanoseconds in a day.
 const DAY_NS: i64 = 86_400_000_000_000;
@@ -347,13 +341,32 @@ pub fn decode(bytes: &[u8], column: &ColumnLayout, rows: usize) -> PolarsResult<
         rows <= fits,
         ComputeError: "column {}: {rows} rows asked for, {fits} in {} bytes", column.name, bytes.len()
     );
+    decode_cells(bytes, column, rows, |row| row)
+}
+
+/// The values of `column` from `bytes` for the rows `index` names, in that order. A
+/// missing row, or one `bytes` does not hold, is an error.
+pub fn decode_rows(bytes: &[u8], column: &ColumnLayout, index: &IdxCa) -> PolarsResult<Column> {
+    column.validate()?;
+    let rows = crate::row_index::checked(index, column.rows_in(bytes.len()))?;
+    decode_cells(bytes, column, rows.len(), |i| rows[i] as usize)
+}
+
+/// `rows` cells of `column`, the `i`th of them row `row(i)`; every row is one `bytes`
+/// holds.
+fn decode_cells(
+    bytes: &[u8],
+    column: &ColumnLayout,
+    rows: usize,
+    row: impl Fn(usize) -> usize,
+) -> PolarsResult<Column> {
     let count = column.count.max(1);
     let values = rows
         .checked_mul(count)
         .ok_or_else(|| polars_err!(ComputeError: "column {}: too many values", column.name))?;
     // Each value's bytes, row by row and in a row left to right.
     let at = move |i: usize| {
-        let start = column.start + (i / count) * column.stride + (i % count) * column.width;
+        let start = column.start + row(i / count) * column.stride + (i % count) * column.width;
         &bytes[start..start + column.width]
     };
     let name = column.name.clone();
@@ -632,13 +645,14 @@ impl FixedRecords {
     /// first, so no read ever goes past the end of one, and a partial last record is
     /// left out rather than refused. The rows come from the sources' lengths as they
     /// are now: a file that has grown is read by building the records again, over a
-    /// fresh map, with the same columns and `usize::MAX` rows.
+    /// fresh map, with the same columns and `usize::MAX` rows. No more than
+    /// [`crate::row_index::MAX_ROWS`] are shown.
     pub fn new(
         sources: Vec<Arc<Bytes>>,
         columns: Vec<ColumnLayout>,
         rows: usize,
     ) -> PolarsResult<Self> {
-        let mut rows = rows;
+        let mut rows = rows.min(crate::row_index::MAX_ROWS);
         for column in &columns {
             column.validate()?;
             let source = sources
@@ -650,6 +664,11 @@ impl FixedRecords {
             .iter()
             .map(|c| Field::new(c.name.clone(), c.dtype()))
             .collect();
+        // The frame decodes a column by its place in the schema.
+        polars_ensure!(
+            schema.len() == columns.len(),
+            Duplicate: "two columns have the same name"
+        );
         Ok(Self {
             sources,
             columns,
@@ -675,22 +694,14 @@ impl FixedRecords {
         &self.sources
     }
 
-    /// The frame: a scan that decodes only what a query asks for.
-    pub fn into_lazy(self: Arc<Self>) -> PolarsResult<LazyFrame> {
-        let schema = self.schema.clone();
-        LazyFrame::anonymous_scan(
-            self,
-            ScanArgsAnonymous {
-                schema: Some(schema),
-                name: SCAN_NAME,
-                ..Default::default()
-            },
-        )
+    /// The frame: decoded over a row index, only what a query reaches.
+    pub fn lazy(self: &Arc<Self>) -> LazyFrame {
+        crate::row_index::lazy(self)
     }
 
-    /// Rows `[start, start + len)` as a frame of their own: the columns start further
-    /// into the same sources, so nothing before `start` is decoded.
-    pub fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
+    /// Rows `[start, start + len)`, decoded now: the columns start further into the
+    /// same sources, so nothing before `start` is decoded and no index is built.
+    pub fn window(&self, start: usize, len: usize) -> PolarsResult<DataFrame> {
         let start = start.min(self.rows);
         let len = len.min(self.rows - start);
         let columns = self
@@ -701,7 +712,7 @@ impl FixedRecords {
                 ..c.clone()
             })
             .collect();
-        Arc::new(Self::new(self.sources.clone(), columns, len)?).into_lazy()
+        Self::new(self.sources.clone(), columns, len)?.collect(len)
     }
 
     /// The first `rows` rows of every column, decoded now.
@@ -722,64 +733,27 @@ impl FixedRecords {
     }
 }
 
-impl AnonymousScan for FixedRecords {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+impl RowSource for FixedRecords {
+    fn height(&self) -> usize {
+        self.rows
     }
 
-    fn schema(&self, _infer_schema_length: Option<usize>) -> PolarsResult<SchemaRef> {
-        Ok(self.schema.clone())
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
     }
 
-    fn allows_projection_pushdown(&self) -> bool {
-        true
-    }
-
-    fn scan(&self, args: AnonymousScanArgs) -> PolarsResult<DataFrame> {
-        let rows = args.n_rows.map_or(self.rows, |n| n.min(self.rows));
-        let columns = match &args.with_columns {
-            Some(names) => names
-                .iter()
-                .map(|name| {
-                    let column = self
-                        .columns
-                        .iter()
-                        .find(|c| c.name == *name)
-                        .ok_or_else(|| polars_err!(ColumnNotFound: "{name}"))?;
-                    self.decode_column(column, rows)
-                })
-                .collect::<PolarsResult<Vec<_>>>()?,
-            None => self
-                .columns
-                .iter()
-                .map(|c| self.decode_column(c, rows))
-                .collect::<PolarsResult<Vec<_>>>()?,
-        };
-        DataFrame::new(rows, columns)
+    fn decode(&self, column: usize, index: &IdxCa) -> PolarsResult<Column> {
+        let column = &self.columns[column];
+        let source = &self.sources[column.source];
+        source.still_whole()?;
+        decode_rows(source.as_slice(), column, index)
     }
 }
 
 impl crate::pushdown::Windowed for FixedRecords {
     fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
-        FixedRecords::window(self, start, len)
+        Ok(FixedRecords::window(self, start, len)?.lazy())
     }
-}
-
-/// Whether `lf` reads an anonymous scan (fixed records, a SQLite table), and so has to
-/// run on the in-memory engine.
-pub fn in_plan(lf: &LazyFrame) -> bool {
-    use polars::lazy::dsl::{DslPlan, FileScanDsl};
-    lf.logical_plan.into_iter().any(|node| match node {
-        DslPlan::Scan { scan_type, .. } => {
-            matches!(scan_type.as_ref(), FileScanDsl::Anonymous { .. })
-        }
-        _ => false,
-    })
-}
-
-/// Whether a query over `lf` may use the streaming engine: asked for, and possible.
-pub fn may_stream(lf: &LazyFrame, wanted: bool) -> bool {
-    wanted && !in_plan(lf)
 }
 
 #[cfg(test)]
@@ -816,8 +790,7 @@ mod tests {
             ],
             usize::MAX,
         )
-        .into_lazy()
-        .unwrap();
+        .lazy();
         let df = lf.collect().unwrap();
         assert_eq!(df.height(), 2);
         assert_eq!(
@@ -913,8 +886,7 @@ mod tests {
             ],
             usize::MAX,
         )
-        .into_lazy()
-        .unwrap();
+        .lazy();
         let df = lf.clone().select([col("b")]).limit(3).collect().unwrap();
         assert_eq!(df.get_column_names(), ["b"]);
         assert_eq!(df.height(), 3);
@@ -933,15 +905,12 @@ mod tests {
             vec![column("a", 0, 4, Physical::Unsigned(1))],
             usize::MAX,
         );
-        let df = records.window(8, 5).unwrap().collect().unwrap();
+        let df = records.window(8, 5).unwrap();
         assert_eq!(
             df.column("a").unwrap().u8().unwrap().to_vec(),
             [Some(32), Some(36)]
         );
-        assert_eq!(
-            records.window(99, 5).unwrap().collect().unwrap().height(),
-            0
-        );
+        assert_eq!(records.window(99, 5).unwrap().height(), 0);
     }
 
     /// A layout that asks for more than its bytes hold is refused, never read past.
@@ -991,28 +960,95 @@ mod tests {
             return;
         }
         cut.unwrap();
-        let err = records.clone().into_lazy().unwrap().collect().unwrap_err();
+        let err = records.lazy().collect().unwrap_err();
         assert!(err.to_string().contains("shorter"), "{err}");
     }
 
-    #[test]
-    fn the_scan_is_found_in_a_plan_and_kept_off_the_streaming_engine() {
-        let lf = records(
-            vec![0; 8],
-            vec![column("a", 0, 1, Physical::Unsigned(1))],
+    /// Records of (u4 id, s2 group, u1 flag): id `i`, group `i % 7 - 3`, flag `i % 2`.
+    fn numbered(rows: u32) -> Arc<FixedRecords> {
+        let mut bytes = Vec::new();
+        for i in 0..rows {
+            bytes.extend(i.to_le_bytes());
+            bytes.extend(((i % 7) as i16 - 3).to_le_bytes());
+            bytes.push((i % 2) as u8);
+        }
+        records(
+            bytes,
+            vec![
+                column("id", 0, 7, Physical::Unsigned(4)),
+                column("group", 4, 7, Physical::Signed(2)),
+                column("flag", 6, 7, Physical::Bool),
+            ],
             usize::MAX,
         )
-        .into_lazy()
+    }
+
+    /// Filters, sorts and group-bys run on the streaming engine, as the app runs them
+    /// with streaming on, and agree with the in-memory engine.
+    #[test]
+    fn queries_stream_and_agree_with_the_in_memory_engine() {
+        let lf = numbered(1_000).lazy();
+        let queries = [
+            lf.clone()
+                .filter(col("flag").and(col("group").gt(lit(0i16))))
+                .select([len()]),
+            lf.clone()
+                .sort(
+                    ["group", "id"],
+                    SortMultipleOptions::default().with_order_descending(true),
+                )
+                .limit(5),
+            lf.clone()
+                .group_by([col("group")])
+                .agg([col("id").sum(), len()])
+                .sort(["group"], Default::default()),
+            lf.clone().slice(990, 50),
+        ];
+        for query in queries {
+            let streamed = crate::statistics::collect_lazy(query.clone(), true).unwrap();
+            let in_memory = query.collect().unwrap();
+            assert!(
+                streamed.equals_missing(&in_memory),
+                "{streamed}\n{in_memory}"
+            );
+        }
+        let groups = crate::statistics::collect_lazy(
+            lf.group_by([col("group")])
+                .agg([len()])
+                .sort(["group"], Default::default()),
+            true,
+        )
         .unwrap();
-        let view = lf.filter(col("a").eq(lit(0u8))).select([col("a")]);
-        assert!(in_plan(&view));
-        assert!(!may_stream(&view, true));
-        assert!(!in_plan(&df!("a" => [1]).unwrap().lazy()));
-        // The in-memory engine runs a callback sink over it, as the copy and the
-        // chart counts ask.
+        assert_eq!(groups.height(), 7);
+        assert_eq!(
+            groups.column("group").unwrap().i16().unwrap().get(0),
+            Some(-3)
+        );
+    }
+
+    /// A slice deep in the file decodes the rows asked for, the same as the window
+    /// that reads them straight, and a callback sink runs over the frame as the copy
+    /// and the chart counts ask.
+    #[test]
+    fn a_deep_slice_reads_its_own_rows() {
+        let records = numbered(100_000);
+        let window = records.window(99_990, 50).unwrap();
+        assert_eq!(window.height(), 10);
+        for streaming in [false, true] {
+            let sliced =
+                crate::statistics::collect_lazy(records.lazy().slice(99_990, 50), streaming)
+                    .unwrap();
+            assert!(window.equals_missing(&sliced), "{sliced}");
+        }
+        assert_eq!(
+            window.column("id").unwrap().u32().unwrap().get(0),
+            Some(99_990)
+        );
         let got = Arc::new(std::sync::Mutex::new(0usize));
         let seen = got.clone();
-        let sink = view
+        let sink = records
+            .lazy()
+            .filter(col("flag"))
             .sink_batches(
                 PlanCallback::new(move |batch: DataFrame| {
                     *seen.lock().unwrap() += batch.height();
@@ -1023,6 +1059,50 @@ mod tests {
             )
             .unwrap();
         crate::statistics::collect_lazy(sink, true).unwrap();
-        assert_eq!(*got.lock().unwrap(), 8);
+        assert_eq!(*got.lock().unwrap(), 50_000);
+    }
+
+    /// A `scale` column is Decimal, whose single-key top-k the streaming engine of
+    /// Polars 0.55 cannot run (it panics); the first page of a sort by it still reads.
+    #[test]
+    fn a_sort_by_a_decimal_column_reads_its_first_page() {
+        let mut price = column("price", 0, 4, Physical::Unsigned(4));
+        price.logical = Logical::Decimal { scale: 2 };
+        let bytes: Vec<u8> = (0u32..1_000).flat_map(|v| v.to_le_bytes()).collect();
+        let lf = records(bytes, vec![price], usize::MAX).lazy();
+        let page = crate::statistics::collect_lazy(
+            lf.sort(
+                ["price"],
+                SortMultipleOptions::default().with_order_descending(true),
+            )
+            .slice(0, 3),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            page.column("price").unwrap().get(0).unwrap().to_string(),
+            "9.99"
+        );
+    }
+
+    /// The frame finds a column by its place, so two of one name are refused.
+    #[test]
+    fn two_columns_of_one_name_are_refused() {
+        let bytes = Arc::new(Bytes::Owned(vec![0; 8]));
+        let a = column("a", 0, 2, Physical::Unsigned(1));
+        let Err(err) = FixedRecords::new(vec![bytes], vec![a.clone(), a], usize::MAX) else {
+            panic!("two columns named a were taken");
+        };
+        assert!(err.to_string().contains("same name"), "{err}");
+    }
+
+    /// The decoder refuses an index past the bytes rather than read past them.
+    #[test]
+    fn decoding_rows_checks_the_index() {
+        let u1 = column("u", 0, 1, Physical::Unsigned(1));
+        let index = IdxCa::from_slice("i".into(), &[3, 0, 3]);
+        let col = decode_rows(&[5, 6, 7, 8], &u1, &index).unwrap();
+        assert_eq!(col.u8().unwrap().to_vec(), [Some(8), Some(5), Some(8)]);
+        assert!(decode_rows(&[5, 6, 7], &u1, &index).is_err());
     }
 }

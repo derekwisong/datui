@@ -193,6 +193,66 @@ fn type_mix(types: &[crate::model_files::TypeShare], sep: &str) -> String {
         .join(sep)
 }
 
+/// Break one line of text into lines no wider than `width` columns, between words: the
+/// spaces at a break are dropped, and leading spaces (a template's indentation) kept.
+/// Only a word wider than `width` is broken, where it reaches the edge, so a long URL
+/// or hash is shown whole rather than clipped.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut line_width = 0;
+    // A line a break started: spaces at its start are the break's, not indentation.
+    let mut broken = false;
+    let mut rest = text;
+    while !rest.is_empty() {
+        let space = rest.starts_with(' ');
+        let end = rest
+            .find(|c: char| (c == ' ') != space)
+            .unwrap_or(rest.len());
+        let (token, after) = rest.split_at(end);
+        rest = after;
+        let w = token.width();
+        if space {
+            if broken && line.is_empty() {
+                continue;
+            }
+            if line_width + w <= width {
+                line.push_str(token);
+                line_width += w;
+            } else {
+                // Indentation wider than the room starts no line of its own.
+                if !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                }
+                line_width = 0;
+                broken = true;
+            }
+            continue;
+        }
+        if line_width + w > width && !line.is_empty() && w <= width {
+            lines.push(std::mem::take(&mut line).trim_end().to_string());
+            line_width = 0;
+            broken = true;
+        }
+        for c in token.chars() {
+            let cw = c.width().unwrap_or(0);
+            if line_width + cw > width && !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+                line_width = 0;
+                broken = true;
+            }
+            line.push(c);
+            line_width += cw;
+        }
+    }
+    // Spaces dropped at a break leave no blank line after the text.
+    if !(broken && line.is_empty()) || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// One metadata value as text: an array that was listed, or how long it is.
 pub(crate) fn meta_text(value: &crate::model_files::MetaValue) -> String {
     use crate::model_files::MetaValue;
@@ -222,7 +282,7 @@ pub(crate) fn metadata_lines(
     metadata: &[(String, crate::model_files::MetaValue)],
     width: usize,
 ) -> Vec<(String, String)> {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    use unicode_width::UnicodeWidthStr;
     let longest = metadata.iter().map(|(k, _)| k.width()).max().unwrap_or(0);
     // Two columns between key and value; the key takes no more than two fifths.
     let key_width = longest.min(width * 2 / 5).max(1);
@@ -254,27 +314,15 @@ pub(crate) fn metadata_lines(
                     c => Some(c),
                 })
                 .collect();
-            let mut line = String::new();
-            let mut line_width = 0;
-            let mut push = |line: &mut String, out: &mut Vec<(String, String)>| {
+            for line in wrap_words(&clean, value_width) {
                 let k = if first {
                     key_cell.clone()
                 } else {
                     blank.clone()
                 };
                 first = false;
-                out.push((k, std::mem::take(line)));
-            };
-            for c in clean.chars() {
-                let w = c.width().unwrap_or(0);
-                if line_width + w > value_width && !line.is_empty() {
-                    push(&mut line, &mut out);
-                    line_width = 0;
-                }
-                line.push(c);
-                line_width += w;
+                out.push((k, line));
             }
-            push(&mut line, &mut out);
         }
         if more > 0 {
             let g = crate::glyphs::get();
@@ -2819,6 +2867,30 @@ mod tests {
         assert_eq!(clock(3723.0005), "1:02:03.001");
     }
 
+    /// A value breaks between words; indentation stays, the spaces at a break go, and
+    /// only a word wider than the room is split.
+    #[test]
+    fn metadata_values_wrap_on_word_boundaries() {
+        assert_eq!(
+            wrap_words("Broadcast WAV coding history", 12),
+            ["Broadcast", "WAV coding", "history"]
+        );
+        assert_eq!(
+            wrap_words("    {% if x %}   y", 10),
+            ["    {% if", "x %}   y"]
+        );
+        assert_eq!(
+            wrap_words("a 0123456789abcdef", 6),
+            ["a 0123", "456789", "abcdef"]
+        );
+        // Measured in columns: three double-width characters are six.
+        assert_eq!(wrap_words("日本語 text", 7), ["日本語", "text"]);
+        assert_eq!(wrap_words("", 5), [""]);
+        // Spaces at a break or past the room leave no blank line.
+        assert_eq!(wrap_words("abc   ", 4), ["abc"]);
+        assert_eq!(wrap_words("          x", 5), ["x"]);
+    }
+
     /// Each value is drawn whole: its own newlines kept, wrapped under the key, a short
     /// array listed and a long one counted.
     #[test]
@@ -2853,10 +2925,10 @@ mod tests {
             lines,
             [
                 (key("a"), "line one".to_string()),
-                (blank.clone(), "second line ".to_string()),
+                (blank.clone(), "second line".to_string()),
                 (blank.clone(), "that is long".to_string()),
-                (key("tokens"), "[151,936 str".to_string()),
-                (blank.clone(), "ings]".to_string()),
+                (key("tokens"), "[151,936".to_string()),
+                (blank.clone(), "strings]".to_string()),
                 (key("tags"), "[\"x\", \"y\"]".to_string()),
             ]
         );

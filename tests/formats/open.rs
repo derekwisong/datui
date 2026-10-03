@@ -325,13 +325,11 @@ fn time_a_large_file() {
         .records
         .clone();
     let started = std::time::Instant::now();
-    let window = records.window(rows - 50, 50).unwrap().collect().unwrap();
+    let window = records.window(rows - 50, 50).unwrap();
     let windowed = started.elapsed();
     let started = std::time::Instant::now();
     let sliced = records
-        .clone()
-        .into_lazy()
-        .unwrap()
+        .lazy()
         .slice((rows - 50) as i64, 50)
         .collect()
         .unwrap();
@@ -339,8 +337,7 @@ fn time_a_large_file() {
     assert!(window.equals_missing(&sliced));
     let started = std::time::Instant::now();
     let price = records
-        .into_lazy()
-        .unwrap()
+        .lazy()
         .select([col("price").cast(DataType::Float64).sum()])
         .collect()
         .unwrap();
@@ -350,4 +347,80 @@ fn time_a_large_file() {
          window of the last 50 {windowed:?}, slice of the last 50 without the window \
          {full:?}, sum of one column {column_pass:?} ({price:?})"
     );
+    // Queries as the app runs them, streaming asked for: time and the most anonymous
+    // memory held while each ran (the map's pages are the file's, not counted).
+    let lf = records.lazy();
+    let queries: [(&str, LazyFrame); 5] = [
+        (
+            "filter and count",
+            lf.clone()
+                .filter(col("side").eq(lit("SELL")))
+                .select([len()]),
+        ),
+        (
+            "group by side",
+            lf.clone()
+                .group_by([col("side")])
+                .agg([col("price").cast(DataType::Float64).mean()]),
+        ),
+        (
+            "sort by price, top 10",
+            lf.clone()
+                .sort(
+                    ["price"],
+                    SortMultipleOptions::default().with_order_descending(true),
+                )
+                .limit(10),
+        ),
+        (
+            "sort by time, top 10",
+            lf.clone()
+                .sort(
+                    ["ts"],
+                    SortMultipleOptions::default().with_order_descending(true),
+                )
+                .limit(10),
+        ),
+        (
+            "slice of the last 50",
+            lf.clone().slice((rows - 50) as i64, 50),
+        ),
+    ];
+    for (name, query) in queries {
+        let (took, peak) = with_peak_anon(|| {
+            datui::statistics::collect_lazy(query, true).unwrap();
+        });
+        println!("{name}: {took:?}, peak anonymous memory {} MiB", peak >> 20);
+    }
+}
+
+/// How long `f` takes and the most anonymous resident memory the process held while it
+/// ran, sampled every few milliseconds.
+fn with_peak_anon(f: impl FnOnce()) -> (std::time::Duration, u64) {
+    fn anon() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("RssAnon:"))
+                    .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            })
+            .map_or(0, |kb| kb * 1024)
+    }
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = done.clone();
+    let sampler = std::thread::spawn(move || {
+        let mut peak = anon();
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            peak = peak.max(anon());
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        peak.max(anon())
+    });
+    let before = anon();
+    let started = std::time::Instant::now();
+    f();
+    let took = started.elapsed();
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    (took, sampler.join().unwrap().saturating_sub(before))
 }

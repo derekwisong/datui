@@ -17,8 +17,7 @@ pub fn collect_lazy(
 ) -> std::result::Result<DataFrame, PolarsError> {
     #[cfg(feature = "streaming")]
     {
-        // A fixed-record scan has no streaming implementation in Polars 0.55.
-        if crate::fixed_records::may_stream(&lf, use_streaming) {
+        if may_stream(&lf, use_streaming) && !sorts_by_one_wide_key(&lf) {
             // A plain collect is always one frame; `Multiple` only comes from sink_multiple.
             lf.collect_with_engine(Engine::Streaming)
                 .map(|result| result.unwrap_single())
@@ -31,6 +30,55 @@ pub fn collect_lazy(
         let _ = use_streaming; // ignored when streaming feature is disabled
         lf.collect()
     }
+}
+
+/// Whether a query over `lf` may use the streaming engine: asked for, and possible.
+/// Polars 0.55's streaming engine cannot run an anonymous scan (a SQLite table): it
+/// stops at a `todo!`.
+pub fn may_stream(lf: &LazyFrame, wanted: bool) -> bool {
+    use polars::lazy::dsl::{DslPlan, FileScanDsl};
+    wanted
+        && !lf.logical_plan.into_iter().any(|node| match node {
+            DslPlan::Scan { scan_type, .. } => {
+                matches!(scan_type.as_ref(), FileScanDsl::Anonymous { .. })
+            }
+            _ => false,
+        })
+}
+
+/// Whether `lf` takes the first rows of an unstable sort by a single Decimal or Int128
+/// key. Polars 0.55's streaming engine runs that as a top-k, which panics on those
+/// dtypes ("not implemented for dtype Int128"); the in-memory engine sorts them. A
+/// format spec's `scale` reads as Decimal, so a query's `by price`, whose group sort
+/// is unstable, takes this for its first page. A stable sort (the table's own) carries
+/// a row index as a second key, and a full sort or a slice further in is no top-k:
+/// both stream.
+#[cfg(feature = "streaming")]
+fn sorts_by_one_wide_key(lf: &LazyFrame) -> bool {
+    use polars::lazy::dsl::DslPlan;
+    let wide_sort = |node: &DslPlan| match node {
+        DslPlan::Sort {
+            input,
+            by_column,
+            sort_options,
+            ..
+        } if by_column.len() == 1 && !sort_options.maintain_order => {
+            LazyFrame::from((**input).clone())
+                .select([by_column[0].clone()])
+                .collect_schema()
+                .ok()
+                .and_then(|schema| schema.get_at_index(0).map(|(_, dtype)| dtype.clone()))
+                .is_some_and(|dtype| dtype.is_decimal() || dtype == DataType::Int128)
+        }
+        _ => false,
+    };
+    lf.logical_plan.into_iter().any(|node| match node {
+        DslPlan::Slice {
+            input, offset: 0, ..
+        } => input.into_iter().any(wide_sort),
+        DslPlan::Sort { sort_options, .. } => sort_options.limit.is_some() && wide_sort(node),
+        _ => false,
+    })
 }
 
 /// Default sampling threshold: datasets >= this size are sampled.
@@ -3323,5 +3371,93 @@ pub(crate) mod describe_tests {
                 .iter()
                 .all(|v| v.is_none())
         );
+    }
+}
+
+#[cfg(all(test, feature = "streaming"))]
+mod streaming_guard_tests {
+    use super::*;
+
+    fn frame() -> LazyFrame {
+        df!("i" => (0..1_000i64).collect::<Vec<_>>(), "j" => (0..1_000i64).map(|v| v % 7).collect::<Vec<_>>())
+            .unwrap()
+            .lazy()
+            .with_columns([
+                col("i").cast(DataType::Decimal(38, 2)).alias("d"),
+                col("i").cast(DataType::Int128).alias("w"),
+            ])
+    }
+
+    struct Anonymous;
+
+    impl AnonymousScan for Anonymous {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn schema(&self, _: Option<usize>) -> PolarsResult<SchemaRef> {
+            Ok(Arc::new(Schema::from_iter([Field::new(
+                "a".into(),
+                DataType::Int64,
+            )])))
+        }
+
+        fn scan(&self, _: AnonymousScanArgs) -> PolarsResult<DataFrame> {
+            df!("a" => [1i64, 2, 3])
+        }
+    }
+
+    /// An anonymous scan (a SQLite table) has no streaming implementation in Polars
+    /// 0.55, so a query over one runs on the in-memory engine whatever is asked.
+    #[test]
+    fn an_anonymous_scan_stays_off_the_streaming_engine() {
+        let lf = LazyFrame::anonymous_scan(Arc::new(Anonymous), Default::default())
+            .unwrap()
+            .filter(col("a").gt(lit(1i64)));
+        assert!(!may_stream(&lf, true));
+        assert!(may_stream(&frame(), true));
+        assert_eq!(collect_lazy(lf, true).unwrap().height(), 2);
+    }
+
+    /// The shapes Polars 0.55's streaming top-k panics on go to the in-memory engine
+    /// and read; the ones it runs stay on the streaming engine.
+    #[test]
+    fn only_a_top_k_by_one_wide_key_leaves_the_streaming_engine() {
+        let lf = frame();
+        let desc = SortMultipleOptions::default().with_order_descending(true);
+        for key in ["d", "w"] {
+            let top = [
+                lf.clone().sort([key], desc.clone()).slice(0, 3),
+                lf.clone()
+                    .filter(col("j").eq(lit(1)))
+                    .sort([key], Default::default())
+                    .limit(3),
+                lf.clone()
+                    .group_by([col(key)])
+                    .agg([len()])
+                    .sort([key], desc.clone())
+                    .slice(0, 3),
+            ];
+            for query in top {
+                assert!(sorts_by_one_wide_key(&query), "{key}");
+                assert_eq!(collect_lazy(query, true).unwrap().height(), 3);
+            }
+            let streams = [
+                lf.clone().sort([key], desc.clone()),
+                lf.clone().sort([key], desc.clone()).slice(10, 3),
+                lf.clone().sort([key, "j"], desc.clone()).slice(0, 3),
+                lf.clone()
+                    .sort([key], desc.clone().with_maintain_order(true))
+                    .slice(0, 3),
+                lf.clone().sort(["i"], desc.clone()).slice(0, 3),
+            ];
+            for query in streams {
+                assert!(!sorts_by_one_wide_key(&query), "{key}");
+                query
+                    .collect_with_engine(Engine::Streaming)
+                    .unwrap()
+                    .unwrap_single();
+            }
+        }
     }
 }

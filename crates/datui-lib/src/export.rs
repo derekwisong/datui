@@ -94,8 +94,7 @@ pub fn run(
     mut written: impl FnMut(u64) + Send + 'static,
 ) -> Result<()> {
     let lf = request.format.prepare(lf)?;
-    // A fixed-record scan has no streaming implementation in Polars 0.55.
-    let polars_streaming = crate::fixed_records::may_stream(&lf, polars_streaming);
+    let polars_streaming = crate::statistics::may_stream(&lf, polars_streaming);
     // Before the plan runs, so a destination that cannot be written fails first.
     let mut out = OutputFile::create(&request.path, request.overwrite)?;
     match request.route(polars_streaming) {
@@ -523,8 +522,7 @@ mod tests {
         }
     }
 
-    /// Fixed records have no streaming implementation in Polars 0.55 (it stops at a
-    /// `todo!`), so an export of them takes the collected route whatever is asked.
+    /// Fixed records export on the streaming route, decoded a batch at a time.
     #[test]
     fn fixed_records_export_with_streaming_asked_for() {
         use crate::fixed_records::{Bytes, ColumnLayout, FixedRecords, Physical};
@@ -532,8 +530,7 @@ mod tests {
             let bytes = std::sync::Arc::new(Bytes::Owned((0u8..32).collect()));
             let column = ColumnLayout::new("a", 0, 4, Physical::Unsigned(4), 4);
             std::sync::Arc::new(FixedRecords::new(vec![bytes], vec![column], usize::MAX).unwrap())
-                .into_lazy()
-                .unwrap()
+                .lazy()
         };
         let dir = tempfile::tempdir().unwrap();
         for format in [ExportFormat::Parquet, ExportFormat::Csv] {

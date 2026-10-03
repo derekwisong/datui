@@ -73,8 +73,14 @@ pub fn run(input: &[u8]) {
     if head.height() > 1 {
         let window = records
             .window(1, 1)
-            .and_then(|lf| lf.collect())
             .expect("a window of counted rows decodes");
         assert!(window.equals_missing(&head.slice(1, 1)));
+        // The frame decodes the same rows over its row index.
+        let sliced = records
+            .lazy()
+            .slice(1, MAX_ROWS as u32 - 1)
+            .collect()
+            .expect("the frame decodes the counted rows");
+        assert!(sliced.equals_missing(&head.slice(1, MAX_ROWS - 1)));
     }
 }

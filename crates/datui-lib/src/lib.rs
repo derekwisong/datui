@@ -116,6 +116,7 @@ pub mod quality_report;
 pub mod quality_trends;
 #[cfg(any(feature = "http", feature = "cloud"))]
 mod remote_model;
+pub mod row_index;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
 pub mod sample_modal;
@@ -19253,7 +19254,7 @@ impl App {
                     return Self::read_with_delimited_spec(paths, options, report, formats, choice);
                 }
                 crate::formats::Route::Read(read) => {
-                    let lf = read.records.clone().into_lazy()?;
+                    let lf = read.records.lazy();
                     report.format_read = Some(Arc::new(*read));
                     return Ok(lf.into());
                 }

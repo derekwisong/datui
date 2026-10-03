@@ -989,7 +989,10 @@ pub fn read_midi(paths: &[PathBuf]) -> Result<(LazyFrame, MidiSummary)> {
     let mut unreadable = Vec::new();
     for (path, name) in paths.iter().zip(&names) {
         let read = read_bytes(path);
-        let parsed = read.as_deref().map_err(|e| eyre!("{e}")).and_then(parse);
+        let parsed = read
+            .as_deref()
+            .map_err(|e| eyre!(crate::error_display::user_message_from_report(e, None)))
+            .and_then(parse);
         let smf = match parsed {
             Ok(smf) => smf,
             Err(e) if !many => return Err(e),
@@ -1011,7 +1014,7 @@ pub fn read_midi(paths: &[PathBuf]) -> Result<(LazyFrame, MidiSummary)> {
             .first()
             .cloned()
             .unwrap_or_else(|| (String::new(), "no files".to_string()));
-        return Err(eyre!("No MIDI file could be read; {name}: {why}"));
+        return Err(eyre!("No MIDI file could be read; \"{name}\": {why}"));
     }
     summary.unreadable = unreadable;
     Ok((frame(cols, many)?, summary))
@@ -1229,6 +1232,41 @@ pub(crate) mod tests {
             out.extend_from_slice(t);
         }
         out
+    }
+
+    /// Every way a MIDI file is refused names the file, in the one shape; of several
+    /// that none can be read, the first is named.
+    #[test]
+    fn errors_name_the_file() {
+        let mut short_track = smf(0, 96, &[&[0x00, 0xff, 0x2f, 0x00]]);
+        short_track.truncate(short_track.len() - 2);
+        crate::readers::bad_input::each_names_its_file(
+            crate::FileFormat::Midi,
+            &[
+                ("text.mid", b"hello there", "MThd"),
+                ("cut.mid", b"MThd\0\0", "cut short"),
+                (
+                    "fmt3.mid",
+                    &smf(3, 96, &[&[0x00, 0xff, 0x2f, 0x00]]),
+                    "format 3",
+                ),
+                ("none.mid", &smf(0, 96, &[]), "no tracks"),
+                ("track.mid", &short_track, "cut short"),
+                ("status.mid", &smf(0, 96, &[&[0x00, 0xf4]]), "undefined"),
+                ("running.mid", &smf(0, 96, &[&[0x00, 60, 100]]), "no status"),
+            ],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = ["a.mid", "b.mid"]
+            .iter()
+            .map(|name| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, b"not midi").unwrap();
+                path
+            })
+            .collect();
+        let err = read_midi(&paths).err().unwrap().to_string();
+        assert!(err.contains("; \"a.mid\": Not a MIDI file"), "{err}");
     }
 
     fn table(bytes: &[u8]) -> (DataFrame, MidiSummary) {

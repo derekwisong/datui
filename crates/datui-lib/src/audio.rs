@@ -815,7 +815,7 @@ fn read_comm(body: &[u8], aifc: bool) -> Result<Comm> {
         b"fl64" | b"FL64" => (Some(Sample::F64), true),
         other => {
             return Err(eyre!(
-                "AIFF-C compression '{}' is not supported; datui reads uncompressed audio",
+                "AIFF-C compression \"{}\" is not supported; datui reads uncompressed audio",
                 String::from_utf8_lossy(other)
             ));
         }
@@ -2016,6 +2016,42 @@ mod tests {
         assert_eq!(top, 30_000.0);
         let last = result.series[0].last().unwrap().0;
         assert!(last > 2.49 && last < 2.5, "X in seconds: {last}");
+    }
+
+    /// Every way a recording is refused names the file, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        let no_comm = {
+            let mut out = b"FORM".to_vec();
+            out.extend_from_slice(&4u32.to_be_bytes());
+            out.extend_from_slice(b"AIFF");
+            out
+        };
+        crate::readers::bad_input::each_names_its_file(
+            crate::FileFormat::Audio,
+            &[
+                ("short.wav", b"RIFF", "too short"),
+                ("rifx.wav", b"RIFX\0\0\0\0WAVEfmt ", "RIFX"),
+                ("other.wav", b"OggS\0\0\0\0\0\0\0\0", "Not a WAV or AIFF"),
+                ("nofmt.wav", &wav(&[chunk(b"data", &[0; 4])]), "no fmt"),
+                (
+                    "law.wav",
+                    &wav(&[chunk(b"fmt ", &fmt(7, 1, 8000, 8)), chunk(b"data", &[])]),
+                    "mu-law",
+                ),
+                (
+                    "mute.wav",
+                    &wav(&[chunk(b"fmt ", &fmt(1, 0, 8000, 16)), chunk(b"data", &[])]),
+                    "0 channels",
+                ),
+                ("nocomm.aiff", &no_comm, "no COMM"),
+                (
+                    "packed.aifc",
+                    &aiff(b"AIFC", &comm(1, 1, 16, Some(b"ACE2")), &[0; 2], &[]),
+                    "\"ACE2\"",
+                ),
+            ],
+        );
     }
 
     #[test]

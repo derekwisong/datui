@@ -413,6 +413,113 @@ pub(crate) fn export_default(format: FileFormat) -> Option<ExportFormat> {
     of(format).export
 }
 
+/// Bad input opened as the load opens it, for each reader's error tests.
+#[cfg(test)]
+pub(crate) mod bad_input {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+
+    use super::{ConvertIn, ScanIn};
+    use crate::scan::Scan;
+    use crate::{FileFormat, OpenOptions, ReadReport};
+
+    /// What the user is told opening `bytes`, written to a file called `name` in
+    /// `dir`, as `format`, through the scan, a conversion and the first rows. `None`
+    /// when it opens.
+    pub(crate) fn opening(
+        dir: &Path,
+        name: &str,
+        bytes: &[u8],
+        format: FileFormat,
+        options: &OpenOptions,
+    ) -> Option<String> {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let said =
+            |e: color_eyre::Report| crate::error_display::user_message_from_report(&e, Some(&path));
+        let formats = crate::formats::Registry::of(Vec::new());
+        let mut report = ReadReport::default();
+        let paths = [path.clone()];
+        let scan = super::scan(ScanIn {
+            format,
+            paths: &paths,
+            options,
+            report: &mut report,
+            formats: &formats,
+        });
+        let lf = match scan {
+            Err(e) => return Some(said(e)),
+            Ok(Scan::Frame(lf)) => *lf,
+            Ok(Scan::ReadInto { files, format }) => {
+                let unfinished = crate::unfinished::Unfinished::default();
+                let writer = unfinished.writer(Arc::new(AtomicBool::new(false)));
+                let read = AtomicU64::new(0);
+                match super::convert(&ConvertIn {
+                    files: &files,
+                    display: &path,
+                    format,
+                    options,
+                    formats: &formats,
+                    writer: &writer,
+                    read: &read,
+                }) {
+                    Err(e) => return Some(said(e)),
+                    Ok((converted, _)) => converted.lf,
+                }
+            }
+            Ok(_) => return None,
+        };
+        lf.limit(100)
+            .collect()
+            .err()
+            .map(|e| said(color_eyre::Report::new(e)))
+    }
+
+    /// `message` is a reader error's shape: the file named in quotes first, its
+    /// first line a sentence ended with a full stop, nothing Rust prints.
+    pub(crate) fn assert_shape(message: &str, path: &Path) {
+        let named = format!("\"{}\": ", path.display());
+        assert!(message.starts_with(&named), "names the file: {message}");
+        let first = message.lines().next().unwrap_or_default();
+        assert!(first.ends_with('.'), "ends with a full stop: {message}");
+        let what = &message[named.len()..];
+        assert!(
+            what.chars().next().is_some_and(|c| !c.is_lowercase()),
+            "sentence case: {message}"
+        );
+        assert_eq!(
+            what.matches(path.to_string_lossy().as_ref()).count(),
+            0,
+            "named once: {message}"
+        );
+        for rust in [
+            "Some(",
+            "None",
+            "Error {",
+            "Kind(",
+            "PolarsError",
+            "ComputeError",
+            "os error",
+        ] {
+            assert!(!message.contains(rust), "no Rust ({rust}): {message}");
+        }
+    }
+
+    /// Each of `bad`, a file name and its bytes, fails to open as `format` with an
+    /// error of the one shape; `says` is a word each message holds.
+    pub(crate) fn each_names_its_file(format: FileFormat, bad: &[(&str, &[u8], &str)]) {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes, says) in bad {
+            let message = opening(dir.path(), name, bytes, format, &OpenOptions::default())
+                .unwrap_or_else(|| panic!("{name} opens"));
+            eprintln!("{message}");
+            assert_shape(&message, &dir.path().join(name));
+            assert!(message.contains(says), "{name}: {message}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

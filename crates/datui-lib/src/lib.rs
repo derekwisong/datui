@@ -666,6 +666,10 @@ pub enum RunInput {
     /// The command line as parsed. The configuration is read, and the flags applied
     /// over it, behind the first frame ([`startup`]).
     Cli(Box<Args>),
+    /// A host program's options, as the command line would give them, with a frame
+    /// to show instead of its paths when there is one. Read as the command line is,
+    /// `-c` included, but standard input is the host's, never data.
+    Host(Box<Args>, Option<Box<LazyFrame>>),
     Paths(Vec<PathBuf>, OpenOptions),
     LazyFrame(Box<LazyFrame>, OpenOptions),
 }
@@ -18558,7 +18562,9 @@ fn run_impl(
             app.set_loading_phase("Scanning input", 10);
             Some(AppEvent::OpenLazyFrame(lf, opts))
         }
-        RunInput::Cli(_) => unreachable!("read_settings resolves the command line"),
+        RunInput::Cli(_) | RunInput::Host(..) => {
+            unreachable!("read_settings resolves the command line")
+        }
     };
     // Declared before the pump, so it drops after it: the app's own files go with the
     // app, and this then removes what a worker was still writing.

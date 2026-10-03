@@ -887,6 +887,27 @@ mod tests {
         }
     }
 
+    /// Python's keywords are the registry's: one name each, and each open option's
+    /// flag is a flag of `Args`.
+    #[test]
+    fn python_keywords_are_unique_and_open_options_are_flags() {
+        let cmd = Args::command();
+        let mut names: Vec<&str> = settings::OPEN.iter().map(|o| o.kwarg).collect();
+        names.extend(settings::SETTINGS.iter().filter_map(|s| s.kwarg));
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "a keyword names two options");
+        assert!(!names.contains(&"config"), "config is the dict of any key");
+        for open in settings::OPEN {
+            assert!(
+                cmd.get_arguments().any(|a| a.get_long() == Some(open.flag)),
+                "--{}",
+                open.flag
+            );
+        }
+    }
+
     /// Each registered flag is a flag of `Args`, and its help is the key's doc; no flag
     /// of `Args` claims a key the registry does not give it.
     #[test]

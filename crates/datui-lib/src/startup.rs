@@ -38,7 +38,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
     // `--log-level`, then `-c log.level`, then `DATUI_LOG`; the files' `log.level` is
     // read below, under all three.
     let log_level = match &input {
-        RunInput::Cli(args) => args.log_level.clone().or_else(|| {
+        RunInput::Cli(args) | RunInput::Host(args, _) => args.log_level.clone().or_else(|| {
             args.config
                 .iter()
                 .rev()
@@ -81,6 +81,18 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
             }
             (RunInput::Paths(paths, opts), config)
         }
+        RunInput::Host(args, frame) => {
+            let mut config = config;
+            apply_args(&mut config, &args);
+            let opts = OpenOptions::from_args_and_config(&args, &config);
+            match frame {
+                Some(lf) => (RunInput::LazyFrame(lf, opts), config),
+                None => {
+                    let paths = args.paths.into_iter().map(crate::stdin::as_file).collect();
+                    (RunInput::Paths(paths, opts), config)
+                }
+            }
+        }
         RunInput::Paths(paths, opts) => {
             let paths = paths.into_iter().map(crate::stdin::as_file).collect();
             (RunInput::Paths(paths, opts), config)
@@ -89,7 +101,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
     };
     let opts = match &input {
         RunInput::Paths(_, o) | RunInput::LazyFrame(_, o) => o.clone(),
-        RunInput::Cli(_) => unreachable!("resolved above"),
+        RunInput::Cli(_) | RunInput::Host(..) => unreachable!("resolved above"),
     };
     // The home screen has no `OpenOptions` of its own, so the CLI and environment S3
     // overrides are folded into the config here, once, for discovery, listing and
@@ -148,7 +160,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
 /// past it; a library caller gets the error as it is.
 pub(crate) fn load_config(input: &RunInput) -> Result<AppConfig> {
     let overrides = match input {
-        RunInput::Cli(args) => args.config.as_slice(),
+        RunInput::Cli(args) | RunInput::Host(args, _) => args.config.as_slice(),
         _ => &[],
     };
     AppConfig::load_with(APP_NAME, overrides).map_err(|e| match input {
@@ -209,7 +221,8 @@ fn apply_args(config: &mut AppConfig, args: &Args) {
 /// The paths `input` names, if any.
 pub(crate) fn named_paths(input: &RunInput) -> &[PathBuf] {
     match input {
-        RunInput::Cli(args) => &args.paths,
+        RunInput::Cli(args) | RunInput::Host(args, None) => &args.paths,
+        RunInput::Host(_, Some(_)) => &[],
         RunInput::Paths(paths, _) => paths,
         RunInput::LazyFrame(..) => &[],
     }

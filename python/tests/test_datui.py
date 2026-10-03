@@ -108,15 +108,41 @@ def test_datui_options_constructible():
     assert d["delimiter"] == 44
     assert d["skip_rows"] == 2
     assert d["row_numbers"] is True
-    assert d["debug"] is False
 
 
-def test_datui_options_debug():
-    """DatuiOptions(debug=True) stores debug; view(..., debug=True) is valid via kwargs."""
+def test_datui_options_take_the_registry_names():
+    """The keywords are the option registry's: the open's options and config keys'."""
     import datui
 
-    opts = datui.DatuiOptions(debug=True)
-    assert opts._as_dict()["debug"] is True
+    for name in ("format", "table", "dict", "comment", "null_values", "infer_types", "row_numbers", "config"):
+        assert name in datui.OPTION_NAMES, name
+    for gone in ("has_header", "comment_char", "parse_strings", "excel_sheet", "debug", "s3_region"):
+        assert gone not in datui.OPTION_NAMES, gone
+    datui.DatuiOptions(
+        format="csv",
+        table="Sales",
+        comment="#",
+        null_values=["NA", "x="],
+        infer_types=["a", "b"],
+        header_rows=[3, 2],
+        no_header=True,
+        max_buffered="1GiB",
+        config={"display.row_numbers": True, "csv.infer_rows": 50},
+    )
+
+
+def test_datui_options_refuse_what_the_command_line_refuses():
+    """A value the flag or key would refuse is a ValueError naming why."""
+    import datui
+
+    with pytest.raises(ValueError, match="not a format"):
+        datui.DatuiOptions(format="cvs")
+    with pytest.raises(ValueError, match="needs a unit"):
+        datui.DatuiOptions(max_buffered="512")
+    with pytest.raises(ValueError, match="not a config key"):
+        datui.DatuiOptions(config={"display.row_number": True})
+    with pytest.raises(TypeError, match="not a datui option"):
+        datui.DatuiOptions(comment_char="#")
 
 
 def test_datui_options_delimiter_single_char():
@@ -125,8 +151,8 @@ def test_datui_options_delimiter_single_char():
 
     opts = datui.DatuiOptions(delimiter=";")
     assert opts is not None
-    d = opts._as_dict()
-    assert d["delimiter"] == ord(";")
+    assert opts._as_dict()["delimiter"] == ";"
+    datui.DatuiOptions(delimiter="tab")
 
 
 def test_view_invalid_kwarg_raises():

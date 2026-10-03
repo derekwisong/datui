@@ -8,379 +8,157 @@
 use std::panic;
 use std::path::{Path, PathBuf};
 
-use ::datui::{
-    CompressionFormat, ErrorKindForPython, FileFormat, OpenOptions, ParseStringsTarget, RunInput,
-    error_for_python, run, run_captured,
-};
+use ::datui::cli::{Args, parse_args, settings};
+use ::datui::{ErrorKindForPython, RunInput, error_for_python, run, run_captured};
 use polars::prelude::LazyFrame;
 use polars_plan::dsl::DslPlan;
 use pyo3::exceptions::{
     PyFileNotFoundError, PyPermissionError, PyRuntimeError, PyTypeError, PyValueError,
 };
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use serde_json;
 
-fn parse_compression(s: &str) -> PyResult<CompressionFormat> {
-    match s.to_lowercase().as_str() {
-        "gzip" => Ok(CompressionFormat::Gzip),
-        "zstd" | "zstandard" => Ok(CompressionFormat::Zstd),
-        "bzip2" | "bz2" => Ok(CompressionFormat::Bzip2),
-        "xz" => Ok(CompressionFormat::Xz),
-        _ => Err(PyValueError::new_err(format!(
-            "compression must be one of: gzip, zstd, bzip2, xz (got {:?})",
-            s
-        ))),
-    }
+/// Every keyword `datui.view()` and `DatuiOptions` take: the open's own options and
+/// the config keys' keywords from the option registry, and `config`, a dict of any
+/// config key to its value, as `-c` takes them.
+fn option_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = settings::OPEN.iter().map(|o| o.kwarg).collect();
+    names.extend(settings::SETTINGS.iter().filter_map(|s| s.kwarg));
+    names.push("config");
+    names
 }
 
-fn parse_format(s: &str) -> PyResult<FileFormat> {
-    // A FIX log has no extension; it is named.
-    FileFormat::from_extension(s).or_else(|| FileFormat::from_name(s)).ok_or_else(|| {
-        let names: Vec<&str> = FileFormat::ALL.iter().map(|f| f.name()).collect();
-        PyValueError::new_err(format!(
-            "format must be one of: {}, or an extension such as wav (got {:?})",
-            names.join(", "),
-            s
-        ))
-    })
+/// A Python value as `-c` or a flag spells it: booleans as `true`/`false`, a list as
+/// a TOML array, anything else as its text.
+fn option_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(b) = value.extract::<bool>() {
+        return Ok(b.to_string());
+    }
+    if let Ok(s) = value.extract::<String>() {
+        return Ok(s);
+    }
+    if let Ok(items) = value.extract::<Vec<String>>() {
+        return serde_json::to_string(&items)
+            .map_err(|e| PyValueError::new_err(e.to_string()));
+    }
+    if let Ok(n) = value.extract::<i64>() {
+        return Ok(n.to_string());
+    }
+    // A path-like, such as pathlib.Path.
+    let os = PyModule::import(value.py(), "os")?;
+    os.getattr("fspath")?.call1((value,))?.extract::<String>()
 }
 
-fn format_to_str(f: FileFormat) -> &'static str {
-    f.name()
+/// The items of a value that may be one or a list.
+fn option_items(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    if value.extract::<String>().is_err()
+        && let Ok(list) = value.cast::<pyo3::types::PyList>()
+    {
+        return list.iter().map(|item| option_text(&item)).collect();
+    }
+    if let Ok(tuple) = value.cast::<pyo3::types::PyTuple>() {
+        return tuple.iter().map(|item| option_text(&item)).collect();
+    }
+    Ok(vec![option_text(value)?])
 }
 
-fn delimiter_from_py(any: &Bound<'_, pyo3::types::PyAny>) -> PyResult<Option<u8>> {
-    if any.is_none() {
-        return Ok(None);
-    }
-    if let Ok(n) = any.extract::<i64>() {
-        let b = u8::try_from(n)
-            .map_err(|_| PyValueError::new_err(format!("delimiter must be 0-255 (got {})", n)))?;
-        return Ok(Some(b));
-    }
-    if let Ok(s) = any.extract::<String>() {
-        let ch: Vec<char> = s.chars().collect();
-        if ch.len() != 1 {
-            return Err(PyValueError::new_err(
-                "delimiter as str must be a single character",
-            ));
+/// The command line `kwargs` stand for: the open's options as their flags, the config
+/// keys' keywords and `config` as `-c`. Read by the same parser as the binary's, so a
+/// value means what it means there.
+fn args_from_kwargs(kwargs: &Bound<'_, PyDict>) -> PyResult<Args> {
+    let mut argv: Vec<String> = vec!["datui".into()];
+    for (key, value) in kwargs.iter() {
+        let key: String = key.extract()?;
+        if value.is_none() {
+            continue;
         }
-        let b = ch[0] as u32;
-        if b > 255 {
-            return Err(PyValueError::new_err(
-                "delimiter character code must be 0-255",
-            ));
+        if key == "config" {
+            let table = value
+                .cast::<PyDict>()
+                .map_err(|_| PyTypeError::new_err("config must be a dict of key to value"))?;
+            for (name, value) in table.iter() {
+                argv.push("-c".into());
+                argv.push(format!("{}={}", name.extract::<String>()?, option_text(&value)?));
+            }
+        } else if let Some(setting) = settings::by_kwarg(&key) {
+            argv.push("-c".into());
+            argv.push(format!("{}={}", setting.key, option_text(&value)?));
+        } else if let Some(open) = settings::OPEN.iter().find(|o| o.kwarg == key) {
+            let flag = format!("--{}", open.flag);
+            match open.kind {
+                settings::Kind::Bool => {
+                    if value.is_truthy()? {
+                        argv.push(flag);
+                    }
+                }
+                settings::Kind::List => {
+                    for item in option_items(&value)? {
+                        argv.push(flag.clone());
+                        argv.push(item);
+                    }
+                }
+                _ => {
+                    // A delimiter given as its code.
+                    let text = match value.extract::<u8>() {
+                        Ok(code) if open.flag == "delimiter" => format!("0x{code:02x}"),
+                        _ => option_text(&value)?,
+                    };
+                    argv.push(flag);
+                    argv.push(text);
+                }
+            }
+        } else {
+            let mut names = option_names();
+            names.sort_unstable();
+            return Err(PyTypeError::new_err(format!(
+                "{key:?} is not a datui option; options: {}",
+                names.join(", ")
+            )));
         }
-        return Ok(Some(b as u8));
     }
-    Err(PyTypeError::new_err(
-        "delimiter must be int (0-255) or single-character str",
-    ))
+    parse_args(argv).map_err(PyValueError::new_err)
 }
 
-fn opt_path_from_py(any: Option<&Bound<'_, pyo3::types::PyAny>>) -> PyResult<Option<PathBuf>> {
-    let Some(any) = any else { return Ok(None) };
-    if any.is_none() {
-        return Ok(None);
-    }
-    let s: String = any
-        .extract()
-        .map_err(|_| PyTypeError::new_err("temp_dir must be str or path-like"))?;
-    Ok(Some(PathBuf::from(s)))
-}
-
-/// Convert Python value to Option<ParseStringsTarget>. None/omitted → All (default). False → disabled. True or [] → All. [str, ...] → Columns.
-fn parse_strings_from_py(
-    any: Option<&Bound<'_, pyo3::types::PyAny>>,
-) -> PyResult<Option<ParseStringsTarget>> {
-    let Some(any) = any else {
-        return Ok(Some(ParseStringsTarget::All));
-    };
-    if any.is_none() {
-        return Ok(Some(ParseStringsTarget::All));
-    }
-    if let Ok(false) = any.extract::<bool>() {
-        return Ok(None);
-    }
-    if let Ok(true) = any.extract::<bool>() {
-        return Ok(Some(ParseStringsTarget::All));
-    }
-    if let Ok(list) = any.extract::<Vec<String>>() {
-        if list.is_empty() {
-            return Ok(Some(ParseStringsTarget::All));
-        }
-        return Ok(Some(ParseStringsTarget::Columns(
-            list.into_iter()
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect(),
-        )));
-    }
-    Err(PyTypeError::new_err(
-        "parse_strings must be None, False, True, or a list of column name strings",
-    ))
-}
-
-/// Options for loading and displaying data in the TUI (Python name for OpenOptions).
-///
-/// **parse_strings**: Default is all CSV string columns (trim + type inference). Use `False` to
-/// disable; `True` or `[]` for all; or a list of column names to limit to those columns.
-/// **parse_strings_sample_rows**: Rows to sample for type inference when parse_strings is enabled (default 1000).
+/// Options for opening data, as keywords: the open's own (`format`, `table`,
+/// `delimiter`, `header_rows`, ...) and a config key's (`comment`, `row_numbers`,
+/// `infer_types`, ...), named in `datui.OPTION_NAMES`. `config` sets any config key
+/// for this view, as `-c` does: `config={"display.row_numbers": True}`. Values mean
+/// what the same flag or key means on the command line.
 #[pyclass(name = "DatuiOptions")]
 struct DatuiOptionsPy {
-    inner: OpenOptions,
+    args: Args,
+    kwargs: Py<PyDict>,
 }
 
 #[pymethods]
 impl DatuiOptionsPy {
     #[new]
-    #[pyo3(signature = (
-        delimiter=None,
-        has_header=None,
-        skip_lines=None,
-        skip_rows=None,
-        skip_tail_rows=None,
-        compression=None,
-        format=None,
-        pages_lookahead=None,
-        pages_lookback=None,
-        max_buffered_rows=None,
-        max_buffered_mb=None,
-        row_numbers=false,
-        row_start_index=1,
-        hive=false,
-        single_spine_schema=true,
-        parse_dates=true,
-        decompress_in_memory=false,
-        temp_dir=None,
-        table=None,
-        polars_streaming=true,
-        null_values=None,
-        comment_char=None,
-        header_rows=None,
-        header_join=None,
-        skip_initial_space=false,
-        debug=false,
-        parse_strings=None,
-        parse_strings_sample_rows=1000
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        delimiter: Option<Bound<'_, pyo3::types::PyAny>>,
-        has_header: Option<Bound<'_, pyo3::types::PyAny>>,
-        skip_lines: Option<Bound<'_, pyo3::types::PyAny>>,
-        skip_rows: Option<Bound<'_, pyo3::types::PyAny>>,
-        skip_tail_rows: Option<Bound<'_, pyo3::types::PyAny>>,
-        compression: Option<Bound<'_, pyo3::types::PyAny>>,
-        format: Option<Bound<'_, pyo3::types::PyAny>>,
-        pages_lookahead: Option<Bound<'_, pyo3::types::PyAny>>,
-        pages_lookback: Option<Bound<'_, pyo3::types::PyAny>>,
-        max_buffered_rows: Option<Bound<'_, pyo3::types::PyAny>>,
-        max_buffered_mb: Option<Bound<'_, pyo3::types::PyAny>>,
-        row_numbers: bool,
-        row_start_index: usize,
-        hive: bool,
-        single_spine_schema: bool,
-        parse_dates: bool,
-        decompress_in_memory: bool,
-        temp_dir: Option<Bound<'_, pyo3::types::PyAny>>,
-        table: Option<Bound<'_, pyo3::types::PyAny>>,
-        polars_streaming: bool,
-        null_values: Option<Bound<'_, pyo3::types::PyAny>>,
-        comment_char: Option<String>,
-        header_rows: Option<Vec<usize>>,
-        header_join: Option<String>,
-        skip_initial_space: bool,
-        debug: bool,
-        parse_strings: Option<Bound<'_, pyo3::types::PyAny>>,
-        parse_strings_sample_rows: usize,
-    ) -> PyResult<Self> {
-        let mut opts = OpenOptions::new();
-        opts.row_numbers = row_numbers;
-        opts.row_start_index = row_start_index;
-        opts.hive = hive;
-        opts.single_spine_schema = single_spine_schema;
-        opts.parse_dates = parse_dates;
-        opts.decompress_in_memory = decompress_in_memory;
-        opts.polars_streaming = polars_streaming;
-
-        if let Some(ref a) = delimiter {
-            opts.delimiter = delimiter_from_py(a)?;
-        }
-        if let Some(ref a) = has_header {
-            if !a.is_none() {
-                opts.has_header = Some(a.extract()?);
-            }
-        }
-        if let Some(ref a) = skip_lines {
-            if !a.is_none() {
-                opts.skip_lines = Some(a.extract::<usize>()?);
-            }
-        }
-        if let Some(ref a) = skip_rows {
-            if !a.is_none() {
-                opts.skip_rows = Some(a.extract::<usize>()?);
-            }
-        }
-        if let Some(ref a) = skip_tail_rows {
-            if !a.is_none() {
-                opts.skip_tail_rows = Some(a.extract::<usize>()?);
-            }
-        }
-        if let Some(ref a) = compression {
-            if !a.is_none() {
-                let s: String = a.extract().map_err(|_| {
-                    PyTypeError::new_err("compression must be str (e.g. 'gzip', 'zstd')")
-                })?;
-                opts.compression = Some(parse_compression(&s)?);
-            }
-        }
-        if let Some(ref a) = format {
-            if !a.is_none() {
-                let s: String = a.extract().map_err(|_| {
-                    PyTypeError::new_err("format must be str (e.g. 'csv', 'parquet')")
-                })?;
-                opts.format = Some(parse_format(&s)?);
-            }
-        }
-        if let Some(ref a) = pages_lookahead {
-            if !a.is_none() {
-                opts.pages_lookahead = Some(a.extract::<usize>()?);
-            }
-        }
-        if let Some(ref a) = pages_lookback {
-            if !a.is_none() {
-                opts.pages_lookback = Some(a.extract::<usize>()?);
-            }
-        }
-        if let Some(ref a) = max_buffered_rows {
-            if !a.is_none() {
-                opts.max_buffered_rows = Some(a.extract::<usize>()?);
-            }
-        }
-        if let Some(ref a) = max_buffered_mb {
-            if !a.is_none() {
-                opts.max_buffered_mb = Some(a.extract::<usize>()?);
-            }
-        }
-        if let Some(ref a) = temp_dir {
-            opts.temp_dir = opt_path_from_py(Some(a))?;
-        }
-        if let Some(ref a) = table {
-            if !a.is_none() {
-                opts.table = Some(a.extract::<String>()?);
-            }
-        }
-        if let Some(ref a) = null_values {
-            if !a.is_none() {
-                opts.null_values = Some(a.extract::<Vec<String>>()?);
-            }
-        }
-        if let Some(c) = comment_char {
-            datui::csv_dialect::check_comment_char(&c)
-                .map_err(|e| PyValueError::new_err(format!("comment_char {e}")))?;
-            opts.comment_char = Some(c);
-        }
-        if let Some(rows) = header_rows {
-            if rows.contains(&0) {
-                return Err(PyValueError::new_err(
-                    "header_rows are line numbers counted from 1",
-                ));
-            }
-            opts.header_rows = rows;
-        }
-        if let Some(join) = header_join {
-            opts.header_join = join;
-        }
-        opts.skip_initial_space = skip_initial_space;
-        opts.parse_strings = parse_strings_from_py(parse_strings.as_ref().map(|b| b.as_ref()))?;
-        opts.parse_strings_sample_rows = parse_strings_sample_rows;
-        opts.debug = debug;
-        Ok(Self { inner: opts })
+    #[pyo3(signature = (**kwargs))]
+    fn new(py: Python<'_>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        let kwargs = match kwargs {
+            Some(kwargs) => kwargs.copy()?,
+            None => PyDict::new(py),
+        };
+        let args = args_from_kwargs(&kwargs)?;
+        Ok(Self {
+            args,
+            kwargs: kwargs.unbind(),
+        })
     }
 
-    /// Return options as a dict of Python values (for merging with kwargs). Internal use.
-    fn _as_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-        use pyo3::types::PyDict;
-        let d = PyDict::new(py);
-        let o = &self.inner;
-        if let Some(v) = o.delimiter {
-            d.set_item("delimiter", v)?;
-        }
-        if let Some(v) = o.has_header {
-            d.set_item("has_header", v)?;
-        }
-        if let Some(v) = o.skip_lines {
-            d.set_item("skip_lines", v)?;
-        }
-        if let Some(v) = o.skip_rows {
-            d.set_item("skip_rows", v)?;
-        }
-        if let Some(v) = o.skip_tail_rows {
-            d.set_item("skip_tail_rows", v)?;
-        }
-        if let Some(ref v) = o.compression {
-            let s = match v {
-                CompressionFormat::Gzip => "gzip",
-                CompressionFormat::Zstd => "zstd",
-                CompressionFormat::Bzip2 => "bzip2",
-                CompressionFormat::Xz => "xz",
-            };
-            d.set_item("compression", s)?;
-        }
-        if let Some(ref v) = o.format {
-            d.set_item("format", format_to_str(*v))?;
-        }
-        if let Some(v) = o.pages_lookahead {
-            d.set_item("pages_lookahead", v)?;
-        }
-        if let Some(v) = o.pages_lookback {
-            d.set_item("pages_lookback", v)?;
-        }
-        if let Some(v) = o.max_buffered_rows {
-            d.set_item("max_buffered_rows", v)?;
-        }
-        if let Some(v) = o.max_buffered_mb {
-            d.set_item("max_buffered_mb", v)?;
-        }
-        d.set_item("row_numbers", o.row_numbers)?;
-        d.set_item("row_start_index", o.row_start_index)?;
-        d.set_item("hive", o.hive)?;
-        d.set_item("single_spine_schema", o.single_spine_schema)?;
-        d.set_item("parse_dates", o.parse_dates)?;
-        match &o.parse_strings {
-            None => d.set_item("parse_strings", false)?,
-            Some(ParseStringsTarget::All) => d.set_item("parse_strings", true)?,
-            Some(ParseStringsTarget::Columns(c)) => d.set_item("parse_strings", c.clone())?,
-        }
-        d.set_item("parse_strings_sample_rows", o.parse_strings_sample_rows)?;
-        d.set_item("decompress_in_memory", o.decompress_in_memory)?;
-        if let Some(ref v) = o.temp_dir {
-            d.set_item("temp_dir", v.to_string_lossy().as_ref())?;
-        }
-        if let Some(ref v) = o.table {
-            d.set_item("table", v.as_str())?;
-        }
-        d.set_item("polars_streaming", o.polars_streaming)?;
-        if let Some(ref v) = o.null_values {
-            d.set_item("null_values", v.as_slice())?;
-        }
-        if let Some(ref v) = o.comment_char {
-            d.set_item("comment_char", v.as_str())?;
-        }
-        if !o.header_rows.is_empty() {
-            d.set_item("header_rows", o.header_rows.clone())?;
-        }
-        d.set_item("header_join", o.header_join.as_str())?;
-        d.set_item("skip_initial_space", o.skip_initial_space)?;
-        d.set_item("debug", o.debug)?;
-        Ok(d)
+    /// The keywords these options were made with, for merging with more. Internal use.
+    fn _as_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.kwargs.bind(py).copy()
     }
 }
 
-fn datui_options_to_rust(opts: Option<&Bound<'_, DatuiOptionsPy>>) -> OpenOptions {
-    opts.map(|o| o.borrow().inner.clone())
-        .unwrap_or_else(OpenOptions::default)
+/// The command line `opts` stand for, or none's.
+fn datui_options_to_args(opts: Option<&Bound<'_, DatuiOptionsPy>>) -> PyResult<Args> {
+    match opts {
+        Some(opts) => Ok(opts.borrow().args.clone()),
+        None => parse_args(["datui"]).map_err(PyValueError::new_err),
+    }
 }
 
 /// Compression format for data files (e.g. for use with DatuiOptions).
@@ -397,9 +175,9 @@ enum CompressionFormatPy {
 /// Newer Polars emits `{"inner": "/foo"}` (under "path" or other keys); polars-plan 0.52
 /// expects `{"Local": "/foo"}` or `{"Cloud": "..."}`. We recursively rewrite any object
 /// that is exactly `{"inner": "<string>"}` to `{"Local": "<string>"}`.
-fn run_tui(plan: DslPlan, opts: OpenOptions, capture: bool) -> PyResult<Option<Vec<u8>>> {
+fn run_tui(plan: DslPlan, args: Args, capture: bool) -> PyResult<Option<Vec<u8>>> {
     let lf = LazyFrame::from(plan);
-    let input = RunInput::LazyFrame(Box::new(lf), opts);
+    let input = RunInput::Host(Box::new(args), Some(Box::new(lf)));
     run_input(input, capture)
 }
 
@@ -464,7 +242,7 @@ fn serialize_captured(lf: LazyFrame) -> PyResult<Vec<u8>> {
 ///
 /// Args:
 ///     data: Bytes from LazyFrame.serialize() or df.lazy().serialize() (binary).
-///     options: Optional DatuiOptions (includes debug); default when None.
+///     options: Optional DatuiOptions; default when None.
 ///     capture: When True, return the final view's plan as bytes on normal quit
 ///         (None when no dataset was open); the wrapper deserializes them.
 ///
@@ -539,8 +317,8 @@ fn view_from_bytes(
             e
         ))
     })?;
-    let opts = datui_options_to_rust(options.as_ref());
-    run_tui(plan, opts, capture)
+    let args = datui_options_to_args(options.as_ref())?;
+    run_tui(plan, args, capture)
 }
 
 /// Launch the datui TUI with a LazyFrame logical plan given as JSON.
@@ -552,7 +330,7 @@ fn view_from_bytes(
 ///
 /// Args:
 ///     json_str: JSON string from LazyFrame.serialize(format="json").
-///     options: Optional DatuiOptions (includes debug); default when None.
+///     options: Optional DatuiOptions; default when None.
 ///
 /// Raises:
 ///     ValueError: If the string is not valid LazyFrame JSON.
@@ -573,8 +351,8 @@ fn view_from_json(
             e
         ))
     })?;
-    let opts = datui_options_to_rust(options.as_ref());
-    run_tui(plan, opts, capture)
+    let args = datui_options_to_args(options.as_ref())?;
+    run_tui(plan, args, capture)
 }
 
 /// Launch the datui TUI with one or more paths (local files, S3, GCS, or HTTP/HTTPS URLs).
@@ -588,7 +366,7 @@ fn view_from_json(
 /// Args:
 ///     paths: A single path string or a list of path strings (e.g. `"file.csv"`,
 ///            `"s3://bucket/file.csv"`, `["a.csv", "b.csv"]`, or `"data/**/*.parquet"`).
-///     options: Optional DatuiOptions (includes debug); default when None.
+///     options: Optional DatuiOptions; default when None.
 ///
 /// Raises:
 ///     ValueError: If paths is empty.
@@ -606,9 +384,9 @@ fn view_paths(
     if paths.is_empty() {
         return Err(PyValueError::new_err("paths must not be empty"));
     }
-    let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    let opts = datui_options_to_rust(options.as_ref());
-    run_input(RunInput::Paths(path_bufs, opts), capture)
+    let mut args = datui_options_to_args(options.as_ref())?;
+    args.paths = paths.into_iter().map(PathBuf::from).collect();
+    run_input(RunInput::Host(Box::new(args), None), capture)
 }
 
 /// Run the datui CLI with the current process arguments (e.g. from `datui file.csv`).
@@ -707,6 +485,7 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
 #[pymodule]
 fn _datui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DatuiOptionsPy>()?;
+    m.add("OPTION_NAMES", option_names())?;
     m.add_class::<CompressionFormatPy>()?;
     m.add_function(wrap_pyfunction!(view_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(view_from_json, m)?)?;

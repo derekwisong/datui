@@ -32,14 +32,21 @@ the command line:
 ```python
 datui.view("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/")
 datui.view(url)                 # asks before it downloads, as on the command line
-datui.view("data.csv", delimiter=";", has_header=False)
+datui.view("data.csv", delimiter=";", no_header=True)
 datui.view(["jan.parquet", "feb.parquet"])
 ```
 
-Options can be passed as keywords or as a `datui.DatuiOptions` instance.
-Common options include `delimiter`, `has_header`, `null_values`, `hive`,
-`table` and `row_numbers`. Use `help(datui.DatuiOptions)` for the full
-Python option list. For a frame, only display options apply.
+Options can be passed as keywords or as a `datui.DatuiOptions` instance. They
+are the [command line](../reference/command-line-options.md)'s and the
+[config](../reference/settings.md)'s, with the same names and values:
+
+| Keywords | Are |
+|---|---|
+| `format`, `table`, `hive`, `compression`, `dict`, `view`, `delimiter`, `no_header`, `header_rows`, `footer_rows`, `skip_rows`, `skip_lines` | The flags of the same name |
+| `comment`, `null_values`, `infer_types`, `infer_rows`, `row_numbers`, `max_buffered`, ... | A config key's last part: `csv.comment`, `display.row_numbers` |
+| `config={"display.row_numbers": True}` | Any config key, as `-c` sets it |
+
+`datui.OPTION_NAMES` lists them all. For a frame, only display options apply.
 
 ## Return the current view
 

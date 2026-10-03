@@ -120,7 +120,7 @@ pub struct Args {
     #[arg(short = 'f', long = "follow", action, help_heading = "Reading")]
     pub follow: bool,
 
-    /// Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends
+    /// Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends. With -, pass it on to standard output, as tee does, and draw on the terminal
     #[arg(long = "tee", value_name = "FILE", help_heading = "Reading")]
     pub tee: Option<std::path::PathBuf>,
 

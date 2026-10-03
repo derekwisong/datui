@@ -1466,7 +1466,8 @@ impl Watcher {
 
 /// Standard input being copied to a file while the file is read: the copy goes on
 /// after the first rows show, until the stream ends or the copy is stopped. The file is
-/// a temporary one, or the one `--tee` names, which the user keeps.
+/// a temporary one, or the one `--tee` names, which the user keeps; with `--tee -`, a
+/// temporary one, and the stream is passed on to standard output too.
 pub struct Spool {
     stop: AtomicBool,
     bytes: AtomicU64,
@@ -1477,6 +1478,8 @@ pub struct Spool {
     sink: Mutex<Option<File>>,
     /// The file `--tee` named, when it is the one written.
     tee: Option<Tee>,
+    /// Standard output, for `--tee -`. Taken when the copy finishes, which closes it.
+    pass: Mutex<Option<Box<dyn Write + Send>>>,
     started: Instant,
 }
 
@@ -1486,6 +1489,24 @@ pub struct Tee {
     pub path: PathBuf,
     /// `--tee-raw`: the bytes exactly as they came, a WAV header's sizes included.
     pub raw: bool,
+}
+
+impl Tee {
+    /// `--tee -`: the stream is passed on to standard output rather than kept in a file.
+    pub fn to_stdout(&self) -> bool {
+        crate::stdin::is_stdin(&self.path)
+    }
+
+    /// Where the stream goes, as a message names it.
+    pub fn name(&self) -> String {
+        if self.to_stdout() {
+            return "standard output".to_string();
+        }
+        self.path.file_name().map_or_else(
+            || self.path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -1509,7 +1530,7 @@ struct SpoolState {
 const RATE_WINDOW: Duration = Duration::from_secs(2);
 
 impl Spool {
-    fn new(sink: File, tee: Option<Tee>) -> Spool {
+    fn new(sink: File, tee: Option<Tee>, pass: Option<Box<dyn Write + Send>>) -> Spool {
         Spool {
             stop: AtomicBool::new(false),
             bytes: AtomicU64::new(0),
@@ -1517,6 +1538,7 @@ impl Spool {
             changed: Condvar::new(),
             sink: Mutex::new(Some(sink)),
             tee,
+            pass: Mutex::new(pass),
             started: Instant::now(),
         }
     }
@@ -1594,10 +1616,18 @@ impl Spool {
                 "Could not write {}: {e}",
                 self.tee
                     .as_ref()
+                    .filter(|t| !t.to_stdout())
                     .map_or("what came in".to_string(), |t| t.path.display().to_string())
             )
         })?;
         drop(sink);
+        // Outside the file's lock: a reader downstream that stops reading holds up this
+        // write, and must not hold up a stop.
+        if let Some(out) = self.pass.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            out.write_all(bytes)
+                .and_then(|()| out.flush())
+                .map_err(|e| format!("Could not write standard output: {e}"))?;
+        }
         let total =
             self.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed) + bytes.len() as u64;
         let now = Instant::now();
@@ -1624,8 +1654,14 @@ impl Spool {
     /// that saved means safe to copy. Once; later calls change nothing.
     fn finish(&self, reason: Option<String>) {
         let file = self.sink.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // Closed, so the reader downstream sees the stream end. Held by a write a reader
+        // downstream is not taking, it is closed once that write returns: the copy then
+        // finds the file finished and finishes again.
+        if let Ok(mut pass) = self.pass.try_lock() {
+            pass.take();
+        }
         let mut reason = reason;
-        if let (Some(mut file), Some(tee)) = (file, self.tee.as_ref()) {
+        if let (Some(mut file), Some(tee)) = (file, self.tee.as_ref().filter(|t| !t.to_stdout())) {
             let finished = (if tee.raw {
                 Ok(())
             } else {
@@ -1734,18 +1770,31 @@ pub(crate) fn spool<R: Read + Send + 'static>(
     options: OpenOptions,
     writer: &Writer,
     read: &AtomicU64,
+    stdout: Option<Box<dyn Write + Send>>,
 ) -> Result<(Spooled, OpenOptions), String> {
-    let (reader, _) = open().map_err(|e| format!("Could not read standard input: {e}"))?;
     let tee = options.tee.clone().map(|path| Tee {
         path,
         raw: options.tee_raw,
     });
+    // A pipe cannot be sought back to, to fill in a WAV header.
+    let tee = tee.map(|tee| Tee {
+        raw: tee.raw || tee.to_stdout(),
+        ..tee
+    });
+    let pass = match &tee {
+        Some(tee) if tee.to_stdout() => Some(stdout.ok_or_else(|| {
+            "--tee - passes the stream on to standard output, which only the datui command has."
+                .to_string()
+        })?),
+        _ => None,
+    };
+    let (reader, _) = open().map_err(|e| format!("Could not read standard input: {e}"))?;
     let (spooled, file) = match &tee {
-        Some(tee) => {
+        Some(tee) if !tee.to_stdout() => {
             let file = crate::tee::create(&tee.path, options.force)?;
             (Spooled::Kept(tee.path.clone()), file)
         }
-        None => {
+        _ => {
             let Some((named, claim)) = writer
                 .create(|| TempDownload::create(options.temp_dir.as_deref(), None))
                 .map_err(|e| crate::error_display::user_message_from_report(&e, None))?
@@ -1759,7 +1808,7 @@ pub(crate) fn spool<R: Read + Send + 'static>(
             (Spooled::Temp(TempDownload::held(named, Some(claim))), file)
         }
     };
-    let spool = Arc::new(Spool::new(file, tee));
+    let spool = Arc::new(Spool::new(file, tee, pass));
     let handle = Arc::new(SpoolHandle {
         spool: spool.clone(),
     });

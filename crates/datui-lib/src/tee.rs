@@ -2,7 +2,8 @@
 //!
 //! The copy itself is a [`crate::follow::Spool`] writing to FILE rather than to a
 //! temporary file; this module creates FILE and, when the stream ends, fills in what
-//! a producer writing to a pipe could not: a WAV file's sizes.
+//! a producer writing to a pipe could not: a WAV file's sizes. `--tee -` passes the
+//! stream on to standard output instead ([`pass_stdout_on`]).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -30,6 +31,91 @@ pub fn refusal(path: &Path) -> String {
         "{} is there already; --force overwrites it.",
         path.display()
     )
+}
+
+/// Why `--tee -` cannot pass the stream on when standard output is the terminal.
+const STDOUT_IS_THE_SCREEN: &str = "--tee - passes standard input on to standard output, \
+     which is the screen here: send it on to a pipe or a file, as in: \
+     some_logger | datui -f --tee - | gzip > run1.csv.gz";
+
+/// `--tee -`: keep standard output for the stream, and point the process's standard
+/// output at the terminal, where the screen is drawn. Everything that draws or writes
+/// to standard output, Ratatui and Crossterm among them, then reaches the terminal
+/// with no change of its own. Returns the stream's standard output.
+#[cfg(unix)]
+pub(crate) fn pass_stdout_on() -> Result<File, String> {
+    use std::io::IsTerminal;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    if std::io::stdout().is_terminal() {
+        return Err(STDOUT_IS_THE_SCREEN.to_string());
+    }
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|e| format!("--tee - draws on the terminal, /dev/tty, which did not open: {e}"))?;
+    // Close-on-exec, so a program datui starts does not hold the pipe open after the
+    // stream ends.
+    // SAFETY: plain fd calls; their results are checked.
+    let kept = unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_DUPFD_CLOEXEC, 3) };
+    if kept < 0 {
+        return Err(format!(
+            "Could not keep standard output: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: `kept` was just opened and is owned by nothing else.
+    let kept = unsafe { File::from_raw_fd(kept) };
+    // SAFETY: both fds are open; dup2 replaces fd 1 atomically.
+    if unsafe { libc::dup2(tty.as_raw_fd(), libc::STDOUT_FILENO) } < 0 {
+        return Err(format!(
+            "Could not draw on the terminal: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(kept)
+}
+
+/// As on Unix, with the console's screen buffer, `CONOUT$`, as standard output. Rust's
+/// standard output asks Windows for the handle on every write, and Crossterm sizes and
+/// sets up the console through `CONOUT$` and `CONIN$` itself.
+#[cfg(windows)]
+pub(crate) fn pass_stdout_on() -> Result<File, String> {
+    use std::io::IsTerminal;
+    use std::os::windows::io::{FromRawHandle, IntoRawHandle};
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle};
+    if std::io::stdout().is_terminal() {
+        return Err(STDOUT_IS_THE_SCREEN.to_string());
+    }
+    let console = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("CONOUT$")
+        .map_err(|e| format!("--tee - draws on the console, which did not open: {e}"))?;
+    // SAFETY: GetStdHandle takes no pointers.
+    let kept = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    if kept.is_null() || kept == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(
+            "--tee - passes the stream on to standard output, and there is none.".to_string(),
+        );
+    }
+    // The console handle stays open for the life of the process, as standard output.
+    let console = console.into_raw_handle();
+    // SAFETY: a live handle, owned from here by the process's standard output.
+    if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, console) } == 0 {
+        return Err(format!(
+            "Could not draw on the console: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: the old standard output handle is no longer standard output; this is now
+    // its one owner.
+    Ok(unsafe { File::from_raw_handle(kept) })
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn pass_stdout_on() -> Result<File, String> {
+    Err("--tee - is not supported on this platform.".to_string())
 }
 
 /// What [`fix_wav_sizes`] did.

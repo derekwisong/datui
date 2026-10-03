@@ -126,6 +126,17 @@ arecord -f S16_LE -r 48000 -c 2 -t wav - | datui -f --tee take1.wav -
 | SIGTERM, SIGHUP | The file is finished and closed, and datui exits |
 | WAV | A producer writing to a pipe cannot fill in the RIFF and `data` sizes; they are filled in when the stream ends, as RF64 over 4 GB when the producer reserved a `JUNK` chunk for it. `--tee-raw` leaves FILE exactly as it came |
 
+`--tee -` passes the stream on to standard output instead, as `tee` does, and
+draws on the terminal (`/dev/tty`, or the console on Windows): datui sits in
+the middle of a pipeline and shows what goes through it. The table reads a
+temporary copy in `--temp-dir`. Standard output has to go to a pipe or a file;
+the bar says `sent` once the stream ends, and a reader downstream that stops
+reading stops the copy, saying so.
+
+```bash
+some_logger | datui -f --tee - | gzip > run1.csv.gz
+```
+
 Without `-f`, the whole stream is recorded before the table opens. With
 `-f`, a format that cannot be followed (a WAV file) shows what had arrived
 when it opened, and the recording goes on. The copy holds one megabyte however

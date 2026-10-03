@@ -525,6 +525,76 @@ fn a_recording_is_the_bytes_as_they_came() {
     assert_eq!(rows(&app), 3);
 }
 
+/// `--tee -` passes the stream on to standard output byte for byte while the table
+/// reads it, and closes it when the stream ends; a reader downstream that goes away
+/// stops the copy and says why. Without standard output to pass to, it is refused.
+#[test]
+fn tee_dash_passes_the_stream_on_to_standard_output() {
+    let passing = OpenOptions {
+        follow: true,
+        tee: Some(PathBuf::from("-")),
+        ..Default::default()
+    };
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    let (downstream, out) = std::io::pipe().unwrap();
+    let passed = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        let mut downstream = downstream;
+        std::io::Read::read_to_end(&mut downstream, &mut got).unwrap();
+        got
+    });
+    producer.write_all(b"t,n\n1,10\n").unwrap();
+    let (mut app, rx) = app();
+    app.read_stdin_from(reader);
+    app.pass_stdout_to(out);
+    pump_open_until_loaded(&mut app, &rx, vec![PathBuf::from("-")], passing.clone());
+    assert!(screen(&mut app).contains("rec "), "the bar says it records");
+    producer.write_all(b"2,20\n3,30\n").unwrap();
+    until(&mut app, &rx, |app| shown(app) == 3 && app.follow_settled());
+    drop(producer);
+    spool(&app).wait();
+    assert_eq!(
+        passed.join().unwrap(),
+        b"t,n\n1,10\n2,20\n3,30\n",
+        "closed at the end"
+    );
+    until(&mut app, &rx, |app| {
+        app.follow()
+            .is_some_and(|f| *f.standing() == Standing::Ended)
+    });
+    let bar = screen(&mut app);
+    assert!(bar.contains("sent") && !bar.contains("saved"), "{bar}");
+    // As the run loop's tick notices it.
+    app.tick_follow_clock();
+    assert_eq!(app.flash_message(), Some("Standard input ended"));
+
+    // Downstream stops reading.
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    let (downstream, out) = std::io::pipe().unwrap();
+    producer.write_all(b"t,n\n1,10\n").unwrap();
+    let (mut app, rx) = self::app();
+    app.read_stdin_from(reader);
+    app.pass_stdout_to(out);
+    pump_open_until_loaded(&mut app, &rx, vec![PathBuf::from("-")], passing.clone());
+    drop(downstream);
+    let _ = producer.write_all(b"2,20\n");
+    spool(&app).wait();
+    let ended = spool(&app).ended().flatten().unwrap_or_default();
+    assert!(ended.contains("standard output"), "{ended}");
+
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"t,n\n1,10\n").unwrap();
+    let (mut app, rx) = self::app();
+    app.read_stdin_from(reader);
+    let message = pump_open_until_error(&mut app, &rx, vec![PathBuf::from("-")], passing);
+    assert!(
+        message
+            .as_deref()
+            .is_some_and(|m| m.contains("standard output")),
+        "{message:?}"
+    );
+}
+
 /// The copy is a thread of its own: megabytes go through while the app handles
 /// nothing at all, so a slow draw never holds the producer up.
 #[test]
@@ -601,8 +671,8 @@ fn quitting_while_recording_asks_whether_to_keep_recording() {
         assert!(matches!(out, Some(AppEvent::Exit)), "either way it quits");
         let after = app.recording_after_exit();
         if keep {
-            let (path, handle) = after.expect("kept recording");
-            assert_eq!(path, file);
+            let (tee, handle) = after.expect("kept recording");
+            assert_eq!(tee.path, file);
             drop(app);
             producer.write_all(b"2\n3\n").unwrap();
             drop(producer);

@@ -1890,7 +1890,7 @@ mod tests {
             "the open itself reads the two ends, which is what staging is"
         );
         assert!(
-            cache.load_dataset_shapes().is_empty(),
+            cache.dataset_shapes_kept() == 0,
             "and keeps nothing: a two-footer view of {count} files is not this dataset, \
              and kept as one it would open next time with two files' worth of schema"
         );
@@ -1971,7 +1971,7 @@ mod tests {
             "both were tried"
         );
         assert!(
-            cache.load_dataset_shapes().is_empty(),
+            cache.dataset_shapes_kept() == 0,
             "and nothing was kept, because one of them did not come back"
         );
 

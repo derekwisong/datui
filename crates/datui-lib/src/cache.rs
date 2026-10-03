@@ -88,6 +88,12 @@ impl CacheManager {
         // and the hidden-source file, so `--clear-cache` kept most of the cache and
         // broke the documented way to unhide a source. Files only, by the extensions
         // datui writes, so a stray directory or foreign file is left alone.
+        match fs::remove_dir_all(self.dataset_shape_dir()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                log::warn!(target: "datui", "remove the dataset shapes: {e}");
+            }
+            _ => {}
+        }
         let Ok(entries) = fs::read_dir(&self.cache_dir) else {
             return Ok(());
         };
@@ -763,11 +769,6 @@ fn cargo_test_layout(exe: &Path, target_dir: Option<&std::ffi::OsStr>) -> bool {
 /// file stays trivial to read and rewrite.
 pub const MAX_DATASET_FACTS: usize = 4096;
 
-/// Dataset shapes kept. Each one holds a row count per file, so a few hundred large
-/// datasets is already a sizeable file; this is the point where speed stops being worth
-/// the bytes.
-pub const MAX_DATASET_SHAPES: usize = 256;
-
 /// The buckets a cloud source listed on an earlier run, shown straight away on the next
 /// one while a fresh listing is out.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -780,16 +781,151 @@ pub struct CloudListing {
     pub listed_at: u64,
 }
 
+/// Bytes of dataset shapes kept, all of them together. A shape's size follows its
+/// dataset's file count — NOAA's by_station, 842k files, is a few megabytes — so a
+/// count alone would let a handful of huge datasets hold the disk while a small one
+/// pushed out a shape still being opened. The one just stored is always kept.
+pub const MAX_DATASET_SHAPE_BYTES: u64 = 128 << 20;
+
+/// The first bytes of a shape file, which also say how the rest is laid out. A file
+/// that does not start with them is from another build and is ignored.
+const SHAPE_MAGIC: &[u8; 8] = b"DTSHAPE1";
+
+/// The part of a shape file read before deciding whether the rest is wanted: which
+/// dataset it is, the fingerprint it was taken at, and its schemas. JSON because the
+/// schemas are Polars types, serialised as Polars serialises them; the per-file
+/// footers, which are most of the bytes, follow as varints.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ShapeHeader {
+    path: String,
+    fingerprint: String,
+    schemas: Vec<Vec<(String, polars::prelude::DataType)>>,
+    taken_at: u64,
+}
+
+fn put_varint(out: &mut Vec<u8>, mut n: u64) {
+    while n >= 0x80 {
+        out.push((n as u8) | 0x80);
+        n >>= 7;
+    }
+    out.push(n as u8);
+}
+
+fn take_varint(bytes: &mut &[u8]) -> Option<u64> {
+    let mut n = 0u64;
+    for shift in (0..64).step_by(7) {
+        let (&b, rest) = bytes.split_first()?;
+        *bytes = rest;
+        n |= u64::from(b & 0x7f) << shift;
+        if b & 0x80 == 0 {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn put_list(out: &mut Vec<u8>, values: &[usize]) {
+    put_varint(out, values.len() as u64);
+    for &v in values {
+        put_varint(out, v as u64);
+    }
+}
+
+fn take_list(bytes: &mut &[u8]) -> Option<Vec<usize>> {
+    let len = usize::try_from(take_varint(bytes)?).ok()?;
+    // Each value is at least a byte, so a length past what is left is a broken file,
+    // not an allocation to attempt.
+    if len > bytes.len() {
+        return None;
+    }
+    (0..len)
+        .map(|_| take_varint(bytes).and_then(|v| usize::try_from(v).ok()))
+        .collect()
+}
+
+fn encode_shape(path: &str, shape: &DatasetShape) -> Result<Vec<u8>> {
+    let header = serde_json::to_vec(&ShapeHeader {
+        path: path.to_string(),
+        fingerprint: shape.fingerprint.clone(),
+        schemas: shape.schemas.clone(),
+        taken_at: shape.taken_at,
+    })?;
+    let mut out = Vec::with_capacity(16 + header.len() + shape.files.len() * 8);
+    out.extend_from_slice(SHAPE_MAGIC);
+    out.extend_from_slice(&u32::try_from(header.len())?.to_le_bytes());
+    out.extend_from_slice(&header);
+    put_varint(&mut out, shape.files.len() as u64);
+    for file in &shape.files {
+        put_varint(&mut out, file.schema.map_or(0, |s| s as u64 + 1));
+        put_list(&mut out, &file.row_group_rows);
+        put_list(&mut out, &file.row_group_bytes);
+        put_list(&mut out, &file.column_bytes);
+    }
+    Ok(out)
+}
+
+/// The shape in `bytes` if it is `path`'s and was taken at `fingerprint`. The footers
+/// are decoded only once the header says they are wanted.
+fn decode_shape(bytes: &[u8], path: &str, fingerprint: &str) -> Option<DatasetShape> {
+    let rest = bytes.strip_prefix(SHAPE_MAGIC)?;
+    let (len, rest) = rest.split_first_chunk::<4>()?;
+    let len = usize::try_from(u32::from_le_bytes(*len)).ok()?;
+    let (header, mut body) = (rest.get(..len)?, rest.get(len..)?);
+    let header: ShapeHeader = serde_json::from_slice(header).ok()?;
+    if header.path != path || header.fingerprint != fingerprint {
+        return None;
+    }
+    let count = usize::try_from(take_varint(&mut body)?).ok()?;
+    if count > body.len() {
+        return None;
+    }
+    let mut files = Vec::with_capacity(count);
+    for _ in 0..count {
+        let schema = match take_varint(&mut body)? {
+            0 => None,
+            at => Some(usize::try_from(at - 1).ok()?),
+        };
+        files.push(CachedFooter {
+            schema,
+            row_group_rows: take_list(&mut body)?,
+            row_group_bytes: take_list(&mut body)?,
+            column_bytes: take_list(&mut body)?,
+        });
+    }
+    body.is_empty().then_some(DatasetShape {
+        fingerprint: header.fingerprint,
+        files,
+        schemas: header.schemas,
+        taken_at: header.taken_at,
+    })
+}
+
 impl CacheManager {
-    fn dataset_shape_path(&self) -> PathBuf {
-        self.cache_file("dataset_shapes.json")
+    /// One file per dataset, so a lookup reads its own dataset and nothing else. They
+    /// were one JSON map, and by_station alone made it 51 MB that every lookup of any
+    /// dataset parsed and every hit rewrote.
+    fn dataset_shape_dir(&self) -> PathBuf {
+        self.cache_file("dataset_shapes")
     }
 
-    /// Every dataset shape datui has kept, by the path or URL it was opened as.
-    /// Unreadable means empty — a cache that cannot be read is one that has nothing to
-    /// say, not an error worth stopping an open for.
-    pub fn load_dataset_shapes(&self) -> std::collections::HashMap<String, DatasetShape> {
-        read_json_cache(&self.dataset_shape_path())
+    /// The file `path`'s shape lives in: named by a hash of the path, which the file
+    /// repeats, so two paths that hash alike only cost each other their entries.
+    fn dataset_shape_file(&self, path: &str) -> PathBuf {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut hasher);
+        self.dataset_shape_dir()
+            .join(format!("{:016x}.shape", hasher.finish()))
+    }
+
+    /// How many dataset shapes are kept.
+    pub fn dataset_shapes_kept(&self) -> usize {
+        fs::read_dir(self.dataset_shape_dir()).map_or(0, |entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "shape"))
+                .count()
+        })
     }
 
     /// What datui remembers about one dataset, if the fingerprint still matches.
@@ -799,72 +935,88 @@ impl CacheManager {
     /// describes a dataset that no longer exists, and there is no use for it that is
     /// not a mistake.
     ///
-    /// A hit is recorded as use, so what ages out is what has not been opened in
-    /// longest rather than what has not been rebuilt in longest.
+    /// Unreadable means absent — a cache that cannot be read is one that has nothing
+    /// to say, not an error worth stopping an open for.
     pub fn dataset_shape(&self, path: &str, fingerprint: &str) -> Option<DatasetShape> {
-        let shape = self
-            .load_dataset_shapes()
-            .remove(path)
-            .filter(|shape| shape.fingerprint == fingerprint)?;
+        let file = self.dataset_shape_file(path);
+        let bytes = fs::read(&file).ok()?;
+        let shape = decode_shape(&bytes, path, fingerprint)?;
         // A hit counts as use. Without this the clock only moves on a miss, so the
         // entries that age out first are the datasets that never change — the ones with
         // a perfect hit rate and the most to gain — while a dataset rewritten every day
-        // keeps resetting its own and stays forever.
-        self.touch_dataset_shape(path);
+        // keeps resetting its own and stays forever. The file's mtime is the clock, so
+        // marking it costs nothing like rewriting it.
+        Self::touch(&file);
         Some(shape)
     }
 
-    /// Mark a shape as used just now, so eviction sees it as recent.
-    ///
-    /// Best effort: a shape that cannot be re-dated is still a shape that can be used,
-    /// and failing the open over it would be absurd.
-    fn touch_dataset_shape(&self, path: &str) {
-        self.with_cache_lock("dataset_shapes", || {
-            let mut all = self.load_dataset_shapes();
-            if let Some(shape) = all.get_mut(path) {
-                shape.taken_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or_default();
-            }
-            let json = serde_json::to_string(&all)?;
-            let temp = self.cache_file(&format!("dataset_shapes.{}.tmp", std::process::id()));
-            fs::write(&temp, json)?;
-            fs::rename(&temp, self.dataset_shape_path()).inspect_err(|_| {
-                let _ = fs::remove_file(&temp);
-            })?;
-            Ok(())
-        })
-        .or_log("re-date a dataset shape");
+    /// Mark a file as used just now. Best effort: a shape that cannot be re-dated is
+    /// still a shape that can be used.
+    fn touch(file: &Path) {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(file)
+            .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+            .or_log("re-date a dataset shape");
     }
 
-    /// Remember one dataset's shape, keeping the others.
-    ///
-    /// Bounded the same way the dataset index is: a cache that grows without limit
-    /// stops being one. The oldest entries go first, since what someone opened least
-    /// recently is what they are least likely to open next.
+    /// Remember one dataset's shape, keeping the others while they fit in
+    /// [`MAX_DATASET_SHAPE_BYTES`].
     pub fn save_dataset_shape(&self, path: &str, shape: DatasetShape) {
-        self.with_cache_lock("dataset_shapes", || {
-            self.ensure_cache_dir()?;
-            let mut all = self.load_dataset_shapes();
-            all.insert(path.to_string(), shape);
-            if all.len() > MAX_DATASET_SHAPES {
-                let mut by_age: Vec<(String, u64)> =
-                    all.iter().map(|(k, v)| (k.clone(), v.taken_at)).collect();
-                by_age.sort_by_key(|(_, at)| *at);
-                for (old, _) in by_age.into_iter().take(all.len() - MAX_DATASET_SHAPES) {
-                    all.remove(&old);
-                }
-            }
-            let json = serde_json::to_string(&all)?;
-            let temp = self.cache_file(&format!("dataset_shapes.{}.tmp", std::process::id()));
-            fs::write(&temp, json)?;
-            fs::rename(&temp, self.dataset_shape_path()).inspect_err(|_| {
+        self.save_dataset_shape_within(path, &shape, MAX_DATASET_SHAPE_BYTES);
+    }
+
+    fn save_dataset_shape_within(&self, path: &str, shape: &DatasetShape, max_bytes: u64) {
+        let file = self.dataset_shape_file(path);
+        let write = || -> Result<()> {
+            fs::create_dir_all(self.dataset_shape_dir())?;
+            let bytes = encode_shape(path, shape)?;
+            let temp = file.with_extension(format!("{}.tmp", std::process::id()));
+            fs::write(&temp, bytes)?;
+            fs::rename(&temp, &file).inspect_err(|_| {
                 let _ = fs::remove_file(&temp);
             })?;
             Ok(())
+        };
+        write().or_log("save a dataset shape");
+        // Under the lock only to keep two evictions from racing each other; writes
+        // land by rename and need none.
+        self.with_cache_lock("dataset_shapes", || {
+            // The single map this replaced, which nothing reads any more.
+            let _ = fs::remove_file(self.cache_file("dataset_shapes.json"));
+            self.evict_dataset_shapes(&file, max_bytes);
+            Ok(())
         })
-        .or_log("save a dataset shape");
+        .or_log("evict dataset shapes");
+    }
+
+    /// Drop the least recently used shapes until what is left fits in `max_bytes`,
+    /// never `keep`, which was just stored.
+    fn evict_dataset_shapes(&self, keep: &Path, max_bytes: u64) {
+        let Ok(entries) = fs::read_dir(self.dataset_shape_dir()) else {
+            return;
+        };
+        let mut kept: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "shape"))
+            .filter_map(|e| {
+                let meta = e.metadata().ok()?;
+                Some((meta.modified().ok()?, meta.len(), e.path()))
+            })
+            .collect();
+        let mut total: u64 = kept.iter().map(|(_, len, _)| len).sum();
+        if total <= max_bytes {
+            return;
+        }
+        kept.sort();
+        for (_, len, file) in kept {
+            if total <= max_bytes {
+                break;
+            }
+            if file != keep && fs::remove_file(&file).is_ok() {
+                total -= len;
+            }
+        }
     }
 
     fn cloud_listing_path(&self) -> PathBuf {
@@ -1304,24 +1456,220 @@ mod dataset_shape_tests {
         );
     }
 
-    /// The cache is bounded, oldest first.
+    /// Set a shape file's clock, so eviction order does not hang on how fast the test ran.
+    fn age(cache: &super::CacheManager, path: &str, secs: u64) {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(cache.dataset_shape_file(path))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    fn shape_bytes(cache: &super::CacheManager, path: &str) -> u64 {
+        std::fs::metadata(cache.dataset_shape_file(path))
+            .unwrap()
+            .len()
+    }
+
+    /// Every field a reopen uses comes back as it was stored, an unreadable footer and
+    /// a footer's column widths among them.
     #[test]
-    fn the_oldest_shapes_are_the_ones_that_go() {
+    fn a_shape_comes_back_as_it_was_stored() {
         let dir = tempfile::tempdir().unwrap();
         let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
-        for i in 0..(MAX_DATASET_SHAPES + 10) {
-            cache.save_dataset_shape(&format!("s3://b/{i}/"), shape("f", i as u64));
+        let mut stored = shape("f", 7);
+        stored.files.push(CachedFooter {
+            schema: None,
+            row_group_rows: Vec::new(),
+            row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
+        });
+        stored.files.push(CachedFooter {
+            schema: Some(1),
+            row_group_rows: vec![0, 300, u32::MAX as usize + 5],
+            row_group_bytes: vec![1, 2, 3],
+            column_bytes: vec![128, 1 << 40],
+        });
+        stored.schemas.push(vec![
+            ("id".into(), polars::prelude::DataType::Int64),
+            (
+                "tags".into(),
+                polars::prelude::DataType::List(Box::new(polars::prelude::DataType::String)),
+            ),
+        ]);
+        cache.save_dataset_shape("s3://b/events/", stored.clone());
+        assert_eq!(cache.dataset_shape("s3://b/events/", "f"), Some(stored));
+    }
+
+    /// A lookup reads its own dataset's file and no other: a small dataset beside a
+    /// huge one costs what the small one weighs.
+    #[test]
+    fn a_lookup_reads_only_its_own_dataset() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
+        cache.save_dataset_shape("s3://b/big/", shape("big", 1));
+        cache.save_dataset_shape("s3://b/small/", shape("small", 1));
+        age(&cache, "s3://b/big/", 1_000);
+        let big = cache.dataset_shape_file("s3://b/big/");
+        // Unreadable, so a lookup that went through it would find nothing.
+        std::fs::write(&big, b"not a shape").unwrap();
+        age(&cache, "s3://b/big/", 1_000);
+
+        assert!(cache.dataset_shape("s3://b/small/", "small").is_some());
+        assert_eq!(
+            std::fs::metadata(&big).unwrap().modified().unwrap(),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000),
+            "the big one's file was not touched"
+        );
+        assert_eq!(
+            cache.dataset_shape("s3://b/big/", "big"),
+            None,
+            "and a broken file is a miss, not an error"
+        );
+    }
+
+    /// A hit dates the shape as used without rewriting it.
+    #[test]
+    fn a_hit_counts_as_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
+        cache.save_dataset_shape("s3://b/events/", shape("f", 1));
+        age(&cache, "s3://b/events/", 1_000);
+        let file = cache.dataset_shape_file("s3://b/events/");
+        let before = std::fs::read(&file).unwrap();
+
+        assert!(cache.dataset_shape("s3://b/events/", "f").is_some());
+        let used = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert!(
+            used > std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000),
+            "dated now"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), before, "and not rewritten");
+
+        age(&cache, "s3://b/events/", 1_000);
+        assert!(cache.dataset_shape("s3://b/events/", "moved").is_none());
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000),
+            "a miss is not use"
+        );
+    }
+
+    /// The cache is bounded by bytes, and what goes is what was used longest ago.
+    #[test]
+    fn the_least_recently_used_shapes_go_once_they_pass_the_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
+        for (i, name) in ["s3://b/a/", "s3://b/b/", "s3://b/c/"].iter().enumerate() {
+            cache.save_dataset_shape(name, shape("f", 1));
+            age(&cache, name, 1_000 + i as u64);
         }
-        let all = cache.load_dataset_shapes();
-        assert_eq!(all.len(), MAX_DATASET_SHAPES, "kept to its bound");
-        assert!(
-            !all.contains_key("s3://b/0/"),
-            "and what went is what was opened longest ago"
-        );
-        assert!(
-            all.contains_key(&format!("s3://b/{}/", MAX_DATASET_SHAPES + 9)),
-            "while the most recent is still there"
-        );
+        let one = shape_bytes(&cache, "s3://b/a/");
+        // `a` is the oldest, but opening it makes `b` the one used longest ago.
+        assert!(cache.dataset_shape("s3://b/a/", "f").is_some());
+
+        cache.save_dataset_shape_within("s3://b/d/", &shape("f", 1), 3 * one);
+        assert_eq!(cache.dataset_shapes_kept(), 3, "kept to its bound in bytes");
+        assert!(cache.dataset_shape("s3://b/b/", "f").is_none(), "b went");
+        for kept in ["s3://b/a/", "s3://b/c/", "s3://b/d/"] {
+            assert!(cache.dataset_shape(kept, "f").is_some(), "{kept} stayed");
+        }
+
+        // One shape larger than the whole bound is still kept: it is the one in use.
+        let mut huge = shape("f", 1);
+        huge.files = vec![huge.files[0].clone(); 1_000];
+        cache.save_dataset_shape_within("s3://b/huge/", &huge, 3 * one);
+        assert_eq!(cache.dataset_shapes_kept(), 1, "everything else made room");
+        assert!(cache.dataset_shape("s3://b/huge/", "f").is_some());
+    }
+
+    /// The single map the cache used to be is dropped, not read.
+    #[test]
+    fn the_old_single_file_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("dataset_shapes.json"), b"{}").unwrap();
+        cache.save_dataset_shape("s3://b/events/", shape("f", 1));
+        assert!(!dir.path().join("dataset_shapes.json").exists());
+    }
+
+    /// What a dataset the size of NOAA's by_station costs to keep and find again.
+    /// Run by hand: `scripts/dev/test.sh unit shape_cache_timings -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a timing, not a check"]
+    fn shape_cache_timings() {
+        use polars::prelude::DataType;
+        const FILES: usize = 842_000;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
+        let big = DatasetShape {
+            fingerprint: "big".into(),
+            files: (0..FILES)
+                .map(|i| CachedFooter {
+                    schema: Some(0),
+                    row_group_rows: vec![1_000 + (i * 7919) % 90_000],
+                    row_group_bytes: vec![10_000 + (i * 104_729) % 900_000],
+                    column_bytes: Vec::new(),
+                })
+                .collect(),
+            schemas: vec![vec![
+                ("ID".into(), DataType::String),
+                ("DATE".into(), DataType::String),
+                ("ELEMENT".into(), DataType::String),
+                ("DATA_VALUE".into(), DataType::Int32),
+                ("M_FLAG".into(), DataType::String),
+                ("Q_FLAG".into(), DataType::String),
+                ("S_FLAG".into(), DataType::String),
+                ("OBS_TIME".into(), DataType::String),
+            ]],
+            taken_at: 1,
+        };
+        let time = |what: &str, work: &mut dyn FnMut()| {
+            let began = std::time::Instant::now();
+            work();
+            eprintln!("{what}: {:.1?}", began.elapsed());
+        };
+        time("store by_station", &mut || {
+            cache.save_dataset_shape("s3://noaa/by_station/", big.clone())
+        });
+        time("store a small one beside it", &mut || {
+            cache.save_dataset_shape("s3://b/small/", shape("small", 2))
+        });
+        time("lookup + touch by_station", &mut || {
+            assert!(
+                cache
+                    .dataset_shape("s3://noaa/by_station/", "big")
+                    .is_some()
+            )
+        });
+        time("lookup by_station, fingerprint moved", &mut || {
+            assert!(
+                cache
+                    .dataset_shape("s3://noaa/by_station/", "moved")
+                    .is_none()
+            )
+        });
+        time("lookup + touch the small one", &mut || {
+            assert!(cache.dataset_shape("s3://b/small/", "small").is_some())
+        });
+        let on_disk: u64 = walk_bytes(dir.path());
+        eprintln!("on disk: {:.1} MB", on_disk as f64 / 1e6);
+    }
+
+    fn walk_bytes(dir: &std::path::Path) -> u64 {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| {
+                let meta = e.metadata().unwrap();
+                if meta.is_dir() {
+                    walk_bytes(&e.path())
+                } else {
+                    meta.len()
+                }
+            })
+            .sum()
     }
 
     /// `--clear-cache` takes it with everything else.

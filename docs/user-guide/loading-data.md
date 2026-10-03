@@ -1200,7 +1200,8 @@ single-file schema inference. That route also omits the partition-key check.
 Schema metadata of a remote dataset, or of a local directory of more than 64
 files, is cached by URL or path. Datui still lists the files to check for
 changes to names, sizes, timestamps or etags. An unchanged listing opens with
-no footer reads; a changed one triggers fresh metadata reads.
+no footer reads; a changed one triggers fresh metadata reads. The cache keeps
+128 MiB of this metadata and drops the least recently opened dataset first.
 
 `--clear-cache` clears this metadata along with other cached state, including
 query history. See [cache contents](home-screen.md#what-datui-remembers).

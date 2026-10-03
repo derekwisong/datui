@@ -158,7 +158,7 @@ beside its name. It gives way before the name is shortened.
 |---|---|
 | `converts` | Reads it once into a temporary file: an Arrow stream, a GPS log, compressed text |
 | `in memory` | Reads it whole into memory: JSON, NDJSON, Avro, ORC, Excel, model files, MIDI |
-| `downloads` | Downloads it whole first: a remote file other than a Parquet object or a model file |
+| `downloads` | Downloads it whole first: a remote file other than a Parquet or Arrow object in a bucket, or a model file |
 
 See [how each format is read](loading-data.md#how-each-format-is-read).
 

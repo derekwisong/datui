@@ -473,7 +473,8 @@ pub fn how_read(entry: &Entry) -> Option<HowRead> {
     let download = match crate::source::input_source(&entry.path) {
         crate::source::InputSource::Local(_) => false,
         crate::source::InputSource::Http(_) => choice.http_file() == crate::RemoteRead::Downloaded,
-        _ => choice.bucket_object() == crate::RemoteRead::Downloaded,
+        // A remote Arrow file is not peeked at here, so it is taken for an IPC file.
+        _ => choice.bucket_object(stored) == crate::RemoteRead::Downloaded,
     };
     Some(HowRead { mode, download })
 }

@@ -199,12 +199,16 @@ impl FileFormat {
         }
     }
 
-    /// How one object of this format in a bucket (S3, GCS, Azure) is read: in place
-    /// with ranged reads, or downloaded first and then read as [`Self::read_mode`] says.
-    /// Polars reads Parquet objects in place; a model file's header is fetched by range.
-    pub fn bucket_object(self) -> RemoteRead {
-        match self {
-            Self::Parquet | Self::Safetensors | Self::Gguf => RemoteRead::InPlace,
+    /// How one object of this format in a bucket (S3, GCS, Azure), as `stored`, is
+    /// read: in place with ranged reads, or downloaded first and then read as
+    /// [`Self::read_mode`] says. Polars reads Parquet objects and Arrow IPC files in
+    /// place by their footers; a model file's header is fetched by range. An Arrow
+    /// stream has no footer, so it is converted as it downloads.
+    pub fn bucket_object(self, stored: Stored) -> RemoteRead {
+        match (self, stored) {
+            (Self::Parquet | Self::Arrow | Self::Safetensors | Self::Gguf, Stored::Plain) => {
+                RemoteRead::InPlace
+            }
             _ => RemoteRead::Downloaded,
         }
     }
@@ -218,15 +222,31 @@ impl FileFormat {
         }
     }
 
-    /// Whether a bucket prefix or glob of files of this format is read in place as one
-    /// table. Parquet (with hive partitions), CSV and NDJSON have Polars cloud scans,
-    /// and the model files under a prefix are read by their headers; a prefix of
-    /// anything else is browsed into and opened an object at a time.
+    /// How a bucket prefix or glob of files of this format, as `stored`, is read as
+    /// one table: in place, downloaded first, or `None` when it is not (browsed into
+    /// and opened an object at a time). Parquet (with hive partitions), CSV, NDJSON and
+    /// Arrow IPC files have Polars cloud scans, and the model files under a prefix are
+    /// read by their headers. A prefix of Arrow streams is converted as it downloads.
+    pub fn bucket_prefix(self, stored: Stored) -> Option<RemoteRead> {
+        match (self, stored) {
+            (
+                Self::Parquet
+                | Self::Csv
+                | Self::Jsonl
+                | Self::Arrow
+                | Self::Safetensors
+                | Self::Gguf,
+                Stored::Plain,
+            ) => Some(RemoteRead::InPlace),
+            (Self::Arrow, Stored::Stream) => Some(RemoteRead::Downloaded),
+            _ => None,
+        }
+    }
+
+    /// Whether a bucket prefix or glob of this format is scanned in place as one table.
+    /// See [`Self::bucket_prefix`].
     pub fn reads_bucket_prefix(self) -> bool {
-        matches!(
-            self,
-            Self::Parquet | Self::Csv | Self::Jsonl | Self::Safetensors | Self::Gguf
-        )
+        self.bucket_prefix(Stored::Plain) == Some(RemoteRead::InPlace)
     }
 
     /// The column separator a delimited format is read with when `--delimiter` is not
@@ -709,9 +729,9 @@ impl FormatChoice {
 
     /// How one object read this way in a bucket is read. A spec reads local files, so
     /// a spec's object is downloaded first.
-    pub fn bucket_object(&self) -> RemoteRead {
+    pub fn bucket_object(&self, stored: Stored) -> RemoteRead {
         match self {
-            Self::Builtin(format) => format.bucket_object(),
+            Self::Builtin(format) => format.bucket_object(stored),
             Self::Spec(_) => RemoteRead::Downloaded,
         }
     }
@@ -724,11 +744,11 @@ impl FormatChoice {
         }
     }
 
-    /// Whether a bucket prefix read this way is read in place as one table.
-    pub fn reads_bucket_prefix(&self) -> bool {
+    /// How a bucket prefix read this way is read as one table; a spec's is not.
+    pub fn bucket_prefix(&self, stored: Stored) -> Option<RemoteRead> {
         match self {
-            Self::Builtin(format) => format.reads_bucket_prefix(),
-            Self::Spec(_) => false,
+            Self::Builtin(format) => format.bucket_prefix(stored),
+            Self::Spec(_) => None,
         }
     }
 
@@ -1240,18 +1260,22 @@ mod format_tests {
             spec.read_mode(Stored::Compressed { in_memory: true }),
             Some(Converted)
         );
-        assert_eq!(spec.bucket_object(), RemoteRead::Downloaded);
+        assert_eq!(spec.bucket_object(Stored::Plain), RemoteRead::Downloaded);
 
-        // Parquet objects and model headers are read in place; CSV and NDJSON prefixes
-        // are too. Over HTTP only a model's header is.
+        // Parquet objects, Arrow IPC files and model headers are read in place; CSV
+        // and NDJSON prefixes are too. Over HTTP only a model's header is.
         let model = |f: FileFormat| matches!(f, FileFormat::Safetensors | FileFormat::Gguf);
         for f in FileFormat::ALL {
-            let in_place = f.bucket_object() == RemoteRead::InPlace;
+            let in_place = f.bucket_object(Stored::Plain) == RemoteRead::InPlace;
             assert_eq!(
                 in_place,
-                f == FileFormat::Parquet || model(f),
+                matches!(f, FileFormat::Parquet | FileFormat::Arrow) || model(f),
                 "{}",
                 f.name()
+            );
+            assert_eq!(
+                f.bucket_object(Stored::Compressed { in_memory: false }),
+                RemoteRead::Downloaded
             );
             assert_eq!(
                 f.http_file() == RemoteRead::InPlace,
@@ -1271,9 +1295,19 @@ mod format_tests {
                 FileFormat::Parquet,
                 FileFormat::Csv,
                 FileFormat::Jsonl,
+                FileFormat::Arrow,
                 FileFormat::Safetensors,
                 FileFormat::Gguf
             ]
+        );
+        // Streams have no footer: one object, or a prefix of them, is downloaded.
+        assert_eq!(
+            FileFormat::Arrow.bucket_object(Stored::Stream),
+            RemoteRead::Downloaded
+        );
+        assert_eq!(
+            FileFormat::Arrow.bucket_prefix(Stored::Stream),
+            Some(RemoteRead::Downloaded)
         );
     }
 
@@ -1341,15 +1375,11 @@ mod format_tests {
                 assert_eq!(http, choice.http_file().label(), "{format}: HTTP(S)");
                 assert_eq!(
                     bucket,
-                    choice.bucket_object().label(),
+                    choice.bucket_object(stored).label(),
                     "{format}: In a bucket"
                 );
-                let in_place = if choice.reads_bucket_prefix() {
-                    "in place"
-                } else {
-                    "no"
-                };
-                assert_eq!(prefix, in_place, "{format}: Bucket prefix");
+                let as_prefix = choice.bucket_prefix(stored).map_or("no", RemoteRead::label);
+                assert_eq!(prefix, as_prefix, "{format}: Bucket prefix");
             }
         }
         for f in FileFormat::ALL {

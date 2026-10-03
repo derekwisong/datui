@@ -86,8 +86,8 @@ The format is taken from the extension, or from `--format` when there is none.
 | Parquet | `.parquet` | lazy | no | downloaded | in place | in place |
 | CSV | `.csv` | lazy | converted once | downloaded | downloaded | in place |
 | TSV, PSV | `.tsv`, `.psv` | lazy | converted once | downloaded | downloaded | no |
-| Arrow IPC file, Feather v2 | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy | no | downloaded | downloaded | no |
-| [Arrow IPC stream](#arrow-ipc-streams) | `.arrow`, `.arrows`, `.ipc`, `.feather` | converted once | no | downloaded | downloaded | no |
+| Arrow IPC file, Feather v2 | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy | no | downloaded | in place | in place |
+| [Arrow IPC stream](#arrow-ipc-streams) | `.arrow`, `.arrows`, `.ipc`, `.feather` | converted once | no | downloaded | downloaded | downloaded |
 | NDJSON | `.jsonl`, `.ndjson` | in memory | no | downloaded | downloaded | in place |
 | JSON | `.json` | in memory | no | downloaded | downloaded | no |
 | Avro | `.avro` | in memory | no | downloaded | downloaded | no |
@@ -115,12 +115,15 @@ The format is taken from the extension, or from `--format` when there is none.
   header is fetched by range; a server that sends no ranges gets the download
   question.
 - **In a bucket** is one S3, GCS or Azure object. `in place` reads only what is
-  needed with ranged requests: a Parquet file's footer and the row groups shown,
-  or a model file's header. `downloaded` copies the object to the temp directory
-  first, after asking, then reads it as **Read** says.
+  needed with ranged requests: a Parquet or Arrow IPC file's footer and the rows
+  shown, or a model file's header. `downloaded` copies the object to the temp
+  directory first, after asking, then reads it as **Read** says; an Arrow stream
+  is converted as it downloads, with no copy of the stream kept.
 - **Bucket prefix** is a prefix or glob read as one table. Only Parquet reads
   hive partitions; the model files directly under a prefix are read by their
-  headers. A prefix marked `no` opens one object at a time from the
+  headers. An Arrow prefix scans its IPC files in place and downloads its
+  streams, one split of a Hugging Face cache as on disk; a glob of Arrow reads
+  IPC files only. A prefix marked `no` opens one object at a time from the
   [cloud browser](cloud-browser.md).
 - [Standard input](#standard-input) is written to a temporary file first, then
   read as **Read** says.
@@ -270,7 +273,7 @@ has no dates, and `time` is null throughout.
 
 `--table` is for any file that holds several tables: an NMEA log's sentence
 types, a [SQLite database](#sqlite-databases)'s tables, or a Hugging Face cache
-directory's splits ([Arrow IPC streams](#formats)). Any other file opened with
+directory's splits ([Arrow IPC streams](#arrow-ipc-streams)). Any other file opened with
 it is refused.
 Excel workbooks take `--sheet`.
 

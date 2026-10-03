@@ -294,3 +294,211 @@ fn test_template_serialization_with_sql_and_fuzzy() -> Result<()> {
     let _ = std::fs::remove_dir_all(&temp_dir);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Several instances sharing one views directory.
+// ---------------------------------------------------------------------------
+
+fn no_criteria() -> MatchCriteria {
+    MatchCriteria {
+        exact_path: None,
+        relative_path: None,
+        path_pattern: None,
+        filename_pattern: None,
+        schema_columns: None,
+        schema_types: None,
+        table: None,
+    }
+}
+
+fn plain_settings() -> TemplateSettings {
+    TemplateSettings {
+        query: None,
+        sql_query: None,
+        fuzzy_query: None,
+        filters: Vec::new(),
+        sort_columns: Vec::new(),
+        sort_descending: Vec::new(),
+        sort_ascending: false,
+        column_order: Vec::new(),
+        locked_columns_count: 0,
+        pivot: None,
+        melt: None,
+        reshape_source: None,
+    }
+}
+
+/// Two instances that have both read one view, and the view's id.
+fn two_instances(dir: &std::path::Path) -> (TemplateManager, TemplateManager, String) {
+    let config = ConfigManager::with_dir(dir.to_path_buf());
+    let mut a = TemplateManager::new(&config).unwrap();
+    let id = a
+        .create_template("shared".into(), None, no_criteria(), plain_settings())
+        .unwrap()
+        .id;
+    let b = TemplateManager::new(&config).unwrap();
+    (a, b, id)
+}
+
+fn stored(dir: &std::path::Path) -> Vec<datui::template::Template> {
+    let fresh = TemplateManager::new(&ConfigManager::with_dir(dir.to_path_buf())).unwrap();
+    assert!(
+        fresh.broken_templates.is_empty(),
+        "a broken view was listed"
+    );
+    fresh.all_templates().to_vec()
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    /// Instance A renames the view.
+    EditA,
+    /// Instance B changes its description.
+    EditB,
+    ApplyA,
+    ApplyB,
+    DeleteB,
+}
+
+fn run(op: Op, a: &mut TemplateManager, b: &mut TemplateManager, id: &str) {
+    let file = std::path::Path::new("/data/x.csv");
+    let edit = |m: &mut TemplateManager, change: &dyn Fn(&mut datui::template::Template)| {
+        if let Some(mut t) = m.get_template_by_id(id).cloned() {
+            change(&mut t);
+            // Fails only when the view was deleted, which the caller checks.
+            let _ = m.update_template(&t);
+        }
+    };
+    match op {
+        Op::EditA => edit(a, &|t| t.name = "renamed".into()),
+        Op::EditB => edit(b, &|t| t.description = Some("described".into())),
+        Op::ApplyA => a.record_use(id, file).unwrap(),
+        Op::ApplyB => b.record_use(id, file).unwrap(),
+        Op::DeleteB => b.delete_template(id).unwrap(),
+    }
+}
+
+fn orders(ops: &[Op]) -> Vec<Vec<Op>> {
+    if ops.len() <= 1 {
+        return vec![ops.to_vec()];
+    }
+    let mut all = Vec::new();
+    for i in 0..ops.len() {
+        let mut rest = ops.to_vec();
+        let first = rest.remove(i);
+        for mut tail in orders(&rest) {
+            tail.insert(0, first);
+            all.push(tail);
+        }
+    }
+    all
+}
+
+/// Edits and applies in two instances, in every order: each instance's edit and every
+/// use survive, whatever the other wrote since it read the view.
+#[test]
+fn edits_and_applies_in_two_instances_lose_nothing() {
+    for order in orders(&[Op::EditA, Op::EditB, Op::ApplyA, Op::ApplyB]) {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, id) = two_instances(dir.path());
+        for &op in &order {
+            run(op, &mut a, &mut b, &id);
+        }
+        let views = stored(dir.path());
+        assert_eq!(views.len(), 1, "{order:?}");
+        let view = &views[0];
+        assert_eq!(view.name, "renamed", "{order:?}");
+        assert_eq!(view.description.as_deref(), Some("described"), "{order:?}");
+        assert_eq!(view.usage_count, 2, "{order:?}");
+    }
+}
+
+/// A view deleted in one instance stays deleted, whatever the other does with its copy
+/// afterwards, in every order.
+#[test]
+fn a_view_deleted_in_one_instance_stays_deleted() {
+    for order in orders(&[Op::EditA, Op::ApplyA, Op::ApplyB, Op::DeleteB]) {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut a, mut b, id) = two_instances(dir.path());
+        let mut deleted = false;
+        for &op in &order {
+            run(op, &mut a, &mut b, &id);
+            deleted |= matches!(op, Op::DeleteB);
+            if deleted {
+                assert!(stored(dir.path()).is_empty(), "{order:?} after {op:?}");
+            }
+        }
+    }
+}
+
+/// An edit of a view deleted elsewhere says so, and the view leaves the editor too.
+#[test]
+fn editing_a_view_deleted_elsewhere_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b, id) = two_instances(dir.path());
+    b.delete_template(&id).unwrap();
+    let mut edited = a.get_template_by_id(&id).cloned().unwrap();
+    edited.name = "renamed".into();
+    assert!(a.update_template(&edited).is_err());
+    assert!(a.get_template_by_id(&id).is_none());
+    assert!(stored(dir.path()).is_empty());
+}
+
+/// Readers never see a half-written view while two instances keep writing it.
+#[test]
+fn a_reader_never_sees_a_broken_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, id) = two_instances(dir.path());
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writers: Vec<_> = [a, b]
+        .into_iter()
+        .enumerate()
+        .map(|(n, mut m)| {
+            let id = id.clone();
+            std::thread::spawn(move || {
+                for i in 0..100 {
+                    let mut t = m.get_template_by_id(&id).cloned().unwrap();
+                    // A long value, so a torn write would be seen.
+                    t.description = Some(format!("{n}-{i}-{}", "x".repeat(4096)));
+                    m.update_template(&t).unwrap();
+                    m.record_use(&id, std::path::Path::new("/data/x.csv"))
+                        .unwrap();
+                }
+            })
+        })
+        .collect();
+    let reader = {
+        let dir = dir.path().to_path_buf();
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let mut reads = 0;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) || reads == 0 {
+                assert_eq!(stored(&dir).len(), 1);
+                reads += 1;
+            }
+        })
+    };
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    reader.join().unwrap();
+    assert_eq!(stored(dir.path())[0].usage_count, 200);
+}
+
+/// A write killed before its rename leaves its temp file and the view as it was;
+/// neither is listed as broken.
+#[test]
+fn a_write_killed_before_its_rename_breaks_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_a, _b, id) = two_instances(dir.path());
+    let templates = dir.path().join("templates");
+    std::fs::write(
+        templates.join(format!("template_{id}.json.999.0.tmp")),
+        "{\"id\": \"half",
+    )
+    .unwrap();
+    let views = stored(dir.path());
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].name, "shared");
+}

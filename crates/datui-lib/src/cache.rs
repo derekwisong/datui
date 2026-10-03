@@ -1,7 +1,7 @@
 use crate::logging::LogFailure;
 use color_eyre::Result;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Manages cache directory and cache file operations
@@ -116,22 +116,28 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Load history from a history file
+    /// Load history from a history file.
+    ///
+    /// A file that cannot be read is an error, never an empty list: an empty list
+    /// would be written back by the next push, and every entry would be gone. A line
+    /// that is not UTF-8 is skipped alone, so one bad byte costs one entry.
     pub fn load_history_file(&self, history_id: &str) -> Result<Vec<String>> {
         let history_file = self.cache_file(&format!("{}_history.txt", history_id));
 
-        if !history_file.exists() {
-            return Ok(Vec::new());
-        }
-
-        let file = fs::File::open(&history_file)?;
-        let reader = BufReader::new(file);
+        let bytes = match fs::read(&history_file) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
         let mut history = Vec::new();
-
-        for line in reader.lines() {
-            let line = line?;
-            if !line.trim().is_empty() {
-                history.push(line);
+        for line in bytes.split(|&b| b == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            match std::str::from_utf8(line) {
+                Ok(line) if !line.trim().is_empty() => history.push(line.to_string()),
+                Ok(_) => {}
+                Err(e) => {
+                    log::warn!(target: "datui", "{history_id} history: skipped a line: {e}")
+                }
             }
         }
 
@@ -172,32 +178,15 @@ impl CacheManager {
 
         self.ensure_cache_dir()?;
         let lock_path = self.cache_file(&format!("{}_history.lock", history_id));
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)?;
-
-        let deadline = std::time::Instant::now() + LOCK_TIMEOUT;
-        let mut held = false;
-        loop {
-            if lock.try_lock_exclusive().is_ok() {
-                held = true;
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        if !held {
+        let Some(lock) = lock_file(&lock_path, LOCK_TIMEOUT)? else {
             log::info!(target: "datui", "{history_id} history not updated: its lock is busy");
             return Ok(HistoryUpdate::SkippedBusy);
-        }
+        };
 
         // Read, modify and write all inside the lock; the whole point is that another
-        // instance cannot land between the read and the write.
-        let mut entries = self.load_history_or_log(history_id);
+        // instance cannot land between the read and the write. A file that cannot be
+        // read is left as it is: rewriting it from nothing would lose every entry.
+        let mut entries = self.load_history_file(history_id)?;
         update(&mut entries);
         let result = self.save_history_file(history_id, &entries);
 
@@ -211,31 +200,15 @@ impl CacheManager {
         self.ensure_cache_dir()?;
         let history_file = self.cache_file(&format!("{}_history.txt", history_id));
 
-        // Write to a sibling and rename over the target. Truncating in place leaves the
-        // file readable in a half-written state, and two datui instances writing at
-        // once interleave into a single corrupt file — entries torn mid-path, or two
-        // paths concatenated onto one line. A rename is atomic on the same filesystem,
-        // so a reader sees either the old file or the new one, and the last writer
-        // wins cleanly instead of both losing.
-        let temp_file = self.cache_file(&format!(
-            "{}_history.{}.tmp",
-            history_id,
-            std::process::id()
-        ));
-
-        {
-            let mut file = fs::File::create(&temp_file)?;
-            // Oldest first, but we keep the most recent entries.
-            for entry in history {
-                writeln!(file, "{}", entry)?;
-            }
-            file.sync_all()?;
+        // Oldest first, but we keep the most recent entries.
+        let mut text = String::new();
+        for entry in history {
+            text.push_str(entry);
+            text.push('\n');
         }
-
-        fs::rename(&temp_file, &history_file).inspect_err(|_| {
-            let _ = fs::remove_file(&temp_file);
-        })?;
-
+        // Truncating in place leaves the file readable half-written, and two instances
+        // writing at once interleave into one corrupt file.
+        atomic_write(&history_file, text.as_bytes())?;
         Ok(())
     }
 }
@@ -255,6 +228,54 @@ fn read_json_cache<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
         log::warn!(target: "datui", "{} is malformed, ignoring it: {e}", path.display());
         T::default()
     })
+}
+
+/// Write `bytes` to `path` through a sibling temp file renamed over it, so a reader,
+/// another instance or a crash mid-write sees the old file or the new one, never part
+/// of either. The temp name ends in `.tmp`, so nothing that lists `.json` or `.txt`
+/// files ever sees it.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(format!(".{}.{serial}.tmp", std::process::id()));
+    let temp = path.with_file_name(name);
+    let written = (|| {
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written
+}
+
+/// Take an exclusive lock on the file at `path` (created if missing), waiting up to
+/// `timeout` for another instance to let it go. `None` when it stayed busy; the lock
+/// is held until the returned file is dropped.
+pub(crate) fn lock_file(
+    path: &Path,
+    timeout: std::time::Duration,
+) -> std::io::Result<Option<fs::File>> {
+    use fs2::FileExt;
+
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if lock.try_lock_exclusive().is_ok() {
+            return Ok(Some(lock));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 /// How long to wait for another instance to finish rewriting a history file.
@@ -1166,23 +1187,10 @@ impl CacheManager {
         use fs2::FileExt;
 
         self.ensure_cache_dir()?;
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(self.cache_file(&format!("{name}.lock")))?;
-
-        let deadline = std::time::Instant::now() + LOCK_TIMEOUT;
-        loop {
-            if lock.try_lock_exclusive().is_ok() {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                log::info!(target: "datui", "{name} cache not updated: its lock is busy");
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        let Some(lock) = lock_file(&self.cache_file(&format!("{name}.lock")), LOCK_TIMEOUT)? else {
+            log::info!(target: "datui", "{name} cache not updated: its lock is busy");
+            return Ok(());
+        };
 
         let result = work();
         let _ = FileExt::unlock(&lock);

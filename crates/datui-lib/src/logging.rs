@@ -109,13 +109,29 @@ impl FileLog {
     }
 
     /// Measured on the file rather than counted, since another session may share it.
+    ///
+    /// Another session may already have moved the file aside, leaving this one writing
+    /// into `<name>.1`; renaming then would put that session's fresh log over the old
+    /// one. So the rename happens under a lock beside the log, and only when the file
+    /// at the path is itself full; either way the path is opened again.
     fn rotate_if_full(&mut self) -> std::io::Result<bool> {
         if self.file.metadata()?.len() <= self.cap {
             return Ok(false);
         }
-        std::fs::rename(&self.path, rotated_path(&self.path))?;
+        let mut lock_name = self.path.as_os_str().to_owned();
+        lock_name.push(".lock");
+        let Some(_lock) =
+            crate::cache::lock_file(Path::new(&lock_name), std::time::Duration::from_millis(200))?
+        else {
+            // Busy: the next line tries again.
+            return Ok(false);
+        };
+        let full = std::fs::metadata(&self.path).is_ok_and(|m| m.len() > self.cap);
+        if full {
+            std::fs::rename(&self.path, rotated_path(&self.path))?;
+        }
         self.file = Self::append(&self.path)?;
-        Ok(true)
+        Ok(full)
     }
 }
 
@@ -747,6 +763,30 @@ mod tests {
         let old = std::fs::read_to_string(rotated_path(&path)).unwrap();
         assert!(old.starts_with('y'), "{old:?}");
         assert!(!dir.path().join("sub").join("datui.log.1.1").exists());
+    }
+
+    /// Two sessions share the log. One moves it aside; the other, still writing into
+    /// the moved file, must not then move the first one's fresh log over it.
+    #[test]
+    fn two_sessions_never_rotate_each_others_lines_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datui.log");
+        let mut a = FileLog::open(&path, 100).unwrap();
+        let mut b = FileLog::open(&path, 100).unwrap();
+        let mut written = Vec::new();
+        // Under two caps' worth in all: one rotation, so nothing may be lost.
+        for n in 0..2 {
+            for (who, log) in [("a", &mut a), ("b", &mut b)] {
+                let line = format!("{who}{n} {}", "x".repeat(40));
+                log.write_line(&line).unwrap();
+                written.push(line);
+            }
+        }
+        let all = std::fs::read_to_string(rotated_path(&path)).unwrap_or_default()
+            + &std::fs::read_to_string(&path).unwrap();
+        for line in &written {
+            assert!(all.contains(line.as_str()), "lost {line:?} from {all:?}");
+        }
     }
 
     #[test]

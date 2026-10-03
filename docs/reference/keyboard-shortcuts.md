@@ -148,7 +148,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
 | type | Filter by name or column name, and search below the directory you are inside |
 | <kbd>~</kbd> | While the filter is empty, type a path or URL. The prompt is a plain editor: characters, <kbd>Backspace</kbd>, <kbd>Ctrl</kbd>+<kbd>U</kbd> clears, <kbd>Tab</kbd> completes, <kbd>Enter</kbd> opens a file or browses a directory, <kbd>Esc</kbd> closes |
-| <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows — the control bar names the order in effect |
+| <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows — the control bar names the order in effect when it has room |
 | <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
@@ -157,7 +157,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember the directory under the cursor so it stays listed, or forget it if remembered |
 | <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or a remembered directory on its heading, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
-| <kbd>Esc</kbd> | Back out one layer: path prompt, filter, directory (back to the row it was entered from), then to the open data |
+| <kbd>Esc</kbd> | Back out one layer: path prompt, filter, directory (back to the row it was entered from), then to the open table; the control bar says which, and `Back to` the table's name flashes on arrival |
 | <kbd>?</kbd> or <kbd>F1</kbd> | Help (<kbd>?</kbd> until you start typing; <kbd>F1</kbd> always) |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Return here from anywhere, including during a load |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |

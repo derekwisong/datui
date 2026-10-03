@@ -3408,10 +3408,11 @@ fn test_search_results_only_appear_once_there_is_a_filter() {
     let mut home = HomeState::default();
     home.rebuild(&[], &[]);
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(
-        &deep,
-        "a/b/buried.parquet",
-    )];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(
+            &deep,
+            "a/b/buried.parquet",
+        )]);
     home.search.done = true;
 
     home.sync_search_section();
@@ -3450,7 +3451,11 @@ fn test_search_results_survive_a_rebuild() {
         ..Default::default()
     };
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(&deep, "a/found.parquet")];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(
+            &deep,
+            "a/found.parquet",
+        )]);
     home.search.done = true;
     home.sync_search_section();
 
@@ -3477,7 +3482,11 @@ fn test_a_dataset_already_on_screen_is_not_listed_twice() {
     };
     home.rebuild(&[], &[]);
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(&here, "visible.parquet")];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(
+            &here,
+            "visible.parquet",
+        )]);
     home.search.done = true;
     home.sync_search_section();
 
@@ -3507,7 +3516,7 @@ fn test_a_late_batch_from_an_abandoned_walk_is_dropped() {
         1,
     );
     assert!(
-        home.search.results.is_empty(),
+        home.search.indexed == 0,
         "a batch from a different root describes a place the user has left"
     );
 }
@@ -3524,7 +3533,11 @@ fn test_a_partial_search_says_so_rather_than_looking_finished() {
         ..Default::default()
     };
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(&found, "one.parquet")];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(
+            &found,
+            "one.parquet",
+        )]);
     home.search_finished(tmp.path(), 4321, Some("partial · out of time".into()));
 
     let section = home
@@ -3538,7 +3551,7 @@ fn test_a_partial_search_says_so_rather_than_looking_finished() {
         "the reason it stopped must be on screen, got {subtitle:?}"
     );
     assert!(
-        subtitle.contains("4321"),
+        subtitle.contains("4,321"),
         "how much was searched is the other half of the answer, got {subtitle:?}"
     );
 }
@@ -3553,7 +3566,8 @@ fn test_clearing_the_filter_takes_the_search_section_away() {
         ..Default::default()
     };
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(&deep, "a/x.parquet")];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(&deep, "a/x.parquet")]);
     home.search.done = true;
     home.sync_search_section();
     assert!(
@@ -5249,6 +5263,24 @@ fn test_the_door_is_named_the_way_the_title_is() {
 /// own comment says counting a place-to-look makes the figure a lie. It was inconsistent
 /// with itself too: under a filter the door steps out of the way, so the same count meant
 /// one thing with a filter typed and another without.
+/// The door says what its directory is stored on, as the rows beside it do (#547 D10).
+#[test]
+fn test_the_door_says_where_it_reads() {
+    let tmp = TempDir::new().unwrap();
+    for name in ["part-0.parquet", "part-1.parquet"] {
+        touch(tmp.path(), name);
+    }
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    let door = door_of(&home).expect("a door");
+    let row = home.sections[0].rows.first().expect("a row");
+    assert!(door.cost.source.is_some());
+    assert_eq!(door.cost.source, row.cost.source);
+}
+
 #[test]
 fn test_the_door_is_not_counted_among_what_a_directory_holds() {
     let tmp = TempDir::new().unwrap();
@@ -5338,7 +5370,7 @@ fn a_found_dataset_matches_by_its_remembered_columns() {
     home.search_batch(tmp.path(), walked, 1);
 
     assert_eq!(
-        home.search.results[0].columns,
+        home.search.files().next().unwrap().columns,
         vec!["revenue".to_string(), "region".to_string()],
         "the walk's entry took the remembered columns"
     );
@@ -5475,7 +5507,7 @@ fn test_coming_back_waits_for_a_row_still_to_arrive() {
     home.browsing = Some(tmp.path().to_path_buf());
     home.come_back(Some(sub.clone()));
     assert_eq!(home.filter, "deep");
-    assert!(home.search.results.is_empty());
+    assert_eq!(home.search.indexed, 0);
     home.search.root = Some(tmp.path().to_path_buf());
     home.search.running = true;
     home.rebuild(&[], &[]);
@@ -5742,6 +5774,146 @@ mod coming_back {
         go_back(&mut app, &rx, None);
     }
 
+    /// The pane's facts share one key column, the place's own details too, and a long
+    /// value wraps under itself rather than back to the pane's edge (#547 D6).
+    #[test]
+    fn the_details_pane_lines_its_facts_up_and_hangs_long_values() {
+        let tmp = TempDir::new().unwrap();
+        let file = touch(tmp.path(), "penguins.csv");
+        std::fs::write(&file, "species,mass\nAdelie,3750\n").unwrap();
+        let mut config = datui::config::AppConfig::default();
+        config.sources = vec![datui::config::SourceConfig {
+            name: "lab".to_string(),
+            label: Some("Lab".to_string()),
+            datasets: vec![datui::config::DatasetConfig {
+                name: "Palmer penguins".to_string(),
+                path: Some(file.to_string_lossy().into_owned()),
+                description: "Size measurements for three penguin species observed on \
+                              three islands in the Palmer Archipelago, Antarctica"
+                    .to_string(),
+                publisher: "Palmer Station LTER".to_string(),
+                homepage: "https://allisonhorst.github.io/palmerpenguins/articles/intro.html"
+                    .to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        let (mut app, _rx) = home_app(config);
+        select(&mut app, &file);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<Vec<String>> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let text = |row: &[String]| row.concat();
+        // The column a fact's value starts at, from its key.
+        let value_at = |key: &str| {
+            rows.iter()
+                .find_map(|row| {
+                    let line = text(row);
+                    let at = line.find(&format!("│ {key} "))?;
+                    let start = line[..at].chars().count() + 2 + key.chars().count();
+                    (start..row.len()).find(|&x| row[x] != " ")
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no {key} line: {:#?}",
+                        rows.iter().map(|r| text(r)).collect::<Vec<_>>()
+                    )
+                })
+        };
+        let column = value_at("kind");
+        for key in ["storage", "about", "publisher", "homepage"] {
+            assert_eq!(value_at(key), column, "{key} lines up with kind");
+        }
+        // The line after `about` carries the rest of it, under the value.
+        let about = rows
+            .iter()
+            .position(|row| text(row).contains("│ about "))
+            .unwrap();
+        let next = &rows[about + 1];
+        let first = (0..next.len())
+            .skip_while(|&x| next[x] != "│")
+            .skip(1)
+            .find(|&x| next[x] != " ")
+            .expect("a continued value");
+        assert_eq!(first, column, "{:?}", text(next));
+    }
+
+    /// A Parquet file whose footer cannot be read says so before Enter, and the open
+    /// that fails is reported once, in the dialog, not again on the prompt (#547 D8).
+    #[test]
+    fn a_broken_parquet_file_says_so_and_its_failure_is_said_once() {
+        let tmp = TempDir::new().unwrap();
+        let broken = touch(tmp.path(), "broken.parquet");
+        std::fs::write(&broken, vec![7u8; 4000]).unwrap();
+        touch(tmp.path(), "fine.csv");
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+        select(&mut app, &broken);
+        settle(&mut app, &rx, |app| {
+            app.home.enriched.contains_key(&broken) && !app.home.measure_in_flight
+        });
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen: String = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Its footer could not be read"), "{screen}");
+        assert!(!screen.contains("Columns are read when opened"), "{screen}");
+
+        let Some(AppEvent::Open(paths, options)) = press(&mut app, KeyCode::Enter) else {
+            panic!("Enter on a file opens it");
+        };
+        crate::common::pump_open_until_loaded(&mut app, &rx, paths, options);
+        assert!(app.error_message().is_some(), "the dialog says it failed");
+        assert_eq!(
+            app.home.status, None,
+            "and the prompt does not say it again"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.error_message(), None);
+        assert_eq!(app.home.status, None, "nor after the dialog is dismissed");
+    }
+
+    /// The whole screen at 80×24 and 200×50: the bar teaches typing, `~` and `?` at
+    /// both, the order shows only where every key fits, and the count is on the rule
+    /// (#547 M2, D11).
+    #[test]
+    fn the_home_screen_at_80_by_24_and_200_by_50() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let (mut app, _rx) = home_app(local_config(tmp.path()));
+        for (w, h) in [(80u16, 24u16), (200, 50)] {
+            let area = Rect::new(0, 0, w, h);
+            let mut buf = Buffer::empty(area);
+            app.render(area, &mut buf);
+            let row =
+                |y: u16| -> String { (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect() };
+            let bar = row(h - 1);
+            for chip in ["type  Filter", "~  Path", "?  Help", "^C  Quit"] {
+                assert!(bar.contains(chip), "{w}x{h}: {chip} in {bar:?}");
+            }
+            assert!(!bar.contains("datasets"), "{w}x{h}: {bar:?}");
+            assert_eq!(bar.contains("by name"), w == 200, "{w}x{h}: {bar:?}");
+            let screen: Vec<String> = (0..h).map(row).collect();
+            assert!(
+                screen.iter().any(|r| r.contains("  40   configured")),
+                "{w}x{h}: the rule counts the rows: {screen:#?}"
+            );
+        }
+    }
+
     #[test]
     fn esc_from_a_collection_dataset_puts_the_cursor_back_on_it() {
         let tmp = TempDir::new().unwrap();
@@ -5812,6 +5984,52 @@ mod coming_back {
         assert!(app.home.filter.is_empty());
         go_back(&mut app, &rx, None);
         assert_eq!(on(&app), Some(d07));
+    }
+
+    /// Past the files the screen scores as it types, the scoring runs on a worker and
+    /// still finds the one match among thousands (#547 D1, D2).
+    #[test]
+    fn typing_in_a_large_tree_finds_the_one_match() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d07 = tmp.path().join("d07");
+        for i in 0..2_500 {
+            touch(
+                &d07.join(format!("bulk{:02}", i % 25)),
+                &format!("f{i:04}.csv"),
+            );
+        }
+        let needle = touch(&d07, "deep/a/b/c/needle_metrics.parquet");
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+
+        select(&mut app, &d07);
+        go_into(&mut app, &rx, KeyCode::Enter, &d07);
+        for c in "needle".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        settle(&mut app, &rx, |app| {
+            app.home.search.done && !app.home.search.scoring && entries(app).contains(&needle)
+        });
+        assert!(app.home.search.indexed > 2_500, "every file was kept");
+        assert_eq!(app.home.filter, "needle");
+
+        // A new query over every file kept is scored on a worker, and lists the cap.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('f'));
+        assert!(
+            app.home.search.scoring,
+            "too many files to score as the key lands"
+        );
+        settle(&mut app, &rx, |app| !app.home.search.scoring);
+        let found = app
+            .home
+            .sections
+            .iter()
+            .find(|s| s.title == datui::home::HomeState::SEARCH_SECTION)
+            .expect("found");
+        assert_eq!(found.rows.len(), 1_000);
+        let subtitle = found.subtitle.clone().unwrap_or_default();
+        assert!(subtitle.contains("1,000 of 2,500 matches"), "{subtitle:?}");
     }
 
     /// A table opened from inside a directory, and back: home is where it was left,

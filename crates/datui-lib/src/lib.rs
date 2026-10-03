@@ -1166,6 +1166,44 @@ mod probe_slot_tests {
 
 /// #455: a home-screen worker that panics still answers, so what marks it in flight
 /// stops waiting and the next request is made.
+#[cfg(all(test, feature = "cloud"))]
+mod cloud_row_tests {
+    /// A source that cannot list says the problem once and what to do about it, rather
+    /// than `not signed in  not signed in` (#547 D5).
+    #[test]
+    fn a_source_not_signed_in_says_what_to_run() {
+        let source = crate::cloud_sources::Source {
+            id: "az".to_string(),
+            label: "Azure".to_string(),
+            kind: crate::cloud_browse::ProviderKind::Azure,
+            tier: crate::cloud_sources::Tier::Tools,
+            origin: "not signed in".to_string(),
+            s3: Default::default(),
+            azure: Default::default(),
+            project: None,
+            profile: None,
+            buckets: Vec::new(),
+            problem: Some("not signed in: run az login".to_string()),
+            gcloud: None,
+            secret_command: None,
+            google_credentials: None,
+        };
+        let row = super::home_cloud_source(&source, None, false);
+        assert_eq!(row.count_text(), "not signed in");
+        assert_eq!(row.note, "run az login");
+
+        // A problem with nothing after the short word keeps its whole text.
+        let source = crate::cloud_sources::Source {
+            problem: Some("no credentials in AWS_PROFILE".to_string()),
+            origin: "env".to_string(),
+            ..source
+        };
+        let row = super::home_cloud_source(&source, None, false);
+        assert_eq!(row.count_text(), "not configured");
+        assert_eq!(row.note, "no credentials in AWS_PROFILE");
+    }
+}
+
 #[cfg(test)]
 mod home_worker_panic_tests {
     use super::*;
@@ -9045,6 +9083,12 @@ pub enum AppEvent {
         found: Vec<crate::discover::Entry>,
         scanned: usize,
     },
+    /// The filter scored against the search's files, for the walk `epoch` names.
+    HomeSearchScored {
+        epoch: u64,
+        /// `None` from a worker that died.
+        matches: Option<Box<crate::search::Matches>>,
+    },
     /// The background search has stopped, with `limited` saying why if it stopped
     /// short of walking everything.
     HomeSearchDone {
@@ -15701,6 +15745,8 @@ impl App {
         self.home.search.reset();
         self.home.search.root = Some(root.clone());
         self.home.search.running = true;
+        self.home.search.epoch = next_search_epoch();
+        self.home.search_limit = config.max_results;
         self.home_search_inflight = true;
 
         let generation = self.home_generation;
@@ -15739,6 +15785,37 @@ impl App {
                     root,
                     scanned: outcome.scanned,
                     limited: outcome.note().map(str::to_string),
+                });
+            })
+        });
+    }
+
+    /// Score the filter against the search's files on a worker, when a scoring is owed.
+    ///
+    /// Asked after every event. Over a tree of tens of thousands of files the scoring
+    /// is what held each keystroke's echo back, so it runs where a stall cannot hold
+    /// the screen, one at a time; each answer asks for the next if the filter moved on.
+    fn home_score_search(&mut self) {
+        if self.input_mode != InputMode::Home {
+            return;
+        }
+        let Some(job) = self.home.score_job() else {
+            return;
+        };
+        let epoch = job.epoch;
+        let tx = self.events.clone();
+        // A worker that dies answers with nothing.
+        let owed = self.owed_answer(AppEvent::HomeSearchScored {
+            epoch,
+            matches: None,
+        });
+        self.runtime.spawn_blocking(move || {
+            owed.run(move || {
+                let matches =
+                    crate::search::score(&job.results, &job.query, job.base.as_ref(), job.limit);
+                let _ = tx.send(AppEvent::HomeSearchScored {
+                    epoch,
+                    matches: Some(Box::new(matches)),
                 });
             })
         });
@@ -16021,6 +16098,16 @@ impl App {
         }
         if self.data_table_state.is_some() {
             self.input_mode = InputMode::Normal;
+            // Said on arrival: Esc pressed once too often to clear the home screen lands
+            // here, and the keys typed next act on the table (#547 D14).
+            let name = self
+                .path
+                .as_deref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned());
+            if let Some(name) = name {
+                self.flash_note(format!("Back to {name}"));
+            }
         }
         None
     }
@@ -18382,6 +18469,13 @@ impl LocalHive {
 /// reasons (see `App::remember_dataset_shape`). No fingerprint, no keeping: a dataset
 /// within one wave is not worth it, and one whose files moved under the listing has
 /// none.
+/// A number for each walk the home search starts, so scorings of one are never taken
+/// for another's, even when the two walked the same place.
+fn next_search_epoch() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn remember_local_shape(
     cache: Option<&crate::cache::CacheManager>,
     key: &str,
@@ -24575,6 +24669,7 @@ impl App {
             self.let_waiting_errands_in();
         }
         self.ensure_chart_data();
+        self.home_score_search();
         Ok(out)
     }
 
@@ -24896,6 +24991,14 @@ impl App {
                 // late batches are expected rather than exceptional.
                 if *generation == self.home_generation {
                     self.home.search_batch(root, found.clone(), *scanned);
+                }
+                None
+            }
+            AppEvent::HomeSearchScored { epoch, matches } => {
+                // A scoring that died is not asked again: the next would die the same
+                // way, and the matches already listed stand.
+                if let Some(matches) = matches {
+                    self.home.search_scored(*epoch, (**matches).clone());
                 }
                 None
             }
@@ -27285,12 +27388,15 @@ impl App {
         let loading::Failed { message, from_home } = failed;
         self.status_message = None;
         self.busy = false;
-        // Kept so the home screen can say why, if that is where dismissing the error
-        // lands the user.
-        self.last_load_error = Some(message.clone());
+        // Kept so the home screen can say why, if dismissing the error lands the user
+        // there from a command line that named the file. Chosen at home, the dialog
+        // has said it, and the prompt's line saying it again was the same failure
+        // reported twice (#547 D8).
         if from_home {
+            self.last_load_error = None;
             self.enter_home();
-            self.home.status = self.last_load_error.clone();
+        } else {
+            self.last_load_error = Some(message.clone());
         }
         self.error_modal.show(message);
     }
@@ -29673,29 +29779,12 @@ impl Widget for &mut App {
             );
         }
 
-        // The trailing figure belongs to whatever view is showing. On the home screen
-        // that is how many datasets are listed, not the table's row count.
+        // The trailing figure belongs to whatever view is showing. On the home screen it
+        // is the order the rows are in: each section's rule already counts its rows, and
+        // a total across sections counted things no one listed together (#547 D11). It
+        // yields to every chip at a narrow width.
         if main_view_content == MainViewContent::Home {
-            // Only things that can actually be opened. A directory is somewhere to
-            // look, not a dataset, and counting it makes the figure a lie — and so
-            // does counting a directory nothing has looked into yet, which in a fresh
-            // listing is every directory in it.
-            // Past the cap on RECENT: a dataset the `more` row stands for is listed,
-            // and the header above it counts it.
-            let datasets = self
-                .home
-                .listed()
-                .iter()
-                .filter(|r| {
-                    // The door is not among these: its kind is the directory's, so it
-                    // would count as a dataset and be the same dataset as the directory —
-                    // the figure this comment calls a lie, counted twice. It is a
-                    // `Row::Door` and not an entry, so nothing here has to exclude it.
-                    matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset())
-                })
-                .count();
-            // State, not actions: how many datasets are listed and what order they
-            // are in. The Tab key that changes it lives with the other keys.
+            // State, not actions. The Tab key that changes it lives with the other keys.
             let in_recents = self
                 .home
                 .selected_section()
@@ -29704,15 +29793,14 @@ impl Widget for &mut App {
                 .unwrap_or(false);
             let order = self.home.sort.label_in(in_recents);
             let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();
-            let dot = crate::glyphs::get().middot;
-            let caption = if waiting && datasets == 0 {
+            let caption = if waiting && self.home.visible().is_empty() {
                 "Looking...".to_string()
-            } else if datasets == 1 {
-                format!("by {order}  {dot}  1 dataset")
             } else {
-                format!("by {order}  {dot}  {datasets} datasets")
+                format!("by {order}")
             };
-            controls = controls.with_caption(Some(caption));
+            controls = controls
+                .with_caption(Some(caption))
+                .with_caption_yielding(true);
         }
 
         // Chart preparation spins the throbber without setting `busy`, so the chart
@@ -29858,33 +29946,46 @@ fn home_cloud_source(
     }
     details.push(("login".to_string(), source.origin.clone()));
 
-    let note = [source.detail(), Some(source.origin.clone())]
-        .into_iter()
-        .flatten()
-        .filter(|n| !n.is_empty())
-        .collect::<Vec<_>>()
-        .join(&format!(" {} ", crate::glyphs::get().middot));
+    let short = source.problem.as_deref().map(|problem| {
+        if problem.starts_with("not signed in") {
+            "not signed in"
+        } else if problem.starts_with("unsupported login") {
+            "unsupported login"
+        } else {
+            "not configured"
+        }
+    });
+    // A source that cannot list says what to do about it where the row has room: the
+    // count already carries the short problem, and the login it would use is moot
+    // (#547 D5).
+    let note = match (&source.problem, short) {
+        (Some(problem), Some(short)) => problem
+            .strip_prefix(short)
+            .map(|rest| rest.trim_start_matches([':', ' ']))
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(problem)
+            .to_string(),
+        _ => [source.detail(), Some(source.origin.clone())]
+            .into_iter()
+            .flatten()
+            .filter(|n| !n.is_empty())
+            .collect::<Vec<_>>()
+            .join(&format!(" {} ", crate::glyphs::get().middot)),
+    };
     let mut names: Vec<String> = cached.map(|c| c.buckets.clone()).unwrap_or_default();
     for bucket in &source.buckets {
         if !names.contains(bucket) {
             names.push(bucket.clone());
         }
     }
-    let status = match &source.problem {
-        Some(problem) => home::CloudStatus::Failed {
-            short: if problem.starts_with("not signed in") {
-                "not signed in"
-            } else if problem.starts_with("unsupported login") {
-                "unsupported login"
-            } else {
-                "not configured"
-            }
-            .to_string(),
+    let status = match (&source.problem, short) {
+        (Some(problem), Some(short)) => home::CloudStatus::Failed {
+            short: short.to_string(),
             detail: problem.clone(),
         },
-        None if cached.is_some() => home::CloudStatus::Listed,
-        None if listing => home::CloudStatus::Listing,
-        None => home::CloudStatus::Unlisted,
+        _ if cached.is_some() => home::CloudStatus::Listed,
+        _ if listing => home::CloudStatus::Listing,
+        _ => home::CloudStatus::Unlisted,
     };
     home::CloudSource {
         id: source.id.clone(),

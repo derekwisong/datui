@@ -493,7 +493,21 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         .map(|s| s.name.clone())
         .collect();
     let mut lines: Vec<Line> = Vec::new();
+    // Only the rows on screen are drawn: a search can list a thousand, and building a
+    // line for each on every frame was most of what a keystroke cost.
+    let last_line = first_line + height;
     for (idx, row) in visible.iter().enumerate() {
+        let at = row_lines.get(idx).copied().unwrap_or(usize::MAX);
+        if at >= last_line {
+            break;
+        }
+        let spacer = spaced && idx > 0 && matches!(row, crate::home::Row::Header { .. });
+        if spacer && at > first_line {
+            lines.push(Line::from(""));
+        }
+        if at < first_line {
+            continue;
+        }
         let selected = idx == app.home.selected;
         match row {
             crate::home::Row::Header {
@@ -501,9 +515,6 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 matches,
                 collapsed,
             } => {
-                if spaced && idx > 0 {
-                    lines.push(Line::from(""));
-                }
                 lines.push(section_header(
                     &app.home.sections[*section],
                     *matches,
@@ -602,7 +613,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         }
     }
 
-    let mut body: Vec<Line> = lines.into_iter().skip(first_line).collect();
+    let mut body: Vec<Line> = lines;
     body.extend(guidance);
     Paragraph::new(body).render(area, buf);
 }
@@ -811,13 +822,26 @@ fn section_header<'a>(
             Some(subtitle) => format!("listing {} {subtitle}", g.middot),
             None => "listing".to_string(),
         }
+    } else if matches == 0
+        && section.door.is_none()
+        && section.origin == Some(crate::home::RootOrigin::Cwd.note())
+    {
+        // Launched somewhere with nothing to open, the heading says so and where to go:
+        // the public rows below would otherwise read as this directory's (#547 D9).
+        format!("nothing to open here {} ~ types a path", g.middot)
     } else {
         section.subtitle.clone().unwrap_or_default()
     };
     // The note is trimmed before the title is, and never takes more than half the
     // line. A note is context; the title is what the section *is*, and a search
     // heading carrying a long path would otherwise crowd the title out entirely.
-    let note = truncate_start(&note, width / 2);
+    // `Found`'s title is one short word, and its note is the answer to the search.
+    let note_room = if section.title == crate::home::HomeState::SEARCH_SECTION {
+        width.saturating_sub(section.title.chars().count() + 16)
+    } else {
+        width / 2
+    };
+    let note = truncate_start(&note, note_room);
     // A title that names a place keeps its case; only the word-like headings —
     // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
     // `s3://datui-sales` into `S3://DATUI-SALES`, which is not the bucket's name and in
@@ -1638,18 +1662,46 @@ fn schema_lines(
     (lines.len(), lines)
 }
 
-/// One `key   value` line, with the value carrying the emphasis.
-fn fact_line(
+/// One `key   value` fact, with the value carrying the emphasis. A value longer than the
+/// pane wraps under itself, not under the key: a URL or a description that ran back to
+/// column 0 read as a new fact (#547 D6).
+fn fact_lines(
     key: &str,
     value: String,
     key_w: usize,
+    width: usize,
     style: Style,
     ctx: &RenderContext,
-) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{key:<key_w$}  "), Style::default().fg(ctx.dimmed)),
-        Span::styled(value, style),
-    ])
+) -> Vec<Line<'static>> {
+    let indent = key_w + 2;
+    let room = width.saturating_sub(indent);
+    let key_span = Span::styled(format!("{key:<key_w$}  "), Style::default().fg(ctx.dimmed));
+    // Too narrow to hang anything under: the pane's own wrap does what it can.
+    if room < 12 || value.chars().count() <= room {
+        return vec![Line::from(vec![key_span, Span::styled(value, style)])];
+    }
+    let pieces = crate::render::overlays::wrap_help_line(&value, room);
+    pieces
+        .into_iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            let lead = if i == 0 {
+                key_span.clone()
+            } else {
+                Span::raw(" ".repeat(indent))
+            };
+            Line::from(vec![lead, Span::styled(piece, style)])
+        })
+        .collect()
+}
+
+/// The width of the key column for a pane's facts: one column for all of them, so the
+/// values line up down the pane.
+fn key_column<'a>(keys: impl IntoIterator<Item = &'a str>) -> usize {
+    keys.into_iter()
+        .map(|k| k.chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 /// A compression ratio, when it is worth stating.
@@ -1726,9 +1778,8 @@ fn kind_words(
     }
 }
 
-/// The name, the path, and everything known about the dataset.
-///
-/// Split out from the pane so it can be checked without an application behind it.
+/// [`preview_head_keyed`] with nothing below it to line up with, as the tests check it.
+#[cfg(test)]
 fn preview_head(
     entry: &Entry,
     place_kind: Option<&'static str>,
@@ -1736,6 +1787,21 @@ fn preview_head(
     width: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
+    preview_head_keyed(entry, place_kind, looking, width, 0, ctx).0
+}
+
+/// The name, the path, and everything known about the dataset, its key column at least
+/// `key_w` wide so facts drawn below it line up with its own; and the key column used.
+///
+/// Split out from the pane so it can be checked without an application behind it.
+fn preview_head_keyed(
+    entry: &Entry,
+    place_kind: Option<&'static str>,
+    looking: Option<crate::home::CloudLook>,
+    width: usize,
+    key_w: usize,
+    ctx: &RenderContext,
+) -> (Vec<Line<'static>>, usize) {
     let g = glyphs::get();
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
@@ -1887,16 +1953,16 @@ fn preview_head(
         }
     }
 
+    let key_w = key_column(facts.iter().map(|(k, _, _)| *k)).max(key_w);
     if !facts.is_empty() {
         lines.push(Line::from(""));
         lines.push(pane_heading("DETAILS", width, ctx));
-        let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
         for (key, value, style) in facts {
-            lines.push(fact_line(key, value, key_w, style, ctx));
+            lines.extend(fact_lines(key, value, key_w, width, style, ctx));
         }
     }
 
-    lines
+    (lines, key_w)
 }
 
 /// The details pane for a cloud source: what it points at, how it logs in, and when
@@ -1945,9 +2011,9 @@ fn source_details(
     }
     lines.push(Line::from(""));
     lines.push(pane_heading("DETAILS", width, ctx));
-    let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+    let key_w = key_column(facts.iter().map(|(k, _, _)| k.as_str()));
     for (key, value, style) in facts {
-        lines.push(fact_line(&key, value, key_w, style, ctx));
+        lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
     }
     if let crate::home::CloudStatus::Failed { short, detail } = &source.status {
         lines.push(Line::from(""));
@@ -2001,11 +2067,19 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         return;
     }
     let g = glyphs::get();
-    let mut lines = preview_head(
+    // What the source's listing said about this place: an Azure account's subscription,
+    // a collection dataset's publisher. Drawn below the facts, in their key column.
+    let place_details = app.home.place_details(&entry.path).map(<[_]>::to_vec);
+    let key_w = place_details
+        .as_ref()
+        .map(|details| key_column(details.iter().map(|(k, _)| k.as_str())))
+        .unwrap_or(0);
+    let (mut lines, key_w) = preview_head_keyed(
         &entry,
         app.home.place_kind(&entry.path),
         app.home.cloud_look(&entry),
         width,
+        key_w,
         ctx,
     );
     // Why the row that reads a bucket directory whole cannot, before Enter is pressed:
@@ -2019,17 +2093,14 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             Style::default().fg(ctx.warning),
         )));
     }
-    // What the source's listing said about this place: an Azure account's
-    // subscription, region and namespace.
-    if let Some(details) = app.home.place_details(&entry.path) {
-        let key_w = details.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    if let Some(details) = place_details {
         for (key, value) in details {
             let style = if key == "network" || key == "shared keys" || key == "access" {
                 Style::default().fg(ctx.warning)
             } else {
                 Style::default().fg(ctx.text_secondary)
             };
-            lines.push(fact_line(key, value.clone(), key_w.max(8), style, ctx));
+            lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
         }
     }
 
@@ -2079,6 +2150,10 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // door will be there — and a user with a filter typed is the one most likely
             // to be lost.
             let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
+            let footer_unreadable = entry.kind == EntryKind::File
+                && entry.rows.is_none()
+                && discover::is_parquet_path(&entry.path)
+                && app.home.enriched.contains_key(&entry.path);
             let note = match entry.kind {
                 // The door itself. It is the row the other notes point at, so it says
                 // what it does rather than where to find it.
@@ -2105,16 +2180,22 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 // The log says which files are live, and datui does not read it.
                 k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
                 k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
+                // Measured, and its footer said nothing: the open will most likely fail
+                // the same way, and saying so before Enter beats a pane promising columns
+                // (#547 D8).
+                EntryKind::File if footer_unreadable => FOOTER_UNREADABLE,
                 _ if reading => "Reading...",
                 // Only Parquet says its columns without being read; everything else is
                 // read when it is opened, which is nothing to warn about.
                 _ => "Columns are read when opened.",
             };
             if !note.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    note,
-                    Style::default().fg(ctx.dimmed),
-                )));
+                let color = if note == FOOTER_UNREADABLE {
+                    ctx.warning
+                } else {
+                    ctx.dimmed
+                };
+                lines.push(Line::from(Span::styled(note, Style::default().fg(color))));
             }
         }
     }
@@ -2123,6 +2204,9 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         .wrap(ratatui::widgets::Wrap { trim: false })
         .render(area, buf);
 }
+
+/// What the pane says on a Parquet file whose footer could not be read.
+const FOOTER_UNREADABLE: &str = "Its footer could not be read; it may not open.";
 
 /// What the pane says on a directory `Enter` steps into rather than opens.
 ///
@@ -2152,8 +2236,9 @@ const DOOR_OF_A_MIX: &str = "Enter reads the files on the reads line as one tabl
 
 /// Every sentence the pane offers as guidance, for the test that reads them.
 #[cfg(test)]
-fn guidance_notes() -> [&'static str; 7] {
+fn guidance_notes() -> [&'static str; 8] {
     [
+        FOOTER_UNREADABLE,
         INSIDE_AND_THE_DOOR,
         INSIDE_A_LAKE_TABLE,
         THE_DOOR,
@@ -2261,9 +2346,9 @@ fn place_details(
         facts.push(("storage", source.label().to_string(), style));
     }
     facts.push(("opened here", held.to_string(), plain));
-    let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+    let key_w = key_column(facts.iter().map(|(k, _, _)| *k));
     for (key, value, style) in facts {
-        lines.push(fact_line(key, value, key_w, style, ctx));
+        lines.extend(fact_lines(key, value, key_w, width, style, ctx));
     }
     // Said before Enter is pressed rather than after: Enter does nothing here.
     if !crate::home::place_is_browsable(path) {
@@ -2975,6 +3060,44 @@ mod tests {
     /// A dot in a directory's name does not make it a file. A local row nothing has
     /// looked into came from a listing that saw a directory, so the name is not the
     /// evidence.
+    /// Launched where there is nothing to open, the directory's heading says so and
+    /// points at `~`, rather than a bare `0` above the public rows (#547 D9).
+    #[test]
+    fn an_empty_current_directory_says_so_and_points_at_the_path_prompt() {
+        let ctx = RenderContext::for_test();
+        let section = Section {
+            door: None,
+            title: "/home/me/empty".to_string(),
+            subtitle: None,
+            origin: Some(crate::home::RootOrigin::Cwd.note()),
+            rows: Vec::new(),
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+            grouped_by_place: false,
+            place_labels: Default::default(),
+            root: None,
+        };
+        let text = |matches: usize, section: &Section| -> String {
+            section_header(section, matches, false, false, 80, 0, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        let empty = text(0, &section);
+        assert!(empty.contains("nothing to open here"), "{empty:?}");
+        assert!(empty.contains("~ types a path"), "{empty:?}");
+        assert!(!text(3, &section).contains("nothing to open"));
+        let configured = Section {
+            origin: Some("configured"),
+            ..section
+        };
+        assert!(!text(0, &configured).contains("nothing to open"));
+    }
+
     #[test]
     fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
         let ctx = RenderContext::for_test();

@@ -41,6 +41,9 @@ pub struct Controls {
     pub row_count_unknown: bool, // When true, the count could not be determined: show "?" instead of a misleading provisional number (takes effect only when not pending)
     /// Replaces the row count entirely, for views that are not showing a table.
     pub caption: Option<String>,
+    /// The caption is dropped before any chip is: on the home screen it is state worth
+    /// a glance, and the keys beside it are how a first session learns the screen.
+    pub caption_yields: bool,
     /// Set to the lake format's name when the table on screen is a lake table's plain
     /// files rather than the table: `"Delta"`, `"Iceberg"`, `"Hudi"`.
     ///
@@ -170,6 +173,12 @@ impl Controls {
         self
     }
 
+    /// See [`Controls::caption_yields`].
+    pub fn with_caption_yielding(mut self, yields: bool) -> Self {
+        self.caption_yields = yields;
+        self
+    }
+
     pub fn with_row_count_unknown(mut self, unknown: bool) -> Self {
         self.row_count_unknown = unknown;
         self
@@ -235,6 +244,7 @@ impl Controls {
     pub fn from_context(row_count: usize, ctx: &RenderContext) -> Self {
         Self {
             caption: None,
+            caption_yields: false,
             row_count: Some(row_count),
             q_pops: false,
             enter_drills: false,
@@ -367,7 +377,15 @@ impl Widget for &Controls {
         // layout used to hardcode twenty-one here and truncate the caption itself.
         let trailing = self
             .row_count
-            .map(|count| (row_count_text(count).chars().count() as u16 + 1 + columns_room).max(20));
+            .map(|count| row_count_text(count).chars().count() as u16 + 1 + columns_room)
+            // A yielding caption asks for its own width: it is drawn only with room to spare.
+            .map(|width| {
+                if self.caption_yields {
+                    width
+                } else {
+                    width.max(20)
+                }
+            });
 
         // The chip that says the row count is not the table's. Immediately left of the
         // count, because the count is what it is about.
@@ -688,6 +706,11 @@ impl Widget for &Controls {
         // is satisfied by nothing, so the extra column is a margin rather than a
         // requirement — it costs one chip at one width and keeps the common case as it
         // was.
+        // A yielding caption is drawn only when every chip fits beside it.
+        let trailing = trailing.filter(|width| {
+            !(self.caption_yields && self.caption.is_some())
+                || bar.width_in(u16::MAX) + width + 1 + chip_width <= area.width
+        });
         let right_reserved = trailing.map(|width| width + 1).unwrap_or(1) + chip_width;
         let chips_width = bar.width_in(area.width.saturating_sub(right_reserved));
 
@@ -709,7 +732,7 @@ impl Widget for &Controls {
             Paragraph::new(chip_line()).render(layout[next], buf);
             next += 1;
         }
-        if let Some(count) = self.row_count {
+        if let (Some(count), Some(_)) = (self.row_count, trailing) {
             Paragraph::new(row_count_text(count))
                 .style(label_style)
                 .right_aligned()

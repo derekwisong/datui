@@ -7,11 +7,20 @@
 //! character is how a file finder becomes slow on exactly the trees where it matters.
 //!
 //! Every limit exists because some real directory violates it. See [`Limits`].
+//!
+//! The walk keeps every data file it finds, and the filter is scored against that
+//! index off the UI thread ([`score`]). The cap on what is listed counts matches, not
+//! files: a file that matches is never lost behind thousands that do not.
 
 use crate::config::SearchConfig;
 use crate::discover::{Entry, EntryKind, is_data_file};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// The most files one walk keeps. The time budget bounds a walk first in practice; this
+/// bounds its memory on a tree fast enough to list a million names inside it.
+pub const MAX_INDEXED: usize = 100_000;
 
 /// How far a walk got, and why it stopped.
 ///
@@ -21,7 +30,7 @@ use std::time::{Duration, Instant};
 pub struct Outcome {
     /// Directory entries examined, whether or not they were data.
     pub scanned: usize,
-    /// Stopped at `max_results`.
+    /// Stopped at [`MAX_INDEXED`] files.
     pub hit_result_limit: bool,
     /// Stopped at `time_budget_ms`.
     pub hit_time_limit: bool,
@@ -39,7 +48,7 @@ impl Outcome {
         if self.hit_time_limit {
             Some("partial · out of time")
         } else if self.hit_result_limit {
-            Some("partial · too many")
+            Some("partial · too many files")
         } else if self.hit_depth_limit {
             Some("partial · too deep")
         } else {
@@ -62,7 +71,15 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(120);
 ///
 /// This blocks and touches the filesystem, so it must never be called from the thread
 /// drawing the screen.
-pub fn walk<F>(root: &Path, config: &SearchConfig, mut emit: F) -> Outcome
+pub fn walk<F>(root: &Path, config: &SearchConfig, emit: F) -> Outcome
+where
+    F: FnMut(Vec<Entry>, Outcome) -> bool,
+{
+    walk_up_to(root, config, MAX_INDEXED, emit)
+}
+
+/// [`walk`], keeping at most `cap` files.
+pub fn walk_up_to<F>(root: &Path, config: &SearchConfig, cap: usize, mut emit: F) -> Outcome
 where
     F: FnMut(Vec<Entry>, Outcome) -> bool,
 {
@@ -121,6 +138,10 @@ where
     let mut batch: Vec<Entry> = Vec::with_capacity(BATCH);
     let mut found = 0usize;
     let mut last_emit = Instant::now();
+    // Where the files live, for the row's storage glyph (#547 D10). One filesystem unless the walk
+    // may cross into others, and then asked per file.
+    let mounts = crate::locality::Mounts::cached();
+    let root_source = mounts.describe(root).fstype;
 
     for result in builder.build() {
         outcome.scanned += 1;
@@ -165,13 +186,18 @@ where
         if let Ok(meta) = dir_entry.metadata() {
             entry = entry.with_fs_metadata(&meta);
         }
+        entry.cost.source = Some(if config.cross_filesystems {
+            mounts.describe(path).fstype
+        } else {
+            root_source.clone()
+        });
         // The name carries the path relative to where the search started, because
         // "sales.parquet" three times over says nothing about which one you want.
         entry.name = relative_label(root, path);
         batch.push(entry);
         found += 1;
 
-        if found >= config.max_results {
+        if found >= cap {
             outcome.hit_result_limit = true;
             break;
         }
@@ -238,4 +264,98 @@ pub fn search_root(
         return None;
     }
     Some(root)
+}
+
+/// What the filter matched among the files a walk kept.
+#[derive(Debug, Clone, Default)]
+pub struct Matches {
+    /// The filter these are matches for.
+    pub query: String,
+    /// How many files of the index were looked at: the first `upto`.
+    pub upto: usize,
+    /// Every match, by its place in the index, in index order. Kept whole so the next,
+    /// longer query only has to look at these.
+    pub ids: Vec<u32>,
+    /// The best matches, best first, at most `max_results` of them: what is listed.
+    pub top: Vec<Entry>,
+    /// The score of each of `top`, so listing them does not score them again.
+    pub scores: Vec<i32>,
+}
+
+impl Matches {
+    /// Whether these can be narrowed to `query` rather than looked for again: every
+    /// match of a longer query is a match of its prefix, for a subsequence of the name
+    /// and for a substring of a column alike.
+    pub fn narrows_to(&self, query: &str) -> bool {
+        !self.query.is_empty() && query.to_lowercase().starts_with(&self.query.to_lowercase())
+    }
+}
+
+impl Matches {
+    /// Score files the walk found since, `start` being the first one's place in the
+    /// index, and fold them in. Whether any of them is now among the best listed.
+    pub fn extend(&mut self, files: &[Entry], start: usize, limit: usize) -> bool {
+        let mut changed = false;
+        for (i, entry) in files.iter().enumerate() {
+            let Some(score) = crate::home::match_score(&self.query, entry) else {
+                continue;
+            };
+            self.ids.push((start + i) as u32);
+            // After every listed match that ranks above or level with it: the ones found
+            // first win a tie, as in a whole scoring.
+            let at = self
+                .scores
+                .iter()
+                .zip(&self.top)
+                .position(|(&s, e)| s < score || (s == score && e.name.len() > entry.name.len()))
+                .unwrap_or(self.top.len());
+            if at < limit {
+                self.top.insert(at, entry.clone());
+                self.scores.insert(at, score);
+                self.top.truncate(limit);
+                self.scores.truncate(limit);
+                changed = true;
+            }
+        }
+        self.upto = start + files.len();
+        changed
+    }
+}
+
+/// Score `query` against the files in `index`, keeping the best `limit` to list.
+///
+/// With `base` from a prefix of `query`, only its matches and the files indexed since
+/// are looked at. Called off the UI thread: over a large tree this is the work that made
+/// every keystroke wait.
+pub fn score(index: &[Arc<[Entry]>], query: &str, base: Option<&Matches>, limit: usize) -> Matches {
+    let all: Vec<&Entry> = index.iter().flat_map(|batch| batch.iter()).collect();
+    let base = base.filter(|b| b.narrows_to(query) && b.upto <= all.len());
+    let candidates: Box<dyn Iterator<Item = usize>> = match base {
+        Some(b) => Box::new(b.ids.iter().map(|&id| id as usize).chain(b.upto..all.len())),
+        None => Box::new(0..all.len()),
+    };
+    let mut hits: Vec<(i32, usize)> = candidates
+        .filter_map(|id| crate::home::match_score(query, all[id]).map(|s| (s, id)))
+        .collect();
+    let ids: Vec<u32> = hits.iter().map(|&(_, id)| id as u32).collect();
+    // Best first; ties to the shorter name, as the listing ranks them.
+    let order = |a: &(i32, usize), b: &(i32, usize)| {
+        b.0.cmp(&a.0)
+            .then_with(|| all[a.1].name.len().cmp(&all[b.1].name.len()))
+            .then_with(|| a.1.cmp(&b.1))
+    };
+    if hits.len() > limit && limit > 0 {
+        hits.select_nth_unstable_by(limit - 1, order);
+        hits.truncate(limit);
+    } else if limit == 0 {
+        hits.clear();
+    }
+    hits.sort_unstable_by(order);
+    Matches {
+        query: query.to_string(),
+        upto: all.len(),
+        ids,
+        scores: hits.iter().map(|&(score, _)| score).collect(),
+        top: hits.into_iter().map(|(_, id)| all[id].clone()).collect(),
+    }
 }

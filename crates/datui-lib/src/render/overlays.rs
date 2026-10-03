@@ -179,6 +179,80 @@ fn render_scrollable_message(
     let _ = ctx;
 }
 
+/// Where the help overlay goes in `area`. A reading surface: it caps its measure
+/// instead of stretching with an ultrawide terminal, and on a narrow one takes
+/// nearly the width, since a help file is written to about 78 columns and every
+/// column less breaks more lines.
+fn help_popup(area: Rect) -> Rect {
+    const MAX_MEASURE: u16 = 100;
+    const NARROW_MEASURE: u16 = 84;
+    let mut popup = centered_rect(area, 80, 80);
+    let narrow = area.width.saturating_sub(2).min(NARROW_MEASURE);
+    if popup.width < narrow {
+        popup.x = area.x + (area.width - narrow) / 2;
+        popup.width = narrow;
+    }
+    if popup.width > MAX_MEASURE {
+        popup.x += (popup.width - MAX_MEASURE) / 2;
+        popup.width = MAX_MEASURE;
+    }
+    popup
+}
+
+/// A help line this wide or wider was wrapped by hand: the next line at its
+/// continuation column carries on the same sentence. Narrower ones (a code
+/// example, a short list) end where they are.
+const HAND_WRAPPED: usize = 60;
+
+/// Join a help file's hand-wrapped paragraphs into one line each.
+///
+/// A line carries on the one before it when that one was long enough to have
+/// been wrapped, ends mid-sentence rather than as a heading, and this one sits
+/// at its continuation column: under a keyed row's description, past a
+/// bullet's dash, or at a plain line's own indent. A keyed row or a bullet of
+/// its own starts afresh.
+fn reflow_help(text: &str) -> Vec<String> {
+    use crate::glyphs::{display_width, key_gap};
+    let indent_of = |line: &str| line.len() - line.trim_start_matches(' ').len();
+    let mut out: Vec<String> = Vec::new();
+    // The column the open line's continuations sit at, and whether its last
+    // physical line was wrapped by hand.
+    let mut open: Option<(usize, bool)> = None;
+    for line in text.lines() {
+        let trimmed = line.trim_start_matches(' ');
+        if trimmed.is_empty() {
+            out.push(String::new());
+            open = None;
+            continue;
+        }
+        let indent = indent_of(line);
+        let bullet = trimmed.starts_with("- ");
+        let keyed = key_gap(line).is_some();
+        let heading = !keyed && trimmed.ends_with(':');
+        let long = display_width(line) >= HAND_WRAPPED;
+        if let (Some((column, true)), Some(last)) = (open, out.last_mut())
+            && indent == column
+            && !keyed
+            && !bullet
+            && !heading
+            && !last.ends_with(':')
+        {
+            last.push(' ');
+            last.push_str(trimmed);
+            open = Some((column, long));
+            continue;
+        }
+        let column = match key_gap(line) {
+            Some((_, desc)) => display_width(&line[..desc]),
+            None if bullet => indent + 2,
+            None => indent,
+        };
+        out.push(line.to_string());
+        open = Some((column, long));
+    }
+    out
+}
+
 /// The fewest columns a wrapped help line's text keeps beside its hanging
 /// indent; narrower than this, the indent gives way instead.
 const MIN_HELP_MEASURE: usize = 16;
@@ -188,7 +262,7 @@ const MIN_HELP_MEASURE: usize = 16;
 /// they continue: a keyed row's under its description, a bullet's past its
 /// dash, any other line under its own indent, so a wrapped row still reads
 /// as one row of its table.
-fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
     use crate::glyphs::{display_width, take_columns};
     if width == 0 {
         return vec![String::new()];
@@ -265,30 +339,27 @@ pub fn render_help_overlay(
     scroll: &mut usize,
     ctx: &RenderContext,
 ) {
-    // A reading surface: it caps its measure instead of stretching with an
-    // ultrawide terminal.
-    let mut popup_area = centered_rect(area, 80, 80);
-    const MAX_MEASURE: u16 = 100;
-    if popup_area.width > MAX_MEASURE {
-        popup_area.x += (popup_area.width - MAX_MEASURE) / 2;
-        popup_area.width = MAX_MEASURE;
-    }
+    let popup_area = help_popup(area);
     Clear.render(popup_area, buf);
-
-    let help_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Fill(1), Constraint::Length(1)])
-        .split(popup_area);
-
-    let text_area = help_layout[0];
-    let scrollbar_area = help_layout[1];
 
     let footer = crate::widgets::ui::HintBar::from_ctx(ctx)
         .hint("Esc", "Close")
         .hint(crate::glyphs::get().updown, "Scroll");
     let inner_area = crate::widgets::ui::Surface::new(title)
         .footer(&footer)
-        .render(text_area, buf, ctx);
+        .render(popup_area, buf, ctx);
+
+    // The scrollbar inside the frame, in the padding column at its right edge, so
+    // nothing is drawn outside the one border; the text keeps a column clear of it.
+    let scrollbar_area = Rect {
+        x: inner_area.right(),
+        width: 1,
+        ..inner_area
+    };
+    let inner_area = Rect {
+        width: inner_area.width.saturating_sub(1),
+        ..inner_area
+    };
 
     let available_width = inner_area.width as usize;
     let available_height = inner_area.height as usize;
@@ -297,8 +368,18 @@ pub fn render_help_overlay(
     // floor gets the twins here, at the one boundary all of them cross.
     let text = crate::glyphs::asciify_instructions(text);
 
+    // Narrower than the file was written for, its hard-wrapped paragraphs are
+    // joined first, so they wrap once at this width rather than at both.
+    let logical: Vec<String> = if text
+        .lines()
+        .any(|line| crate::glyphs::display_width(line) > available_width)
+    {
+        reflow_help(&text)
+    } else {
+        text.lines().map(str::to_string).collect()
+    };
     let mut wrapped_lines: Vec<String> = Vec::new();
-    for line in text.lines() {
+    for line in &logical {
         if crate::glyphs::display_width(line) <= available_width {
             wrapped_lines.push(line.to_string());
         } else {
@@ -354,6 +435,81 @@ pub fn render_help_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hand-wrapped paragraphs and keyed rows join; headings, short lines, new
+    /// keys and bullets stay where they are.
+    #[test]
+    fn reflow_joins_what_was_wrapped_by_hand() {
+        let text = "\
+The home screen: pick a dataset. datui starts here without a path, and Ctrl+O
+returns here from anywhere.
+
+Navigation:
+  Enter:            What the control bar says on this row: \"Open all\" reads a
+                    whole directory as one table
+  Esc:              Back
+  - a bullet that is long enough to have been wrapped by its author here
+    and carries on
+  - another
+  select a, b
+  where c";
+        assert_eq!(
+            reflow_help(text),
+            vec![
+                "The home screen: pick a dataset. datui starts here without a path, and Ctrl+O returns here from anywhere.",
+                "",
+                "Navigation:",
+                "  Enter:            What the control bar says on this row: \"Open all\" reads a whole directory as one table",
+                "  Esc:              Back",
+                "  - a bullet that is long enough to have been wrapped by its author here and carries on",
+                "  - another",
+                "  select a, b",
+                "  where c",
+            ]
+        );
+    }
+
+    /// At 80×24 the home help wraps once, at this width, not at the file's and
+    /// again at the overlay's; and nothing is drawn outside its frame (#547 D7).
+    #[test]
+    fn home_help_at_80_columns_reads_cleanly() {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let mut scroll = 0;
+        let ctx = RenderContext::for_test();
+        render_help_overlay(
+            area,
+            &mut buf,
+            "Home Help",
+            crate::help_strings::home(),
+            &mut scroll,
+            &ctx,
+        );
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let screen = rows.join("\n");
+        // The file's second line carries on the first's sentence on screen too.
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("returns here from anywhere. Every letter")),
+            "the first paragraph is wrapped once: {screen}"
+        );
+        // The frame's right edge, and nothing drawn past it.
+        let right = rows[3]
+            .rfind('│')
+            .map(|b| rows[3][..b].chars().count())
+            .unwrap();
+        let thumb = crate::glyphs::get().scroll_thumb;
+        for row in &rows {
+            let past: String = row.chars().skip(right + 1).collect();
+            assert!(!past.contains(thumb), "drawn outside the frame: {row:?}");
+        }
+        assert!(
+            rows.iter().any(|row| row.contains(thumb)),
+            "the scrollbar is drawn, inside: {screen}"
+        );
+    }
 
     #[test]
     fn help_wrap_breaks_at_word_boundaries() {
@@ -411,20 +567,16 @@ mod tests {
     /// off the buffer one scroll position at a time.
     /// The width the help overlay wraps its text to in `area`.
     fn help_text_width(area: Rect) -> usize {
-        let mut popup = centered_rect(area, 80, 80);
-        popup.width = popup.width.min(100);
-        let text_area = Rect {
-            width: popup.width.saturating_sub(1),
-            ..popup
-        };
         let mut scratch = Buffer::empty(area);
         let footer = crate::widgets::ui::HintBar::from_ctx(&RenderContext::for_test())
             .hint("Esc", "Close")
             .hint(crate::glyphs::get().updown, "Scroll");
+        // Less the scrollbar's column, inside the frame.
         crate::widgets::ui::Surface::new("Help")
             .footer(&footer)
-            .render(text_area, &mut scratch, &RenderContext::for_test())
+            .render(help_popup(area), &mut scratch, &RenderContext::for_test())
             .width as usize
+            - 1
     }
 
     fn help_rows(area: Rect, text: &str) -> Vec<String> {
@@ -456,8 +608,9 @@ mod tests {
             .iter()
             .rposition(|c| side.starts_with(*c))
             .expect("frame");
+        // Short of the frame's padding column, where the scrollbar is drawn.
         let cells = |row: &str| -> String {
-            let text: String = row.chars().take(right).skip(x0).collect();
+            let text: String = row.chars().take(right - 1).skip(x0).collect();
             text.trim_end().to_string()
         };
         let mut rows = Vec::new();
@@ -498,7 +651,17 @@ mod tests {
                     let mut rows = rows.iter();
                     // What the overlay draws: ASCII twins when the locale is not UTF-8.
                     let drawn = crate::glyphs::asciify_instructions(&text);
-                    for line in drawn.lines().map(str::trim_end) {
+                    // Its hand-wrapped paragraphs joined, when it is wider than this.
+                    let width = help_text_width(area);
+                    let logical: Vec<String> = if drawn
+                        .lines()
+                        .any(|l| crate::glyphs::display_width(l) > width)
+                    {
+                        reflow_help(&drawn)
+                    } else {
+                        drawn.lines().map(str::to_string).collect()
+                    };
+                    for line in logical.iter().map(|l| l.trim_end()) {
                         let first = rows.next().expect("a row per line");
                         assert!(line.starts_with(first.as_str()), "{first:?} for {line:?}");
                         let words: Vec<&str> = line.split_whitespace().collect();

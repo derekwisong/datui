@@ -18,6 +18,15 @@ directory is browsed, as <kbd>→</kbd> does.
 <kbd>Ctrl</kbd>+<kbd>D</kbd> remembers a directory as its own section.
 <kbd>Ctrl</kbd>+<kbd>O</kbd> returns home from an open table.
 
+## The control bar
+
+The bar leads with what a first session needs: <kbd>Enter</kbd> (named for what
+it does on the selected row), `type Filter`, `~ Path`, <kbd>Esc</kbd> (named for
+where it goes: `Clear`, `Up`, `Back`, or `Table` when a dataset is open), `?`
+and <kbd>Ctrl</kbd>+<kbd>C</kbd>. Moves and conveniences follow and are the
+first cut on a narrow terminal. The sort order (`by name`) shows at the far
+right when every key fits; each section's rule counts its rows.
+
 ## Sections
 
 | Section | Contents |
@@ -35,7 +44,8 @@ directory is browsed, as <kbd>→</kbd> does.
 Folded sections stay folded between runs. Path sections show why they are
 listed and their status: for example `configured`, `nfs4`, `listing` (with
 `1,200 so far` once a slow share sends its first rows, which show as they
-arrive), `unavailable`, or `first 5,000` when a listing is incomplete.
+arrive), `unavailable`, or `first 5,000` when a listing is incomplete. An
+empty current directory says `nothing to open here · ~ types a path`.
 
 ### Recent
 
@@ -83,10 +93,17 @@ use_desktop_recents = false
 Typing filters the visible list and starts a background search below the
 working directory. `Found` results show relative paths, so identically named
 files in different folders remain distinguishable. The directory walk runs
-once; later keystrokes filter its results in memory.
+once and keeps every data file it finds; each keystroke scores those files in
+the background, narrowing the last result as the filter grows.
 
-An incomplete search says `partial · out of time`, `partial · too many`, or
-`partial · too deep` in its heading.
+`Found` lists the best `max_results` matches (1,000 by default). Its heading
+counts the rest (`1,000 of 2,500 matches`) and how many entries the walk read
+(`23,041 searched`).
+
+An incomplete search says `partial · out of time`, `partial · too many files`,
+or `partial · too deep` in its heading. A search that stopped short and matched
+nothing keeps its heading to say so: `no match in 23,001 files · partial · out
+of time`.
 
 ### Matching
 
@@ -378,7 +395,7 @@ The bottom bar shows the available action for the selected row.
 | Files read for a preview count | 64 |
 | Datasets measured concurrently | 12, visible entries only |
 | Network directories probed concurrently | 4 |
-| Recursive search | Depth 8; 20,000 results; 1.5 seconds |
+| Recursive search | Depth 8; 100,000 files kept; 1,000 matches listed; 1.5 seconds |
 
 Entries beyond an inspection limit remain browsable. The listing or search
 heading marks incomplete results: a directory cut short reads `first 5,000`

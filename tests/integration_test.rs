@@ -9464,6 +9464,9 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
         InputMode::Normal,
         "Esc from home should return to the open dataset"
     );
+    // Said on arrival, so a reflexive Esc too many does not leave the next keys acting
+    // on a table nobody noticed coming back (#547 D14).
+    assert_eq!(app.flash_message(), Some("Back to people.parquet"));
     assert_eq!(
         app.open_path(),
         Some(open_first.as_path()),
@@ -10200,15 +10203,11 @@ fn a_load_chosen_at_home_fails_at_home() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert!(!recorded(&broken), "a file that failed is not a recent");
 
-    // Dismissed, the reason stays beside the prompt.
+    // Dismissed, it is not said a second time beside the prompt: the dialog said it
+    // (#547 D8).
     app.event(&key(KeyCode::Enter));
     assert_eq!(app.input_mode, InputMode::Home);
-    assert!(
-        app.home
-            .status
-            .as_deref()
-            .is_some_and(|s| s.contains("broken.parquet"))
-    );
+    assert_eq!(app.home.status, None);
 
     // A file no reader takes is refused before anything is read.
     let model = dir.path().join("model.onnx");
@@ -13070,9 +13069,10 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
     assert_eq!(app.home.status, None, "gone at the next key");
 }
 
-/// The bar's count is of what is listed, which the header and the `more` row agree on.
+/// The count is of what is listed, which the header and the `more` row agree on. It
+/// sits on the section's rule; the bar keeps only the order (#547 D11).
 #[test]
-fn test_the_bar_counts_datasets_past_the_cap() {
+fn test_the_rule_counts_datasets_past_the_cap() {
     common::isolate_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let recents: Vec<PathBuf> = (0..12)
@@ -13099,7 +13099,9 @@ fn test_the_bar_counts_datasets_past_the_cap() {
     let bar: String = (0..area.width)
         .map(|x| buf[(x, area.height - 1)].symbol().to_string())
         .collect();
-    assert!(bar.contains("12 datasets"), "{bar:?}");
+    assert!(screen.contains("RECENT  12 "), "{screen:?}");
+    assert!(bar.contains("by recent"), "{bar:?}");
+    assert!(!bar.contains("datasets"), "{bar:?}");
 }
 
 /// The rendered list, one string per screen row, without the control bar.
@@ -14626,13 +14628,12 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
     );
 }
 
-/// The `N datasets` caption counts what is listed, not the way out of the directory.
+/// The section's count is of what is listed, not the way out of the directory.
 ///
 /// The door's kind is the directory's, so it counts as a dataset — and it is the same
-/// dataset as the directory it opens, counted a second time, in the figure whose own
-/// comment says counting a place-to-look makes it a lie.
+/// dataset as the directory it opens, counted a second time.
 #[test]
-fn test_the_caption_does_not_count_the_door_as_a_dataset() {
+fn test_the_count_does_not_include_the_door() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let parts = tmp.path().join("parts");
     std::fs::create_dir_all(&parts).unwrap();
@@ -14658,12 +14659,10 @@ fn test_the_caption_does_not_count_the_door_as_a_dataset() {
     let area = Rect::new(0, 0, 200, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let bar: String = (0..area.width)
-        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
-        .collect();
+    let screen = rendered_text(&buf);
     assert!(
-        bar.contains("3 datasets"),
-        "three files, and the door is not a fourth: {bar:?}"
+        screen.contains("parts  3 "),
+        "three files, and the door is not a fourth: {screen:?}"
     );
 }
 

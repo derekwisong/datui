@@ -204,6 +204,12 @@ pub fn best_match(needle: &str, haystack: &str) -> Option<Match> {
             positions: Vec::new(),
         });
     }
+    // Most names in a long list do not match. For ASCII, which is most names, saying so
+    // takes one pass over the bytes and no allocation; the search scores tens of
+    // thousands of names per keystroke.
+    if needle.is_ascii() && haystack.is_ascii() && !ascii_subsequence(haystack, needle) {
+        return None;
+    }
     let hay: Vec<char> = haystack.chars().collect();
     let lower: Vec<char> = haystack.to_lowercase().chars().collect();
     let needle: Vec<char> = needle.to_lowercase().chars().collect();
@@ -257,6 +263,14 @@ fn simple_match(hay: &[char], needle: &[char]) -> Option<Match> {
         score: (positions.len() as i32) * SCORE_MATCH,
         positions,
     })
+}
+
+/// Whether `needle` is a subsequence of `haystack`, ignoring ASCII case. Both ASCII.
+fn ascii_subsequence(haystack: &str, needle: &str) -> bool {
+    let mut hay = haystack.bytes();
+    needle
+        .bytes()
+        .all(|n| hay.any(|h| h.eq_ignore_ascii_case(&n)))
 }
 
 /// Whether `needle` is a subsequence of an already-lowercased `haystack`.

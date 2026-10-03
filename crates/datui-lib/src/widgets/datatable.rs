@@ -2149,6 +2149,11 @@ impl DataTableState {
         self.fixed_window = format_read
             .as_ref()
             .map(|read| read.records.clone() as Arc<dyn crate::pushdown::Windowed>);
+        if let Some(read) = &format_read {
+            // As for audio: the reader counted the records from the file's size, and a
+            // count through the frame would build its row index whole.
+            self.set_num_rows(read.records.rows());
+        }
         self.pushdown = pushdown;
         self.source_hold = hold;
         self.format_read = format_read;
@@ -4675,7 +4680,7 @@ impl DataTableState {
             .map_err(|e| color_eyre::eyre::eyre!(e))?;
         let read = Arc::new(read);
         let mut state = Self::new(
-            read.records.clone().into_lazy()?,
+            read.records.lazy(),
             options.pages_lookahead,
             options.pages_lookback,
             options.max_buffered_rows,

@@ -73,7 +73,6 @@ pub fn run(input: &[u8]) {
     if head.height() > 1 {
         let window = records
             .window(1, 1)
-            .and_then(|lf| lf.collect())
             .expect("a window of counted rows decodes");
         assert!(window.equals_missing(&head.slice(1, 1)));
     }

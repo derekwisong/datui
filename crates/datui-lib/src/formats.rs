@@ -3114,13 +3114,7 @@ fields = [
     }
 
     fn collect(opened: &Opened) -> DataFrame {
-        opened
-            .records
-            .clone()
-            .into_lazy()
-            .unwrap()
-            .collect()
-            .unwrap()
+        opened.records.lazy().collect().unwrap()
     }
 
     fn cell(df: &DataFrame, column: &str, row: usize) -> String {

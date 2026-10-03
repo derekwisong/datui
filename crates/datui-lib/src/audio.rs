@@ -868,10 +868,8 @@ pub const FRAME: &str = "frame";
 /// rather than a Duration: it charts, compares and reads as a plain number
 /// (`12.345625`), where a Duration displays as mixed units.
 pub const SECONDS: &str = "seconds";
-/// The frame index the lazy plan decodes from; the select over it leaves it out.
-const INDEX: &str = "__datui_audio_frame";
 /// The most frames shown: Polars counts rows in 32 bits.
-const MAX_FRAMES: u64 = IdxSize::MAX as u64;
+const MAX_FRAMES: u64 = crate::row_index::MAX_ROWS as u64;
 
 impl AudioSource {
     pub fn open(path: &Path, normalize: bool) -> Result<Self> {
@@ -1105,46 +1103,11 @@ impl AudioSource {
         }
     }
 
-    /// The frames as a lazy frame that Polars can stream, slice and prune.
-    ///
-    /// The plan is a frame index over nothing — a frame with no columns, only a
-    /// height — and one elementwise expression per column that decodes its samples
-    /// from the index. So a slice anywhere in the file decodes only its own frames, a
-    /// query that names one channel decodes only that channel, and the streaming
-    /// engine decodes a morsel at a time. The in-memory engine still builds the index
-    /// whole up to a slice's end, 4 bytes a frame, which is why an untouched view reads
-    /// its window through [`Self::window`]. A Polars `AnonymousScan` gives none of
-    /// these: it cannot start a slice late, and the streaming engine cannot run it.
+    /// The frames as a lazy frame that Polars can stream, slice and prune: decoded
+    /// over a frame index ([`crate::row_index`]), so a slice anywhere decodes only its
+    /// own frames and a query that names one channel decodes only that channel.
     pub fn lazy(self: &Arc<Self>) -> LazyFrame {
-        let base = DataFrame::empty_with_height(self.frames as usize)
-            .lazy()
-            .with_row_index(INDEX, None);
-        let exprs: Vec<Expr> = self
-            .schema()
-            .iter()
-            .filter_map(|(name, dtype)| {
-                let which = self.which(name)?;
-                let source = Arc::clone(self);
-                let field = Field::new(name.clone(), dtype.clone());
-                Some(
-                    col(INDEX)
-                        .map(
-                            move |c: Column| {
-                                source.still_whole()?;
-                                let index = c.as_materialized_series().idx()?;
-                                Ok(source.decode(
-                                    c.name().clone(),
-                                    which,
-                                    index.iter().map(|f| f.map(u64::from)),
-                                ))
-                            },
-                            move |_, _| Ok(field.clone()),
-                        )
-                        .alias(name.clone()),
-                )
-            })
-            .collect();
-        base.select(exprs)
+        crate::row_index::lazy(self)
     }
 
     /// The lowest and highest value a channel's column can hold, in the column's own
@@ -1280,6 +1243,33 @@ impl AudioSource {
             }
         }
         Ok(Some(reports))
+    }
+}
+
+impl crate::row_index::RowSource for AudioSource {
+    fn height(&self) -> usize {
+        self.frames as usize
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::new(AudioSource::schema(self))
+    }
+
+    fn decode(&self, column: usize, index: &IdxCa) -> PolarsResult<Column> {
+        self.still_whole()?;
+        let which = match column {
+            0 => Which::Frame,
+            1 => Which::Seconds,
+            c => Which::Channel(c - 2),
+        };
+        let name = self.schema().get_at_index(column).map(|(n, _)| n.clone());
+        let name = name.ok_or_else(|| polars_err!(ColumnNotFound: "column {column}"))?;
+        Ok(AudioSource::decode(
+            self,
+            name,
+            which,
+            index.iter().map(|f| f.map(u64::from)),
+        ))
     }
 }
 

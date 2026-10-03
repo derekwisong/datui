@@ -17,8 +17,7 @@ pub fn collect_lazy(
 ) -> std::result::Result<DataFrame, PolarsError> {
     #[cfg(feature = "streaming")]
     {
-        // A fixed-record scan has no streaming implementation in Polars 0.55.
-        if crate::fixed_records::may_stream(&lf, use_streaming) {
+        if may_stream(&lf, use_streaming) && !sorts_by_one_wide_key(&lf) {
             // A plain collect is always one frame; `Multiple` only comes from sink_multiple.
             lf.collect_with_engine(Engine::Streaming)
                 .map(|result| result.unwrap_single())
@@ -31,6 +30,42 @@ pub fn collect_lazy(
         let _ = use_streaming; // ignored when streaming feature is disabled
         lf.collect()
     }
+}
+
+/// Whether a query over `lf` may use the streaming engine: asked for, and possible.
+/// Polars 0.55's streaming engine cannot run an anonymous scan (a SQLite table): it
+/// stops at a `todo!`.
+pub fn may_stream(lf: &LazyFrame, wanted: bool) -> bool {
+    use polars::lazy::dsl::{DslPlan, FileScanDsl};
+    wanted
+        && !lf.logical_plan.into_iter().any(|node| match node {
+            DslPlan::Scan { scan_type, .. } => {
+                matches!(scan_type.as_ref(), FileScanDsl::Anonymous { .. })
+            }
+            _ => false,
+        })
+}
+
+/// Whether `lf` sorts by a single Decimal or 128-bit key. Polars 0.55's streaming
+/// top-k, a sort under a slice from row 0 as the table's first page is, panics on
+/// those ("not implemented for dtype Int128"); the in-memory engine sorts them. A
+/// format spec's `scale` reads as Decimal, so a sort by a price column takes this.
+#[cfg(feature = "streaming")]
+fn sorts_by_one_wide_key(lf: &LazyFrame) -> bool {
+    use polars::lazy::dsl::DslPlan;
+    lf.logical_plan.into_iter().any(|node| match node {
+        DslPlan::Sort {
+            input, by_column, ..
+        } if by_column.len() == 1 => LazyFrame::from((**input).clone())
+            .select([by_column[0].clone()])
+            .collect_schema()
+            .ok()
+            .and_then(|schema| schema.get_at_index(0).map(|(_, dtype)| dtype.clone()))
+            .is_some_and(|dtype| {
+                dtype.is_decimal() || matches!(dtype, DataType::Int128 | DataType::UInt128)
+            }),
+        _ => false,
+    })
 }
 
 /// Default sampling threshold: datasets >= this size are sampled.

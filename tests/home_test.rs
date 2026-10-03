@@ -2684,23 +2684,35 @@ fn test_recent_shows_whole_places_up_to_a_third_of_the_screen() {
     ));
 }
 
-/// Serializes the tests that change the process working directory, which is process
-/// state: two of them interleaving would each build the other's listing.
-static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The process working directory, which every listing reads and a few tests move:
+/// those take it to write, so two of them never interleave, and a test whose rows
+/// depend on it holds it to read, so the section it lists first does not change
+/// under it.
+static CWD: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
-/// Puts the working directory back when the test ends, panicking or not.
-struct CwdGuard(std::path::PathBuf);
+/// Puts the working directory back when the test ends, panicking or not, and only
+/// then lets the next test move it: a guard returned beside the lock was dropped after
+/// it, and put back the directory the next test had just moved into.
+struct CwdGuard {
+    back: std::path::PathBuf,
+    _lock: std::sync::RwLockWriteGuard<'static, ()>,
+}
 impl Drop for CwdGuard {
     fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.0);
+        let _ = std::env::set_current_dir(&self.back);
     }
 }
 
-fn in_cwd(dir: &std::path::Path) -> (std::sync::MutexGuard<'static, ()>, CwdGuard) {
-    let lock = CWD.lock().unwrap_or_else(|e| e.into_inner());
-    let restore = CwdGuard(std::env::current_dir().unwrap());
+fn in_cwd(dir: &std::path::Path) -> CwdGuard {
+    let lock = CWD.write().unwrap_or_else(|e| e.into_inner());
+    let back = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir).unwrap();
-    (lock, restore)
+    CwdGuard { back, _lock: lock }
+}
+
+/// Keep the working directory where it is while held.
+fn hold_cwd() -> std::sync::RwLockReadGuard<'static, ()> {
+    CWD.read().unwrap_or_else(|e| e.into_inner())
 }
 
 #[test]
@@ -4827,6 +4839,9 @@ fn test_rows_that_cannot_be_measured_are_not_located_on_the_mount_table() {
     for day in 1..=40 {
         fs::create_dir_all(tmp.path().join(format!("2009-01-{day:02}"))).unwrap();
     }
+    // The listing has a section for the working directory, and other tests here move
+    // it into a directory of data files; held, it lists only the partitions.
+    let _cwd = in_cwd(tmp.path());
 
     let mut home = HomeState::default();
     home.rebuild(&[tmp.path().to_path_buf()], &[]);
@@ -5573,6 +5588,10 @@ mod coming_back {
     thread_local! {
         /// Each test's private cache, removed when its thread ends.
         static CACHES: std::cell::RefCell<Vec<TempDir>> = const { std::cell::RefCell::new(Vec::new()) };
+        /// The working directory held still until the test's thread ends: its section
+        /// comes first, and a test moving it mid-test moved the rows below it (#715).
+        static CWD_HELD: std::cell::RefCell<Option<std::sync::RwLockReadGuard<'static, ()>>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     /// The home screen over `config`, its first listing landed. Its recents are its
@@ -5595,6 +5614,9 @@ mod coming_back {
         let cache = TempDir::new().unwrap();
         app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
         CACHES.with(|caches| caches.borrow_mut().push(cache));
+        CWD_HELD.with(|held| {
+            held.borrow_mut().get_or_insert_with(super::hold_cwd);
+        });
         app.enter_home();
         settle(&mut app, &rx, |_| true);
         (app, rx)
@@ -5620,11 +5642,8 @@ mod coming_back {
             }
             assert!(
                 Instant::now() < deadline,
-                "the home screen never settled: browsing {:?}, listing {}, search {:?} {:?}, rows {:?}",
-                app.home.browsing,
-                app.home.listing_in_flight,
-                app.home.search.done,
-                app.home.search.limited,
+                "the home screen never settled: {}; rows {:?}",
+                crate::common::home_pending(app),
                 entries(app)
             );
             if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
@@ -6349,6 +6368,19 @@ mod cloud_level_paging {
         settle(&mut app, &rx, |app| {
             super::coming_back::entries(app).contains(&wanted)
         });
+        assert_eq!(
+            subtitle(&app).as_deref(),
+            Some("first 5,000 + 10 STATION=P509*")
+        );
+        // An answer for a key typed since, landing late, does not put the shorter
+        // prefix back.
+        let rows = app.home.narrowed.clone().expect("narrowed").rows;
+        app.event(&AppEvent::HomeNarrowed {
+            dir: level.clone(),
+            prefix: "STATION=P50".to_string(),
+            listed: Some((rows, false)),
+        });
+        settle(&mut app, &rx, |_| true);
         assert_eq!(
             subtitle(&app).as_deref(),
             Some("first 5,000 + 10 STATION=P509*")
@@ -7179,6 +7211,9 @@ fn a_csv_a_delimited_spec_names_is_listed_under_the_spec() {
 fn test_a_file_row_says_how_it_will_be_read() {
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     common::isolate_cache();
+    // The working directory is listed first; moved by another test, it moved this
+    // file's row beside the pane's own `in memory`.
+    let _cwd = hold_cwd();
     let tmp = TempDir::new().unwrap();
     for name in [
         "events.json",

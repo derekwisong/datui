@@ -13341,16 +13341,19 @@ impl App {
                 prefix,
                 listed,
             } => {
-                if self
+                // Only the request out now: one replaced by a later key may still
+                // answer, after the later one, and put back the shorter prefix.
+                let asked = self
                     .home_narrowing
                     .as_ref()
-                    .is_some_and(|(d, p, _)| d == dir && p == prefix)
-                {
+                    .is_some_and(|(d, p, _)| d == dir && p == prefix);
+                if asked {
                     self.home_narrowing = None;
                 }
                 // Only while it is still where the user is and what the filter asks.
-                let wanted =
-                    self.home.browsing.as_ref() == Some(dir) && !self.home.filter.is_empty();
+                let wanted = asked
+                    && self.home.browsing.as_ref() == Some(dir)
+                    && !self.home.filter.is_empty();
                 if let (Some((rows, truncated)), true) = (listed, wanted) {
                     self.home.narrowed = Some(home::Narrowed {
                         dir: dir.clone(),

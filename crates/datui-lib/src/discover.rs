@@ -90,9 +90,9 @@ impl EntryKind {
     /// Short label shown next to the entry name.
     pub fn label(self) -> &'static str {
         match self {
-            EntryKind::File => "",
-            // No reader: shown as its bytes.
-            EntryKind::Other => "binary",
+            // A file with no reader says nothing: it is dimmed, and Enter shows its
+            // bytes. `binary` would be wrong for the README or log it often is.
+            EntryKind::File | EntryKind::Other => "",
             EntryKind::Hive => "hive",
             EntryKind::MultiFile => "multi",
             EntryKind::Delta => "delta",

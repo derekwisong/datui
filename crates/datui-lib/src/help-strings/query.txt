@@ -2,10 +2,10 @@ Keys:
   Enter:            Run the query (reopening / restores the last query,
                     selected: typing replaces it, arrows edit it).
                     On the tab bar, Enter returns to the input
-  Ctrl+T:           Next mode: SQL, Search, q-style (from the input too)
+  Ctrl+T:           Next mode: SQL, Text, q (from the input too)
   Shift+Tab:        Input to the tab bar and back
   Tab:              SQL: complete a column name or df; again for the
-                    next match. Search, q-style: to the tab bar
+                    next match. Text, q: to the tab bar
   Alt+Enter:        SQL: start a new line
   ← / → (h/l):      On the tab bar: switch mode
   ↑ / ↓:            Earlier and later queries from the history
@@ -19,7 +19,7 @@ Keys:
 
 / opens on SQL, or on the active query's mode.
 [query] default_mode in the config chooses another starting mode.
-A build without the sql feature has no SQL tab and opens on Search.
+A build without the sql feature has no SQL tab and opens on Text.
 
 Running a query — or clearing one — starts a fresh view: sidebar filters,
 sort, frozen columns and pivot/melt are dropped. This is deliberate; apply
@@ -31,7 +31,7 @@ keeps what it showed, and the query is there to fix.
 
 SQL:
   The SQL the bundled Polars supports, not the full SQL standard, over one
-  table, df: the group's rows while drilled into one, the pivot or melt
+  table, df: the group's rows while drilled down into one, the pivot or melt
   result while one is in effect, otherwise the data as loaded. Never the
   sidebar filters or sort, nor the previous statement's result.
   Example: SELECT carrier, COUNT(*) AS flights FROM df GROUP BY carrier
@@ -43,19 +43,19 @@ SQL:
   after the WHERE; Esc comes back. Only for one table grouped by selected
   keys: no joins, subqueries, WITH, UNION or window functions.
 
-Search:
+Text:
   Every word's letters in order, in any text column. A row matches when,
   for each word, one of its text columns holds that word's letters in
   order, not necessarily adjacent, so "smth" finds "Smith". Matching is
   case-insensitive and needs at least one text column. Reopened after a
-  search, the prompt shows how many rows matched.
+  Text query, the prompt shows how many rows matched.
 
-q-style:
+q:
   A subset of the q language, datui's own: it evaluates right to left and
   is not a complete q or q-sql. The syntax follows; the user guide's
   Query syntax page is the full reference.
 
-q-style Syntax:
+q syntax:
   select [columns] [by group_cols] [where conditions]
 
 Basic Examples:
@@ -128,7 +128,7 @@ Grouping:
   - Group with aliases: by region_name:region, total:sales+tax
   - Empty select with grouping: select by city, state
   - All non-group columns collected as lists
-  - Enter on a result row drills into its rows, aggregated or not;
+  - Enter on a result row drills down to its rows, aggregated or not;
     Esc comes back
 
 Where Conditions:

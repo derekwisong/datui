@@ -332,8 +332,8 @@ fn test_query_default_mode() {
 
     for (text, mode) in [
         ("sql", QueryMode::Sql),
-        ("search", QueryMode::Text),
-        ("q-style", QueryMode::Q),
+        ("text", QueryMode::Text),
+        ("q", QueryMode::Q),
     ] {
         let config: AppConfig =
             toml::from_str(&format!("[query]\ndefault_mode = \"{text}\"\n")).unwrap();
@@ -341,9 +341,9 @@ fn test_query_default_mode() {
     }
     assert!(toml::from_str::<AppConfig>("[query]\ndefault_mode = \"fuzzy\"\n").is_err());
 
-    // A file that picks q-style wins, a later one that says nothing keeps it, and one
+    // A file that picks q wins, a later one that says nothing keeps it, and one
     // that names the default puts it back.
-    let picked = "[query]\ndefault_mode = \"q-style\"\n";
+    let picked = "[query]\ndefault_mode = \"q\"\n";
     let silent = "[query]\nhistory_limit = 10\n";
     assert_eq!(layered(&[picked, silent]).query.default_mode, QueryMode::Q);
     assert_eq!(
@@ -451,7 +451,7 @@ streaming = false
 quality_local_copy = "512MiB"
 
 [query]
-default_mode = "search"
+default_mode = "text"
 history = false
 
 [views]

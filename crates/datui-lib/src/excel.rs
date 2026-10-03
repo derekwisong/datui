@@ -203,7 +203,7 @@ pub fn detail<RS: std::io::Read + std::io::Seek>(
         }
         list.push((sheet.name.clone(), MetaValue::Text(said.join(", "))));
     }
-    let mut first = count(meta.len() as u64, "sheet", "sheets");
+    let mut first = count(meta.len() as u64, "worksheet", "worksheets");
     let middot = crate::glyphs::get().middot;
     if hidden > 0 {
         first.push_str(&format!(" {middot} {hidden} hidden"));

@@ -9,26 +9,26 @@ Navigation:
   PgUp/PgDn:        Scroll pages (Ctrl+F down, Ctrl+B up)
   Home/End:         Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:    Half page down/up
-  ::                Go to line number (e.g. :0 Enter for top)
+  ::                Go to row number (e.g. :0 Enter for top)
   f:                Find text or a regex in the view; the cursor, column
                     cursor and all, goes to the first match at or after
                     its row
   n / N:            Next / previous match from the cursor's cell,
                     wrapping round the view
-  Enter:            On a row of a by query or a SQL GROUP BY, drill into
+  Enter:            On a row of a by query or a SQL GROUP BY, drill down to
                     its rows (Esc comes back); elsewhere, inspect the row
   Space:            Inspect the row: every field, each value whole and
                     exact (Esc or Space closes). The bar's first chip
                     says what Enter does: Inspect, or Drill
 
 Data Operations:
-  /:                Query: SQL, Search or q-style
+  /:                Query: SQL, Text or q
   c:                Open charts
   s:                Open the Sort & Filter sidebar (tabs: Columns, Filters),
                     on the cursor's column
   F:                Value counts of the cursor's column: each value's
                     rows, percent and a bar, with a summary
-  a:                Open Statistical Analysis. In a Data Quality evidence
+  a:                Open Analysis. In a Data Quality evidence
                     drill a is disabled; Esc returns to the observation
   p:                Open Pivot & Melt
   e:                Export data to file

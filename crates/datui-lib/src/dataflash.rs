@@ -526,7 +526,6 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
         tables.clone(),
         wanted,
         path,
-        crate::FileFormat::Dataflash,
         " The log has no records but its formats.",
     )? {
         crate::sqlite::Pick::One(table) => table.name,

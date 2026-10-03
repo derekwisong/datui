@@ -108,7 +108,7 @@ pub fn render(
 ) {
     let title = match app.input_type {
         Some(crate::InputType::Query) => "Query",
-        Some(crate::InputType::GoToLine) => "Go to line",
+        Some(crate::InputType::GoToLine) => "Go to row",
         Some(crate::InputType::Find) => "Find",
         None => "Input",
     };
@@ -562,13 +562,13 @@ mod tests {
     /// SQL comes first, and the tabs read in the documented order.
     #[cfg(feature = "sql")]
     #[test]
-    fn the_modes_read_sql_search_q_style() {
+    fn the_modes_read_sql_text_q() {
         let mut app = prompt();
         let tab_row = &draw(&mut app, 80)[1];
         let sql = tab_row.find("SQL").unwrap();
-        let search = tab_row.find("Search").unwrap();
-        let q = tab_row.find("q-style").unwrap();
-        assert!(sql < search && search < q, "{tab_row:?}");
+        let text = tab_row.find("Text").unwrap();
+        let q = tab_row.find(" q ").unwrap();
+        assert!(sql < text && text < q, "{tab_row:?}");
     }
 
     /// One border: the Surface's frame, nothing box-drawn inside it.

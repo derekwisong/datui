@@ -6,7 +6,7 @@ use crate::{App, AppEvent, InputMode, InputType, QueryFocus};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
-    /// Keys while a prompt (query, find, go to line) is being edited.
+    /// Keys while a prompt (query, find, go to row) is being edited.
     pub(crate) fn editing_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         if self.input_type == Some(InputType::Query) {
             const RIGHT_KEYS: [KeyCode; 2] = [KeyCode::Right, KeyCode::Char('l')];

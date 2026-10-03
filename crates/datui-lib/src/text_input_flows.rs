@@ -52,7 +52,7 @@ impl Harness {
         harness
     }
 
-    /// Loaded, with `/` preferring the q-style mode.
+    /// Loaded, with `/` preferring the q mode.
     fn q_style() -> Self {
         let mut h = Self::with_data();
         h.app.app_config.query.default_mode = crate::QueryMode::Q;
@@ -503,7 +503,7 @@ fn each_query_tab_keeps_its_own_value() {
     assert_eq!(h.app.fuzzy_input.value(), "ada");
     assert_eq!(drawn(&h.app.fuzzy_input, 20), "ada");
 
-    // The q-style tab still holds what was typed there, and going back to
+    // The q tab still holds what was typed there, and going back to
     // it, text and all, is the tab bar's round trip.
     assert_eq!(h.app.query_input.value(), "select name");
     h.press(KeyCode::Tab);
@@ -541,7 +541,7 @@ fn ctrl_t_cycles_the_mode_without_leaving_the_input() {
     assert_eq!(typed.value(), "abcd");
 }
 
-/// Esc closes the prompt whole from every mode. The q-style path used to leave
+/// Esc closes the prompt whole from every mode. The q path used to leave
 /// the prompt's input type behind.
 #[test]
 fn esc_closes_the_query_prompt_from_every_mode() {

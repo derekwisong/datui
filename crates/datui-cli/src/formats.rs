@@ -135,13 +135,11 @@ const TEXT_ONLY: Summary = Summary::None("text holds its rows and nothing else")
 #[derive(Debug)]
 pub struct Tables {
     /// The table a file of several opens when none is named, as the home screen says
-    /// it (`its symbols`, `its first sheet`): Enter there opens it and → lists them
+    /// it (`its symbols`, `its first table`): Enter there opens it and → lists them
     /// all. `None`: Enter lists them.
     pub opens: Option<&'static str>,
     /// Whether the home screen lists them by name rather than in the file's order.
     pub by_name: bool,
-    /// What one is called, singular and plural.
-    pub noun: (&'static str, &'static str),
     /// What the flag takes for this format, for its help: `a table or view by name`.
     pub help: &'static str,
 }
@@ -302,10 +300,9 @@ const EXCEL: Descriptor = Descriptor {
     title: "Excel",
     extensions: &["xls", "xlsx", "xlsm", "xlsb"],
     tables: Some(Tables {
-        opens: Some("its first sheet"),
+        opens: Some("its first table"),
         by_name: false,
-        noun: ("sheet", "sheets"),
-        help: "a sheet by name, or by 0-based index when no sheet is so named",
+        help: "a worksheet by name, or by 0-based index when no worksheet is so named",
     }),
     summary: Summary::Tab("Excel"),
     ..BASE
@@ -336,7 +333,6 @@ const NMEA: Descriptor = Descriptor {
     tables: Some(Tables {
         opens: Some("its fixes"),
         by_name: false,
-        noun: ("table", "tables"),
         help: "fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences",
     }),
     conversion: Some(Conversion {
@@ -390,7 +386,6 @@ const SQLITE: Descriptor = Descriptor {
     tables: Some(Tables {
         opens: None,
         by_name: true,
-        noun: ("table", "tables"),
         help: "a table or view by name",
     }),
     summary: Summary::Tab("SQLite"),
@@ -443,7 +438,6 @@ const NUMPY: Descriptor = Descriptor {
     tables: Some(Tables {
         opens: None,
         by_name: false,
-        noun: ("array", "arrays"),
         help: "an array of an archive (.npz) by name",
     }),
     conversion: Some(Conversion {
@@ -462,7 +456,6 @@ const ELF: Descriptor = Descriptor {
     tables: Some(Tables {
         opens: Some("its symbols"),
         by_name: false,
-        noun: ("table", "tables"),
         help: "symbols (default) or sections",
     }),
     summary: Summary::Tab("ELF"),
@@ -479,7 +472,6 @@ const ULOG: Descriptor = Descriptor {
     tables: Some(Tables {
         opens: None,
         by_name: false,
-        noun: ("table", "tables"),
         help: "a topic",
     }),
     summary: Summary::Tab("ULog"),
@@ -494,7 +486,6 @@ const DATAFLASH: Descriptor = Descriptor {
     tables: Some(Tables {
         opens: None,
         by_name: false,
-        noun: ("table", "tables"),
         help: "a message type",
     }),
     summary: Summary::Tab("DataFlash"),
@@ -509,8 +500,7 @@ const CANDUMP: Descriptor = Descriptor {
     tables: Some(Tables {
         opens: None,
         by_name: false,
-        noun: ("table", "tables"),
-        help: "frames (default), signals, or a message a DBC file names",
+        help: "frames (default), signals, or a message a dictionary names",
     }),
     summary: Summary::Tab("CAN"),
     ..BASE

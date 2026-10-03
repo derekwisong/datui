@@ -975,7 +975,7 @@ pub struct App {
     // One input per query mode, each with its own history. The history ids
     // ("query", "sql", "fuzzy") name files already on disk; they stay as they
     // are so no history is lost or read as another mode's.
-    query_input: TextInput, // q-style, history id "query"; also borrowed by go-to-line
+    query_input: TextInput, // q mode, history id "query"; also borrowed by go-to-line
     sql_input: TextInput,   // SQL, history id "sql"
     fuzzy_input: TextInput, // Search, history id "fuzzy"
     /// The find prompt (`f`) and the find `n` and `N` repeat; history id "find".
@@ -1645,7 +1645,7 @@ impl App {
                 view.push(format!("SQL: {}", state.get_active_sql_query()));
             }
             if !state.get_active_fuzzy_query().is_empty() {
-                view.push(format!("search: {}", state.get_active_fuzzy_query()));
+                view.push(format!("text: {}", state.get_active_fuzzy_query()));
             }
             for (index, filter) in state.view_filters().iter().enumerate() {
                 let join = if index == 0 {
@@ -13514,7 +13514,7 @@ impl App {
                     let streaming = self.app_config.performance.streaming;
                     self.spawn_job(
                         Job::Analysis(jobs::AnalysisRun::default()),
-                        Some("Computing statistics..."),
+                        Some("Running analysis..."),
                         move |_| {
                             let results = source
                                 .cut(&sample.scope)
@@ -14121,7 +14121,7 @@ impl App {
                 None
             }
             AppEvent::TextQuery(query) => {
-                self.run_query(QueryMode::Text, query, "Searching...");
+                self.run_query(QueryMode::Text, query, "Applying Text query...");
                 None
             }
             AppEvent::Filter(statements) => {
@@ -16013,7 +16013,7 @@ impl App {
         })
     }
 
-    /// A view's query: SQL or q-style (at most one is stored), then a search.
+    /// A view's query: SQL or q (at most one is stored), then a Text query.
     fn replay_query(
         state: &mut DataTableState,
         sql: Option<&str>,
@@ -16758,7 +16758,7 @@ impl App {
             .map(|selected| state.start_row() + selected)
             .and_then(|index| Some((index, state.drill_row(index)?)));
         match drill {
-            None => self.flash_note("Nothing to drill into".to_string()),
+            None => self.flash_note("No group to drill down into".to_string()),
             Some((group_index, DrillRow::Buffered(row))) => self.drill_into(group_index, &row),
             Some((group_index, DrillRow::Read(lf))) => {
                 let streaming = state.polars_streaming();
@@ -18005,7 +18005,7 @@ impl App {
             InputMode::Editing => match self.input_type {
                 Some(InputType::Query) => ("Query Help", help_strings::query()),
                 Some(InputType::Find) => ("Find Help", help_strings::find()),
-                _ => ("Go to Line", help_strings::go_to_line()),
+                _ => ("Go to Row", help_strings::go_to_line()),
             },
             InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
             InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),

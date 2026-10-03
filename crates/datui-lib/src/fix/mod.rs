@@ -1000,7 +1000,7 @@ pub fn layers(registry: &crate::formats::Registry, dicts: &[PathBuf]) -> Result<
             Ok(None) => {
                 return Err(FileError::new(
                     path,
-                    "not a FIX dictionary. --dict takes a QuickFIX XML file, or TOML with kind = \"fix\".",
+                    "not a QuickFIX dictionary. --dict takes a QuickFIX XML file, or TOML with kind = \"fix\".",
                 )
                 .into());
             }

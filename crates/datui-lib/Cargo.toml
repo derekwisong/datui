@@ -166,7 +166,7 @@ features = [
     "regex",
     "abs",
     "round_series",
-    # log and exp in the q-style query language.
+    # log and exp in the q query language.
     "log",
     "strings",
 ]

@@ -136,7 +136,6 @@ pub fn pick(tables: Vec<Table>, wanted: Option<&str>, display: &Path) -> color_e
         tables,
         wanted,
         display,
-        crate::FileFormat::Sqlite,
         " --table sqlite_master shows its schema.",
     )
 }

@@ -139,7 +139,7 @@ pub struct Args {
     )]
     pub compression: Option<CompressionFormat>,
 
-    /// A dictionary to decode with, over those on the format search path: a FIX dictionary (QuickFIX .xml) or a DBC file (.dbc), or TOML with kind = "fix" or "dbc". Repeatable
+    /// A dictionary to decode with, over those on the format search path: QuickFIX XML (.xml) for FIX logs, DBC (.dbc) for CAN logs, or TOML with kind = "fix" or "dbc". Repeatable
     #[arg(long = "dict", value_name = "FILE", help_heading = "Open")]
     pub dict: Vec<std::path::PathBuf>,
 
@@ -505,9 +505,9 @@ pub enum ViewsAction {
 /// What `datui formats` does besides listing.
 #[derive(Clone, Debug, Subcommand)]
 pub enum FormatsAction {
-    /// Check a spec or FIX dictionary, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error
+    /// Check a format spec or a QuickFIX dictionary, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error
     Check {
-        /// A spec or FIX dictionary name on the search path, or its file
+        /// A format spec or QuickFIX dictionary on the search path, by name, or its file
         #[arg(value_name = "SPEC")]
         spec: String,
         /// A file (or directory of column files) to read with it
@@ -1383,7 +1383,7 @@ mod format_tests {
                     .descriptor()
                     .tables
                     .as_ref()
-                    .map_or("no", |t| t.noun.1);
+                    .map_or("no", |_| "tables");
                 assert_eq!(tables, listed, "{title}: Lists inside the file");
             }
         }

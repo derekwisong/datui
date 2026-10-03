@@ -113,7 +113,7 @@ pub fn load(path: &Path) -> Result<Option<Dbc>, SpecError> {
                 Some(path),
                 0,
                 format!(
-                    "{} MiB is past the {} MiB a DBC file may be",
+                    "{} MiB is past the {} MiB a DBC dictionary may be",
                     size >> 20,
                     MAX_FILE >> 20
                 ),
@@ -149,7 +149,7 @@ pub fn load(path: &Path) -> Result<Option<Dbc>, SpecError> {
         error(
             Some(path),
             0,
-            "kind = \"dbc\" names its DBC file with file = \"...\"",
+            "kind = \"dbc\" names its .dbc file with file = \"...\"",
         )
     })?;
     let interface = match table.get("match") {

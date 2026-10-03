@@ -1851,8 +1851,8 @@ impl QueryMode {
     pub fn title(self) -> &'static str {
         match self {
             QueryMode::Sql => "SQL",
-            QueryMode::Text => "Search",
-            QueryMode::Q => "q-style",
+            QueryMode::Text => "Text",
+            QueryMode::Q => "q",
         }
     }
 

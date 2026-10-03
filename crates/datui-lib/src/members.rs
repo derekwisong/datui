@@ -119,27 +119,16 @@ pub fn tables(file: &Path, format: FileFormat) -> color_eyre::Result<Vec<Table>>
     .map_err(|e| crate::error_display::in_file(file, e))
 }
 
-/// What a file of tables calls one of them, singular and plural.
-pub fn noun(format: FileFormat) -> (&'static str, &'static str) {
-    format
-        .descriptor()
-        .tables
-        .as_ref()
-        .map_or(("table", "tables"), |t| t.noun)
-}
-
 /// The table `wanted` names among `tables`, or the file's one table of its own when
-/// nothing is named. `display` names the file in errors; `format` says what its
-/// tables are called, and `empty` what to say of a file of none.
+/// nothing is named. `display` names the file in errors, and `empty` what to say of a
+/// file of none.
 pub fn pick(
     tables: Vec<Table>,
     wanted: Option<&str>,
     display: &Path,
-    format: FileFormat,
     empty: &str,
 ) -> color_eyre::Result<Pick> {
     use crate::error_display::FileError;
-    let (one, many) = noun(format);
     let own: Vec<&Table> = tables.iter().filter(|t| !t.internal).collect();
     let names = || {
         const SHOWN: usize = 20;
@@ -166,13 +155,13 @@ pub fn pick(
             Some(table) => Ok(Pick::One(table.clone())),
             None if own.is_empty() => Err(FileError::new(
                 display,
-                format!("no {one} \"{wanted}\"; the file holds no {many}."),
+                format!("no table \"{wanted}\"; the file holds no tables."),
             )
             .into()),
             None => Err(FileError::new(
                 display,
                 format!(
-                    "no {one} \"{wanted}\". --table names one of its {many}: {}.",
+                    "no table \"{wanted}\". --table names one of its tables: {}.",
                     names()
                 ),
             )
@@ -180,7 +169,7 @@ pub fn pick(
         };
     }
     match own.as_slice() {
-        [] => Err(FileError::new(display, format!("the file holds no {many}.{empty}")).into()),
+        [] => Err(FileError::new(display, format!("the file holds no tables.{empty}")).into()),
         [one] => Ok(Pick::One((*one).clone())),
         _ => Ok(Pick::Several(tables)),
     }
@@ -295,23 +284,21 @@ fields = [{ name = "b", type = "u1" }]"#,
         let display = Path::new("run.npz");
         let several = vec![t("x"), t("y")];
         assert!(matches!(
-            pick(several.clone(), None, display, FileFormat::Numpy, "").unwrap(),
+            pick(several.clone(), None, display, "").unwrap(),
             Pick::Several(_)
         ));
         assert_eq!(
-            pick(several.clone(), Some("Y"), display, FileFormat::Numpy, "").unwrap(),
+            pick(several.clone(), Some("Y"), display, "").unwrap(),
             Pick::One(t("y"))
         );
-        let missing = pick(several, Some("z"), display, FileFormat::Numpy, "")
+        let missing = pick(several, Some("z"), display, "")
             .unwrap_err()
             .to_string();
         assert_eq!(
             missing,
-            "\"run.npz\": No array \"z\". --table names one of its arrays: x, y."
+            "\"run.npz\": No table \"z\". --table names one of its tables: x, y."
         );
-        let empty = pick(Vec::new(), None, display, FileFormat::Numpy, "")
-            .unwrap_err()
-            .to_string();
-        assert_eq!(empty, "\"run.npz\": The file holds no arrays.");
+        let empty = pick(Vec::new(), None, display, "").unwrap_err().to_string();
+        assert_eq!(empty, "\"run.npz\": The file holds no tables.");
     }
 }

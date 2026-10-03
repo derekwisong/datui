@@ -2692,14 +2692,14 @@ impl DataTableState {
             Some(sheet_sel) => match sheet_sel.parse::<usize>() {
                 Ok(idx) => sheet_names.get(idx).cloned().ok_or_else(|| {
                     color_eyre::eyre::eyre!(
-                        "Excel: no sheet at index {}; this file has: {}",
+                        "Excel: no worksheet at index {}; this file has: {}",
                         idx,
                         sheets_on_offer()
                     )
                 })?,
                 Err(_) => {
                     return Err(color_eyre::eyre::eyre!(
-                        "Excel: no sheet named '{}'; this file has: {}",
+                        "Excel: no worksheet named '{}'; this file has: {}",
                         sheet_sel,
                         sheets_on_offer()
                     ));
@@ -8330,7 +8330,7 @@ impl DataTableState {
         self.cursor_at = saved.cursor_at;
         self.reveal_cursor = true;
         self.grouped = saved.grouped;
-        // A q-style query or a search forgets the pivot or melt it replaces.
+        // A q query or a search forgets the pivot or melt it replaces.
         self.reshaped_lf = saved.reshaped_lf;
         self.last_pivot_spec = saved.last_pivot_spec;
         self.last_melt_spec = saved.last_melt_spec;
@@ -9106,7 +9106,7 @@ impl DataTableState {
                 literal,
             )]),
             None => Step::Unreproducible(format!(
-                "drilled into the rows where {column} is {label}, a value of a type not written as Python"
+                "drilled down to the rows where {column} is {label}, a value of a type not written as Python"
             )),
         });
         let matches = col(column).eq_missing(lit(Scalar::new(dtype, value)));
@@ -9246,7 +9246,7 @@ impl DataTableState {
             // Already first.
             lead: Vec::new(),
             steps: vec![Step::Unreproducible(format!(
-                "drilled into the group {group}, read from the grouped result's lists: \
+                "drilled down into the group {group}, read from the grouped result's lists: \
                  not written as Python"
             ))],
             // The lists keep the result's names.
@@ -9310,7 +9310,7 @@ impl DataTableState {
                 steps
             }
             _ => vec![Step::Unreproducible(format!(
-                "drilled into the group {}: not written as Python",
+                "drilled down into the group {}: not written as Python",
                 key_columns
                     .iter()
                     .zip(&key_values)
@@ -10166,7 +10166,7 @@ impl DataTableState {
             .collect();
         if string_cols.is_empty() {
             self.error = Some(PolarsError::ComputeError(
-                "Search needs at least one text column".into(),
+                "A Text query needs at least one text column".into(),
             ));
             return;
         }
@@ -14573,7 +14573,7 @@ mod tests {
         }
     }
 
-    /// A q-style query forgets the melt it replaces; rolled back, the melt is
+    /// A q query forgets the melt it replaces; rolled back, the melt is
     /// what SQL runs against again, not only what the table shows.
     #[test]
     fn a_rollback_brings_back_the_melt_a_query_forgot() {

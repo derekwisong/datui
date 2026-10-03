@@ -882,7 +882,7 @@ mod tests {
         drop(file);
 
         let mut pump = pump();
-        // The queries typed here are q-style.
+        // The queries typed here are q.
         pump.app.app_config.query.default_mode = crate::QueryMode::Q;
         pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
             .unwrap();
@@ -1981,7 +1981,7 @@ mod tests {
 
         let analysis = p.app.job_for_tests(
             crate::Job::Analysis(crate::jobs::AnalysisRun::default()),
-            Some("Computing statistics..."),
+            Some("Running analysis..."),
         );
         analysis.end(crate::Outcome::Failed {
             message: "disk on fire".to_string(),

@@ -569,7 +569,7 @@ fn a_dash_with_a_terminal_on_stdin_says_nothing_is_piped() {
 fn dev_null_on_stdin_is_nothing_piped_in() {
     let dirs = Dirs::new();
     let mut session = dirs.spawn_with(&[], Some(Stdio::null()));
-    session.wait_for_screen("filter and search");
+    session.wait_for_screen("narrow and search");
     session.type_keys(CTRL_Q);
     assert!(session.wait_exit().success());
 

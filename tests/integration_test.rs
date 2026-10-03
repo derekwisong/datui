@@ -8159,7 +8159,7 @@ fn text_column(df: &DataFrame, name: &str) -> Vec<Option<String>> {
         .collect()
 }
 
-/// A q-style `by` result holds list columns, which CSV cannot: they are written
+/// A q `by` result holds list columns, which CSV cannot: they are written
 /// as JSON text, while Parquet keeps them as lists.
 #[test]
 fn test_csv_export_writes_a_by_result_lists_as_json() {
@@ -8864,7 +8864,7 @@ fn test_counting_a_union_of_scans_does_not_panic() {
 /// Analysis counts the rows itself, which is the same `len()` over a union of scans
 /// that crashed the table. Its panic is worse: it happens inside `spawn_blocking`,
 /// where tokio swallows it, so the panel never finishes and the app wedges on
-/// "Computing statistics…" with the panic text over the raw-mode screen.
+/// "Running analysis…" with the panic text over the raw-mode screen.
 #[test]
 fn test_analysing_a_union_of_scans_does_not_panic() {
     let dir = tempfile::tempdir().unwrap();
@@ -10859,7 +10859,7 @@ fn test_sidebar_filter_applies_on_top_of_query() {
     );
 }
 
-/// The q-style additions run through the app: `distinct`, the word operators and a
+/// The q additions run through the app: `distinct`, the word operators and a
 /// computed group key.
 #[test]
 fn test_q_style_distinct_like_mod_and_xbar() {
@@ -12429,7 +12429,7 @@ fn test_enter_on_an_empty_sql_group_by_flashes() {
     assert_eq!(current_rows(&app), 0);
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(app.flash_message(), Some("Nothing to drill into"));
+    assert_eq!(app.flash_message(), Some("No group to drill down into"));
     assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
 }
 
@@ -18396,12 +18396,12 @@ fn the_query_prompt_opens_on_sql() {
 /// `[query] default_mode` chooses where `/` opens, read from the config file.
 #[test]
 fn the_preferred_query_mode_is_where_the_prompt_opens() {
-    let config: datui::AppConfig = toml::from_str("[query]\ndefault_mode = \"q-style\"\n").unwrap();
+    let config: datui::AppConfig = toml::from_str("[query]\ndefault_mode = \"q\"\n").unwrap();
     let (mut app, _rx, _tx) = open_query_filter_fixture_with("prompt_preferred.csv", config);
     press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
 
-    // Typed there, a q-style query runs as one.
+    // Typed there, a q query runs as one.
     for c in "select a where a > 10".chars() {
         press_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
     }
@@ -18412,7 +18412,7 @@ fn the_preferred_query_mode_is_where_the_prompt_opens() {
 }
 
 /// Editing an active query reopens its own mode, whatever the preference:
-/// q-style text is never offered up as SQL, or the other way round.
+/// q text is never offered up as SQL, or the other way round.
 #[test]
 fn reopening_the_prompt_selects_the_active_query_mode() {
     let (mut app, rx, tx) = open_query_filter_fixture("prompt_reopen_mode.csv");

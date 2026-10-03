@@ -6,7 +6,7 @@ Examples:
   datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/
       NOAA daily highs for 2024, one table from public S3
   datui abfss://release@overturemapswestus2.dfs.core.windows.net/
-      Browse Overture Maps releases in public Azure storage
+      Overture Maps releases in public Azure storage, listed on the home screen
   datui jan.csv feb.csv mar.csv
       Files of the same shape, as one table
   curl -s https://example.com/data.csv.gz | datui

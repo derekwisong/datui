@@ -1111,7 +1111,7 @@ mod tests {
         let held = Arc::new(());
         let analysis = || Job::Analysis(AnalysisRun::default());
         let is_analysis = |job: &Job| matches!(job, Job::Analysis(_));
-        let stale = jobs.start(analysis(), Some("Computing statistics..."));
+        let stale = jobs.start(analysis(), Some("Running analysis..."));
         let own = jobs.start(
             Job::ChartExport {
                 path: PathBuf::from("chart.png"),

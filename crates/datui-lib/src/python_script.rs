@@ -260,14 +260,14 @@ fn filters_python(filters: &[SidebarFilter]) -> String {
 /// One step datui took to build the view, in the order it took them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
-    /// A q-style query over data of the `input` schema. `keys` names a grouping's
+    /// A q query over data of the `input` schema. `keys` names a grouping's
     /// keys in its result, which orders its rows.
     Query {
         query: String,
         input: SchemaRef,
         keys: Vec<String>,
     },
-    /// The rows a grouped q-style query grouped: its where clause alone.
+    /// The rows a grouped q query grouped: its where clause alone.
     QueryRows {
         query: String,
         input: SchemaRef,
@@ -988,7 +988,7 @@ pub(crate) fn excel_arguments(call: &mut Call<'_>) -> Option<Source> {
         }
     }
     call.notes.push(
-        "datui types a sheet's columns itself; Polars may read some differently.".to_string(),
+        "datui types a worksheet's columns itself; Polars may read some differently.".to_string(),
     );
     None
 }

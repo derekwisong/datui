@@ -65,19 +65,19 @@ const ALLOWED: &[(&str, &str)] = &[
     ("docs/reference/glossary.md", "| "),
     // Omarchy's own word for the theme file its tooling fills in.
     (
-        "docs/user-guide/system-theming.md",
+        "docs/user-guide/configuration.md",
         "renders per-app theme files from templates",
     ),
     (
-        "docs/user-guide/system-theming.md",
+        "docs/user-guide/configuration.md",
         "Install the template from the repository",
     ),
     (
-        "docs/user-guide/system-theming.md",
+        "docs/user-guide/configuration.md",
         "The template sets `theme.mode`",
     ),
     (
-        "docs/user-guide/system-theming.md",
+        "docs/user-guide/configuration.md",
         "before rendering templates",
     ),
     // The Excel reader: the workbook XML's own tag, and Excel's kinds of sheet that

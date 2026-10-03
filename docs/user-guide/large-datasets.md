@@ -1,4 +1,4 @@
-# Performance tips
+# Large datasets
 
 Opening a file and calculating over it have different costs. Datui keeps a
 buffer of visible rows, but a query, sort, aggregation or analysis may scan
@@ -42,11 +42,11 @@ aggregate the period first to chart every step of it.
   read once into a temporary Arrow file, then scanned. SQLite tables are read in
   place, a page at a time, with the sidebar's sort and filters run in SQLite; an
   index on the column makes them fast. See
-  [formats](../user-guide/loading-data.md#formats).
+  [formats](../formats/index.md#how-each-format-is-read).
 - A Parquet directory reads file footers to combine schemas and count rows.
   Beyond 64 files it opens before the background footer pass finishes, and
   beyond 20,000 the pass uses sampled footers. See
-  [multi-file loading](../user-guide/loading-data.md#how-large-datasets-open).
+  [multi-file loading](large-datasets.md#how-large-datasets-open).
 - Parquet in object storage uses range reads. Supported remote CSV and JSONL
   directories scan in place; HTTP and other download routes fetch the file
   first. See [remote data](../user-guide/remote-data.md).
@@ -57,3 +57,48 @@ all queries.
 
 Use <kbd>i</kbd> → **Resources** to inspect the buffer and loading measurements,
 and **Notes** for layouts with large row groups or many small files.
+
+## How large datasets open
+
+Directories with more than 64 Parquet files, local or in the cloud, open using
+the first and last files by name, then read the remaining footers in the
+background. New columns join the end of the table, and the total row count
+arrives, when they land. Until then:
+
+- The total row count is unavailable and empty cells display as `∅`.
+- Notes state the partial metadata scope.
+- A query, pivot or drill-down defers the new columns until you return to the original data.
+
+Above 20,000 files the background pass reads a sample, and the row count reads
+the footers the sample skipped. Once every footer is read, the dataset is cached
+and a reopen reads none. The control bar reports footer-reading progress.
+
+While a directory or prefix is listed, the loading screen counts the files
+found: `Listing files: 412,000`. <kbd>Ctrl</kbd>+<kbd>O</kbd> stops the listing.
+A large S3 or Google Cloud prefix is listed in parallel key ranges.
+
+Partition columns come from the listing, the same way for a local directory and a
+cloud prefix. The newest file's path names the columns. The first and newest
+files' values set each column's type.
+
+The Notes tab also flags storage layouts that may explain a slow open:
+
+| Finding | Why it matters |
+|---|---|
+| Median row-group size above 64 MiB | Reading a page may require a large row group |
+| More than 10,000 files, median size below 1 MiB | Many metadata reads before data can be displayed |
+| Different partition keys, such as `date` and `dt` | Partition columns vary across the dataset; key order alone is fine |
+
+`-c read.parquet_schema=false` skips datui's footer union and uses
+Polars' single-file schema inference. That route also omits the partition-key check.
+
+## Opening it again
+
+Schema metadata of a remote dataset, or of a local directory of more than 64
+files, is cached by URL or path. Datui still lists the files to check for
+changes to names, sizes, timestamps or etags. An unchanged listing opens with
+no footer reads; a changed one triggers fresh metadata reads. The cache keeps
+128 MiB of this metadata and drops the least recently opened dataset first.
+
+`datui cache clear` clears this metadata along with other cached state, including
+query history. See [cache contents](home-screen.md#what-datui-remembers).

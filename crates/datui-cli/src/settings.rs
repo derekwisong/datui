@@ -168,7 +168,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         name: "csv",
         title: "CSV",
-        intro: "CSV, TSV and PSV. A [delimited format spec](../user-guide/binary-formats.md#delimited-text) takes these keys too.",
+        intro: "CSV, TSV and PSV. A [delimited format spec](../formats/format-specs.md#delimited-text) takes these keys too.",
     },
     Section {
         name: "display",
@@ -218,7 +218,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         name: "formats",
         title: "Formats",
-        intro: "Where [format specs](../user-guide/binary-formats.md) and dictionaries are found.",
+        intro: "Where [format specs](../formats/format-specs.md) and dictionaries are found.",
     },
     Section {
         name: "log",

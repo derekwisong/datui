@@ -18,7 +18,7 @@ list_on_start = false           # list every source's buckets at launch, not whe
 
 An S3-compatible endpoint, its keys and region come from `AWS_*` variables or a
 named connection below, never from keys in this file. See
-[Loading Data](../user-guide/loading-data.md#remote-data).
+[Loading Data](../user-guide/remote-data.md).
 
 ## Connections
 
@@ -92,7 +92,7 @@ database password for one, is ignored. A variable already set in the environment
 wins, and nothing is exported, so no program datui starts sees them. No `.env` file is read unless it is listed in `env_files`.
 
 See [The Home Screen](../user-guide/home-screen.md) for
-[`discover`](../user-guide/cloud-browser.md#which-sources-appear) and
+[`discover`](../user-guide/home-screen.md#which-sources-appear) and
 [`list_on_start`](../user-guide/home-screen.md#loading). `-c cloud.discover=none` overrides
 `discover` for one run.
 

@@ -111,6 +111,6 @@ datui s3://bucket/events/
 datui                        # start at the home screen
 ```
 
-Next: [file formats](../user-guide/loading-data.md),
+Next: [file formats](../user-guide/open-files.md),
 [cloud access](../user-guide/remote-data.md), or
 [all keyboard shortcuts](../reference/keyboard-shortcuts.md).

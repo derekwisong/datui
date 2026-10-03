@@ -1269,9 +1269,9 @@ mod format_tests {
     /// formats by the extensions it lists, so the extensions are checked too.
     #[test]
     fn the_docs_format_table_agrees_with_the_code() {
-        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/user-guide/loading-data.md");
-        let text = std::fs::read_to_string(&page).expect("the loading-data page");
+        let page =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/formats/index.md");
+        let text = std::fs::read_to_string(&page).expect("the formats overview");
         let header =
             "| Format | Extensions | Read | Compressed | HTTP(S) | In a bucket | Bucket prefix |";
         let start = text.find(header).expect("the format table");

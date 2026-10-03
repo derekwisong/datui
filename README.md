@@ -116,8 +116,8 @@ Released under the [MIT license](LICENSE).
 [copy-guide]: https://derekwisong.github.io/datui/latest/user-guide/copying.html
 [export-guide]: https://derekwisong.github.io/datui/latest/user-guide/exporting-data.html
 [views-guide]: https://derekwisong.github.io/datui/latest/user-guide/views.html
-[performance]: https://derekwisong.github.io/datui/latest/advanced/performance-tips.html
-[loading-guide]: https://derekwisong.github.io/datui/latest/user-guide/loading-data.html
+[performance]: https://derekwisong.github.io/datui/latest/user-guide/large-datasets.html
+[loading-guide]: https://derekwisong.github.io/datui/latest/user-guide/open-files.html
 [python-module]: https://derekwisong.github.io/datui/latest/user-guide/python-module.html
 [config-guide]: https://derekwisong.github.io/datui/latest/user-guide/configuration.html
 [for-developers]: https://derekwisong.github.io/datui/latest/for-developers.html

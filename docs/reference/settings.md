@@ -44,7 +44,7 @@ lives, imports, the theme and troubleshooting.
 
 ## CSV
 
-`[csv]` CSV, TSV and PSV. A [delimited format spec](../user-guide/binary-formats.md#delimited-text) takes these keys too.
+`[csv]` CSV, TSV and PSV. A [delimited format spec](../formats/format-specs.md#delimited-text) takes these keys too.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
@@ -168,7 +168,7 @@ lives, imports, the theme and troubleshooting.
 
 ## Formats
 
-`[formats]` Where [format specs](../user-guide/binary-formats.md) and dictionaries are found.
+`[formats]` Where [format specs](../formats/format-specs.md) and dictionaries are found.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|

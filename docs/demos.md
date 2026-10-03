@@ -8,7 +8,7 @@ and the publisher-hosted datasets in datui's public cloud catalog.
 
 | Watch | Guide |
 |---|---|
-| [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud sources](user-guide/cloud-browser.md) |
+| [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud sources](user-guide/home-screen.md) |
 | [Querying](#querying) | [Queries](user-guide/querying-data.md) |
 | [Sorting](#sorting) · [Filtering](#filtering) | [Table controls](user-guide/filtering-sorting.md) |
 | [Pivot](#pivot) · [Melt](#melt) | [Reshaping](user-guide/reshaping.md) |

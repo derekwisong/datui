@@ -162,7 +162,7 @@ file and the table on screen (`flight.bin --table GPS`):
 - Data piped in on standard input; recorded with `--tee FILE`, it is read
   from FILE instead
 - A format with `df = ...` above, or a read through a
-  [format spec](binary-formats.md)
+  [format spec](../formats/format-specs.md)
 - A file compressed with bzip2 or xz
 - A CSV read with `--header-rows`, `--skip-initial-space`, or a
   `--comment` longer than five characters

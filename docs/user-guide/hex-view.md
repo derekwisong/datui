@@ -2,7 +2,7 @@
 
 The hex view shows a file as its bytes: the offset, the bytes in hex in groups
 of four, and the same bytes as ASCII. Use it to look inside a file datui has no
-reader for, and to work out the layout of a [binary format spec](binary-formats.md).
+reader for, and to work out the layout of a [binary format spec](../formats/format-specs.md).
 
 | Opens it | |
 |---|---|

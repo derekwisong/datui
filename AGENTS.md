@@ -69,7 +69,7 @@ are opt-in. Put new integration cases in an existing domain target rather than
 adding a top-level test executable for each feature. Use small in-memory data
 for logic tests and preserve regression coverage. See
 `docs/for-developers/tests.md` for selection and
-`docs/for-developers/test-organization-review.md` for the reorganization plan.
+`tests/ORGANIZATION.md` for the reorganization plan.
 
 Tests that drive an `App` wait on the work with the helpers in `tests/common/`
 (`pump_open_until_loaded`, `drain_events`, `next_event`, `work_pending`), never

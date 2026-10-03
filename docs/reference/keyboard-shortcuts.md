@@ -14,7 +14,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | A page of columns left or right, the cursor on the page's first column |
 | <kbd>{</kbd> <kbd>}</kbd> | First column; last column |
 | <kbd>g</kbd> | Go to a column by name, cursor and all |
-| <kbd>b</kbd> | A binary file read through a [format spec](../user-guide/binary-formats.md): read it again with another spec |
+| <kbd>b</kbd> | A binary file read through a [format spec](../formats/format-specs.md): read it again with another spec |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> or <kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>Ctrl</kbd>+<kbd>F</kbd> | One page |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> | Half a page |
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
@@ -42,7 +42,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>,</kbd> | Toggle [digit grouping](../user-guide/configuration.md#number-formatting) (was <kbd>F</kbd>) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
-| <kbd>t</kbd> | [Follow](../user-guide/loading-data.md#following-a-growing-file) a CSV, TSV, PSV or NDJSON file as it grows, reading it again as <kbd>H</kbd> does; while following, pause and resume |
+| <kbd>t</kbd> | [Follow](../user-guide/pipes-and-follow.md#following-a-growing-file) a CSV, TSV, PSV or NDJSON file as it grows, reading it again as <kbd>H</kbd> does; while following, pause and resume |
 | <kbd>Esc</kbd> | Out of a drill-down; otherwise stop following, keeping the rows read |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
@@ -127,7 +127,7 @@ panel, or `datui --hex FILE`. See [Hex view](../user-guide/hex-view.md).
 | <kbd>v</kbd> | Mark a range from the cursor; again, or <kbd>Esc</kbd>, unmarks |
 | <kbd>i</kbd> <kbd>Enter</kbd> | Show or hide the byte inspector |
 | <kbd>#</kbd> | Offsets in decimal or hex |
-| <kbd>B</kbd> | Read the file with a [format spec](../user-guide/binary-formats.md) |
+| <kbd>B</kbd> | Read the file with a [format spec](../formats/format-specs.md) |
 | <kbd>Esc</kbd> | Back to the table or the home screen it was opened from |
 | <kbd>q</kbd> | Home, when opened from there; otherwise quit |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |

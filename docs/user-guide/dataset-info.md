@@ -9,7 +9,7 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 |---|---|
 | **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression |
 | Format's own | What the file says besides its rows, named for its format; see [the table below](#tabs-by-format) |
-| **Metadata** | The metadata line a [delimited format spec](binary-formats.md#delimited-text) names, as key and value; appears for files read through one |
+| **Metadata** | The metadata line a [delimited format spec](../formats/format-specs.md#delimited-text) names, as key and value; appears for files read through one |
 | **Resources** | File size, how the file is read, buffered memory, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
@@ -58,7 +58,7 @@ from its directory, without reading them; an `.xls` or `.xlsb` file keeps its wo
 names where only reading the workbook finds them, so it opens its first worksheet and
 `--table` names another.
 
-A [Hugging Face](loading-data.md#arrow-ipc-streams) cache directory lists its
+A [Hugging Face](../formats/columnar-and-json.md#arrow-ipc-streams) cache directory lists its
 splits inside it the same way (`cache/test`), above the files they are made of.
 
 ## Keys
@@ -78,7 +78,7 @@ appear in the table's second header row; <kbd>D</kbd> toggles that row.
 
 ## Model
 
-For a [SafeTensors or GGUF file](loading-data.md#model-files), <kbd>i</kbd>
+For a [SafeTensors or GGUF file](../formats/model-files.md), <kbd>i</kbd>
 opens on the Model tab:
 
 | Line | Shows |
@@ -97,7 +97,7 @@ first file to name a key gives its value.
 
 ## Audio
 
-For a [WAV, BWF, RF64 or AIFF file](loading-data.md#audio-files), <kbd>i</kbd>
+For a [WAV, BWF, RF64 or AIFF file](../formats/signals-and-logs.md#audio-files), <kbd>i</kbd>
 opens on the Audio tab:
 
 | Line | Shows |
@@ -113,7 +113,7 @@ frames are counted from the file's size.
 
 ## MIDI
 
-For a [MIDI file](loading-data.md#midi-files), <kbd>i</kbd> opens on the MIDI
+For a [MIDI file](../formats/signals-and-logs.md#midi-files), <kbd>i</kbd> opens on the MIDI
 tab, or on Notes first when a note never ends or a file could not be read:
 
 | Line | Shows |
@@ -129,7 +129,7 @@ list is the files that could not be read, with why.
 
 ## File format tabs
 
-For a [VCD dump](loading-data.md#vcd-value-change-dumps), <kbd>i</kbd> opens on the
+For a [VCD dump](../formats/signals-and-logs.md#vcd-value-change-dumps), <kbd>i</kbd> opens on the
 VCD tab; for every other format the tab sits beside Schema.
 
 | Tab | Lines | List |
@@ -178,7 +178,7 @@ be reliably ordered, such as `part=2` and `part=10`.
 
 **Lake tables:** datui reads their plain files without applying table metadata.
 The displayed row count may include deleted rows and superseded versions.
-See [lake table directories](loading-data.md#directories).
+See [lake table directories](open-files.md#directories).
 
 ### Read a conflicting column as text
 
@@ -187,7 +187,7 @@ is offered. Values from the conflicting files become visible, but filters and
 sorting now compare strings. For example, `"10"` sorts before `"2"`.
 
 The action is unavailable if any file stores the column as a list, array,
-duration, binary or unknown type. See [files that disagree](loading-data.md#files-that-disagree).
+duration, binary or unknown type. See [files that disagree](open-files.md#files-that-disagree).
 
 Most notes describe the dataset as opened. Filter/sort exclusion notes follow
 the active view and disappear when those controls are cleared. Queries,
@@ -216,5 +216,5 @@ unless the dataset is already known to be empty.
 
 Footer reads can exceed the number of files: schema and row-count passes may
 read the same footer more than once. Use the Listing count for dataset size.
-A dataset opened from [cached metadata](loading-data.md#opening-it-again)
+A dataset opened from [cached metadata](large-datasets.md#opening-it-again)
 reads no footers and shows no Footers row.

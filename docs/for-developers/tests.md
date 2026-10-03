@@ -68,8 +68,8 @@ exercise the changed CLI behavior. CLI definition tests do not replace this.
 
 Keep existing build artifacts for the edit loop. Changing compiler flags,
 toolchains or features can cause rebuilds; `cargo clean` is not a routine test
-step. See the [test organization review](test-organization-review.md) for the
-structural changes proposed to reduce linking and harness overhead.
+step. `tests/ORGANIZATION.md` in the repository proposes structural changes to
+reduce linking and harness overhead.
 
 ## Heavy runs queue
 

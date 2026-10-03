@@ -10,9 +10,9 @@ files and cloud storage, and works with Polars frames in Python.
 
 | I want to… | Go to |
 |---|---|
-| Open a file, a directory, or a compressed export | [Loading data](user-guide/loading-data.md) |
+| Open a file, a directory, or a compressed export | [Loading data](user-guide/open-files.md) |
 | Connect to S3, GCS, Azure or an HTTP URL | [Remote data](user-guide/remote-data.md) |
-| Find recent files or browse buckets | [Home screen](user-guide/home-screen.md) · [Cloud sources](user-guide/cloud-browser.md) |
+| Find recent files or browse buckets | [Home screen](user-guide/home-screen.md) · [Cloud sources](user-guide/home-screen.md) |
 | Filter rows or write SQL | [Querying](user-guide/querying-data.md) · [Sort and filter](user-guide/filtering-sorting.md) |
 | Make a chart or reshape a table | [Charting](user-guide/charting.md) · [Pivot and melt](user-guide/reshaping.md) |
 | Check missing values or schema changes | [Data quality](user-guide/data-quality.md) · [Info panel](user-guide/dataset-info.md) |

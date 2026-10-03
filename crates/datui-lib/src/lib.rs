@@ -8248,7 +8248,6 @@ impl App {
             sqlite: report.sqlite,
             opened: report.opened,
             splits: report.splits,
-            spec_choice: None,
             read_python: report.read_python,
             read_mode,
             tail,
@@ -8274,13 +8273,11 @@ impl App {
                 path,
                 options,
             },
-            Scan::DecompressSpec { file, choice } => LoadAnswer::Compressed {
+            Scan::DecompressSpec { file, choice } => LoadAnswer::CompressedRecords {
                 file,
                 path,
-                options: OpenOptions {
-                    spec_choice: Some(choice),
-                    ..options
-                },
+                choice,
+                options,
             },
             Scan::ReadInto { files, format } => LoadAnswer::Convert {
                 what: loading::Conversion::Text(format),
@@ -8569,45 +8566,58 @@ impl App {
                     })))
                 });
             }
-            Step::Decompress {
+            Step::DecompressRecords {
                 file,
                 path,
+                choice,
                 options,
                 writer,
-                download,
-            } if options.spec_choice.is_some() => {
+            } => {
                 self.spawn_job(job, Some("Decompressing..."), move |_| {
+                    let failed = |e: color_eyre::Report| {
+                        crate::error_display::user_message_from_report(&e, Some(path.as_path()))
+                    };
+                    let compression = options
+                        .compression
+                        .or_else(|| CompressionFormat::from_extension(&file))
+                        .ok_or_else(|| format!("{} is not compressed", path.display()))?;
+                    let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
+                    let copy =
+                        DataTableState::decompress_to_copy(&file, compression, &temp_dir, &writer)
+                            .map_err(failed)?;
+                    Ok(Answer::Load(Box::new(LoadAnswer::DecompressedRecords {
+                        copy,
+                        path,
+                        choice,
+                        options,
+                    })))
+                });
+            }
+            Step::ReadRecords {
+                copy,
+                path,
+                choice,
+                options,
+            } => {
+                self.spawn_job(job, Some("Reading records..."), move |_| {
                     let named = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let (state, read) =
-                        DataTableState::from_compressed_spec(&file, &named, &options, &writer)
-                            .map_err(|e| {
-                                crate::error_display::user_message_from_report(
-                                    &e,
-                                    Some(path.as_path()),
-                                )
-                            })?;
-                    let state = state.with_open(OpenFacts {
-                        fetched: Self::fetched(download.as_ref(), Some(&path)),
-                        download,
-                        open_notes: read.notes(),
-                        format_read: Some(read.clone()),
-                        read_mode: cli::FormatChoice::Spec(String::new())
-                            .read_mode(crate::Stored::Compressed { in_memory: false }),
-                        ..Default::default()
-                    });
-                    let options = OpenOptions {
-                        format_read: Some(read),
-                        spec_choice: None,
-                        ..options
-                    };
-                    Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
-                        state: Box::new(state),
+                    let read = crate::formats::read(&copy, &named, choice)?;
+                    let lf = Arc::clone(&read.records).into_lazy().map_err(|e| {
+                        crate::error_display::user_message_from_report(
+                            &color_eyre::eyre::eyre!(e),
+                            Some(path.as_path()),
+                        )
+                    })?;
+                    Ok(Answer::Load(Box::new(LoadAnswer::Scanned {
+                        lf: Box::new(lf),
                         path: Some(path),
-                        options,
-                        debug_label: Some("decompressed format spec".to_string()),
+                        options: OpenOptions {
+                            format_read: Some(Arc::new(read)),
+                            ..options
+                        },
                     })))
                 });
             }
@@ -16046,7 +16056,6 @@ impl App {
                     spec_name: Some(name),
                     spec_file: None,
                     spec_variant: None,
-                    spec_choice: None,
                     format_read: None,
                     sqlite: None,
                     format: None,

@@ -268,6 +268,10 @@ pub(crate) enum Phase {
         read: Arc<AtomicU64>,
     },
     Decompressing,
+    /// A compressed file a format spec reads, being decompressed to a copy.
+    DecompressingRecords,
+    /// The decompressed copy's records, read through the spec.
+    ReadingRecords,
     /// Files being converted to ones the dataset scans, `read` of their `total` bytes:
     /// Arrow IPC streams to one IPC file, or GPS logs to their table.
     Converting {
@@ -303,7 +307,8 @@ impl Phase {
             #[cfg(any(feature = "http", feature = "cloud"))]
             Phase::Downloading => ("Downloading", 20),
             Phase::Spooling { .. } => ("Reading stdin", 5),
-            Phase::Decompressing => ("Decompressing", 30),
+            Phase::Decompressing | Phase::DecompressingRecords => ("Decompressing", 30),
+            Phase::ReadingRecords => ("Reading records", 35),
             Phase::Converting { what, read, total } => {
                 let done = read.load(Ordering::Relaxed).min(*total);
                 // Up to the scan or the schema read that follows.
@@ -464,6 +469,23 @@ pub(crate) enum Step {
         /// The download `file` is, given to the dataset built from it.
         download: Option<TempDownload>,
     },
+    /// Decompress `file`, which `choice`'s spec reads, to a copy written through
+    /// `writer`; `path` names it on screen and in errors.
+    DecompressRecords {
+        file: PathBuf,
+        path: PathBuf,
+        choice: crate::formats::Choice,
+        options: OpenOptions,
+        writer: Writer,
+    },
+    /// Read the records of `copy`, the decompressed file `path` names, with
+    /// `choice`'s spec.
+    ReadRecords {
+        copy: PathBuf,
+        path: PathBuf,
+        choice: crate::formats::Choice,
+        options: OpenOptions,
+    },
     /// Convert `files` as `what` says into temporary IPC files written through
     /// `writer`, counting the bytes read in `read`; `path` names them on screen and in
     /// errors.
@@ -618,6 +640,21 @@ pub(crate) enum LoadAnswer {
     Compressed {
         file: PathBuf,
         path: Option<PathBuf>,
+        options: OpenOptions,
+    },
+    /// The scan found a compressed file, `file`, that `choice`'s spec reads once it is
+    /// decompressed.
+    CompressedRecords {
+        file: PathBuf,
+        path: Option<PathBuf>,
+        choice: crate::formats::Choice,
+        options: OpenOptions,
+    },
+    /// The decompressed copy of a file a spec reads. Dropped unused, it removes itself.
+    DecompressedRecords {
+        copy: TempDownload,
+        path: PathBuf,
+        choice: crate::formats::Choice,
         options: OpenOptions,
     },
     /// The scan found `files`, `bytes` in all as stored, which have to be converted as
@@ -1162,7 +1199,7 @@ impl Loader {
         match (answer, &load.phase) {
             (
                 LoadAnswer::Scanned { lf, path, options },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::ReadingRecords,
             ) => {
                 load.phase = Phase::ReadingSchema;
                 Step::ReadSchema {
@@ -1272,6 +1309,44 @@ impl Loader {
                     options,
                     writer: load.writer.clone(),
                     download: load.download.as_ref().map(|fetched| fetched.file.clone()),
+                }
+            }
+            (
+                LoadAnswer::CompressedRecords {
+                    file,
+                    path,
+                    choice,
+                    options,
+                },
+                Phase::Scanning { .. } | Phase::ScanningStrings,
+            ) => {
+                load.phase = Phase::DecompressingRecords;
+                Step::DecompressRecords {
+                    path: path.unwrap_or_else(|| file.clone()),
+                    file,
+                    choice,
+                    options,
+                    writer: load.writer.clone(),
+                }
+            }
+            (
+                LoadAnswer::DecompressedRecords {
+                    copy,
+                    path,
+                    choice,
+                    options,
+                },
+                Phase::DecompressingRecords,
+            ) => {
+                // The load holds the copy until the dataset built from it does.
+                let file = copy.path().to_path_buf();
+                load.converted = vec![copy];
+                load.phase = Phase::ReadingRecords;
+                Step::ReadRecords {
+                    copy: file,
+                    path,
+                    choice,
+                    options,
                 }
             }
             (
@@ -2225,6 +2300,86 @@ mod tests {
             answer(&mut loader, id, schema_read("dir")),
             Step::Install(_)
         ));
+    }
+
+    /// A compressed file a spec reads is decompressed in a phase of its own, which a
+    /// retired load stops, then its copy's records are read in another; the copy goes
+    /// to the dataset with the frame, and a second answer for a phase left does nothing.
+    #[test]
+    fn a_compressed_file_a_spec_reads_is_decompressed_then_its_records_read() {
+        let spec = crate::formats::Spec::parse(
+            "name = \"t.rec\"\n[records]\nfields = [{ name = \"v\", type = \"u1\" }]\n",
+            None,
+        )
+        .unwrap();
+        let choice = crate::formats::Choice {
+            spec: Arc::new(spec),
+            by: crate::formats::Chosen::Glob,
+            also: Vec::new(),
+        };
+        let compressed = || LoadAnswer::CompressedRecords {
+            file: PathBuf::from("day.rec.zst"),
+            path: None,
+            choice: choice.clone(),
+            options: OpenOptions::default(),
+        };
+        let mut loader = Loader::default();
+        let _ = loader.open(request("day.rec.zst"));
+        let id = loader.id().unwrap();
+        let Step::DecompressRecords {
+            file, path, writer, ..
+        } = answer(&mut loader, id, compressed())
+        else {
+            panic!("the file is decompressed");
+        };
+        assert_eq!(
+            (file.as_path(), path.as_path()),
+            (Path::new("day.rec.zst"), Path::new("day.rec.zst"))
+        );
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Decompressing", 30)
+        );
+        assert!(loader.waits());
+        assert!(matches!(
+            answer(&mut loader, id, compressed()),
+            Step::Nothing
+        ));
+        loader.retire();
+        assert!(writer.stopped(), "Esc or another open stops the copy");
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut loader = Loader::default();
+        let _ = loader.open(request("day.rec.zst"));
+        let id = loader.id().unwrap();
+        let _ = answer(&mut loader, id, compressed());
+        let copy = TempDownload::keep(TempDownload::create(Some(dir.path()), None).unwrap());
+        let temp = copy.path().to_path_buf();
+        let decompressed = || LoadAnswer::DecompressedRecords {
+            copy: copy.clone(),
+            path: PathBuf::from("day.rec.zst"),
+            choice: choice.clone(),
+            options: OpenOptions::default(),
+        };
+        let Step::ReadRecords { copy: read, .. } = answer(&mut loader, id, decompressed()) else {
+            panic!("the copy's records are read");
+        };
+        assert_eq!(read, temp);
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Reading records", 35)
+        );
+        assert!(matches!(
+            answer(&mut loader, id, decompressed()),
+            Step::Nothing
+        ));
+        let Step::ReadSchema { made, .. } = answer(&mut loader, id, scanned("day.rec.zst")) else {
+            panic!("the frame's schema is read");
+        };
+        assert_eq!(made.converted.len(), 1, "the dataset holds the copy");
+        drop((made, copy));
+        loader.retire();
+        assert!(!temp.exists(), "the retired load let the copy go");
     }
 
     /// GPS logs the scan found are converted under the name the open was asked for;

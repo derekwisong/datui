@@ -154,8 +154,6 @@ pub struct OpenOptions {
     pub spec_name: Option<String>,
     /// `--variant NAME`: one variant of the spec's records, read alone.
     pub spec_variant: Option<String>,
-    /// The spec a compressed file was matched to, read once the file is decompressed.
-    pub spec_choice: Option<crate::formats::Choice>,
     /// What a read through a format spec found, carried from the scan to the dataset.
     pub format_read: Option<Arc<crate::formats::Read>>,
     /// What the open did to the rows its reader gave — CSV column names trimmed, text
@@ -271,7 +269,6 @@ impl OpenOptions {
             dbc: None,
             spec_name: None,
             spec_variant: None,
-            spec_choice: None,
             format_read: None,
             normalize: false,
             sqlite: None,

@@ -196,6 +196,8 @@ mod tests {
             spec: None,
             fix_dict: None,
             variant: None,
+            hex: false,
+            record_size: None,
             command: None,
             polars_streaming: None,
             workaround_pivot_date_index: None,

@@ -158,3 +158,10 @@ path = "fuzz_targets/sdf_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "hex_input"
+path = "fuzz_targets/hex_input.rs"
+test = false
+doc = false
+bench = false

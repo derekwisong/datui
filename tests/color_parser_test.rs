@@ -351,6 +351,12 @@ fn test_theme_with_custom_colors() {
         gradient_start: "blue".to_string(),
         gradient_end: "magenta".to_string(),
         find_match: "yellow".to_string(),
+        hex_null: "dark_gray".to_string(),
+        hex_printable: "cyan".to_string(),
+        hex_whitespace: "green".to_string(),
+        hex_control: "magenta".to_string(),
+        hex_high: "yellow".to_string(),
+        hex_ff: "red".to_string(),
     };
 
     let result = Theme::from_config(&config.theme);

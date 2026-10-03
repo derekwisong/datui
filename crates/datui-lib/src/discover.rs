@@ -90,7 +90,9 @@ impl EntryKind {
     /// Short label shown next to the entry name.
     pub fn label(self) -> &'static str {
         match self {
-            EntryKind::File | EntryKind::Other => "",
+            EntryKind::File => "",
+            // No reader: shown as its bytes.
+            EntryKind::Other => "binary",
             EntryKind::Hive => "hive",
             EntryKind::MultiFile => "multi",
             EntryKind::Delta => "delta",

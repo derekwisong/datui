@@ -142,6 +142,9 @@ pub struct Glyphs {
     pub newline_mark: &'static str,
     pub tab_mark: &'static str,
     pub control_mark: &'static str,
+    /// A byte in the hex view's ASCII gutter that is not printable. One column wide
+    /// in both sets.
+    pub hex_dot: &'static str,
     /// Eight compact levels for inline charts (lowest to highest).
     pub mini_bars: &'static [&'static str; 8],
     /// In a line of `mini_bars`, a place with nothing measured: segments a sample
@@ -368,6 +371,7 @@ const UNICODE: Glyphs = Glyphs {
     newline_mark: "¶",
     tab_mark: "»",
     control_mark: "¤",
+    hex_dot: "·",
     mini_bars: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
     unsampled: "·",
     pointer: "▲",
@@ -441,6 +445,7 @@ const ASCII: Glyphs = Glyphs {
     newline_mark: "$",
     tab_mark: ">",
     control_mark: "?",
+    hex_dot: ".",
     mini_bars: &[".", ":", "-", "=", "+", "*", "#", "@"],
     unsampled: "?",
     pointer: "^",
@@ -555,6 +560,7 @@ macro_rules! with_string_slots {
             newline_mark,
             tab_mark,
             control_mark,
+            hex_dot,
             unsampled,
             pointer
         )

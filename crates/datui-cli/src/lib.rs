@@ -562,6 +562,13 @@ pub struct Args {
     /// Read one variant of a binary format spec's records alone, as its own table: only its records, and only its columns
     #[arg(long = "variant", value_name = "NAME", help_heading = "Reading")]
     pub variant: Option<String>,
+    /// Show the file's bytes in the hex view, whatever it holds. A local file no reader and no spec takes opens there anyway
+    #[arg(long = "hex", action, help_heading = "Reading")]
+    pub hex: bool,
+
+    /// Bytes a row of the hex view holds, so that records line up (default: 8, 16, 32 or 64, as many as fit)
+    #[arg(long = "record-size", value_name = "N", value_parser = clap::value_parser!(u16).range(1..=4096), help_heading = "Reading")]
+    pub record_size: Option<u16>,
 
     /// Enable debug mode to show operational information
     #[arg(long = "debug", action)]

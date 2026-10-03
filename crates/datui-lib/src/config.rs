@@ -2311,6 +2311,8 @@ fn default_row_numbers_color() -> String {
 /// - `dimmed`: Dimmed elements, axis lines
 /// - `table_selected`: Selected row style (special modifier)
 /// - `find_match`: The cell a find landed on
+/// - `hex_null`, `hex_printable`, `hex_whitespace`, `hex_control`, `hex_high`,
+///   `hex_ff`: The hex view's bytes, by class
 pub struct ColorConfig {
     pub keybind_hints: String,
     pub keybind_labels: String,
@@ -2388,6 +2390,20 @@ pub struct ColorConfig {
     /// Absent from older configs, so it falls back to the palette.
     #[serde(default = "default_find_match")]
     pub find_match: String,
+    /// The hex view's bytes by class, as hexyl colors them. Absent from older configs,
+    /// so they fall back to the palette.
+    #[serde(default = "default_hex_null")]
+    pub hex_null: String,
+    #[serde(default = "default_hex_printable")]
+    pub hex_printable: String,
+    #[serde(default = "default_hex_whitespace")]
+    pub hex_whitespace: String,
+    #[serde(default = "default_hex_control")]
+    pub hex_control: String,
+    #[serde(default = "default_hex_high")]
+    pub hex_high: String,
+    #[serde(default = "default_hex_ff")]
+    pub hex_ff: String,
 }
 
 fn default_true() -> bool {
@@ -2417,6 +2433,24 @@ fn default_gradient_end() -> String {
 }
 fn default_find_match() -> String {
     ColorConfig::default().find_match
+}
+fn default_hex_null() -> String {
+    ColorConfig::default().hex_null
+}
+fn default_hex_printable() -> String {
+    ColorConfig::default().hex_printable
+}
+fn default_hex_whitespace() -> String {
+    ColorConfig::default().hex_whitespace
+}
+fn default_hex_control() -> String {
+    ColorConfig::default().hex_control
+}
+fn default_hex_high() -> String {
+    ColorConfig::default().hex_high
+}
+fn default_hex_ff() -> String {
+    ColorConfig::default().hex_ff
 }
 
 // Field comments for ColorConfig
@@ -2517,6 +2551,15 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
         "gradient_end",
         "Last stop of the wordmark gradient on the home screen",
     ),
+    ("hex_null", "Hex view: the byte 0x00"),
+    ("hex_printable", "Hex view: printable ASCII bytes"),
+    (
+        "hex_whitespace",
+        "Hex view: space, tab, line feed and the other whitespace bytes",
+    ),
+    ("hex_control", "Hex view: the other ASCII control bytes"),
+    ("hex_high", "Hex view: bytes from 0x80 to 0xFE"),
+    ("hex_ff", "Hex view: the byte 0xFF"),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2831,6 +2874,12 @@ impl ColorConfig {
             gradient_start: "#7aa2f7".to_string(),
             gradient_end: "#bb9af7".to_string(),
             find_match: "#e0af68".to_string(),
+            hex_null: "#565f89".to_string(),
+            hex_printable: "#7dcfff".to_string(),
+            hex_whitespace: "#9ece6a".to_string(),
+            hex_control: "#bb9af7".to_string(),
+            hex_high: "#e0af68".to_string(),
+            hex_ff: "#f7768e".to_string(),
         }
     }
 
@@ -2897,6 +2946,12 @@ impl ColorConfig {
             gradient_start: "#2e7de9".to_string(),
             gradient_end: "#9854f1".to_string(),
             find_match: "#f0c35a".to_string(),
+            hex_null: "#848cb5".to_string(),
+            hex_printable: "#007197".to_string(),
+            hex_whitespace: "#587539".to_string(),
+            hex_control: "#9854f1".to_string(),
+            hex_high: "#8c6c3e".to_string(),
+            hex_ff: "#f52a65".to_string(),
         }
     }
 }
@@ -3601,6 +3656,12 @@ impl ColorConfig {
         validate_color!(&self.gradient_start, "gradient_start");
         validate_color!(&self.gradient_end, "gradient_end");
         validate_color!(&self.find_match, "find_match");
+        validate_color!(&self.hex_null, "hex_null");
+        validate_color!(&self.hex_printable, "hex_printable");
+        validate_color!(&self.hex_whitespace, "hex_whitespace");
+        validate_color!(&self.hex_control, "hex_control");
+        validate_color!(&self.hex_high, "hex_high");
+        validate_color!(&self.hex_ff, "hex_ff");
 
         Ok(())
     }
@@ -4025,6 +4086,27 @@ impl Theme {
             "find_match".to_string(),
             parser.parse(&config.colors.find_match)?,
         );
+        colors.insert(
+            "hex_null".to_string(),
+            parser.parse(&config.colors.hex_null)?,
+        );
+        colors.insert(
+            "hex_printable".to_string(),
+            parser.parse(&config.colors.hex_printable)?,
+        );
+        colors.insert(
+            "hex_whitespace".to_string(),
+            parser.parse(&config.colors.hex_whitespace)?,
+        );
+        colors.insert(
+            "hex_control".to_string(),
+            parser.parse(&config.colors.hex_control)?,
+        );
+        colors.insert(
+            "hex_high".to_string(),
+            parser.parse(&config.colors.hex_high)?,
+        );
+        colors.insert("hex_ff".to_string(), parser.parse(&config.colors.hex_ff)?);
 
         Ok(Self { colors })
     }

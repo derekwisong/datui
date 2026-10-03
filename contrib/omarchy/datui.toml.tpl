@@ -97,3 +97,12 @@ chart_series_color_4 = "{{ magenta }}"
 chart_series_color_5 = "{{ cyan }}"
 chart_series_color_6 = "{{ orange }}"
 chart_series_color_7 = "{{ red }}"
+
+# --- Hex view --------------------------------------------------------------
+# Bytes by class, as hexyl colors them.
+hex_null       = "{{ muted }}"
+hex_printable  = "{{ cyan }}"
+hex_whitespace = "{{ green }}"
+hex_control    = "{{ magenta }}"
+hex_high       = "{{ yellow }}"
+hex_ff         = "{{ red }}"

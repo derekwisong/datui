@@ -218,8 +218,8 @@ fn a_format_name_not_on_the_path_says_so() {
     );
 }
 
-/// A spec that would match everything takes nothing datui already reads, and a file no
-/// spec matches fails as it did before specs.
+/// spec and no reader takes opens in the hex view.
+/// spec matches opens in the hex view, as one did before specs.
 #[test]
 fn files_that_open_today_open_the_same_way() {
     let dir = common::fixture_dir();
@@ -238,9 +238,12 @@ fields = [{ name = "x", type = "u1" }]"#;
     let (mut app, rx, _tx) = app_with(vec![spec(L2)]);
     let unmatched = dir.join("unmatched_today.bin");
     std::fs::write(&unmatched, [0u8, 1, 2, 3]).unwrap();
-    let message =
-        pump_open_until_error(&mut app, &rx, vec![unmatched], OpenOptions::default()).unwrap();
-    assert!(message.contains("Unsupported file type"), "{message}");
+    // No reader and no spec: its bytes, in the hex view (#588), not an error.
+    pump_open_until_loaded(&mut app, &rx, vec![unmatched], OpenOptions::default());
+    drain_events(&mut app, &rx);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    assert_eq!(app.input_mode, InputMode::Hex);
+    assert!(app.hex_view().unwrap().fallback);
 }
 
 #[test]

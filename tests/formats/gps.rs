@@ -3,8 +3,8 @@
 //! Fixtures are written by `scripts/generate_sample_data.py` under
 //! `tests/sample-data/gps/`. Anything a test writes goes to `fixture_dir()`.
 
-use crate::common::{self, pump_open_until_loaded};
-use datui::{App, AppEvent, OpenOptions};
+use crate::common::{self, drain_events, pump_open_until_loaded};
+use datui::{App, AppEvent, InputMode, OpenOptions};
 use polars::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -283,7 +283,7 @@ fn a_gpx_file_opens_as_its_points() {
 }
 
 /// A log whose name says nothing opens by its first bytes; a text file that is not
-/// one is still refused as before.
+/// one is not read as a log: no reader takes it, so it shows as bytes.
 #[test]
 fn a_log_is_known_by_its_first_bytes() {
     let (options, dir) = scratch();
@@ -295,8 +295,10 @@ fn a_log_is_known_by_its_first_bytes() {
 
     let notes = dir.join("notes.txt");
     std::fs::write(&notes, "just some notes\n").unwrap();
-    let (app, _rx) = open_with(notes, options);
-    assert!(app.error_message().is_some(), "not a GPS log");
+    let (mut app, rx) = open_with(notes, options);
+    drain_events(&mut app, &rx);
+    assert!(app.data_table_state.is_none(), "not a GPS log");
+    assert_eq!(app.input_mode, InputMode::Hex, "{:?}", app.error_message());
 }
 
 /// A directory of GPX activities opens as one table with a `file` column, its logs

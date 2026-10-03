@@ -136,7 +136,9 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 
 When two specs match the same way, the first on the search path reads the file.
 The bar shows `2 formats match`, and the Notes tab names the others. A file no
-spec matches opens as it does without specs.
+spec matches opens as it does without specs; a local file no reader takes
+either opens in the [hex view](hex-view.md), where <kbd>B</kbd> reads it with a
+spec and <kbd>r</kbd> lines the bytes up in records while you write one.
 
 <kbd>b</kbd> on the table picks another spec and reads the file again with it.
 The Notes tab of <kbd>i</kbd> says which spec read the file and why, the header's

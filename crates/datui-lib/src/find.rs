@@ -762,7 +762,7 @@ impl App {
     /// Whether a find is reading.
     pub fn finding(&self) -> bool {
         self.jobs
-            .current(|job| matches!(job, Job::Find(_)))
+            .current(|job| matches!(job, Job::Find(_) | Job::HexFind(_)))
             .is_some()
     }
 
@@ -776,6 +776,9 @@ impl App {
 
     /// Stop the find that is reading, if one is. Returns whether one was.
     pub(crate) fn stop_find(&mut self) -> bool {
+        if self.stop_hex_find() {
+            return true;
+        }
         let Some((_, Job::Find(run))) = self.jobs.current(|job| matches!(job, Job::Find(_))) else {
             return false;
         };

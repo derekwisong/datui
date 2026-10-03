@@ -79,6 +79,8 @@ pub enum JobKind {
     ChartExport,
     Find,
     ValueCounts,
+    HexOpen,
+    HexFind,
 }
 
 /// One started operation. Issued when it starts, carried by its worker, and handed
@@ -163,6 +165,14 @@ pub(crate) enum Job {
     Find(crate::find::FindRun),
     /// Counting a column's values for the Value Counts screen.
     ValueCounts,
+    /// Mapping a file for the hex view, opened from `origin`.
+    HexOpen {
+        origin: crate::hex_view::Origin,
+        fallback: bool,
+        record_size: Option<usize>,
+    },
+    /// A find reading the hex view's file.
+    HexFind(crate::hex_view::HexFindRun),
 }
 
 /// A look at a path chosen on the home screen. Every key acts on the home screen even
@@ -216,6 +226,8 @@ impl Job {
             Job::ChartExport { .. } => JobKind::ChartExport,
             Job::Find(_) => JobKind::Find,
             Job::ValueCounts => JobKind::ValueCounts,
+            Job::HexOpen { .. } => JobKind::HexOpen,
+            Job::HexFind(_) => JobKind::HexFind,
         }
     }
 
@@ -346,6 +358,10 @@ pub(crate) enum Answer {
     Found(Option<crate::find::Found>),
     /// [`Job::ValueCounts`]: the column's values, counted.
     ValueCounts(Box<crate::value_counts::ValueCounts>),
+    /// [`Job::HexOpen`]: the file, mapped.
+    HexOpened(Box<crate::hex_view::HexSource>),
+    /// [`Job::HexFind`]: where the pattern is, if anywhere.
+    HexFound(crate::hex_view::HexHit),
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),
@@ -403,6 +419,8 @@ pub enum Progress {
     QualityPhase(crate::data_quality::QualityPhase),
     /// A find has read `rows` of the view.
     Finding { rows: usize },
+    /// A find in the hex view has read `read` of the file's `total` bytes.
+    HexFinding { read: u64, total: u64 },
 }
 
 /// A job whose outcome has been taken: what it was, whether its answer is still

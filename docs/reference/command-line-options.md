@@ -26,6 +26,8 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, vcd, fix, sdf, or the name of a binary format spec such as acme.l2feed |
 | `--spec <FILE>` | Read the file (or directory of column files) through this binary format spec, whatever else matches it |
 | `--fix-dict <FILE>` | Read a FIX log with this dictionary too, over the built-in one and those on the format search path: a QuickFIX XML data dictionary, or TOML with kind = "fix" |
+| `--hex` | Show the file's bytes in the hex view, whatever it holds. A local file no reader and no spec takes opens there anyway |
+| `--record-size <N>` | Bytes a row of the hex view holds, so that records line up (default: 8, 16, 32 or 64, as many as fit) |
 | `--debug` | Enable debug mode to show operational information |
 | `--log-file <PATH>` | Write the log here (default: [debug] log_file, or datui.log in the cache directory). DATUI_LOG sets the level: error, warn (default), info, debug or off |
 | `--hive` | Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file |

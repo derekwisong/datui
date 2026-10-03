@@ -1403,12 +1403,14 @@ impl Loader {
                 // A download is a temporary file the load owns; it has no bytes to show
                 // once the load is put down.
                 let fetched = load.download.is_some();
+                let named = load.path.clone();
                 self.retire();
                 if fetched {
-                    return Step::Failed(Failed {
-                        message: "Unsupported file type".to_string(),
-                        from_home,
-                    });
+                    let message = match named {
+                        Some(path) => crate::error_display::file_message(&path, crate::UNSUPPORTED),
+                        None => crate::UNSUPPORTED.to_string(),
+                    };
+                    return Step::Failed(Failed { message, from_home });
                 }
                 Step::Hex(Hex {
                     file,

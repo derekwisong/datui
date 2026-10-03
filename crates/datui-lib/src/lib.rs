@@ -234,6 +234,10 @@ use widgets::text_input::TextInput;
 /// Application name used for cache directory and other app-specific paths
 pub const APP_NAME: &str = "datui";
 
+/// What a file no reader takes, and no hex view can show, is told.
+pub(crate) const UNSUPPORTED: &str =
+    "Unsupported file type. --format names the format to read it as.";
+
 /// Re-export compression format and file format from CLI module
 pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored};
 
@@ -10564,8 +10568,11 @@ impl App {
             && (options.spec_file.is_some() || options.spec_name.is_some())
         {
             return Err(color_eyre::eyre::eyre!(
-                "format specs read local files; download {} first",
-                path.display()
+                "{}",
+                crate::error_display::file_message(
+                    path,
+                    "format specs read local files; download it first"
+                )
             ));
         }
         Ok(())
@@ -11066,7 +11073,7 @@ impl App {
                 });
             }
             return Err(color_eyre::eyre::eyre!(match paths.len() {
-                1 => "Unsupported file type".to_string(),
+                1 => UNSUPPORTED.to_string(),
                 _ => crate::readers::many_files_refused(),
             }));
         };

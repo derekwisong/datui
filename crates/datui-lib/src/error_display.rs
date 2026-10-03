@@ -100,7 +100,52 @@ pub fn user_message_from_polars(err: &PolarsError) -> String {
     if let Some(none) = nothing_matched(&said) {
         return none;
     }
-    without_the_query_plan(&said)
+    let said = without_the_query_plan(&said);
+    let (first, rest) = said.split_once('\n').unwrap_or((&said, ""));
+    match rust_names_said_plainly(first) {
+        Some(plain) if rest.is_empty() => plain,
+        Some(plain) => format!("{plain}\n{rest}"),
+        None => said,
+    }
+}
+
+/// A file reader's words that are a Rust name (`Out-of-spec: InvalidFooter`,
+/// `OutOfSpec`, `InvalidUtf8 at character 0`), said in English.
+fn rust_names_said_plainly(msg: &str) -> Option<String> {
+    // `InvalidFooter` as `invalid footer`.
+    let words = |name: &str| {
+        let mut out = String::new();
+        for (i, c) in name.chars().enumerate() {
+            if c.is_uppercase() && i > 0 {
+                out.push(' ');
+            }
+            out.extend(c.to_lowercase());
+        }
+        out
+    };
+    let msg = msg.trim();
+    let is_name = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric());
+    let damaged = |what: Option<String>| {
+        let what = what.map(|w| format!(" ({w})")).unwrap_or_default();
+        format!(
+            "The file is not laid out as its format says{what}: it is damaged, or another \
+             format. --format names the format to read it as."
+        )
+    };
+    if msg == "OutOfSpec" {
+        return Some(damaged(None));
+    }
+    const SPEC: &str = "out-of-spec: ";
+    if let Some(name) = msg
+        .get(..SPEC.len())
+        .filter(|p| p.eq_ignore_ascii_case(SPEC))
+        .map(|_| &msg[SPEC.len()..])
+        && is_name(name)
+    {
+        return Some(damaged(Some(words(name))));
+    }
+    let at = msg.strip_prefix("InvalidUtf8")?;
+    Some(format!("The file is not UTF-8 text{at}."))
 }
 
 /// A scan whose path expanded to no files, said plainly. Polars prints its expansion
@@ -543,8 +588,8 @@ fn report_message(windows: bool, report: &color_eyre::eyre::Report, path: Option
 
     // Fallback: use first line of display to avoid long tracebacks
     let display = report.to_string();
-    let first_line = display.lines().next().unwrap_or("An error occurred");
-    named(first_line.trim().to_string())
+    let first_line = display.lines().next().unwrap_or("An error occurred").trim();
+    named(rust_names_said_plainly(first_line).unwrap_or_else(|| first_line.to_string()))
 }
 
 /// Polars' own words, with its query plan taken off the end.
@@ -625,7 +670,7 @@ fn files_columns_differ(msg: &str) -> Option<String> {
         let (got, expected) = rest.split_once(", expected ")?;
         let expected = expected.lines().next().unwrap_or(expected).trim();
         format!(
-            "one has a column named `{}` where another has `{expected}`",
+            "one has a column named \"{}\" where another has \"{expected}\"",
             got.trim()
         )
     } else if msg.contains("schema lengths differ") {
@@ -675,7 +720,7 @@ fn short_csv_parse_error_message(raw: &str) -> String {
     let col = extract_csv_parse_column(raw);
     let first = match &col {
         Some(c) => format!(
-            "CSV parse error in column '{}': a value didn't match the inferred type.",
+            "CSV parse error in column \"{}\": a value didn't match the inferred type.",
             c
         ),
         None => "CSV parse error: a value didn't match the inferred column type.".to_string(),
@@ -726,6 +771,24 @@ mod tests {
             user_message_from_report(&color_eyre::eyre::eyre!("bad header"), Some(path)),
             "\"/d/a.wav\": Bad header."
         );
+    }
+
+    /// A reader's Rust names are said in English.
+    #[test]
+    fn rust_names_are_said_plainly() {
+        let said = |m: &str| rust_names_said_plainly(m);
+        assert!(
+            said("out-of-spec: InvalidFooter")
+                .unwrap()
+                .contains("(invalid footer)")
+        );
+        assert!(said("OutOfSpec").unwrap().contains("--format"));
+        assert_eq!(
+            said("InvalidUtf8 at character 0").unwrap(),
+            "The file is not UTF-8 text at character 0."
+        );
+        assert_eq!(said("out-of-spec: the footer is short"), None);
+        assert_eq!(said("bad header"), None);
     }
 
     /// An expansion that found nothing says so instead of printing Polars' input.
@@ -805,7 +868,7 @@ mod tests {
         ));
         assert!(said.contains("cannot be read as one table"), "{said}");
         assert!(
-            said.contains("a column named `39` where another has `25`"),
+            said.contains("a column named \"39\" where another has \"25\""),
             "{said}"
         );
         assert!(said.contains("--no-header"), "{said}");
@@ -1000,7 +1063,7 @@ mod tests {
             msg
         );
         assert!(
-            msg.contains("column 'column'"),
+            msg.contains("column \"column\""),
             "expected offending column in message: {}",
             msg
         );

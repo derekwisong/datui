@@ -5,6 +5,8 @@ use color_eyre::Result;
 
 use super::{BASE, EVERYWHERE, Kind, Reader, ScanIn, Signature, Trusted, Unnamed};
 use crate::FileFormat;
+#[cfg(feature = "cloud")]
+use crate::error_display::FileError;
 use crate::export_modal::ExportFormat;
 use crate::python_script::{self as py, Python};
 use crate::scan::Scan;
@@ -23,7 +25,13 @@ fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> 
         options,
         format,
     } = input;
-    let failed = || format!("Could not read {url} as {}", format.name());
+    let named = std::path::Path::new(url);
+    let failed = |e: polars::prelude::PolarsError| {
+        FileError::new(
+            named,
+            format!("could not read it as {}: {}", format.name(), said(&e)),
+        )
+    };
     let reader = || {
         LazyCsvReader::new(path.clone())
             .with_cloud_options(Some(cloud.clone()))
@@ -32,9 +40,11 @@ fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> 
     // Each object has its own header lines, and the scan reads them all as one; the
     // names cannot come from one of them.
     if options.header_rows().is_some() {
-        return Err(color_eyre::eyre::eyre!(
-            "--header-rows reads a file's own lines, so it cannot read {url} in place. Download the files, or name the header with --skip-lines"
-        ));
+        return Err(FileError::new(
+            named,
+            "--header-rows reads a file's own lines, so it cannot read these in place. Download the files, or name the header with --skip-lines.",
+        )
+        .into());
     }
     let nv = DataTableState::build_null_values_with(options, None, || {
         DataTableState::csv_schema_for_null_values(reader(), options)
@@ -54,8 +64,9 @@ fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> 
                 DataTableState::csv_null_values_for(options, column)
             })
         })
-        .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", failed()))?;
-    DataTableState::apply_skip_tail_rows_csv(lf, options).map_err(|e| e.wrap_err(failed()))
+        .map_err(failed)?;
+    DataTableState::apply_skip_tail_rows_csv(lf, options)
+        .map_err(|e| crate::error_display::in_file(named, e))
 }
 
 /// A prefix of NDJSON in an object store.
@@ -66,11 +77,11 @@ fn bucket_json_lines(input: super::BucketIn<'_>) -> Result<polars::prelude::Lazy
         .with_cloud_options(Some(input.cloud))
         .finish()
         .map_err(|e| {
-            color_eyre::eyre::eyre!(
-                "Could not read {} as {}: {e}",
-                input.url,
-                input.format.name()
+            FileError::new(
+                std::path::Path::new(input.url),
+                format!("could not read it as {}: {}", input.format.name(), said(&e)),
             )
+            .into()
         })
 }
 
@@ -91,10 +102,22 @@ fn bucket_arrow(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame
             .next()
             .and_then(|head| head.rsplit_once('/'))
             .map_or(url, |(folder, _)| folder);
-        color_eyre::eyre::eyre!(
-            "Could not read {url} as Arrow IPC files: {e}. A glob reads IPC files in place; Arrow streams are read by their folder: open {folder}/"
+        FileError::new(
+            std::path::Path::new(url),
+            format!(
+                "could not read it as Arrow IPC files: {}. A glob reads IPC files in place; Arrow streams are read by their folder: open {folder}/",
+                said(&e)
+            ),
         )
+        .into()
     })
+}
+
+/// Polars' words for `e`, as a clause: tidied, without its full stop.
+#[cfg(feature = "cloud")]
+fn said(e: &polars::prelude::PolarsError) -> String {
+    let said = crate::error_display::user_message_from_polars(e);
+    said.trim_end_matches('.').to_string()
 }
 
 /// What text no format's signature claims is taken for, from its first bytes:
@@ -386,3 +409,28 @@ pub(crate) const EXCEL: Reader = Reader {
     scan: scan_excel,
     ..BASE
 };
+
+#[cfg(test)]
+mod reader_errors {
+    use crate::FileFormat;
+    use crate::readers::bad_input::each_names_its_file;
+
+    /// Bytes no Polars reader can read name their file, in the one shape, at the scan
+    /// or at the first rows.
+    #[test]
+    fn errors_name_the_file() {
+        let garbage: &[u8] = b"\x00\x01\x02 this is not a file of any format \xff\xfe";
+        for (format, name) in [
+            (FileFormat::Parquet, "bad.parquet"),
+            (FileFormat::Arrow, "bad.arrow"),
+            (FileFormat::Avro, "bad.avro"),
+            (FileFormat::Orc, "bad.orc"),
+            (FileFormat::Excel, "bad.xlsx"),
+            (FileFormat::Json, "bad.json"),
+            (FileFormat::Jsonl, "bad.jsonl"),
+        ] {
+            each_names_its_file(format, &[(name, garbage, "")]);
+        }
+        each_names_its_file(FileFormat::Csv, &[("ragged.csv", b"a,b\n1,2\n\"3,4\n", "")]);
+    }
+}

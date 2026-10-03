@@ -39,10 +39,19 @@ const VALUE_MIN: usize = 3;
 /// The Surface's inner width from which the fields and the value sit side by
 /// side: a 140-column terminal.
 pub const WIDE: usize = 136;
+/// The Surface's inner width from which a row with bytes gives the value pane a
+/// 32-byte hex row: a 240-column terminal.
+pub const WIDER: usize = 236;
 /// Cells between the field list and the value side by side.
 const PANE_GAP: usize = 3;
+/// The narrowest the value pane gets beside a list that needs the room: still a
+/// comfortable measure for prose.
+const VALUE_FLOOR: usize = 56;
+/// The rail and a hex dump row of 32 bytes: the value pane's width for bytes
+/// where the list keeps room beside it.
+const HEX_WIDE: usize = 1 + 8 + 1 + 32 * 3 + 2 + 32;
 /// The narrowest preview a column of fields keeps.
-const PREVIEW_MIN: usize = 16;
+const PREVIEW_MIN: usize = 14;
 /// JSON text up to this long has a JSON view; longer text reads raw.
 pub const PRETTY_MAX: usize = 1024 * 1024;
 /// Bytes shown escaped: the start of a long binary value.
@@ -414,6 +423,8 @@ fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
 /// Everything a pane is built from beside the value.
 pub struct PaneAsk<'a> {
     pub choice: Option<View>,
+    /// The pane's width: text wraps to the reading measure inside it, and a hex
+    /// dump fills it.
     pub width: usize,
     /// The table's preview of a scalar, said beside the exact value when they differ.
     pub table: Option<&'a str>,
@@ -427,7 +438,7 @@ pub struct PaneAsk<'a> {
 /// The value pane for `shown`, a value of type `dtype`.
 pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
     let g = crate::glyphs::get();
-    let width = ask.width.max(1);
+    let width = ask.width.clamp(1, MEASURE);
     let kind = type_text(dtype);
     let mut lines = Vec::new();
     match shown {
@@ -484,8 +495,8 @@ pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
                 let s = exact::value_text(value);
                 text_pane(&s, kind, ask.choice, &Indented::None, true)
             }
-            AnyValue::Binary(b) => binary_pane(b, ask.choice, width),
-            AnyValue::BinaryOwned(b) => binary_pane(b, ask.choice, width),
+            AnyValue::Binary(b) => binary_pane(b, ask.choice, ask.width),
+            AnyValue::BinaryOwned(b) => binary_pane(b, ask.choice, ask.width),
             v if exact::is_nested_value(v) => {
                 let mut facts = vec![kind];
                 if let Some(n) = exact::nested_len(v) {
@@ -788,6 +799,42 @@ pub fn list_window(n: usize, sel: usize, offset: usize, cap: usize) -> (usize, b
     (o, above, below)
 }
 
+/// What the side-by-side layout sizes the field list from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListShape {
+    /// Every field of the row, listed or not: narrowing the list moves nothing.
+    pub fields: usize,
+    /// A column of fields at its narrowest.
+    pub min_col: usize,
+    /// One column: Compare puts other rows beside each field.
+    pub single: bool,
+    /// The row has bytes: the value pane widens for a 32-byte hex row where the
+    /// list keeps room beside it.
+    pub bytes: bool,
+}
+
+/// The value pane's width side by side with the list in `width` cells and
+/// `rows` rows. It depends on the terminal and the row's fields, never on the
+/// focused one, so nothing moves as the focus does. A list longer than the
+/// screen takes the columns it needs, down to [`VALUE_FLOOR`] for the value;
+/// otherwise the value has its measure, or from [`WIDER`] a 32-byte hex row
+/// for a row with bytes.
+fn value_pane_width(width: usize, rows: usize, list: ListShape) -> usize {
+    let mut max = (MEASURE + 1).min(width * 45 / 100);
+    if list.bytes && !list.single && width >= WIDER {
+        max = HEX_WIDE;
+    }
+    if list.single {
+        return max;
+    }
+    let floor = VALUE_FLOOR.min(max);
+    let need = list.fields.div_ceil(rows.max(1)).max(1);
+    let fit = ((width.saturating_sub(floor + PANE_GAP) + GAP) / (list.min_col + GAP)).max(1);
+    let cols = need.min(fit);
+    let list_w = cols * list.min_col + (cols - 1) * GAP;
+    width.saturating_sub(list_w + PANE_GAP).clamp(floor, max)
+}
+
 /// Where each part of the inspector goes inside the Surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
@@ -805,15 +852,15 @@ pub struct Layout {
 /// rows. Below [`WIDE`] the list sits above the value and takes the rows it
 /// needs, leaving the value what its lines need; with the focus on the value,
 /// the list keeps a few rows around the focused field. From [`WIDE`] the two
-/// sit side by side, each at full height, and fields flow into as many columns
-/// of `min_col` cells as fit.
+/// sit side by side, each at full height, the value as wide as
+/// [`value_pane_width`] says, and fields flow into as many columns of
+/// `list.min_col` cells as fit.
 pub fn layout(
     content: Rect,
     fields: usize,
     value_need: usize,
     focus: Focus,
-    single_column: bool,
-    min_col: usize,
+    list: ListShape,
 ) -> Layout {
     let line = |y: u16, x: u16, width: u16| Rect {
         x,
@@ -824,11 +871,11 @@ pub fn layout(
     let width = content.width as usize;
     let h = content.height as usize;
     if width >= WIDE {
-        let value_w = (MEASURE + 1).min(width * 45 / 100);
-        let list_w = width - value_w - PANE_GAP;
         let rows = h.saturating_sub(1).max(1);
-        let mut cols = ((list_w + GAP) / (min_col + GAP)).max(1);
-        if single_column {
+        let value_w = value_pane_width(width, rows, list);
+        let list_w = width - value_w - PANE_GAP;
+        let mut cols = ((list_w + GAP) / (list.min_col + GAP)).max(1);
+        if list.single {
             cols = 1;
         }
         while cols > 1 && (cols - 1) * rows >= fields {
@@ -889,10 +936,14 @@ pub fn layout(
     }
 }
 
-/// The pane's wrapping width inside `value`: past the rail column, capped at the
-/// reading measure.
+/// The pane's width inside `value`, past the rail column: a hex dump's.
+fn pane_width(value: Rect) -> usize {
+    (value.width as usize).saturating_sub(1).max(1)
+}
+
+/// The pane's wrapping width inside `value`: capped at the reading measure.
 fn value_width(value: Rect) -> usize {
-    (value.width as usize).saturating_sub(1).clamp(1, MEASURE)
+    pane_width(value).min(MEASURE)
 }
 
 /// Build, or take from the cache, the pane for the focused field of `row`.
@@ -1011,31 +1062,6 @@ pub fn render(
 
     let content = Surface::content_area(area);
     let focused = modal.focused().cloned();
-    let probe = layout(
-        content,
-        modal.visible.len(),
-        VALUE_MIN,
-        modal.focus,
-        true,
-        1,
-    );
-    let width = value_width(probe.value);
-    let pane = match (&row, &focused) {
-        (Some(row), Some(field)) => Some(field_pane(modal, state, row, field, width, ctx)),
-        _ => None,
-    };
-    let pane = pane.unwrap_or_else(|| {
-        let message = if row.is_none() {
-            "Reading the row..."
-        } else {
-            "No field matches"
-        };
-        Pane::lines(vec![(message.to_string(), Tone::Dim)], Vec::new())
-    });
-    modal.reader.prepare(pane.id, width, modal.wrap);
-    let need = modal
-        .reader
-        .rows_needed(&pane.content, content.height as usize);
 
     // The list's columns, measured over every field so moving moves nothing.
     let g = crate::glyphs::get();
@@ -1060,15 +1086,44 @@ pub fn render(
         .max()
         .unwrap_or(0)
         .min(14);
-    let min_col = 1 + name_w + GAP + type_w + GAP + PREVIEW_MIN;
-    let lay = layout(
-        content,
-        modal.visible.len(),
-        need,
-        modal.focus,
-        other.is_some(),
-        min_col,
-    );
+    let shape = ListShape {
+        fields: modal.fields.len(),
+        min_col: 1 + name_w + GAP + type_w + GAP + PREVIEW_MIN,
+        single: other.is_some(),
+        bytes: modal
+            .fields
+            .iter()
+            .any(|f| matches!(f.dtype, DataType::Binary | DataType::BinaryOffset)),
+    };
+    // The value's width does not depend on what it needs; only the stacked
+    // layout's heights do.
+    let probe = layout(content, modal.visible.len(), VALUE_MIN, modal.focus, shape);
+    let width = value_width(probe.value);
+    let pane = match (&row, &focused) {
+        (Some(row), Some(field)) => Some(field_pane(
+            modal,
+            state,
+            row,
+            field,
+            pane_width(probe.value),
+            ctx,
+        )),
+        _ => None,
+    };
+    let pane = pane.unwrap_or_else(|| {
+        let message = if row.is_none() {
+            "Reading the row..."
+        } else {
+            "No field matches"
+        };
+        Pane::lines(vec![(message.to_string(), Tone::Dim)], Vec::new())
+    });
+    modal.reader.prepare(pane.id, width, modal.wrap);
+    let need = modal
+        .reader
+        .rows_needed(&pane.content, content.height as usize);
+
+    let lay = layout(content, modal.visible.len(), need, modal.focus, shape);
 
     // The footer, from what the layout leaves visible.
     let enter = match (&row, &focused) {
@@ -1391,7 +1446,9 @@ fn draw_fields(
     } else {
         list_w
     };
-    let name_w = name_w.min((col_w / 3).max(4));
+    // Names stay whole while a column has its narrowest preview beside them.
+    let beside = 1 + GAP + type_w + GAP + PREVIEW_MIN;
+    let name_w = name_w.min((col_w / 3).max(col_w.saturating_sub(beside)).max(4));
     let rest = col_w.saturating_sub(1 + name_w + GAP + type_w + GAP);
     let (this_w, other_w) = if other.is_some() {
         let each = rest.saturating_sub(GAP + 2) / 2;
@@ -1606,7 +1663,7 @@ fn draw_value(
         .as_ref()
         .map(|f| f.text.clone())
         .unwrap_or_default();
-    let text_w = value_width(lay.value) as u16;
+    let text_w = pane_width(lay.value) as u16;
     for (i, row) in win.rows.iter().enumerate() {
         let y = lay.value.y + i as u16;
         if focused {
@@ -1691,7 +1748,7 @@ pub fn node_pane(node: &Node, choice: Option<View>, width: usize) -> Pane {
 /// indented up to a few chunks.
 fn json_pane(value: &JsonValue, ask: &PaneAsk) -> Pane {
     let g = crate::glyphs::get();
-    let width = ask.width.max(1);
+    let width = ask.width.clamp(1, MEASURE);
     let scalar = |text: String, kind: &str| {
         let mut lines = Vec::new();
         reader::wrap_lines(&text, width, Tone::Plain, &mut lines);
@@ -1822,10 +1879,8 @@ fn render_drill(
         width: content.width.min(WIDE as u16 - 1),
         ..content
     };
-    let width = value_width(Rect {
-        width: content.width,
-        ..content
-    });
+    let full = pane_width(content);
+    let width = full.min(MEASURE);
 
     let pane = match &focused {
         Some((label, child)) => {
@@ -1834,14 +1889,14 @@ fn render_drill(
                 row: drill.row,
                 field: drill.item_key(label),
                 view: modal.view,
-                width: width as u16,
+                width: full as u16,
                 state: 5,
                 pretty: 0,
             };
             match &modal.pane {
                 Some((cached, pane)) if *cached == key => pane.clone(),
                 _ => {
-                    let mut built = node_pane(child, modal.view, width);
+                    let mut built = node_pane(child, modal.view, full);
                     built.id = renewed(modal, &key, &built);
                     modal.pane = Some((key, built.clone()));
                     built
@@ -1868,8 +1923,12 @@ fn render_drill(
         len,
         need,
         modal.focus,
-        true,
-        1,
+        ListShape {
+            fields: len,
+            min_col: 1,
+            single: true,
+            bytes: false,
+        },
     );
     // The table's header takes the row under the rule; the rest move down one.
     lay.list.y += header as u16;
@@ -2548,42 +2607,76 @@ mod tests {
     /// side at full height, and the fields flow into columns that fit.
     #[test]
     fn the_layout_fits_the_row_and_the_terminal() {
+        let list = |fields: usize, min_col: usize| ListShape {
+            fields,
+            min_col,
+            single: false,
+            bytes: false,
+        };
         // 80x24: the Surface's content is 76x20, 18 rows past the two rules.
         let content = Rect::new(2, 1, 76, 20);
-        let l = layout(content, 14, 1, Focus::List, false, 40);
+        let l = layout(content, 14, 1, Focus::List, list(14, 40));
         assert!(!l.wide);
         assert_eq!(l.list.height, 14, "every field listed");
         assert_eq!(l.value.height, 4);
-        let l = layout(content, 214, 1, Focus::List, false, 40);
+        let l = layout(content, 214, 1, Focus::List, list(214, 40));
         assert_eq!(
             (l.list.height, l.value.height),
             (15, 3),
             "the value keeps three"
         );
-        let l = layout(content, 214, 40, Focus::List, false, 40);
+        let l = layout(content, 214, 40, Focus::List, list(214, 40));
         assert_eq!(l.value.height, 9, "a long value takes half");
-        let l = layout(content, 214, 40, Focus::Value, false, 40);
+        let l = layout(content, 214, 40, Focus::Value, list(214, 40));
         assert_eq!(l.list.height, 3, "reading, the list keeps a few rows");
         // Two fields and a long value: the list takes its two rows, the value the rest.
-        let l = layout(content, 2, 1_000, Focus::List, false, 40);
+        let l = layout(content, 2, 1_000, Focus::List, list(2, 40));
         assert_eq!((l.list.height, l.value.height), (2, 16));
-        // 200x50: side by side, two columns of fields.
+        // 200x50: side by side. 214 fields take three columns and the value
+        // narrows to its floor; a short row leaves the value its measure.
         let content = Rect::new(2, 1, 196, 46);
-        let l = layout(content, 214, 1, Focus::List, false, 45);
+        let l = layout(content, 214, 1, Focus::List, list(214, 44));
         assert!(l.wide);
         assert_eq!(l.value.height, 45);
-        assert_eq!(l.cols, 2);
-        assert!(l.cols * l.list.height as usize >= 44);
-        // 300x80: every one of 214 fields.
+        assert_eq!(l.cols, 3, "{l:?}");
+        assert!(l.value.width as usize >= VALUE_FLOOR, "{l:?}");
+        assert!(l.cols * l.list.height as usize >= 130);
+        let l = layout(content, 14, 1, Focus::List, list(14, 44));
+        assert_eq!((l.cols, l.value.width), (1, 88), "{l:?}");
+        // Narrowing the list (a find, Filled) moves nothing: the pane is sized
+        // from every field.
+        let narrowed = layout(content, 3, 1, Focus::List, list(214, 44));
+        assert_eq!(
+            narrowed.value,
+            layout(content, 214, 1, Focus::List, list(214, 44)).value
+        );
+        // 300x80: every one of 214 fields; a row with bytes gives the value a
+        // 32-byte hex row.
         let content = Rect::new(2, 1, 296, 76);
-        let l = layout(content, 214, 1, Focus::List, false, 45);
+        let l = layout(content, 214, 1, Focus::List, list(214, 45));
         assert!(l.cols * l.list.height as usize >= 214, "{l:?}");
+        assert_eq!(l.value.width as usize, MEASURE + 1);
+        let bytes = ListShape {
+            bytes: true,
+            ..list(214, 45)
+        };
+        let l = layout(content, 214, 1, Focus::List, bytes);
+        assert_eq!(l.value.width as usize, HEX_WIDE);
+        assert_eq!(reader::hex_per_line(pane_width(l.value)), 32);
+        assert!(l.cols * l.list.height as usize >= 214, "{l:?}");
+        // Compare keeps the list one column and the value its measure.
+        let compare = ListShape {
+            single: true,
+            ..bytes
+        };
+        let l = layout(content, 214, 1, Focus::List, compare);
+        assert_eq!((l.cols, l.value.width as usize), (1, MEASURE + 1));
         // A short row keeps one column.
-        let l = layout(content, 14, 1, Focus::List, false, 45);
+        let l = layout(content, 14, 1, Focus::List, list(14, 45));
         assert_eq!(l.cols, 1);
         // 140 columns: side by side.
-        assert!(layout(Rect::new(2, 1, 136, 30), 14, 1, Focus::List, false, 45).wide);
-        assert!(!layout(Rect::new(2, 1, 135, 30), 14, 1, Focus::List, false, 45).wide);
+        assert!(layout(Rect::new(2, 1, 136, 30), 14, 1, Focus::List, list(14, 45)).wide);
+        assert!(!layout(Rect::new(2, 1, 135, 30), 14, 1, Focus::List, list(14, 45)).wide);
     }
 
     /// A long trail keeps the row and where the drill is now; the steps between

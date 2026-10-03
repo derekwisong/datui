@@ -20001,6 +20001,54 @@ fn test_inspector_lays_a_wide_row_out_side_by_side() {
     assert!(app.inspector_modal.focused_position() > before + 40);
 }
 
+/// #661: from 240 columns a row with bytes gives its hex dump 32 bytes a row;
+/// a resize while reading keeps the offset at the top, at any row length.
+#[test]
+fn test_inspector_widens_hex_rows_and_keeps_the_place_on_a_resize() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bytes.parquet");
+    let bytes: Vec<u8> = (0..8192u32).map(|i| (i % 251) as u8).collect();
+    let mut df = df!("id" => [1i64], "blob" => [bytes.as_slice()]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    rows_at(&mut app, 300, 80);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "blob");
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let text = rows_at(&mut app, 300, 80).join("\n");
+    assert!(text.contains(" 00000020  "), "{text}");
+    assert!(!text.contains(" 00000010  "), "{text}");
+    let text = rows_at(&mut app, 200, 50).join("\n");
+    assert!(
+        text.contains(" 00000010  "),
+        "16 a row at 200 columns:\n{text}"
+    );
+
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    rows_at(&mut app, 300, 80);
+    press_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    let top = |rows: &[String]| {
+        let text = rows.join("\n");
+        let at = text.find(" of 0x2000").expect(&text);
+        let from = text[..at].rsplit(' ').next().unwrap();
+        from.split('-').next().unwrap().to_string()
+    };
+    let before = top(&rows_at(&mut app, 300, 80));
+    assert_ne!(before, "0x0");
+    for (width, height) in [(200u16, 50u16), (80, 24), (300, 80)] {
+        let rows = rows_at(&mut app, width, height);
+        assert_eq!(top(&rows), before, "{width}x{height}:\n{}", rows.join("\n"));
+    }
+}
+
 /// A field past a megabyte is copied off the UI thread, whole.
 #[test]
 fn test_inspector_copies_a_large_field_in_the_background() {

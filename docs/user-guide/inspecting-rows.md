@@ -19,7 +19,10 @@ The list takes the rows its fields need and the value the rest; when they do
 not all fit, the value keeps the lines it needs, up to half the height, and
 the list scrolls, with `… 5 above` and `… 12 more` at its ends. At 140
 columns and wider the fields and the value sit side by side at full height,
-and the fields flow into as many columns as fit. The fields' rule counts
+and the fields flow into as many columns as fit: a row with more fields than
+the screen has rows narrows the value to make room for them. At 240 columns
+and wider, a row with a binary field gives the value room for a hex dump of
+32 bytes a line. The fields' rule counts
 them, `14 · 2 null · 1 empty`, and the footer offers only the keys that act
 now.
 

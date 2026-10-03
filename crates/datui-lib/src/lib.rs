@@ -18706,10 +18706,16 @@ impl App {
                     args,
                 )?);
             }
+            // A converted stream sits in a temp directory the user names, `[` and all,
+            // and a file read in place may be called `d[1].arrow` (#632).
+            let args = polars::prelude::UnifiedScanArgs {
+                glob: source::expands_as_glob(path),
+                ..Default::default()
+            };
             Ok(LazyFrame::scan_ipc(
                 polars::prelude::PlRefPath::try_from_path(path)?,
                 Default::default(),
-                Default::default(),
+                args,
             )?)
         };
         let streams = |offset: u64, rows: u64| -> Result<LazyFrame> {

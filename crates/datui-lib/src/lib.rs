@@ -6174,11 +6174,8 @@ impl App {
         self.runtime.spawn(async move {
             let mut hidden = cache.load_hidden_cloud_sources();
             hidden.extend(cloud.hide.iter().cloned());
-            let listings = cache.load_cloud_listings();
             let cached_for = |source: &crate::cloud_sources::Source| {
-                listings
-                    .get(&source.id)
-                    .filter(|l| l.fingerprint == source.fingerprint())
+                cache.cloud_listing(&source.id, &source.fingerprint())
             };
             let found = {
                 let env = crate::cloud_browse::Environment::current();
@@ -6205,7 +6202,7 @@ impl App {
                 None => {
                     let rows = sources
                         .iter()
-                        .map(|source| home_cloud_source(source, cached_for(source), list))
+                        .map(|source| home_cloud_source(source, cached_for(source).as_ref(), list))
                         .collect();
                     let _ = tx.send(AppEvent::HomeCloudSources { sources: rows });
                 }
@@ -6476,8 +6473,7 @@ impl App {
             owed.run(move || {
                 // Ranked by frecency; the newest is where the cursor lands, so the
                 // last file is still one Enter away.
-                let recents = cache.load_recents();
-                let visits = cache.load_visits();
+                let (recents, visits) = cache.load_recents_with_visits();
                 let newest = recents.first().cloned();
                 request.recents = crate::cache::by_frecency(recents, &visits);
                 request.remembered_dirs = cache.load_remembered_places();
@@ -6486,6 +6482,15 @@ impl App {
                     request.desktop_dirs = home::desktop_recent_dirs();
                 }
                 let listing = home::build_listing(&request);
+                // A record shown is a record used: the ones eviction keeps.
+                let shown: Vec<PathBuf> = listing
+                    .sections
+                    .iter()
+                    .flat_map(|s| s.rows.iter().chain(&s.door))
+                    .flat_map(|row| [row.path.clone(), home::index_key(&row.path)])
+                    .filter(|key| request.known.contains_key(key))
+                    .collect();
+                cache.touch_dataset_facts(shown.iter().map(PathBuf::as_path));
                 let _ = tx.send(AppEvent::HomeListingReady {
                     generation,
                     listing: Box::new(listing),
@@ -10137,11 +10142,10 @@ impl App {
         // every footer. A sampled read does not replace a whole one, though: the shape
         // cache is the smaller of the two and forgets a dataset long before the index
         // does, and a reopen that finds its shape gone reads a sample first.
-        if let Some((path, facts)) = Self::facts_from_cloud_footers(full, files, read, footers) {
-            let existing = cache.load_dataset_facts();
-            if Self::facts_worth_recording(existing.get(&path), &facts) {
-                cache.record_dataset_facts(&[(path, facts)]);
-            }
+        if let Some((path, facts)) = Self::facts_from_cloud_footers(full, files, read, footers)
+            && Self::facts_worth_recording(cache.dataset_facts(&path).as_ref(), &facts)
+        {
+            cache.record_dataset_facts(&[(path, facts)]);
         }
         let Some(fingerprint) = fingerprint else {
             return;

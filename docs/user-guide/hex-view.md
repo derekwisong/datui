@@ -48,7 +48,7 @@ rest of the layout is found.
 
 The inspector sits beside the bytes when there is room for it and 16 bytes a
 row; elsewhere <kbd>i</kbd> opens it under them. <kbd>r</kbd> or
-`--record-size N` fixes the bytes per row (1 to 4096) so that records line up;
+`--hex-width N` fixes the bytes per row (1 to 4096) so that records line up;
 a row wider than the screen shows the part the cursor is in.
 
 Bytes are colored by class: 0x00, printable ASCII, whitespace, other control

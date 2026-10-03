@@ -654,7 +654,7 @@ fn union_schema_message(msg: &str) -> String {
         said.push_str(&format!("\nIt stopped at {file}."));
     }
     said.push_str(
-        "\nTry: open one file on its own, or --format / --infer-schema-length to settle \
+        "\nTry: open one file on its own, or --format / --infer-rows to settle \
          the types.",
     );
     said
@@ -727,8 +727,8 @@ fn short_csv_parse_error_message(raw: &str) -> String {
     };
     format!(
         "{}\n\
-         Try: --infer-schema-length 1000\n\
-              --null-value <value>  (treat as null)\n\
+         Try: --infer-rows 1000\n\
+              --null <value>  (treat as null)\n\
               --ignore-errors  (skip bad rows)",
         first
     )
@@ -1067,16 +1067,8 @@ mod tests {
             "expected offending column in message: {}",
             msg
         );
-        assert!(
-            msg.contains("--infer-schema-length"),
-            "expected CLI hint: {}",
-            msg
-        );
-        assert!(
-            msg.contains("--null-value"),
-            "expected null-value hint: {}",
-            msg
-        );
+        assert!(msg.contains("--infer-rows"), "expected CLI hint: {}", msg);
+        assert!(msg.contains("--null"), "expected null-value hint: {}", msg);
         assert!(
             !msg.contains("Original error"),
             "should not regurgitate Polars: {}",

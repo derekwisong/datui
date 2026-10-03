@@ -40,29 +40,28 @@ accent           = "{{ accent }}"
 accent_bright    = "{{ mix accent foreground 30% }}"
 gradient_start   = "{{ blue }}"
 gradient_end     = "{{ magenta }}"
-keybind_hints    = "{{ accent }}"
-keybind_labels   = "{{ light_foreground }}"
+chip_key         = "{{ accent }}"
+chip_label       = "{{ light_foreground }}"
 throbber         = "{{ accent }}"
 sidebar_border   = "{{ mix background foreground 25% }}"
-column_separator = "{{ mix background foreground 25% }}"
 
 # --- Table -----------------------------------------------------------------
-table_header        = "{{ bright_foreground }}"
-table_header_bg     = "{{ mix background foreground 12% }}"
-alternate_row_color = "{{ mix background foreground 6% }}"
-row_numbers         = "{{ muted }}"
-# A tint under the current row. "reversed" is still accepted and swaps fg/bg.
-table_selected      = "{{ mix background accent 30% }}"
-find_match          = "{{ yellow }}"
+table_header           = "{{ bright_foreground }}"
+table_header_bg        = "{{ mix background foreground 12% }}"
+table_alternate_row    = "{{ mix background foreground 6% }}"
+table_row_numbers      = "{{ muted }}"
+table_column_separator = "{{ mix background foreground 25% }}"
+# A tint under the current row. "reversed" swaps fg/bg instead.
+table_selected         = "{{ mix background accent 30% }}"
+find_match             = "{{ yellow }}"
 # The column cursor's cells, and its header and the current cell.
-column_cursor       = "{{ mix background foreground 9% }}"
-cell_cursor         = "{{ mix background foreground 22% }}"
+table_column_cursor    = "{{ mix background foreground 9% }}"
+table_cell_cursor      = "{{ mix background foreground 22% }}"
 
-# --- Cursor / modals -------------------------------------------------------
-cursor_focused      = "{{ accent }}"
-cursor_dimmed       = "{{ muted }}"
-# Text under the cursor block; the background reads on an accent cursor.
-cursor_text         = "{{ background }}"
+# --- Text caret / modals ---------------------------------------------------
+input_cursor        = "{{ accent }}"
+# Text under the caret block; the background reads on an accent caret.
+input_cursor_text   = "{{ background }}"
 modal_border_active = "{{ accent }}"
 modal_border_error  = "{{ red }}"
 
@@ -74,12 +73,12 @@ warning = "{{ yellow }}"
 # --- Column types ----------------------------------------------------------
 # These must stay mutually distinguishable: they are how you read a schema at a
 # glance. Mapped to the theme's six hues rather than derived shades.
-str_col      = "{{ green }}"
-int_col      = "{{ cyan }}"
-float_col    = "{{ blue }}"
-bool_col     = "{{ yellow }}"
-temporal_col = "{{ magenta }}"
-binary_col   = "{{ muted }}"
+type_str      = "{{ green }}"
+type_int      = "{{ cyan }}"
+type_float    = "{{ blue }}"
+type_bool     = "{{ yellow }}"
+type_temporal = "{{ magenta }}"
+type_binary   = "{{ muted }}"
 
 # --- Distribution / outliers ----------------------------------------------
 distribution_normal = "{{ green }}"
@@ -88,17 +87,16 @@ distribution_other  = "{{ foreground }}"
 outlier_marker      = "{{ red }}"
 
 # --- Charts ----------------------------------------------------------------
-primary_chart_series_color   = "{{ accent }}"
-secondary_chart_series_color = "{{ muted }}"
-chart_series_color_1 = "{{ blue }}"
-chart_series_color_2 = "{{ green }}"
-chart_series_color_3 = "{{ yellow }}"
-chart_series_color_4 = "{{ magenta }}"
-chart_series_color_5 = "{{ cyan }}"
-chart_series_color_6 = "{{ orange }}"
-chart_series_color_7 = "{{ red }}"
+# chart_1 is also histogram bars and Q-Q points; overlays take `dimmed`.
+chart_1 = "{{ accent }}"
+chart_2 = "{{ magenta }}"
+chart_3 = "{{ green }}"
+chart_4 = "{{ yellow }}"
+chart_5 = "{{ blue }}"
+chart_6 = "{{ red }}"
+chart_7 = "{{ orange }}"
 # The grid sits a shade under muted, so it never competes with a series.
-chart_grid           = "{{ mix background foreground 30% }}"
+chart_grid = "{{ mix background foreground 30% }}"
 
 # --- Hex view --------------------------------------------------------------
 # Bytes by class, as hexyl colors them.

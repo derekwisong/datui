@@ -1,13 +1,3 @@
 Datui is a terminal UI for tabular data: Parquet, CSV, JSON, Arrow and more,
 local or in S3, GCS, Azure and HTTP, from a few rows to a few billion.
-
-    - Opens data where it is: local, S3, GCS, Azure, HTTP(S), Hive-partitioned
-    - Home screen: recent datasets, your directories, reachable buckets and a
-      catalog of public datasets
-    - SQL, text search, and q-style (select a, b by region where c > 10)
-    - Describe, distribution fitting with Q-Q plots, correlation, data quality
-    - Charts: line, scatter, bar, histogram, box, KDE, heatmap; save PNG or EPS
-    - Pivot, melt, copy, views; export CSV, Parquet, JSON, NDJSON, Arrow, Avro
-    - Light and dark palettes, every color and default in one config file
-
-Run with no PATH for the home screen. Press ? inside for the keys.
+Run with no PATH for the home screen; `datui formats` lists what it reads.

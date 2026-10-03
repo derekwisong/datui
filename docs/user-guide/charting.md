@@ -51,14 +51,14 @@ labels where there is room.
 
 | Axis | Ticks and labels |
 |---|---|
-| Numbers | One notation and precision per axis, in the table's digit grouping and decimal separator ([number format](../reference/settings.md#number-formatting)). Counts and integer columns tick in whole numbers |
+| Numbers | One notation and precision per axis, in the table's digit grouping and decimal separator ([number format](../user-guide/configuration.md#number-formatting)). Counts and integer columns tick in whole numbers |
 | Dates and times | Calendar boundaries: years, months, days, hours, minutes. A label names the unit that turns there: `2026` at a new year, `Apr` at a new month, `Mar 5` at a new day among hours, otherwise `12` or `06:00`. The first label also names the year |
 | Log scale | 1, 10, 100 and on, with 2 and 5 between when there is room, and 0 where the data starts there; one format, shortened to `1k`, `10k`, `1M` when narrow |
 | Too narrow | Fewer ticks, then shorter labels (`12.3k`, `12,3k`); a time axis falls back to its ends. When two labels are nearest the spacing and more fit, more: `0 2 4 6`, not `0 5` |
 
 | Feature | What it does |
 |---|---|
-| **Grid** | Dotted lines at the labeled ticks, under the series, in `chart_grid`. <kbd>g</kbd> or the **Grid** row toggles it; `grid` in the [`[chart]` section](../reference/settings.md#charts) sets where a new chart starts (off) |
+| **Grid** | Dotted lines at the labeled ticks, under the series, in `chart_grid`. <kbd>g</kbd> or the **Grid** row toggles it; `chart_grid` in the [`[analysis]` section](../reference/settings.md#analysis) sets where a new chart starts (off) |
 | **Legend** | Names the series when there are two or more, in the corner the series leave emptiest. The **Legend** row hides it |
 | **Crosshair** | XY: <kbd>x</kbd> gives the plot the keys. <kbd>←</kbd> <kbd>→</kbd> step a line down the plot from point to point (a column at a time where they crowd), <kbd>Home</kbd> <kbd>End</kbd> go to the ends, and under the plot a readout gives x and each series' value there: `date: 2020-04-30   high_temp: 67.2`. A series with no value there reads `∅`. <kbd>x</kbd>, <kbd>Tab</kbd> or <kbd>Esc</kbd> hand the keys back to the options. A click on the plot puts the crosshair there |
 | Marks | Lines in braille. A scatter marks each point with a dot, or in braille past one point per four cells. Histogram bars fill their bins |
@@ -144,8 +144,8 @@ draw theirs, with the same seed: 50 runs of one Parquet or IPC file, or one
 streamed pass over anything else. Another option, or another chart of columns
 already read, draws from the same rows without reading the table again. An
 exported PNG or EPS carries the same notes under the plot. The default size
-comes from `row_limit` in the
-[`[chart]` config section](../reference/settings.md#charts) and is 10,000.
+comes from `chart_rows` in the
+[`[analysis]` config section](../reference/settings.md#analysis) and is 10,000.
 
 A **Line** chart over more rows than the sample size draws an envelope
 instead: X is cut into half as many steps as the sample size, and each step
@@ -184,6 +184,5 @@ bar chart exports up to its first 100 bars; the category axis counts the rest.
 
 ## Colors
 
-Series take `chart_series_color_1` through `chart_series_color_7` from the
-[theme](../reference/settings.md#colors); bars and histograms take
-`primary_chart_series_color`, and the grid `chart_grid`.
+Series take `chart_1` through `chart_7` from the
+[theme](../reference/settings.md#colors); bars and histograms take `chart_1`, and the grid `chart_grid`.

@@ -89,7 +89,7 @@ if result is not None:
 
 ## Configuration
 
-Run `datui --generate-config` to create a TOML config. It controls data
+Run `datui config init` to create a TOML config. It controls data
 directories, cloud connections, number formatting and colors. See the
 [configuration guide][config-guide] for the available settings.
 

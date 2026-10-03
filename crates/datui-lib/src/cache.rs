@@ -85,7 +85,7 @@ impl CacheManager {
     pub fn clear_all(&self) -> Result<()> {
         // Everything datui writes here, not a fixed list: the list rotted — it held
         // two names while the directory grew histories, measurements, cloud sources
-        // and the hidden-source file, so `--clear-cache` kept most of the cache and
+        // and the hidden-source file, so `datui cache clear` kept most of the cache and
         // broke the documented way to unhide a source. Files only, by the extensions
         // datui writes, so a stray directory or foreign file is left alone.
         match fs::remove_dir_all(self.dataset_shape_dir()) {
@@ -1078,7 +1078,7 @@ impl CacheManager {
 
     /// Directories kept on the home screen with Ctrl+D, in the order they were added.
     ///
-    /// The one-keystroke twin of `[data] directories`. Kept here rather than written
+    /// The one-keystroke twin of `[home] directories`. Kept here rather than written
     /// into the config: that file is the user's, comments and all, and may be one of
     /// several merged together.
     pub fn load_remembered_places(&self) -> Vec<PathBuf> {
@@ -1744,7 +1744,7 @@ mod dataset_shape_tests {
             .sum()
     }
 
-    /// `--clear-cache` takes it with everything else.
+    /// `datui cache clear` takes it with everything else.
     #[test]
     fn clearing_the_cache_forgets_the_shapes() {
         let dir = tempfile::tempdir().unwrap();
@@ -1793,7 +1793,7 @@ mod facts_compat_tests {
         assert_eq!(map.len(), 2, "both rows, not none of them");
     }
 
-    /// `--clear-cache` clears the cache — all of it. The old fixed list held two
+    /// `datui cache clear` clears the cache — all of it. The old fixed list held two
     /// names while the directory grew histories, measurements and the hidden-source
     /// file, so the documented promises ("clears everything", "hidden until
     /// --clear-cache") were both broken.

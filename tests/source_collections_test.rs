@@ -56,7 +56,7 @@ fn pump(app: &mut App, rx: &Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
 fn config_with(extra: &str) -> AppConfig {
     common::isolate_cache();
     let config = common::layered_config(&[
-        "[data]\nuse_desktop_recents = false\n[cloud]\ndiscover = false\n",
+        "[home]\ndesktop_recents = false\n[cloud]\ndiscover = false\n",
         extra,
     ]);
     config.validate().expect("test config validates");
@@ -310,14 +310,14 @@ fn the_catalog_is_replaced_dropped_or_hidden() {
         "replaced whole: {replaced:?}"
     );
 
-    let dropped = listed("[data]\nbuiltin_catalog = false\n");
+    let dropped = listed("[home]\nbuiltin_catalog = false\n");
     assert!(
         !dropped.iter().any(|t| t == "Public datasets"),
         "{dropped:?}"
     );
 
     let hidden = listed(&format!(
-        "[data]\nhide_sources = [\"public\"]\n[[sources]]\nname = \"public\"\nlabel = \"Curated\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"{}\"\n",
+        "[home]\nhide = [\"public\"]\n[[sources]]\nname = \"public\"\nlabel = \"Curated\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"{}\"\n",
         toml_path(&local)
     ));
     assert!(

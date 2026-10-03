@@ -368,7 +368,7 @@ fn a_full_scan_is_compared_again_without_a_request() {
 
 fn copies_off() -> AppConfig {
     let mut config = AppConfig::default();
-    config.performance.quality_local_copy_mb = 0;
+    config.analysis.quality_local_copy = datui::config::ByteSize(0);
     config
 }
 
@@ -581,7 +581,7 @@ fn large_events() -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-/// Past `performance.quality_local_copy_mb` a full scan reads the bucket in its
+/// Past `analysis.quality_local_copy` a full scan reads the bucket in its
 /// passes as before, and Setup says why before Run. Nothing is written locally.
 #[test]
 fn above_the_budget_a_full_scan_reads_the_source_in_passes() {
@@ -591,7 +591,7 @@ fn above_the_budget_a_full_scan_reads_the_source_in_passes() {
     let s3 = FakeS3::serve("lake", objects);
     let cache = tempfile::tempdir().unwrap();
     let mut config = AppConfig::default();
-    config.performance.quality_local_copy_mb = 1;
+    config.analysis.quality_local_copy = datui::config::ByteSize::mib(1);
     let (mut app, rx) = {
         let config = AppConfig {
             cloud: s3.cloud_config(),

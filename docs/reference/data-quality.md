@@ -273,7 +273,7 @@ There is no percentage: a run has no total to measure against.
 | Read | On <kbd>Esc</kbd> |
 |---|---|
 | Random or Equal per value sample | Stops at its next batch, or between seeded runs |
-| Full scan's passes (profiles, duplicates, spellings, segments, intervals, shared nulls) and a segment count | Stop at the next batch on the streaming engine (`[performance] polars_streaming`, on by default); with it off, each runs to its end |
+| Full scan's passes (profiles, duplicates, spellings, segments, intervals, shared nulls) and a segment count | Stop at the next batch on the streaming engine (`[performance] streaming`, on by default); with it off, each runs to its end |
 | Values a type conflict hides | Stop between files |
 | A full scan's fetch of its local copy | Stops at its next chunk; the partial copy is removed |
 | First rows sample; a full scan's row count when the total is not known | Runs to its end |
@@ -467,7 +467,7 @@ cache directory and makes every pass over that copy:
 | The scope is the whole source, or a view with no filter, query, search, reshape or drill that shows every column | A narrower scope's passes may read less than the whole objects |
 | No binary column | Binary columns are never read, and a copy would fetch them |
 | Every object's size is known from the listing or the footer read that opened it | The budget is checked before Run, with no request |
-| The total fits `[performance] quality_local_copy_mb` (2048 MiB by default; 0 never copies) and the free disk in the cache directory | The copy never takes more than either |
+| The total fits `[analysis] quality_local_copy` (`"2GiB"` by default; 0 never copies) and the free disk in the cache directory | The copy never takes more than either |
 
 Otherwise the scan reads the source in its passes, as before, and Read says
 why. A file over HTTP is already downloaded when it opens, and a local file is
@@ -482,7 +482,7 @@ read where it is.
 | Cancel or failure | The fetch stops at its next chunk, and the objects copied so far are removed |
 | Left behind | A copy left by a datui that did not exit cleanly, or quit while a run read it, is removed by the next copy any datui makes |
 | An object changed since it opened | A size or ETag that differs from the listing's fails the run: open the dataset again |
-| A local write fails | A full disk, or two keys that name one file on a disk that ignores case, fails the run; `quality_local_copy_mb = 0` reads the source instead |
+| A local write fails | A full disk, or two keys that name one file on a disk that ignores case, fails the run; `quality_local_copy = 0` reads the source instead |
 | Still read from the source | The values a type conflict hides, read per file as before |
 
 The copy is a session snapshot, like kept rows: an object rewritten in the

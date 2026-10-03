@@ -887,7 +887,7 @@ fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
         CopyPlan::Passes(why) => vec![
             over_source,
             match why {
-                NoCopy::Off => "Local copies are off: quality_local_copy_mb is 0".to_string(),
+                NoCopy::Off => "Local copies are off: quality_local_copy is 0".to_string(),
                 NoCopy::SizeUnknown => {
                     "Object sizes unknown when it opened, so no local copy".to_string()
                 }
@@ -1324,7 +1324,7 @@ pub(crate) fn rule_line(
         glyphs::get()
             .rule_h
             .repeat((width as usize).saturating_sub(used)),
-        Style::default().fg(theme.get("column_separator")),
+        Style::default().fg(theme.get("table_column_separator")),
     ));
     Line::from(spans)
 }
@@ -5472,10 +5472,7 @@ mod interval_tests {
         );
         assert!(lines(CopyPlan::NotApplicable, false).contains("passes over the scope"));
         for (why, says) in [
-            (
-                NoCopy::Off,
-                "Local copies are off: quality_local_copy_mb is 0",
-            ),
+            (NoCopy::Off, "Local copies are off: quality_local_copy is 0"),
             (
                 NoCopy::SizeUnknown,
                 "Object sizes unknown when it opened, so no local copy",

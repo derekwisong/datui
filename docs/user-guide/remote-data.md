@@ -64,30 +64,22 @@ is its own source on the [home screen](cloud-browser.md), named
 
 ## S3-compatible storage (MinIO, R2, Ceph)
 
-Point datui at the endpoint. Command line beats environment beats config.
-
-```toml
-# ~/.config/datui/config.toml
-[cloud]
-s3_endpoint_url = "http://localhost:9000"
-s3_access_key_id = "minioadmin"
-s3_secret_access_key = "minioadmin"
-s3_region = "us-east-1"
-```
+Point datui at the endpoint with the AWS variables, or name the store as a
+[connection](#several-stores-at-once):
 
 ```bash
-# or per shell
 export AWS_ENDPOINT_URL=http://localhost:9000
+export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin AWS_REGION=us-east-1
 # or per run
-datui --s3-endpoint-url http://localhost:9000 s3://bucket/file.parquet
+AWS_ENDPOINT_URL=http://localhost:9000 datui s3://bucket/file.parquet
 ```
 
-The command-line flags are `--s3-endpoint-url`, `--s3-access-key-id`,
-`--s3-secret-access-key` and `--s3-region`. In the environment the endpoint is
+There are no flags or config keys for these: a key on the command line shows in
+`ps` and the shell history, and one in a file sits in plain text. The endpoint is
 taken from the first of `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and
 `AWS_ENDPOINT` that is set, the keys from `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY`, and the region from `AWS_REGION` or
-`AWS_DEFAULT_REGION`. A variable or flag that is set but empty counts as unset.
+`AWS_DEFAULT_REGION`. A variable that is set but empty counts as unset.
 
 ## Several stores at once
 
@@ -129,7 +121,7 @@ datui s3://onprem@data/sales.parquet
 | URL | Reaches |
 |---|---|
 | `s3://<name>@bucket/key` | The S3-compatible store with that name |
-| `s3://bucket/key` | The `[cloud] s3_*` settings, the `AWS_*` environment and the `--s3-*` flags, as above |
+| `s3://bucket/key` | The `AWS_*` environment, as above |
 | `gs://bucket/key` | The Google login, as below |
 
 A source of `kind = "s3"` without `endpoint_url` is a second AWS login. Its URLs stay
@@ -202,7 +194,7 @@ refusal says so. To read only as your sign-in:
 
 ```toml
 [cloud]
-azure_account_keys = false
+use_azure_account_keys = false
 ```
 
 In **Azure Cloud Shell**, `az` is already signed in, so the Azure row lists your

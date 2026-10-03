@@ -2,7 +2,8 @@
 """Generate command-line-options markdown from Clap definitions.
 
 Runs the gen_docs binary (emits markdown to stdout). With -o/--output, writes
-to that path; otherwise prints to the terminal.
+to that path; otherwise prints to the terminal. With --settings, writes the
+settings reference from the option registry instead.
 
 Usage:
     python3 scripts/docs/generate_command_line_options.py [REPO_ROOT] [-o PATH]
@@ -50,7 +51,13 @@ def main() -> int:
         default=None,
         help="Write output to this path; if omitted, print to terminal",
     )
+    parser.add_argument(
+        "--settings",
+        action="store_true",
+        help="Generate docs/reference/settings.md (the option registry) instead",
+    )
     args = parser.parse_args()
+    page = ["--", "settings"] if args.settings else []
 
     repo_root = Path(args.repo_root).resolve() if args.repo_root else find_repo_root()
     repo_root = repo_root.resolve()
@@ -58,8 +65,8 @@ def main() -> int:
     # Try current layout first (gen_docs in datui-cli); fall back to old layout (gen_docs in root).
     # This lets build_all_docs_local.py work for both main and historical tags.
     for cmd in (
-        ["cargo", "run", "-p", "datui-cli", "--bin", "gen_docs", "--quiet"],
-        ["cargo", "run", "--bin", "gen_docs", "--quiet"],
+        ["cargo", "run", "-p", "datui-cli", "--bin", "gen_docs", "--quiet", *page],
+        ["cargo", "run", "--bin", "gen_docs", "--quiet", *page],
     ):
         proc = subprocess.run(
             cmd,

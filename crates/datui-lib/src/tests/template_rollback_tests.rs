@@ -100,7 +100,7 @@ fn open_with_view(
     }
 }
 
-/// The saved views are read on a worker while the app starts. A `--template` open
+/// The saved views are read on a worker while the app starts. A `--view` open
 /// that gets to its schema first waits for them rather than showing the rows
 /// without the view: the app is built, draws and takes keys with the read still
 /// out, and the view the user asked for is the one installed.

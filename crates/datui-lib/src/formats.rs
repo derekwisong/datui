@@ -587,7 +587,7 @@ pub enum Expected {
 }
 
 /// The most a spec file may hold, local or remote: far more than any spec needs, and
-/// a bound on what `--spec` reads before it knows what it read.
+/// a bound on what `--format FILE` reads before it knows what it read.
 pub const MAX_SPEC_BYTES: u64 = 1 << 20;
 /// [`MAX_SPEC_BYTES`], as the user is told it.
 pub const MAX_SPEC_SAID: &str = "1 MiB";
@@ -620,7 +620,7 @@ pub struct Spec {
     pub capture: Option<Capture>,
     pub files: Option<Files>,
     pub sections: Vec<Section>,
-    /// The variant read alone (`--variant`), when one is.
+    /// The variant read alone (`--table`), when one is.
     pub variant: Option<String>,
 }
 
@@ -1096,22 +1096,17 @@ impl Reader<'_> {
             }
         };
         let mut spec = Delimited::default();
+        // The `[csv]` keys and `--delimiter`'s words, read by the same rules.
         if let Some(v) = top.get("delimiter") {
             let text = self.string(v, "delimiter")?;
-            spec.delimiter = match text.as_bytes() {
-                [b] if b.is_ascii() && !matches!(b, b'"' | b'\n' | b'\r') => Some(*b),
-                _ => {
-                    return Err(self.error(
-                        &v.span(),
-                        "delimiter: expected one character, such as \",\", \";\" or \"\\t\"",
-                    ));
-                }
-            };
+            let byte = datui_cli::parse_delimiter(&text)
+                .map_err(|e| self.error(&v.span(), format!("delimiter: {e}")))?;
+            spec.delimiter = Some(byte);
         }
-        if let Some(v) = top.get("comment_char") {
-            let text = self.string(v, "comment_char")?;
+        if let Some(v) = top.get("comment") {
+            let text = self.string(v, "comment")?;
             crate::csv_dialect::check_comment_char(&text)
-                .map_err(|e| self.error(&v.span(), format!("comment_char: {e}")))?;
+                .map_err(|e| self.error(&v.span(), format!("comment: {e}")))?;
             spec.comment_char = Some(text);
         }
         if let Some(v) = top.get("skip_initial_space") {
@@ -1127,17 +1122,17 @@ impl Reader<'_> {
             }
             spec.skip_lines = Some(n as usize);
         }
-        if let Some(v) = top.get("null_value") {
+        if let Some(v) = top.get("null_values") {
             spec.null_values = match v.get_ref() {
                 DeValue::String(s) => vec![s.to_string()],
                 DeValue::Array(items) => items
                     .iter()
-                    .map(|item| self.string(item, "null_value"))
+                    .map(|item| self.string(item, "null_values"))
                     .collect::<Result<_, _>>()?,
                 _ => {
                     return Err(self.error(
                         &v.span(),
-                        "null_value: expected a string or a list of them, such as \"NA\" or \"COL=-999\"",
+                        "null_values: expected a string or a list of them, such as \"NA\" or \"COL=-999\"",
                     ));
                 }
             };
@@ -1197,7 +1192,7 @@ impl Reader<'_> {
                 return Err(self.error(
                     &v.span(),
                     format!(
-                        "metadata_line: line {n} would be read as data; put it above header_rows, or set skip_lines or comment_char"
+                        "metadata_line: line {n} would be read as data; put it above header_rows, or set skip_lines or comment"
                     ),
                 ));
             }
@@ -3285,25 +3280,8 @@ impl Spec {
         document: &DeTable<'_>,
         path: Option<&Path>,
     ) -> Result<Self, SpecError> {
-        let top = reader.entries(
-            document,
-            "a delimited spec",
-            &[
-                "name",
-                "description",
-                "kind",
-                "match",
-                "delimiter",
-                "comment_char",
-                "skip_initial_space",
-                "header_rows",
-                "header_join",
-                "metadata_line",
-                "null_value",
-                "skip_lines",
-                "columns",
-            ],
-        )?;
+        let keys = delimited_spec_keys();
+        let top = reader.entries(document, "a delimited spec", &keys)?;
         let name = reader.spec_name(&top)?;
         let description = top
             .get("description")
@@ -4471,7 +4449,7 @@ pub struct FixFound {
 /// How a spec was chosen for a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chosen {
-    /// `--spec FILE`.
+    /// `--format FILE`.
     SpecFile,
     /// `--format NAME`, or picked in the view.
     Named,
@@ -4482,7 +4460,7 @@ pub enum Chosen {
 impl Chosen {
     pub fn words(self) -> &'static str {
         match self {
-            Self::SpecFile => "--spec",
+            Self::SpecFile => "--format FILE",
             Self::Named => "its name",
             Self::Glob => "its glob",
             Self::Magic => "its magic",
@@ -4498,7 +4476,7 @@ pub struct Matched {
 }
 
 /// The directories and files searched for specs, in order: the config directory's
-/// `formats`, then `$DATUI_FORMATS_PATH`, then `formats_path` from the config.
+/// `formats`, then `$DATUI_FORMATS_PATH`, then `[formats] path` from the config.
 pub fn search_path(
     config_dir: Option<&Path>,
     env: Option<std::ffi::OsString>,
@@ -4521,7 +4499,7 @@ pub fn search_path(
 }
 
 /// The search path `config` asks for: the config directory's `formats`, then
-/// `$DATUI_FORMATS_PATH`, then its `formats_path`.
+/// `$DATUI_FORMATS_PATH`, then its `[formats] path`.
 pub fn search_path_for(config: &crate::config::AppConfig) -> Vec<PathBuf> {
     let config_dir = crate::config::ConfigManager::new(crate::APP_NAME)
         .ok()
@@ -4529,7 +4507,7 @@ pub fn search_path_for(config: &crate::config::AppConfig) -> Vec<PathBuf> {
     search_path(
         config_dir.as_deref(),
         std::env::var_os(PATH_VAR),
-        &config.formats_path,
+        &config.formats.path,
     )
 }
 
@@ -4872,13 +4850,14 @@ impl std::fmt::Debug for Read {
 /// What a request for a format says, besides the path.
 #[derive(Debug, Clone, Default)]
 pub struct Asked {
-    /// `--spec FILE`.
+    /// `--format FILE`.
     pub spec_file: Option<PathBuf>,
     /// `--format NAME`, or the spec picked in the view.
     pub spec_name: Option<String>,
     /// The spec `spec_file` names, read already: fetched, when it is remote.
     pub spec: Option<Arc<Spec>>,
-    /// `--variant NAME`: one variant of the spec's records, read alone.
+    /// `--table NAME`: one variant of the spec's records, read alone; any other
+    /// reader takes the name as its own table.
     pub variant: Option<String>,
     /// A built-in format from `--format`, which no spec overrides.
     pub builtin: bool,
@@ -4906,7 +4885,25 @@ pub enum Route {
     Delimited(Choice),
 }
 
-/// Whether, and with which spec, `path` is read. In order: `--spec FILE`, then
+/// The keys a delimited spec takes: its own, and the dialect the option registry
+/// gives a spec key (`[csv]`'s keys and the layout flags'), so a spec reads as a
+/// `[csv]` block.
+fn delimited_spec_keys() -> Vec<&'static str> {
+    use datui_cli::settings::{OPEN, SETTINGS};
+    let mut keys = vec![
+        "name",
+        "description",
+        "kind",
+        "match",
+        "metadata_line",
+        "columns",
+    ];
+    keys.extend(SETTINGS.iter().filter_map(|s| s.spec));
+    keys.extend(OPEN.iter().filter_map(|o| o.spec));
+    keys
+}
+
+/// Whether, and with which spec, `path` is read. In order: `--format FILE`, then
 /// `--format NAME`, then a glob, then magic. A file whose name or bytes say it is a
 /// format datui reads already keeps opening that way.
 pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, String> {
@@ -4963,7 +4960,7 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
         Some(choice) => choice,
         None => {
             if asked.builtin || registry.is_empty() {
-                return no_spec(asked);
+                return Ok(Route::Elsewhere);
             }
             let is_dir = path.is_dir();
             // What the name already says is read as it says, compressed or not: a
@@ -5004,7 +5001,7 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
                 head_of(path, compression, reach)
             });
             let Some(matched) = matched else {
-                return no_spec(asked);
+                return Ok(Route::Elsewhere);
             };
             let mut specs = matched.specs.into_iter();
             let spec = specs.next().expect("a match has a spec");
@@ -5030,16 +5027,6 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
         return Ok(Route::Decompress(choice));
     }
     read(path, &named, choice).map(|r| Route::Read(Box::new(r)))
-}
-
-/// The route of a path no spec reads, unless `--variant` asked for one.
-fn no_spec(asked: &Asked) -> Result<Route, String> {
-    match &asked.variant {
-        Some(variant) => Err(format!(
-            "--variant {variant} picks a variant of a format spec's records, and no spec reads this file"
-        )),
-        None => Ok(Route::Elsewhere),
-    }
 }
 
 /// Read `path` with the spec `choice` holds, naming it `named` in what it says.
@@ -6242,7 +6229,7 @@ name = "acme.instrument-log"
 kind = "delimited"
 match = { magic = "#device_info" }
 
-comment_char = "#"
+comment = "#"
 skip_initial_space = true
 header_rows = { name = 3, unit = 2 }
 metadata_line = 1
@@ -6275,7 +6262,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         assert_eq!(d.columns[0].from.len(), 3);
         // A list of name lines joins them, as Frictionless does.
         let joined = Spec::parse(
-            "name = \"a.b\"\nkind = \"delimited\"\nheader_rows = [1, 2]\ndelimiter = \"\\t\"\nnull_value = [\"NA\", \"x=-1\"]",
+            "name = \"a.b\"\nkind = \"delimited\"\nheader_rows = [1, 2]\ndelimiter = \"\\t\"\nnull_values = [\"NA\", \"x=-1\"]",
             None,
         )
         .unwrap();
@@ -6317,8 +6304,12 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
                 "header_rows = 2\nmetadata_line = 2",
                 "metadata_line: line 2 is a header line",
             ),
-            ("delimiter = \"ab\"", "delimiter: expected one character"),
-            ("comment_char = \"\"", "comment_char: must not be empty"),
+            (
+                "delimiter = \"ab\"",
+                "delimiter: \"ab\" is not one ASCII character",
+            ),
+            ("comment_char = \"#\"", "comment_char"),
+            ("comment = \"\"", "comment: must not be empty"),
             (
                 "match = { where = { \"header.v\" = 1 } }",
                 "where compares a binary header's fields",
@@ -6347,7 +6338,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             assert!(e.contains(said), "{rest}: {e}");
         }
         // A metadata line below the header lines is fine when it is a comment line.
-        let text = format!("{head}header_rows = 2\ncomment_char = \"#\"\nmetadata_line = 5");
+        let text = format!("{head}header_rows = 2\ncomment = \"#\"\nmetadata_line = 5");
         assert!(Spec::parse(&text, None).is_ok());
     }
 

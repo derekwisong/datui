@@ -38,7 +38,7 @@ then moves from the same home screen into NOAA's public Parquet directories. See
 ## Light terminals
 
 The light palette, chosen automatically on a terminal that sets `COLORFGBG` or
-with `mode = "light"`. See [Light and dark](reference/settings.md#light-and-dark).
+with `mode = "light"`. See [Light and dark](user-guide/configuration.md#light-and-dark).
 
 ![Light Theme Demo](demos/13-light-theme.gif)
 

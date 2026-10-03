@@ -1099,7 +1099,7 @@ def generate_gps():
 
 
 def generate_csv_dialect_files():
-    """Text files laid out as instrument and logger exports are, for --comment-char,
+    """Text files laid out as instrument and logger exports are, for --comment,
     --header-rows and --skip-initial-space. Written as text: their layout is the point.
     """
     # A padded log: two comment lines, the second of them units, then the names, then

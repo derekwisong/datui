@@ -73,7 +73,7 @@ fn a_source_that_never_answers_does_not_hold_up_the_others() {
         std::env::set_var("DATUI_TEST_SECRET", "secret");
     }
     let mut config = datui::config::AppConfig::default();
-    config.data.use_desktop_recents = false;
+    config.home.desktop_recents = false;
     config.cloud.connections = vec![
         // Listed first, so a one-at-a-time listing would wait on it.
         source("a-silent", &silent_server()),
@@ -83,7 +83,7 @@ fn a_source_that_never_answers_does_not_hold_up_the_others() {
     config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
         .map(String::from)
         .to_vec();
-    config.cloud.list_on_start = Some(true);
+    config.cloud.list_on_start = true;
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(
@@ -180,7 +180,7 @@ fn a_url_typed_at_the_prompt_is_browsed_or_opened() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     common::isolate_cache();
     let mut config = datui::config::AppConfig::default();
-    config.data.use_desktop_recents = false;
+    config.home.desktop_recents = false;
     // A browse lists the place it lands on; this one never answers, so nothing
     // leaves the machine.
     config.cloud.connections = vec![source("local", &silent_server())];

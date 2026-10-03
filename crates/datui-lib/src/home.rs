@@ -8,7 +8,7 @@
 //! *roots* — places to look — gathered from two sources, neither of which requires
 //! maintaining a catalogue:
 //!
-//! 1. **Configured** — `[data] directories`, a `PATH`-shaped list of places.
+//! 1. **Configured** — `[home] directories`, a `PATH`-shaped list of places.
 //! 2. **The working directory** — free, and right for local exports and fixtures.
 //!
 //! What bridges "code here, data there" with no configuration at all is `RECENT`:
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 pub enum RootOrigin {
     Cwd,
     Configured,
-    /// Kept with Ctrl+D on the home screen: `[data] directories` without editing it.
+    /// Kept with Ctrl+D on the home screen: `[home] directories` without editing it.
     Remembered,
     /// Derived from the desktop's own recently-used list.
     Desktop,
@@ -857,7 +857,7 @@ impl CloudSource {
 /// local and remote alike.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Collection {
-    /// The collection's name, as in `[[sources]]` and `[data] hide_sources`.
+    /// The collection's name, as in `[[sources]]` and `[home] hide`.
     pub name: String,
     /// The section's title.
     pub label: String,
@@ -1208,7 +1208,7 @@ pub struct HomeState {
     pub sections: Vec<Section>,
     /// Fuzzy filter over every row in every section.
     pub filter: String,
-    /// The most search matches listed under `Found`: `[data.search] max_results`.
+    /// The most search matches listed under `Found`: `[home.search] max_results`.
     pub search_limit: usize,
     /// The filter `Found`'s rows were scored for, and the score of each of its first
     /// rows, in order. Listing a thousand matches scored each of them again on every
@@ -3687,7 +3687,7 @@ impl HomeState {
     /// Whole places are shown, newest first, until they have used a third of the
     /// list's height, and always at least one; what is left is one `… N more in M
     /// places` row. The fraction is a judgment. If it proves wrong in use the answer
-    /// is a `[data] recent_rows` setting, not a different fraction. A filter shows
+    /// is a `[home] recent_rows` setting, not a different fraction. A filter shows
     /// every match, and the `more` row goes with the cap: a match that is hidden is
     /// not a match.
     fn rows_by_place<'a>(

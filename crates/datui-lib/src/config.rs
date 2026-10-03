@@ -1,6 +1,7 @@
 use crate::numfmt::{self, Glob, Grouping, NumberFormat, NumberFormatSettings};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+pub use datui_cli::units::{ByteSize, Interval};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -76,310 +77,62 @@ impl ConfigManager {
         Ok(subdir_path)
     }
 
-    /// Generate the default configuration template.
-    ///
-    /// Ordinary settings are commented out so defaults continue to apply. The built-in
-    /// catalog is active: deleting one of its dataset tables must remove that dataset.
+    /// The commented file `datui config init` writes, from the option registry: every
+    /// key with its doc line and its default, commented out so the defaults keep
+    /// applying. The built-in catalog is active: deleting one of its dataset tables
+    /// must remove that dataset.
     pub fn generate_default_config(&self) -> String {
-        // Serialize default config to TOML
-        let config = AppConfig::default();
-        let toml_str = toml::to_string_pretty(&config)
-            .unwrap_or_else(|e| panic!("Failed to serialize default config: {}", e));
-
-        // Build comment map from all struct comment constants
-        let comments = Self::collect_all_comments();
-
-        // Comment out ordinary fields, then append the built-in catalog as live TOML.
-        // Keeping it separate also avoids teaching the generic formatter about arrays of
-        // tables and their nested arrays.
-        let mut result = Self::comment_all_fields(toml_str, comments);
-        result.push_str(
+        use datui_cli::settings::{DefaultValue, Kind, SECTIONS, in_section};
+        let mut out = String::from(
+            "# datui configuration file (TOML: https://toml.io).\n\
+             # Every setting is commented out at its default; remove the # to change one.\n\
+             # `datui config keys` lists them with the values in effect.\n",
+        );
+        for section in SECTIONS {
+            let settings: Vec<_> = in_section(section.name)
+                .filter(|s| s.kind != Kind::Tables)
+                .collect();
+            if settings.is_empty() {
+                continue;
+            }
+            out.push('\n');
+            if !section.name.is_empty() {
+                out.push_str(&format!(
+                    "# {rule}\n# {}\n# {rule}\n# [{}]\n",
+                    section.title,
+                    section.name,
+                    rule = "=".repeat(76)
+                ));
+            }
+            for setting in settings {
+                for line in wrap(setting.doc, 86) {
+                    out.push_str(&format!("# {line}\n"));
+                }
+                let value = match setting.default {
+                    DefaultValue::Value(v) | DefaultValue::Unset(v) => v.to_string(),
+                    DefaultValue::Color { dark, .. } => format!("\"{dark}\""),
+                };
+                if setting.key.ends_with(".*") {
+                    out.push_str(&format!("# {value}\n"));
+                } else {
+                    out.push_str(&format!("# {} = {value}\n", setting.name()));
+                }
+            }
+        }
+        out.push_str(
             "\n# ============================================================================\n\
              # Sources\n\
              # ============================================================================\n\
              # Named collections of datasets, local (path) or remote (url), each listed under\n\
              # its label on the home screen. A collection named \"public\" replaces the\n\
-             # built-in catalog below; [data] builtin_catalog = false drops it, and\n\
-             # [data] hide_sources hides any collection by name.\n\
+             # built-in catalog below; [home] builtin_catalog = false drops it, and\n\
+             # [home] hide hides any collection by name.\n\
              #\n\
              # This active catalog is a snapshot. Delete or edit a dataset table to curate it;\n\
              # configs generated today do not automatically receive future catalog updates.\n",
         );
-        result.push_str(&serialize_builtin_catalog());
-        result
-    }
-
-    /// Collect all field comments from struct constants into a map
-    fn collect_all_comments() -> std::collections::HashMap<String, String> {
-        let mut comments = std::collections::HashMap::new();
-
-        // Top-level fields
-        for (field, comment) in APP_COMMENTS {
-            comments.insert(field.to_string(), comment.to_string());
-        }
-
-        // Cloud fields
-        for (field, comment) in CLOUD_COMMENTS {
-            comments.insert(format!("cloud.{}", field), comment.to_string());
-        }
-
-        comments.insert(
-            "display.unicode".to_string(),
-            DISPLAY_UNICODE_COMMENT.to_string(),
-        );
-
-        // Data (home screen roots)
-        for (field, comment) in DATA_COMMENTS {
-            comments.insert(format!("data.{}", field), comment.to_string());
-        }
-
-        // Data search (recursive search below the working directory)
-        for (field, comment) in DATA_SEARCH_COMMENTS {
-            comments.insert(format!("data.search.{}", field), comment.to_string());
-        }
-
-        // File loading fields
-        for (field, comment) in FILE_LOADING_COMMENTS {
-            comments.insert(format!("file_loading.{}", field), comment.to_string());
-        }
-
-        // Display fields
-        for (field, comment) in DISPLAY_COMMENTS {
-            comments.insert(format!("display.{}", field), comment.to_string());
-        }
-
-        // Performance fields
-        for (field, comment) in PERFORMANCE_COMMENTS {
-            comments.insert(format!("performance.{}", field), comment.to_string());
-        }
-
-        // Chart fields
-        for (field, comment) in CHART_COMMENTS {
-            comments.insert(format!("chart.{}", field), comment.to_string());
-        }
-
-        // Theme fields
-        for (field, comment) in THEME_COMMENTS {
-            comments.insert(format!("theme.{}", field), comment.to_string());
-        }
-
-        // Color fields
-        for (field, comment) in COLOR_COMMENTS {
-            comments.insert(format!("theme.colors.{}", field), comment.to_string());
-        }
-
-        // Clipboard fields
-        for (field, comment) in CLIPBOARD_COMMENTS {
-            comments.insert(format!("clipboard.{}", field), comment.to_string());
-        }
-
-        // Query fields
-        for (field, comment) in QUERY_COMMENTS {
-            comments.insert(format!("query.{}", field), comment.to_string());
-        }
-
-        // Template fields
-        for (field, comment) in TEMPLATE_COMMENTS {
-            comments.insert(format!("templates.{}", field), comment.to_string());
-        }
-
-        // Debug fields
-        for (field, comment) in DEBUG_COMMENTS {
-            comments.insert(format!("debug.{}", field), comment.to_string());
-        }
-
-        comments
-    }
-
-    /// Comment out all fields in TOML and add comments, then add the settings that
-    /// are unset by default as commented examples
-    fn comment_all_fields(
-        toml: String,
-        comments: std::collections::HashMap<String, String>,
-    ) -> String {
-        let mut result = String::new();
-        result.push_str("# datui configuration file\n");
-        result
-            .push_str("# This file uses TOML format. See https://toml.io/ for syntax reference.\n");
-        result.push('\n');
-
-        let lines: Vec<&str> = toml.lines().collect();
-        let mut i = 0;
-        let mut current_section = String::new();
-        let mut seen_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        // First pass: process existing fields and track what we've seen
-        while i < lines.len() {
-            let line = lines[i];
-
-            // Check if this is a section header
-            if let Some(section) = Self::extract_section_name(line) {
-                current_section = section.clone();
-
-                // Add section header comment if we have one
-                if let Some(header) = SECTION_HEADERS.iter().find(|(s, _)| s == &section) {
-                    result.push_str(header.1);
-                    result.push('\n');
-                }
-
-                // Comment out the section header
-                result.push_str("# ");
-                result.push_str(line);
-                result.push('\n');
-                i += 1;
-                continue;
-            }
-
-            // Check if this is a field assignment
-            if let Some(field_path) = Self::extract_field_path_simple(line, &current_section) {
-                seen_fields.insert(field_path.clone());
-
-                // Add comment if we have one
-                if let Some(comment) = comments.get(&field_path) {
-                    for comment_line in comment.lines() {
-                        // Blank comment lines stay bare so generated configs
-                        // carry no trailing whitespace.
-                        if comment_line.is_empty() {
-                            result.push_str("#\n");
-                            continue;
-                        }
-                        result.push_str("# ");
-                        result.push_str(comment_line);
-                        result.push('\n');
-                    }
-                }
-
-                // Comment out the field line, and every line it continues onto.
-                // `toml` renders a non-empty array across several lines, and
-                // commenting only the first leaves the elements behind as bare
-                // text — a generated config that does not parse.
-                result.push_str("# ");
-                result.push_str(line);
-                result.push('\n');
-                let mut depth = bracket_depth(line);
-                while depth > 0 && i + 1 < lines.len() {
-                    i += 1;
-                    result.push_str("# ");
-                    result.push_str(lines[i]);
-                    result.push('\n');
-                    depth += bracket_depth(lines[i]);
-                }
-            } else {
-                // Empty line or other content - preserve as-is
-                result.push_str(line);
-                result.push('\n');
-            }
-
-            i += 1;
-        }
-
-        // Second pass: settings that are unset by default and so were not serialized
-        result = Self::add_unset_settings(result, &comments, &seen_fields);
-
-        result
-    }
-
-    /// Add the documented settings that are unset by default, which serializing the
-    /// defaults leaves out, each as a commented example in its section. A section with
-    /// nothing serialized of its own, such as `[theme]` beside `[theme.colors]`, gets
-    /// its header placed before its first subsection.
-    fn add_unset_settings(
-        mut result: String,
-        comments: &std::collections::HashMap<String, String>,
-        seen_fields: &std::collections::HashSet<String>,
-    ) -> String {
-        let mut sections: Vec<(&str, String)> = Vec::new();
-        for (path, example) in UNSET_EXAMPLES {
-            if seen_fields.contains(*path) {
-                continue;
-            }
-            let (section, field) = path
-                .rsplit_once('.')
-                .expect("an unset setting lives in a section");
-            let block = match sections.iter().position(|(s, _)| *s == section) {
-                Some(i) => &mut sections[i].1,
-                None => {
-                    sections.push((section, String::new()));
-                    &mut sections.last_mut().expect("just pushed").1
-                }
-            };
-            if let Some(comment) = comments.get(*path) {
-                for line in comment.lines() {
-                    if line.is_empty() {
-                        block.push_str("#\n");
-                    } else {
-                        block.push_str(&format!("# {line}\n"));
-                    }
-                }
-            }
-            block.push_str(&format!("# {field} = {example}\n"));
-        }
-
-        for (section, block) in sections {
-            let header = format!("# [{section}]\n");
-            if let Some(pos) = result.find(&header) {
-                result.insert_str(pos + header.len(), &block);
-                continue;
-            }
-            let mut at = result
-                .find(&format!("# [{section}."))
-                .unwrap_or(result.len());
-            // Keep a subsection's banner above the subsection.
-            let sub = Self::extract_section_name(
-                result[at..]
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim_start_matches("# "),
-            );
-            if let Some((_, banner)) =
-                sub.and_then(|sub| SECTION_HEADERS.iter().find(|(s, _)| *s == sub))
-                && result[..at].ends_with(&format!("{banner}\n"))
-            {
-                at -= banner.len() + 1;
-            }
-            let mut opened = String::new();
-            if let Some((_, banner)) = SECTION_HEADERS.iter().find(|(s, _)| *s == section) {
-                opened.push_str(banner);
-                opened.push('\n');
-            }
-            opened.push_str(&header);
-            opened.push_str(&block);
-            opened.push('\n');
-            result.insert_str(at, &opened);
-        }
-
-        result
-    }
-
-    /// Extract section name from TOML line like "[performance]" or "[theme.colors]"
-    fn extract_section_name(line: &str) -> Option<String> {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            Some(trimmed[1..trimmed.len() - 1].to_string())
-        } else {
-            None
-        }
-    }
-
-    /// Extract field path from a line (simpler version)
-    fn extract_field_path_simple(line: &str, current_section: &str) -> Option<String> {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
-            return None;
-        }
-
-        // Extract field name from line (e.g., "analysis_sample_rows = 10000")
-        if let Some(eq_pos) = trimmed.find('=') {
-            let field_name = trimmed[..eq_pos].trim();
-            if current_section.is_empty() {
-                Some(field_name.to_string())
-            } else {
-                Some(format!("{}.{}", current_section, field_name))
-            }
-        } else {
-            None
-        }
+        out.push_str(&serialize_builtin_catalog());
+        out
     }
 
     /// Write default configuration to config file
@@ -409,147 +162,83 @@ impl ConfigManager {
 #[serde(default)]
 pub struct AppConfig {
     /// Additional config files merged in before this file's own values.
-    /// See `APP_COMMENTS` for the user-facing description.
     pub import: Vec<String>,
-    /// Configuration format version (for future compatibility)
-    pub version: String,
-    /// Directories (or files) of binary format specs, searched after the config
-    /// directory's `formats` and `$DATUI_FORMATS_PATH`. Adds up across imports.
-    pub formats_path: Vec<String>,
     /// Named collections of datasets, `[[sources]]`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceConfig>,
-    pub cloud: CloudConfig,
-    pub file_loading: FileLoadingConfig,
+    pub read: ReadConfig,
+    pub csv: CsvConfig,
     pub display: DisplayConfig,
     pub performance: PerformanceConfig,
-    pub chart: ChartConfig,
+    pub analysis: AnalysisConfig,
+    pub home: HomeConfig,
+    pub cloud: CloudConfig,
+    pub query: QueryConfig,
+    pub views: ViewsConfig,
+    pub clipboard: ClipboardConfig,
+    pub formats: FormatsConfig,
+    pub log: LogConfig,
     pub theme: ThemeConfig,
     pub glyphs: GlyphsConfig,
-    pub clipboard: ClipboardConfig,
-    pub data: DataConfig,
-    pub query: QueryConfig,
-    pub templates: TemplateConfig,
-    pub debug: DebugConfig,
 }
 
-// Field comments for AppConfig (top-level fields)
-const APP_COMMENTS: &[(&str, &str)] = &[
-    (
-        "import",
-        "Config files to merge in before this file's own values.\n\
-         Precedence, lowest first: datui defaults -> each import in order -> this file.\n\
-         So an imported theme restyles datui, but anything you set here still wins.\n\
-         Paths may be absolute, relative to this file, or use ~ and $VAR.\n\
-         An import that does not exist is skipped with a warning on stderr.\n\
-         To follow the active Omarchy theme:\n\
-         import = [\"~/.local/state/omarchy/current/theme/datui.toml\"]",
-    ),
-    (
-        "version",
-        "Configuration format version (for future compatibility)",
-    ),
-    (
-        "formats_path",
-        "Directories of binary format specs (*.toml), searched after ~/.config/datui/formats\n\
-         and $DATUI_FORMATS_PATH; the first spec of a name wins. Adds up across imports.\n\
-         A relative path is relative to the config file that names it.\n\
-         Example: formats_path = [\"~/src/acme-formats\"]",
-    ),
-];
-
-// Section header comments
-const SECTION_HEADERS: &[(&str, &str)] = &[
-    (
-        "cloud",
-        "# ============================================================================\n# Cloud / Object Storage (S3, MinIO)\n# ============================================================================\n# Optional overrides for s3:// URLs. Leave unset to use AWS defaults (env, ~/.aws/).\n# Set endpoint_url to use MinIO or other S3-compatible backends.",
-    ),
-    (
-        "file_loading",
-        "# ============================================================================\n# File Loading Defaults\n# ============================================================================",
-    ),
-    (
-        "display",
-        "# ============================================================================\n# Display Settings\n# ============================================================================",
-    ),
-    (
-        "performance",
-        "# ============================================================================\n# Performance Settings\n# ============================================================================",
-    ),
-    (
-        "chart",
-        "# ============================================================================\n# Chart View\n# ============================================================================",
-    ),
-    (
-        "theme",
-        "# ============================================================================\n# Color Theme\n# ============================================================================",
-    ),
-    (
-        "theme.colors",
-        "# Color definitions\n# Supported formats:\n#   - Named colors: \"red\", \"blue\", \"bright_red\", \"dark_gray\", etc. (case-insensitive)\n#   - Hex colors: \"#ff0000\" or \"#FF0000\" (case-insensitive)\n#   - Indexed colors: \"indexed(0-255)\" for specific xterm 256-color palette entries\n# Colors automatically adapt to your terminal's capabilities",
-    ),
-    (
-        "glyphs",
-        "# ============================================================================\n# Glyph Overrides\n# ============================================================================\n# Replace individual UI glyphs when your font carries more than the tested\n# coverage floor (see scripts/code/audit_glyphs.py in the datui repo). Keys\n# are the slot names in glyphs.rs; an override must keep the display width of\n# the glyph it replaces, and applies only when the Unicode set is active — the\n# ASCII tier never changes. Examples, for fonts that carry them:\n#   in_object_store = \"☁\"                  # the cloud, back again\n#   spinner = [\"◐\", \"◓\", \"◑\", \"◒\"]  # quarter-circle spinner",
-    ),
-    (
-        "clipboard",
-        "# ============================================================================\n# Clipboard\n# ============================================================================\n# How the copy dialog (y) reaches the system clipboard.",
-    ),
-    (
-        "query",
-        "# ============================================================================\n# Query System\n# ============================================================================",
-    ),
-    (
-        "templates",
-        "# ============================================================================\n# View Settings (the section keeps its pre-0.4 name)\n# ============================================================================",
-    ),
-    (
-        "debug",
-        "# ============================================================================\n# Debug Settings\n# ============================================================================",
-    ),
-];
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CloudConfig {
-    /// Custom endpoint for S3-compatible storage (e.g. MinIO). Example: "http://localhost:9000"
+    /// The S3 endpoint, keys and region the environment gives (`AWS_*`): not keys of
+    /// the file, where a secret would sit in plain text. `[[cloud.connections]]` names
+    /// a store's variables instead.
+    #[serde(skip)]
     pub s3_endpoint_url: Option<String>,
-    /// Access key for S3-compatible backends when not using env / AWS config
+    #[serde(skip)]
     pub s3_access_key_id: Option<String>,
-    /// Secret key for S3-compatible backends when not using env / AWS config
+    #[serde(skip)]
     pub s3_secret_access_key: Option<String>,
-    /// Region (e.g. us-east-1). Often required when using a custom endpoint (MinIO uses us-east-1).
+    #[serde(skip)]
     pub s3_region: Option<String>,
     /// Stores named in `[[cloud.connections]]`, beside the ones found on the machine.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<CloudConnectionConfig>,
     /// Source IDs never shown on the home screen.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<String>,
     /// Read an Azure account with its access keys when a sign-in has no data role, as
-    /// the Portal does. On unless set to `false`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub azure_account_keys: Option<bool>,
+    /// the Portal does.
+    pub use_azure_account_keys: bool,
     /// Files to read cloud variables from, relative to the working directory: `.env`.
     /// Only known cloud variable names are taken, and nothing is exported.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub env_files: Vec<String>,
     /// Use the identity of the cloud VM datui runs on (EC2, GCE, Azure). Finding it is a
     /// request to a metadata service, so it is off unless the platform says so.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instance_identity: Option<bool>,
+    pub instance_identity: bool,
     /// Which logins found on this machine become home-screen sources. Unset means all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discover: Option<CloudDiscover>,
     /// List every source's buckets when the home screen opens. Off: a source is listed
     /// when it is entered or on Ctrl+R, and its credential command runs only then.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub list_on_start: Option<bool>,
+    pub list_on_start: bool,
     /// How the object-store datasets in `[[sources]]` are read. Not a key: derived from
     /// the collections by [`AppConfig`], so resolving a URL needs only this section.
     #[serde(skip)]
     pub dataset_access: Vec<DatasetAccess>,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            s3_endpoint_url: None,
+            s3_access_key_id: None,
+            s3_secret_access_key: None,
+            s3_region: None,
+            connections: Vec::new(),
+            hide: Vec::new(),
+            use_azure_account_keys: true,
+            env_files: Vec::new(),
+            instance_identity: false,
+            discover: None,
+            list_on_start: false,
+            dataset_access: Vec::new(),
+        }
+    }
 }
 
 /// How a `[[sources.datasets]]` URL in an object store is read, when it says.
@@ -973,7 +662,7 @@ fn check_source_names(sources: &[SourceConfig]) -> Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct SourceConfig {
-    /// The collection's ID: what `[data] hide_sources` names, and what a later file
+    /// The collection's ID: what `[home] hide` names, and what a later file
     /// uses to replace it.
     pub name: String,
     /// Shown instead of the name.
@@ -1304,7 +993,7 @@ fn serialize_builtin_catalog() -> String {
 /// choice the user made knowingly, since datui is the one that wrote the file.
 ///
 /// The mode is applied twice on purpose. `OpenOptions::mode` only takes effect
-/// when the file is created, so it does nothing for `--generate-config --force`
+/// when the file is created, so it does nothing for `datui config init --force`
 /// over a config that already exists at 0644; `set_permissions` fixes that
 /// case. Creating with the mode still matters, because it closes the window
 /// where a new file exists at 0644 before the permissions are corrected.
@@ -1334,85 +1023,6 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Documented settings that are unset by default, so serializing the defaults leaves
-/// them out, with the value the generated config shows for each. Every key here needs
-/// a comment, and every commented key must reach the generated config one way or the
-/// other; a test checks both.
-const UNSET_EXAMPLES: &[(&str, &str)] = &[
-    ("cloud.s3_endpoint_url", "\"http://localhost:9000\""),
-    ("cloud.s3_access_key_id", "\"\""),
-    ("cloud.s3_secret_access_key", "\"\""),
-    ("cloud.s3_region", "\"us-east-1\""),
-    ("cloud.azure_account_keys", "true"),
-    ("cloud.env_files", "[\".env\"]"),
-    ("cloud.instance_identity", "false"),
-    ("cloud.discover", "true"),
-    ("cloud.list_on_start", "false"),
-    ("cloud.hide", "[]"),
-    ("file_loading.null_values", "[\"NA\", \"amount=\"]"),
-    ("file_loading.parse_dates", "true"),
-    ("file_loading.parse_strings", "true"),
-    ("file_loading.parse_strings_sample_rows", "1000"),
-    ("file_loading.infer_schema_length", "1000"),
-    ("file_loading.ignore_errors", "false"),
-    ("file_loading.comment_char", "\"#\""),
-    ("file_loading.header_join", "\" \""),
-    ("file_loading.skip_initial_space", "false"),
-    ("file_loading.decompress_in_memory", "false"),
-    ("file_loading.temp_dir", "\"/tmp\""),
-    ("file_loading.single_spine_schema", "true"),
-    ("file_loading.follow_interval_ms", "250"),
-    ("file_loading.memory_warning_mb", "1024"),
-    ("display.sidebar_width", "70"),
-    ("theme.mode", "\"auto\""),
-    ("debug.log_file", "\"~/datui.log\""),
-];
-
-const CLOUD_COMMENTS: &[(&str, &str)] = &[
-    (
-        "s3_endpoint_url",
-        "Custom endpoint for S3-compatible storage (MinIO, etc.). Example: \"http://localhost:9000\". Unset = AWS.",
-    ),
-    (
-        "s3_access_key_id",
-        "Access key when using custom endpoint (or set AWS_ACCESS_KEY_ID).",
-    ),
-    (
-        "s3_secret_access_key",
-        "Secret key when using custom endpoint. Prefer AWS_SECRET_ACCESS_KEY, or the usual AWS credential chain: a secret written here sits in a plain file that backups and dotfile repos will happily copy.",
-    ),
-    (
-        "s3_region",
-        "Region (e.g. us-east-1). Required for custom endpoints; MinIO often uses us-east-1.",
-    ),
-    (
-        "azure_account_keys",
-        "Read an Azure account with its access keys when a sign-in has no data role (default: true)",
-    ),
-    (
-        "env_files",
-        "Files to read cloud variables from, relative to the working directory. None unless listed.\n\
-         Only known cloud variable names are taken, and nothing is exported. Adds up across imports.",
-    ),
-    (
-        "instance_identity",
-        "Use the identity of the cloud VM datui runs on: EC2, GCE or Azure (default: false)",
-    ),
-    (
-        "discover",
-        "Logins found on this machine that become home-screen sources:\n\
-         true or \"all\" (default), false or \"none\", or a list such as [\"s3\", \"gcs\", \"azure\"]",
-    ),
-    (
-        "list_on_start",
-        "List every source's buckets when the home screen opens, not when one is entered (default: false)",
-    ),
-    (
-        "hide",
-        "Cloud source IDs never shown on the home screen. Adds up across imports.",
-    ),
-];
-
 /// The variables that name an S3 endpoint, in the order they are consulted. The AWS
 /// SDKs read the service-specific one first, then the general one; `AWS_ENDPOINT` is
 /// what `object_store` accepts.
@@ -1440,10 +1050,8 @@ impl CloudConfig {
         }
     }
 
-    /// Lay the environment or the command line over the config file's settings: each
-    /// S3 setting and `discover` that `over` gives wins, and a blank value says
-    /// nothing. Nothing else in `over` is read; config files layer through
-    /// [`ConfigLayer`].
+    /// Lay the environment's S3 settings over these: each one `over` gives wins, and a
+    /// blank value says nothing. Nothing else in `over` is read.
     pub fn overlay(&mut self, over: Self) {
         for (slot, value) in [
             (&mut self.s3_endpoint_url, over.s3_endpoint_url),
@@ -1454,9 +1062,6 @@ impl CloudConfig {
             if let Some(value) = value.and_then(non_blank) {
                 *slot = Some(value);
             }
-        }
-        if over.discover.is_some() {
-            self.discover = over.discover;
         }
     }
 
@@ -1478,184 +1083,136 @@ impl CloudConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// `[read]`: how files are read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct FileLoadingConfig {
-    /// When true, CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime. Default: true.
-    pub parse_dates: Option<bool>,
-    /// When true, decompress a compressed CSV, TSV or PSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
-    pub decompress_in_memory: Option<bool>,
-    /// Directory for decompression temp files. Unset = system default (e.g. TMPDIR).
+pub struct ReadConfig {
+    /// Which string columns are typed: all, none, or those named.
+    pub infer_types: InferTypes,
+    /// How a partitioned Parquet dataset's schema is found.
+    pub parquet_schema: ParquetSchema,
+    /// Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file.
+    pub decompress_in_memory: bool,
+    /// Directory for decompression temp files. Unset: the system's (e.g. TMPDIR).
     pub temp_dir: Option<String>,
-    /// When true (default), infer Hive/partitioned Parquet schema from one file (single-spine) for faster "Reading schema". When false, use Polars collect_schema() over all files.
-    pub single_spine_schema: Option<bool>,
-    /// CSV null values: list of strings. Plain string = treat as null in all columns; "COL=VAL" = treat VAL as null only in column COL (first "=" separates). Example: ["NA", "amount="].
-    pub null_values: Option<Vec<String>>,
-    /// When false, disable parse-strings for CSV. When true or unset, trim and parse all CSV string columns (default). Use CLI --parse-strings=COL for specific columns, --no-parse-strings to disable.
-    pub parse_strings: Option<bool>,
-    /// Number of rows to sample for parse_strings type inference (single file or multiple/partitioned). Default 1000.
-    pub parse_strings_sample_rows: Option<usize>,
-    /// Number of rows to use when inferring CSV schema. Unset = use default (1000 in datui). Larger values reduce risk of wrong type (e.g. int then N/A).
-    pub infer_schema_length: Option<usize>,
-    /// When true, CSV reader ignores parse errors and continues with the next batch. Default false.
-    pub ignore_errors: Option<bool>,
-    /// CSV: lines starting with this are comments, skipped before the header and in the data (Frictionless `commentChar`). Unset = none.
-    pub comment_char: Option<String>,
-    /// CSV: what joins a column's pieces when `--header-rows` names several lines (Frictionless `headerJoin`). Default " ".
-    pub header_join: Option<String>,
-    /// CSV: ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null (Frictionless `skipInitialSpace`). Default false.
-    pub skip_initial_space: Option<bool>,
-    /// `--follow`: in milliseconds, how often a followed file is checked for new rows; on Linux, where a change is heard of as it happens, the least time between two reads. A burst of appends within one interval is one refresh. Default 250.
-    pub follow_interval_ms: Option<u64>,
-    /// Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory). 0 never asks. Default 1024.
-    pub memory_warning_mb: Option<u64>,
+    /// `--follow`: how often a followed file is checked; on Linux, where a change is
+    /// heard of as it happens, the least time between two reads. A burst of appends
+    /// within one interval is one refresh.
+    pub follow_interval: Interval,
+    /// Ask before reading more than this of a file whole into memory (JSON, Avro, ORC,
+    /// Excel and the other formats read in memory). 0 never asks.
+    pub memory_warning: ByteSize,
+    /// Integer audio samples as float in [-1, 1].
+    pub audio_float: bool,
 }
 
-/// `[file_loading] memory_warning_mb` when it is not set.
-const MEMORY_WARNING_MB: u64 = 1024;
-
-impl FileLoadingConfig {
-    /// The bytes past which a read into memory is asked about first: `memory_warning_mb`,
-    /// or 1 GiB; `None` when it is 0, which never asks.
+impl ReadConfig {
+    /// The bytes past which a read into memory is asked about first; `None` when
+    /// `memory_warning` is 0, which never asks.
     pub fn memory_warning(&self) -> Option<u64> {
-        let mb = self.memory_warning_mb.unwrap_or(MEMORY_WARNING_MB);
-        (mb > 0).then(|| mb.saturating_mul(1024 * 1024))
-    }
-
-    /// How often a followed file is checked: `follow_interval_ms`, or 250 ms.
-    pub fn follow_interval(&self) -> std::time::Duration {
-        self.follow_interval_ms
-            .map(std::time::Duration::from_millis)
-            .unwrap_or(crate::follow::DEFAULT_INTERVAL)
+        let bytes = self.memory_warning.bytes();
+        (bytes > 0).then_some(bytes)
     }
 }
 
-/// The bounds of `[file_loading] follow_interval_ms`: faster than ten checks a second
-/// redraws for nothing anyone can read, and slower than a minute is not following.
-const FOLLOW_INTERVAL_MS: std::ops::RangeInclusive<u64> = 10..=60_000;
-
-/// `[file_loading]` keys that described one file's layout rather than a preference,
-/// and so mangled every other file they were applied to, each with the flag that
-/// says the same thing about the one file being opened.
-const REMOVED_FILE_LOADING_KEYS: [(&str, &str); 5] = [
-    ("delimiter", "--delimiter"),
-    ("has_header", "--no-header"),
-    ("skip_lines", "--skip-lines"),
-    ("skip_rows", "--skip-rows"),
-    ("skip_tail_rows", "--skip-tail-rows"),
-];
-
-/// The removed layout keys a config file still sets, so loading can say they are
-/// ignored rather than dropping them without a word.
-fn removed_file_loading_keys(layer: &toml::Table) -> Vec<(&'static str, &'static str)> {
-    let Some(section) = layer.get("file_loading").and_then(|v| v.as_table()) else {
-        return Vec::new();
-    };
-    REMOVED_FILE_LOADING_KEYS
-        .into_iter()
-        .filter(|(k, _)| section.contains_key(*k))
-        .collect()
+impl Default for ReadConfig {
+    fn default() -> Self {
+        Self {
+            infer_types: InferTypes::Switch(true),
+            parquet_schema: ParquetSchema::Union,
+            decompress_in_memory: false,
+            temp_dir: None,
+            follow_interval: Interval(crate::follow::DEFAULT_INTERVAL),
+            memory_warning: ByteSize::mib(1024),
+            audio_float: false,
+        }
+    }
 }
 
-// Field comments for FileLoadingConfig
-// Format: (field_name, comment_text)
-const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
-    (
-        "parse_dates",
-        "When true (default), CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime",
-    ),
-    (
-        "decompress_in_memory",
-        "When true, decompress a compressed CSV, TSV or PSV into memory (eager). When false (default), decompress to a temp file and use lazy scan",
-    ),
-    (
-        "temp_dir",
-        "Directory for decompression temp files. Unset = system default (e.g. TMPDIR)",
-    ),
-    (
-        "single_spine_schema",
-        "When true (default), a partitioned Parquet dataset's schema is every column any of its files has, read from their footers. When false, Polars decides it from one file.",
-    ),
-    (
-        "null_values",
-        "CSV: values to treat as null. Plain string = all columns; \"COL=VAL\" = column COL only. Example: [\"NA\", \"amount=\"]",
-    ),
-    (
-        "parse_strings",
-        "When false, disable parse-strings. When true or unset, parse all CSV string columns (default). Use CLI --parse-strings=COL or --no-parse-strings.",
-    ),
-    (
-        "parse_strings_sample_rows",
-        "Rows to sample for parse_strings type inference (default 1000).",
-    ),
-    (
-        "infer_schema_length",
-        "Number of rows to use when inferring CSV schema (default 1000). Larger values reduce risk of wrong type (e.g. int then N/A).",
-    ),
-    (
-        "ignore_errors",
-        "When true, CSV reader ignores parse errors and continues with the next batch (default false).",
-    ),
-    (
-        "comment_char",
-        "CSV: lines starting with this are comments, skipped before the header and among the data. Unset = none",
-    ),
-    (
-        "header_join",
-        "CSV: joins a column's names when --header-rows names several lines (default \" \")",
-    ),
-    (
-        "skip_initial_space",
-        "CSV: when true, ignore the spaces after a delimiter; padded numbers are numbers and a cell of spaces is null (default false)",
-    ),
-    (
-        "follow_interval_ms",
-        "--follow: in milliseconds, how often a followed file is checked for new rows, or on Linux the least time between two reads; a burst of appends within one interval is one refresh (default 250, 10 to 60000)",
-    ),
-    (
-        "memory_warning_mb",
-        "Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel, ...); 0 never asks (default 1024)",
-    ),
-];
+/// `[read] infer_types`: every string column, none, or the columns named.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InferTypes {
+    Switch(bool),
+    Columns(Vec<String>),
+}
+
+/// `[read] parquet_schema`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParquetSchema {
+    /// Every column any file has, from their footers.
+    Union,
+    /// Polars' schema from one file.
+    First,
+}
+
+/// The bounds of `[read] follow_interval`: faster than ten checks a second redraws
+/// for nothing anyone can read, and slower than a minute is not following.
+const FOLLOW_INTERVAL: std::ops::RangeInclusive<std::time::Duration> =
+    std::time::Duration::from_millis(10)..=std::time::Duration::from_secs(60);
+
+/// `[csv]`: CSV, TSV and PSV, and the dialect a delimited spec writes with these keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CsvConfig {
+    /// Lines starting with this are comments, before the header and in the data
+    /// (Frictionless `commentChar`).
+    pub comment: Option<String>,
+    /// What joins a column's pieces when `--header-rows` names several lines
+    /// (Frictionless `headerJoin`).
+    pub header_join: String,
+    /// Ignore the spaces after a delimiter (Frictionless `skipInitialSpace`).
+    pub skip_initial_space: bool,
+    /// Read as null: `VAL` everywhere, `COL=VAL` in one column.
+    pub null_values: Vec<String>,
+    /// Rows read to infer column types, by Polars and by datui's string typing.
+    pub infer_rows: usize,
+    /// Skip rows that do not parse instead of failing.
+    pub ignore_errors: bool,
+}
+
+impl Default for CsvConfig {
+    fn default() -> Self {
+        Self {
+            comment: None,
+            header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
+            skip_initial_space: false,
+            null_values: Vec::new(),
+            infer_rows: 1000,
+            ignore_errors: false,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
     /// Whether to draw box-drawing and arrow characters, or fall back to ASCII.
     pub unicode: crate::glyphs::UnicodeMode,
-    pub pages_lookahead: usize,
-    pub pages_lookback: usize,
-    /// Max rows in scroll buffer (0 = no limit).
-    pub max_buffered_rows: usize,
-    /// Max buffer size in MB (0 = no limit): the rows the table holds between reads,
-    /// not a cap on the process.
-    pub max_buffered_mb: usize,
     pub row_numbers: bool,
-    pub row_start_index: usize,
+    /// The first row's number.
+    pub row_numbers_start: usize,
     /// Spacing between table columns: `"comfortable"`, `"compact"` or a count of cells.
-    pub table_cell_padding: CellPadding,
+    pub cell_padding: CellPadding,
     /// When true, colorize main table cells by column type (string, int, float, bool, temporal).
     pub column_colors: bool,
     /// Show a second header row naming each column's type. `D` toggles it for the session.
-    #[serde(default = "default_true")]
-    pub dtype_row: bool,
+    pub type_row: bool,
     /// Give the `i` key a quiet accent when datui has noticed something about the data
     /// and the Info panel has not been opened since. The notes are collected either
     /// way; this only decides whether the control bar points at them.
-    #[serde(default = "default_true")]
     pub notes_accent: bool,
     /// Take the mouse: the wheel scrolls and a click selects. The terminal's own text
     /// selection then needs its bypass modifier (Shift in most terminals).
-    #[serde(default = "default_true")]
     pub mouse: bool,
-    /// Optional fixed width for all sidebars (Info, Sort & Filter, Template, Pivot & Melt). When None, use built-in defaults per sidebar.
-    #[serde(default)]
+    /// A fixed width for every sidebar (Info, Sort & Filter, Views, Pivot & Melt). None:
+    /// each sidebar's own.
     pub sidebar_width: Option<u16>,
     /// Right-align numeric columns and their headers in the data table.
-    pub align_numeric_right: bool,
+    pub right_align_numbers: bool,
     /// How numbers are displayed. Either a preset name (`number_format = "thousands"`)
     /// or a `[display.number_format]` table for finer control.
-    #[serde(default)]
     pub number_format: NumberFormatConfig,
 }
 
@@ -1704,8 +1261,7 @@ impl<'de> Deserialize<'de> for CellPadding {
             Cells(usize),
             Name(String),
         }
-        const EXPECTED: &str =
-            "table_cell_padding is \"compact\", \"comfortable\" or a number of cells";
+        const EXPECTED: &str = "cell_padding is \"compact\", \"comfortable\" or a number of cells";
         match Raw::deserialize(deserializer).map_err(|_| D::Error::custom(EXPECTED))? {
             Raw::Cells(n) => Ok(Self::Cells(n)),
             Raw::Name(name) => match name.as_str() {
@@ -1905,92 +1461,6 @@ impl NumberFormatConfig {
     }
 }
 
-// Field comments for DisplayConfig
-const DISPLAY_COMMENTS: &[(&str, &str)] = &[
-    (
-        "pages_lookahead",
-        "Number of pages to buffer ahead of visible area\nLarger values = smoother scrolling but more memory",
-    ),
-    (
-        "pages_lookback",
-        "Number of pages to buffer behind visible area\nLarger values = smoother scrolling but more memory",
-    ),
-    (
-        "max_buffered_rows",
-        "Maximum rows in scroll buffer (0 = no limit)\nPrevents unbounded memory use when scrolling",
-    ),
-    (
-        "max_buffered_mb",
-        "Maximum buffer size in MB (0 = no limit)\nUses estimated memory; helps with very wide tables",
-    ),
-    (
-        "row_numbers",
-        "Display row numbers on the left side of the table",
-    ),
-    ("row_start_index", "Starting index for row numbers (0 or 1)"),
-    (
-        "table_cell_padding",
-        "Spacing between columns in the main data table: \"comfortable\" (2 cells, the default),\n\"compact\" (1 cell) or a number of cells (>= 0)",
-    ),
-    (
-        "column_colors",
-        "Colorize main table cells by column type (string, int, float, bool, date/datetime)\nSet to false to use default text color for all cells",
-    ),
-    (
-        "dtype_row",
-        "Show a second header row naming each column's type (str, i64, f64, bool, datetime ...)
-D toggles it for the session",
-    ),
-    (
-        "notes_accent",
-        "Accent the i key when datui has noticed something about the data and the Info
-panel has not been opened since. The Notes tab is there either way",
-    ),
-    (
-        "mouse",
-        "Wheel scrolls, click selects, double-click is Enter. Set false to leave the mouse
-to the terminal. While it is on, Shift-drag selects text in most terminals",
-    ),
-    (
-        "sidebar_width",
-        "Optional: fixed width in characters for all sidebars (Info, Sort & Filter, Views, Pivot & Melt). When unset, each sidebar uses its default width. Example: sidebar_width = 70",
-    ),
-    (
-        "align_numeric_right",
-        "Right-align numeric columns and their headers in the data table (default: true)\nSet to false to left-align everything as in datui 0.2.55 and earlier",
-    ),
-    (
-        "number_format",
-        "How numbers are displayed in the data table. Press , to toggle on/off while running.\n\
-         Shorthand — one of:\n\
-         \x20  none         1234567    (default: renders exactly as the file stores it)\n\
-         \x20  thousands    1,234,567\n\
-         \x20  european     1.234.567,89\n\
-         \x20  si           1 234 567.89   (narrow no-break space, ISO 31-0)\n\
-         \x20  swiss        1'234'567.89\n\
-         \x20  indian       12,34,567.89   (lakh / crore)\n\
-         \x20  underscore   1_234_567\n\
-         \n\
-         For finer control, replace the line below with a table:\n\
-         \x20  [display.number_format]\n\
-         \x20  grouping = \"thousands\"     # none | thousands | indian | system | any preset above\n\
-         \x20  group_separator = \",\"\n\
-         \x20  decimal_separator = \".\"\n\
-         \x20  floats = true              # group float columns too\n\
-         \x20  float_precision = 2        # omit to keep the file's own decimal rendering\n\
-         \x20  exclude_columns = [\"*_id\", \"year\"]   # never format these (globs: * and ?)\n\
-         \n\
-         Every value in a formatted column is grouped. Use exclude_columns for columns that hold\n\
-         identifiers rather than quantities -- years, sample IDs, ZIP codes, accession numbers.\n\
-         \n\
-         grouping = \"system\" is opt-in: it reads LC_ALL / LC_NUMERIC / LANG and picks a matching\n\
-         preset. Formatting is otherwise never taken from the environment, because a data file has\n\
-         no locale and the same file should render identically on every machine.\n\
-         \n\
-         Formatting is display-only. Exports, queries, filters and views always use raw values.",
-    ),
-];
-
 /// Rows an analysis samples by default. Enough that a distribution's shape and a
 /// correlation are stable to two decimals; few enough to read in seconds.
 pub const DEFAULT_ANALYSIS_SAMPLE_ROWS: usize = 100_000;
@@ -1998,69 +1468,59 @@ pub const DEFAULT_ANALYSIS_SAMPLE_ROWS: usize = 100_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerformanceConfig {
-    /// The analysis sample's starting size: the rows every tool (Describe,
-    /// Distribution, Correlation, Data Quality) reads from a table with more, spread
-    /// across all of it. 0 starts at every row.
-    pub analysis_sample_rows: usize,
-    /// When true (default), use Polars streaming engine for LazyFrame collect when the streaming feature is enabled (lower memory, batch processing).
-    pub polars_streaming: bool,
-    /// The most a Data Quality full scan of a remote dataset may copy into the cache
-    /// directory, in MiB, to read the objects once instead of once per pass. 0 never
-    /// copies.
-    pub quality_local_copy_mb: u64,
+    /// Pages of rows buffered ahead of and behind the screen.
+    pub pages_ahead: usize,
+    pub pages_behind: usize,
+    /// Most rows the table buffers between reads; 0 for no limit.
+    pub max_buffered_rows: usize,
+    /// Most memory the buffered rows may take, estimated from the schema; 0 for no
+    /// limit. A cap on the rows kept between reads, not on the process.
+    pub max_buffered: ByteSize,
+    /// Use the Polars streaming engine for collects where it applies.
+    pub streaming: bool,
 }
 
-// Field comments for PerformanceConfig
-const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
-    (
-        "analysis_sample_rows",
-        "The analysis sample's starting size (default 100000): the rows every analysis tool\nreads from a larger table, spread across the whole of it. A smaller table is read whole.\n0 starts at every row. The Sample form (s) changes it, and the method, per session.",
-    ),
-    (
-        "polars_streaming",
-        "Use Polars streaming engine for LazyFrame collect when available (default: true). Reduces memory and can improve performance on large or partitioned data.",
-    ),
-    (
-        "quality_local_copy_mb",
-        "Data Quality full scans of a remote dataset (default 2048): up to this many MiB are\nfetched once into the cache directory and every pass reads the copy. A larger dataset,\nor one past the free disk, is read in its passes from the source. 0 never copies.",
-    ),
-];
+impl PerformanceConfig {
+    /// `max_buffered` in whole MiB, as the table counts it; a nonzero cap below one
+    /// MiB is one, not none.
+    pub fn max_buffered_mb(&self) -> usize {
+        usize::try_from(self.max_buffered.bytes().div_ceil(1 << 20)).unwrap_or(usize::MAX)
+    }
+}
 
-/// Default for `performance.quality_local_copy_mb`: 2 GiB.
-pub const DEFAULT_QUALITY_LOCAL_COPY_MB: u64 = 2048;
+/// Default for `analysis.quality_local_copy`: 2 GiB.
+pub const DEFAULT_QUALITY_LOCAL_COPY: ByteSize = ByteSize::mib(2048);
 
 /// Default maximum rows used for chart data when not overridden by config or UI.
 pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
 /// Maximum chart row limit (Polars slice takes u32).
 pub const MAX_CHART_ROW_LIMIT: usize = u32::MAX as usize;
 
+/// `[analysis]`: Analysis, Data Quality and charts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ChartConfig {
-    /// Rows a chart reads: every row up to n, and a sample of n spread across the table past
-    /// it. None = every row. Default 10000.
-    pub row_limit: Option<usize>,
-    /// Whether a chart starts with its grid at the major ticks. Default false.
-    pub grid: bool,
+pub struct AnalysisConfig {
+    /// The analysis sample's starting size: the rows every tool (Describe,
+    /// Distribution, Correlation, Data Quality) reads from a table with more, spread
+    /// across all of it. 0 starts at every row.
+    pub sample_rows: usize,
+    /// Rows a chart reads: every row up to n, and a sample of n spread across the
+    /// table past it.
+    pub chart_rows: usize,
+    /// Whether a chart starts with its grid at the major ticks.
+    pub chart_grid: bool,
+    /// The most a Data Quality full scan of a remote dataset may copy into the cache
+    /// directory, to read the objects once instead of once per pass. 0 never copies.
+    pub quality_local_copy: ByteSize,
 }
 
-// Field comments for ChartConfig
-const CHART_COMMENTS: &[(&str, &str)] = &[
-    (
-        "row_limit",
-        "Rows a chart reads (display and export). A larger table is sampled across all of it, and the chart says so.\nCan also be changed in the chart view (Sample size). Example: row_limit = 10000",
-    ),
-    (
-        "grid",
-        "Start charts with a grid at the major ticks. g toggles it in the chart view",
-    ),
-];
-
-impl Default for ChartConfig {
+impl Default for AnalysisConfig {
     fn default() -> Self {
         Self {
-            row_limit: Some(DEFAULT_CHART_ROW_LIMIT),
-            grid: false,
+            sample_rows: DEFAULT_ANALYSIS_SAMPLE_ROWS,
+            chart_rows: DEFAULT_CHART_ROW_LIMIT,
+            chart_grid: false,
+            quality_local_copy: DEFAULT_QUALITY_LOCAL_COPY,
         }
     }
 }
@@ -2119,24 +1579,24 @@ fn detect_terminal_mode() -> ThemeMode {
 /// metadata. datui records nothing about the datasets it finds there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct DataConfig {
+pub struct HomeConfig {
     /// Directories to offer as roots on the home screen, in order.
     /// Supports `~` and `$VAR`.
     pub directories: Vec<String>,
     /// Whether to also offer directories the desktop records you opening data from.
     /// Only the directories are used, never the file names.
-    pub use_desktop_recents: bool,
+    pub desktop_recents: bool,
     /// Whether the home screen lists files datui has no reader for, dimmed, from the
     /// start. `Ctrl+A` flips it for the session either way.
-    pub show_unreadable_files: bool,
+    pub show_unreadable: bool,
     /// Whether the built-in `public` collection exists.
     pub builtin_catalog: bool,
     /// Collection names never shown on the home screen, built-in or configured.
-    pub hide_sources: Vec<String>,
-    /// The largest local file, in MB, whose first rows the home screen reads for its
-    /// preview (Parquet: its average row group). Those rows are the open's first page,
-    /// so opening the file reads them only once. 0 turns the preview off.
-    pub preview_max_mb: u64,
+    pub hide: Vec<String>,
+    /// The largest local file whose first rows the home screen reads for its preview
+    /// (Parquet: its average row group). Those rows are the open's first page, so
+    /// opening the file reads them only once. 0 turns the preview off.
+    pub preview_max: ByteSize,
     /// Recursive search of the working directory from the home screen's filter.
     pub search: SearchConfig,
 }
@@ -2160,7 +1620,7 @@ pub struct SearchConfig {
     pub max_results: usize,
     /// Give up walking after this long and keep what was found. A cold or enormous
     /// tree must degrade to partial results, never to a wait.
-    pub time_budget_ms: u64,
+    pub time_budget: Interval,
     /// Descend into directories on a different filesystem than the one started in.
     ///
     /// Off by default, and the most important limit here: it is what stops a walk
@@ -2210,7 +1670,7 @@ impl Default for SearchConfig {
             enabled: true,
             max_depth: 8,
             max_results: 1_000,
-            time_budget_ms: 1_500,
+            time_budget: Interval::ms(1_500),
             cross_filesystems: false,
             follow_gitignore: false,
             skip: DEFAULT_SEARCH_SKIP.iter().map(|s| s.to_string()).collect(),
@@ -2229,23 +1689,23 @@ impl SearchConfig {
     }
 }
 
-impl Default for DataConfig {
+impl Default for HomeConfig {
     fn default() -> Self {
         Self {
             directories: Vec::new(),
             // On by default: it only ever contributes *places*, and it is the one
             // thing that gives a fresh install somewhere to point you.
-            use_desktop_recents: true,
-            show_unreadable_files: false,
+            desktop_recents: true,
+            show_unreadable: false,
             builtin_catalog: true,
-            hide_sources: Vec::new(),
-            preview_max_mb: 64,
+            hide: Vec::new(),
+            preview_max: ByteSize::mib(64),
             search: SearchConfig::default(),
         }
     }
 }
 
-impl DataConfig {
+impl HomeConfig {
     /// Configured directories with `~`/`$VAR` expanded. Non-existent paths are kept:
     /// the home screen shows an unavailable root rather than hiding it, because
     /// "the mount is down" is information.
@@ -2253,53 +1713,6 @@ impl DataConfig {
         self.directories.iter().map(|d| expand_path(d)).collect()
     }
 }
-
-const DISPLAY_UNICODE_COMMENT: &str = "Draw box-drawing and arrow characters: \"auto\" (default), \"always\", or \"never\".\n\
-     \"auto\" uses them when the locale is UTF-8. Set \"never\" on a terminal that shows\n\
-     replacement boxes instead — datui falls back to plain ASCII throughout.";
-
-const DATA_COMMENTS: &[(&str, &str)] = &[
-    (
-        "directories",
-        "Directories to offer as roots on the datui home screen (opened with no arguments).\n\
-     Think of this like PATH: a list of places, not a catalog. datui stores nothing\n\
-     about what it finds. Supports ~ and $VAR.\n\
-     Directories of datasets you opened recently are offered automatically, so this is\n\
-     only needed for places you have not visited yet. Ctrl+D on the home screen keeps\n\
-     a directory listed without editing this file.\n\
-     Example: directories = [\"/mnt/data\", \"~/datasets\"]",
-    ),
-    (
-        "use_desktop_recents",
-        "Also offer directories your desktop records you opening data files from\n\
-         (freedesktop's recently-used list, written by file managers and GTK apps).\n\
-         Only the DIRECTORIES are used, never the file names: that list often holds\n\
-         things you would not want on a screen you are sharing.\n\
-         Set false to ignore it entirely.",
-    ),
-    (
-        "show_unreadable_files",
-        "List files datui has no reader for (README.md, model.onnx) on the home screen,\n\
-         dimmed, instead of hiding them. Ctrl+A shows or hides them for the session.",
-    ),
-    (
-        "builtin_catalog",
-        "Offer the built-in \"public\" collection of datasets on the home screen.\n\
-         A [[sources]] entry named \"public\" replaces it instead.",
-    ),
-    (
-        "hide_sources",
-        "[[sources]] collections not to show, by name, the built-in \"public\" included.\n\
-         Names add up across imported files. Example: hide_sources = [\"public\"]",
-    ),
-    (
-        "preview_max_mb",
-        "Show the first rows of the selected local file on the home screen when it is at\n\
-         most this many MB (Parquet: its average row group). They are read the way the\n\
-         open reads them and become its first page, so nothing is read twice.\n\
-         Files on network shares are never previewed. 0 turns the preview off.",
-    ),
-];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -2310,79 +1723,15 @@ pub struct ThemeConfig {
     pub colors: ColorConfig,
 }
 
-// Field comments for ThemeConfig
-const THEME_COMMENTS: &[(&str, &str)] = &[(
-    "mode",
-    "Which built-in color set to start from: \"auto\" (default), \"dark\" or \"light\".\n\
-     datui's stock chrome (header fills, row striping, borders, dim text) uses fixed\n\
-     shades, and a set tuned for a dark terminal is unreadable on a light one.\n\
-     \"auto\" reads COLORFGBG and falls back to dark; Alacritty, Kitty and Ghostty do\n\
-     not set it, so on a light background in those terminals set this to \"light\".\n\
-     Individual colors below always override whichever set is chosen.",
-)];
-
-fn default_row_numbers_color() -> String {
-    "dark_gray".to_string()
-}
-
+/// Color configuration for the application theme: one slot per role, each a name
+/// (`"cyan"`, `"default"`), `"#rrggbb"` or `"indexed(N)"`. The option registry
+/// documents every slot and holds its dark and light defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-/// Color configuration for the application theme.
-///
-/// This struct defines all color settings used throughout the UI. Colors can be specified as:
-/// - Named colors: "cyan", "red", "yellow", etc.
-/// - Hex colors: "#ff0000"
-/// - Indexed colors: "indexed(236)" for 256-color palette
-/// - Special modifiers: "reversed" for selected rows
-///
-/// ## Color Usage:
-///
-/// **UI Element Colors:**
-/// - `keybind_hints`: Keybind hints (modals, breadcrumb, correlation matrix)
-/// - `keybind_labels`: Action labels in controls bar
-/// - `throbber`: Busy indicator (spinner) in control bar
-/// - `table_header`: Table column header text
-/// - `table_header_bg`: Table column header background
-/// - `column_separator`: Vertical line between columns
-/// - `sidebar_border`: Sidebar borders
-/// - `modal_border_active`: Active modal elements
-/// - `modal_border_error`: Error modal borders
-///
-/// **Chart Colors:**
-/// - `primary_chart_series_color`: Chart data (histogram bars, Q-Q plot data points)
-/// - `secondary_chart_series_color`: Chart theory (histogram overlays, Q-Q plot reference line)
-///
-/// **Status Colors:**
-/// - `success`: Success indicators, normal distributions
-/// - `error`: Error messages, outliers
-/// - `warning`: Warnings, skewed distributions
-/// - `distribution_normal`: Normal distribution indicator
-/// - `distribution_skewed`: Skewed distribution indicator
-/// - `distribution_other`: Other distribution types
-/// - `outlier_marker`: Outlier indicators
-///
-/// **Text Colors:**
-/// - `text_primary`: Primary text
-/// - `text_secondary`: Secondary text
-/// - `text_inverse`: Text on light backgrounds
-///
-/// **Background Colors:**
-/// - `background`: Main background
-/// - `surface`: Modal/surface backgrounds
-/// - `controls_bg`: Controls bar and table header backgrounds
-///
-/// **Other:**
-/// - `dimmed`: Dimmed elements, axis lines
-/// - `table_selected`: Selected row style (special modifier)
-/// - `find_match`: The cell a find landed on
-/// - `hex_null`, `hex_printable`, `hex_whitespace`, `hex_control`, `hex_high`,
-///   `hex_ff`: The hex view's bytes, by class
 pub struct ColorConfig {
-    pub keybind_hints: String,
-    pub keybind_labels: String,
+    pub chip_key: String,
+    pub chip_label: String,
     pub throbber: String,
-    pub primary_chart_series_color: String,
-    pub secondary_chart_series_color: String,
     pub success: String,
     pub error: String,
     pub warning: String,
@@ -2395,17 +1744,17 @@ pub struct ColorConfig {
     pub text_inverse: String,
     pub table_header: String,
     pub table_header_bg: String,
-    /// Row numbers column text. Use "default" for terminal default.
-    #[serde(default = "default_row_numbers_color")]
-    pub row_numbers: String,
-    pub column_separator: String,
+    /// The row-number column. "default" is the terminal's.
+    pub table_row_numbers: String,
+    pub table_column_separator: String,
+    /// Tint under the current row; "reversed" swaps text and background instead.
     pub table_selected: String,
-    /// Tint under the column cursor's cells. Absent from older configs.
-    #[serde(default = "default_column_cursor")]
-    pub column_cursor: String,
-    /// The column cursor's header and the current cell (the cursor's row and column).
-    #[serde(default = "default_cell_cursor")]
-    pub cell_cursor: String,
+    /// Tint under the column cursor's cells.
+    pub table_column_cursor: String,
+    /// The column cursor's header and the current cell.
+    pub table_cell_cursor: String,
+    /// Every other row; "default" turns the stripe off.
+    pub table_alternate_row: String,
     pub sidebar_border: String,
     pub modal_border_active: String,
     pub modal_border_error: String,
@@ -2413,231 +1762,54 @@ pub struct ColorConfig {
     pub distribution_skewed: String,
     pub distribution_other: String,
     pub outlier_marker: String,
-    pub cursor_focused: String,
-    pub cursor_dimmed: String,
-    /// Text under the solid cursor block. "default" picks black or white by the
-    /// cursor color's luminance.
-    #[serde(default = "default_cursor_text")]
-    pub cursor_text: String,
-    /// "default" = no alternate row color; any other value is parsed as a color (e.g. "dark_gray")
-    pub alternate_row_color: String,
-    /// Column type colors (main data table): string, integer, float, boolean, temporal
-    pub str_col: String,
-    pub int_col: String,
-    pub float_col: String,
-    pub bool_col: String,
-    pub temporal_col: String,
-    /// Main data table: placeholder color for binary columns (the `‹binary›` stub)
-    pub binary_col: String,
-    /// Chart view: series colors 1–7 (line/scatter/bar series)
-    pub chart_series_color_1: String,
-    pub chart_series_color_2: String,
-    pub chart_series_color_3: String,
-    pub chart_series_color_4: String,
-    pub chart_series_color_5: String,
-    pub chart_series_color_6: String,
-    pub chart_series_color_7: String,
-    /// Chart view: the grid, a shade dimmer than `dimmed`. Absent from older configs.
-    #[serde(default = "default_chart_grid")]
+    /// The text caret; "default" reverses the text under it.
+    pub input_cursor: String,
+    /// Text under the caret block; "default" picks black or white by contrast.
+    pub input_cursor_text: String,
+    /// Cells and headers by column type.
+    pub type_str: String,
+    pub type_int: String,
+    pub type_float: String,
+    pub type_bool: String,
+    pub type_temporal: String,
+    /// The `‹binary›` stub of a binary column.
+    pub type_binary: String,
+    /// The chart series, in order; `chart_1` is also histogram bars and Q-Q points.
+    pub chart_1: String,
+    pub chart_2: String,
+    pub chart_3: String,
+    pub chart_4: String,
+    pub chart_5: String,
+    pub chart_6: String,
+    pub chart_7: String,
+    /// The chart grid, a shade dimmer than `dimmed`.
     pub chart_grid: String,
     /// The one colour that means "this is the thing": focused titles, key chips, the
-    /// selection rail. Absent from older configs, so it falls back to the palette.
-    #[serde(default = "default_accent")]
+    /// selection rail.
     pub accent: String,
     /// A brighter accent for a focused title or a value that just changed.
-    #[serde(default = "default_accent_bright")]
     pub accent_bright: String,
     /// Two stops for the wordmark on the home screen. Used nowhere else on purpose:
     /// a gradient on data would be decoration.
-    #[serde(default = "default_gradient_start")]
     pub gradient_start: String,
-    #[serde(default = "default_gradient_end")]
     pub gradient_end: String,
     /// Behind the cell a find landed on; its text takes black or white by contrast.
-    /// Absent from older configs, so it falls back to the palette.
-    #[serde(default = "default_find_match")]
     pub find_match: String,
-    /// The hex view's bytes by class, as hexyl colors them. Absent from older configs,
-    /// so they fall back to the palette.
-    #[serde(default = "default_hex_null")]
+    /// The hex view's bytes by class, as hexyl colors them.
     pub hex_null: String,
-    #[serde(default = "default_hex_printable")]
     pub hex_printable: String,
-    #[serde(default = "default_hex_whitespace")]
     pub hex_whitespace: String,
-    #[serde(default = "default_hex_control")]
     pub hex_control: String,
-    #[serde(default = "default_hex_high")]
     pub hex_high: String,
-    #[serde(default = "default_hex_ff")]
     pub hex_ff: String,
 }
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_cursor_text() -> String {
-    ColorConfig::default().cursor_text
-}
-fn default_column_cursor() -> String {
-    ColorConfig::default().column_cursor
-}
-fn default_cell_cursor() -> String {
-    ColorConfig::default().cell_cursor
-}
-fn default_accent() -> String {
-    ColorConfig::default().accent
-}
-fn default_accent_bright() -> String {
-    ColorConfig::default().accent_bright
-}
-fn default_gradient_start() -> String {
-    ColorConfig::default().gradient_start
-}
-fn default_gradient_end() -> String {
-    ColorConfig::default().gradient_end
-}
-fn default_chart_grid() -> String {
-    ColorConfig::default().chart_grid
-}
-fn default_find_match() -> String {
-    ColorConfig::default().find_match
-}
-fn default_hex_null() -> String {
-    ColorConfig::default().hex_null
-}
-fn default_hex_printable() -> String {
-    ColorConfig::default().hex_printable
-}
-fn default_hex_whitespace() -> String {
-    ColorConfig::default().hex_whitespace
-}
-fn default_hex_control() -> String {
-    ColorConfig::default().hex_control
-}
-fn default_hex_high() -> String {
-    ColorConfig::default().hex_high
-}
-fn default_hex_ff() -> String {
-    ColorConfig::default().hex_ff
-}
-
-// Field comments for ColorConfig
-const COLOR_COMMENTS: &[(&str, &str)] = &[
-    (
-        "keybind_hints",
-        "Keybind hints (modals, breadcrumb, correlation matrix)",
-    ),
-    ("keybind_labels", "Action labels in controls bar"),
-    ("throbber", "Busy indicator (spinner) in control bar"),
-    (
-        "primary_chart_series_color",
-        "Chart data (histogram bars, Q-Q plot data points)",
-    ),
-    (
-        "secondary_chart_series_color",
-        "Chart theory (histogram overlays, Q-Q plot reference line)",
-    ),
-    ("success", "Success indicators, normal distributions"),
-    ("error", "Error messages, outliers"),
-    ("warning", "Warnings, skewed distributions"),
-    ("dimmed", "Dimmed elements, axis lines"),
-    ("background", "Main background"),
-    ("surface", "Modal/surface backgrounds"),
-    ("controls_bg", "Controls bar background"),
-    ("text_primary", "Primary text"),
-    ("text_secondary", "Secondary text"),
-    ("text_inverse", "Text on light backgrounds"),
-    ("table_header", "Table column header text"),
-    ("table_header_bg", "Table column header background"),
-    (
-        "row_numbers",
-        "Row numbers column text; use \"default\" for terminal default",
-    ),
-    ("column_separator", "Vertical line between columns"),
-    ("table_selected", "Selected row style"),
-    (
-        "find_match",
-        "Behind the cell a find (f) landed on; its text is black or white by contrast",
-    ),
-    ("column_cursor", "Tint under the column cursor's cells"),
-    (
-        "cell_cursor",
-        "The column cursor's header and the current cell",
-    ),
-    ("sidebar_border", "Sidebar borders"),
-    ("modal_border_active", "Active modal elements"),
-    ("modal_border_error", "Error modal borders"),
-    ("distribution_normal", "Normal distribution indicator"),
-    ("distribution_skewed", "Skewed distribution indicator"),
-    ("distribution_other", "Other distribution types"),
-    ("outlier_marker", "Outlier indicators"),
-    (
-        "cursor_focused",
-        "Cursor color when text input is focused\n\"default\" reverses the text under the cursor instead",
-    ),
-    (
-        "cursor_dimmed",
-        "Cursor color when text input is unfocused (currently unused - unfocused inputs hide cursor)",
-    ),
-    (
-        "cursor_text",
-        "Text color under the cursor block\n\"default\" picks black or white by the cursor color's luminance",
-    ),
-    (
-        "alternate_row_color",
-        "Background color for every other row in the main data table\nSet to \"default\" to disable alternate row coloring",
-    ),
-    ("str_col", "Main table: string column text color"),
-    ("int_col", "Main table: integer column text color"),
-    ("float_col", "Main table: float column text color"),
-    ("bool_col", "Main table: boolean column text color"),
-    (
-        "temporal_col",
-        "Main table: date/datetime/time column text color",
-    ),
-    ("binary_col", "Main table: binary column placeholder color"),
-    ("chart_series_color_1", "Chart view: first series color"),
-    ("chart_series_color_2", "Chart view: second series color"),
-    ("chart_series_color_3", "Chart view: third series color"),
-    ("chart_series_color_4", "Chart view: fourth series color"),
-    ("chart_series_color_5", "Chart view: fifth series color"),
-    ("chart_series_color_6", "Chart view: sixth series color"),
-    ("chart_series_color_7", "Chart view: seventh series color"),
-    ("chart_grid", "Chart view: the grid, dimmer than dimmed"),
-    (
-        "accent",
-        "The accent: key chips in the control bar, focused section titles, the selection rail",
-    ),
-    (
-        "accent_bright",
-        "A brighter accent, for the section the cursor is in",
-    ),
-    (
-        "gradient_start",
-        "First stop of the wordmark gradient on the home screen",
-    ),
-    (
-        "gradient_end",
-        "Last stop of the wordmark gradient on the home screen",
-    ),
-    ("hex_null", "Hex view: the byte 0x00"),
-    ("hex_printable", "Hex view: printable ASCII bytes"),
-    (
-        "hex_whitespace",
-        "Hex view: space, tab, line feed and the other whitespace bytes",
-    ),
-    ("hex_control", "Hex view: the other ASCII control bytes"),
-    ("hex_high", "Hex view: bytes from 0x80 to 0xFE"),
-    ("hex_ff", "Hex view: the byte 0xFF"),
-];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueryConfig {
     pub history_limit: usize,
-    pub enable_history: bool,
+    /// Remember queries.
+    pub history: bool,
     pub default_mode: QueryMode,
 }
 
@@ -2703,61 +1875,31 @@ impl QueryMode {
     }
 }
 
-// Field comments for QueryConfig
-const QUERY_COMMENTS: &[(&str, &str)] = &[
-    (
-        "history_limit",
-        "Maximum number of queries to keep in history",
-    ),
-    ("enable_history", "Enable query history caching"),
-    (
-        "default_mode",
-        "Mode / opens on when no query is active: \"sql\", \"search\" or \"q-style\".\n\
-         Editing an active query reopens its own mode.\n\
-         A build without SQL opens on \"search\" instead of \"sql\".",
-    ),
-];
-
+/// `[views]`: saved views.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct TemplateConfig {
+pub struct ViewsConfig {
     pub auto_apply: bool,
 }
 
-// Field comments for TemplateConfig
-const TEMPLATE_COMMENTS: &[(&str, &str)] = &[(
-    "auto_apply",
-    "Apply the best-matching view when a file opens",
-)];
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `[log]`: the log file and how much it says.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct DebugConfig {
-    pub enabled: bool,
-    pub show_performance: bool,
-    pub show_query: bool,
-    pub show_transformations: bool,
+pub struct LogConfig {
     /// Where the log goes. Unset: `datui.log` in the cache directory.
-    pub log_file: Option<String>,
+    pub file: Option<String>,
+    /// error, warn, info, debug, trace or off. Unset: `DATUI_LOG`, else warn.
+    pub level: Option<String>,
 }
 
-// Field comments for DebugConfig
-const DEBUG_COMMENTS: &[(&str, &str)] = &[
-    ("enabled", "Enable debug overlay by default"),
-    (
-        "show_performance",
-        "Show performance metrics in debug overlay",
-    ),
-    ("show_query", "Show LazyFrame query in debug overlay"),
-    (
-        "show_transformations",
-        "Show transformation state in debug overlay",
-    ),
-    (
-        "log_file",
-        "Log file path (default: datui.log in the cache directory; DATUI_LOG sets the level)",
-    ),
-];
+/// `[formats]`: where format specs and dictionaries are found.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FormatsConfig {
+    /// Directories (or files) of specs and dictionaries, searched after the config
+    /// directory's `formats` and `$DATUI_FORMATS_PATH`. Adds up across imports.
+    pub path: Vec<String>,
+}
 
 // Default implementations
 /// `[clipboard]`: how the copy dialog reaches the system clipboard.
@@ -2767,34 +1909,19 @@ pub struct ClipboardConfig {
     /// "auto", "native" (display server through arboard) or "osc52" (an
     /// escape sequence the terminal applies; what works over SSH).
     pub backend: String,
-    /// Longest OSC 52 payload to attempt, in KB of base64. Terminals cap the
-    /// sequences they accept; a generous terminal's user can raise this.
-    pub osc52_limit_kb: usize,
+    /// Longest OSC 52 payload to attempt, as base64. Terminals cap the sequences
+    /// they accept; a generous terminal's user can raise this.
+    pub osc52_limit: ByteSize,
 }
 
 impl Default for ClipboardConfig {
     fn default() -> Self {
         Self {
             backend: "auto".to_string(),
-            osc52_limit_kb: 100,
+            osc52_limit: ByteSize::kib(100),
         }
     }
 }
-
-// Field comments for ClipboardConfig
-const CLIPBOARD_COMMENTS: &[(&str, &str)] = &[
-    (
-        "backend",
-        "How the copy dialog (y) reaches the system clipboard\n\
-         \"auto\": native where a display server answers, osc52 elsewhere (SSH)\n\
-         \"native\": the display server, with an HTML flavor beside tabular copies\n\
-         \"osc52\": an escape sequence the terminal applies; tmux needs set-clipboard on",
-    ),
-    (
-        "osc52_limit_kb",
-        "Longest osc52 copy to attempt, in KB of base64 (terminals cap what they accept)",
-    ),
-];
 
 /// `[glyphs]`: per-slot overrides laid over the Unicode set, so a font that has
 /// more than the coverage floor gets to use it — `☁` back for the object-store
@@ -2813,21 +1940,21 @@ impl Default for AppConfig {
     fn default() -> Self {
         let mut config = Self {
             import: Vec::new(),
-            version: "0.2".to_string(),
-            formats_path: Vec::new(),
             sources: Vec::new(),
-            cloud: CloudConfig::default(),
-            file_loading: FileLoadingConfig::default(),
+            read: ReadConfig::default(),
+            csv: CsvConfig::default(),
             display: DisplayConfig::default(),
             performance: PerformanceConfig::default(),
-            chart: ChartConfig::default(),
+            analysis: AnalysisConfig::default(),
+            home: HomeConfig::default(),
+            cloud: CloudConfig::default(),
+            query: QueryConfig::default(),
+            views: ViewsConfig::default(),
+            clipboard: ClipboardConfig::default(),
+            formats: FormatsConfig::default(),
+            log: LogConfig::default(),
             theme: ThemeConfig::default(),
             glyphs: GlyphsConfig::default(),
-            clipboard: ClipboardConfig::default(),
-            data: DataConfig::default(),
-            query: QueryConfig::default(),
-            templates: TemplateConfig::default(),
-            debug: DebugConfig::default(),
         };
         config.sync_dataset_access();
         config
@@ -2838,19 +1965,15 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             unicode: crate::glyphs::UnicodeMode::default(),
-            pages_lookahead: 3,
-            pages_lookback: 3,
-            max_buffered_rows: crate::widgets::datatable::DEFAULT_MAX_BUFFERED_ROWS,
-            max_buffered_mb: 512,
             row_numbers: false,
-            row_start_index: 1,
-            table_cell_padding: CellPadding::default(),
+            row_numbers_start: 1,
+            cell_padding: CellPadding::default(),
             column_colors: true,
-            dtype_row: true,
+            type_row: true,
             notes_accent: true,
             mouse: true,
             sidebar_width: None,
-            align_numeric_right: true,
+            right_align_numbers: true,
             number_format: NumberFormatConfig::default(),
         }
     }
@@ -2859,9 +1982,11 @@ impl Default for DisplayConfig {
 impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
-            analysis_sample_rows: DEFAULT_ANALYSIS_SAMPLE_ROWS,
-            polars_streaming: true,
-            quality_local_copy_mb: DEFAULT_QUALITY_LOCAL_COPY_MB,
+            pages_ahead: 3,
+            pages_behind: 3,
+            max_buffered_rows: crate::widgets::datatable::DEFAULT_MAX_BUFFERED_ROWS,
+            max_buffered: ByteSize::mib(512),
+            streaming: true,
         }
     }
 }
@@ -2890,11 +2015,9 @@ impl ColorConfig {
         // rather than one grey shared by everything, and the row under the cursor is
         // tinted rather than reversed so cell colours survive on it.
         Self {
-            keybind_hints: "#7dcfff".to_string(),
-            keybind_labels: "#a9b1d6".to_string(),
+            chip_key: "#7dcfff".to_string(),
+            chip_label: "#a9b1d6".to_string(),
             throbber: "#7dcfff".to_string(),
-            primary_chart_series_color: "#7dcfff".to_string(),
-            secondary_chart_series_color: "#565f89".to_string(),
             success: "#9ece6a".to_string(),
             error: "#f7768e".to_string(),
             warning: "#e0af68".to_string(),
@@ -2907,13 +2030,13 @@ impl ColorConfig {
             text_inverse: "#1a1b26".to_string(),
             table_header: "#c0caf5".to_string(),
             table_header_bg: "#2b3047".to_string(),
-            row_numbers: "#565f89".to_string(),
-            column_separator: "#3b4261".to_string(),
+            table_row_numbers: "#565f89".to_string(),
+            table_column_separator: "#3b4261".to_string(),
             table_selected: "#283457".to_string(),
             // A grey a step off the stripe for the column, and a lighter one where it
             // crosses the current row, so the cell stands out from both.
-            column_cursor: "#292e42".to_string(),
-            cell_cursor: "#3b4261".to_string(),
+            table_column_cursor: "#292e42".to_string(),
+            table_cell_cursor: "#3b4261".to_string(),
             // Box titles are drawn in the border colour, so this has to read as text:
             // the theme's comment grey, not the hairline shade the rules use.
             sidebar_border: "#565f89".to_string(),
@@ -2923,23 +2046,22 @@ impl ColorConfig {
             distribution_skewed: "#e0af68".to_string(),
             distribution_other: "#c0caf5".to_string(),
             outlier_marker: "#f7768e".to_string(),
-            cursor_focused: "default".to_string(),
-            cursor_dimmed: "default".to_string(),
-            cursor_text: "default".to_string(),
-            alternate_row_color: "#1e2030".to_string(),
-            str_col: "#9ece6a".to_string(),
-            int_col: "#7aa2f7".to_string(),
-            float_col: "#2ac3de".to_string(),
-            bool_col: "#e0af68".to_string(),
-            temporal_col: "#bb9af7".to_string(),
-            binary_col: "#565f89".to_string(),
-            chart_series_color_1: "#7dcfff".to_string(),
-            chart_series_color_2: "#bb9af7".to_string(),
-            chart_series_color_3: "#9ece6a".to_string(),
-            chart_series_color_4: "#e0af68".to_string(),
-            chart_series_color_5: "#7aa2f7".to_string(),
-            chart_series_color_6: "#f7768e".to_string(),
-            chart_series_color_7: "#ff9e64".to_string(),
+            input_cursor: "default".to_string(),
+            input_cursor_text: "default".to_string(),
+            table_alternate_row: "#1e2030".to_string(),
+            type_str: "#9ece6a".to_string(),
+            type_int: "#7aa2f7".to_string(),
+            type_float: "#2ac3de".to_string(),
+            type_bool: "#e0af68".to_string(),
+            type_temporal: "#bb9af7".to_string(),
+            type_binary: "#565f89".to_string(),
+            chart_1: "#7dcfff".to_string(),
+            chart_2: "#bb9af7".to_string(),
+            chart_3: "#9ece6a".to_string(),
+            chart_4: "#e0af68".to_string(),
+            chart_5: "#7aa2f7".to_string(),
+            chart_6: "#f7768e".to_string(),
+            chart_7: "#ff9e64".to_string(),
             // Dimmer than `dimmed`, and still blue rather than black on a 16-color
             // terminal, where black is the background.
             chart_grid: "#3d4785".to_string(),
@@ -2969,11 +2091,9 @@ impl ColorConfig {
         // clears 4.5:1 on a white or near-white background. The chrome tiers go the
         // other way — a little darker than the terminal rather than lighter.
         Self {
-            keybind_hints: "#2e7de9".to_string(),
-            keybind_labels: "#3760bf".to_string(),
+            chip_key: "#2e7de9".to_string(),
+            chip_label: "#3760bf".to_string(),
             throbber: "#2e7de9".to_string(),
-            primary_chart_series_color: "#2e7de9".to_string(),
-            secondary_chart_series_color: "#848cb5".to_string(),
             success: "#587539".to_string(),
             error: "#f52a65".to_string(),
             warning: "#8c6c3e".to_string(),
@@ -2986,11 +2106,11 @@ impl ColorConfig {
             text_inverse: "#e1e2e7".to_string(),
             table_header: "#3760bf".to_string(),
             table_header_bg: "#c4c8da".to_string(),
-            row_numbers: "#848cb5".to_string(),
-            column_separator: "#a8aecb".to_string(),
+            table_row_numbers: "#848cb5".to_string(),
+            table_column_separator: "#a8aecb".to_string(),
             table_selected: "#b6bfe2".to_string(),
-            column_cursor: "#cbd3f2".to_string(),
-            cell_cursor: "#a0aef0".to_string(),
+            table_column_cursor: "#cbd3f2".to_string(),
+            table_cell_cursor: "#a0aef0".to_string(),
             sidebar_border: "#6172b0".to_string(),
             modal_border_active: "#2e7de9".to_string(),
             modal_border_error: "#f52a65".to_string(),
@@ -2998,23 +2118,22 @@ impl ColorConfig {
             distribution_skewed: "#8c6c3e".to_string(),
             distribution_other: "#3760bf".to_string(),
             outlier_marker: "#f52a65".to_string(),
-            cursor_focused: "default".to_string(),
-            cursor_dimmed: "default".to_string(),
-            cursor_text: "default".to_string(),
-            alternate_row_color: "#dcdfea".to_string(),
-            str_col: "#587539".to_string(),
-            int_col: "#2e7de9".to_string(),
-            float_col: "#007197".to_string(),
-            bool_col: "#8c6c3e".to_string(),
-            temporal_col: "#9854f1".to_string(),
-            binary_col: "#848cb5".to_string(),
-            chart_series_color_1: "#2e7de9".to_string(),
-            chart_series_color_2: "#9854f1".to_string(),
-            chart_series_color_3: "#587539".to_string(),
-            chart_series_color_4: "#8c6c3e".to_string(),
-            chart_series_color_5: "#007197".to_string(),
-            chart_series_color_6: "#f52a65".to_string(),
-            chart_series_color_7: "#b15c00".to_string(),
+            input_cursor: "default".to_string(),
+            input_cursor_text: "default".to_string(),
+            table_alternate_row: "#dcdfea".to_string(),
+            type_str: "#587539".to_string(),
+            type_int: "#2e7de9".to_string(),
+            type_float: "#007197".to_string(),
+            type_bool: "#8c6c3e".to_string(),
+            type_temporal: "#9854f1".to_string(),
+            type_binary: "#848cb5".to_string(),
+            chart_1: "#2e7de9".to_string(),
+            chart_2: "#9854f1".to_string(),
+            chart_3: "#587539".to_string(),
+            chart_4: "#8c6c3e".to_string(),
+            chart_5: "#007197".to_string(),
+            chart_6: "#f52a65".to_string(),
+            chart_7: "#b15c00".to_string(),
             // The theme's cyan halfway to the background: a grey this light is white
             // on a 16-color terminal, and the grid vanished into the background.
             chart_grid: "#70aabf".to_string(),
@@ -3037,20 +2156,8 @@ impl Default for QueryConfig {
     fn default() -> Self {
         Self {
             history_limit: 1000,
-            enable_history: true,
+            history: true,
             default_mode: QueryMode::default(),
-        }
-    }
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            show_performance: true,
-            show_query: true,
-            show_transformations: true,
-            log_file: None,
         }
     }
 }
@@ -3182,6 +2289,24 @@ pub struct ConfigLayer {
     imports: Vec<String>,
 }
 
+/// Where a layer of the configuration came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerSource {
+    /// A config file: the user's, or one it imports.
+    File(PathBuf),
+    /// `-c KEY=VALUE` on the command line.
+    Override,
+}
+
+impl std::fmt::Display for LayerSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::Override => f.write_str("-c"),
+        }
+    }
+}
+
 /// How a key combines across layers when a later layer does not simply replace it.
 #[derive(Debug, Clone, Copy)]
 enum Combine {
@@ -3196,21 +2321,12 @@ enum Combine {
 /// The keys that do not follow "a later layer's value replaces the earlier one".
 /// Tables merge key by key; everything else not listed here is replaced whole.
 const COMBINED_KEYS: &[(&str, Combine)] = &[
-    ("formats_path", Combine::Union),
+    ("formats.path", Combine::Union),
     ("sources", Combine::ByName),
     ("cloud.connections", Combine::ByName),
     ("cloud.hide", Combine::Union),
     ("cloud.env_files", Combine::Union),
-    ("data.hide_sources", Combine::Union),
-];
-
-/// `[cloud]` keys where a blank value says nothing, so `s3_region = ""` cannot erase
-/// an imported region. The same rule as for the environment and the command line.
-const CLOUD_BLANK_IS_UNSET: [&str; 4] = [
-    "s3_endpoint_url",
-    "s3_access_key_id",
-    "s3_secret_access_key",
-    "s3_region",
+    ("home.hide", Combine::Union),
 ];
 
 impl ConfigLayer {
@@ -3218,22 +2334,39 @@ impl ConfigLayer {
     /// against the file that holds it rather than after merging.
     pub fn parse(text: &str) -> Result<Self> {
         let typed: AppConfig = toml::from_str(text)?;
-        let mut table: toml::Table = toml::from_str(text)?;
-        table.remove("import");
-        if let Some(cloud) = table.get_mut("cloud").and_then(toml::Value::as_table_mut) {
-            for key in CLOUD_BLANK_IS_UNSET {
-                if let Some(value) = cloud.get(key).and_then(toml::Value::as_str) {
-                    match non_blank(value.to_string()) {
-                        Some(trimmed) => cloud.insert(key.to_string(), trimmed.into()),
-                        None => cloud.remove(key),
-                    };
+        let table: toml::Table = toml::from_str(text)?;
+        Ok(Self::from_table(table, typed.import))
+    }
+
+    /// The layer `-c KEY=VALUE` makes: each key at its place, the last of one key
+    /// winning. Keys and value shapes were checked as the command line was read; the
+    /// types are checked here, as a file's are.
+    pub fn from_overrides(overrides: &[datui_cli::settings::Override]) -> Result<Self> {
+        let mut table = toml::Table::new();
+        for o in overrides {
+            let mut at = &mut table;
+            let mut parts: Vec<&str> = o.key.split('.').collect();
+            let last = parts.pop().unwrap_or_default();
+            for part in parts {
+                let entry = at
+                    .entry(part.to_string())
+                    .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+                if !entry.is_table() {
+                    *entry = toml::Value::Table(toml::Table::new());
                 }
+                at = entry.as_table_mut().expect("just made a table");
             }
+            at.insert(last.to_string(), o.value.clone());
         }
-        Ok(Self {
-            table,
-            imports: typed.import,
-        })
+        toml::Value::Table(table.clone())
+            .try_into::<AppConfig>()
+            .map_err(|e| eyre!("-c: {}", e.message().trim_end()))?;
+        Ok(Self::from_table(table, Vec::new()))
+    }
+
+    fn from_table(mut table: toml::Table, imports: Vec<String>) -> Self {
+        table.remove("import");
+        Self { table, imports }
     }
 
     /// The layer in `path`, or `None` when there is no such file. A file that exists
@@ -3256,12 +2389,10 @@ impl ConfigLayer {
                 parse_reason(&e)
             )
         })?;
-        for (key, flag) in removed_file_loading_keys(&layer.table) {
-            eprintln!(
-                "datui: warning: {}: file_loading.{key} is no longer read; \
-                 pass {flag} when opening the file it describes",
-                path.display(),
-            );
+        // Serde passes over a key it does not know; a renamed or misspelled one would
+        // otherwise change nothing without a word.
+        for unknown in unknown_keys_in(&layer.table) {
+            eprintln!("datui: warning: {}: {unknown}", path.display());
         }
         layer.anchor_paths(path.parent().unwrap_or_else(|| Path::new(".")));
         Ok(Some(layer))
@@ -3270,7 +2401,11 @@ impl ConfigLayer {
     /// Resolve relative dataset `path`s against `dir`, the directory of the file that
     /// named them, before a layer from another directory can be merged with them.
     fn anchor_paths(&mut self, dir: &Path) {
-        if let Some(toml::Value::Array(entries)) = self.table.get_mut("formats_path") {
+        if let Some(toml::Value::Array(entries)) = self
+            .table
+            .get_mut("formats")
+            .and_then(|f| f.get_mut("path"))
+        {
             for entry in entries {
                 if let toml::Value::String(path) = entry
                     && !path.trim().is_empty()
@@ -3298,12 +2433,57 @@ impl ConfigLayer {
         }
     }
 
+    /// The value this layer writes at the dotted `key`, if it writes one.
+    pub fn get(&self, key: &str) -> Option<&toml::Value> {
+        let mut parts = key.split('.');
+        let mut value = self.table.get(parts.next()?)?;
+        for part in parts {
+            value = value.as_table()?.get(part)?;
+        }
+        Some(value)
+    }
+
     /// Lay `upper` over this layer: every key `upper` writes wins, except the
     /// combined keys in [`COMBINED_KEYS`], and keys it leaves out keep this layer's
     /// value. `upper`'s imports are not carried over.
     pub fn merge(&mut self, upper: ConfigLayer) {
         merge_tables(&mut self.table, upper.table, "");
     }
+}
+
+/// The keys `table` writes that the option registry does not know, each with the
+/// nearest known keys, sorted. A registered key's value is not looked into: a table
+/// such as `[display.number_format]` or `[[sources]]` is that key's business.
+fn unknown_keys_in(table: &toml::Table) -> Vec<String> {
+    fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
+        for (key, value) in table {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if datui_cli::settings::find(&path).is_some() {
+                continue;
+            }
+            match value {
+                // A section, known or not: its keys are named one by one, so a renamed
+                // section's keys each find their new place.
+                toml::Value::Table(inner) => walk(inner, &path, out),
+                _ => {
+                    let near = datui_cli::settings::suggestions(&path);
+                    let mut said = format!("{path} is not a config key, and is not read");
+                    if !near.is_empty() {
+                        said.push_str(&format!("; did you mean {}?", near.join(" or ")));
+                    }
+                    out.push(said);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(table, "", &mut out);
+    out.sort();
+    out
 }
 
 /// A TOML error with its reason and place on the first line, then the excerpt of the
@@ -3393,11 +2573,20 @@ fn merge_by_name(lower: &mut Vec<toml::Value>, upper: Vec<toml::Value>) {
 impl AppConfig {
     /// Load configuration from all layers (default → imports → user config)
     pub fn load(app_name: &str) -> Result<Self> {
+        Self::load_with(app_name, &[])
+    }
+
+    /// [`Self::load`], with `-c KEY=VALUE` over the files.
+    pub fn load_with(app_name: &str, overrides: &[datui_cli::settings::Override]) -> Result<Self> {
         match ConfigManager::new(app_name) {
-            Ok(manager) => Self::load_from_file(&manager.config_path("config.toml")),
+            Ok(manager) => {
+                Self::load_from_file_with(&manager.config_path("config.toml"), overrides)
+            }
             // No config directory on this platform: defaults are all there is.
             Err(_) => {
-                let config = AppConfig::default();
+                let layers = vec![ConfigLayer::from_overrides(overrides)?];
+                let config =
+                    Self::from_layers(layers).map_err(|e| eyre!("Invalid configuration: {}", e))?;
                 config
                     .validate()
                     .map_err(|e| eyre!("Invalid configuration: {}", e))?;
@@ -3420,26 +2609,69 @@ impl AppConfig {
     /// generated by a theme system that may not have run yet — but an import that
     /// exists and cannot be read or parsed is an error too.
     pub fn load_from_file(config_path: &Path) -> Result<Self> {
-        let mut layers: Vec<ConfigLayer> = Vec::new();
-        let mut imports: Vec<String> = Vec::new();
+        Self::load_from_file_with(config_path, &[])
+    }
 
+    /// [`Self::load_from_file`], with `-c KEY=VALUE` laid over every file.
+    pub fn load_from_file_with(
+        config_path: &Path,
+        overrides: &[datui_cli::settings::Override],
+    ) -> Result<Self> {
+        let layers = Self::read_layers(config_path, overrides)?;
+        Self::from_read_layers(config_path, overrides, &layers)
+    }
+
+    /// Every layer the configuration rooted at `config_path` is built from, lowest
+    /// precedence first: each import, depth-first, then the file, then `-c`. Each is
+    /// named by where it came from. A missing root file contributes nothing.
+    pub fn read_layers(
+        config_path: &Path,
+        overrides: &[datui_cli::settings::Override],
+    ) -> Result<Vec<(LayerSource, ConfigLayer)>> {
+        let mut layers = Vec::new();
         if let Some(root) = ConfigLayer::read(config_path, None)? {
             let canonical = crate::canonical::canonicalize(config_path)
                 .unwrap_or_else(|_| config_path.to_path_buf());
             let mut stack = vec![canonical];
-            imports = root.imports.clone();
-            Self::collect_imports(&imports, config_path, &mut stack, &mut layers)?;
-            layers.push(root);
+            Self::collect_imports(&root.imports, config_path, &mut stack, &mut layers)?;
+            layers.push((LayerSource::File(config_path.to_path_buf()), root));
         }
+        if !overrides.is_empty() {
+            layers.push((
+                LayerSource::Override,
+                ConfigLayer::from_overrides(overrides)?,
+            ));
+        }
+        Ok(layers)
+    }
 
-        let mut config = Self::from_layers(layers)
-            .map_err(|e| eyre!("Invalid configuration in {}: {}", config_path.display(), e))?;
+    /// The configuration `layers`, read by [`Self::read_layers`] for `config_path`,
+    /// describe: merged over the defaults and validated.
+    pub fn from_read_layers(
+        config_path: &Path,
+        overrides: &[datui_cli::settings::Override],
+        layers: &[(LayerSource, ConfigLayer)],
+    ) -> Result<Self> {
+        // A bad value may be the file's or a `-c`'s.
+        let place = if overrides.is_empty() {
+            config_path.display().to_string()
+        } else {
+            format!("{} with -c", config_path.display())
+        };
+        let imports = layers
+            .iter()
+            .find(|(source, _)| *source == LayerSource::File(config_path.to_path_buf()))
+            .map(|(_, root)| root.imports.clone())
+            .unwrap_or_default();
+
+        let mut config = Self::from_layers(layers.iter().map(|(_, layer)| layer.clone()))
+            .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
         // `import` is a load-time directive, never merged; report what the root declared.
         config.import = imports;
 
         config
             .validate()
-            .map_err(|e| eyre!("Invalid configuration in {}: {}", config_path.display(), e))?;
+            .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
 
         Ok(config)
     }
@@ -3453,7 +2685,7 @@ impl AppConfig {
         imports: &[String],
         origin: &Path,
         stack: &mut Vec<PathBuf>,
-        out: &mut Vec<ConfigLayer>,
+        out: &mut Vec<(LayerSource, ConfigLayer)>,
     ) -> Result<()> {
         if imports.is_empty() {
             return Ok(());
@@ -3500,7 +2732,7 @@ impl AppConfig {
             Self::collect_imports(&layer.imports, &path, stack, out)?;
             stack.pop();
 
-            out.push(layer);
+            out.push((LayerSource::File(path), layer));
         }
 
         Ok(())
@@ -3544,26 +2776,26 @@ impl AppConfig {
 
     /// Every collection: the configured ones in the order defined, imports first, then
     /// the built-in catalog, unless a configured collection named `public` replaces it
-    /// or `[data] builtin_catalog = false` drops it. Hidden ones included.
+    /// or `[home] builtin_catalog = false` drops it. Hidden ones included.
     pub fn collections(&self) -> Vec<SourceConfig> {
         let mut all = self.sources.clone();
-        if self.data.builtin_catalog && !all.iter().any(|s| s.name == BUILTIN_CATALOG) {
+        if self.home.builtin_catalog && !all.iter().any(|s| s.name == BUILTIN_CATALOG) {
             all.push(builtin_catalog());
         }
         all
     }
 
     /// The collections the home screen shows: [`Self::collections`] less
-    /// `[data] hide_sources`.
+    /// `[home] hide`.
     pub fn shown_collections(&self) -> Vec<SourceConfig> {
         self.collections()
             .into_iter()
-            .filter(|s| !self.data.hide_sources.contains(&s.name))
+            .filter(|s| !self.home.hide.contains(&s.name))
             .collect()
     }
 
     /// Derive `[cloud]`'s view of how collection URLs are read. Called by
-    /// `from_layers` and `default`; call it after changing `sources` or `data` by hand.
+    /// `from_layers` and `default`; call it after changing `sources` or `home` by hand.
     pub fn sync_dataset_access(&mut self) {
         self.cloud.dataset_access = self
             .collections()
@@ -3591,21 +2823,10 @@ impl AppConfig {
 
     /// Validate configuration values
     pub fn validate(&self) -> Result<()> {
-        // Validate version compatibility
-        if !self.version.starts_with("0.2") {
+        let rows = self.analysis.chart_rows;
+        if rows == 0 || rows > MAX_CHART_ROW_LIMIT {
             return Err(eyre!(
-                "Unsupported config version: {}. Expected 0.2.x",
-                self.version
-            ));
-        }
-
-        if let Some(n) = self.chart.row_limit
-            && (n == 0 || n > MAX_CHART_ROW_LIMIT)
-        {
-            return Err(eyre!(
-                "chart.row_limit must be between 1 and {} when set, got {}",
-                MAX_CHART_ROW_LIMIT,
-                n
+                "analysis.chart_rows must be between 1 and {MAX_CHART_ROW_LIMIT}, got {rows}"
             ));
         }
 
@@ -3613,21 +2834,26 @@ impl AppConfig {
         // are reported at load time rather than silently ignored at render time.
         self.display
             .number_format
-            .resolve(self.display.align_numeric_right)?;
+            .resolve(self.display.right_align_numbers)?;
 
-        if let Some(ms) = self.file_loading.follow_interval_ms
-            && !FOLLOW_INTERVAL_MS.contains(&ms)
-        {
+        let interval = self.read.follow_interval;
+        if !FOLLOW_INTERVAL.contains(&interval.duration()) {
             return Err(eyre!(
-                "file_loading.follow_interval_ms must be between {} and {}, got {ms}",
-                FOLLOW_INTERVAL_MS.start(),
-                FOLLOW_INTERVAL_MS.end()
+                "read.follow_interval must be between 10ms and 1m, got {interval}"
             ));
         }
 
-        if let Some(c) = &self.file_loading.comment_char {
-            crate::csv_dialect::check_comment_char(c)
-                .map_err(|e| eyre!("file_loading.comment_char: {e}"))?;
+        if let Some(c) = &self.csv.comment {
+            crate::csv_dialect::check_comment_char(c).map_err(|e| eyre!("csv.comment: {e}"))?;
+        }
+
+        if let Some(level) = &self.log.level
+            && !datui_cli::LOG_LEVELS.contains(&level.as_str())
+        {
+            return Err(eyre!(
+                "log.level must be one of {}, got {level:?}",
+                datui_cli::LOG_LEVELS.join(", ")
+            ));
         }
 
         self.cloud.validate()?;
@@ -3635,15 +2861,9 @@ impl AppConfig {
         for source in &self.sources {
             source.validate(&self.cloud.connections)?;
         }
-        if let Some(name) = self
-            .data
-            .hide_sources
-            .iter()
-            .find(|name| !is_valid_source_id(name))
-        {
+        if let Some(name) = self.home.hide.iter().find(|name| !is_valid_source_id(name)) {
             return Err(eyre!(
-                "data.hide_sources: \"{name}\" is not a collection name. Use the name, not \
-                 the label"
+                "home.hide: \"{name}\" is not a collection name. Use the name, not the label"
             ));
         }
 
@@ -3660,8 +2880,8 @@ impl AppConfig {
                 self.clipboard.backend
             ));
         }
-        if self.clipboard.osc52_limit_kb == 0 {
-            return Err(eyre!("[clipboard] osc52_limit_kb must be greater than 0"));
+        if self.clipboard.osc52_limit.bytes() == 0 {
+            return Err(eyre!("[clipboard] osc52_limit must be greater than 0"));
         }
 
         Ok(())
@@ -3669,88 +2889,31 @@ impl AppConfig {
 }
 
 impl ColorConfig {
+    /// Every slot by name, as the config writes it.
+    fn slots(&self) -> Vec<(String, String)> {
+        match toml::Value::try_from(self) {
+            Ok(toml::Value::Table(table)) => table
+                .into_iter()
+                .map(|(name, value)| (name, value.as_str().unwrap_or_default().to_string()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Validate all color strings can be parsed
     fn validate(&self, parser: &ColorParser) -> Result<()> {
-        // Helper macro to validate a color field (reports as theme.colors.<name> for config file context)
-        macro_rules! validate_color {
-            ($field:expr_2021, $name:expr_2021) => {
-                parser.parse($field).map_err(|e| {
-                    eyre!(
-                        "theme.colors.{}: {}. Use a valid color name (e.g. red, cyan, bright_red), \
-                         hex (#rrggbb), or indexed(0-255)",
-                        $name,
-                        e
-                    )
-                })?;
-            };
+        for (name, value) in self.slots() {
+            // "default" is no stripe, not a color.
+            if name == "table_alternate_row" && value == "default" {
+                continue;
+            }
+            parser.parse(&value).map_err(|e| {
+                eyre!(
+                    "theme.colors.{name}: {e}. Use a valid color name (e.g. red, cyan, \
+                     bright_red), hex (#rrggbb), or indexed(0-255)"
+                )
+            })?;
         }
-
-        validate_color!(&self.keybind_hints, "keybind_hints");
-        validate_color!(&self.keybind_labels, "keybind_labels");
-        validate_color!(&self.throbber, "throbber");
-        validate_color!(
-            &self.primary_chart_series_color,
-            "primary_chart_series_color"
-        );
-        validate_color!(
-            &self.secondary_chart_series_color,
-            "secondary_chart_series_color"
-        );
-        validate_color!(&self.success, "success");
-        validate_color!(&self.error, "error");
-        validate_color!(&self.warning, "warning");
-        validate_color!(&self.dimmed, "dimmed");
-        validate_color!(&self.background, "background");
-        validate_color!(&self.surface, "surface");
-        validate_color!(&self.controls_bg, "controls_bg");
-        validate_color!(&self.text_primary, "text_primary");
-        validate_color!(&self.text_secondary, "text_secondary");
-        validate_color!(&self.text_inverse, "text_inverse");
-        validate_color!(&self.table_header, "table_header");
-        validate_color!(&self.table_header_bg, "table_header_bg");
-        validate_color!(&self.row_numbers, "row_numbers");
-        validate_color!(&self.column_separator, "column_separator");
-        validate_color!(&self.table_selected, "table_selected");
-        validate_color!(&self.column_cursor, "column_cursor");
-        validate_color!(&self.cell_cursor, "cell_cursor");
-        validate_color!(&self.sidebar_border, "sidebar_border");
-        validate_color!(&self.modal_border_active, "modal_border_active");
-        validate_color!(&self.modal_border_error, "modal_border_error");
-        validate_color!(&self.distribution_normal, "distribution_normal");
-        validate_color!(&self.distribution_skewed, "distribution_skewed");
-        validate_color!(&self.distribution_other, "distribution_other");
-        validate_color!(&self.outlier_marker, "outlier_marker");
-        validate_color!(&self.cursor_focused, "cursor_focused");
-        validate_color!(&self.cursor_dimmed, "cursor_dimmed");
-        validate_color!(&self.cursor_text, "cursor_text");
-        if self.alternate_row_color != "default" {
-            validate_color!(&self.alternate_row_color, "alternate_row_color");
-        }
-        validate_color!(&self.str_col, "str_col");
-        validate_color!(&self.int_col, "int_col");
-        validate_color!(&self.float_col, "float_col");
-        validate_color!(&self.bool_col, "bool_col");
-        validate_color!(&self.temporal_col, "temporal_col");
-        validate_color!(&self.chart_series_color_1, "chart_series_color_1");
-        validate_color!(&self.chart_series_color_2, "chart_series_color_2");
-        validate_color!(&self.chart_series_color_3, "chart_series_color_3");
-        validate_color!(&self.chart_series_color_4, "chart_series_color_4");
-        validate_color!(&self.chart_series_color_5, "chart_series_color_5");
-        validate_color!(&self.chart_series_color_6, "chart_series_color_6");
-        validate_color!(&self.chart_series_color_7, "chart_series_color_7");
-        validate_color!(&self.chart_grid, "chart_grid");
-        validate_color!(&self.accent, "accent");
-        validate_color!(&self.accent_bright, "accent_bright");
-        validate_color!(&self.gradient_start, "gradient_start");
-        validate_color!(&self.gradient_end, "gradient_end");
-        validate_color!(&self.find_match, "find_match");
-        validate_color!(&self.hex_null, "hex_null");
-        validate_color!(&self.hex_printable, "hex_printable");
-        validate_color!(&self.hex_whitespace, "hex_whitespace");
-        validate_color!(&self.hex_control, "hex_control");
-        validate_color!(&self.hex_high, "hex_high");
-        validate_color!(&self.hex_ff, "hex_ff");
-
         Ok(())
     }
 }
@@ -3974,232 +3137,24 @@ impl Theme {
     pub fn from_config(config: &ThemeConfig) -> Result<Self> {
         let parser = ColorParser::new();
         let mut colors = HashMap::new();
-
-        // Parse all colors from config
-        colors.insert(
-            "keybind_hints".to_string(),
-            parser.parse(&config.colors.keybind_hints)?,
-        );
-        colors.insert(
-            "keybind_labels".to_string(),
-            parser.parse(&config.colors.keybind_labels)?,
-        );
-        colors.insert(
-            "throbber".to_string(),
-            parser.parse(&config.colors.throbber)?,
-        );
-        colors.insert(
-            "primary_chart_series_color".to_string(),
-            parser.parse(&config.colors.primary_chart_series_color)?,
-        );
-        colors.insert(
-            "secondary_chart_series_color".to_string(),
-            parser.parse(&config.colors.secondary_chart_series_color)?,
-        );
-        colors.insert("success".to_string(), parser.parse(&config.colors.success)?);
-        colors.insert("error".to_string(), parser.parse(&config.colors.error)?);
-        colors.insert("warning".to_string(), parser.parse(&config.colors.warning)?);
-        colors.insert("dimmed".to_string(), parser.parse(&config.colors.dimmed)?);
-        colors.insert(
-            "background".to_string(),
-            parser.parse(&config.colors.background)?,
-        );
-        colors.insert("surface".to_string(), parser.parse(&config.colors.surface)?);
-        colors.insert(
-            "controls_bg".to_string(),
-            parser.parse(&config.colors.controls_bg)?,
-        );
-        colors.insert(
-            "text_primary".to_string(),
-            parser.parse(&config.colors.text_primary)?,
-        );
-        colors.insert(
-            "text_secondary".to_string(),
-            parser.parse(&config.colors.text_secondary)?,
-        );
-        colors.insert(
-            "text_inverse".to_string(),
-            parser.parse(&config.colors.text_inverse)?,
-        );
-        colors.insert(
-            "table_header".to_string(),
-            parser.parse(&config.colors.table_header)?,
-        );
-        colors.insert(
-            "table_header_bg".to_string(),
-            parser.parse(&config.colors.table_header_bg)?,
-        );
-        colors.insert(
-            "row_numbers".to_string(),
-            parser.parse(&config.colors.row_numbers)?,
-        );
-        colors.insert(
-            "column_separator".to_string(),
-            parser.parse(&config.colors.column_separator)?,
-        );
-        // "reversed" keeps the old swap-fg-and-bg selection; anything else is the tint
-        // painted under the row the cursor is on. Left out of the map for "reversed"
-        // so a widget can ask `get_optional` and tell the two apart.
-        if !config
-            .colors
-            .table_selected
-            .trim()
-            .eq_ignore_ascii_case("reversed")
-        {
-            colors.insert(
-                "table_selected".to_string(),
-                parser.parse(&config.colors.table_selected)?,
-            );
+        for (name, value) in config.colors.slots() {
+            // Left out of the map so a widget can ask `get_optional` and tell them apart:
+            // "reversed" swaps the current row's text and background instead of tinting
+            // it, and "default" is no stripe.
+            let absent = match name.as_str() {
+                "table_selected" => value.trim().eq_ignore_ascii_case("reversed"),
+                "table_alternate_row" => value == "default",
+                _ => false,
+            };
+            if !absent {
+                colors.insert(name, parser.parse(&value)?);
+            }
         }
-        colors.insert(
-            "column_cursor".to_string(),
-            parser.parse(&config.colors.column_cursor)?,
-        );
-        colors.insert(
-            "cell_cursor".to_string(),
-            parser.parse(&config.colors.cell_cursor)?,
-        );
-        let sidebar_border = parser.parse(&config.colors.sidebar_border)?;
-        colors.insert("sidebar_border".to_string(), sidebar_border);
         // Every sidebar and the input strip draw their resting border from
-        // `modal_border`; it is the same slot as `sidebar_border`, which is the name
-        // the config documents.
-        colors.insert("modal_border".to_string(), sidebar_border);
-        colors.insert(
-            "label".to_string(),
-            parser.parse(&config.colors.text_secondary)?,
-        );
-        colors.insert(
-            "modal_border_active".to_string(),
-            parser.parse(&config.colors.modal_border_active)?,
-        );
-        colors.insert(
-            "modal_border_error".to_string(),
-            parser.parse(&config.colors.modal_border_error)?,
-        );
-        colors.insert(
-            "distribution_normal".to_string(),
-            parser.parse(&config.colors.distribution_normal)?,
-        );
-        colors.insert(
-            "distribution_skewed".to_string(),
-            parser.parse(&config.colors.distribution_skewed)?,
-        );
-        colors.insert(
-            "distribution_other".to_string(),
-            parser.parse(&config.colors.distribution_other)?,
-        );
-        colors.insert(
-            "outlier_marker".to_string(),
-            parser.parse(&config.colors.outlier_marker)?,
-        );
-        colors.insert(
-            "cursor_focused".to_string(),
-            parser.parse(&config.colors.cursor_focused)?,
-        );
-        colors.insert(
-            "cursor_dimmed".to_string(),
-            parser.parse(&config.colors.cursor_dimmed)?,
-        );
-        colors.insert(
-            "cursor_text".to_string(),
-            parser.parse(&config.colors.cursor_text)?,
-        );
-        if config.colors.alternate_row_color != "default" {
-            colors.insert(
-                "alternate_row_color".to_string(),
-                parser.parse(&config.colors.alternate_row_color)?,
-            );
-        }
-        colors.insert("str_col".to_string(), parser.parse(&config.colors.str_col)?);
-        colors.insert("int_col".to_string(), parser.parse(&config.colors.int_col)?);
-        colors.insert(
-            "float_col".to_string(),
-            parser.parse(&config.colors.float_col)?,
-        );
-        colors.insert(
-            "bool_col".to_string(),
-            parser.parse(&config.colors.bool_col)?,
-        );
-        colors.insert(
-            "temporal_col".to_string(),
-            parser.parse(&config.colors.temporal_col)?,
-        );
-        colors.insert(
-            "binary_col".to_string(),
-            parser.parse(&config.colors.binary_col)?,
-        );
-        colors.insert(
-            "chart_series_color_1".to_string(),
-            parser.parse(&config.colors.chart_series_color_1)?,
-        );
-        colors.insert(
-            "chart_series_color_2".to_string(),
-            parser.parse(&config.colors.chart_series_color_2)?,
-        );
-        colors.insert(
-            "chart_series_color_3".to_string(),
-            parser.parse(&config.colors.chart_series_color_3)?,
-        );
-        colors.insert(
-            "chart_series_color_4".to_string(),
-            parser.parse(&config.colors.chart_series_color_4)?,
-        );
-        colors.insert(
-            "chart_series_color_5".to_string(),
-            parser.parse(&config.colors.chart_series_color_5)?,
-        );
-        colors.insert(
-            "chart_series_color_6".to_string(),
-            parser.parse(&config.colors.chart_series_color_6)?,
-        );
-        colors.insert(
-            "chart_series_color_7".to_string(),
-            parser.parse(&config.colors.chart_series_color_7)?,
-        );
-        colors.insert(
-            "chart_grid".to_string(),
-            parser.parse(&config.colors.chart_grid)?,
-        );
-        colors.insert("accent".to_string(), parser.parse(&config.colors.accent)?);
-        colors.insert(
-            "accent_bright".to_string(),
-            parser.parse(&config.colors.accent_bright)?,
-        );
-        colors.insert(
-            "gradient_start".to_string(),
-            parser.parse(&config.colors.gradient_start)?,
-        );
-        colors.insert(
-            "gradient_end".to_string(),
-            parser.parse(&config.colors.gradient_end)?,
-        );
-        colors.insert(
-            "find_match".to_string(),
-            parser.parse(&config.colors.find_match)?,
-        );
-        colors.insert(
-            "hex_null".to_string(),
-            parser.parse(&config.colors.hex_null)?,
-        );
-        colors.insert(
-            "hex_printable".to_string(),
-            parser.parse(&config.colors.hex_printable)?,
-        );
-        colors.insert(
-            "hex_whitespace".to_string(),
-            parser.parse(&config.colors.hex_whitespace)?,
-        );
-        colors.insert(
-            "hex_control".to_string(),
-            parser.parse(&config.colors.hex_control)?,
-        );
-        colors.insert(
-            "hex_high".to_string(),
-            parser.parse(&config.colors.hex_high)?,
-        );
-        colors.insert("hex_ff".to_string(), parser.parse(&config.colors.hex_ff)?);
-
+        // `modal_border`, the slot the config calls `sidebar_border`; labels are
+        // secondary text.
+        colors.insert("modal_border".to_string(), colors["sidebar_border"]);
+        colors.insert("label".to_string(), colors["text_secondary"]);
         Ok(Self { colors })
     }
 
@@ -4226,13 +3181,13 @@ impl Theme {
 
     /// Style of the column cursor's cells; see [`column_cursor_style`].
     pub fn column_cursor_style(&self) -> ratatui::style::Style {
-        column_cursor_style(self.get_optional("column_cursor"))
+        column_cursor_style(self.get_optional("table_column_cursor"))
     }
 
     /// Style of the column cursor's header and the current cell; see
     /// [`cell_cursor_style`].
     pub fn cell_cursor_style(&self) -> ratatui::style::Style {
-        cell_cursor_style(self.get_optional("cell_cursor"))
+        cell_cursor_style(self.get_optional("table_cell_cursor"))
     }
 
     /// Style of selected text in a field: the highlight tint, or reversed video
@@ -4262,7 +3217,7 @@ impl Theme {
     /// white by the cursor color's luminance when the slot says "default". Lives
     /// here so widgets never pick colors themselves.
     pub fn cursor_text_for(&self, cursor: Color) -> Color {
-        match self.get("cursor_text") {
+        match self.get("input_cursor_text") {
             Color::Reset => contrasting_text(cursor),
             configured => configured,
         }
@@ -4366,75 +3321,19 @@ fn xterm_rgb(i: u8) -> (u8, u8, u8) {
     }
 }
 
-const DATA_SEARCH_COMMENTS: &[(&str, &str)] = &[
-    (
-        "enabled",
-        "Search below the working directory when you type on the home screen.\n\
-         The walk runs once, in the background, the first time you type; every\n\
-         keystroke after that filters the result in memory. Set false to list only\n\
-         the directories themselves.",
-    ),
-    (
-        "max_depth",
-        "How deep to descend. Data is rarely twelve directories down, and every\n\
-         extra level costs a listing on every branch.",
-    ),
-    (
-        "max_results",
-        "Stop after this many datasets. The list is a way to find something, not an\n\
-         inventory. Hitting the limit is reported on screen, never silent.",
-    ),
-    (
-        "time_budget_ms",
-        "Give up walking after this long and keep whatever was found. A cold or\n\
-         enormous tree must degrade to partial results, never to a wait.",
-    ),
-    (
-        "cross_filesystems",
-        "Descend into directories on a different filesystem than the one you started\n\
-         in. Off by default, and the most important limit here: it is what keeps a\n\
-         search from wandering onto a network share, and on autofs, from MOUNTING one\n\
-         merely by looking at it. Turn it on only if your data lives on a mount\n\
-         beneath your working directory and you know that mount is fast.",
-    ),
-    (
-        "follow_gitignore",
-        "Obey .gitignore. Off by default, and deliberately: people gitignore data\n\
-         directories precisely because the data is too big to commit, which is the\n\
-         same reason they want to open it in datui. In datui's own repository,\n\
-         honouring it hides 38 real test datasets while hiding 69 files of virtualenv\n\
-         noise -- wrong in both directions. Use skip/skip_extra for the noise.",
-    ),
-    (
-        "skip",
-        "Directory names never descended into. Setting this REPLACES the defaults:\n\
-         node_modules, target, build, dist, vendor, site-packages, __pycache__,\n\
-         venv, env. Hidden directories (.git, .venv, the caches) are always skipped.\n\
-         To add to the defaults rather than replace them, use skip_extra.",
-    ),
-    (
-        "skip_extra",
-        "Directory names to skip in addition to the defaults, so adding one does not\n\
-         mean restating the whole list. Example: skip_extra = [\"archive\", \"raw\"]",
-    ),
-    (
-        "extensions",
-        "File extensions to search for. Empty (default) means every format datui can\n\
-         open -- which includes json and txt, noisy in a source tree. Narrow it if\n\
-         that bothers you. Example: extensions = [\"parquet\", \"csv\"]",
-    ),
-];
-
-/// Net change in unclosed brackets across one line of TOML.
-///
-/// Enough to tell whether a rendered array is still open at the end of the line.
-/// Brackets inside strings would fool it, and none of the values here contain any.
-fn bracket_depth(line: &str) -> i32 {
-    line.chars().fold(0, |acc, c| match c {
-        '[' => acc + 1,
-        ']' => acc - 1,
-        _ => acc,
-    })
+/// `text` in lines of at most `width` characters, broken between words.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.len() + 1 + word.len() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -4527,13 +3426,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_config_that_still_sets_a_layout_key_is_told_so() {
-        let found = |text: &str| removed_file_loading_keys(&toml::from_str(text).unwrap());
-        assert_eq!(
-            found("[file_loading]\nskip_rows = 2\nhas_header = false\nparse_dates = true\n"),
-            [("has_header", "--no-header"), ("skip_rows", "--skip-rows")]
+    fn a_key_the_registry_does_not_know_is_named_with_the_nearest() {
+        let found = |text: &str| unknown_keys_in(&toml::from_str(text).unwrap());
+        let unknown = found(
+            "[file_loading]\ncomment_char = \"#\"\n[display]\nmouse = false\nrow_numbr = true\n\
+             number_format = { grouping = \"thousands\" }\n[glyphs]\nspinner = [\"a\"]\n\
+             [theme.colors]\naccent = \"red\"\n[[sources]]\nname = \"x\"\n",
         );
-        assert!(found("[display]\nskip_rows = 2\n").is_empty());
+        assert_eq!(unknown.len(), 2, "{unknown:?}");
+        assert!(
+            unknown[0].starts_with("display.row_numbr")
+                && unknown[0].contains("display.row_numbers")
+        );
+        assert!(
+            unknown[1].starts_with("file_loading.comment_char")
+                && unknown[1].contains("csv.comment")
+        );
     }
 
     #[test]
@@ -4589,9 +3497,14 @@ mod tests {
         };
         let mut out = Vec::new();
         walk(&defaults, "", &mut out);
-        for (path, example) in UNSET_EXAMPLES {
-            let value: toml::Table = toml::from_str(&format!("v = {example}")).unwrap();
-            out.push((path.to_string(), value["v"].clone()));
+        for setting in datui_cli::settings::SETTINGS {
+            if let datui_cli::settings::DefaultValue::Unset(example) = setting.default
+                && !setting.key.ends_with(".*")
+                && setting.kind != datui_cli::settings::Kind::Tables
+            {
+                let value: toml::Table = toml::from_str(&format!("v = {example}")).unwrap();
+                out.push((setting.key.to_string(), value["v"].clone()));
+            }
         }
         out
     }
@@ -4613,20 +3526,75 @@ mod tests {
         table.get(key)
     }
 
+    /// The registry and the config structs describe the same keys with the same
+    /// defaults: every key the defaults serialize is registered with that value, and
+    /// every registered key is one the structs read.
     #[test]
-    fn every_setting_is_documented_in_the_generated_config() {
-        // A new option needs a comment and a line in the generated config, whether its
-        // default serializes or it is unset and so needs an `UNSET_EXAMPLES` entry.
-        let comments = ConfigManager::collect_all_comments();
+    fn the_registry_and_the_config_structs_agree() {
+        use datui_cli::settings::{DefaultValue, Kind, SETTINGS, find};
+        let toml::Value::Table(defaults) = toml::Value::try_from(AppConfig::default()).unwrap()
+        else {
+            unreachable!("a struct serializes to a table")
+        };
+        let light = toml::Value::try_from(ColorConfig::light()).unwrap();
+        for (path, value) in leaf_settings() {
+            let setting = find(&path).unwrap_or_else(|| panic!("{path} is not registered"));
+            let registered = match setting.default {
+                DefaultValue::Value(v) | DefaultValue::Unset(v) => {
+                    toml::from_str::<toml::Table>(&format!("v = {v}")).unwrap()["v"].clone()
+                }
+                DefaultValue::Color { dark, light: lit } => {
+                    let name = setting.name();
+                    assert_eq!(
+                        light.get(name).and_then(|v| v.as_str()),
+                        Some(lit),
+                        "{path} (light)"
+                    );
+                    toml::Value::String(dark.to_string())
+                }
+            };
+            assert_eq!(value, registered, "{path}: the registry's default differs");
+        }
+        for setting in SETTINGS {
+            if setting.key.ends_with(".*") || setting.kind == Kind::Tables {
+                continue;
+            }
+            let serialized = value_at(&defaults, setting.key).is_some();
+            let unset = matches!(setting.default, DefaultValue::Unset(_));
+            assert_eq!(
+                serialized,
+                !unset,
+                "{}: registered as {}set by default",
+                setting.key,
+                if unset { "un" } else { "" }
+            );
+            // Each value it shows is one the config reads.
+            let example = match setting.default {
+                DefaultValue::Value(v) | DefaultValue::Unset(v) => v.to_string(),
+                DefaultValue::Color { dark, .. } => format!("\"{dark}\""),
+            };
+            let value =
+                toml::from_str::<toml::Table>(&format!("v = {example}")).unwrap()["v"].clone();
+            layer_at(setting.key, value).unwrap_or_else(|e| panic!("{}: {e}", setting.key));
+        }
+    }
+
+    #[test]
+    fn the_generated_config_shows_every_key_and_parses_uncommented() {
         let generated = ConfigManager::with_dir(PathBuf::new()).generate_default_config();
         let mut shown = std::collections::HashSet::new();
         let mut section = String::new();
+        let mut uncommented = String::new();
         for line in generated.lines() {
             let Some(line) = line.strip_prefix("# ") else {
+                uncommented.push_str(line);
+                uncommented.push('\n');
                 continue;
             };
             if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
                 section = name.to_string();
+                uncommented.push_str(line);
+                uncommented.push('\n');
             } else if let Some((key, _)) = line.split_once(" = ")
                 && !key.contains(' ')
             {
@@ -4634,22 +3602,18 @@ mod tests {
                     "" => key.to_string(),
                     s => format!("{s}.{key}"),
                 });
+                uncommented.push_str(line);
+                uncommented.push('\n');
             }
         }
-        let settings = leaf_settings();
-        for (path, _) in &settings {
-            assert!(comments.contains_key(path), "{path} has no comment");
+        for (path, _) in leaf_settings() {
             assert!(
-                shown.contains(path),
+                shown.contains(&path),
                 "{path} is not in the generated config"
             );
         }
-        for path in comments.keys() {
-            assert!(
-                settings.iter().any(|(p, _)| p == path),
-                "{path} is commented but is no setting"
-            );
-        }
+        // Every value shown, uncommented, is a config datui reads.
+        ConfigLayer::parse(&uncommented).unwrap();
     }
 
     #[test]
@@ -4662,10 +3626,7 @@ mod tests {
         let mut moved = Vec::new();
         for (path, value) in &defaults {
             // These follow their own rules, tested on their own.
-            let blank_is_unset = path
-                .strip_prefix("cloud.")
-                .is_some_and(|key| CLOUD_BLANK_IS_UNSET.contains(&key));
-            if path == "import" || blank_is_unset || COMBINED_KEYS.iter().any(|(p, _)| p == path) {
+            if path == "import" || COMBINED_KEYS.iter().any(|(p, _)| p == path) {
                 continue;
             }
             let other = match value {

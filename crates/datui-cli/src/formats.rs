@@ -105,7 +105,7 @@ pub enum Lines {
 pub enum Compressed {
     /// It is not: the open refuses it.
     Refused,
-    /// Decompressed once, to a file or with `--decompress-in-memory` into memory.
+    /// Decompressed once, to a file or with `[file_loading] decompress_in_memory` into memory.
     Decompressed,
     /// Decompressed as it is read into the files it is converted to.
     ReadThrough,
@@ -117,30 +117,10 @@ pub struct Tables {
     /// Whether the home screen lists them as places inside the file
     /// (`shop.db/orders`, `run.npz/weights`) that recents record and `--table` names.
     pub listed: bool,
-    /// The flag that picks one.
-    pub flag: TableFlag,
     /// What one is called, singular and plural.
     pub noun: (&'static str, &'static str),
     /// What the flag takes for this format, for its help: `a table or view by name`.
     pub help: &'static str,
-}
-
-/// The flag that picks a table of a file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TableFlag {
-    Table,
-    /// An Excel workbook's sheet.
-    Sheet,
-}
-
-impl TableFlag {
-    /// The flag as it is typed.
-    pub fn flag(self) -> &'static str {
-        match self {
-            Self::Table => "--table",
-            Self::Sheet => "--sheet",
-        }
-    }
 }
 
 /// What the open says while a file is read into files of its own.
@@ -290,7 +270,6 @@ const EXCEL: Descriptor = Descriptor {
     extensions: &["xls", "xlsx", "xlsm", "xlsb"],
     tables: Some(Tables {
         listed: false,
-        flag: TableFlag::Sheet,
         noun: ("sheet", "sheets"),
         help: "a sheet by 0-based index or name",
     }),
@@ -319,7 +298,6 @@ const NMEA: Descriptor = Descriptor {
     many_files: true,
     tables: Some(Tables {
         listed: false,
-        flag: TableFlag::Table,
         noun: ("table", "tables"),
         help: "fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences",
     }),
@@ -369,7 +347,6 @@ const SQLITE: Descriptor = Descriptor {
     read: ReadMode::Lazy,
     tables: Some(Tables {
         listed: true,
-        flag: TableFlag::Table,
         noun: ("table", "tables"),
         help: "a table or view by name",
     }),
@@ -418,7 +395,6 @@ const NUMPY: Descriptor = Descriptor {
     read: ReadMode::Lazy,
     tables: Some(Tables {
         listed: true,
-        flag: TableFlag::Table,
         noun: ("array", "arrays"),
         help: "an array of an archive (.npz) by name",
     }),
@@ -436,7 +412,6 @@ const ELF: Descriptor = Descriptor {
     extensions: &["elf", "axf"],
     tables: Some(Tables {
         listed: true,
-        flag: TableFlag::Table,
         noun: ("table", "tables"),
         help: "symbols (default) or sections",
     }),
@@ -452,7 +427,6 @@ const ULOG: Descriptor = Descriptor {
     read: ReadMode::Lazy,
     tables: Some(Tables {
         listed: true,
-        flag: TableFlag::Table,
         noun: ("table", "tables"),
         help: "a topic",
     }),
@@ -466,7 +440,6 @@ const DATAFLASH: Descriptor = Descriptor {
     read: ReadMode::Lazy,
     tables: Some(Tables {
         listed: true,
-        flag: TableFlag::Table,
         noun: ("table", "tables"),
         help: "a message type",
     }),
@@ -480,7 +453,6 @@ const CANDUMP: Descriptor = Descriptor {
     read: ReadMode::Lazy,
     tables: Some(Tables {
         listed: true,
-        flag: TableFlag::Table,
         noun: ("table", "tables"),
         help: "frames (default), signals, or a message a DBC file names",
     }),
@@ -647,10 +619,7 @@ impl FileFormat {
 
     /// Whether `--table` picks one of the tables of a file of this format.
     pub fn takes_table(self) -> bool {
-        self.descriptor()
-            .tables
-            .as_ref()
-            .is_some_and(|t| t.flag == TableFlag::Table)
+        self.descriptor().tables.is_some()
     }
 
     /// Whether a file of this format is read into files of its own before it is
@@ -770,7 +739,7 @@ impl FileFormat {
 pub fn format_help() -> String {
     let names: Vec<&str> = FileFormat::ALL.iter().map(|f| f.name()).collect();
     format!(
-        "File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): {}, or the name of a binary format spec such as acme.l2feed",
+        "File format, when the extension does not say: {}; or a format spec, by name (acme.l2feed), file (./acme.toml) or http(s), s3, gs or az URL (at most 1 MiB)",
         names.join(", ")
     )
 }
@@ -779,9 +748,7 @@ pub fn format_help() -> String {
 pub fn table_help() -> String {
     let mut help = String::from("Table to open from a file that holds several.");
     for format in FileFormat::ALL {
-        if let Some(tables) = &format.descriptor().tables
-            && tables.flag == TableFlag::Table
-        {
+        if let Some(tables) = &format.descriptor().tables {
             help.push_str(&format!(" {}: {}.", format.title(), tables.help));
         }
     }
@@ -790,19 +757,8 @@ pub fn table_help() -> String {
 }
 
 /// Why `--table` was refused for a file of `format` (`None`: not known), which holds
-/// one table: the formats whose tables it picks, or the flag that picks this one's.
+/// one table: the formats whose tables it picks.
 pub fn one_table(format: Option<FileFormat>) -> String {
-    if let Some(format) = format
-        && let Some(tables) = &format.descriptor().tables
-        && tables.flag != TableFlag::Table
-    {
-        return format!(
-            "--table does not apply to {} files; {} picks a {}.",
-            format.title(),
-            tables.flag.flag(),
-            tables.noun.0
-        );
-    }
     let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
     let titles: Vec<&str> = FileFormat::ALL
         .into_iter()
@@ -853,7 +809,7 @@ pub enum Stored {
     /// As its format's extension says.
     #[default]
     Plain,
-    /// Under gzip, zstd, bzip2 or xz. `in_memory` is `--decompress-in-memory`.
+    /// Under gzip, zstd, bzip2 or xz. `in_memory` is `[file_loading] decompress_in_memory`.
     Compressed { in_memory: bool },
     /// An Arrow IPC stream rather than an IPC file: no footer to find the rows by.
     Stream,
@@ -904,7 +860,7 @@ mod tests {
     }
 
     /// `--format` lists every format; `--table` names every format whose tables it
-    /// picks, and refusing it names them too, or the flag that does pick.
+    /// picks, and refusing it names them too.
     #[test]
     fn help_and_refusals_come_from_the_descriptors() {
         let format = format_help();
@@ -923,10 +879,7 @@ mod tests {
             "{refused}"
         );
         assert!(one_table(None).starts_with("This file holds one table"));
-        assert_eq!(
-            one_table(Some(FileFormat::Excel)),
-            "--table does not apply to Excel files; --sheet picks a sheet."
-        );
+        assert!(FileFormat::Excel.takes_table(), "a sheet is a table");
     }
 
     /// Every format read into files of its own says so in words of its own: none falls

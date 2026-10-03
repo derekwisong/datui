@@ -74,7 +74,7 @@ Typing also matches bucket names already listed, this session or an earlier one,
 from every source, in `Found`:
 `Lab MinIO › data` and `onprem › data` stay two rows.
 
-<kbd>Delete</kbd> on a source hides it until `datui --clear-cache`. To hide one
+<kbd>Delete</kbd> on a source hides it until `datui cache clear`. To hide one
 for good:
 
 ```toml

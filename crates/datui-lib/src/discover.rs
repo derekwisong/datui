@@ -2121,7 +2121,7 @@ pub fn database_rows(file: &Path) -> Vec<Entry> {
 
 /// The rows of a file a format spec reads as several variants, one a variant, each at
 /// its path inside the file (`day.itch/add`): opened, it is the file read with
-/// `--variant`. Empty for any other file.
+/// `--table`. Empty for any other file.
 pub fn variant_rows(file: &Path, formats: &crate::formats::Registry) -> Vec<Entry> {
     let Some((spec, tables)) = crate::members::variants(file, formats) else {
         return Vec::new();

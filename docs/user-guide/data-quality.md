@@ -255,7 +255,7 @@ The **Read** rule names the rows runs have kept for reuse, such as
 that would have used them reads its sample again.
 
 A full scan of a remote dataset (S3, GCS, Azure) reads its scope once per check.
-When the whole dataset fits `quality_local_copy_mb` (2 GiB by default) and the
+When the whole dataset fits `[analysis] quality_local_copy` (2GiB by default) and the
 free disk, Read says `One fetch of 8 objects (16.5 MiB) into a local copy, then
 up to 7 passes over it`: each object is fetched once into the cache directory,
 and every pass, and every later full scan of the dataset, reads the copy. The

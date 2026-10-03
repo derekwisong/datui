@@ -657,36 +657,33 @@ fn test_desktop_roots_rank_below_everything_else() {
 
 #[test]
 fn test_desktop_recents_can_be_turned_off() {
-    use datui::config::DataConfig;
-    let default = DataConfig::default();
-    assert!(default.use_desktop_recents, "on by default");
+    use datui::config::HomeConfig;
+    let default = HomeConfig::default();
+    assert!(default.desktop_recents, "on by default");
 
-    let off: DataConfig = toml::from_str("use_desktop_recents = false").expect("parses");
-    assert!(!off.use_desktop_recents);
+    let off: HomeConfig = toml::from_str("desktop_recents = false").expect("parses");
+    assert!(!off.desktop_recents);
 }
 
 /// Files datui cannot read start hidden unless the config shows them, and a later
 /// layer that leaves the key out does not turn it back off.
 #[test]
 fn test_unreadable_files_can_be_shown_from_the_start() {
-    use datui::config::DataConfig;
-    assert!(
-        !DataConfig::default().show_unreadable_files,
-        "hidden by default"
-    );
+    use datui::config::HomeConfig;
+    assert!(!HomeConfig::default().show_unreadable, "hidden by default");
 
     let config = common::layered_config(&[
-        "[data]\nshow_unreadable_files = true\n",
-        "[data]\nuse_desktop_recents = true\n",
+        "[home]\nshow_unreadable = true\n",
+        "[home]\ndesktop_recents = true\n",
     ]);
-    assert!(config.data.show_unreadable_files);
+    assert!(config.home.show_unreadable);
     assert!(
         !common::layered_config(&[
-            "[data]\nshow_unreadable_files = true\n",
-            "[data]\nshow_unreadable_files = false\n",
+            "[home]\nshow_unreadable = true\n",
+            "[home]\nshow_unreadable = false\n",
         ])
-        .data
-        .show_unreadable_files,
+        .home
+        .show_unreadable,
         "a later layer that says false hides them again"
     );
 
@@ -5572,8 +5569,8 @@ mod coming_back {
     /// own: other tests in this binary open datasets, and a recent landing in the
     /// shared cache mid-test moved the rows a test was coming back to (#658).
     pub(super) fn home_app(mut config: datui::config::AppConfig) -> (App, Receiver<AppEvent>) {
-        config.data.use_desktop_recents = false;
-        config.data.hide_sources = vec!["public".to_string()];
+        config.home.desktop_recents = false;
+        config.home.hide = vec!["public".to_string()];
         // Whatever this machine is logged in to is not part of the test.
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -5701,7 +5698,7 @@ mod coming_back {
 
     fn local_config(dir: &Path) -> datui::config::AppConfig {
         let mut config = datui::config::AppConfig::default();
-        config.data.directories = vec![dir.to_string_lossy().into_owned()];
+        config.home.directories = vec![dir.to_string_lossy().into_owned()];
         config
     }
 
@@ -6108,7 +6105,7 @@ fn test_esc_back_through_a_cloud_source_puts_the_cursor_on_each_row_entered() {
     };
     let mut config = datui::config::AppConfig::default();
     // Bucket names are what `Found` is about here, not the working directory.
-    config.data.search.enabled = false;
+    config.home.search.enabled = false;
     // Two, so the one entered is not the first row. Keys of their own: the same server
     // with the same key would be one source.
     config.cloud.connections = vec![
@@ -6196,8 +6193,8 @@ fn home_at_80x24(
         touch(tmp.path(), &format!("f{i:02}.csv"));
     }
     let mut config = datui::config::AppConfig::default();
-    config.data.directories = vec![tmp.path().to_string_lossy().into_owned()];
-    config.data.use_desktop_recents = false;
+    config.home.directories = vec![tmp.path().to_string_lossy().into_owned()];
+    config.home.desktop_recents = false;
     config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
         .map(String::from)
         .to_vec();
@@ -6582,8 +6579,8 @@ mod landing {
     /// anyone has read the listing.
     fn home_over(root: &Path) -> (App, Receiver<AppEvent>) {
         let mut config = datui::config::AppConfig::default();
-        config.data.directories = vec![root.to_string_lossy().into_owned()];
-        config.data.search.enabled = false;
+        config.home.directories = vec![root.to_string_lossy().into_owned()];
+        config.home.search.enabled = false;
         let (mut app, rx) = home_app(config);
         let measured = ["sales_hive", "same_schema", "diff_schema"].map(|d| root.join(d));
         // Not just listed in `enriched`: a look sends a row's kind before its footers,
@@ -6975,8 +6972,8 @@ fn test_a_file_row_says_how_it_will_be_read() {
     }
     fs::write(tmp.path().join("file.arrow"), b"ARROW1\0\0").unwrap();
     let mut config = datui::config::AppConfig::default();
-    config.data.directories = vec![tmp.path().to_string_lossy().into_owned()];
-    config.data.use_desktop_recents = false;
+    config.home.directories = vec![tmp.path().to_string_lossy().into_owned()];
+    config.home.desktop_recents = false;
     config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
         .map(String::from)
         .to_vec();
@@ -7111,7 +7108,7 @@ mod first_rows {
 
     fn config(dir: &Path) -> datui::config::AppConfig {
         let mut config = datui::config::AppConfig::default();
-        config.data.directories = vec![dir.to_string_lossy().into_owned()];
+        config.home.directories = vec![dir.to_string_lossy().into_owned()];
         config
     }
 
@@ -7199,7 +7196,7 @@ mod first_rows {
         let tmp = TempDir::new().unwrap();
         let file = people(tmp.path(), 40);
         let mut config = config(tmp.path());
-        config.data.preview_max_mb = 0;
+        config.home.preview_max = datui::config::ByteSize(0);
         let (mut app, rx) = home_app(config);
         select(&mut app, &tmp.path().join("small"));
         go_into(&mut app, &rx, KeyCode::Right, &tmp.path().join("small"));
@@ -7337,7 +7334,7 @@ mod catalog {
 
     fn app_with_catalog(config: datui::config::AppConfig) -> (App, Receiver<AppEvent>, TempDir) {
         let mut config = config;
-        config.data.use_desktop_recents = false;
+        config.home.desktop_recents = false;
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new_with_config(
@@ -7429,7 +7426,7 @@ mod catalog {
         super::touch(tmp.path(), "events/year=2024/part-0.parquet");
         super::touch(tmp.path(), "events/year=2025/part-0.parquet");
         let mut config = datui::config::AppConfig::default();
-        config.data.directories = vec![tmp.path().to_string_lossy().into_owned()];
+        config.home.directories = vec![tmp.path().to_string_lossy().into_owned()];
         let (mut app, rx, _cache) = app_with_catalog(config);
         let data = tmp.path().join("data");
         let events = tmp.path().join("events");
@@ -7538,9 +7535,9 @@ mod frecency {
             );
         }
         let mut config = datui::config::AppConfig::default();
-        config.data.directories = vec![dir.to_string_lossy().into_owned()];
-        config.data.use_desktop_recents = false;
-        config.data.hide_sources = vec!["public".to_string()];
+        config.home.directories = vec![dir.to_string_lossy().into_owned()];
+        config.home.desktop_recents = false;
+        config.home.hide = vec!["public".to_string()];
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new_with_config(
@@ -7787,9 +7784,9 @@ mod path_prompt {
     #[test]
     fn a_bucket_completes_from_what_is_known() {
         let mut config = datui::config::AppConfig::default();
-        config.data.hide_sources = Vec::new();
+        config.home.hide = Vec::new();
         let (tx, _rx) = std::sync::mpsc::channel();
-        config.data.use_desktop_recents = false;
+        config.home.desktop_recents = false;
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
         let mut app = App::new_with_config(
             tx,

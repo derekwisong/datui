@@ -201,7 +201,7 @@ pub struct InstanceIdentity {
 }
 
 pub fn instance_identity(config: &CloudConfig, env: &Environment<'_>) -> InstanceIdentity {
-    let opted_in = config.instance_identity == Some(true);
+    let opted_in = config.instance_identity;
     let set = |key: &str| (env.var)(key).is_some_and(|v| !v.trim().is_empty());
     InstanceIdentity {
         aws: opted_in,
@@ -1115,7 +1115,7 @@ pub async fn list_objects(
                 && crate::azure::is_permission_mismatch(&refusal)
                 && resolved.azure.identity.is_some() =>
         {
-            let enabled = config.azure_account_keys != Some(false);
+            let enabled = config.use_azure_account_keys;
             let keyed = {
                 let (resolved, refusal) = (resolved.clone(), refusal.clone());
                 tokio::task::spawn_blocking(move || {
@@ -2709,15 +2709,6 @@ mod tests {
             detect(&config, &env)[0].label,
             "S3-compatible (localhost:9000)"
         );
-        // A blank flag says nothing either.
-        let options = crate::OpenOptions {
-            s3_endpoint_url_override: Some(String::new()),
-            ..crate::OpenOptions::default()
-        };
-        assert_eq!(
-            options.effective_cloud(&file).s3_endpoint_url.as_deref(),
-            Some("http://localhost:9000")
-        );
     }
 
     #[test]
@@ -2886,16 +2877,15 @@ mod tests {
     fn the_listing_honours_the_endpoint_override() {
         // The bug this guards against: the section title named the override's host
         // while `ListBuckets` went to AWS. Listing must see the same merged endpoint
-        // the open path uses, with the CLI/environment override beating the config.
+        // the open path uses, with the environment's beating the config.
         let config = CloudConfig {
             s3_endpoint_url: Some("http://localhost:9000/".to_string()),
             ..CloudConfig::default()
         };
-        let options = crate::OpenOptions {
-            s3_endpoint_url_override: Some("http://127.0.0.1:9101".to_string()),
-            ..crate::OpenOptions::default()
-        };
-        let effective = options.effective_cloud(&config);
+        let mut effective = config.clone();
+        effective.overlay(CloudConfig::from_env(&|name| {
+            (name == "AWS_ENDPOINT_URL").then(|| "http://127.0.0.1:9101".to_string())
+        }));
         assert_eq!(
             s3_list_buckets_url(&S3Settings::from_config(&effective)),
             "http://127.0.0.1:9101/"
@@ -2907,7 +2897,8 @@ mod tests {
         assert_eq!(found[0].label, "S3-compatible (127.0.0.1:9101)");
 
         // Without an override the config file's endpoint stands.
-        let effective = crate::OpenOptions::default().effective_cloud(&config);
+        let mut effective = config.clone();
+        effective.overlay(CloudConfig::from_env(&|_| None));
         assert_eq!(
             s3_list_buckets_url(&S3Settings::from_config(&effective)),
             "http://localhost:9000/"
@@ -2921,13 +2912,13 @@ mod tests {
             s3_region: Some("eu-west-1".to_string()),
             ..CloudConfig::default()
         };
-        let options = crate::OpenOptions {
-            s3_access_key_id_override: Some("from-cli".to_string()),
-            s3_secret_access_key_override: Some("secret".to_string()),
-            ..crate::OpenOptions::default()
-        };
-        let effective = options.effective_cloud(&config);
-        assert_eq!(effective.s3_access_key_id.as_deref(), Some("from-cli"));
+        let mut effective = config.clone();
+        effective.overlay(CloudConfig::from_env(&|name| match name {
+            "AWS_ACCESS_KEY_ID" => Some("from-env".to_string()),
+            "AWS_SECRET_ACCESS_KEY" => Some("secret".to_string()),
+            _ => None,
+        }));
+        assert_eq!(effective.s3_access_key_id.as_deref(), Some("from-env"));
         assert_eq!(effective.s3_secret_access_key.as_deref(), Some("secret"));
         assert_eq!(effective.s3_region.as_deref(), Some("eu-west-1"));
     }

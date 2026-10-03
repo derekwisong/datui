@@ -35,6 +35,19 @@ pub struct Settings {
 /// Read the settings: the configuration (unless one was given), the command line over
 /// it, `[cloud] env_files`, the log.
 pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Settings> {
+    // `--log-level`, then `-c log.level`, then `DATUI_LOG`; the files' `log.level` is
+    // read below, under all three.
+    let log_level = match &input {
+        RunInput::Cli(args) | RunInput::Host(args, _) => args.log_level.clone().or_else(|| {
+            args.config
+                .iter()
+                .rev()
+                .find(|o| o.key == "log.level")
+                .and_then(|o| o.value.as_str().map(str::to_string))
+        }),
+        _ => None,
+    }
+    .or_else(|| std::env::var("DATUI_LOG").ok());
     let config = match config {
         Some(config) => config,
         None => load_config(&input)?,
@@ -68,6 +81,18 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
             }
             (RunInput::Paths(paths, opts), config)
         }
+        RunInput::Host(args, frame) => {
+            let mut config = config;
+            apply_args(&mut config, &args);
+            let opts = OpenOptions::from_args_and_config(&args, &config);
+            match frame {
+                Some(lf) => (RunInput::LazyFrame(lf, opts), config),
+                None => {
+                    let paths = args.paths.into_iter().map(crate::stdin::as_file).collect();
+                    (RunInput::Paths(paths, opts), config)
+                }
+            }
+        }
         RunInput::Paths(paths, opts) => {
             let paths = paths.into_iter().map(crate::stdin::as_file).collect();
             (RunInput::Paths(paths, opts), config)
@@ -76,7 +101,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
     };
     let opts = match &input {
         RunInput::Paths(_, o) | RunInput::LazyFrame(_, o) => o.clone(),
-        RunInput::Cli(_) => unreachable!("resolved above"),
+        RunInput::Cli(_) | RunInput::Host(..) => unreachable!("resolved above"),
     };
     // The home screen has no `OpenOptions` of its own, so the CLI and environment S3
     // overrides are folded into the config here, once, for discovery, listing and
@@ -91,8 +116,8 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
 
     let cache_dir = crate::cache::CacheManager::new(APP_NAME).ok();
     notes.extend(logging::init(&logging::LogSettings::resolve(
-        config.debug.log_file.as_deref(),
-        std::env::var("DATUI_LOG").ok().as_deref(),
+        config.log.file.as_deref(),
+        log_level.as_deref().or(config.log.level.as_deref()),
         cache_dir.as_ref().map(|c| c.cache_dir()),
     )));
     for secret in [
@@ -134,7 +159,11 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
 /// The configuration file, read. From the command line its error says how to get
 /// past it; a library caller gets the error as it is.
 pub(crate) fn load_config(input: &RunInput) -> Result<AppConfig> {
-    AppConfig::load(APP_NAME).map_err(|e| match input {
+    let overrides = match input {
+        RunInput::Cli(args) | RunInput::Host(args, _) => args.config.as_slice(),
+        _ => &[],
+    };
+    AppConfig::load_with(APP_NAME, overrides).map_err(|e| match input {
         // In full: a TOML parse error's later lines show the offending line and why.
         RunInput::Cli(_) => color_eyre::eyre::eyre!(
             "{e}\nFix the configuration and try again, or remove/rename the config file to \
@@ -145,14 +174,20 @@ pub(crate) fn load_config(input: &RunInput) -> Result<AppConfig> {
 }
 
 /// `input` with a leading `~` expanded in the paths its command line names: the
-/// datasets, `--spec` and `--temp-dir`. `--log-file` expands with `[debug] log_file`.
+/// datasets, `--format FILE`, `--dict` and `--temp-dir`. `--log-file` expands with
+/// `[log] file`.
 pub(crate) fn expand_home(input: RunInput) -> RunInput {
     match input {
         RunInput::Cli(mut args) => {
+            let spec = match args.format.as_mut() {
+                Some(crate::cli::FormatChoice::File(path)) => Some(path),
+                _ => None,
+            };
             for path in args
                 .paths
                 .iter_mut()
-                .chain(args.spec.as_mut())
+                .chain(spec)
+                .chain(args.dict.iter_mut())
                 .chain(args.temp_dir.as_mut())
             {
                 *path = crate::config::expand_home(path);
@@ -163,35 +198,31 @@ pub(crate) fn expand_home(input: RunInput) -> RunInput {
     }
 }
 
-/// The command line's display flags, over the configuration.
+/// The command line's flags that set config keys, over the configuration (which
+/// `-c` is already in). The open's own flags go to `OpenOptions`.
 fn apply_args(config: &mut AppConfig, args: &Args) {
-    if let Some(cc) = args.column_colors {
-        config.display.column_colors = cc;
-    }
     if let Some(nf) = args.number_format.as_deref() {
         config.display.number_format = config.display.number_format.with_grouping_override(nf);
     }
-    if let Some(ar) = args.align_numeric_right {
-        config.display.align_numeric_right = ar;
+    if let Some(row_numbers) = args.row_numbers {
+        config.display.row_numbers = row_numbers;
     }
     if let Some(mouse) = args.mouse {
         config.display.mouse = mouse;
     }
     if let Some(rows) = args.sample_rows {
-        config.performance.analysis_sample_rows = rows;
-    }
-    if let Some(ps) = args.polars_streaming {
-        config.performance.polars_streaming = ps;
+        config.analysis.sample_rows = rows;
     }
     if let Some(path) = &args.log_file {
-        config.debug.log_file = Some(path.to_string_lossy().into_owned());
+        config.log.file = Some(path.to_string_lossy().into_owned());
     }
 }
 
 /// The paths `input` names, if any.
 pub(crate) fn named_paths(input: &RunInput) -> &[PathBuf] {
     match input {
-        RunInput::Cli(args) => &args.paths,
+        RunInput::Cli(args) | RunInput::Host(args, None) => &args.paths,
+        RunInput::Host(_, Some(_)) => &[],
         RunInput::Paths(paths, _) => paths,
         RunInput::LazyFrame(..) => &[],
     }
@@ -249,6 +280,57 @@ mod tests {
         assert!(!after(&[], false));
     }
 
+    /// A key is read from the file, `-c` beats the file, and a flag beats `-c`.
+    #[test]
+    fn a_flag_beats_dash_c_which_beats_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(
+            &file,
+            "[analysis]\nsample_rows = 10\n[display]\nrow_numbers_start = 5\n",
+        )
+        .unwrap();
+        let effective = |flags: &[&str]| {
+            let args = Args::try_parse_from(std::iter::once("datui").chain(flags.iter().copied()))
+                .expect("parses");
+            let mut config = AppConfig::load_from_file_with(&file, &args.config).unwrap();
+            apply_args(&mut config, &args);
+            (
+                config.analysis.sample_rows,
+                config.display.row_numbers_start,
+            )
+        };
+        assert_eq!(effective(&[]), (10, 5));
+        assert_eq!(effective(&["-c", "analysis.sample_rows=20"]), (20, 5));
+        assert_eq!(
+            effective(&["-c", "analysis.sample_rows=20", "--sample-rows", "30"]),
+            (30, 5)
+        );
+        // The last `-c` of a key wins, and keys it does not name keep the file's.
+        assert_eq!(
+            effective(&[
+                "-c",
+                "display.row_numbers_start=0",
+                "-c",
+                "display.row_numbers_start=2"
+            ]),
+            (10, 2)
+        );
+    }
+
+    /// A `-c` value of the right shape for its key but not for datui says it came
+    /// from `-c`.
+    #[test]
+    fn a_dash_c_the_config_cannot_read_is_named() {
+        let args =
+            Args::try_parse_from(["datui", "-c", "display.number_format=[1, 2]"]).expect("parses");
+        let dir = tempfile::tempdir().unwrap();
+        let error = AppConfig::load_from_file_with(&dir.path().join("none.toml"), &args.config)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("-c:"), "{error}");
+    }
+
     #[test]
     fn the_command_line_s_paths_expand_a_leading_tilde() {
         let home = dirs::home_dir().expect("a home directory");
@@ -258,8 +340,10 @@ mod tests {
             "b.csv",
             "--temp-dir",
             "~/scratch",
-            "--spec",
+            "--format",
             "~/l2feed.toml",
+            "--dict",
+            "~/car.dbc",
         ])
         .unwrap();
         let RunInput::Cli(args) = expand_home(RunInput::Cli(Box::new(args))) else {
@@ -267,6 +351,10 @@ mod tests {
         };
         assert_eq!(args.paths, [home.join("a.csv"), PathBuf::from("b.csv")]);
         assert_eq!(args.temp_dir, Some(home.join("scratch")));
-        assert_eq!(args.spec, Some(home.join("l2feed.toml")));
+        assert_eq!(
+            args.format,
+            Some(crate::cli::FormatChoice::File(home.join("l2feed.toml")))
+        );
+        assert_eq!(args.dict, [home.join("car.dbc")]);
     }
 }

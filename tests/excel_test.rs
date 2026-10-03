@@ -138,14 +138,14 @@ fn selects_a_sheet_by_index_and_by_name() {
     let indexed = open_excel(
         "people.xlsx",
         OpenOptions {
-            excel_sheet: Some("0".to_string()),
+            table: Some("0".to_string()),
             ..Default::default()
         },
     );
     let named = open_excel(
         "people.xlsx",
         OpenOptions {
-            excel_sheet: Some("Sheet".to_string()),
+            table: Some("Sheet".to_string()),
             ..Default::default()
         },
     );
@@ -155,7 +155,7 @@ fn selects_a_sheet_by_index_and_by_name() {
     assert_eq!(indexed.height(), 1000);
 }
 
-/// A `--sheet` that misses says what it missed among: the sheets the file has, by
+/// A `--table` that misses says what it missed among: the sheets the file has, by
 /// index and name, so the remedy is in the message rather than in a second guess.
 #[test]
 fn a_bad_sheet_error_names_the_sheets_that_exist() {
@@ -163,7 +163,7 @@ fn a_bad_sheet_error_names_the_sheets_that_exist() {
     let path = PathBuf::from("tests/sample-data/people.xlsx");
     let from_excel = |sheet: &str| {
         let options = OpenOptions {
-            excel_sheet: Some(sheet.to_string()),
+            table: Some(sheet.to_string()),
             ..OpenOptions::default()
         };
         datui::widgets::datatable::DataTableState::from_excel(&path, &options)

@@ -9,7 +9,7 @@
 //! An HTTP server that sends the whole file where a range was asked for answers
 //! [`RangeError::NoRanges`], and the open downloads the file instead.
 //!
-//! [`fetch_small`] reads a small remote file whole the same ways: a `--spec` URL.
+//! [`fetch_small`] reads a small remote file whole the same ways: a `--format` URL.
 
 use std::path::Path;
 

@@ -57,6 +57,6 @@ Clipboard:
   over SSH; tmux needs set-clipboard on), "auto" (default) uses native
   where it works and osc52 elsewhere. A native copy belongs to datui, so
   quitting can drop it unless a clipboard manager holds copies. An osc52
-  copy over [clipboard] osc52_limit_kb is refused; a Table copy stops
+  copy over [clipboard] osc52_limit is refused; a Table copy stops
   reading at the limit, so it asks first only when the limit is over
   10 MiB.

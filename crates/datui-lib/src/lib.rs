@@ -67,7 +67,9 @@ pub mod cloud_env;
 mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
+pub mod commands;
 pub mod config;
+pub mod config_command;
 mod copy_keys;
 pub mod copy_modal;
 pub mod csv_dialect;
@@ -664,6 +666,10 @@ pub enum RunInput {
     /// The command line as parsed. The configuration is read, and the flags applied
     /// over it, behind the first frame ([`startup`]).
     Cli(Box<Args>),
+    /// A host program's options, as the command line would give them, with a frame
+    /// to show instead of its paths when there is one. Read as the command line is,
+    /// `-c` included, but standard input is the host's, never data.
+    Host(Box<Args>, Option<Box<LazyFrame>>),
     Paths(Vec<PathBuf>, OpenOptions),
     LazyFrame(Box<LazyFrame>, OpenOptions),
 }
@@ -971,7 +977,7 @@ pub struct App {
     /// the context: opened from home it returns there, launched straight onto
     /// a file it quits — the user's mental stack, not a mode.
     opened_from_home: bool,
-    /// `--template NAME`, waiting for the dataset from the command line to land.
+    /// `--view NAME`, waiting for the dataset from the command line to land.
     /// Taken on the first install, so datasets opened later are not re-dressed.
     startup_template: Option<String>,
     pub analysis_modal: AnalysisModal,
@@ -984,7 +990,7 @@ pub struct App {
     /// [`QUALITY_MEMORY_BUDGET`], smaller in a test that fills it.
     quality_memory_budget: usize,
     /// Local copies Data Quality's full scans read instead of a remote source, newest
-    /// first, within `performance.quality_local_copy_mb`. Removed from disk when
+    /// first, within `analysis.quality_local_copy`. Removed from disk when
     /// released, when the dataset is opened again or replaced, and at exit.
     quality_copies: Vec<RetainedCopy>,
     /// The dataset whose copy was released, so Setup says why Run fetches again.
@@ -1062,9 +1068,9 @@ pub struct App {
     /// `a` is waiting on the confirmation to read every row.
     pending_read_all: bool,
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
-    table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
+    table_cell_padding: u16, // Spaces between columns (from config.display.cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
-    /// Second header row of column types. Starts from `display.dtype_row`; `D` flips it.
+    /// Second header row of column types. Starts from `display.type_row`; `D` flips it.
     dtype_row: bool,
     // Resolved display-time number formatting. `enabled` is flipped by the F key.
     number_format: NumberFormatSettings,
@@ -1382,7 +1388,7 @@ impl App {
                 }
             })
             .collect::<Vec<_>>();
-        let streaming = self.app_config.performance.polars_streaming;
+        let streaming = self.app_config.performance.streaming;
         self.analysis_modal.computing = Some(AnalysisProgress::new("Reading the rows that repeat"));
         self.spawn_job(
             Job::SampleRows,
@@ -2351,12 +2357,9 @@ impl App {
         self.cache.cache_dir().join(crate::local_copy::COPIES_DIR)
     }
 
-    /// `performance.quality_local_copy_mb`, in bytes.
+    /// `analysis.quality_local_copy`, in bytes.
     fn quality_copy_limit(&self) -> u64 {
-        self.app_config
-            .performance
-            .quality_local_copy_mb
-            .saturating_mul(1024 * 1024)
+        self.app_config.analysis.quality_local_copy.bytes()
     }
 
     /// Bytes on disk in the copies kept.
@@ -2535,7 +2538,7 @@ impl App {
     /// file with `--table`.
     fn view_table(&self) -> Option<&str> {
         let (_, options) = self.opened.as_ref()?;
-        options.table.as_deref().or(options.spec_variant.as_deref())
+        options.table.as_deref()
     }
 
     /// Whether any leased background work, current or abandoned, has yet to report
@@ -2823,7 +2826,7 @@ impl App {
     ) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let (source, known_total) = Self::sample_source_for(state, &sample.scope);
-        let streaming = self.app_config.performance.polars_streaming;
+        let streaming = self.app_config.performance.streaming;
         // The rows Data Quality just measured, when they are the rows asked for: cut
         // from memory rather than drawn again from the files.
         let kept = self.kept_quality_sample(&sample).map(|kept| {
@@ -4628,7 +4631,7 @@ impl App {
                 Some(tail) => {
                     state.start_following(crate::follow::Follow::start(
                         tail.clone(),
-                        self.app_config.file_loading.follow_interval(),
+                        self.app_config.read.follow_interval.duration(),
                         self.events.clone(),
                         options.spool.clone(),
                     ));
@@ -4671,8 +4674,8 @@ impl App {
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
 
         // The dataset is installed and its schema known, so this is where a template
-        // meets it. `--template` names one and applies to this first open alone;
-        // `[templates] auto_apply` dresses every open that has a matching template.
+        // meets it. `--view` names one and applies to this first open alone;
+        // `[views] auto_apply` dresses every open that has a matching template.
         // A fresh dataset starts with no view applied: the previous file's view
         // must not wear the check mark here, nor count as applied when edited.
         self.active_template_id = None;
@@ -4684,7 +4687,7 @@ impl App {
                     (None, None)
                 }
             },
-            None if self.app_config.templates.auto_apply => self
+            None if self.app_config.views.auto_apply => self
                 .view_dataset()
                 .zip(self.data_table_state.as_ref())
                 .and_then(|(dataset, state)| {
@@ -5353,7 +5356,7 @@ impl App {
             footers_this_frame: None,
             listed_this_frame: None,
             home: home::HomeState {
-                hide_unreadable: !app_config.data.show_unreadable_files,
+                hide_unreadable: !app_config.home.show_unreadable,
                 formats: formats.clone(),
                 ..Default::default()
             },
@@ -5414,9 +5417,7 @@ impl App {
             template_modal: TemplateModal::new(),
             opened_from_home: false,
             startup_template: None,
-            analysis_modal: AnalysisModal::with_sample_rows(
-                app_config.performance.analysis_sample_rows,
-            ),
+            analysis_modal: AnalysisModal::with_sample_rows(app_config.analysis.sample_rows),
             quality_cache: Vec::new(),
             quality_samples: Vec::new(),
             quality_released: Vec::new(),
@@ -5462,18 +5463,18 @@ impl App {
             theme,
             pending_read_all: false,
             history_limit: app_config.query.history_limit,
-            table_cell_padding: app_config.display.table_cell_padding.cells(),
+            table_cell_padding: app_config.display.cell_padding.cells(),
             column_colors: app_config.display.column_colors,
-            dtype_row: app_config.display.dtype_row,
+            dtype_row: app_config.display.type_row,
             number_format: app_config
                 .display
                 .number_format
-                .resolve(app_config.display.align_numeric_right)
+                .resolve(app_config.display.right_align_numbers)
                 // AppConfig::load validates this, but App can be built from an
                 // unvalidated config (e.g. the Python API): fall back to no
                 // formatting while still honouring the alignment setting.
                 .unwrap_or_else(|_| NumberFormatSettings {
-                    align_numeric_right: app_config.display.align_numeric_right,
+                    align_numeric_right: app_config.display.right_align_numbers,
                     ..Default::default()
                 }),
             jobs,
@@ -5620,11 +5621,7 @@ impl App {
         entry: &discover::Entry,
         screen_height: u16,
     ) -> Option<Arc<crate::home_preview::PreviewRows>> {
-        let max = self
-            .app_config
-            .data
-            .preview_max_mb
-            .saturating_mul(1024 * 1024);
+        let max = self.app_config.home.preview_max.bytes();
         if !crate::home_preview::previewable(entry, max) {
             return None;
         }
@@ -5967,7 +5964,7 @@ impl App {
             return;
         }
         self.cloud_discovery_started = true;
-        let list = self.app_config.cloud.list_on_start == Some(true);
+        let list = self.app_config.cloud.list_on_start;
         self.list_cloud_sources(None, list);
     }
 
@@ -6181,7 +6178,7 @@ impl App {
         if self.home_search_inflight || self.home.search.done {
             return;
         }
-        let config = self.app_config.data.search.clone();
+        let config = self.app_config.home.search.clone();
         if !config.enabled {
             return;
         }
@@ -6281,7 +6278,7 @@ impl App {
 
         self.home.collections = home::collections(&self.app_config);
         let mut request = home::ListingRequest {
-            config_dirs: self.app_config.data.resolved_directories(),
+            config_dirs: self.app_config.home.resolved_directories(),
             // Filled in on the worker, from the cache and the desktop's recents: files
             // all the same, and the first frame does not wait on a file.
             remembered_dirs: Vec::new(),
@@ -6300,7 +6297,7 @@ impl App {
             formats: self.formats.clone(),
         };
         let read_folds = std::mem::take(&mut self.home.folds_owed);
-        let desktop = self.app_config.data.use_desktop_recents;
+        let desktop = self.app_config.home.desktop_recents;
         let cache = self.cache.clone();
 
         self.home.listing_in_flight = true;
@@ -6675,7 +6672,7 @@ impl App {
 
     fn configured_place_note(path: &Path) -> String {
         format!(
-            "{} is in [data] directories; edit the config to remove it",
+            "{} is in [home] directories; edit the config to remove it",
             home::display_path(path)
         )
     }
@@ -6698,7 +6695,7 @@ impl App {
         let key = self.place_key(&path);
         let configured = self
             .app_config
-            .data
+            .home
             .resolved_directories()
             .iter()
             .any(|dir| self.place_key(dir) == key);
@@ -8923,7 +8920,7 @@ impl App {
         }
     }
 
-    /// What the user is asked before files past `[file_loading] memory_warning_mb` are
+    /// What the user is asked before files past `[read] memory_warning` are
     /// read whole into memory: `big.json: JSON reads 2.1 GB into memory`.
     fn in_memory_confirmation_message(read: &loading::InMemory) -> String {
         let what = match read.files {
@@ -10670,7 +10667,7 @@ impl App {
         if format == FileFormat::Parquet {
             return Default::default();
         }
-        // Null values are the one setting the sample cannot mirror: `--null-value`
+        // Null values are the one setting the sample cannot mirror: `--null`
         // takes `COL=VAL` forms the reader resolves against the file it is opening, and
         // a sample that guessed would report a widening the table never did. They are
         // unset unless the user names them, so this stands down where it must and runs
@@ -11011,7 +11008,7 @@ impl App {
             let asked = crate::formats::Asked {
                 spec_file: options.spec_file.clone(),
                 spec_name: options.spec_name.clone(),
-                variant: options.spec_variant.clone(),
+                variant: options.table.clone(),
                 spec: options.spec_fetched.clone(),
                 builtin: options.format.is_some(),
                 compression: options.compression,
@@ -12521,8 +12518,8 @@ impl App {
                             datetime: &datetime_columns,
                             category: &category_columns,
                         },
-                        self.app_config.chart.row_limit,
-                        self.app_config.chart.grid,
+                        Some(self.app_config.analysis.chart_rows),
+                        self.app_config.analysis.chart_grid,
                         self.dataset_generation,
                     );
                     self.chart_cache.clear();
@@ -12759,7 +12756,7 @@ impl App {
             limit: self.chart_modal.row_limit,
             known_total: state.num_rows_if_valid(),
             seed: self.analysis_modal.sample.seed,
-            streaming: self.app_config.performance.polars_streaming,
+            streaming: self.app_config.performance.streaming,
             full_passes: !state.is_remote_source(),
             held: self.chart_cache.held_rows(dataset),
             cancel: Arc::default(),
@@ -12833,7 +12830,7 @@ impl App {
                 // the path is there to be a recent.
                 let mut request =
                     loading::OpenRequest::named(paths.clone(), options.clone(), &self.formats);
-                request.warn_in_memory_above = self.app_config.file_loading.memory_warning();
+                request.warn_in_memory_above = self.app_config.read.memory_warning();
                 self.begin_new_dataset();
                 let step = self.loading.open(request);
                 self.run_load_step(step)
@@ -13209,7 +13206,7 @@ impl App {
                 let comp = self.analysis_computation.take()?;
                 if comp.df.is_none() {
                     let sample = self.analysis_modal.sample.clone();
-                    let streaming = self.app_config.performance.polars_streaming;
+                    let streaming = self.app_config.performance.streaming;
                     self.spawn_job(
                         Job::Analysis(jobs::AnalysisRun::default()),
                         Some("Computing statistics..."),
@@ -13235,7 +13232,7 @@ impl App {
                 if let Some(state) = &self.data_table_state {
                     let (source, known_total) = self.sample_source(state);
                     let sample = self.analysis_modal.sample.clone();
-                    let streaming = self.app_config.performance.polars_streaming;
+                    let streaming = self.app_config.performance.streaming;
                     self.spawn_job(
                         Job::Analysis(jobs::AnalysisRun::default()),
                         Some("Analyzing distributions..."),
@@ -15979,7 +15976,8 @@ impl App {
         if self.clipboard.is_none() {
             let choice = clipboard::BackendChoice::parse(&self.app_config.clipboard.backend)
                 .unwrap_or_default();
-            let limit = self.app_config.clipboard.osc52_limit_kb * 1024;
+            let limit = usize::try_from(self.app_config.clipboard.osc52_limit.bytes())
+                .unwrap_or(usize::MAX);
             self.clipboard = Some(clipboard::destination(choice, limit)?);
         }
         Ok(self
@@ -16079,7 +16077,7 @@ impl App {
             value_counts::Read::Exact
         } else {
             value_counts::Read::Quick {
-                sample_rows: self.app_config.performance.analysis_sample_rows,
+                sample_rows: self.app_config.analysis.sample_rows,
                 seed: self.analysis_modal.sample.seed,
                 remote: state.is_remote_source(),
             }
@@ -16378,7 +16376,7 @@ impl App {
                     spec_name: Some(name),
                     spec_file: None,
                     spec_fetched: None,
-                    spec_variant: None,
+                    table: None,
                     format_read: None,
                     sqlite: None,
                     format: None,
@@ -18538,7 +18536,9 @@ fn run_impl(
         app.pass_stdout_to(out);
     }
     app.startup_template = opts.template.clone();
-    if opts.debug {
+    // A developer's overlay: an environment variable, not a flag.
+    let debug_env = std::env::var_os("DATUI_DEBUG").is_some_and(|v| !v.is_empty() && v != "0");
+    if opts.debug || debug_env {
         app.enable_debug();
     }
 
@@ -18562,7 +18562,9 @@ fn run_impl(
             app.set_loading_phase("Scanning input", 10);
             Some(AppEvent::OpenLazyFrame(lf, opts))
         }
-        RunInput::Cli(_) => unreachable!("read_settings resolves the command line"),
+        RunInput::Cli(_) | RunInput::Host(..) => {
+            unreachable!("read_settings resolves the command line")
+        }
     };
     // Declared before the pump, so it drops after it: the app's own files go with the
     // app, and this then removes what a worker was still writing.

@@ -37,8 +37,8 @@ pub(crate) mod stream;
 pub use stream::stream_messages;
 
 /// How often the watcher checks the file, or where it hears of changes (Linux) the least
-/// time between two reads, unless `[file_loading] follow_interval_ms` says otherwise. A
-/// burst of appends inside one interval is one refresh.
+/// time between two reads, unless `[read] follow_interval` says otherwise. A burst of
+/// appends inside one interval is one refresh.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Bytes read from the file per step while counting records.
@@ -91,7 +91,7 @@ pub fn refusal(format: Option<FileFormat>, options: &OpenOptions) -> Option<Stri
     }
     if options.header_rows().is_some() || options.skip_tail_rows.is_some() {
         return Some(
-            "A file read with --header-rows or --skip-tail-rows cannot be followed.".to_string(),
+            "A file read with --header-rows or --footer-rows cannot be followed.".to_string(),
         );
     }
     if options.spec_name.is_some() || options.spec_file.is_some() || options.delimited.is_some() {

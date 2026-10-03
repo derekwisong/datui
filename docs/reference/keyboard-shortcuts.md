@@ -39,7 +39,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>#</kbd> | Toggle row numbers |
 | <kbd>&lt;</kbd> <kbd>&gt;</kbd> | The column cursor's column 4 cells narrower or wider ([widths](../user-guide/filtering-sorting.md#column-widths)) |
 | <kbd>=</kbd> <kbd>w</kbd> | Fit the column cursor's column to the rows on screen; back to its automatic width |
-| <kbd>,</kbd> | Toggle [digit grouping](settings.md#number-formatting) (was <kbd>F</kbd>) |
+| <kbd>,</kbd> | Toggle [digit grouping](../user-guide/configuration.md#number-formatting) (was <kbd>F</kbd>) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
 | <kbd>t</kbd> | [Follow](../user-guide/loading-data.md#following-a-growing-file) a CSV, TSV, PSV or NDJSON file as it grows, reading it again as <kbd>H</kbd> does; while following, pause and resume |

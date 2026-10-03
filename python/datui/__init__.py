@@ -17,51 +17,12 @@ PathLike = str | Path
 DatuiOptions = datui._datui.DatuiOptions
 CompressionFormat = datui._datui.CompressionFormat
 
-# Keyword arguments accepted by view(..., **kwargs) and DatuiOptions; unknown kwargs raise TypeError.
-_DATUI_OPTIONS_KEYS = frozenset({
-    "delimiter",
-    "has_header",
-    "skip_lines",
-    "skip_rows",
-    "skip_tail_rows",
-    "compression",
-    "pages_lookahead",
-    "pages_lookback",
-    "max_buffered_rows",
-    "max_buffered_mb",
-    "row_numbers",
-    "row_start_index",
-    "hive",
-    "single_spine_schema",
-    "parse_dates",
-    "parse_strings",
-    "parse_strings_sample_rows",
-    "decompress_in_memory",
-    "temp_dir",
-    "excel_sheet",
-    "table",
-    "s3_endpoint_url",
-    "s3_access_key_id",
-    "s3_secret_access_key",
-    "s3_region",
-    "polars_streaming",
-    "workaround_pivot_date_index",
-    "null_values",
-    "comment_char",
-    "header_rows",
-    "header_join",
-    "skip_initial_space",
-    "debug",
-})
-
-
-def _normalize_delimiter(value: int | str) -> int:
-    """Convert delimiter to int 0-255 for Rust. Accepts single-char str or int."""
-    if isinstance(value, str):
-        if len(value) != 1:
-            raise ValueError("delimiter as str must be a single character")
-        return ord(value)
-    return int(value)
+# Keyword arguments view(..., **kwargs) and DatuiOptions take, from datui's option
+# registry: the open's own options (format, table, delimiter, ...), the config keys'
+# keywords (comment, row_numbers, infer_types, ...) and config, a dict of any config
+# key to its value. Unknown keywords raise TypeError.
+OPTION_NAMES = tuple(datui._datui.OPTION_NAMES)
+_DATUI_OPTIONS_KEYS = frozenset(OPTION_NAMES)
 
 
 def _merge_options(options: DatuiOptions | None, kwargs: dict) -> DatuiOptions | None:
@@ -73,13 +34,8 @@ def _merge_options(options: DatuiOptions | None, kwargs: dict) -> DatuiOptions |
     bad = set(kwargs) - _DATUI_OPTIONS_KEYS
     if bad:
         raise TypeError(f"invalid option(s) for view: {sorted(bad)}; valid: {sorted(_DATUI_OPTIONS_KEYS)}")
-    if options is not None:
-        base = dict(options._as_dict())
-        merged = {**base, **kwargs}
-    else:
-        merged = dict(kwargs)
-    if "delimiter" in merged:
-        merged["delimiter"] = _normalize_delimiter(merged["delimiter"])
+    merged = dict(options._as_dict()) if options is not None else {}
+    merged.update(kwargs)
     return datui._datui.DatuiOptions(**merged)
 
 
@@ -198,12 +154,12 @@ def view(
     are refused (RuntimeError); export from inside datui (press e) instead — that
     also remains the way to write rows out without capture.
 
-    Options (path-based viewing): delimiter, has_header, skip_lines, skip_rows, skip_tail_rows,
-    compression, null_values, comment_char, header_rows, header_join, skip_initial_space,
-    parse_strings (default: all CSV string columns; use False to
-    disable or a list of column names to limit), parse_strings_sample_rows, hive, debug,
-    etc. (see DatuiOptions). For frame-based viewing only display/buffer options apply.
-    Pass options as a DatuiOptions instance or as keyword arguments.
+    Options are datui.OPTION_NAMES: the open's own (format, table, delimiter,
+    no_header, header_rows, skip_rows, ...) and config keys' (comment, null_values,
+    infer_types, row_numbers, ...), each meaning what its flag or key means on the
+    command line; config={"display.row_numbers": True} sets any config key, as -c
+    does. Pass them as keywords or as a DatuiOptions instance. For a frame, only
+    display options apply.
 
     Args:
         data: Path(s), LazyFrame, or DataFrame.

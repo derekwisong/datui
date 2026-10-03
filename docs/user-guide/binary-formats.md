@@ -3,8 +3,8 @@
 ```bash
 datui day.l2                           # a spec on the search path matches it
 datui --format acme.l2feed capture.bin # read it as that spec
-datui --spec l2feed.toml capture.bin   # read it with this spec file
-datui --spec s3://team/l2feed.toml day.bin  # or a spec at a URL
+datui --format ./l2feed.toml capture.bin  # read it with this spec file
+datui --format s3://team/l2feed.toml day.bin  # or a spec at a URL
 datui formats                          # list the specs datui finds
 datui formats check acme.l2feed day.l2 # check a spec and print a file's first rows
 ```
@@ -184,7 +184,7 @@ variants share is one column, so it must be the same field in both. A record of
 a type no variant names shows as `?X` when its size is known
 (`length_prefixed`); otherwise the read stops there, with a note.
 
-`datui --variant add capture.bin` opens one variant as its own table: only its
+`datui --table add capture.bin` opens one variant as its own table: only its
 records and its columns.
 
 On the home screen, a file a spec's glob names that holds several variants
@@ -275,7 +275,7 @@ wins, as with `PATH`.
 |---|---|
 | `~/.config/datui/formats/` | Your own specs |
 | `$DATUI_FORMATS_PATH` | Directories separated by `:` (`;` on Windows), such as a checked-out repository of a team's specs |
-| `formats_path` in [config](../reference/settings.md#binary-formats) | More directories. Lists add up across imported config files |
+| `[formats] path` in [config](../reference/settings.md#formats) | More directories. Lists add up across imported config files |
 
 `datui formats` lists each spec, what it matches, the file it came from, any copy
 of the same name it overrides, and the files that could not be read, with the
@@ -293,7 +293,7 @@ a repository of specs can run it in CI.
 
 | First that applies | |
 |---|---|
-| `--spec FILE` | That spec, whatever the file is called. `FILE` may be an `http(s)://`, `s3://`, `gs://` or `az://` URL, fetched once as the open starts |
+| `--format FILE`: a path (it has a `/` or ends `.toml`), or an `http(s)://`, `s3://`, `gs://` or `az://` URL fetched once as the open starts | That spec, whatever the file is called |
 | `--format NAME` | The spec of that name |
 | A name datui already reads (`.csv`, `.parquet`) | Read as it is, as before, unless a [delimited spec](#delimited-text) matches a `.csv`, `.tsv` or `.psv` |
 | A `glob` matches | That spec |
@@ -339,14 +339,16 @@ header:
 
 A spec of `kind = "delimited"` holds the [CSV options](loading-data.md#csv-options)
 for such a family of files, so they open with no flags: from the command line,
-from the home screen, compressed, or as a directory.
+from the home screen, compressed, or as a directory. It is a `[csv]` block of
+the [config](../reference/settings.md#csv), with the same keys, plus `match`,
+`kind`, the layout keys and `[columns]`.
 
 ```toml
 name = "acme.instrument-log"
 kind = "delimited"
 match = { magic = "#device_info" }       # or glob = ["**/logs/log_*.csv"]
 
-comment_char = "#"
+comment = "#"
 skip_initial_space = true
 header_rows = { name = 3, unit = 2 }     # a list, such as [3] or [3, 2], also works
 metadata_line = 1
@@ -359,19 +361,19 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
 |---|---|
 | `kind` | `delimited`. Default `binary` |
 | `match` | `glob` and `magic`, as for binary specs. `magic` compares the start of the first line |
-| `delimiter` | One character, such as `";"` or `"\t"`. Default `,`, or the one the file's name implies |
-| `comment_char` | Lines that start with it are skipped wherever they are |
+| `delimiter` | One character, `"tab"`, `"\t"` or a code such as `"0x1f"`, as `--delimiter` takes. Default `,`, or the one the file's name implies |
+| `comment` | Lines that start with it are skipped wherever they are |
 | `skip_initial_space` | `true`: ignore the spaces after a delimiter |
 | `header_rows` | `{ name = N, unit = M }`: the line that names the columns and the line that gives their units. `name` may be a list of lines, joined with `header_join` (default a space). A number or a list is `name` alone. A header line is never data |
 | `header_join` | What joins the pieces of a name from several lines |
 | `metadata_line` | A line of `key="value"` or `key=value` pairs, separated by commas, for the Info panel. It must not be data: above the last header line, within `skip_lines`, or a comment line |
-| `null_value` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
+| `null_values` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
 | `skip_lines` | Lines to pass over before the header |
 | `[columns]` | Derived columns, below |
 
 Lines count from 1 at the top of the file. Each option the spec sets replaces
 the config's; a flag typed on the command line (`--delimiter`,
-`--comment-char`, `--skip-initial-space`, `--header-rows`, `--skip-lines`)
+`--comment`, `--skip-initial-space`, `--header-rows`, `--skip-lines`)
 wins over the spec. The options the spec does not set keep theirs.
 `datui --delimiter 44 formats check SPEC FILE` reads the file as an open with
 those flags would, and names the flags that override the spec. The header lines
@@ -423,7 +425,7 @@ without its derived columns.
 | A header count larger than the file | The whole records open, with a note |
 | A record whose length or type cannot be read | The records before it open; a note says where the rest was left out |
 | `checksum` in `[records]` | A `checksum_ok` column, true or false for each record, rather than an error |
-| `--spec` or `--format NAME` on an `s3://`, `gs://` or Azure path | Refused: specs read local files, so download it first |
+| `--format` with a spec on an `s3://`, `gs://` or Azure path | Refused: specs read local files, so download it first |
 
 ```toml
 checksum = { algo = "crc16-ccitt", field = "crc", from = "len", to = "crc" }
@@ -480,7 +482,7 @@ file opens. That pass keeps where each record starts (5 bytes a record, up to
 records again, and a file opened again with the same spec is not walked again.
 Scrolling to the last row of a gigabyte file reads only the rows shown. A sort,
 filter, query, chart or analysis reads every row of the columns it uses, a batch
-at a time on the streaming engine (`[performance] polars_streaming`, on by
+at a time on the streaming engine (`[performance] streaming`, on by
 default).
 A table holds at most 4,294,967,295 rows; records past that are not shown, and
 the dataset's notes say so.

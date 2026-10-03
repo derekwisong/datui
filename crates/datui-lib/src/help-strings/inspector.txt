@@ -88,7 +88,7 @@ Copy:
   view, other bytes as base64, a null as empty. Y copies the row as JSON;
   fields not read are left out and the message counts them. Both use the
   same clipboard as the copy dialog (y at the table). A value over the
-  osc52 limit ([clipboard] osc52_limit_kb) is refused.
+  osc52 limit ([clipboard] osc52_limit) is refused.
 
 Open:
   o writes the value to a read-only temporary file named for its kind

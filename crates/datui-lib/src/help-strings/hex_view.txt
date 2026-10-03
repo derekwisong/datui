@@ -29,7 +29,7 @@ Finding:
 
 Rows:
   r:                Bytes per row, so that records line up; empty goes back
-                    to as many as fit. --record-size N sets it on the
+                    to as many as fit. --hex-width N sets it on the
                     command line
   #:                Offsets in decimal or hex
 

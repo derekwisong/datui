@@ -3,7 +3,7 @@
 //!
 //! | Frictionless | Here | Done by |
 //! |---|---|---|
-//! | `commentChar` | `--comment-char` | Polars' `comment_prefix`, before the header and in the data |
+//! | `commentChar` | `--comment` | Polars' `comment_prefix`, before the header and in the data |
 //! | `headerRows`, `headerJoin` | `--header-rows`, `header_join` | [`header_names`] reads those lines; Polars reads the rest without a header |
 //! | `skipInitialSpace` | `--skip-initial-space` | [`skip_initial_space`], lazy expressions over the text columns |
 //!

@@ -21,7 +21,7 @@ The prompt stays open until the query's first rows are in. A query that fails
 on the data is not applied: the reason shows under it, the table keeps what it
 showed, and the query is still there to fix.
 
-To open on another mode, set it in the [config](../reference/settings.md#query-views-debug):
+To open on another mode, set it in the [config](../reference/settings.md#query):
 
 ```toml
 [query]

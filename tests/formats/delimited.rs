@@ -11,7 +11,7 @@ name = "acme.instrument-log"
 kind = "delimited"
 match = { magic = "#device_info" }
 
-comment_char = "#"
+comment = "#"
 skip_initial_space = true
 header_rows = { name = 3, unit = 2 }
 metadata_line = 1
@@ -55,7 +55,7 @@ fn screen(app: &mut App) -> String {
     rendered_text(&buffer)
 }
 
-/// Opened as `datui FILE` opens it: text columns typed (`--parse-strings`).
+/// Opened as `datui FILE` opens it: text columns typed (`--infer-types`).
 fn open(app: &mut App, rx: &mpsc::Receiver<AppEvent>, path: PathBuf, options: OpenOptions) {
     let options = OpenOptions {
         parse_strings: Some(datui::ParseStringsTarget::All),
@@ -386,7 +386,7 @@ kind = "delimited"
 match = { magic = "#semi" }
 
 delimiter = ";"
-comment_char = "#"
+comment = "#"
 "##;
 
 /// A flag typed on the command line wins over the spec's option; one only in the

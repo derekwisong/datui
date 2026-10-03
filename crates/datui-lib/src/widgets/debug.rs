@@ -14,7 +14,7 @@ pub struct DebugState {
     /// Last action taken (e.g. "scroll_left") for debugging key handling.
     pub last_action: String,
     pub enabled: bool,
-    /// Snapshot of main help flag at render time (set by App when enabled). Used by --debug to verify help state.
+    /// Snapshot of main help flag at render time (set by App when enabled). Used by the debug overlay (DATUI_DEBUG=1) to verify help state.
     pub show_help_at_render: bool,
     /// Schema load path taken by the open's schema phase (one-file vs full scan); set when loading Parquet.
     pub schema_load: Option<String>,

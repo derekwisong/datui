@@ -8,6 +8,8 @@ use std::path::Path;
 
 mod formats;
 pub use formats::*;
+pub mod settings;
+pub mod units;
 
 /// Compression format for data files
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -99,7 +101,11 @@ pub fn examples() -> Vec<Example> {
     out
 }
 
-/// Command-line arguments for datui
+/// Command-line arguments for datui.
+///
+/// A flag exists when one invocation needs it: what to open, how to read this file,
+/// what to do at start. Everything else is config, set for one run with `-c`. A flag
+/// that sets a config key takes its help from the option registry.
 #[derive(Clone, Parser, Debug)]
 #[command(
     name = "datui",
@@ -109,281 +115,215 @@ pub fn examples() -> Vec<Example> {
     after_help = EXAMPLES
 )]
 pub struct Args {
-    /// Path(s) to the data file(s) to open.
-    /// Multiple files of the same format are concatenated into one table.
-    /// `-` reads data piped to standard input, as does no PATH when something is piped in.
-    /// With no PATH and nothing piped in, datui opens its home screen so you can pick a dataset.
+    /// Files, directories, globs or URLs to open; files of one shape are one table. - reads standard input, as does no PATH when data is piped in. No PATH opens the home screen
     #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
-    /// Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file or Arrow IPC stream, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops
-    #[arg(short = 'f', long = "follow", action, help_heading = "Reading")]
+    #[arg(short = 'F', long = "format", value_name = "FMT", value_parser = parse_format, help = format_help(), help_heading = "Open")]
+    pub format: Option<FormatChoice>,
+
+    #[arg(short = 't', long = "table", value_name = "NAME", help = table_help(), help_heading = "Open")]
+    pub table: Option<String>,
+
+    /// Read a glob as one partitioned table, or force partition columns on a directory whose layout does not say so. Ignored for a single file
+    #[arg(long = "hive", action, help_heading = "Open")]
+    pub hive: bool,
+
+    /// Compression, when the extension does not say: gzip, zstd, bzip2 or xz
+    #[arg(
+        long = "compression",
+        value_name = "C",
+        value_enum,
+        hide_possible_values = true,
+        help_heading = "Open"
+    )]
+    pub compression: Option<CompressionFormat>,
+
+    /// A dictionary to decode with, over those on the format search path: a FIX dictionary (QuickFIX .xml) or a DBC file (.dbc), or TOML with kind = "fix" or "dbc". Repeatable
+    #[arg(long = "dict", value_name = "FILE", help_heading = "Open")]
+    pub dict: Vec<std::path::PathBuf>,
+
+    /// Follow the file as it grows, as tail -f does: a local CSV, TSV, PSV or NDJSON file or Arrow IPC stream, or standard input (-). t pauses and resumes; Esc stops
+    #[arg(short = 'f', long = "follow", action, help_heading = "Open")]
     pub follow: bool,
 
-    /// Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends. With -, pass it on to standard output, as tee does, and draw on the terminal
-    #[arg(long = "tee", value_name = "FILE", help_heading = "Reading")]
+    /// Record standard input to FILE while viewing it, byte for byte. A WAV file's sizes are filled in when the stream ends. With -, pass it on to standard output, as tee does, and draw on the terminal
+    #[arg(long = "tee", value_name = "FILE", help_heading = "Open")]
     pub tee: Option<std::path::PathBuf>,
 
     /// With --tee: leave FILE exactly as the bytes came, a WAV header's sizes included
-    #[arg(long = "tee-raw", requires = "tee", action, help_heading = "Reading")]
+    #[arg(long = "tee-raw", requires = "tee", action, help_heading = "Open")]
     pub tee_raw: bool,
 
-    /// Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows
-    #[arg(long = "skip-lines", value_name = "N", help_heading = "Reading")]
-    pub skip_lines: Option<usize>,
+    /// With --tee: replace FILE if it is there
+    #[arg(long = "force", action, requires = "tee", help_heading = "Open")]
+    pub force: bool,
 
-    /// Skip this many CSV rows at the start of the file; the header is read after them. Quote-aware: a row with embedded newlines counts once. Compare --skip-lines
-    #[arg(long = "skip-rows", value_name = "N", help_heading = "Reading")]
-    pub skip_rows: Option<usize>,
+    /// Open in the hex view, whatever the file holds
+    #[arg(long = "hex", action, help_heading = "Open")]
+    pub hex: bool,
 
-    /// Skip this many rows at the end of the file, such as a vendor footer or trailing garbage. Needs the row count first, which reads the whole file; on a directory in a bucket, every file
-    #[arg(long = "skip-tail-rows", value_name = "N", help_heading = "Reading")]
-    pub skip_tail_rows: Option<usize>,
+    /// Bytes a row of the hex view holds, so records line up (default: 8, 16, 32 or 64, as many as fit)
+    #[arg(long = "hex-width", value_name = "N", value_parser = clap::value_parser!(u16).range(1..=4096), help_heading = "Open")]
+    pub hex_width: Option<u16>,
 
-    /// Lines that start with this are comments and are skipped, before the header and among the data; the header is the first line that is not one. Frictionless `commentChar`
-    #[arg(
-        long = "comment-char",
-        value_name = "C",
-        value_parser = parse_comment_char,
-        help_heading = "CSV and delimited text"
-    )]
-    pub comment_char: Option<String>,
+    /// Apply a saved view by name once the data is on screen
+    #[arg(long = "view", value_name = "NAME", help_heading = "Open")]
+    pub view: Option<String>,
 
-    /// The line, or comma-separated lines, that hold the header, counted from 1 at the top of the file before anything is skipped. Several are joined per column with [file_loading] header_join (default a space); the data starts after the last. Frictionless `headerRows`
+    #[arg(long = "temp-dir", value_name = "DIR", help = settings::flag_help("temp-dir"), help_heading = "Open")]
+    pub temp_dir: Option<std::path::PathBuf>,
+
+    /// Column separator: one character, tab, \t or a code such as 0x1f (default: , for .csv, tab for .tsv, | for .psv)
+    #[arg(long = "delimiter", value_name = "C", value_parser = parse_delimiter, help_heading = "Delimited text")]
+    pub delimiter: Option<u8>,
+
+    /// Read the first row as data; columns are named column_1, column_2, ...
+    #[arg(long = "no-header", action, help_heading = "Delimited text")]
+    pub no_header: bool,
+
+    /// The line, or comma-separated lines, holding the header, counted from 1 before anything is skipped. Several are joined per column ([csv] header_join); the data starts after the last
     #[arg(
         long = "header-rows",
         value_name = "N[,M...]",
         value_delimiter = ',',
         value_parser = clap::value_parser!(u64).range(1..),
-        help_heading = "CSV and delimited text"
+        help_heading = "Delimited text"
     )]
     pub header_rows: Vec<u64>,
 
-    /// Ignore the spaces after a delimiter, so padded numbers read as numbers and a cell of spaces is null. Frictionless `skipInitialSpace`
-    #[arg(long = "skip-initial-space", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
+    /// Skip this many rows at the end, such as a footer. Reads the whole file to count rows
+    #[arg(
+        long = "footer-rows",
+        value_name = "N",
+        help_heading = "Delimited text"
+    )]
+    pub footer_rows: Option<usize>,
+
+    /// Skip this many rows at the start; the header is read after them. Quote-aware, unlike --skip-lines
+    #[arg(long = "skip-rows", value_name = "N", help_heading = "Delimited text")]
+    pub skip_rows: Option<usize>,
+
+    /// Skip this many raw lines at the start, split on newlines alone: a newline inside quotes counts
+    #[arg(long = "skip-lines", value_name = "N", help_heading = "Delimited text")]
+    pub skip_lines: Option<usize>,
+
+    #[arg(long = "comment", value_name = "PREFIX", value_parser = parse_comment_char, help = settings::flag_help("comment"), help_heading = "Delimited text")]
+    pub comment: Option<String>,
+
+    #[arg(long = "skip-initial-space", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = settings::parse_bool, help = settings::flag_help("skip-initial-space"), help_heading = "Delimited text")]
     pub skip_initial_space: Option<bool>,
 
-    /// Read the first row as data, not column names; columns are named column_1, column_2, …
-    #[arg(long = "no-header", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
-    pub no_header: Option<bool>,
+    #[arg(long = "null", value_name = "VAL", help = settings::flag_help("null"), help_heading = "Delimited text")]
+    pub null: Vec<String>,
 
-    /// Column separator for a delimited text file, as an ASCII code (9 for tab). Default: `,` for .csv, tab for .tsv, `|` for .psv
-    #[arg(
-        long = "delimiter",
-        value_name = "CODE",
-        help_heading = "CSV and delimited text"
-    )]
-    pub delimiter: Option<u8>,
+    #[arg(long = "infer-types", value_name = "COLS|off", num_args = 0..=1, require_equals = true, default_missing_value = "all", value_parser = parse_infer_types, help = settings::flag_help("infer-types"), help_heading = "Delimited text")]
+    pub infer_types: Option<InferTypes>,
 
-    /// Number of rows to use when inferring CSV schema (default: 1000). Larger values reduce the risk of a wrong type (e.g. int then N/A)
-    #[arg(
-        long = "infer-schema-length",
-        value_name = "N",
-        help_heading = "CSV and delimited text"
-    )]
-    pub infer_schema_length: Option<usize>,
+    #[arg(long = "infer-rows", value_name = "N", help = settings::flag_help("infer-rows"), help_heading = "Delimited text")]
+    pub infer_rows: Option<usize>,
 
-    /// When reading CSV, ignore parse errors and continue with the next batch (default: false)
-    #[arg(long = "ignore-errors", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
+    #[arg(long = "ignore-errors", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = settings::parse_bool, help = settings::flag_help("ignore-errors"), help_heading = "Delimited text")]
     pub ignore_errors: Option<bool>,
 
-    /// Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount=
-    #[arg(
-        long = "null-value",
-        value_name = "VAL",
-        help_heading = "CSV and delimited text"
-    )]
-    pub null_value: Vec<String>,
+    #[arg(long = "row-numbers", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = settings::parse_bool, help = settings::flag_help("row-numbers"), help_heading = "Display")]
+    pub row_numbers: Option<bool>,
 
-    /// Compression format, when the extension does not say (default: auto-detected from the extension)
-    #[arg(long = "compression", value_enum, help_heading = "Reading")]
-    pub compression: Option<CompressionFormat>,
-
-    #[arg(long = "format", value_name = "FORMAT", value_parser = parse_format, help = format_help(), help_heading = "Reading")]
-    pub format: Option<FormatChoice>,
-
-    /// Read the file (or directory of column files) through this binary format spec, whatever else matches it. FILE may be an http(s), s3, gs or az URL; a spec is at most 1 MiB
-    #[arg(long = "spec", value_name = "FILE", help_heading = "Reading")]
-    pub spec: Option<std::path::PathBuf>,
-
-    /// Decode a candump log's frames with this DBC file too, over those on the format search path: a .dbc file, or TOML with kind = "dbc"
-    #[arg(long = "dbc", value_name = "FILE", help_heading = "Reading")]
-    pub dbc: Option<std::path::PathBuf>,
-
-    /// Read a FIX log with this dictionary too, over the built-in one and those on the format search path: a QuickFIX XML data dictionary, or TOML with kind = "fix"
-    #[arg(long = "fix-dict", value_name = "FILE", help_heading = "Reading")]
-    pub fix_dict: Option<std::path::PathBuf>,
-    /// Read one variant of a binary format spec's records alone, as its own table: only its records, and only its columns
-    #[arg(long = "variant", value_name = "NAME", help_heading = "Reading")]
-    pub variant: Option<String>,
-    /// Show the file's bytes in the hex view, whatever it holds. A local file no reader and no spec takes opens there anyway
-    #[arg(long = "hex", action, help_heading = "Reading")]
-    pub hex: bool,
-
-    /// Bytes a row of the hex view holds, so that records line up (default: 8, 16, 32 or 64, as many as fit)
-    #[arg(long = "record-size", value_name = "N", value_parser = clap::value_parser!(u16).range(1..=4096), help_heading = "Reading")]
-    pub record_size: Option<u16>,
-
-    /// Enable debug mode to show operational information
-    #[arg(long = "debug", action)]
-    pub debug: bool,
-
-    /// Write the log here (default: [debug] log_file, or datui.log in the cache directory). DATUI_LOG sets the level: error, warn (default), info, debug or off
-    #[arg(long = "log-file", value_name = "PATH")]
-    pub log_file: Option<std::path::PathBuf>,
-
-    /// Read this as one partitioned table. Not needed for a directory, which datui reads the way Enter reads its row; use it for a glob, or to force partition columns on a layout that does not say so itself. Ignored for a single file
-    #[arg(long = "hive", action, help_heading = "Reading")]
-    pub hive: bool,
-
-    /// Combine Parquet file schemas from their footers (default: true). Set to false to use Polars' single-file schema inference
-    #[arg(long = "single-spine-schema", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Reading")]
-    pub single_spine_schema: Option<bool>,
-
-    /// Parse CSV and JSON string columns that look like dates or ISO 8601 timestamps (e.g. 2024-01-31, 2024-01-31T10:00:00Z) as Date or Datetime (default: true)
-    #[arg(long = "parse-dates", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "CSV and delimited text")]
-    pub parse_dates: Option<bool>,
-
-    /// Trim whitespace and parse CSV string columns as date, datetime, time, duration, int, or float (default: all string columns). --parse-strings=COL (repeatable) limits it to named columns; --no-parse-strings disables it
-    #[arg(long = "parse-strings", value_name = "COL", num_args = 0.., require_equals = true, default_missing_value = "", help_heading = "CSV and delimited text")]
-    pub parse_strings: Vec<String>,
-
-    /// Do not trim or type-infer CSV string columns. Overrides config and --parse-strings
-    #[arg(
-        long = "no-parse-strings",
-        action,
-        help_heading = "CSV and delimited text"
-    )]
-    pub no_parse_strings: bool,
-
-    /// Decompress into memory (default: decompress to a temp file and scan lazily)
-    #[arg(long = "decompress-in-memory", value_name = "BOOL", require_equals = true, default_missing_value = "true", num_args = 0..=1, value_parser = clap::value_parser!(bool), help_heading = "Reading")]
-    pub decompress_in_memory: Option<bool>,
-
-    /// Directory for decompression temp files (default: system temp, e.g. TMPDIR)
-    #[arg(long = "temp-dir", value_name = "DIR", help_heading = "Reading")]
-    pub temp_dir: Option<std::path::PathBuf>,
-
-    /// Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales")
-    #[arg(long = "sheet", value_name = "SHEET", help_heading = "Reading")]
-    pub excel_sheet: Option<String>,
-
-    #[arg(long = "table", value_name = "TABLE", help = table_help(), help_heading = "Reading")]
-    pub table: Option<String>,
-    /// Show integer audio samples as float in [-1, 1] (default: the integers as stored)
-    #[arg(long = "normalize", help_heading = "Reading")]
-    pub normalize: bool,
-
-    /// Forget every recently opened dataset and exit; other caches are kept
-    #[arg(long = "clear-recents", action, help_heading = "Maintenance")]
-    pub clear_recents: bool,
-
-    /// Clear all cache data and exit
-    #[arg(long = "clear-cache", action, help_heading = "Maintenance")]
-    pub clear_cache: bool,
-
-    /// Apply a saved view by name when starting the application
-    #[arg(long = "template", value_name = "NAME")]
-    pub template: Option<String>,
-
-    /// Remove all saved views and exit
-    #[arg(long = "remove-templates", action, help_heading = "Maintenance")]
-    pub remove_templates: bool,
-
-    /// Rows an analysis samples from a larger table, spread across all of it (default: [performance] analysis_sample_rows, 100000). 0 reads every row
-    #[arg(long = "sample-rows", value_name = "N", help_heading = "Performance")]
-    pub sample_rows: Option<usize>,
-
-    /// Use the Polars streaming engine where available (default: true)
-    #[arg(long = "polars-streaming", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Performance")]
-    pub polars_streaming: Option<bool>,
-
-    /// No effect since Polars 0.55: the pivot crash with a Date/Datetime index it worked around is gone. Kept so existing invocations still parse
-    #[arg(long = "workaround-pivot-date-index", value_name = "BOOL", value_parser = clap::value_parser!(bool), hide = true)]
-    pub workaround_pivot_date_index: Option<bool>,
-
-    /// Pages to buffer ahead of the visible area (default: 3). More is smoother scrolling, more memory
-    #[arg(
-        long = "pages-lookahead",
-        value_name = "N",
-        help_heading = "Performance"
-    )]
-    pub pages_lookahead: Option<usize>,
-
-    /// Pages to buffer behind the visible area (default: 3). More is smoother scrolling, more memory
-    #[arg(
-        long = "pages-lookback",
-        value_name = "N",
-        help_heading = "Performance"
-    )]
-    pub pages_lookback: Option<usize>,
-
-    /// Show row numbers on the left side of the table. Press N to toggle while running
-    #[arg(long = "row-numbers", action, help_heading = "Display")]
-    pub row_numbers: bool,
-
-    /// Starting index for row numbers (default: 1)
-    #[arg(long = "row-start-index", value_name = "N", help_heading = "Display")]
-    pub row_start_index: Option<usize>,
-
-    /// Color table cells by column type (default: true)
-    #[arg(long = "column-colors", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
-    pub column_colors: Option<bool>,
-
-    /// Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press , to toggle while running
-    #[arg(long = "number-format", value_name = "FORMAT", value_parser = clap::builder::PossibleValuesParser::new(NUMBER_FORMAT_VALUES), help_heading = "Display")]
+    #[arg(long = "number-format", value_name = "F", value_parser = clap::builder::PossibleValuesParser::new(NUMBER_FORMAT_VALUES), hide_possible_values = true, help = settings::flag_help("number-format"), help_heading = "Display")]
     pub number_format: Option<String>,
 
-    /// Right-align numeric columns and their headers (default: true)
-    #[arg(long = "align-numeric-right", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
-    pub align_numeric_right: Option<bool>,
-
-    /// Take the mouse: wheel scrolls, click selects (default: true). --mouse=false leaves it to the terminal
-    #[arg(long = "mouse", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
+    #[arg(long = "mouse", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = settings::parse_bool, help = settings::flag_help("mouse"), help_heading = "Display")]
     pub mouse: Option<bool>,
 
-    /// Write the default configuration to ~/.config/datui/config.toml and exit
-    #[arg(long = "generate-config", action, help_heading = "Maintenance")]
-    pub generate_config: bool,
+    #[arg(long = "sample-rows", value_name = "N", help = settings::flag_help("sample-rows"), help_heading = "Display")]
+    pub sample_rows: Option<usize>,
 
-    /// Overwrite an existing file: the config file with --generate-config, or FILE with --tee
-    #[arg(long = "force", action, help_heading = "Maintenance")]
-    pub force: bool,
-
-    /// S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000
-    #[arg(long = "s3-endpoint-url", value_name = "URL", help_heading = "Cloud")]
-    pub s3_endpoint_url: Option<String>,
-
-    /// S3 access key (overrides config and AWS_ACCESS_KEY_ID)
-    #[arg(long = "s3-access-key-id", value_name = "KEY", help_heading = "Cloud")]
-    pub s3_access_key_id: Option<String>,
-
-    /// S3 secret key (overrides config and AWS_SECRET_ACCESS_KEY)
+    /// Set a config key for this run, as in the file: -c display.row_numbers=true. Repeatable; a flag of the key's own still wins. `datui config keys` lists them
     #[arg(
-        long = "s3-secret-access-key",
-        value_name = "SECRET",
-        help_heading = "Cloud"
+        short = 'c',
+        long = "config",
+        value_name = "KEY=VALUE",
+        global = true,
+        help_heading = "Config"
     )]
-    pub s3_secret_access_key: Option<String>,
+    pub config: Vec<settings::Override>,
 
-    /// S3 region (overrides config and AWS_REGION). Example: us-east-1
-    #[arg(long = "s3-region", value_name = "REGION", help_heading = "Cloud")]
-    pub s3_region: Option<String>,
+    #[arg(long = "log-file", value_name = "PATH", help = settings::flag_help("log-file"), help_heading = "Logging")]
+    pub log_file: Option<std::path::PathBuf>,
 
-    /// Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Entries in [[cloud.connections]] always appear
-    #[arg(long = "cloud-discover", value_name = "WHICH", value_parser = parse_cloud_discover, help_heading = "Cloud")]
-    pub cloud_discover: Option<String>,
+    #[arg(long = "log-level", value_name = "LEVEL", value_parser = clap::builder::PossibleValuesParser::new(LOG_LEVELS), hide_possible_values = true, help = settings::flag_help("log-level"), help_heading = "Logging")]
+    pub log_level: Option<String>,
 
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
-/// What `--format` names: a format datui reads, or a binary format spec.
+/// The levels `--log-level` and `DATUI_LOG` take.
+pub const LOG_LEVELS: &[&str] = &["error", "warn", "info", "debug", "trace", "off"];
+
+/// What `--infer-types` asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InferTypes {
+    /// Every string column.
+    All,
+    Off,
+    Columns(Vec<String>),
+}
+
+/// `--infer-types`: all (the bare flag), `off`, or columns separated by commas.
+fn parse_infer_types(text: &str) -> Result<InferTypes, String> {
+    match text.trim() {
+        "" | "all" | "true" => Ok(InferTypes::All),
+        "off" | "false" | "none" => Ok(InferTypes::Off),
+        cols => {
+            let mut columns: Vec<String> = Vec::new();
+            for col in cols.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+                if !columns.iter().any(|c| c == col) {
+                    columns.push(col.to_string());
+                }
+            }
+            Ok(InferTypes::Columns(columns))
+        }
+    }
+}
+
+/// A delimiter as people write it: `;`, `tab`, `\t`, or a byte code such as `0x1f`.
+pub fn parse_delimiter(text: &str) -> Result<u8, String> {
+    let byte = match text {
+        "tab" | "\\t" | "\t" => b'\t',
+        "space" => b' ',
+        _ => {
+            if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+                u8::from_str_radix(hex, 16)
+                    .map_err(|_| format!("\"{text}\" is not a byte code such as 0x1f"))?
+            } else {
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) if c.is_ascii() => c as u8,
+                    _ => {
+                        return Err(format!(
+                            "\"{text}\" is not one ASCII character, tab, \\t, or a code such as 0x1f"
+                        ));
+                    }
+                }
+            }
+        }
+    };
+    if matches!(byte, b'\n' | b'\r' | b'"') {
+        return Err(format!("{byte:#04x} cannot separate columns"));
+    }
+    Ok(byte)
+}
+
+/// What `--format` names: a format datui reads, a format spec on the search path, or
+/// a spec's file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatChoice {
     Builtin(FileFormat),
     /// A spec on the search path, by its namespaced name.
     Spec(String),
+    /// A spec's file: `./acme.toml`.
+    File(std::path::PathBuf),
 }
 
 impl FormatChoice {
@@ -391,7 +331,7 @@ impl FormatChoice {
     pub fn builtin(&self) -> Option<FileFormat> {
         match self {
             Self::Builtin(format) => Some(*format),
-            Self::Spec(_) => None,
+            Self::Spec(_) | Self::File(_) => None,
         }
     }
 
@@ -401,7 +341,7 @@ impl FormatChoice {
     pub fn read_mode(&self, stored: Stored) -> Option<ReadMode> {
         match self {
             Self::Builtin(format) => format.read_mode(stored),
-            Self::Spec(_) => match stored {
+            Self::Spec(_) | Self::File(_) => match stored {
                 Stored::Plain => Some(ReadMode::Lazy),
                 Stored::Compressed { .. } => Some(ReadMode::Converted),
                 Stored::Stream => None,
@@ -414,7 +354,7 @@ impl FormatChoice {
     pub fn bucket_object(&self, stored: Stored) -> RemoteRead {
         match self {
             Self::Builtin(format) => format.bucket_object(stored),
-            Self::Spec(_) => RemoteRead::Downloaded,
+            Self::Spec(_) | Self::File(_) => RemoteRead::Downloaded,
         }
     }
 
@@ -422,7 +362,7 @@ impl FormatChoice {
     pub fn http_file(&self) -> RemoteRead {
         match self {
             Self::Builtin(format) => format.http_file(),
-            Self::Spec(_) => RemoteRead::Downloaded,
+            Self::Spec(_) | Self::File(_) => RemoteRead::Downloaded,
         }
     }
 
@@ -430,22 +370,37 @@ impl FormatChoice {
     pub fn bucket_prefix(&self, stored: Stored) -> Option<RemoteRead> {
         match self {
             Self::Builtin(format) => format.bucket_prefix(stored),
-            Self::Spec(_) => None,
+            Self::Spec(_) | Self::File(_) => None,
         }
     }
 
     /// The spec's name, when a spec was named.
     pub fn spec(&self) -> Option<&str> {
         match self {
-            Self::Builtin(_) => None,
             Self::Spec(name) => Some(name),
+            Self::Builtin(_) | Self::File(_) => None,
+        }
+    }
+
+    /// The spec's file, when a file was named.
+    pub fn spec_file(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::File(path) => Some(path),
+            Self::Builtin(_) | Self::Spec(_) => None,
         }
     }
 }
 
-/// A built-in format's name, or a spec's: namespaced (`acme.l2feed`), so one can never
-/// be taken for the other.
+/// A built-in format's name, a spec's (namespaced, `acme.l2feed`, so one is never
+/// taken for the other), or a spec's file: a path only if it has a `/` or ends
+/// `.toml`, so `./acme` names a file and `acme.l2feed` a spec.
 fn parse_format(text: &str) -> Result<FormatChoice, String> {
+    let is_path = text.contains('/')
+        || (cfg!(windows) && text.contains('\\'))
+        || text.to_ascii_lowercase().ends_with(".toml");
+    if is_path {
+        return Ok(FormatChoice::File(std::path::PathBuf::from(text)));
+    }
     if let Some(format) = FileFormat::from_name(&text.to_ascii_lowercase()) {
         return Ok(FormatChoice::Builtin(format));
     }
@@ -459,8 +414,13 @@ fn parse_format(text: &str) -> Result<FormatChoice, String> {
         return Ok(FormatChoice::Spec(text.to_string()));
     }
     let names: Vec<&str> = FileFormat::ALL.iter().map(|f| f.name()).collect();
+    let file = if std::path::Path::new(text).is_file() {
+        format!(" A spec file in this directory needs ./ in front: --format ./{text}.")
+    } else {
+        String::new()
+    };
     Err(format!(
-        "\"{text}\" is not a format: {}, or a spec name such as acme.l2feed (`datui formats` lists them)",
+        "\"{text}\" is not a format: {}, a spec name such as acme.l2feed (`datui formats` lists them), or a spec file such as ./acme.toml.{file}",
         names.join(", ")
     ))
 }
@@ -468,11 +428,78 @@ fn parse_format(text: &str) -> Result<FormatChoice, String> {
 /// Commands besides opening data.
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
-    /// List the binary format specs and FIX dictionaries on the search path: each one's name, what it matches, the file it came from, and the copies it overrides
+    /// List the format specs and dictionaries (FIX, DBC) on the search path: each one's name, what it matches, its file, and the copies it overrides
     Formats {
         #[command(subcommand)]
         action: Option<FormatsAction>,
     },
+    /// Write the default config file, list the files read, or list every key
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Clear the cache: recents, history, schemas and copies
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+    /// List or remove saved views
+    Views {
+        #[command(subcommand)]
+        action: ViewsAction,
+    },
+    /// Print the shell completion script for SHELL
+    Completions {
+        #[arg(value_name = "SHELL")]
+        shell: clap_complete::Shell,
+    },
+}
+
+/// What `datui config` does.
+#[derive(Clone, Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Write the default config file, every key commented out at its default
+    Init {
+        /// Replace a config file that is there
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print the config files read, lowest precedence first
+    Path,
+    /// List every key: its type, default, the value in effect and what set it
+    Keys,
+}
+
+/// The completion script for `shell`, built from `Args`, for `datui completions`.
+pub fn completions(shell: clap_complete::Shell) -> String {
+    let mut out = Vec::new();
+    clap_complete::generate(shell, &mut Args::command(), "datui", &mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// What `datui cache` does.
+#[derive(Clone, Debug, Subcommand)]
+pub enum CacheAction {
+    /// Delete the cache directory's contents, or with --recents only the recent datasets
+    Clear {
+        /// Forget the recently opened datasets and keep the rest
+        #[arg(long)]
+        recents: bool,
+    },
+}
+
+/// What `datui views` does.
+#[derive(Clone, Debug, Subcommand)]
+pub enum ViewsAction {
+    /// List the saved views: name, what files they match, when last used
+    List,
+    /// Remove one saved view by name
+    Rm {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Remove every saved view
+    Clear,
 }
 
 /// What `datui formats` does besides listing.
@@ -489,28 +516,8 @@ pub enum FormatsAction {
     },
 }
 
-/// `all`, `none`, or kinds from `s3`, `gcs` and `azure` separated by commas. The same
-/// words `[cloud] discover` takes, checked here so a typo stops at the command line.
-fn parse_cloud_discover(text: &str) -> Result<String, String> {
-    const KINDS: [&str; 3] = ["s3", "gcs", "azure"];
-    let text = text.trim().to_ascii_lowercase();
-    if text == "all" || text == "none" {
-        return Ok(text);
-    }
-    for kind in text.split(',') {
-        if !KINDS.contains(&kind.trim()) {
-            return Err(format!(
-                "\"{}\" is not all, none, or a kind: {}",
-                kind.trim(),
-                KINDS.join(", ")
-            ));
-        }
-    }
-    Ok(text)
-}
-
 /// Why `c` cannot mark comment lines, if it cannot: it must be something, and on one
-/// line. `--comment-char`, `[file_loading] comment_char` and the Python option share it.
+/// line. `--comment`, its config key and the Python option share it.
 pub fn check_comment_char(c: &str) -> Result<(), String> {
     if c.is_empty() {
         return Err("must not be empty".into());
@@ -692,42 +699,273 @@ mod tests {
         let args = Args::try_parse_from(["datui", "-", "--format", "jsonl"]).unwrap();
         assert_eq!(args.paths, vec![std::path::PathBuf::from("-")]);
         assert_eq!(args.format, Some(FormatChoice::Builtin(FileFormat::Jsonl)));
-        let args = Args::try_parse_from(["datui", "--delimiter", "59", "-"]).unwrap();
+        let args = Args::try_parse_from(["datui", "--delimiter", ";", "-"]).unwrap();
         assert_eq!(args.paths, vec![std::path::PathBuf::from("-")]);
         assert_eq!(args.delimiter, Some(b';'));
         assert!(EXAMPLES.contains("| datui"), "the help shows a pipe");
     }
 
-    /// `--format` takes a built-in format or a spec's namespaced name, and nothing else.
+    /// `--format` takes a built-in format, a spec's namespaced name, or a spec's file:
+    /// a path only with a `/` or a `.toml` ending.
     #[test]
-    fn a_format_is_built_in_or_a_spec_name() {
-        let args = Args::try_parse_from(["datui", "x.l2", "--format", "acme.l2feed"]).unwrap();
-        assert_eq!(args.format, Some(FormatChoice::Spec("acme.l2feed".into())));
-        let args = Args::try_parse_from(["datui", "x", "--format", "CSV"]).unwrap();
-        assert_eq!(args.format, Some(FormatChoice::Builtin(FileFormat::Csv)));
-        let refused = Args::try_parse_from(["datui", "x", "--format", "cvs"]).unwrap_err();
-        assert!(refused.to_string().contains("spec name"), "{refused}");
+    fn a_format_is_built_in_a_spec_name_or_a_spec_file() {
+        let format = |value: &str| {
+            Args::try_parse_from(["datui", "x", "--format", value])
+                .map(|a| a.format.unwrap())
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(
+            format("acme.l2feed"),
+            Ok(FormatChoice::Spec("acme.l2feed".into()))
+        );
+        assert_eq!(format("CSV"), Ok(FormatChoice::Builtin(FileFormat::Csv)));
+        assert_eq!(format("./acme"), Ok(FormatChoice::File("./acme".into())));
+        assert_eq!(
+            format("acme.toml"),
+            Ok(FormatChoice::File("acme.toml".into()))
+        );
+        assert_eq!(
+            format("specs/acme.TOML"),
+            Ok(FormatChoice::File("specs/acme.TOML".into()))
+        );
+        let refused = format("cvs").unwrap_err().to_string();
+        assert!(
+            refused.contains("spec name") && refused.contains("./acme.toml"),
+            "{refused}"
+        );
+        let args = Args::try_parse_from(["datui", "x", "-F", "parquet"]).unwrap();
+        assert_eq!(
+            args.format,
+            Some(FormatChoice::Builtin(FileFormat::Parquet))
+        );
     }
 
-    /// `datui formats` is a command; any other first word is still a path.
+    /// A flag whose value is optional takes it only after `=`, so the path after it
+    /// stays a path.
     #[test]
-    fn formats_is_a_command_and_paths_stay_paths() {
-        let args = Args::try_parse_from(["datui", "formats"]).unwrap();
+    fn an_optional_value_needs_equals() {
+        let args = Args::try_parse_from(["datui", "--infer-types", "data.csv"]).unwrap();
+        assert_eq!(args.infer_types, Some(InferTypes::All));
+        assert_eq!(args.paths, vec![std::path::PathBuf::from("data.csv")]);
+        let args = Args::try_parse_from(["datui", "--infer-types=off", "d.csv"]).unwrap();
+        assert_eq!(args.infer_types, Some(InferTypes::Off));
+        let args = Args::try_parse_from(["datui", "--infer-types=a, b,a", "d.csv"]).unwrap();
+        assert_eq!(
+            args.infer_types,
+            Some(InferTypes::Columns(vec!["a".into(), "b".into()]))
+        );
+        for flag in [
+            "--row-numbers",
+            "--mouse",
+            "--skip-initial-space",
+            "--ignore-errors",
+        ] {
+            let args = Args::try_parse_from(["datui", flag, "data.csv"]).unwrap();
+            assert_eq!(
+                args.paths,
+                vec![std::path::PathBuf::from("data.csv")],
+                "{flag}"
+            );
+            let off = Args::try_parse_from(["datui", &format!("{flag}=false"), "d.csv"]).unwrap();
+            assert_eq!(off.paths.len(), 1, "{flag}");
+        }
+        let args = Args::try_parse_from(["datui", "--mouse=false"]).unwrap();
+        assert_eq!(args.mouse, Some(false));
+        let args = Args::try_parse_from(["datui", "--row-numbers"]).unwrap();
+        assert_eq!(args.row_numbers, Some(true));
+    }
+
+    #[test]
+    fn a_delimiter_is_written_as_people_write_it() {
+        for (text, byte) in [
+            (";", b';'),
+            ("tab", b'\t'),
+            ("\\t", b'\t'),
+            ("0x1f", 0x1f),
+            ("|", b'|'),
+        ] {
+            assert_eq!(parse_delimiter(text), Ok(byte), "{text}");
+        }
+        for refused in ["59", "ab", "é", "0xzz", "\""] {
+            assert!(parse_delimiter(refused).is_err(), "{refused}");
+        }
+    }
+
+    /// Every subcommand parses; any other first word is still a path.
+    #[test]
+    fn every_command_parses_and_paths_stay_paths() {
+        let command = |argv: &[&str]| Args::try_parse_from(argv).unwrap().command;
         assert!(matches!(
-            args.command,
+            command(&["datui", "formats"]),
             Some(Command::Formats { action: None })
         ));
-        let args = Args::try_parse_from(["datui", "formats", "check", "a.b", "f.bin"]).unwrap();
         let Some(Command::Formats {
             action: Some(FormatsAction::Check { spec, file }),
-        }) = args.command
+        }) = command(&["datui", "formats", "check", "a.b", "f.bin"])
         else {
             panic!("a check");
         };
         assert_eq!((spec.as_str(), file), ("a.b", Some("f.bin".into())));
-        let args = Args::try_parse_from(["datui", "data.csv", "--spec", "s.toml"]).unwrap();
+        assert!(matches!(
+            command(&["datui", "config", "init", "--force"]),
+            Some(Command::Config {
+                action: ConfigAction::Init { force: true }
+            })
+        ));
+        assert!(matches!(
+            command(&["datui", "config", "path"]),
+            Some(Command::Config {
+                action: ConfigAction::Path
+            })
+        ));
+        assert!(matches!(
+            command(&["datui", "config", "keys"]),
+            Some(Command::Config {
+                action: ConfigAction::Keys
+            })
+        ));
+        assert!(matches!(
+            command(&["datui", "cache", "clear"]),
+            Some(Command::Cache {
+                action: CacheAction::Clear { recents: false }
+            })
+        ));
+        assert!(matches!(
+            command(&["datui", "cache", "clear", "--recents"]),
+            Some(Command::Cache {
+                action: CacheAction::Clear { recents: true }
+            })
+        ));
+        assert!(matches!(
+            command(&["datui", "views", "list"]),
+            Some(Command::Views {
+                action: ViewsAction::List
+            })
+        ));
+        assert!(matches!(
+            command(&["datui", "views", "rm", "daily"]),
+            Some(Command::Views {
+                action: ViewsAction::Rm { name }
+            }) if name == "daily"
+        ));
+        assert!(matches!(
+            command(&["datui", "views", "clear"]),
+            Some(Command::Views {
+                action: ViewsAction::Clear
+            })
+        ));
+        let args = Args::try_parse_from(["datui", "data.csv", "--format", "./s.toml"]).unwrap();
         assert_eq!(args.paths, vec![std::path::PathBuf::from("data.csv")]);
         assert!(args.command.is_none());
+    }
+
+    /// Every shell's script names the commands and the flags.
+    #[test]
+    fn completions_cover_commands_and_flags() {
+        use clap::ValueEnum;
+        for shell in clap_complete::Shell::value_variants() {
+            let script = completions(*shell);
+            assert!(!script.is_empty(), "{shell}");
+            assert!(script.contains("config"), "{shell}: a subcommand");
+            assert!(script.contains("infer-types"), "{shell}: a flag");
+        }
+        let args = Args::try_parse_from(["datui", "completions", "fish"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Completions {
+                shell: clap_complete::Shell::Fish
+            })
+        ));
+        assert!(Args::try_parse_from(["datui", "completions", "tcsh"]).is_err());
+    }
+
+    /// Removed flags are gone, not hidden: the config key or command replaces each.
+    #[test]
+    fn removed_flags_are_refused() {
+        for flag in [
+            "--generate-config",
+            "--clear-cache",
+            "--clear-recents",
+            "--remove-templates",
+            "--s3-endpoint-url=x",
+            "--s3-region=x",
+            "--workaround-pivot-date-index=true",
+            "--debug",
+            "--sheet=x",
+            "--variant=x",
+            "--spec=x",
+            "--fix-dict=x",
+            "--dbc=x",
+            "--parse-dates",
+            "--parse-strings",
+            "--no-parse-strings",
+            "--polars-streaming",
+            "--pages-lookahead=3",
+            "--row-start-index=0",
+            "--column-colors",
+            "--align-numeric-right",
+            "--cloud-discover=all",
+            "--normalize",
+            "--single-spine-schema",
+            "--decompress-in-memory",
+            "--template=x",
+            "--skip-tail-rows=1",
+            "--comment-char=#",
+            "--infer-schema-length=9",
+            "--null-value=x",
+            "--record-size=4",
+        ] {
+            assert!(Args::try_parse_from(["datui", flag]).is_err(), "{flag}");
+        }
+    }
+
+    /// Python's keywords are the registry's: one name each, and each open option's
+    /// flag is a flag of `Args`.
+    #[test]
+    fn python_keywords_are_unique_and_open_options_are_flags() {
+        let cmd = Args::command();
+        let mut names: Vec<&str> = settings::OPEN.iter().map(|o| o.kwarg).collect();
+        names.extend(settings::SETTINGS.iter().filter_map(|s| s.kwarg));
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "a keyword names two options");
+        assert!(!names.contains(&"config"), "config is the dict of any key");
+        for open in settings::OPEN {
+            assert!(
+                cmd.get_arguments().any(|a| a.get_long() == Some(open.flag)),
+                "--{}",
+                open.flag
+            );
+        }
+    }
+
+    /// Each registered flag is a flag of `Args`, and its help is the key's doc; no flag
+    /// of `Args` claims a key the registry does not give it.
+    #[test]
+    fn registered_flags_are_args_and_share_the_doc() {
+        let cmd = Args::command();
+        for setting in settings::SETTINGS {
+            let Some(flag) = setting.flag else { continue };
+            let arg = cmd
+                .get_arguments()
+                .find(|a| a.get_long() == Some(flag))
+                .unwrap_or_else(|| {
+                    panic!("--{flag} is registered for {} but not an arg", setting.key)
+                });
+            let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
+            assert!(
+                help.contains(setting.doc) && help.contains(setting.key),
+                "--{flag}: {help}"
+            );
+        }
+        for arg in cmd.get_arguments() {
+            let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
+            if help.contains("[config: ") {
+                let flag = arg.get_long().unwrap_or_default();
+                assert!(settings::by_flag(flag).is_some(), "--{flag}");
+            }
+        }
     }
 
     #[test]

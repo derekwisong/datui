@@ -88,7 +88,7 @@ where
         return outcome;
     }
 
-    let deadline = Instant::now() + Duration::from_millis(config.time_budget_ms);
+    let deadline = Instant::now() + config.time_budget.duration();
     let skip = config.skipped_dirs();
     let extensions: Vec<String> = config
         .extensions

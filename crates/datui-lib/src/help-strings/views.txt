@@ -45,7 +45,7 @@ Save and edit form:
   renaming a view never overwrites what it carries.
 
 Matching:
-  V and [templates] auto_apply only apply a view one of whose rules fits
+  V and [views] auto_apply only apply a view one of whose rules fits
   the open file; this list shows every view, ranked. Matches combine, so a
   view fitting by relative path and exact schema outranks one fitting by
   exact path alone. A dataset whose columns merely include a view's scores

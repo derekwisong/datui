@@ -15,7 +15,7 @@
 pub mod dict;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error_display::FileError;
@@ -35,7 +35,7 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
     // The dictionaries are read before the file, so one that does not parse says so at
     // once.
     convert: Some(|input| {
-        let layers = layers(input.formats, input.options.fix_dict.as_deref())?;
+        let layers = layers(input.formats, &input.options.dicts)?;
         crate::text_formats::read_one(input, |pieces| {
             convert(input.display, input.options, layers, input.writer, pieces)
         })
@@ -990,17 +990,17 @@ pub fn detail(reader: &FixReader) -> Detail {
     }
 }
 
-/// The dictionaries a log is read with: the search path's, then `--fix-dict`.
-pub fn layers(registry: &crate::formats::Registry, fix_dict: Option<&Path>) -> Result<Layers> {
+/// The dictionaries a log is read with: the search path's, then each `--dict`.
+pub fn layers(registry: &crate::formats::Registry, dicts: &[PathBuf]) -> Result<Layers> {
     let mut custom: Vec<Arc<dict::Dictionary>> =
         registry.fix.iter().map(|f| f.dict.clone()).collect();
-    if let Some(path) = fix_dict {
+    for path in dicts {
         match dict::Dictionary::load(path) {
             Ok(Some(d)) => custom.push(Arc::new(d)),
             Ok(None) => {
                 return Err(FileError::new(
                     path,
-                    "not a FIX dictionary. --fix-dict takes a QuickFIX XML file, or TOML with kind = \"fix\".",
+                    "not a FIX dictionary. --dict takes a QuickFIX XML file, or TOML with kind = \"fix\".",
                 )
                 .into());
             }
@@ -1067,13 +1067,13 @@ mod tests {
         );
         let dir = tempfile::tempdir().unwrap();
         for (name, text, says) in [
-            ("plain.toml", "a = 1\n", "--fix-dict takes"),
+            ("plain.toml", "a = 1\n", "--dict takes"),
             ("broken.xml", "<fix><fields><field", "Line "),
         ] {
             let dict = dir.path().join(name);
             std::fs::write(&dict, text).unwrap();
             let options = OpenOptions {
-                fix_dict: Some(dict.clone()),
+                dicts: vec![dict.clone()],
                 ..Default::default()
             };
             let message = opening(

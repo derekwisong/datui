@@ -208,7 +208,7 @@ fn a_view_saved_on_one_table_fits_that_table_of_the_file_alone() {
     );
 
     // Applied on open, the view says which it is and why.
-    app.app_config.templates.auto_apply = true;
+    app.app_config.views.auto_apply = true;
     open_with(&mut app, &rx, &tx, by_flag("orders"));
     assert!(app.active_template_id.is_some(), "the view is applied");
     assert_eq!(
@@ -270,7 +270,7 @@ fn a_frame_from_python_matches_views_by_its_columns() {
     );
 
     // And auto-apply dresses a frame as it opens.
-    app.app_config.templates.auto_apply = true;
+    app.app_config.views.auto_apply = true;
     open_with(&mut app, &rx, &tx, frame(3));
     assert!(app.active_template_id.is_some(), "applied on open");
     let state = app.data_table_state.as_ref().unwrap();

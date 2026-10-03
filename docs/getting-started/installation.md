@@ -96,6 +96,19 @@ cargo build --release --locked --no-default-features --features sql,streaming
 
 Public datasets lists only what the build can open.
 
+## Shell completions
+
+`datui completions SHELL` prints the completion script for the flags, commands
+and format names. Set it up once per shell:
+
+| Shell | Setup |
+|---|---|
+| bash | `source <(datui completions bash)` in `~/.bashrc` |
+| zsh | `source <(datui completions zsh)` in `~/.zshrc`, after `compinit` |
+| fish | `datui completions fish > ~/.config/fish/completions/datui.fish` |
+| PowerShell | `datui completions powershell \| Out-String \| Invoke-Expression` in your `$PROFILE` |
+| elvish | `eval (datui completions elvish \| slurp)` in `~/.config/elvish/rc.elv` |
+
 ## Windows
 
 ```powershell
@@ -104,7 +117,7 @@ winget install derekwisong.datui
 
 | | On Windows |
 |---|---|
-| Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Windows Terminal draws datui's glyphs; the classic console draws ASCII unless its code page is UTF-8 (`chcp 65001`). `[display] unicode` overrides either way ([Glyphs or ASCII](../reference/settings.md#glyphs-or-ascii)) |
+| Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Windows Terminal draws datui's glyphs; the classic console draws ASCII unless its code page is UTF-8 (`chcp 65001`). `[display] unicode` overrides either way ([Glyphs or ASCII](../user-guide/configuration.md#glyphs-or-ascii)) |
 | Config file | `%APPDATA%\datui\config.toml` |
 | Format specs | `%APPDATA%\datui\formats` ([Binary formats](../user-guide/binary-formats.md)) |
 | Cache and log | `%LOCALAPPDATA%\datui` |

@@ -77,4 +77,4 @@ default), held in one Parquet or IPC file, is
 read, and the header says `sample of`. <kbd>a</kbd> then counts every row. A
 view the sampler would have to read whole anyway, such as a directory of
 files or a CSV, is counted exactly from the start. The sample size is
-`[performance] analysis_sample_rows`; `0` always counts every row.
+`[analysis] sample_rows`; `0` always counts every row.

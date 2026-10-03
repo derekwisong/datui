@@ -9,19 +9,16 @@ lists of datasets, the built-in public datasets among them, are
 
 ```toml
 [cloud]
-s3_endpoint_url = "http://localhost:9000"   # MinIO, R2, Ceph and other S3-compatible stores
-s3_access_key_id = "..."
-s3_secret_access_key = "..."
-s3_region = "us-east-1"
-azure_account_keys = true                   # read Azure with the account key after a sign-in is refused for want of a data role
-env_files = [".env"]                        # read cloud variables from these files; off unless listed
-instance_identity = false                   # use the EC2, GCE or Azure VM's own identity
-discover = true                             # logins found on this machine: true, false, or ["s3", "gcs", "azure"]
-list_on_start = false                       # list every source's buckets at launch, not when entered
+use_azure_account_keys = true   # read Azure with the account key after a sign-in is refused for want of a data role
+env_files = [".env"]            # read cloud variables from these files; off unless listed
+instance_identity = false       # use the EC2, GCE or Azure VM's own identity
+discover = true                 # logins found on this machine: true, false, or ["s3", "gcs", "azure"]
+list_on_start = false           # list every source's buckets at launch, not when entered
 ```
 
-Environment variables override these, and command-line flags override both.
-See [Loading Data](../user-guide/loading-data.md#remote-data).
+An S3-compatible endpoint, its keys and region come from `AWS_*` variables or a
+named connection below, never from keys in this file. See
+[Loading Data](../user-guide/loading-data.md#remote-data).
 
 ## Connections
 
@@ -96,8 +93,8 @@ wins, and nothing is exported, so no program datui starts sees them. No `.env` f
 
 See [The Home Screen](../user-guide/home-screen.md) for
 [`discover`](../user-guide/cloud-browser.md#which-sources-appear) and
-[`list_on_start`](../user-guide/home-screen.md#loading). `--cloud-discover` overrides `discover`
-for one run.
+[`list_on_start`](../user-guide/home-screen.md#loading). `-c cloud.discover=none` overrides
+`discover` for one run.
 
 `instance_identity = true` lets datui ask the cloud VM it runs on for credentials:
 an EC2 instance role, a GCE service account, an Azure VM's managed identity. This is off by default because metadata requests can time out outside those VMs. Cloud Run and Cloud Functions, and
@@ -129,14 +126,13 @@ Listing a bucket does not guarantee permission to read every object inside it.
 
 To show only some kinds of login found on the machine, or none:
 
-| `[cloud] discover` | `--cloud-discover` | Shows |
+| `[cloud] discover` | `-c cloud.discover=` | Shows |
 |---|---|---|
 | unset, `true` or `"all"` | `all` | Every login found |
 | `false` or `"none"` | `none` | None |
-| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` whether its keys come from `[cloud] s3_*`, `--s3-*` or `AWS_*` |
+| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` its keys from `AWS_*` |
 
-`[[cloud.connections]]` entries appear whatever it says. The flag
-overrides the config for one run.
+`[[cloud.connections]]` entries appear whatever it says.
 
 A source in the config with the same name as one of these replaces it. The same
 server with the same key found in several places is one row; its note lists

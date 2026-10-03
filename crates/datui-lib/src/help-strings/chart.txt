@@ -20,7 +20,8 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap, Bar.
                     (group first with a query). Order by value or
                     label; bars that do not fit are counted
   g:                Grid on or off at the labeled ticks: XY, Histogram,
-                    Box Plot and KDE. [chart] grid sets where it starts
+                    Box Plot and KDE. [analysis] chart_grid sets
+                    where it starts
   x:                XY: the plot takes the keys, and a crosshair reads
                     out x and every series' value under the plot.
                     ← / → (h/l) step to the next point or column,

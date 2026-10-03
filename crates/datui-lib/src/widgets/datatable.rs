@@ -411,7 +411,6 @@ pub struct DataTableState {
     other_tables: Vec<String>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     polars_streaming: bool,
-    /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
     /// When true, `collect()` / `apply_transformations()` skip the blocking collect.
     /// The caller is responsible for triggering an async collect afterwards.
     defer_collect: bool,
@@ -1079,7 +1078,7 @@ impl CollectResult {
     }
 }
 
-/// Rows the display buffer may hold when `display.max_buffered_rows` is not set. Also
+/// Rows the display buffer may hold when `performance.max_buffered_rows` is not set. Also
 /// the window a remote scan buffers when the cap is switched off.
 pub const DEFAULT_MAX_BUFFERED_ROWS: usize = 100_000;
 
@@ -2648,7 +2647,7 @@ impl DataTableState {
     }
 
     /// Load a single Excel file (xls, xlsx, xlsm, xlsb) using calamine (eager read, then lazy).
-    /// Sheet is selected by 0-based index or name via `options.excel_sheet`.
+    /// Sheet is selected by 0-based index or name via `options.table` (`--table`).
     pub fn from_excel(path: &Path, options: &OpenOptions) -> Result<Self> {
         let mut workbook =
             open_workbook_auto(path).map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?;
@@ -2656,7 +2655,7 @@ impl DataTableState {
         if sheet_names.is_empty() {
             return Err(color_eyre::eyre::eyre!("Excel file has no worksheets"));
         }
-        // Named so a bad --sheet says what to ask for instead: "0 'Sales', 1 'Summary'".
+        // Named so a bad --table says what to ask for instead: "0 'Sales', 1 'Summary'".
         let sheets_on_offer = || {
             sheet_names
                 .iter()
@@ -2665,7 +2664,7 @@ impl DataTableState {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let range = if let Some(sheet_sel) = options.excel_sheet.as_deref() {
+        let range = if let Some(sheet_sel) = options.table.as_deref() {
             if let Ok(idx) = sheet_sel.parse::<usize>() {
                 workbook
                     .worksheet_range_at(idx)
@@ -4050,7 +4049,7 @@ impl DataTableState {
         ))
     }
 
-    /// The null values `--null-value` gives the column shown as `column`.
+    /// The null values `--null` gives the column shown as `column`.
     pub(crate) fn csv_null_values_for(options: &OpenOptions, column: &str) -> Vec<String> {
         let (global, per_column) =
             Self::parse_null_value_specs(options.null_values.as_deref().unwrap_or_default());
@@ -4275,7 +4274,7 @@ impl DataTableState {
             .copied()
     }
 
-    /// Apply trim and type inference to CSV string columns when --parse-strings is enabled.
+    /// Apply trim and type inference to CSV string columns when --infer-types is enabled.
     /// Samples up to `options.parse_strings_sample_rows` rows to infer types, then overlays lazy exprs (trim then cast) on the LazyFrame.
     fn apply_parse_strings_to_csv_lazyframe(
         lf: LazyFrame,
@@ -4767,7 +4766,7 @@ impl DataTableState {
     }
 
     /// A compressed file read as lines: decompressed once to a file in `--temp-dir`, or
-    /// into memory with `--decompress-in-memory`, then indexed.
+    /// into memory with `[read] decompress_in_memory`, then indexed.
     pub(crate) fn from_lines_decompressed(
         path: &Path,
         options: &OpenOptions,

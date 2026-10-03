@@ -116,7 +116,7 @@ fn a_schema_read_that_dies_is_not_asked_for_again() {
 #[test]
 fn a_search_whose_walk_dies_ends() {
     let (mut app, rx, _dir) = app();
-    app.app_config.data.search.enabled = true;
+    app.app_config.home.search.enabled = true;
     app.home.network_check = |_| false;
     dies_once(&mut app, |e| matches!(e, AppEvent::HomeSearchDone { .. }));
     app.spawn_home_search();

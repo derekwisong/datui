@@ -462,8 +462,9 @@ fields = [{ name = "px", type = "f8", offset = "header.px_off" }]
 ## Compressed files
 
 `day.l2.zst`, `.gz`, `.bz2` and `.xz` are decompressed to a temporary file before
-they are read. The glob matches the name without the compression suffix, and
-magic is read from the decompressed bytes.
+they are read: the loading screen says `Decompressing`, then `Reading records`,
+and Esc stops either. The glob matches the name without the compression suffix,
+and magic is read from the decompressed bytes.
 
 ## Large files
 
@@ -471,7 +472,9 @@ Read: [lazy, or converted once when compressed](loading-data.md#how-each-format-
 
 A file is memory-mapped, and only the columns and rows on screen are decoded.
 Records that are not all one size, and blocks, are indexed by one pass when the
-file opens.
+file opens. That pass keeps where each record starts (5 bytes a record, up to
+64M records), so a query reads every column from there rather than walking the
+records again, and a file opened again with the same spec is not walked again.
 Scrolling to the last row of a gigabyte file reads only the rows shown. A sort,
 filter, query, chart or analysis reads every row of the columns it uses, a batch
 at a time on the streaming engine (`[performance] polars_streaming`, on by

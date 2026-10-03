@@ -492,13 +492,25 @@ fn unquote(cell: &str) -> &str {
 }
 
 /// Whether `plan` is a scan of `path` and nothing else.
+/// Whether two spellings of a path name one file. Polars keeps its own spelling of a
+/// scan's path, which on Windows need not match ours character for character.
+fn same_file(a: &str, b: &str) -> bool {
+    if a == b || Path::new(a) == Path::new(b) {
+        return true;
+    }
+    matches!(
+        (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+        (Ok(a), Ok(b)) if a == b
+    )
+}
+
 fn scans(plan: &polars::lazy::dsl::DslPlan, path: &str) -> bool {
     use polars::lazy::dsl::DslPlan;
     match plan {
         DslPlan::Scan {
             sources: ScanSources::Paths(paths),
             ..
-        } => paths.len() == 1 && paths[0].as_str() == path,
+        } => paths.len() == 1 && same_file(paths[0].as_str(), path),
         DslPlan::IR { dsl, .. } => scans(dsl, path),
         _ => false,
     }

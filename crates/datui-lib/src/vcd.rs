@@ -720,18 +720,43 @@ fn group_u64(n: u64) -> String {
     crate::numfmt::group_chrome(usize::try_from(n).unwrap_or(usize::MAX))
 }
 
-/// A time in the file's timescale as text: `12,500 ns`, `40 ps`.
-fn time_text(ticks: i64, scale: Scale) -> String {
-    match scale {
-        Scale::Nanos(ns) => match ticks.checked_mul(ns) {
-            Some(ns) => format!("{} ns", group_u64(ns.unsigned_abs())),
-            None => format!("#{ticks}"),
-        },
-        Scale::Count { per_tick, unit } => match ticks.checked_mul(per_tick) {
-            Some(n) => format!("{} {unit}", group_u64(n.unsigned_abs())),
-            None => format!("#{ticks}"),
-        },
-    }
+/// The span from `first` to `last` ticks as text, in the coarsest unit both are whole
+/// numbers of: `0 to 800 s`, `5 to 12,500 ns`, `40 to 80 ps`.
+fn span_text(first: i64, last: i64, scale: Scale) -> String {
+    let (per, units): (i64, &[(&str, i64)]) = match scale {
+        Scale::Nanos(ns) => (
+            ns,
+            &[
+                ("s", 1_000_000_000),
+                ("ms", 1_000_000),
+                ("us", 1_000),
+                ("ns", 1),
+            ],
+        ),
+        Scale::Count { per_tick, unit } => (
+            per_tick,
+            if unit == "ps" {
+                &[("ps", 1)]
+            } else if unit == "fs" {
+                &[("fs", 1)]
+            } else {
+                &[("ticks", 1)]
+            },
+        ),
+    };
+    let (Some(a), Some(b)) = (first.checked_mul(per), last.checked_mul(per)) else {
+        return format!("#{first} to #{last}");
+    };
+    let (unit, div) = units
+        .iter()
+        .find(|(_, d)| a % d == 0 && b % d == 0)
+        .copied()
+        .unwrap_or(("ns", 1));
+    let show = |n: i64| {
+        let text = group_u64((n / div).unsigned_abs());
+        if n < 0 { format!("-{text}") } else { text }
+    };
+    format!("{} to {} {unit}", show(a), show(b))
 }
 
 /// The VCD tab of the Info panel: the header and the signals.
@@ -753,11 +778,7 @@ pub fn detail(reader: &VcdReader) -> Detail {
         (stats.first_time, stats.last_time, reader.scale())
     {
         body.push_str(&sep);
-        body.push_str(&format!(
-            "{} to {}",
-            time_text(first, scale),
-            time_text(last, scale)
-        ));
+        body.push_str(&span_text(first, last, scale));
     }
     lines.push(body);
     if let Some(date) = header.date.as_deref().filter(|d| !d.is_empty()) {
@@ -1012,10 +1033,19 @@ $enddefinitions $end
             detail.lines
         );
         assert!(detail.lines[0].contains("3 signals in 2 scopes"));
-        assert!(
-            detail.lines[1].contains("0 ns to 10 ns"),
-            "{:?}",
-            detail.lines
+        assert!(detail.lines[1].contains("0 to 10 ns"), "{:?}", detail.lines);
+        assert_eq!(span_text(0, 800, Scale::Nanos(1_000_000_000)), "0 to 800 s");
+        assert_eq!(span_text(5, 2_500, Scale::Nanos(1)), "5 to 2,500 ns");
+        assert_eq!(
+            span_text(
+                4,
+                8,
+                Scale::Count {
+                    per_tick: 10,
+                    unit: "ps"
+                }
+            ),
+            "40 to 80 ps"
         );
         assert_eq!(detail.list.len(), 3);
         assert_eq!(detail.list[1].0, "top.cpu.data[7:0]");

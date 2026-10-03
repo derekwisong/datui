@@ -21,6 +21,11 @@ use crate::segments::{Converted, Segments};
 use crate::text_formats::{Detail, Pieces, capped_list, count, note};
 use crate::unfinished::Writer;
 
+/// What datui does with a VCD dump: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    ..crate::readers::BASE
+};
+
 /// The longest token read; a longer one is passed over.
 pub const MAX_TOKEN: usize = 1 << 20;
 /// The most text kept of one header section (`$date`, `$version`, `$comment`).

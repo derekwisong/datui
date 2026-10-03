@@ -21,6 +21,11 @@ use crate::segments::{Converted, Segments};
 use crate::text_formats::{Detail, Pieces, capped_list, count, note};
 use crate::unfinished::Writer;
 
+/// What datui does with an SDF file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    ..crate::readers::BASE
+};
+
 /// The longest line kept; the rest of a longer one is cut off.
 pub const MAX_LINE: usize = 1 << 20;
 /// The longest value kept, its lines together; the rest is cut off.

@@ -144,6 +144,7 @@ pub mod sampling;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
 // hand-written and runs on whatever the user types, so it is fuzzed directly.
 pub mod query;
+mod readers;
 mod render;
 pub mod sanitize;
 mod scan;
@@ -226,35 +227,6 @@ pub const APP_NAME: &str = "datui";
 
 /// Re-export compression format and file format from CLI module
 pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored};
-
-/// Map FileFormat to ExportFormat for default export. Tsv/Psv map to Csv; Orc/Excel have no export variant.
-fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
-    match f {
-        FileFormat::Parquet => Some(ExportFormat::Parquet),
-        FileFormat::Csv | FileFormat::Tsv | FileFormat::Psv => Some(ExportFormat::Csv),
-        FileFormat::Json => Some(ExportFormat::Json),
-        FileFormat::Jsonl => Some(ExportFormat::Ndjson),
-        FileFormat::Arrow => Some(ExportFormat::Ipc),
-        FileFormat::Avro => Some(ExportFormat::Avro),
-        FileFormat::Orc
-        | FileFormat::Excel
-        | FileFormat::Safetensors
-        | FileFormat::Gguf
-        | FileFormat::Nmea
-        | FileFormat::Gpx
-        | FileFormat::Audio
-        | FileFormat::Midi
-        | FileFormat::Sqlite
-        | FileFormat::Vcd
-        | FileFormat::Fix
-        | FileFormat::Sdf
-        | FileFormat::Numpy
-        | FileFormat::Elf
-        | FileFormat::Ulog
-        | FileFormat::Dataflash
-        | FileFormat::Candump => None,
-    }
-}
 
 #[cfg(test)]
 mod text_input_flows;
@@ -7855,7 +7827,7 @@ impl App {
         options
             .format
             .or_else(|| FileFormat::from_path(path))
-            .and_then(file_format_to_export_format)
+            .and_then(crate::readers::export_default)
             .or_else(|| {
                 path.file_stem()
                     .and_then(|s| s.to_str())

@@ -18,6 +18,11 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::prelude::*;
 
+/// What datui does with a MIDI file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    ..crate::readers::BASE
+};
+
 /// The largest file read. MIDI files are kilobytes; a song with a dense controller
 /// stream is a few megabytes.
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;

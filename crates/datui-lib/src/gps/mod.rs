@@ -34,6 +34,12 @@ use crate::segments::{Converted, Segments};
 use crate::unfinished::Writer;
 use crate::{CompressionFormat, FileFormat, OpenOptions};
 
+/// What datui does with an NMEA log: see [`crate::readers`].
+pub(crate) const NMEA: crate::readers::Reader = crate::readers::BASE;
+
+/// What datui does with a GPX file: see [`crate::readers`].
+pub(crate) const GPX: crate::readers::Reader = crate::readers::BASE;
+
 /// How much of the file is read at a time.
 const CHUNK: usize = 1 << 16;
 /// Bytes looked at to tell a GPS log by its content.

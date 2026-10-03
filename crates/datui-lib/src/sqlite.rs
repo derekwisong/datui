@@ -22,6 +22,12 @@
 
 use std::path::Path;
 
+/// What datui does with a SQLite database: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    tables: Some(tables),
+    ..crate::readers::BASE
+};
+
 /// The first sixteen bytes of every SQLite 3 database.
 pub const MAGIC: &[u8; 16] = b"SQLite format 3\0";
 

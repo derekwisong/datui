@@ -19,6 +19,12 @@ use polars::prelude::*;
 
 use crate::FileFormat;
 
+/// What datui does with a SafeTensors file: see [`crate::readers`].
+pub(crate) const SAFETENSORS: crate::readers::Reader = crate::readers::BASE;
+
+/// What datui does with a GGUF file: see [`crate::readers`].
+pub(crate) const GGUF: crate::readers::Reader = crate::readers::BASE;
+
 /// The largest SafeTensors header read: the limit the reference implementation sets.
 pub const MAX_SAFETENSORS_HEADER: u64 = 100_000_000;
 /// The largest `model.safetensors.index.json` read. Real ones are a few hundred KB.

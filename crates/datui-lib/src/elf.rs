@@ -22,6 +22,12 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with an ELF file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    tables: Some(|_| Ok(tables())),
+    ..crate::readers::BASE
+};
+
 /// The first four bytes of every ELF file.
 pub const MAGIC: &[u8; 4] = b"\x7fELF";
 

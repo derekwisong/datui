@@ -26,6 +26,12 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with a ULog flight log: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    tables: Some(listed),
+    ..crate::readers::BASE
+};
+
 /// The first seven bytes of every ULog file; the eighth is its version.
 pub const MAGIC: &[u8; 7] = b"ULog\x01\x12\x35";
 
@@ -574,6 +580,14 @@ fn push_logged(index: &mut Index, time: u64, level_byte: u8, tag: Option<u16>, t
 fn find_sync(data: &[u8], from: usize, end: usize) -> Option<usize> {
     let hay = data.get(from..end)?;
     memchr::memmem::find(hay, &SYNC).map(|i| from + i + SYNC.len())
+}
+
+/// The log's tables as its indexing pass found them: listed once it has been opened,
+/// and not read here, where the home screen waits.
+pub fn listed(file: &Path) -> Result<Vec<Table>> {
+    crate::indexed::peek::<Index>(file)
+        .map(|index| tables(&index))
+        .ok_or_else(|| eyre!("Open the log to list its tables."))
 }
 
 /// The tables of an indexed log, for the home screen and `--table`.

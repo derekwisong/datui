@@ -23,6 +23,11 @@ use color_eyre::eyre::eyre;
 use memmap2::Mmap;
 use polars::prelude::*;
 
+/// What datui does with an audio file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    ..crate::readers::BASE
+};
+
 /// The most channels a file may declare; each is a column.
 const MAX_CHANNELS: u16 = 1024;
 /// The most chunks walked. Real files have a handful; each step moves at least 8 bytes,

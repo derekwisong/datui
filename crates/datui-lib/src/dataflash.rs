@@ -24,6 +24,12 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with a DataFlash log: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    tables: Some(listed),
+    ..crate::readers::BASE
+};
+
 const HEAD: [u8; 2] = [0xA3, 0x95];
 /// The type id of `FMT`, the record that defines the others.
 const FMT: u8 = 0x80;
@@ -379,6 +385,14 @@ pub fn columns(index: &Index, t: &MessageType) -> (Vec<ColumnLayout>, Vec<(Strin
         at += width * count;
     }
     (columns, units)
+}
+
+/// The log's tables as its indexing pass found them: listed once it has been opened,
+/// and not read here, where the home screen waits.
+pub fn listed(file: &Path) -> Result<Vec<Table>> {
+    crate::indexed::peek::<Index>(file)
+        .map(|index| tables(&index))
+        .ok_or_else(|| eyre!("Open the log to list its tables."))
 }
 
 /// The tables of an indexed log, for the home screen and `--table`.

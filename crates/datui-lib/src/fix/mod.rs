@@ -30,6 +30,11 @@ use crate::text_formats::{Detail, Pieces, capped_list, count, note};
 use crate::unfinished::Writer;
 use dict::{FixType, Layers, Resolved};
 
+/// What datui does with a FIX log: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    ..crate::readers::BASE
+};
+
 /// The longest message read; a longer one is cut there.
 pub const MAX_MESSAGE: usize = 1 << 20;
 /// The most fields one message may hold; the rest are left out.

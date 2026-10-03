@@ -27,6 +27,14 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with a candump log: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    tables: Some(|path| {
+        listed(path).ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables."))
+    }),
+    ..crate::readers::BASE
+};
+
 /// The longest line read as a frame; a longer one is not one.
 const MAX_LINE: usize = 4096;
 /// Interfaces told apart; past this many, the rest share the last.

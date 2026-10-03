@@ -30,6 +30,12 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with a NumPy file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    tables: Some(tables),
+    ..crate::readers::BASE
+};
+
 /// The first six bytes of every `.npy` file.
 pub const MAGIC: &[u8; 6] = b"\x93NUMPY";
 

@@ -1394,7 +1394,9 @@ fn entry_line<'a>(
         // `shown_column` below may cut this; both are written from the same string.
         None if kind.is_empty() => String::new(),
         None if kind_is_chip => format!("  {kind} "),
-        None => format!(" {kind}"),
+        // Two cells between a name and what it is, on every row: a place row's
+        // label, a bucket's, a collection's and a file's read the same (#547 M7).
+        None => format!("  {kind}"),
     };
 
     // Where this row's data lives, immediately before its name. The detail pane has
@@ -1529,7 +1531,7 @@ fn entry_line<'a>(
     // name is cut at all: the pane beside it says the same.
     let kind_cell = match discover::how_read(entry).and_then(read_marker) {
         Some(marker) if matched_column.is_none() && kind_cell.is_empty() => {
-            let cell = format!(" {marker}");
+            let cell = format!("  {marker}");
             let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1);
             if name.chars().count() + cell.chars().count() <= room {
                 cell
@@ -2577,7 +2579,13 @@ fn shows_as_a_place(entry: &Entry) -> bool {
     if entry.opens_whole_directory {
         return false;
     }
-    if entry.kind == EntryKind::Directory {
+    // A dataset that is a directory is still one: `events/  hive` reads as the place
+    // it is, the way `data/  3 dirs` does.
+    if matches!(
+        entry.kind,
+        EntryKind::Directory | EntryKind::Hive | EntryKind::MultiFile
+    ) || entry.kind.is_lake_table()
+    {
         return true;
     }
     if entry.kind != EntryKind::Unknown {
@@ -2773,6 +2781,49 @@ mod tests {
             EntryKind::Directory,
         );
         assert!(!drawn(&inside, None).contains("prefix"));
+    }
+
+    /// One grammar on every row: the name, a slash when it is a place to go into, two
+    /// cells, and what it is. Local, collection and bucket rows alike, a directory of
+    /// directories counting them (#547 M7).
+    #[test]
+    fn every_row_reads_name_slash_two_spaces_label() {
+        let ctx = RenderContext::for_test();
+        let drawn = |entry: &Entry, place_kind: Option<&'static str>| -> String {
+            entry_line(
+                entry, false, 60, true, None, "", None, place_kind, None, 0, &ctx,
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("")
+        };
+        let mut local = row("/data/project/data", EntryKind::Directory);
+        local.holds.directories = 3;
+        let mut hive = row("/data/project/events", EntryKind::Hive);
+        hive.holds.partitions = 2;
+        let mut parquet = row("/data/project/processed", EntryKind::MultiFile);
+        parquet.holds.formats = vec![("parquet".to_string(), 2)];
+        let mut prefix = row("s3://bucket/exports", EntryKind::Directory);
+        prefix.holds.formats = vec![("csv".to_string(), 12)];
+        let bucket = row("s3://noaa-ghcn-pds", EntryKind::Directory);
+        let mut noaa = row("s3://noaa-ghcn-pds/parquet/", EntryKind::Directory);
+        noaa.name = "NOAA daily weather".to_string();
+        let mut penguins = row("https://example.com/csv/penguins.csv", EntryKind::File);
+        penguins.name = "Palmer penguins".to_string();
+        for (entry, place_kind, expect) in [
+            (&local, None, "data/  3 dirs"),
+            (&hive, None, "events/  hive"),
+            (&parquet, None, "processed/  2 parquet"),
+            (&prefix, None, "exports/  12 csv"),
+            (&bucket, None, "noaa-ghcn-pds/  bucket"),
+            (&noaa, Some("dataset"), "NOAA daily weather/  dataset"),
+            (&penguins, None, "Palmer penguins  csv"),
+        ] {
+            let text = drawn(entry, place_kind);
+            assert!(text.contains(expect), "{expect:?} in {text:?}");
+        }
     }
 
     /// And the pane beside it says the same word. The two take the same order through
@@ -3695,7 +3746,7 @@ mod tests {
             .collect()
         };
         let lab = ["lab".to_string()];
-        assert!(text(Some(&lab)).contains("sales.parquet lab"));
+        assert!(text(Some(&lab)).contains("sales.parquet  lab"));
         assert!(text(Some(&[])).contains("source not found: lab"));
         // Inside a source the trail already says which, so nothing is added.
         assert!(!text(None).contains("lab"));

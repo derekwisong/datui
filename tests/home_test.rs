@@ -7379,7 +7379,7 @@ mod catalog {
                 .iter()
                 .find(|line| line.find("Palmer penguins").is_some_and(|at| at < 12))
                 .unwrap_or_else(|| panic!("{w}x{h}: {lines:#?}"));
-            assert!(row.contains("Palmer penguins csv"), "{w}x{h}: {row:?}");
+            assert!(row.contains("Palmer penguins  csv"), "{w}x{h}: {row:?}");
             assert!(row.contains("16.1 KB"), "{w}x{h}: {row:?}");
         }
     }
@@ -7407,6 +7407,39 @@ mod catalog {
             panic!("Enter at ~ opens the URL");
         };
         assert_eq!(options.download_unasked, None, "a typed URL is asked about");
+    }
+
+    /// On screen, a local directory of directories, a hive table and a public dataset
+    /// directory read in one grammar: `name/  label` (#547 M7).
+    #[test]
+    fn rows_read_name_slash_two_spaces_label_on_screen() {
+        let tmp = TempDir::new().unwrap();
+        for sub in ["a", "b", "c"] {
+            super::touch(&tmp.path().join("data").join(sub), "x.csv");
+        }
+        super::touch(tmp.path(), "events/year=2024/part-0.parquet");
+        super::touch(tmp.path(), "events/year=2025/part-0.parquet");
+        let mut config = datui::config::AppConfig::default();
+        config.data.directories = vec![tmp.path().to_string_lossy().into_owned()];
+        let (mut app, rx, _cache) = app_with_catalog(config);
+        let data = tmp.path().join("data");
+        let labelled = |app: &App| {
+            app.home.visible().iter().any(|row| {
+                matches!(row, Row::Entry { entry, .. }
+                    if entry.path == data && entry.holds.directories == 3)
+            })
+        };
+        settle(&mut app, &rx, labelled);
+        for (w, h) in [(80, 24), (200, 50)] {
+            let lines = screen(&mut app, w, h).join("\n");
+            for expect in [
+                "data/  3 dirs",
+                "events/  hive",
+                "NOAA daily weather (GHCN-D)/  dataset",
+            ] {
+                assert!(lines.contains(expect), "{w}x{h}: {expect:?} in\n{lines}");
+            }
+        }
     }
 
     /// A recent opened from a collection is named as the collection names it, with the

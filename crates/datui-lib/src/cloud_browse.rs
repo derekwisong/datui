@@ -2025,7 +2025,7 @@ mod tests {
         )
         .1;
         assert_eq!(holds.not_read, 0);
-        assert_eq!(holds.label(), "dir");
+        assert_eq!(holds.label(), "1 dir");
     }
 
     /// A Hugging Face cache's JSON is its writer's, as on disk: one shard beside
@@ -2130,7 +2130,7 @@ mod tests {
         .1;
         assert_eq!(holds.directories, 1);
         assert_eq!(holds.not_read, 0, "the placeholder is the directory itself");
-        assert_eq!(holds.label(), "dir");
+        assert_eq!(holds.label(), "1 dir");
     }
 
     #[test]

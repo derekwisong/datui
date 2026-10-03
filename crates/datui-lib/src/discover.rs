@@ -246,6 +246,9 @@ impl Holds {
             // `dir` says there is no data file inside. A listing cut short cannot say
             // that — it found none among the entries it read, and more files can
             // unmake it, which is what separates this from `mixed`.
+            // A directory of directories counts them: `3 dirs` says where to go next.
+            [] if self.directories == 1 => format!("1 dir{more}"),
+            [] if self.directories > 1 => format!("{}{more} dirs", self.directories),
             [] => format!("dir{more}"),
             // The `+` hedges the whole claim, not only the number: past the cap a
             // second format may be among the entries that were not read, so `5000+

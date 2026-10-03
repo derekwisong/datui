@@ -69,8 +69,10 @@ Sections, in order:
   Found:              Search results, shown while typing
 
 Reading a row:
-  A directory's label says what is directly inside: a count and format
-  ("12 parquet"), hive, delta, iceberg, hudi, "mixed", or "dir". A label of
+  Every row reads name, then "/" for a directory, two spaces, and its
+  label. A directory's label says what is directly inside: a count and
+  format ("12 parquet"), hive, delta, iceberg, hudi, "mixed", "3 dirs" for
+  directories only, or "dir" for neither. A label of
   … has not been looked at yet; labels fill in as you scroll. Inside a
   directory with something openable, the first row reads the whole
   directory as one table, and says how: "(hive table: year, month)",

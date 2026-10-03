@@ -170,6 +170,9 @@ count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts
 
 ### What a row's label says
 
+Every row reads the same way: the name, a `/` when it is a directory, two
+spaces, then the label: `data/  3 dirs`, `events/  hive`, `Palmer penguins  csv`.
+
 | Label | Directory contents |
 |---|---|
 | `hive` | `key=value` subdirectories, at least as numerous as direct data files |
@@ -178,7 +181,9 @@ count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts
 | `3 safetensors`, `2 gguf` | A model: weight files of one format, with only JSON (config, tokenizer) beside them. Opens as one table |
 | `3 tables` | A SQLite database or a NumPy `.npz` archive (a file, not a directory). One table opens; several are listed, a row each, when <kbd>Enter</kbd> or <kbd>→</kbd> goes inside |
 | `mixed` | Several formats |
-| `dir` | No direct data files; `dir+` means the listing was cut short |
+| `3 dirs` | Only directories: how many there are to go into |
+| `dir` | No direct data files and no directories; `dir+` means the listing was cut short |
+| `csv`, `parquet` | A file whose row name does not say its format, such as a public dataset |
 | `bucket`, `container` | The top of an object store |
 | `…`, spinner, `?` | Not inspected yet, inspecting, or inspection failed |
 

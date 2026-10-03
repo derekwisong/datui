@@ -581,7 +581,7 @@ fn an_sdf_file_opens_from_a_url() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while app.data_table_state.is_none() && app.error_message().is_none() {
         assert!(std::time::Instant::now() < deadline, "the open finishes");
-        if app.awaiting_download_confirmation() {
+        if app.awaiting_open_confirmation() {
             next = Some(AppEvent::Key(KeyEvent::new(
                 KeyCode::Enter,
                 KeyModifiers::NONE,

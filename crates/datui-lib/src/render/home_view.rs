@@ -1872,11 +1872,7 @@ fn read_marker(how: discover::HowRead) -> Option<&'static str> {
     if how.download {
         return Some("downloads");
     }
-    match how.mode {
-        crate::ReadMode::Lazy => None,
-        crate::ReadMode::Converted => Some("converts"),
-        crate::ReadMode::InMemory => Some("in memory"),
-    }
+    how.mode.marker()
 }
 
 /// The pane's `read` line: [`crate::ReadMode::label`], after the download when there

@@ -28,10 +28,13 @@ Scopes:
           does a table whose size is not known yet; above 200 MiB the
           copy is refused with an error — use an export (e) instead.
   Python (Polars):
-          The view as a Python script: the file read with the same
-          options, then each query, reshape, drill, filter and sort in
-          the order applied, and the columns shown. A step Python cannot
-          repeat is a comment, and what follows it is commented out.
+          The view as a Python script: the file read as the format datui
+          read it, with the same options (a SQLite table through sqlite3,
+          a NumPy array through np.load), then each query, reshape, drill,
+          filter and sort in the order applied, and the columns shown. A
+          format Polars cannot read starts from df = ... naming the file
+          and table. A step Python cannot repeat is a comment, and what
+          follows it is commented out.
           It has no Format row.
 
 Formats:

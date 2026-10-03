@@ -214,7 +214,7 @@ pub fn render(
         // A commitment, so a compact centered dialog: the format list plus a
         // row per option, never scaling with the terminal.
         let modal_width = (area.width * 3 / 4).min(66);
-        let modal_height = 11.min(area.height);
+        let modal_height = 13.min(area.height);
         let modal_x = (area.width.saturating_sub(modal_width)) / 2;
         let modal_y = (area.height.saturating_sub(modal_height)) / 2;
         let modal_area = Rect {

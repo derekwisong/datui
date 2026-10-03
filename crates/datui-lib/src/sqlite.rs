@@ -25,6 +25,12 @@ use std::path::Path;
 /// What datui does with a SQLite database: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
     scan,
+    python: Some(crate::python_script::Python {
+        call: "pl.read_database",
+        eager: true,
+        glob_flag: false,
+        arguments: Some(crate::python_script::sqlite_arguments),
+    }),
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like(head),
         kind: crate::readers::Kind::Magic,
@@ -1880,6 +1886,8 @@ fn scan(input: crate::readers::ScanIn<'_>) -> color_eyre::Result<crate::scan::Sc
     match pick(tables.clone(), input.options.table.as_deref(), file)? {
         Pick::One(table) => {
             let opened = open_table(file, file, &table, &tables)?;
+            // The only table, when none was named: what reading it again names.
+            input.report.table = Some(table.name.clone());
             input.report.sqlite = Some(std::sync::Arc::new(crate::SqliteOpen {
                 pushdown: opened.pushdown,
                 hold: std::sync::Mutex::new(Some(opened.hold)),

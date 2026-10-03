@@ -3952,7 +3952,7 @@ impl App {
     /// Whether a spinner is on screen, so the run loop turns it and redraws.
     pub fn something_is_spinning(&self) -> bool {
         self.is_busy()
-            || (self.row_count_pending() && !self.awaiting_download_confirmation())
+            || (self.row_count_pending() && !self.awaiting_open_confirmation())
             // The clock beside "source read finishing" keeps time until it has.
             || (self.analysis_modal.active && self.cancelled_analysis_running().is_some())
             || self.chart_preparing()
@@ -4149,6 +4149,13 @@ impl App {
                         &pending,
                         self.loading.download_note(),
                     ));
+                None
+            }
+            Step::AskRead(read) => {
+                // As for a download: nothing runs, and the generation is held.
+                self.loading.hold_while_asking(self.jobs.hold());
+                self.confirmation_modal
+                    .show(Self::in_memory_confirmation_message(&read));
                 None
             }
             step => {
@@ -4610,9 +4617,14 @@ impl App {
         self.retire_a_count_the_rows_answered();
         self.path = path.clone();
         if let Some(ref p) = path {
-            self.original_file_format = Self::export_format_for(p, options);
-            // A comma unless the user named a separator. A `.tsv` exports as CSV, to a
-            // `.csv` by default, and a tab there would reopen as one column.
+            let read_as = self
+                .data_table_state
+                .as_ref()
+                .and_then(DataTableState::read_as);
+            self.original_file_format = Self::export_format_for(p, read_as.or(options.format));
+            // CSV's delimiter: a comma unless the user named a separator. A `.tsv`
+            // exports as TSV, whose preset is the tab; a tab in a `.csv` would reopen
+            // as one column.
             self.original_file_delimiter = Some(options.separator_or(b','));
         } else {
             self.original_file_format = None;
@@ -5017,6 +5029,7 @@ impl App {
             size: 0,
             recent: None,
             shown: None,
+            warn_in_memory_above: None,
         });
         self.loading.id().expect("an open was begun")
     }
@@ -7847,20 +7860,19 @@ impl App {
 
     /// The export format to offer by default for a dataset opened from `path`.
     ///
-    /// An explicit `--format` wins, then the extension. A compressed CSV keeps its CSV
-    /// identity: `sales.csv.gz` has extension `gz`, and the `.csv` that matters is in
-    /// the stem, so reading the extension alone offered no default at all.
-    fn export_format_for(path: &Path, options: &OpenOptions) -> Option<ExportFormat> {
-        options
-            .format
+    /// The format the open read wins (`format`: what it sniffed, or `--format`), then
+    /// the extension. A compressed CSV keeps its CSV identity: `sales.csv.gz` has
+    /// extension `gz`, and the `.csv` that matters is in the stem, so reading the
+    /// extension alone offered no default at all.
+    fn export_format_for(path: &Path, format: Option<FileFormat>) -> Option<ExportFormat> {
+        format
             .or_else(|| FileFormat::from_path(path))
-            .and_then(crate::readers::export_default)
             .or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .filter(|s| s.ends_with(".csv"))
-                    .map(|_| ExportFormat::Csv)
+                CompressionFormat::from_extension(path)
+                    .and(path.file_stem())
+                    .and_then(|stem| FileFormat::from_path(Path::new(stem)))
             })
+            .and_then(crate::readers::export_default)
     }
 
     /// `options` for the compressed delimited file `file`, in the dialect of the
@@ -8208,6 +8220,7 @@ impl App {
             opened: None,
             splits: options.splits.clone(),
             delimited: None,
+            table: None,
         };
         // A followed file reads every row it can and counts the rest: a row
         // that does not fit the schema never stops the follow.
@@ -8284,6 +8297,7 @@ impl App {
             read_python: report.read_python,
             read_mode,
             tail,
+            table: report.table.or_else(|| options.table.clone()),
             ..options
         };
         // The spec's dialect stays with the dataset, so a read again (`H`,
@@ -8432,6 +8446,7 @@ impl App {
                     .with_open(OpenFacts {
                         detail: opened.detail.clone(),
                         open_notes: notes,
+                        read_as: Some(format),
                         ..Default::default()
                     });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
@@ -8728,6 +8743,7 @@ impl App {
                                 .map(|read| read.notes())
                                 .unwrap_or_default(),
                             delimited: options.delimited.clone(),
+                            read_as: options.format,
                             // The loader sends a compressed file here without a scan.
                             read_mode: options.format.and_then(|f| {
                                 f.read_mode(crate::Stored::Compressed {
@@ -8850,7 +8866,28 @@ impl App {
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             Step::Ask(_) => unreachable!("not a phase with a worker"),
+            Step::AskRead(_) => unreachable!("not a phase with a worker"),
         }
+    }
+
+    /// What the user is asked before files past `[file_loading] memory_warning_mb` are
+    /// read whole into memory: `big.json: JSON reads 2.1 GB into memory`.
+    fn in_memory_confirmation_message(read: &loading::InMemory) -> String {
+        let what = match read.files {
+            1 => format!(
+                "{}: {} reads",
+                read.name
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| read.name.display().to_string()),
+                read.format.title()
+            ),
+            n => format!("{n} {} files read", read.format.title()),
+        };
+        format!(
+            "{what} {} into memory before the table appears.\n\nRead it?",
+            Self::format_bytes(read.bytes)
+        )
     }
 
     /// What the user is being asked to agree to before a remote file is downloaded.
@@ -10070,6 +10107,7 @@ impl App {
             facts.delimited = Some(read.clone());
         }
         facts.read_mode = options.read_mode;
+        facts.read_as = options.format;
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         // Arrow in a store reads its IPC files in place, and its streams from their
@@ -11427,12 +11465,13 @@ impl App {
         }
     }
 
-    /// True while the confirmation modal is asking whether to download a remote file.
+    /// True while the confirmation modal is asking whether to download a remote file,
+    /// or to read a large one whole into memory.
     ///
-    /// That is the one confirmation the user has to be able to walk away from: the
-    /// size probe behind it can take fifteen seconds, and the answer to "actually,
-    /// never mind" is the home screen, not the exit.
-    pub fn awaiting_download_confirmation(&self) -> bool {
+    /// Those are the confirmations the user has to be able to walk away from: the
+    /// size probe behind a download can take fifteen seconds, and the answer to
+    /// "actually, never mind" is the home screen, not the exit.
+    pub fn awaiting_open_confirmation(&self) -> bool {
         self.confirmation_modal.active && self.loading.asking()
     }
 
@@ -11501,7 +11540,7 @@ impl App {
         // not a wait for it to finish.
         if event.code == KeyCode::Char('o')
             && event.modifiers.contains(KeyModifiers::CONTROL)
-            && (!self.confirmation_modal.active || self.awaiting_download_confirmation())
+            && (!self.confirmation_modal.active || self.awaiting_open_confirmation())
         {
             self.enter_home();
             return None;
@@ -11595,11 +11634,10 @@ impl App {
                             self.confirmation_modal.hide();
                             return Some(AppEvent::CopyTable { format, header });
                         }
-                        #[cfg(any(feature = "http", feature = "cloud"))]
                         if self.loading.asking() {
                             self.confirmation_modal.hide();
                             // The loader lets go of its hold on the generation as the
-                            // download starts, and the download's job takes it before
+                            // download or the read starts, and its job takes it before
                             // anything else can look.
                             let step = self.loading.confirmed();
                             return self.run_load_step(step);
@@ -12645,8 +12683,9 @@ impl App {
                 }
                 // Asks the filesystem for the size the loading screen shows, and whether
                 // the path is there to be a recent.
-                let request =
+                let mut request =
                     loading::OpenRequest::named(paths.clone(), options.clone(), &self.formats);
+                request.warn_in_memory_above = self.app_config.file_loading.memory_warning();
                 self.begin_new_dataset();
                 let step = self.loading.open(request);
                 self.run_load_step(step)
@@ -15694,9 +15733,28 @@ impl App {
             // A decompressed file is read into its dataset directly, not through a scan.
             options.read_python = state.read_python().to_vec();
         }
+        // The source an `s3://<id>@bucket` URL names has its own endpoint and region.
+        let remote = paths
+            .and_then(|paths| paths.first())
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| source::is_remote_url(Path::new(p)));
+        let source_of = remote
+            .as_deref()
+            .and_then(|url| source::split_source_id(url).0)
+            .and_then(|id| cloud.connections.iter().find(|c| c.name == id));
+        // What this session learned of the place: read unsigned, it is public.
+        #[cfg(feature = "cloud")]
+        let unsigned = remote
+            .as_deref()
+            .and_then(crate::cloud_sources::known_access)
+            .unwrap_or(false);
+        #[cfg(not(feature = "cloud"))]
+        let unsigned = false;
         let record = python_script::OpenRecord {
             paths,
             options: &options,
+            format: state.read_as().or(options.format),
+            read_mode: state.read_mode(),
             schema: state.source_schema(),
             remote_objects: state
                 .remote_objects()
@@ -15704,8 +15762,15 @@ impl App {
                 .into_iter()
                 .map(|object| object.url)
                 .collect(),
-            s3_endpoint: cloud.s3_endpoint_url.filter(|s| !s.trim().is_empty()),
-            s3_region: cloud.s3_region.filter(|s| !s.trim().is_empty()),
+            s3_endpoint: source_of
+                .and_then(|c| c.endpoint_url.clone())
+                .or(cloud.s3_endpoint_url.clone())
+                .filter(|s| !s.trim().is_empty()),
+            s3_region: source_of
+                .and_then(|c| c.region.clone())
+                .or(cloud.s3_region.clone())
+                .filter(|s| !s.trim().is_empty()),
+            unsigned,
             read_as_text: state.read_as_text().iter().map(|c| c.to_string()).collect(),
             spec: state.format_read().map(|read| read.spec.name.clone()),
         };
@@ -17522,7 +17587,7 @@ impl Widget for &mut App {
             .filter(|_| self.awaiting_dataset() || self.export_progress.is_none());
         let status_msg = match (load, &self.export_progress) {
             // The load is paused on the user; the bar names the modal's keys instead.
-            (Some(_), _) if self.awaiting_download_confirmation() => None,
+            (Some(_), _) if self.awaiting_open_confirmation() => None,
             (Some((current_phase, progress_percent, ..)), _) => {
                 let current_phase = self.loading_phase(current_phase);
                 // The percentage is a constant per phase, which was harmless beside a
@@ -17703,7 +17768,7 @@ impl Widget for &mut App {
             });
         // Nothing is counted while a load waits on the download confirmation, and a
         // spinning count there would read as progress.
-        if self.awaiting_download_confirmation() {
+        if self.awaiting_open_confirmation() {
             controls.row_count = None;
         }
         // The hex view has bytes, not rows: its status line says where the cursor is.

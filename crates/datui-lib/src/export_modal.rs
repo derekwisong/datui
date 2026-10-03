@@ -8,6 +8,10 @@ use polars::prelude::{LazyFrame, PolarsResult};
 pub enum ExportFormat {
     #[default]
     Csv,
+    /// CSV with the tab as its delimiter.
+    Tsv,
+    /// CSV with `|` as its delimiter.
+    Psv,
     Parquet,
     Json,
     Ndjson,
@@ -17,8 +21,10 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Csv,
+        Self::Tsv,
+        Self::Psv,
         Self::Parquet,
         Self::Json,
         Self::Ndjson,
@@ -29,6 +35,8 @@ impl ExportFormat {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Csv => "CSV",
+            Self::Tsv => "TSV",
+            Self::Psv => "PSV",
             Self::Parquet => "Parquet",
             Self::Json => "JSON",
             Self::Ndjson => "NDJSON",
@@ -40,6 +48,8 @@ impl ExportFormat {
     pub fn extension(self) -> &'static str {
         match self {
             Self::Csv => "csv",
+            Self::Tsv => "tsv",
+            Self::Psv => "psv",
             Self::Parquet => "parquet",
             Self::Json => "json",
             Self::Ndjson => "jsonl",
@@ -51,6 +61,8 @@ impl ExportFormat {
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_lowercase().as_str() {
             "csv" => Some(Self::Csv),
+            "tsv" => Some(Self::Tsv),
+            "psv" => Some(Self::Psv),
             "parquet" => Some(Self::Parquet),
             "json" => Some(Self::Json),
             "ndjson" | "jsonl" => Some(Self::Ndjson),
@@ -63,7 +75,21 @@ impl ExportFormat {
     /// Whether the format stores list, array and struct columns as they are.
     /// The others get them as JSON text (`nested_json`).
     pub fn holds_nesting(self) -> bool {
-        !matches!(self, Self::Csv)
+        !self.is_delimited()
+    }
+
+    /// CSV and its presets, which write delimited text.
+    pub fn is_delimited(self) -> bool {
+        matches!(self, Self::Csv | Self::Tsv | Self::Psv)
+    }
+
+    /// The delimiter a preset sets; `None` for CSV, whose delimiter is the user's.
+    pub fn preset_delimiter(self) -> Option<u8> {
+        match self {
+            Self::Tsv => Some(b'\t'),
+            Self::Psv => Some(b'|'),
+            _ => None,
+        }
     }
 
     /// `lf` as this format can write it: binary as base64 and dates as text for
@@ -71,7 +97,7 @@ impl ExportFormat {
     /// Avro lacks cast to ones it has. Planned, not run.
     pub fn prepare(self, lf: LazyFrame) -> PolarsResult<LazyFrame> {
         match self {
-            Self::Csv => crate::nested_json::lazy_as_json(lf),
+            Self::Csv | Self::Tsv | Self::Psv => crate::nested_json::lazy_as_json(lf),
             Self::Json | Self::Ndjson => crate::nested_json::lazy_for_json(lf),
             Self::Avro => crate::avro_types::lazy_for_avro(lf),
             Self::Parquet | Self::Ipc => Ok(lf),
@@ -79,7 +105,7 @@ impl ExportFormat {
     }
 
     pub fn supports_compression(self) -> bool {
-        matches!(self, Self::Csv | Self::Json | Self::Ndjson)
+        self.is_delimited() || matches!(self, Self::Json | Self::Ndjson)
     }
 
     /// The format a path's extension names, looking through a trailing compression
@@ -263,7 +289,9 @@ impl ExportModal {
     /// Set the compression field the given format reads at export time.
     fn set_compression_for(&mut self, format: ExportFormat, comp: Option<CompressionFormat>) {
         match format {
-            ExportFormat::Csv => self.csv_compression = comp,
+            ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Psv => {
+                self.csv_compression = comp
+            }
             ExportFormat::Json => self.json_compression = comp,
             ExportFormat::Ndjson => self.ndjson_compression = comp,
             ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {}
@@ -283,6 +311,10 @@ impl ExportModal {
                 ExportFocus::CsvIncludeHeader,
                 ExportFocus::CsvCompression,
             ]),
+            // The preset says the delimiter.
+            ExportFormat::Tsv | ExportFormat::Psv => {
+                order.extend([ExportFocus::CsvIncludeHeader, ExportFocus::CsvCompression])
+            }
             ExportFormat::Json => order.push(ExportFocus::JsonCompression),
             ExportFormat::Ndjson => order.push(ExportFocus::NdjsonCompression),
             ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {}
@@ -463,6 +495,33 @@ mod tests {
         assert_eq!(ExportFormat::from_path("out.dat"), None);
         // A bare compression extension names no format either way.
         assert_eq!(ExportFormat::from_path("out.gz"), None);
+    }
+
+    /// TSV and PSV are CSV presets: their names pick them, their delimiter is set, and
+    /// the form offers the header and compression without a delimiter row.
+    #[test]
+    fn tsv_and_psv_are_presets_with_their_delimiter_set() {
+        assert_eq!(ExportFormat::from_path("out.tsv"), Some(ExportFormat::Tsv));
+        assert_eq!(
+            ExportFormat::from_path("out.psv.zst"),
+            Some(ExportFormat::Psv)
+        );
+        assert_eq!(ExportFormat::Tsv.preset_delimiter(), Some(b'\t'));
+        assert_eq!(ExportFormat::Psv.preset_delimiter(), Some(b'|'));
+        assert_eq!(ExportFormat::Csv.preset_delimiter(), None);
+        let mut modal = ExportModal::new();
+        for format in [ExportFormat::Tsv, ExportFormat::Psv] {
+            modal.selected_format = format;
+            let order = modal.focus_order();
+            assert!(!order.contains(&ExportFocus::CsvDelimiter), "{format:?}");
+            assert!(order.contains(&ExportFocus::CsvIncludeHeader), "{format:?}");
+            assert!(order.contains(&ExportFocus::CsvCompression), "{format:?}");
+        }
+        modal.selected_format = ExportFormat::Csv;
+        modal.path_input.set_value("out.csv");
+        modal.selected_format = ExportFormat::Tsv;
+        modal.sync_path_to_format();
+        assert_eq!(modal.path_input.value(), "out.tsv");
     }
 
     #[test]

@@ -27,6 +27,7 @@ decompress_in_memory = false  # Compressed CSV/TSV/PSV: decompress to a temp fil
 temp_dir = "/tmp"             # Where that temp file goes. Omit for the system default
 single_spine_schema = true    # Partitioned Parquet: every column any file has, from the footers
 follow_interval_ms = 250      # --follow: how often a followed file is read at most; 10 to 60000
+memory_warning_mb = 1024      # Ask before reading more than this many MB whole into memory; 0 never asks
 ```
 
 ## Binary formats

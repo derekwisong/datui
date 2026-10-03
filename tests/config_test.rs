@@ -3322,3 +3322,28 @@ fn test_formats_path_adds_up_and_is_anchored_to_its_file() {
         ]
     );
 }
+
+/// The size past which a read into memory asks first: 1 GiB unless set, layered by
+/// presence, and never with 0.
+#[test]
+fn test_memory_warning() {
+    let config = layered(&[]);
+    assert_eq!(config.file_loading.memory_warning_mb, None);
+    assert_eq!(
+        config.file_loading.memory_warning(),
+        Some(1024 * 1024 * 1024)
+    );
+    let config = layered(&[
+        "[file_loading]\nmemory_warning_mb = 0\n",
+        "[file_loading]\nmemory_warning_mb = 1024\n",
+    ]);
+    assert_eq!(
+        config.file_loading.memory_warning_mb,
+        Some(1024),
+        "an explicit default over an import wins"
+    );
+    let config = layered(&["[file_loading]\nmemory_warning_mb = 0\n"]);
+    assert_eq!(config.file_loading.memory_warning(), None);
+    let config = layered(&["[file_loading]\nmemory_warning_mb = 5\n"]);
+    assert_eq!(config.file_loading.memory_warning(), Some(5 * 1024 * 1024));
+}

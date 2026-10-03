@@ -354,6 +354,8 @@ pub struct DataTableState {
     source_hold: Option<crate::sqlite::Hold>,
     /// How the open reads the data. See [`crate::OpenOptions::read_mode`].
     read_mode: Option<crate::ReadMode>,
+    /// The format the open read. See [`OpenFacts::read_as`].
+    read_as: Option<crate::FileFormat>,
     /// The data was downloaded from a remote source before it was read.
     fetched: bool,
     /// What the file said besides its rows. See [`OpenFacts::detail`].
@@ -947,6 +949,10 @@ pub struct OpenFacts {
     pub hold: Option<crate::sqlite::Hold>,
     /// How the open reads the data. See [`crate::OpenOptions::read_mode`].
     pub read_mode: Option<crate::ReadMode>,
+    /// The format the open read the data as, after sniffing and spec matching: what
+    /// the scan chose, which a file's name may not say. Copy as Python and the export
+    /// default follow it.
+    pub read_as: Option<crate::FileFormat>,
     /// The data was downloaded from a remote source before it was read: not a local
     /// stream's conversion or standard input's spool, which are held as downloads are.
     pub fetched: bool,
@@ -2042,6 +2048,7 @@ impl DataTableState {
             pushdown: None,
             source_hold: None,
             read_mode: None,
+            read_as: None,
             fetched: false,
             detail: None,
             file_units: Arc::new(Vec::new()),
@@ -2192,6 +2199,7 @@ impl DataTableState {
             pushdown: None,
             source_hold: None,
             read_mode: None,
+            read_as: None,
             fetched: false,
             detail: None,
             file_units: Arc::new(Vec::new()),
@@ -2258,6 +2266,7 @@ impl DataTableState {
             pushdown,
             hold,
             read_mode,
+            read_as,
             fetched,
             detail,
             records,
@@ -2315,6 +2324,7 @@ impl DataTableState {
         self.converted = converted;
         self.other_tables = other_tables;
         self.read_mode = read_mode;
+        self.read_as = read_as;
         self.fetched = fetched;
         self.detail = detail;
         if let Some((window, rows)) = records {
@@ -6330,6 +6340,11 @@ impl DataTableState {
     /// in whole, such as one from Python.
     pub fn read_mode(&self) -> Option<crate::ReadMode> {
         self.read_mode
+    }
+
+    /// The format the open read the data as. See [`OpenFacts::read_as`].
+    pub fn read_as(&self) -> Option<crate::FileFormat> {
+        self.read_as
     }
 
     /// Whether the data was downloaded from a remote source before it was read.

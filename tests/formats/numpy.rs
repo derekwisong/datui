@@ -403,3 +403,31 @@ fn the_home_screen_lists_an_archives_arrays() {
     let preview = datui::discover::schema_preview(&trades).unwrap();
     assert_eq!(preview[1], ("px".to_string(), DataType::Float64));
 }
+
+/// Copy as Python loads the array on screen with NumPy, named as datui names its
+/// columns: a vector, a grid, a structured array and an archive's array.
+#[test]
+fn copy_as_python_loads_the_array_on_screen() {
+    for (file, table) in [
+        ("vector.npy", None),
+        ("grid.npy", None),
+        ("trades.npy", None),
+        ("run.npz", Some("grid")),
+    ] {
+        let options = OpenOptions {
+            table: table.map(str::to_string),
+            ..scratch().0
+        };
+        let (mut app, rx) = open_with(numpy().join(file), options);
+        assert_eq!(app.error_message(), None, "{file}");
+        drain_events(&mut app, &rx);
+        let script = app.python_script(app.data_table_state.as_ref().unwrap());
+        assert!(script.contains("import numpy as np\n"), "{script}");
+        assert!(script.contains("pl.from_numpy(np.load("), "{script}");
+        let Some((rows, script)) = crate::run_python_script(&app) else {
+            eprintln!("skipped: no .venv to run the scripts with");
+            return;
+        };
+        assert_eq!(rows, crate::view_csv(&app), "{file}:\n{script}");
+    }
+}

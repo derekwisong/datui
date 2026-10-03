@@ -408,3 +408,32 @@ fn the_sidebar_sorts_and_filters_in_sqlite() {
     assert!(expected.height() > 0);
     assert!(frame(&app).equals_missing(&expected));
 }
+
+/// Copy as Python reads the table on screen through `sqlite3`, the one table of a
+/// database opened without `--table` included, and computes datui's rows.
+#[test]
+fn copy_as_python_reads_the_table_on_screen() {
+    for (file, options) in [("one.sqlite", scratch().0), ("shop.db", table("orders"))] {
+        let (mut app, rx) = open_with(sqlite().join(file), options);
+        let query = match file {
+            "one.sqlite" => "select station, celsius where celsius > 10.2",
+            _ => "select id, amount where amount > 50",
+        };
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .query(query.to_string());
+        drain_events(&mut app, &rx);
+        let script = app.python_script(app.data_table_state.as_ref().unwrap());
+        assert!(script.contains("import sqlite3\n"), "{script}");
+        assert!(
+            script.contains("pl.read_database(\"SELECT * FROM \\\""),
+            "{script}"
+        );
+        let Some((rows, script)) = crate::run_python_script(&app) else {
+            eprintln!("skipped: no .venv to run the scripts with");
+            return;
+        };
+        assert_eq!(rows, crate::view_csv(&app), "{file}:\n{script}");
+    }
+}

@@ -603,11 +603,11 @@ fn compressed_csv_still_defaults_to_csv() {
     // `sales.csv.gz` has extension `gz`; the `.csv` that decides this is in the
     // stem. Reading the extension alone offered no export default at all.
     assert_eq!(
-        App::export_format_for(Path::new("sales.csv.gz"), &opts()),
+        App::export_format_for(Path::new("sales.csv.gz"), None),
         Some(ExportFormat::Csv)
     );
     assert_eq!(
-        App::export_format_for(Path::new("sales.csv.zst"), &opts()),
+        App::export_format_for(Path::new("sales.csv.zst"), None),
         Some(ExportFormat::Csv)
     );
 }
@@ -617,7 +617,9 @@ fn plain_extensions_map_to_their_formats() {
     for (name, expected) in [
         ("a.parquet", Some(ExportFormat::Parquet)),
         ("a.csv", Some(ExportFormat::Csv)),
-        ("a.tsv", Some(ExportFormat::Csv)),
+        ("a.tsv", Some(ExportFormat::Tsv)),
+        ("a.psv", Some(ExportFormat::Psv)),
+        ("a.tsv.gz", Some(ExportFormat::Tsv)),
         ("a.json", Some(ExportFormat::Json)),
         ("a.ndjson", Some(ExportFormat::Ndjson)),
         ("a.jsonl", Some(ExportFormat::Ndjson)),
@@ -629,7 +631,7 @@ fn plain_extensions_map_to_their_formats() {
         ("a.unknown", None),
     ] {
         assert_eq!(
-            App::export_format_for(Path::new(name), &opts()),
+            App::export_format_for(Path::new(name), None),
             expected,
             "{name}"
         );
@@ -637,11 +639,9 @@ fn plain_extensions_map_to_their_formats() {
 }
 
 #[test]
-fn explicit_format_beats_the_extension() {
-    let mut options = opts();
-    options.format = Some(FileFormat::Parquet);
+fn the_format_read_beats_the_extension() {
     assert_eq!(
-        App::export_format_for(Path::new("mislabelled.csv"), &options),
+        App::export_format_for(Path::new("mislabelled.csv"), Some(FileFormat::Parquet)),
         Some(ExportFormat::Parquet)
     );
 }

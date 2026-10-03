@@ -37,8 +37,9 @@ use crate::unfinished::{Unfinished, Writer};
 use crate::widgets::datatable::DataTableState;
 use crate::{CompressionFormat, FileFormat, OpenOptions, source, stdin};
 
+use crate::jobs::Hold;
 #[cfg(any(feature = "http", feature = "cloud"))]
-use crate::jobs::{Hold, Jobs};
+use crate::jobs::Jobs;
 
 /// Names one open, from the moment it is asked for until it is done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -158,6 +159,9 @@ pub(crate) struct OpenRequest {
     /// What the loading screen names in place of the first path: a table inside a
     /// database.
     pub(crate) shown: Option<PathBuf>,
+    /// Ask before reading more than this many bytes whole into memory
+    /// (`[file_loading] memory_warning_mb`); `None` never asks.
+    pub(crate) warn_in_memory_above: Option<u64>,
 }
 
 impl OpenRequest {
@@ -227,6 +231,7 @@ impl OpenRequest {
             size,
             recent,
             shown: table,
+            warn_in_memory_above: None,
         }
     }
 }
@@ -254,6 +259,12 @@ pub(crate) enum Phase {
     #[cfg(any(feature = "http", feature = "cloud"))]
     CheckingSize {
         note: Option<&'static str>,
+    },
+    /// Waiting on the user to agree to read files whole into memory, past the size
+    /// that asks first. Holds the generation meanwhile, once the app gives it a hold.
+    ConfirmingRead {
+        scan: Box<Scan>,
+        _hold: Option<Hold>,
     },
     /// Waiting on the user to agree to the download. Holds the generation meanwhile:
     /// nothing is running, and the open is very much unfinished.
@@ -283,6 +294,9 @@ pub(crate) enum Phase {
     },
     /// A CSV read with its string columns parsed.
     ScanningStrings,
+    /// A CSV whose footer rows are dropped (`--skip-tail-rows`): the scan counts every
+    /// row of the file first, which is the wait.
+    CountingFooter,
     /// The scan; `downloaded` when it reads a download rather than what was named.
     Scanning {
         downloaded: bool,
@@ -310,6 +324,7 @@ impl Phase {
             #[cfg(any(feature = "http", feature = "cloud"))]
             Phase::Downloading => ("Downloading", 20),
             Phase::Spooling { .. } => ("Reading stdin", 5),
+            Phase::ConfirmingRead { .. } => ("Scanning input", 0),
             Phase::Decompressing | Phase::DecompressingRecords => ("Decompressing", 30),
             Phase::ReadingRecords => ("Reading records", 35),
             Phase::Converting { what, read, total } => {
@@ -319,10 +334,21 @@ impl Phase {
                 (what.label(), 10 + share as u16)
             }
             Phase::ScanningStrings => ("Scanning string columns", 55),
+            Phase::CountingFooter => (COUNTING_FOOTER, 10),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
             Phase::ReadingSchema => ("Caching schema", 40),
             Phase::FirstRows => ("Loading buffer", 70),
+        }
+    }
+
+    /// Whether the open waits on the user's answer to a question.
+    fn asks(&self) -> bool {
+        match self {
+            Phase::ConfirmingRead { .. } => true,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Phase::Confirming { .. } => true,
+            _ => false,
         }
     }
 
@@ -396,6 +422,26 @@ pub(crate) struct Load {
     /// The IPC files its Arrow streams or GPS logs were converted to, which the
     /// dataset scans.
     converted: Vec<TempDownload>,
+    /// See [`OpenRequest::warn_in_memory_above`].
+    warn_in_memory_above: Option<u64>,
+}
+
+/// A scan held while the user is asked about it.
+pub(crate) struct Scan {
+    paths: Vec<PathBuf>,
+    options: OpenOptions,
+    display: Option<PathBuf>,
+}
+
+/// What a read whole into memory would take, put to the user before it starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InMemory {
+    /// The files' bytes on disk.
+    pub(crate) bytes: u64,
+    pub(crate) format: FileFormat,
+    pub(crate) files: usize,
+    /// The first file, as the loading screen names it.
+    pub(crate) name: PathBuf,
 }
 
 impl Load {
@@ -449,6 +495,8 @@ pub(crate) enum Step {
     /// Ask the user whether to download it.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Ask(PendingDownload),
+    /// Ask the user whether to read files this large whole into memory.
+    AskRead(InMemory),
     /// Download it, writing through `writer`: the load's stop flag, and its claim on
     /// the file for quitting to find.
     #[cfg(any(feature = "http", feature = "cloud"))]
@@ -801,15 +849,17 @@ impl Loader {
 
     /// Whether the open is waiting on the user to agree to a download.
     pub(crate) fn asking(&self) -> bool {
-        #[cfg(any(feature = "http", feature = "cloud"))]
+        self.load.as_ref().is_some_and(|load| load.phase.asks())
+    }
+
+    /// Give the question being asked the hold that keeps the generation while it waits.
+    pub(crate) fn hold_while_asking(&mut self, hold: Hold) {
+        if let Some(Load {
+            phase: Phase::ConfirmingRead { _hold, .. },
+            ..
+        }) = self.load.as_mut()
         {
-            self.load
-                .as_ref()
-                .is_some_and(|load| matches!(load.phase, Phase::Confirming { .. }))
-        }
-        #[cfg(not(any(feature = "http", feature = "cloud")))]
-        {
-            false
+            *_hold = Some(hold);
         }
     }
 
@@ -840,16 +890,7 @@ impl Loader {
         }
         Some(Retired {
             id: load.id,
-            asking: {
-                #[cfg(any(feature = "http", feature = "cloud"))]
-                {
-                    matches!(load.phase, Phase::Confirming { .. })
-                }
-                #[cfg(not(any(feature = "http", feature = "cloud")))]
-                {
-                    false
-                }
-            },
+            asking: load.phase.asks(),
         })
     }
 
@@ -892,6 +933,7 @@ impl Loader {
                 progress,
                 download: None,
                 converted: Vec::new(),
+                warn_in_memory_above: None,
             });
         }
         let load = self.load.as_mut().expect("started just above");
@@ -966,6 +1008,7 @@ impl Loader {
             size,
             recent,
             shown,
+            warn_in_memory_above,
         } = request;
         // What an earlier load found of its Arrow is not this one's to read.
         options.arrow_parts = None;
@@ -978,6 +1021,7 @@ impl Loader {
         load.size = size;
         load.recent = recent;
         load.paths = Some(paths.clone());
+        load.warn_in_memory_above = warn_in_memory_above;
         match prepared {
             Some(prepared) => self.install_prepared(*prepared),
             None => self.first_step(paths, options),
@@ -1149,6 +1193,16 @@ impl Loader {
             return Step::Probe(pending);
         }
         let load = self.load.as_mut().expect("an open has a load");
+        if counts_footer(&paths, &options) {
+            load.phase = Phase::CountingFooter;
+            let display = load.path.clone().filter(|shown| *shown != paths[0]);
+            return Step::Scan {
+                paths,
+                options,
+                display,
+                status: COUNTING_FOOTER_STATUS,
+            };
+        }
         if paths.len() == 1 && delimited.is_some() && options.parse_strings.is_some() {
             load.phase = Phase::ScanningStrings;
             return Step::Scan {
@@ -1158,9 +1212,24 @@ impl Loader {
                 status: "Scanning string columns...",
             };
         }
-        load.phase = Phase::Scanning { downloaded: false };
         // A table inside a database goes by its path there, on screen and once open.
         let display = load.path.clone().filter(|shown| *shown != paths[0]);
+        // A large file read whole is put to the user before the read starts.
+        if let Some(limit) = load.warn_in_memory_above
+            && let Some(read) = in_memory(&paths, &options)
+            && read.bytes > limit
+        {
+            load.phase = Phase::ConfirmingRead {
+                scan: Box::new(Scan {
+                    paths,
+                    options,
+                    display,
+                }),
+                _hold: None,
+            };
+            return Step::AskRead(read);
+        }
+        load.phase = Phase::Scanning { downloaded: false };
         Step::Scan {
             paths,
             options,
@@ -1205,12 +1274,19 @@ impl Loader {
                 download: Some(download),
             };
         }
-        load.phase = Phase::Scanning { downloaded: true };
+        let paths = vec![file];
+        let status = if counts_footer(&paths, &options) {
+            load.phase = Phase::CountingFooter;
+            COUNTING_FOOTER_STATUS
+        } else {
+            load.phase = Phase::Scanning { downloaded: true };
+            "Scanning..."
+        };
         Step::Scan {
-            paths: vec![file],
+            paths,
             options,
             display: Some(url),
-            status: "Scanning...",
+            status,
         }
     }
 
@@ -1228,7 +1304,10 @@ impl Loader {
         match (answer, &load.phase) {
             (
                 LoadAnswer::Scanned { lf, path, options },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::ReadingRecords,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingRecords,
             ) => {
                 load.phase = Phase::ReadingSchema;
                 Step::ReadSchema {
@@ -1247,7 +1326,7 @@ impl Loader {
                     path,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
             ) if load.converted.is_empty() => {
                 let read = Arc::<AtomicU64>::default();
                 load.phase = Phase::Converting {
@@ -1329,7 +1408,7 @@ impl Loader {
                     path,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
             ) => {
                 load.phase = Phase::Decompressing;
                 Step::Decompress {
@@ -1397,7 +1476,7 @@ impl Loader {
                     asked,
                     record_size,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
             ) => {
                 let from_home = load.from_home;
                 // A download is a temporary file the load owns; it has no bytes to show
@@ -1421,7 +1500,7 @@ impl Loader {
             }
             (
                 LoadAnswer::Tables { file, tables, path },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
             ) => {
                 let from_home = load.from_home;
                 let database = path.unwrap_or(file);
@@ -1565,12 +1644,19 @@ impl Loader {
                 load.path = Some(file.clone());
                 load.paths = Some(vec![file.clone()]);
                 load.recent = Some(file.clone());
-                load.phase = Phase::Scanning { downloaded: false };
+                let paths = vec![file];
+                let status = if counts_footer(&paths, &options) {
+                    load.phase = Phase::CountingFooter;
+                    COUNTING_FOOTER_STATUS
+                } else {
+                    load.phase = Phase::Scanning { downloaded: false };
+                    "Scanning input..."
+                };
                 Step::Scan {
-                    paths: vec![file],
+                    paths,
                     options,
                     display: None,
-                    status: "Scanning input...",
+                    status,
                 }
             }
             (LoadAnswer::Spooled { download, options }, Phase::Spooling { read }) => {
@@ -1616,26 +1702,37 @@ impl Loader {
         Step::Failed(Failed { message, from_home })
     }
 
-    /// The user agreed to the download: let go of the hold and fetch it.
-    #[cfg(any(feature = "http", feature = "cloud"))]
+    /// The user agreed to what the open asked: let go of the hold, and fetch the
+    /// download or start the read.
     pub(crate) fn confirmed(&mut self) -> Step {
-        let Some(load) = self
-            .load
-            .as_mut()
-            .filter(|load| matches!(load.phase, Phase::Confirming { .. }))
-        else {
+        let Some(load) = self.load.as_mut().filter(|load| load.phase.asks()) else {
             return Step::Nothing;
         };
-        // The hold goes as the phase changes: the download job the caller starts next
-        // holds the generation before anything else can look at it.
-        let Phase::Confirming { pending, .. } =
-            std::mem::replace(&mut load.phase, Phase::Downloading)
-        else {
-            unreachable!("matched just above");
-        };
-        Step::Download {
-            pending: *pending,
-            writer: load.writer.clone(),
+        // The hold goes as the phase changes: the job the caller starts next holds the
+        // generation before anything else can look at it.
+        match std::mem::replace(&mut load.phase, Phase::Scanning { downloaded: false }) {
+            Phase::ConfirmingRead { scan, .. } => {
+                let Scan {
+                    paths,
+                    options,
+                    display,
+                } = *scan;
+                Step::Scan {
+                    paths,
+                    options,
+                    display,
+                    status: "Scanning input...",
+                }
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            Phase::Confirming { pending, .. } => {
+                load.phase = Phase::Downloading;
+                Step::Download {
+                    pending: *pending,
+                    writer: load.writer.clone(),
+                }
+            }
+            _ => unreachable!("a phase that asks"),
         }
     }
 
@@ -1662,6 +1759,78 @@ impl Drop for Loader {
 /// The delimited format (CSV, TSV or PSV) `path` is read as, if it is one: `--format`
 /// when given, else the extension, looking through a compression suffix
 /// (`x.tsv.gz` is TSV).
+/// What reading `paths` would read whole into memory, by what their names and the
+/// options say (the bytes are not looked at here, on the event thread): the local
+/// files of a format read in memory, as [`FileFormat::read_mode`] says. `None` when
+/// none is.
+pub(crate) fn in_memory(paths: &[PathBuf], options: &OpenOptions) -> Option<InMemory> {
+    let mut found: Option<InMemory> = None;
+    for path in paths {
+        if !matches!(source::input_source(path), source::InputSource::Local(_)) {
+            continue;
+        }
+        let compression = options
+            .compression
+            .or_else(|| CompressionFormat::from_extension(path));
+        let format = options.format.or_else(|| match compression {
+            Some(_) => path
+                .file_stem()
+                .and_then(|stem| FileFormat::from_path(Path::new(stem))),
+            None => FileFormat::from_path(path),
+        });
+        let Some(format) = format else {
+            continue;
+        };
+        let stored = match compression {
+            Some(_) => crate::Stored::Compressed {
+                in_memory: options.decompress_in_memory,
+            },
+            None => crate::Stored::Plain,
+        };
+        // A model file's table comes from its header, which is what a URL of one is
+        // read in place for: small however large the file.
+        if format.read_mode(stored) != Some(crate::ReadMode::InMemory)
+            || format.http_file() == crate::RemoteRead::InPlace
+        {
+            continue;
+        }
+        let Some(bytes) = std::fs::metadata(path)
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+        else {
+            continue;
+        };
+        match &mut found {
+            Some(read) => {
+                read.bytes += bytes;
+                read.files += 1;
+            }
+            None => {
+                found = Some(InMemory {
+                    bytes,
+                    format,
+                    files: 1,
+                    name: path.clone(),
+                })
+            }
+        }
+    }
+    found
+}
+
+/// What the loading screen says while a CSV is counted to drop its footer rows.
+const COUNTING_FOOTER: &str = "Counting rows to skip the footer";
+/// The control bar's line for the same wait.
+const COUNTING_FOOTER_STATUS: &str = "Counting rows to skip the footer...";
+
+/// Whether the scan of `paths` counts every row first: delimited text whose footer
+/// rows are dropped (`--skip-tail-rows`).
+fn counts_footer(paths: &[PathBuf], options: &OpenOptions) -> bool {
+    options.skip_tail_rows.is_some_and(|n| n > 0)
+        && paths.iter().all(|p| delimited_format(p, options).is_some())
+}
+
 pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
     let format = options.format.or_else(|| {
         FileFormat::from_path(path).or_else(|| {
@@ -1873,6 +2042,7 @@ mod tests {
             size: 7,
             recent: Some(PathBuf::from(path)),
             shown: None,
+            warn_in_memory_above: None,
         }
     }
 
@@ -2260,6 +2430,76 @@ mod tests {
         );
     }
 
+    /// A file read whole into memory past the size that asks is put to the user before
+    /// its scan; agreeing scans it, and one in memory under the size, or read lazily,
+    /// is scanned without asking.
+    #[test]
+    fn a_large_read_into_memory_is_asked_about_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = dir.path().join("big.json");
+        std::fs::write(&json, "[{\"a\": 1}]").unwrap();
+        let csv = dir.path().join("big.csv");
+        std::fs::write(&csv, "a\n1\n").unwrap();
+        let open = |loader: &mut Loader, path: &Path, limit: u64| {
+            loader.open(OpenRequest {
+                warn_in_memory_above: Some(limit),
+                ..request(&path.to_string_lossy())
+            })
+        };
+        let mut loader = Loader::default();
+        let Step::AskRead(read) = open(&mut loader, &json, 4) else {
+            panic!("a JSON file past the size is asked about");
+        };
+        assert_eq!(read.format, FileFormat::Json);
+        assert_eq!((read.bytes, read.files), (10, 1));
+        assert!(loader.asking() && loader.awaiting_dataset() && !loader.waits());
+        assert!(matches!(loader.confirmed(), Step::Scan { ref paths, .. } if paths[0] == json));
+        assert!(!loader.asking());
+        let mut loader = Loader::default();
+        assert!(matches!(open(&mut loader, &json, 10), Step::Scan { .. }));
+        let mut loader = Loader::default();
+        assert!(matches!(open(&mut loader, &csv, 0), Step::Scan { .. }));
+        let mut loader = Loader::default();
+        let _ = open(&mut loader, &json, 0);
+        assert!(loader.retire().is_some_and(|retired| retired.asking));
+    }
+
+    /// A CSV whose footer rows are dropped counts the file in its scan, and says so;
+    /// a file of another format, or with no footer to drop, scans as ever.
+    #[test]
+    fn a_footer_to_drop_says_the_file_is_counted() {
+        let footer = |n| OpenOptions {
+            skip_tail_rows: Some(n),
+            parse_strings: Some(crate::ParseStringsTarget::All),
+            ..OpenOptions::default()
+        };
+        let mut loader = Loader::default();
+        let step = loader.open(OpenRequest {
+            options: footer(2),
+            ..request("vendor.csv")
+        });
+        assert!(
+            matches!(step, Step::Scan { status, .. } if status == COUNTING_FOOTER_STATUS),
+            "{:?}",
+            loader.current().map(|l| l.phase().label())
+        );
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            (COUNTING_FOOTER, 10)
+        );
+        for (path, n) in [("vendor.csv", 0), ("vendor.parquet", 2)] {
+            let mut loader = Loader::default();
+            let step = loader.open(OpenRequest {
+                options: footer(n),
+                ..request(path)
+            });
+            assert!(
+                matches!(step, Step::Scan { status, .. } if status != COUNTING_FOOTER_STATUS),
+                "{path}"
+            );
+        }
+    }
+
     /// Several URLs at once cannot be read, and say so.
     #[test]
     fn several_urls_end_the_session() {
@@ -2270,6 +2510,7 @@ mod tests {
             size: 0,
             recent: None,
             shown: None,
+            warn_in_memory_above: None,
         });
         assert!(matches!(step, Step::Crash(message) if message.contains("S3")));
         assert!(loader.current().is_none());

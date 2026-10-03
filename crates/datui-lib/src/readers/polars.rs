@@ -269,7 +269,7 @@ pub(crate) const PARQUET: Reader = Reader {
     ..BASE
 };
 
-/// CSV, TSV and PSV export as CSV: the export's own delimiter option says the rest.
+/// CSV, TSV and PSV each export as themselves: TSV and PSV are CSV presets.
 pub(crate) const CSV: Reader = Reader {
     #[cfg(feature = "cloud")]
     bucket_scan: Some(bucket_csv),
@@ -290,10 +290,14 @@ pub(crate) const TSV: Reader = Reader {
     // No prefix of it is read in place.
     #[cfg(feature = "cloud")]
     bucket_scan: None,
+    export: Some(ExportFormat::Tsv),
     ..CSV
 };
 
-pub(crate) const PSV: Reader = TSV;
+pub(crate) const PSV: Reader = Reader {
+    export: Some(ExportFormat::Psv),
+    ..TSV
+};
 
 pub(crate) const JSON: Reader = Reader {
     python: Some(Python {
@@ -316,7 +320,7 @@ pub(crate) const JSONL: Reader = Reader {
         call: "pl.scan_ndjson",
         eager: false,
         glob_flag: false,
-        arguments: None,
+        arguments: Some(py::ndjson_arguments),
     }),
     scan: scan_json_lines,
     export: Some(ExportFormat::Ndjson),

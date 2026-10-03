@@ -40,11 +40,16 @@ impl ExportOptions {
     /// The compression chosen for `format`; None for the formats without one.
     pub fn compression(&self, format: ExportFormat) -> Option<CompressionFormat> {
         match format {
-            ExportFormat::Csv => self.csv_compression,
+            ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Psv => self.csv_compression,
             ExportFormat::Json => self.json_compression,
             ExportFormat::Ndjson => self.ndjson_compression,
             ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => None,
         }
+    }
+
+    /// The delimiter `format` writes: a preset's own, else the one chosen for CSV.
+    pub fn delimiter(&self, format: ExportFormat) -> u8 {
+        format.preset_delimiter().unwrap_or(self.csv_delimiter)
     }
 }
 
@@ -70,7 +75,7 @@ impl ExportRequest {
     /// The route this export takes. `polars_streaming` is the user's engine
     /// setting: with it off, nothing streams.
     pub fn route(&self, polars_streaming: bool) -> Route {
-        let sinkable = matches!(self.format, ExportFormat::Csv | ExportFormat::Parquet)
+        let sinkable = (self.format.is_delimited() || self.format == ExportFormat::Parquet)
             && self.options.compression(self.format).is_none();
         if cfg!(feature = "streaming") && polars_streaming && sinkable {
             Route::Streamed
@@ -133,14 +138,16 @@ fn sink(
 
     // What the frame writers of the collected route write.
     let file_format = match format {
-        ExportFormat::Csv => FileWriteFormat::Csv(CsvWriterOptions {
-            include_header: options.csv_include_header,
-            serialize_options: Arc::new(SerializeOptions {
-                separator: options.csv_delimiter,
-                ..SerializeOptions::default()
-            }),
-            ..CsvWriterOptions::default()
-        }),
+        ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Psv => {
+            FileWriteFormat::Csv(CsvWriterOptions {
+                include_header: options.csv_include_header,
+                serialize_options: Arc::new(SerializeOptions {
+                    separator: options.delimiter(format),
+                    ..SerializeOptions::default()
+                }),
+                ..CsvWriterOptions::default()
+            })
+        }
         // `ParquetWriter` writes the newest Arrow types (string views); the
         // sink's default is the oldest.
         ExportFormat::Parquet => FileWriteFormat::Parquet(Arc::new(ParquetWriteOptions {
@@ -259,8 +266,8 @@ fn serialize(
     out: &mut impl Write,
 ) -> Result<()> {
     match format {
-        ExportFormat::Csv => CsvWriter::new(out)
-            .with_separator(options.csv_delimiter)
+        ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Psv => CsvWriter::new(out)
+            .with_separator(options.delimiter(format))
             .include_header(options.csv_include_header)
             .finish(df)?,
         ExportFormat::Parquet => {
@@ -368,7 +375,9 @@ mod tests {
             ndjson_compression: None,
         };
         match format {
-            ExportFormat::Csv => options.csv_compression = compression,
+            ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Psv => {
+                options.csv_compression = compression
+            }
             ExportFormat::Json => options.json_compression = compression,
             ExportFormat::Ndjson => options.ndjson_compression = compression,
             _ => assert!(compression.is_none()),
@@ -415,7 +424,10 @@ mod tests {
     fn read_back(bytes: Vec<u8>, format: ExportFormat) -> DataFrame {
         let cursor = std::io::Cursor::new(bytes);
         match format {
-            ExportFormat::Csv => CsvReader::new(cursor).finish(),
+            ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Psv => CsvReadOptions::default()
+                .map_parse_options(|p| p.with_separator(format.preset_delimiter().unwrap_or(b',')))
+                .into_reader_with_file_handle(cursor)
+                .finish(),
             ExportFormat::Parquet => ParquetReader::new(cursor).finish(),
             ExportFormat::Json => JsonReader::new(cursor).finish(),
             ExportFormat::Ndjson => JsonReader::new(cursor)
@@ -540,6 +552,27 @@ mod tests {
             run(lf, &request, true, |_| {}).unwrap();
             let back = read_back(std::fs::read(&path).unwrap(), format);
             assert_eq!(back.height(), 7, "{format:?}");
+        }
+    }
+
+    /// A preset writes its own delimiter, whatever was typed for CSV, on both routes.
+    #[test]
+    fn presets_write_their_delimiter() {
+        let dir = tempfile::tempdir().unwrap();
+        for (format, separator) in [(ExportFormat::Tsv, '\t'), (ExportFormat::Psv, '|')] {
+            for streaming in [false, true] {
+                let path = dir.path().join("out");
+                let request = request(&path, format, Overwrite::Replace);
+                assert_eq!(request.options.csv_delimiter, b',');
+                let lf = df!("a" => [1i64, 2], "b" => ["x", "y"]).unwrap().lazy();
+                run(lf, &request, streaming, |_| {}).unwrap();
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert_eq!(
+                    text,
+                    format!("a{separator}b\n1{separator}x\n2{separator}y\n"),
+                    "{format:?} streaming={streaming}"
+                );
+            }
         }
     }
 
@@ -763,8 +796,8 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
-    /// Uncompressed CSV and Parquet stream when the engine is on; every other
-    /// format and compression, and every export with it off, is collected.
+    /// Uncompressed CSV (and its presets) and Parquet stream when the engine is on;
+    /// every other format and compression, and every export with it off, is collected.
     #[test]
     fn only_uncompressed_csv_and_parquet_stream() {
         for (format, compression) in combinations() {
@@ -776,7 +809,7 @@ mod tests {
                 let streams = cfg!(feature = "streaming")
                     && streaming
                     && compression.is_none()
-                    && matches!(format, ExportFormat::Csv | ExportFormat::Parquet);
+                    && (format.is_delimited() || format == ExportFormat::Parquet);
                 assert_eq!(
                     request.route(streaming) == Route::Streamed,
                     streams,

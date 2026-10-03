@@ -1362,6 +1362,7 @@ const UNSET_EXAMPLES: &[(&str, &str)] = &[
     ("file_loading.temp_dir", "\"/tmp\""),
     ("file_loading.single_spine_schema", "true"),
     ("file_loading.follow_interval_ms", "250"),
+    ("file_loading.memory_warning_mb", "1024"),
     ("display.sidebar_width", "70"),
     ("theme.mode", "\"auto\""),
     ("debug.log_file", "\"~/datui.log\""),
@@ -1506,9 +1507,21 @@ pub struct FileLoadingConfig {
     pub skip_initial_space: Option<bool>,
     /// `--follow`: in milliseconds, how often a followed file is checked for new rows; on Linux, where a change is heard of as it happens, the least time between two reads. A burst of appends within one interval is one refresh. Default 250.
     pub follow_interval_ms: Option<u64>,
+    /// Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory). 0 never asks. Default 1024.
+    pub memory_warning_mb: Option<u64>,
 }
 
+/// `[file_loading] memory_warning_mb` when it is not set.
+const MEMORY_WARNING_MB: u64 = 1024;
+
 impl FileLoadingConfig {
+    /// The bytes past which a read into memory is asked about first: `memory_warning_mb`,
+    /// or 1 GiB; `None` when it is 0, which never asks.
+    pub fn memory_warning(&self) -> Option<u64> {
+        let mb = self.memory_warning_mb.unwrap_or(MEMORY_WARNING_MB);
+        (mb > 0).then(|| mb.saturating_mul(1024 * 1024))
+    }
+
     /// How often a followed file is checked: `follow_interval_ms`, or 250 ms.
     pub fn follow_interval(&self) -> std::time::Duration {
         self.follow_interval_ms
@@ -1598,6 +1611,10 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "follow_interval_ms",
         "--follow: in milliseconds, how often a followed file is checked for new rows, or on Linux the least time between two reads; a burst of appends within one interval is one refresh (default 250, 10 to 60000)",
+    ),
+    (
+        "memory_warning_mb",
+        "Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel, ...); 0 never asks (default 1024)",
     ),
 ];
 

@@ -465,6 +465,8 @@ pub enum Source {
         call: String,
         after: Vec<String>,
         notes: Vec<String>,
+        /// Imports the call needs besides Polars: `import sqlite3`.
+        imports: Vec<&'static str>,
     },
     /// Data no reader call can name — standard input, a frame handed over, a format
     /// Polars does not read — left to the user as `df = ...`, with why.
@@ -476,13 +478,22 @@ pub struct OpenRecord<'a> {
     /// The paths asked for; `None` for a frame handed over.
     pub paths: Option<&'a [PathBuf]>,
     pub options: &'a OpenOptions,
+    /// The format the open read, after sniffing and spec matching: what the scan
+    /// chose, which the name may not say (a `.bin` DataFlash log, a part file with no
+    /// extension). Before `--format` and the extension.
+    pub format: Option<FileFormat>,
+    /// How datui read the data ([`crate::ReadMode`]), as the Info panel's `Read:` says.
+    pub read_mode: Option<crate::ReadMode>,
     /// The data as loaded.
     pub schema: &'a Schema,
     /// Each object a remote dataset reads, for the format of a prefix.
     pub remote_objects: Vec<String>,
-    /// S3 endpoint and region in effect, for a bucket that is not AWS's.
+    /// S3 endpoint and region in effect, for a bucket that is not AWS's: the source's
+    /// own for an `s3://<id>@bucket` URL.
     pub s3_endpoint: Option<String>,
     pub s3_region: Option<String>,
+    /// The object store was read with no signature: a public bucket.
+    pub unsigned: bool,
     /// Columns read as text from every file.
     pub read_as_text: Vec<String>,
     /// The binary format spec the data was read through, by name.
@@ -497,15 +508,22 @@ fn is_url(path: &Path) -> bool {
 /// for HTTP the query string and fragment, where a signed URL keeps its signature
 /// or a token. The second value says whether anything was taken out.
 fn without_secrets(url: &str) -> (String, bool) {
+    // An S3 source ID before the bucket is datui's name for the source, not a user.
+    let url = &*crate::source::split_source_id(url).1;
     let Some(scheme_end) = url.find("://").map(|i| i + 3) else {
         return (url.to_string(), false);
     };
     let (scheme, rest) = url.split_at(scheme_end);
     let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, path) = rest.split_at(host_end);
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
+    // `abfss://container@account...` names the container there.
+    let azure = ["abfs://", "abfss://"]
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s));
+    let host = match authority.rsplit_once('@') {
+        Some((_, host)) if !azure => host,
+        _ => authority,
+    };
     let http = scheme.eq_ignore_ascii_case("http://") || scheme.eq_ignore_ascii_case("https://");
     let path = match path.find(['?', '#']) {
         Some(i) if http => &path[..i],
@@ -516,10 +534,10 @@ fn without_secrets(url: &str) -> (String, bool) {
     (kept, cut)
 }
 
-/// The format a file is read as: `--format`, else its extension, looking through a
-/// compression extension (`.csv.gz` is CSV).
-fn file_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
-    options.format.or_else(|| {
+/// The format a file is read as: what the open read, else `--format`, else its
+/// extension, looking through a compression extension (`.csv.gz` is CSV).
+fn file_format(path: &Path, record: &OpenRecord) -> Option<FileFormat> {
+    record.format.or(record.options.format).or_else(|| {
         FileFormat::from_path(path).or_else(|| {
             CompressionFormat::from_extension(path)
                 .and_then(|_| path.file_stem())
@@ -561,7 +579,7 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
     let text = path.to_string_lossy().to_string();
     if is_url(path) {
         let (text, _) = without_secrets(&text);
-        if let Some(format) = file_format(Path::new(&text), record.options) {
+        if let Some(format) = file_format(Path::new(&text), record) {
             let pattern = crate::source::has_glob_chars(Path::new(&text));
             return Some(Target {
                 text,
@@ -573,8 +591,8 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
         }
         // A prefix: scanned whole, in the format of what it holds.
         let format = record
-            .options
             .format
+            .or(record.options.format)
             .or_else(|| commonest_format(record.remote_objects.iter().map(String::as_str)))?;
         let base = text.trim_end_matches('/');
         let ext = format_extension(format)?;
@@ -602,8 +620,8 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
         }
         let has_dirs = entries.iter().any(|e| e.path().is_dir());
         let format = record
-            .options
             .format
+            .or(record.options.format)
             .or_else(|| commonest_format(names.iter().map(String::as_str)));
         // The directory is there, so its name is no pattern, `[` and all (#625).
         let base = crate::source::escape_glob(text.trim_end_matches(['/', '\\']));
@@ -628,7 +646,7 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
             literal: false,
         });
     }
-    let format = file_format(path, record.options)?;
+    let format = file_format(path, record)?;
     let pattern = crate::source::expands_as_glob(path);
     Some(Target {
         // Polars' scans read every name as a pattern: an existing `d[1].csv` is that
@@ -759,7 +777,7 @@ pub(crate) struct Call<'a> {
     pub names: &'a [String],
     /// Read from below a prefix or directory, as Hive partitions may be.
     pub below: bool,
-    /// The S3 settings a bucket that is not AWS's needs, when one is read.
+    /// The `storage_options` argument the object store read needs, when one is read.
     pub storage: Option<String>,
     pub args: Vec<String>,
     pub after: Vec<String>,
@@ -769,14 +787,61 @@ pub(crate) struct Call<'a> {
 }
 
 impl Call<'_> {
-    /// The S3 settings, for a call that reads from S3.
+    /// The store's settings, for a call that reads from an object store.
     fn storage_for(&self, names: impl IntoIterator<Item = impl AsRef<str>>) -> Option<String> {
         names
             .into_iter()
-            .any(|n| n.as_ref().starts_with("s3://"))
+            .any(|n| store_scheme(n.as_ref()).is_some())
             .then(|| self.storage.clone())
             .flatten()
     }
+}
+
+/// The object store `name` is in: `s3`, `gs` or `azure`; `None` for a local path or
+/// an HTTP(S) URL.
+fn store_scheme(name: &str) -> Option<&'static str> {
+    let (scheme, _) = name.split_once("://")?;
+    match scheme.to_ascii_lowercase().as_str() {
+        "s3" | "s3a" => Some("s3"),
+        "gs" | "gcs" => Some("gs"),
+        "az" | "adl" | "azure" | "abfs" | "abfss" => Some("azure"),
+        _ => None,
+    }
+}
+
+/// `storage_options` for reading `name`, with what the open read it with that is not a
+/// secret: S3's endpoint and region, an Azure account, and no signature for a public
+/// place. Credentials stay where Polars finds them, as datui found them.
+fn storage_options(name: &str, record: &OpenRecord, endpoint: Option<&str>) -> Option<String> {
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    match store_scheme(name)? {
+        "s3" => {
+            pairs.extend(endpoint.map(|e| ("aws_endpoint_url", e.to_string())));
+            pairs.extend(record.s3_region.clone().map(|r| ("aws_region", r)));
+        }
+        "azure" => {
+            pairs.extend(
+                crate::source::azure_parts(name).map(|(account, ..)| ("account_name", account)),
+            );
+        }
+        _ => {}
+    }
+    if record.unsigned {
+        pairs.push(("skip_signature", "true".to_string()));
+    }
+    let pairs: Vec<String> = pairs
+        .iter()
+        .map(|(k, v)| format!("{}: {}", py_str(k), py_str(v)))
+        .collect();
+    (!pairs.is_empty()).then(|| format!("storage_options={{{}}}", pairs.join(", ")))
+}
+
+/// NDJSON: the store's settings.
+pub(crate) fn ndjson_arguments(call: &mut Call<'_>) -> Option<Source> {
+    if let Some(s) = call.storage_for(call.names) {
+        call.args.push(s);
+    }
+    None
 }
 
 fn python_of(format: FileFormat) -> Option<&'static Python> {
@@ -798,8 +863,10 @@ pub(crate) fn parquet_arguments(call: &mut Call<'_>) -> Option<Source> {
 pub(crate) fn csv_arguments(call: &mut Call<'_>) -> Option<Source> {
     let options = call.record.options;
     let names = call.names.join(", ");
+    // Polars takes a comment prefix of up to five characters.
+    let comment = options.comment_char.as_deref().filter(|c| !c.is_empty());
     let dialect: Vec<&str> = [
-        (options.comment_char.is_some(), "--comment-char"),
+        (comment.is_some_and(|c| c.len() > 5), "--comment-char"),
         (options.header_rows().is_some(), "--header-rows"),
         (options.skip_initial_space, "--skip-initial-space"),
     ]
@@ -824,6 +891,9 @@ pub(crate) fn csv_arguments(call: &mut Call<'_>) -> Option<Source> {
             "separator={}",
             py_str(&(separator as char).to_string())
         ));
+    }
+    if let Some(prefix) = comment {
+        args.push(format!("comment_prefix={}", py_str(prefix)));
     }
     if options.has_header == Some(false) {
         args.push("has_header=False".to_string());
@@ -896,6 +966,7 @@ pub(crate) fn arrow_arguments(call: &mut Call<'_>) -> Option<Source> {
                 call: read,
                 after,
                 notes: std::mem::take(&mut call.notes),
+                imports: Vec::new(),
             })
         }
         None => {
@@ -922,6 +993,112 @@ pub(crate) fn excel_arguments(call: &mut Call<'_>) -> Option<Source> {
     None
 }
 
+/// `name` as an SQL identifier, quoted.
+fn sql_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// The source a format read whole by a call of its own, with the steps the open
+/// recorded after it.
+fn whole(call: &mut Call<'_>, read: String, imports: Vec<&'static str>) -> Source {
+    call.notes.extend(read_whole_note(call.record, &read));
+    let mut after = std::mem::take(&mut call.after);
+    after.extend(call.skip_tail.take());
+    Source::Read {
+        call: read,
+        after,
+        notes: std::mem::take(&mut call.notes),
+        imports,
+    }
+}
+
+/// What the script's read costs where datui's did not: the `Read:` fact the Info
+/// panel states, beside the call that reads the file whole.
+fn read_whole_note(record: &OpenRecord, call: &str) -> Option<String> {
+    let name = call.split('(').next().unwrap_or(call);
+    (record.read_mode == Some(crate::ReadMode::Lazy)).then(|| {
+        format!(
+            "Read: {} in datui; {name} reads the file whole into memory.",
+            crate::ReadMode::Lazy.label()
+        )
+    })
+}
+
+/// SQLite: the table on screen, read through Python's own `sqlite3`.
+pub(crate) fn sqlite_arguments(call: &mut Call<'_>) -> Option<Source> {
+    let [file] = call.names else {
+        return None;
+    };
+    let Some(table) = call.record.options.table.as_deref() else {
+        return Some(Source::Placeholder {
+            what: format!("{file}: datui could not tell which table it read; load it here."),
+        });
+    };
+    if call.paths.iter().any(|p| is_url(p)) {
+        return Some(Source::Placeholder {
+            what: format!(
+                "{file} --table {table}: sqlite3 opens a local file; download it and read it \
+                 with pl.read_database."
+            ),
+        });
+    }
+    call.notes.push(
+        "datui types a table's columns from their declared types; Polars infers them from \
+         the values."
+            .to_string(),
+    );
+    let query = format!("SELECT * FROM {}", sql_ident(table));
+    let read = format!(
+        "pl.read_database({}, sqlite3.connect({})).lazy()",
+        py_str(&query),
+        py_str(file)
+    );
+    Some(whole(call, read, vec!["import sqlite3"]))
+}
+
+/// NumPy: the array on screen, loaded with NumPy and named as datui names its columns.
+pub(crate) fn numpy_arguments(call: &mut Call<'_>) -> Option<Source> {
+    let [file] = call.names else {
+        return None;
+    };
+    let table = call.record.options.table.as_deref();
+    let archive = table.is_some() || file.to_ascii_lowercase().ends_with(".npz");
+    let array = match table {
+        Some(name) => format!("np.load({})[{}]", py_str(file), py_str(name)),
+        // An archive of one array opens it.
+        None if archive => format!("next(iter(np.load({}).values()))", py_str(file)),
+        None => format!("np.load({})", py_str(file)),
+    };
+    let names: Vec<String> = call
+        .record
+        .schema
+        .iter_names()
+        .map(|n| n.to_string())
+        .collect();
+    // A nested field is a struct in Polars and `outer.inner` columns in datui.
+    let schema = if names.iter().any(|n| n.contains('.')) {
+        call.notes.push(
+            "datui names a nested field's columns outer.inner; Polars keeps the field as a struct."
+                .to_string(),
+        );
+        String::new()
+    } else {
+        format!(", schema={}", py_names(&names))
+    };
+    let read = format!("pl.from_numpy({array}{schema}, orient=\"row\").lazy()");
+    Some(whole(call, read, vec!["import numpy as np"]))
+}
+
+/// `names`, and the table picked inside them where the open named one, as the
+/// placeholders say what to load: `log.bin --table GPS`.
+fn named_with_table(names: &[String], record: &OpenRecord) -> String {
+    let names = names.join(", ");
+    match record.options.table.as_deref() {
+        Some(table) => format!("{names} --table {table}"),
+        None => names,
+    }
+}
+
 /// The reader for the open, with the options datui gave its own.
 pub fn source(record: &OpenRecord) -> Source {
     let Some(paths) = record.paths else {
@@ -929,6 +1106,15 @@ pub fn source(record: &OpenRecord) -> Source {
             what: "The data datui was handed: load it here as a DataFrame or LazyFrame."
                 .to_string(),
         };
+    };
+    // Standard input recorded with `--tee` is read again from its file.
+    let teed;
+    let paths = match (&record.options.tee, paths) {
+        (Some(tee), [one]) if crate::stdin::is_stdin(one) => {
+            teed = [tee.clone()];
+            &teed[..]
+        }
+        _ => paths,
     };
     if paths.iter().any(|p| crate::stdin::is_stdin(p)) {
         return Source::Placeholder {
@@ -952,8 +1138,15 @@ pub fn source(record: &OpenRecord) -> Source {
     }
     let targets: Option<Vec<Target>> = paths.iter().map(|p| reader_target(p, record)).collect();
     let Some(targets) = targets.filter(|t| !t.is_empty()) else {
+        let names: Vec<String> = paths
+            .iter()
+            .map(|p| without_secrets(&p.to_string_lossy()).0)
+            .collect();
         return Source::Placeholder {
-            what: "datui could not name a Polars reader for this data: load it here.".to_string(),
+            what: format!(
+                "{}: datui could not name a Polars reader for this data; load it here.",
+                named_with_table(&names, record)
+            ),
         };
     };
     let format = targets[0].format;
@@ -983,8 +1176,9 @@ pub fn source(record: &OpenRecord) -> Source {
     let Some(python) = python else {
         return Source::Placeholder {
             what: format!(
-                "{}: Polars has no reader for this format; load it here.",
-                names.join(", ")
+                "{}: Polars has no reader for {} files; load it here.",
+                named_with_table(&names, record),
+                format.title()
             ),
         };
     };
@@ -1010,16 +1204,18 @@ pub fn source(record: &OpenRecord) -> Source {
                 .to_string(),
         );
     }
-    let storage = {
-        let mut pairs = Vec::new();
-        if let Some((endpoint, _)) = &endpoint {
-            pairs.push(format!("\"aws_endpoint_url\": {}", py_str(endpoint)));
-        }
-        if let Some(region) = &record.s3_region {
-            pairs.push(format!("\"aws_region\": {}", py_str(region)));
-        }
-        (!pairs.is_empty()).then(|| format!("storage_options={{{}}}", pairs.join(", ")))
-    };
+    let in_store = names.iter().find(|n| store_scheme(n).is_some());
+    let storage = in_store
+        .and_then(|name| storage_options(name, record, endpoint.as_ref().map(|(e, _)| e.as_str())));
+    // The readers that read a file whole take no `storage_options`.
+    if let Some(name) = in_store
+        && python.eager
+    {
+        notes.push(format!(
+            "{} reads no object store: download {name} and read it from disk.",
+            python.call
+        ));
+    }
     let mut call = Call {
         record,
         paths,
@@ -1054,9 +1250,15 @@ pub fn source(record: &OpenRecord) -> Source {
     }
     let mut call = format!("{}({})", python.call, args.join(", "));
     if python.eager {
+        notes.extend(read_whole_note(record, &call));
         call.push_str(".lazy()");
     }
-    Source::Read { call, after, notes }
+    Source::Read {
+        call,
+        after,
+        notes,
+        imports: Vec::new(),
+    }
 }
 
 /// `--null-values` as `scan_csv` takes them: one value or a list for every column,
@@ -1137,9 +1339,18 @@ pub struct Script {
 
 impl Script {
     pub fn render(&self) -> String {
-        let mut out = String::from("import polars as pl\n\n");
+        let mut out = String::from("import polars as pl\n");
+        if let Source::Read { imports, .. } = &self.source {
+            for import in imports {
+                out.push_str(import);
+                out.push('\n');
+            }
+        }
+        out.push('\n');
         let (head, mut lines) = match &self.source {
-            Source::Read { call, after, notes } => {
+            Source::Read {
+                call, after, notes, ..
+            } => {
                 for note in notes {
                     out.push_str(&py_comment(note));
                     out.push('\n');
@@ -1206,6 +1417,7 @@ mod tests {
                 call: "pl.scan_parquet(\"sales.parquet\")".to_string(),
                 after: Vec::new(),
                 notes: Vec::new(),
+                imports: Vec::new(),
             },
             steps,
         }
@@ -1406,6 +1618,9 @@ mod tests {
             remote_objects: Vec::new(),
             s3_endpoint: None,
             s3_region: None,
+            unsigned: false,
+            format: None,
+            read_mode: None,
             read_as_text: Vec::new(),
             spec: None,
         };
@@ -1436,6 +1651,9 @@ mod tests {
                 remote_objects: Vec::new(),
                 s3_endpoint: None,
                 s3_region: None,
+                unsigned: false,
+                format: None,
+                read_mode: None,
                 read_as_text: Vec::new(),
                 spec: spec.map(str::to_string),
             };
@@ -1454,7 +1672,7 @@ mod tests {
         placeholder(&[PathBuf::from("drive.nmea")], &plain, None);
         let csv = [PathBuf::from("log.csv")];
         let mut comment = OpenOptions::new();
-        comment.comment_char = Some("#".into());
+        comment.comment_char = Some("######".into());
         assert!(placeholder(&csv, &comment, None).contains("--comment-char"));
         let mut rows = OpenOptions::new();
         rows.header_rows = vec![3, 2];
@@ -1462,6 +1680,173 @@ mod tests {
         let mut space = OpenOptions::new();
         space.skip_initial_space = true;
         assert!(placeholder(&csv, &space, None).contains("--skip-initial-space"));
+    }
+
+    fn record_for<'a>(
+        paths: &'a [PathBuf],
+        options: &'a OpenOptions,
+        schema: &'a Schema,
+    ) -> OpenRecord<'a> {
+        OpenRecord {
+            paths: Some(paths),
+            options,
+            format: None,
+            read_mode: None,
+            schema,
+            remote_objects: Vec::new(),
+            s3_endpoint: None,
+            s3_region: None,
+            unsigned: false,
+            read_as_text: Vec::new(),
+            spec: None,
+        }
+    }
+
+    fn call_of(source: Source) -> (String, Vec<String>) {
+        match source {
+            Source::Read { call, notes, .. } => (call, notes),
+            Source::Placeholder { what } => panic!("a placeholder: {what}"),
+        }
+    }
+
+    /// Every reader of an object store gets its settings: S3's endpoint and region
+    /// for NDJSON as for Parquet, an Azure account, and no signature for a public
+    /// place. A reader that reads a file whole says it reads no store.
+    #[test]
+    fn every_store_reader_gets_its_storage_options() {
+        let schema = Schema::default();
+        let options = OpenOptions::new();
+        let s3 = [PathBuf::from("s3://b/logs/a.jsonl")];
+        let mut record = record_for(&s3, &options, &schema);
+        record.s3_endpoint = Some("http://localhost:9000".into());
+        record.s3_region = Some("us-east-1".into());
+        assert_eq!(
+            call_of(source(&record)).0,
+            "pl.scan_ndjson(\"s3://b/logs/a.jsonl\", storage_options={\"aws_endpoint_url\": \
+             \"http://localhost:9000\", \"aws_region\": \"us-east-1\"})"
+        );
+        let gcs = [PathBuf::from("gs://public/x.parquet")];
+        let mut record = record_for(&gcs, &options, &schema);
+        record.unsigned = true;
+        assert_eq!(
+            call_of(source(&record)).0,
+            "pl.scan_parquet(\"gs://public/x.parquet\", storage_options={\"skip_signature\": \"true\"})"
+        );
+        let azure = [PathBuf::from(
+            "abfss://data@acct.dfs.core.windows.net/t/x.csv",
+        )];
+        let (call, notes) = call_of(source(&record_for(&azure, &options, &schema)));
+        assert!(
+            call.starts_with("pl.scan_csv(\"abfss://data@acct.dfs.core.windows.net/t/x.csv\", ")
+                && call.contains("storage_options={\"account_name\": \"acct\"}"),
+            "{call}"
+        );
+        assert!(
+            notes.is_empty(),
+            "the container is no credential: {notes:?}"
+        );
+        let json = [PathBuf::from("s3://b/x.json")];
+        let (call, notes) = call_of(source(&record_for(&json, &options, &schema)));
+        assert_eq!(call, "pl.read_json(\"s3://b/x.json\").lazy()");
+        assert!(notes[0].contains("reads no object store"), "{notes:?}");
+    }
+
+    /// An `s3://<id>@bucket` URL is read as the plain URL, with no word of a
+    /// credential left out: the ID is datui's name for the source.
+    #[test]
+    fn a_source_id_is_no_credential() {
+        assert_eq!(
+            without_secrets("s3://minio@bucket/x.parquet"),
+            ("s3://bucket/x.parquet".to_string(), false)
+        );
+        assert_eq!(
+            without_secrets("abfss://c@a.dfs.core.windows.net/x"),
+            ("abfss://c@a.dfs.core.windows.net/x".to_string(), false)
+        );
+    }
+
+    /// Standard input recorded with `--tee` is read again from the file.
+    #[test]
+    fn a_teed_pipe_reads_its_file() {
+        let schema = Schema::default();
+        let mut options = OpenOptions::new();
+        options.tee = Some(PathBuf::from("rec.csv"));
+        let stdin = [PathBuf::from("-")];
+        let mut record = record_for(&stdin, &options, &schema);
+        record.format = Some(FileFormat::Csv);
+        assert_eq!(
+            call_of(source(&record)).0,
+            "pl.scan_csv(\"rec.csv\", try_parse_dates=True)"
+        );
+    }
+
+    /// A table datui read lazily that the script reads whole says so, as the Info
+    /// panel's `Read:` line does; one datui read in memory too says nothing more.
+    #[test]
+    fn a_whole_read_of_a_lazy_table_says_so() {
+        let schema = Schema::default();
+        let mut options = OpenOptions::new();
+        options.table = Some("orders".into());
+        let db = [PathBuf::from("shop.db")];
+        let mut record = record_for(&db, &options, &schema);
+        record.format = Some(FileFormat::Sqlite);
+        record.read_mode = Some(crate::ReadMode::Lazy);
+        let (call, notes) = call_of(source(&record));
+        assert!(call.starts_with("pl.read_database("), "{call}");
+        assert!(
+            notes.contains(
+                &"Read: lazy in datui; pl.read_database reads the file whole into memory."
+                    .to_string()
+            ),
+            "{notes:?}"
+        );
+        let json = [PathBuf::from("a.json")];
+        let mut record = record_for(&json, &options, &schema);
+        record.read_mode = Some(crate::ReadMode::InMemory);
+        assert!(call_of(source(&record)).1.is_empty());
+    }
+
+    /// `--comment-char` is Polars' `comment_prefix`.
+    #[test]
+    fn a_comment_character_is_the_comment_prefix() {
+        let schema = Schema::default();
+        let mut options = OpenOptions::new();
+        options.comment_char = Some("#".into());
+        let csv = [PathBuf::from("log.csv")];
+        assert_eq!(
+            call_of(source(&record_for(&csv, &options, &schema))).0,
+            "pl.scan_csv(\"log.csv\", comment_prefix=\"#\", try_parse_dates=True)"
+        );
+    }
+
+    /// A file known by its bytes, read as a format Polars has no reader for: the
+    /// placeholder names the format and the table on screen.
+    #[test]
+    fn a_placeholder_names_the_format_read_and_the_table() {
+        let schema = Schema::default();
+        let paths = vec![PathBuf::from("flight.bin")];
+        let mut options = OpenOptions::new();
+        options.table = Some("GPS".into());
+        let record = OpenRecord {
+            paths: Some(&paths),
+            options: &options,
+            format: Some(FileFormat::Dataflash),
+            read_mode: None,
+            schema: &schema,
+            remote_objects: Vec::new(),
+            s3_endpoint: None,
+            s3_region: None,
+            unsigned: false,
+            read_as_text: Vec::new(),
+            spec: None,
+        };
+        let Source::Placeholder { what } = source(&record) else {
+            panic!("Polars reads no DataFlash");
+        };
+        assert_eq!(
+            what,
+            "flight.bin --table GPS: Polars has no reader for DataFlash files; load it here."
+        );
     }
 
     #[test]
@@ -1486,6 +1871,9 @@ mod tests {
             remote_objects: Vec::new(),
             s3_endpoint: Some("http://key:secret@localhost:9000".into()),
             s3_region: None,
+            unsigned: false,
+            format: None,
+            read_mode: None,
             read_as_text: Vec::new(),
             spec: None,
         };
@@ -1514,6 +1902,9 @@ mod tests {
             remote_objects: vec!["s3://b/p/year=2024/a.parquet".into()],
             s3_endpoint: Some("http://localhost:9000".into()),
             s3_region: None,
+            unsigned: false,
+            format: None,
+            read_mode: None,
             read_as_text: Vec::new(),
             spec: None,
         };

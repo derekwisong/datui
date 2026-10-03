@@ -51,6 +51,12 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
         ))
     }),
     scan,
+    python: Some(crate::python_script::Python {
+        call: "pl.from_numpy",
+        eager: true,
+        glob_flag: false,
+        arguments: Some(crate::python_script::numpy_arguments),
+    }),
     signatures: &[
         crate::readers::Signature {
             says: |head, _| looks_like(head),

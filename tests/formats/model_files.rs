@@ -424,7 +424,7 @@ mod remote {
         assert_eq!(wire.bytes, FIRST_SAFETENSORS_RANGE, "{wire:?}");
         assert_eq!(frame(&app).height(), 4);
         assert!(says(&model_tab(&app), "4 tensors"));
-        assert!(!app.awaiting_download_confirmation(), "nothing to download");
+        assert!(!app.awaiting_open_confirmation(), "nothing to download");
     }
 
     /// Over HTTP, a GGUF header is read forward in ranges until its tensor infos end:
@@ -566,7 +566,7 @@ mod remote {
         let url = format!("{}/lake/tiny.safetensors", s3.endpoint);
         let mut next = Some(AppEvent::Open(vec![PathBuf::from(&url)], options));
         // The question holds the open, so the wait is for it rather than for quiet.
-        while app.error_message().is_none() && !app.awaiting_download_confirmation() {
+        while app.error_message().is_none() && !app.awaiting_open_confirmation() {
             let event = next
                 .take()
                 .or_else(|| next_event(&app, &rx))

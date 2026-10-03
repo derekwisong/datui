@@ -9161,8 +9161,12 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
         // and the format's last option is gone, a row extra and a gap opens up.
         // Either way this row is no longer the one above the checkbox.
         let last_of_its_own = match format {
-            // All three end on their compression row.
-            ExportFormat::Csv | ExportFormat::Json | ExportFormat::Ndjson => "Compression:",
+            // These end on their compression row.
+            ExportFormat::Csv
+            | ExportFormat::Tsv
+            | ExportFormat::Psv
+            | ExportFormat::Json
+            | ExportFormat::Ndjson => "Compression:",
             // No options of their own, so the checkbox sits right under the path.
             ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => "Path:",
         };
@@ -9710,7 +9714,7 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
 /// used to quit datui, and Ctrl+O was swallowed while it was up, which made a remote
 /// open the one thing in the app you could not back out of.
 #[cfg(feature = "http")]
-fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
+fn app_awaiting_open_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     // Refused immediately, so the size probe does not sit on its timeout.
@@ -9732,7 +9736,7 @@ fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
     // time Windows had run them. What is being asserted is that datui asks before
     // downloading, not that it asks within any particular time.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !app.awaiting_download_confirmation() && std::time::Instant::now() < deadline {
+    while !app.awaiting_open_confirmation() && std::time::Instant::now() < deadline {
         while let Ok(ev) = rx.try_recv() {
             if let Some(follow_up) = app.event(&ev) {
                 app.event(&follow_up);
@@ -9746,9 +9750,9 @@ fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
 #[cfg(feature = "http")]
 #[test]
 fn test_declining_a_download_goes_home_instead_of_quitting() {
-    let (mut app, _rx) = app_awaiting_download_confirmation();
+    let (mut app, _rx) = app_awaiting_open_confirmation();
     assert!(
-        app.awaiting_download_confirmation(),
+        app.awaiting_open_confirmation(),
         "opening a remote URL should ask before downloading"
     );
 
@@ -9766,14 +9770,14 @@ fn test_declining_a_download_goes_home_instead_of_quitting() {
         InputMode::Home,
         "declining a download should leave the user at home"
     );
-    assert!(!app.awaiting_download_confirmation());
+    assert!(!app.awaiting_open_confirmation());
 }
 
 #[cfg(feature = "http")]
 #[test]
 fn test_ctrl_o_escapes_the_download_confirmation() {
-    let (mut app, _rx) = app_awaiting_download_confirmation();
-    assert!(app.awaiting_download_confirmation());
+    let (mut app, _rx) = app_awaiting_open_confirmation();
+    assert!(app.awaiting_open_confirmation());
 
     app.event(&ctrl_o());
 
@@ -9783,7 +9787,7 @@ fn test_ctrl_o_escapes_the_download_confirmation() {
         "Ctrl+O should work while the download confirmation is up"
     );
     assert!(
-        !app.awaiting_download_confirmation(),
+        !app.awaiting_open_confirmation(),
         "leaving should clear the pending download, not leave it armed"
     );
 }
@@ -16312,7 +16316,7 @@ fn settle_from(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: AppEvent) {
         match next.take() {
             Some(ev) => next = app.event(&ev),
             // A download is asked about first; Yes has the focus.
-            None if app.awaiting_download_confirmation() => next = Some(key(KeyCode::Enter)),
+            None if app.awaiting_open_confirmation() => next = Some(key(KeyCode::Enter)),
             None => match next_event(app, rx) {
                 Some(ev) => next = Some(ev),
                 None => return,
@@ -16474,7 +16478,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
         assert!(Instant::now() < deadline, "the first KiB never landed");
         next = match next.take() {
             Some(event) => app.event(&event),
-            None if app.awaiting_download_confirmation() => Some(key(KeyCode::Enter)),
+            None if app.awaiting_open_confirmation() => Some(key(KeyCode::Enter)),
             None => rx.recv_timeout(Duration::from_millis(10)).ok(),
         };
     }
@@ -16545,7 +16549,7 @@ fn quitting_mid_http_download_removes_the_partial_file() {
         assert!(Instant::now() < deadline, "the first KiB never landed");
         next = match next.take() {
             Some(event) => app.event(&event),
-            None if app.awaiting_download_confirmation() => Some(key(KeyCode::Enter)),
+            None if app.awaiting_open_confirmation() => Some(key(KeyCode::Enter)),
             None => rx.recv_timeout(Duration::from_millis(10)).ok(),
         };
     }
@@ -22895,6 +22899,34 @@ fn test_copy_as_python_reads_a_csv_as_datui_does() {
     }
 }
 
+/// A logger's CSV with comment lines before its header and among its rows, read
+/// with `--comment-char`: the script reads it with `comment_prefix` and computes
+/// datui's rows.
+#[test]
+fn test_copy_as_python_skips_comment_lines_as_datui_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("logger.csv");
+    std::fs::write(
+        &path,
+        "# logger 7\n# firmware 2.1\nt,v\n1,10\n# gap\n2,20\n3,30\n",
+    )
+    .unwrap();
+    let options = OpenOptions {
+        comment_char: Some("#".to_string()),
+        ..OpenOptions::default()
+    };
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], options);
+    pump_until_idle(&mut app, &rx, &tx);
+    let Some((rows, script)) = run_python_script(&app) else {
+        eprintln!("skipped: no .venv to run the scripts with");
+        return;
+    };
+    assert!(script.contains("comment_prefix=\"#\""), "{script}");
+    assert_eq!(rows, view_csv(&app), "{script}");
+}
+
 /// NDJSON with dates held as text: the script types them as datui did.
 #[test]
 fn test_copy_as_python_types_json_dates_as_datui_does() {
@@ -23017,6 +23049,144 @@ fn test_copy_as_python_reads_streams_beside_ipc_files() {
         "{script}"
     );
     assert_eq!(rows, view_csv(&app), "{script}");
+}
+
+/// Dropping footer rows counts the whole file before the first row: the loading
+/// screen and the control bar say so while it does.
+#[test]
+fn test_a_footer_count_says_so_on_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vendor.csv");
+    std::fs::write(&path, "a,b\n1,2\n3,4\nTOTAL,6\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let options = OpenOptions {
+        skip_tail_rows: Some(1),
+        ..OpenOptions::default()
+    };
+    let mut next = app.event(&AppEvent::Open(vec![path], options));
+    let area = Rect::new(0, 0, 100, 24);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains("Counting rows to skip the footer"),
+        "{screen}"
+    );
+    while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+        next = app.event(&event);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 2);
+}
+
+/// A file read whole into memory past `[file_loading] memory_warning_mb` is put to
+/// the user before the read: Enter reads it, Esc goes home without reading, and 0
+/// never asks.
+#[test]
+fn test_a_large_in_memory_read_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.json");
+    // Over 1 MiB of JSON.
+    let rows: Vec<String> = (0..40_000)
+        .map(|i| format!("{{\"id\":{i},\"name\":\"row number {i}\"}}"))
+        .collect();
+    std::fs::write(&path, format!("[{}]", rows.join(","))).unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 1024 * 1024);
+    let app_with = |mb: u64| {
+        let mut config = datui::AppConfig::default();
+        config.file_loading.memory_warning_mb = Some(mb);
+        let theme = datui::Theme::from_config(&config.theme).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
+        (app, rx, tx)
+    };
+    // Opened until the question is up, as a download's is: the open waits on it.
+    let ask = |app: &mut App, rx: &mpsc::Receiver<AppEvent>| {
+        let mut next = Some(AppEvent::Open(vec![path.clone()], OpenOptions::default()));
+        while !app.awaiting_open_confirmation() {
+            let event = next
+                .take()
+                .or_else(|| next_event(app, rx))
+                .expect("the open asks");
+            next = app.event(&event);
+        }
+    };
+
+    let (mut app, rx, tx) = app_with(1);
+    ask(&mut app, &rx);
+    assert!(app.confirmation_modal.active, "the read is asked about");
+    let message = app.confirmation_modal.message.clone();
+    assert!(
+        message.starts_with("big.json: JSON reads ") && message.contains("into memory"),
+        "{message}"
+    );
+    assert!(app.data_table_state.is_none(), "nothing was read");
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+        next = app.event(&event);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 40_000);
+
+    let (mut app, rx, _tx) = app_with(1);
+    ask(&mut app, &rx);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    drain_events(&mut app, &rx);
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(app.data_table_state.is_none(), "declined, nothing was read");
+
+    let (mut app, rx, _tx) = app_with(0);
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    assert!(!app.confirmation_modal.active, "0 never asks");
+    assert!(app.data_table_state.is_some());
+}
+
+/// A file known by its bytes rather than its name, an extensionless Parquet file:
+/// Copy as Python reads it as Parquet and the export defaults to Parquet, from the
+/// format the open read rather than the name.
+#[test]
+fn test_a_sniffed_file_copies_and_exports_as_the_format_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blob");
+    let mut df = df!("k" => ["a", "b", "a"], "v" => [1i64, 2, 3]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.read_as(), Some(datui::FileFormat::Parquet));
+    let script = app.python_script(state);
+    assert!(
+        script.contains(&format!(
+            "pl.scan_parquet({:?})",
+            path.display().to_string()
+        )),
+        "{script}"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.export_modal.active);
+    assert_eq!(
+        app.export_modal.selected_format,
+        datui::export_modal::ExportFormat::Parquet
+    );
+    if let Some((rows, script)) = run_python_script(&app) {
+        assert_eq!(rows, view_csv(&app), "{script}");
+    }
 }
 
 /// The query language's `/` and `%` floor-divide two whole numbers, as Polars' `/`

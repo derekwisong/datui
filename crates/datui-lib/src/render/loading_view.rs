@@ -41,7 +41,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
     let frame = app.throbber_frame as usize % g.spinner.len();
     // Paused on the download confirmation: nothing is in progress, so no spinner and
     // no phase. The line stays so the file below it does not move.
-    let phase_line = if app.awaiting_download_confirmation() {
+    let phase_line = if app.awaiting_open_confirmation() {
         Line::from("")
     } else {
         Line::from(vec![

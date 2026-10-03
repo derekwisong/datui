@@ -795,6 +795,16 @@ impl ReadMode {
             Self::InMemory => "in memory",
         }
     }
+
+    /// The word a home screen row carries for it, short beside a name: `converts`,
+    /// `in memory`; `None` for a lazy read, which most are.
+    pub fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::Lazy => None,
+            Self::Converted => Some("converts"),
+            Self::InMemory => Some("in memory"),
+        }
+    }
 }
 
 /// How a file sits on disk, where that changes how it is read.

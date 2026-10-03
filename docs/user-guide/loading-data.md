@@ -209,7 +209,7 @@ The format is taken from the extension, or from `--format` when there is none.
 |---|---|
 | lazy | Scanned where it is. Browsing reads a buffer of rows; queries, sorting and analysis may read the whole input |
 | converted once | Read through once into a temporary file in the temp directory (`--temp-dir`), which is then scanned lazily. The file is removed on quit ([temporary files](#temporary-files)) |
-| in memory | Read whole into memory before the table appears. A model file's table is one row per tensor, from the header, so it is small however large the model; a MIDI file is at most 64 MiB |
+| in memory | Read whole into memory before the table appears. Past `memory_warning_mb` in `[file_loading]` (1024 MB by default; 0 never asks), datui asks first: `big.json: JSON reads 2.10 GB into memory`. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB |
 
 - **Compressed** is a `.gz`, `.zst`, `.bz2` or `.xz` file; `no` means it does not
   open. `--decompress-in-memory` reads compressed CSV, TSV and PSV in memory instead.
@@ -948,7 +948,7 @@ all of them except `--parse-strings`, `--parse-dates` and `--header-rows`, and
 | `--delimiter 9` | | Column separator as an ASCII code (`59` for `;`, `124` for `\|`). Default `,` for `.csv`, tab for `.tsv`, `\|` for `.psv` |
 | `--no-header` | | The first row is data, not names. <kbd>H</kbd> does the same, or undoes it, on the file on screen |
 | `--skip-lines N`, `--skip-rows N` | | Ignore a preamble |
-| `--skip-tail-rows N` | | Ignore a footer. Counts every row first: on a directory in a bucket, that downloads every file before the table opens |
+| `--skip-tail-rows N` | | Ignore a footer. Counts every row first, and the loading screen says `Counting rows to skip the footer` meanwhile: on a directory in a bucket, that downloads every file before the table opens |
 | `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`, the name as shown). Repeatable |
 | `--comment-char '#'` | `comment_char` | Skip lines that start with it, before the header and among the data. The header is the first line that is not a comment |
 | `--header-rows 3`, `--header-rows 3,2` | `header_join` | The line or lines holding the header, counted from 1 at the top of the file. Several are joined per column, in the order given, with `header_join` (default a space) |

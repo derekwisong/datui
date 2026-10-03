@@ -880,17 +880,32 @@ fn decode_shape(bytes: &[u8], path: &str, fingerprint: &str) -> Option<DatasetSh
         return None;
     }
     let mut files = Vec::with_capacity(count);
+    // Totals over the whole dataset must fit, so no sum a reader makes later can
+    // overflow on a damaged file.
+    let (mut rows, mut bytes_total) = (0usize, 0usize);
     for _ in 0..count {
         let schema = match take_varint(&mut body)? {
             0 => None,
             at => Some(usize::try_from(at - 1).ok()?),
         };
-        files.push(CachedFooter {
+        let footer = CachedFooter {
             schema,
             row_group_rows: take_list(&mut body)?,
             row_group_bytes: take_list(&mut body)?,
             column_bytes: take_list(&mut body)?,
-        });
+        };
+        if let Some(at) = footer.schema
+            && at >= header.schemas.len()
+        {
+            return None;
+        }
+        for &n in &footer.row_group_rows {
+            rows = rows.checked_add(n)?;
+        }
+        for &n in footer.row_group_bytes.iter().chain(&footer.column_bytes) {
+            bytes_total = bytes_total.checked_add(n)?;
+        }
+        files.push(footer);
     }
     body.is_empty().then_some(DatasetShape {
         fingerprint: header.fingerprint,
@@ -1339,6 +1354,63 @@ mod recents_pruning_tests {
 
 #[cfg(test)]
 mod dataset_shape_tests {
+
+    /// A damaged shape file is a miss, never a panic: every truncation, and a flipped
+    /// bit at every byte, of a real entry.
+    #[test]
+    fn a_damaged_shape_file_is_a_miss() {
+        let shape = DatasetShape {
+            fingerprint: "fp".to_string(),
+            files: vec![
+                CachedFooter {
+                    schema: Some(0),
+                    row_group_rows: vec![3, 4],
+                    row_group_bytes: vec![100, 200],
+                    column_bytes: vec![],
+                },
+                CachedFooter {
+                    schema: None,
+                    row_group_rows: vec![],
+                    row_group_bytes: vec![],
+                    column_bytes: vec![],
+                },
+            ],
+            schemas: vec![vec![("a".to_string(), polars::prelude::DataType::Int64)]],
+            taken_at: 1,
+        };
+        let good = encode_shape("s3://b/d/", &shape).unwrap();
+        assert!(decode_shape(&good, "s3://b/d/", "fp").is_some());
+        for cut in 0..good.len() {
+            assert!(
+                decode_shape(&good[..cut], "s3://b/d/", "fp").is_none(),
+                "cut {cut}"
+            );
+        }
+        for at in 0..good.len() {
+            for bit in 0..8 {
+                let mut bad = good.clone();
+                bad[at] ^= 1 << bit;
+                // Decoding may succeed with other numbers; it must not panic, and what
+                // it returns must be self-consistent.
+                if let Some(back) = decode_shape(&bad, "s3://b/d/", "fp") {
+                    assert!(
+                        back.files
+                            .iter()
+                            .all(|f| f.schema.is_none_or(|s| s < back.schemas.len()))
+                    );
+                }
+            }
+        }
+        // A schema index past the table, and totals that overflow, are refused.
+        let mut wild = shape.clone();
+        wild.files[0].schema = Some(5);
+        let bytes = encode_shape("s3://b/d/", &wild).unwrap();
+        assert!(decode_shape(&bytes, "s3://b/d/", "fp").is_none());
+        let mut huge = shape.clone();
+        huge.files[0].row_group_rows = vec![usize::MAX, 1];
+        let bytes = encode_shape("s3://b/d/", &huge).unwrap();
+        assert!(decode_shape(&bytes, "s3://b/d/", "fp").is_none());
+    }
     use super::*;
 
     fn shape(fingerprint: &str, taken_at: u64) -> DatasetShape {

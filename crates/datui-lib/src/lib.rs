@@ -9559,8 +9559,9 @@ impl App {
             .remembered
             .as_ref()
             .and_then(|cache| cache.dataset_shape(full, &fingerprint))
-            // No length check: the fingerprint leads with the file count, so a listing
-            // of a different size cannot match one in the first place.
+            // A damaged file can carry the right header and the wrong count; refuse it
+            // rather than index past the listing.
+            .filter(|shape| shape.files.len() == files.len())
             .and_then(|shape| cloud_hive::footers_from_cache(&shape.files, &shape.schemas));
 
         let staged = remembered.is_none() && files.len() > cloud_hive::FOOTERS_AT_ONCE;

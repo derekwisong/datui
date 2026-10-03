@@ -390,22 +390,17 @@ impl Widget for &Controls {
             .and_then(|f| f.rec.as_ref())
             .map(|rec| format!(" {rec} "));
         let rec_stopped = self.follow.as_ref().is_some_and(|f| f.rec_stopped);
-        let follow_note = self.follow.as_ref().and_then(|f| f.note.clone());
-        let follow_warning = self.follow.as_ref().and_then(|f| f.warning.clone());
+        let mut follow_note = self.follow.as_ref().and_then(|f| f.note.clone());
+        let mut follow_warning = self.follow.as_ref().and_then(|f| f.warning.clone());
         let width_of = |text: &Option<String>| {
             text.as_ref()
                 .map(|text| crate::glyphs::display_width(text) as u16 + 1)
                 .unwrap_or(0)
         };
-        let follow_width = width_of(&follow_chip)
-            + width_of(&follow_note)
-            + width_of(&follow_warning)
-            + width_of(&rec_chip);
-        let chip_width = follow_width
-            + not_the_table
-                .as_ref()
-                .map(|text| text.chars().count() as u16)
-                .unwrap_or(0)
+        let other_chips = not_the_table
+            .as_ref()
+            .map(|text| text.chars().count() as u16)
+            .unwrap_or(0)
             + reshaped
                 .as_ref()
                 .map(|text| text.chars().count() as u16 + 1)
@@ -418,6 +413,26 @@ impl Widget for &Controls {
                 .as_ref()
                 .map(|text| text.chars().count() as u16 + 1)
                 .unwrap_or(0);
+        // The follow's notes yield before the way out does: on a narrow bar the count
+        // of new rows goes first, then the rows that do not fit, so a quit chip keeps
+        // its room.
+        const WAY_OUT: u16 = 10;
+        let fixed = trailing.unwrap_or(0)
+            + other_chips
+            + width_of(&follow_chip)
+            + width_of(&rec_chip)
+            + WAY_OUT;
+        if fixed + width_of(&follow_note) + width_of(&follow_warning) > area.width {
+            follow_note = None;
+        }
+        if fixed + width_of(&follow_warning) > area.width {
+            follow_warning = None;
+        }
+        let chip_width = other_chips
+            + width_of(&follow_chip)
+            + width_of(&follow_note)
+            + width_of(&follow_warning)
+            + width_of(&rec_chip);
 
         // The chip: the bar's accent behind the bar's own colour, the same cut-out a
         // key chip is, because it is the one thing here the eye must not slide past.
@@ -837,7 +852,7 @@ mod tests {
     }
 
     /// A follow's chip sits beside the count it moves, its note and warning before it,
-    /// and `t` leads the keys; on a narrow bar the keys yield, not the follow.
+    /// and `t` leads the keys; on a narrow bar the notes yield before the way out does.
     #[test]
     fn a_follow_says_so_beside_the_count() {
         let mark = FollowMark {
@@ -847,18 +862,28 @@ mod tests {
             warning: Some("1 row does not fit".to_string()),
             ..Default::default()
         };
-        for width in [80u16, 160] {
-            let bar = render_to_string(
+        let bar = |width| {
+            render_to_string(
                 &with_row_count(1_234).with_follow(Some(mark.clone())),
                 width,
-            );
+            )
+        };
+        for width in [60u16, 80, 160] {
+            let bar = bar(width);
             let chip = bar.find("following · 3s ago").expect("the chip");
             let count = bar.find("1,234 rows").expect("the count");
             assert!(chip < count, "{bar:?}");
-            assert!(bar.contains("4 new below"), "{bar:?}");
+            assert!(
+                bar.contains("Quit"),
+                "the way out stays at {width}: {bar:?}"
+            );
         }
-        let wide = render_to_string(&with_row_count(1_234).with_follow(Some(mark)), 160);
-        assert!(wide.contains("1 row does not fit"), "{wide:?}");
+        assert!(!bar(60).contains("new below"), "the note yields first");
+        let wide = bar(160);
+        assert!(
+            wide.contains("4 new below") && wide.contains("1 row does not fit"),
+            "{wide:?}"
+        );
         assert!(
             wide.find("Pause") < wide.find("Inspect"),
             "t leads the keys: {wide:?}"

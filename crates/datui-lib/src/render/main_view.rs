@@ -800,6 +800,9 @@ fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         }
     }
     keys.push(("e", "Export"));
+    if modal.has_grid() {
+        keys.push(("g", "Grid"));
+    }
     keys.push(("Tab", "Options"));
     keys.push(("?", "Help"));
     keys.push(("Esc", "Back"));

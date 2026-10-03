@@ -86,6 +86,7 @@ fn row_label(focus: ChartFocus) -> &'static str {
         ChartFocus::YStartsAtZero => "Y from zero:",
         ChartFocus::LogScale => "Log scale:",
         ChartFocus::ShowLegend => "Legend:",
+        ChartFocus::Grid => "Grid:",
         ChartFocus::Column => "Column:",
         ChartFocus::Bins => "Bins:",
         ChartFocus::Bandwidth => "Bandwidth:",
@@ -166,6 +167,7 @@ fn render_sidebar(
             ChartFocus::YStartsAtZero => FormValue::Toggle(modal.y_starts_at_zero),
             ChartFocus::LogScale => FormValue::Toggle(modal.log_scale),
             ChartFocus::ShowLegend => FormValue::Toggle(modal.show_legend),
+            ChartFocus::Grid => FormValue::Toggle(modal.grid),
             ChartFocus::Column => {
                 let column = match modal.chart_kind {
                     ChartKind::Histogram => modal.hist_column.as_deref(),
@@ -1183,6 +1185,7 @@ mod tests {
                 category: &["carrier".to_string()],
             },
             Some(10_000),
+            false,
             1,
         );
         modal
@@ -1250,7 +1253,8 @@ mod tests {
         assert!(rows[5].contains("Y from zero:"));
         assert!(rows[6].contains("Log scale:"));
         assert!(rows[7].contains("Legend:"));
-        assert!(rows[8].contains("Sample size:") && rows[8].contains("10,000"));
+        assert!(rows[8].contains("Grid:"));
+        assert!(rows[9].contains("Sample size:") && rows[9].contains("10,000"));
     }
 
     /// Only the active chart kind's options render.

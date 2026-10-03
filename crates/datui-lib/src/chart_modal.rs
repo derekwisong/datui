@@ -77,6 +77,8 @@ pub enum ChartFocus {
     YStartsAtZero,
     LogScale,
     ShowLegend,
+    /// The grid at the major ticks: XY, Histogram, Box Plot and KDE.
+    Grid,
     /// The value column of the Histogram, Box Plot, or KDE on screen.
     Column,
     /// Heatmap axis columns (single pick each).
@@ -168,6 +170,8 @@ pub struct ChartModal {
     pub y_starts_at_zero: bool,
     pub log_scale: bool,
     pub show_legend: bool,
+    /// The grid at the major ticks, on the kinds with axes (`g`).
+    pub grid: bool,
     pub focus: ChartFocus,
     /// The one Picker, open for the focused column row; None while the form
     /// has the keys.
@@ -222,11 +226,12 @@ impl ChartModal {
     /// Open the chart view. On a dataset seen before, the chart comes back as it was
     /// left, less any column the view no longer has; otherwise it starts with no
     /// columns picked. `default_row_limit` is the initial Sample size (e.g. from
-    /// config); None = every row.
+    /// config); None = every row. `grid` is whether a new chart starts with its grid.
     pub fn open(
         &mut self,
         columns: ChartColumns<'_>,
         default_row_limit: Option<usize>,
+        grid: bool,
         dataset: u64,
     ) {
         let ChartColumns {
@@ -256,6 +261,7 @@ impl ChartModal {
         self.y_starts_at_zero = false;
         self.log_scale = false;
         self.show_legend = true;
+        self.grid = grid;
         self.value_range = ValueRange::All;
         self.row_limit = default_row_limit.and_then(|n| {
             if n == 0 {
@@ -324,11 +330,12 @@ impl ChartModal {
                 YStartsAtZero,
                 LogScale,
                 ShowLegend,
+                Grid,
                 LimitRows,
             ],
-            ChartKind::Histogram => &[Column, Bins, Range, LimitRows],
-            ChartKind::BoxPlot => &[Column, Range, LimitRows],
-            ChartKind::Kde => &[Column, Bandwidth, Range, LimitRows],
+            ChartKind::Histogram => &[Column, Bins, Range, Grid, LimitRows],
+            ChartKind::BoxPlot => &[Column, Range, Grid, LimitRows],
+            ChartKind::Kde => &[Column, Bandwidth, Range, Grid, LimitRows],
             ChartKind::Heatmap => &[HeatmapX, HeatmapY, Bins, LimitRows],
             ChartKind::Bar => &[Category, Value, Order, LimitRows],
         }
@@ -404,8 +411,17 @@ impl ChartModal {
     pub fn is_toggle_row(&self, focus: ChartFocus) -> bool {
         matches!(
             focus,
-            ChartFocus::YStartsAtZero | ChartFocus::LogScale | ChartFocus::ShowLegend
+            ChartFocus::YStartsAtZero
+                | ChartFocus::LogScale
+                | ChartFocus::ShowLegend
+                | ChartFocus::Grid
         )
+    }
+
+    /// Whether the chart on screen has axes to draw a grid on: the heatmap's cells
+    /// and the bar chart's rows have none.
+    pub fn has_grid(&self) -> bool {
+        self.row_order().contains(&ChartFocus::Grid)
     }
 
     pub fn is_number_row(&self, focus: ChartFocus) -> bool {
@@ -669,6 +685,10 @@ impl ChartModal {
         self.show_legend = !self.show_legend;
     }
 
+    pub fn toggle_grid(&mut self) {
+        self.grid = !self.grid;
+    }
+
     /// Cycle chart type: Line -> Scatter -> Bar -> Line.
     pub fn next_chart_type(&mut self) {
         self.chart_type = match self.chart_type {
@@ -836,7 +856,7 @@ mod tests {
         let numeric = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let datetime = vec!["date".to_string()];
         let mut modal = ChartModal::new();
-        modal.open(columns(&numeric, &datetime), Some(10_000), 1);
+        modal.open(columns(&numeric, &datetime), Some(10_000), false, 1);
         modal
     }
 
@@ -873,7 +893,7 @@ mod tests {
     #[test]
     fn tab_walks_the_xy_rows_and_wraps() {
         let mut modal = open_modal();
-        let walked: Vec<ChartFocus> = (0..7)
+        let walked: Vec<ChartFocus> = (0..8)
             .map(|_| {
                 modal.next_focus();
                 modal.focus
@@ -887,6 +907,7 @@ mod tests {
                 ChartFocus::YStartsAtZero,
                 ChartFocus::LogScale,
                 ChartFocus::ShowLegend,
+                ChartFocus::Grid,
                 ChartFocus::LimitRows,
                 ChartFocus::Style,
             ]
@@ -948,7 +969,7 @@ mod tests {
     fn y_picker_toggles_and_caps_at_the_series_max() {
         let cols: Vec<String> = (0..10).map(|i| format!("col_{}", i)).collect();
         let mut modal = ChartModal::new();
-        modal.open(columns(&cols, &[]), Some(10_000), 1);
+        modal.open(columns(&cols, &[]), Some(10_000), false, 1);
         modal.focus = ChartFocus::YColumns;
         modal.open_picker();
         for _ in 0..=Y_SERIES_MAX {
@@ -1033,11 +1054,12 @@ mod tests {
         modal.y_columns = vec!["a".to_string(), "b".to_string()];
         modal.hist_column = Some("c".to_string());
         modal.value_range = crate::chart_data::ValueRange::Percentile1To99;
+        modal.toggle_grid();
         modal.close();
 
         let numeric = vec!["a".to_string(), "c".to_string()];
         let datetime = vec!["date".to_string()];
-        modal.open(columns(&numeric, &datetime), Some(10_000), 1);
+        modal.open(columns(&numeric, &datetime), Some(10_000), false, 1);
         assert_eq!(modal.chart_kind, ChartKind::Histogram);
         assert_eq!(modal.x_column.as_deref(), Some("date"));
         assert_eq!(modal.y_columns, ["a"], "b is gone from the view");
@@ -1046,9 +1068,13 @@ mod tests {
             modal.value_range,
             crate::chart_data::ValueRange::Percentile1To99
         );
+        assert!(modal.grid, "the grid stays as it was left");
         modal.close();
 
-        modal.open(columns(&numeric, &datetime), Some(10_000), 2);
+        modal.open(columns(&numeric, &datetime), Some(10_000), false, 2);
+        assert!(!modal.grid, "a new dataset starts from the config");
+        modal.open(columns(&numeric, &datetime), Some(10_000), true, 3);
+        assert!(modal.grid);
         assert_eq!(modal.chart_kind, ChartKind::XY);
         assert!(modal.x_column.is_none() && modal.y_columns.is_empty());
         assert!(modal.hist_column.is_none());
@@ -1061,7 +1087,12 @@ mod tests {
         modal.set_chart_kind(ChartKind::BoxPlot);
         assert_eq!(
             modal.row_order(),
-            [ChartFocus::Column, ChartFocus::Range, ChartFocus::LimitRows]
+            [
+                ChartFocus::Column,
+                ChartFocus::Range,
+                ChartFocus::Grid,
+                ChartFocus::LimitRows
+            ]
         );
         modal.focus = ChartFocus::Range;
         modal.adjust_number_row(1);
@@ -1107,6 +1138,7 @@ mod tests {
                 category: &category,
             },
             Some(10_000),
+            false,
             1,
         );
         modal.set_chart_kind(ChartKind::Bar);
@@ -1172,6 +1204,7 @@ mod tests {
                 category: &category,
             },
             None,
+            false,
             1,
         );
         modal.set_chart_kind(ChartKind::Bar);

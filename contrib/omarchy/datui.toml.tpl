@@ -97,6 +97,8 @@ chart_series_color_4 = "{{ magenta }}"
 chart_series_color_5 = "{{ cyan }}"
 chart_series_color_6 = "{{ orange }}"
 chart_series_color_7 = "{{ red }}"
+# The grid sits a shade under muted, so it never competes with a series.
+chart_grid           = "{{ mix background foreground 30% }}"
 
 # --- Hex view --------------------------------------------------------------
 # Bytes by class, as hexyl colors them.

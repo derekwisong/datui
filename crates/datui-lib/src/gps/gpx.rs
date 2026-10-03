@@ -395,7 +395,7 @@ impl GpxReader {
     pub fn finish(&mut self) -> Result<DataFrame, String> {
         self.scan(true)?;
         if !self.root_seen {
-            return Err("This is not a GPX file: it has no <gpx> element.".to_string());
+            return Err("Not a GPX file: it has no <gpx> element.".to_string());
         }
         if !self.stack.is_empty() || self.pos < self.buf.len() {
             self.stats.truncated = true;
@@ -419,7 +419,7 @@ impl GpxReader {
             let Some(len) = markup_end(rest) else {
                 if rest.len() > MAX_MARKUP {
                     return Err(format!(
-                        "This GPX file has a tag or comment longer than {} MiB.",
+                        "The GPX file has a tag or comment longer than {} MiB.",
                         MAX_MARKUP >> 20
                     ));
                 }
@@ -428,7 +428,7 @@ impl GpxReader {
             };
             if len > MAX_MARKUP {
                 return Err(format!(
-                    "This GPX file has a tag or comment longer than {} MiB.",
+                    "The GPX file has a tag or comment longer than {} MiB.",
                     MAX_MARKUP >> 20
                 ));
             }
@@ -490,13 +490,13 @@ impl GpxReader {
     fn start(&mut self, tag: &Tag) -> Result<(), String> {
         if self.stack.len() >= MAX_DEPTH {
             return Err(format!(
-                "This GPX file nests elements more than {MAX_DEPTH} deep."
+                "The GPX file nests elements more than {MAX_DEPTH} deep."
             ));
         }
         if !self.root_seen {
             if tag.name != "gpx" {
                 return Err(format!(
-                    "This is not a GPX file: its first element is <{}>.",
+                    "Not a GPX file: its first element is <{}>.",
                     tag.name.chars().take(40).collect::<String>()
                 ));
             }

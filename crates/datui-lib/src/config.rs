@@ -978,7 +978,7 @@ fn serialize_builtin_catalog() -> String {
 /// choice the user made knowingly, since datui is the one that wrote the file.
 ///
 /// The mode is applied twice on purpose. `OpenOptions::mode` only takes effect
-/// when the file is created, so it does nothing for `--generate-config --force`
+/// when the file is created, so it does nothing for `datui config init --force`
 /// over a config that already exists at 0644; `set_permissions` fixes that
 /// case. Creating with the mode still matters, because it closes the window
 /// where a new file exists at 0644 before the permissions are corrected.
@@ -2380,6 +2380,24 @@ pub struct ConfigLayer {
     imports: Vec<String>,
 }
 
+/// Where a layer of the configuration came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerSource {
+    /// A config file: the user's, or one it imports.
+    File(PathBuf),
+    /// `-c KEY=VALUE` on the command line.
+    Override,
+}
+
+impl std::fmt::Display for LayerSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::Override => f.write_str("-c"),
+        }
+    }
+}
+
 /// How a key combines across layers when a later layer does not simply replace it.
 #[derive(Debug, Clone, Copy)]
 enum Combine {
@@ -2523,6 +2541,16 @@ impl ConfigLayer {
         }
     }
 
+    /// The value this layer writes at the dotted `key`, if it writes one.
+    pub fn get(&self, key: &str) -> Option<&toml::Value> {
+        let mut parts = key.split('.');
+        let mut value = self.table.get(parts.next()?)?;
+        for part in parts {
+            value = value.as_table()?.get(part)?;
+        }
+        Some(value)
+    }
+
     /// Lay `upper` over this layer: every key `upper` writes wins, except the
     /// combined keys in [`COMBINED_KEYS`], and keys it leaves out keep this layer's
     /// value. `upper`'s imports are not carried over.
@@ -2662,28 +2690,54 @@ impl AppConfig {
         config_path: &Path,
         overrides: &[datui_cli::settings::Override],
     ) -> Result<Self> {
-        let mut layers: Vec<ConfigLayer> = Vec::new();
-        let mut imports: Vec<String> = Vec::new();
+        let layers = Self::read_layers(config_path, overrides)?;
+        Self::from_read_layers(config_path, overrides, &layers)
+    }
 
+    /// Every layer the configuration rooted at `config_path` is built from, lowest
+    /// precedence first: each import, depth-first, then the file, then `-c`. Each is
+    /// named by where it came from. A missing root file contributes nothing.
+    pub fn read_layers(
+        config_path: &Path,
+        overrides: &[datui_cli::settings::Override],
+    ) -> Result<Vec<(LayerSource, ConfigLayer)>> {
+        let mut layers = Vec::new();
         if let Some(root) = ConfigLayer::read(config_path, None)? {
             let canonical = crate::canonical::canonicalize(config_path)
                 .unwrap_or_else(|_| config_path.to_path_buf());
             let mut stack = vec![canonical];
-            imports = root.imports.clone();
-            Self::collect_imports(&imports, config_path, &mut stack, &mut layers)?;
-            layers.push(root);
+            Self::collect_imports(&root.imports, config_path, &mut stack, &mut layers)?;
+            layers.push((LayerSource::File(config_path.to_path_buf()), root));
         }
         if !overrides.is_empty() {
-            layers.push(ConfigLayer::from_overrides(overrides)?);
+            layers.push((
+                LayerSource::Override,
+                ConfigLayer::from_overrides(overrides)?,
+            ));
         }
+        Ok(layers)
+    }
+
+    /// The configuration `layers`, read by [`Self::read_layers`] for `config_path`,
+    /// describe: merged over the defaults and validated.
+    pub fn from_read_layers(
+        config_path: &Path,
+        overrides: &[datui_cli::settings::Override],
+        layers: &[(LayerSource, ConfigLayer)],
+    ) -> Result<Self> {
         // A bad value may be the file's or a `-c`'s.
         let place = if overrides.is_empty() {
             config_path.display().to_string()
         } else {
             format!("{} with -c", config_path.display())
         };
+        let imports = layers
+            .iter()
+            .find(|(source, _)| *source == LayerSource::File(config_path.to_path_buf()))
+            .map(|(_, root)| root.imports.clone())
+            .unwrap_or_default();
 
-        let mut config = Self::from_layers(layers)
+        let mut config = Self::from_layers(layers.iter().map(|(_, layer)| layer.clone()))
             .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
         // `import` is a load-time directive, never merged; report what the root declared.
         config.import = imports;
@@ -2704,7 +2758,7 @@ impl AppConfig {
         imports: &[String],
         origin: &Path,
         stack: &mut Vec<PathBuf>,
-        out: &mut Vec<ConfigLayer>,
+        out: &mut Vec<(LayerSource, ConfigLayer)>,
     ) -> Result<()> {
         if imports.is_empty() {
             return Ok(());
@@ -2751,7 +2805,7 @@ impl AppConfig {
             Self::collect_imports(&layer.imports, &path, stack, out)?;
             stack.pop();
 
-            out.push(layer);
+            out.push((LayerSource::File(path), layer));
         }
 
         Ok(())

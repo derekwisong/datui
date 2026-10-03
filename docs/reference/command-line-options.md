@@ -59,8 +59,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--number-format <FORMAT>` | Digit grouping for numbers in the table (default: none). "system" reads LC_ALL/LC_NUMERIC/LANG. Press , to toggle while running |
 | `--align-numeric-right[=<BOOL>]` | Right-align numeric columns and their headers (default: true) |
 | `--mouse[=<BOOL>]` | Take the mouse: wheel scrolls, click selects (default: true). --mouse=false leaves it to the terminal |
-| `--generate-config` | Write the default configuration to ~/.config/datui/config.toml and exit |
-| `--force` | Overwrite an existing file: the config file with --generate-config, or FILE with --tee |
+| `--force` | With --tee: replace FILE if it is there |
 | `--s3-endpoint-url <URL>` | S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000 |
 | `--s3-access-key-id <KEY>` | S3 access key (overrides config and AWS_ACCESS_KEY_ID) |
 | `--s3-secret-access-key <SECRET>` | S3 secret key (overrides config and AWS_SECRET_ACCESS_KEY) |
@@ -72,6 +71,10 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 
 | Command | Does |
 |---------|------|
+| `datui config` | Write the default config file, list the files read, or list every key |
+| `datui config init ` | Write the default config file, every key commented out at its default |
+| `datui config path ` | Print the config files read, lowest precedence first |
+| `datui config keys ` | List every key: its type, default, the value in effect and what set it |
 | `datui formats` | List the binary format specs and FIX dictionaries on the search path: each one's name, what it matches, the file it came from, and the copies it overrides |
 | `datui formats check SPEC [FILE]` | Check a spec or FIX dictionary, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error |
 
@@ -90,4 +93,4 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui --format csv --no-header raw.txt` | Headerless text, whatever the extension |
 | `datui --format acme.l2feed capture.bin` | A binary file, read through the format spec of that name |
 | `datui formats check acme.l2feed capture.bin` | Check a format spec and print the first rows it reads |
-| `datui --generate-config` | Write ~/.config/datui/config.toml |
+| `datui config init` | Write ~/.config/datui/config.toml |

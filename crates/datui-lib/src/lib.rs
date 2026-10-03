@@ -68,6 +68,7 @@ mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
 pub mod config;
+pub mod config_command;
 mod copy_keys;
 pub mod copy_modal;
 pub mod csv_dialect;

@@ -344,12 +344,8 @@ pub struct Args {
     #[arg(long = "mouse", value_name = "BOOL", num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::value_parser!(bool), help_heading = "Display")]
     pub mouse: Option<bool>,
 
-    /// Write the default configuration to ~/.config/datui/config.toml and exit
-    #[arg(long = "generate-config", action, help_heading = "Maintenance")]
-    pub generate_config: bool,
-
-    /// Overwrite an existing file: the config file with --generate-config, or FILE with --tee
-    #[arg(long = "force", action, help_heading = "Maintenance")]
+    /// With --tee: replace FILE if it is there
+    #[arg(long = "force", action, requires = "tee", help_heading = "Reading")]
     pub force: bool,
 
     /// S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000
@@ -474,11 +470,31 @@ fn parse_format(text: &str) -> Result<FormatChoice, String> {
 /// Commands besides opening data.
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
+    /// Write the default config file, list the files read, or list every key
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// List the binary format specs and FIX dictionaries on the search path: each one's name, what it matches, the file it came from, and the copies it overrides
     Formats {
         #[command(subcommand)]
         action: Option<FormatsAction>,
     },
+}
+
+/// What `datui config` does.
+#[derive(Clone, Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Write the default config file, every key commented out at its default
+    Init {
+        /// Replace a config file that is there
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print the config files read, lowest precedence first
+    Path,
+    /// List every key: its type, default, the value in effect and what set it
+    Keys,
 }
 
 /// What `datui formats` does besides listing.

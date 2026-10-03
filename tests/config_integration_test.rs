@@ -66,7 +66,6 @@ fn test_config_used_for_row_numbers() {
         ignore_errors: None,
         follow: false,
         tee: None,
-        generate_config: false,
         tee_raw: false,
         config: vec![],
     };
@@ -142,7 +141,6 @@ fn test_cli_args_override_config() {
         ignore_errors: None,
         follow: false,
         tee: None,
-        generate_config: false,
         tee_raw: false,
         config: vec![],
     };
@@ -218,7 +216,6 @@ fn test_config_display_settings() {
         ignore_errors: None,
         follow: false,
         tee: None,
-        generate_config: false,
         tee_raw: false,
         config: vec![],
     };
@@ -294,7 +291,6 @@ fn test_config_file_loading_settings() {
         ignore_errors: None,
         follow: false,
         tee: None,
-        generate_config: false,
         tee_raw: false,
         config: vec![],
     };
@@ -368,7 +364,6 @@ fn test_config_null_values_merge() {
         ignore_errors: None,
         follow: false,
         tee: None,
-        generate_config: false,
         tee_raw: false,
         config: vec![],
     };
@@ -455,7 +450,6 @@ fn test_parse_strings_default_and_no_parse_strings() {
         ignore_errors: None,
         follow: false,
         tee: None,
-        generate_config: false,
         tee_raw: false,
         config: vec![],
     };

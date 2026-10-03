@@ -21,7 +21,7 @@ Examples:
       A binary file, read through the format spec of that name
   datui formats check acme.l2feed capture.bin
       Check a format spec and print the first rows it reads
-  datui --generate-config
+  datui config init
       Write ~/.config/datui/config.toml
 
 Docs: https://derekwisong.github.io/datui/

@@ -24,29 +24,20 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
         std::process::exit(code);
     }
 
-    if args.generate_config {
-        match ConfigManager::new(APP_NAME) {
-            Ok(config_manager) => match config_manager.write_default_config(args.force) {
-                Ok(path) => {
-                    println!("Configuration file written to: {}", path.display());
-                    return Ok(Some(()));
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Error: {}",
-                        error_display::user_message_from_report(&e, None)
-                    );
-                    std::process::exit(1);
-                }
-            },
-            Err(e) => {
-                eprintln!(
-                    "Error: {}",
-                    error_display::user_message_from_report(&e, None)
-                );
-                std::process::exit(1);
-            }
+    if let Some(datui::cli::Command::Config { action }) = &args.command {
+        let (text, code) = match ConfigManager::new(APP_NAME) {
+            Ok(manager) => datui::config_command::command(&manager, action, &args.config),
+            Err(e) => (
+                format!("{}\n", error_display::user_message_from_report(&e, None)),
+                1,
+            ),
+        };
+        if code == 0 {
+            print!("{text}");
+        } else {
+            eprint!("Error: {text}");
         }
+        std::process::exit(code);
     }
 
     if args.clear_recents {
@@ -175,7 +166,6 @@ mod tests {
             pages_lookback: None,
             row_numbers: false,
             row_start_index: None,
-            generate_config: false,
             force: false,
             hive: false,
             single_spine_schema: None,
@@ -226,16 +216,38 @@ mod tests {
         assert!(args.paths.is_empty());
     }
 
+    /// `datui config ACTION` is a command; any other first word is still a path.
     #[test]
-    fn test_path_not_required_with_generate_config() {
+    fn config_is_a_command() {
         use clap::Parser;
+        use datui::cli::{Command, ConfigAction};
 
-        let result = Args::try_parse_from(vec!["datui", "--generate-config"]);
-        assert!(result.is_ok());
-
-        let args = result.unwrap();
-        assert!(args.paths.is_empty());
-        assert!(args.generate_config);
+        let action = |argv: &[&str]| match Args::try_parse_from(argv).unwrap().command {
+            Some(Command::Config { action }) => action,
+            other => panic!("{other:?}"),
+        };
+        assert!(matches!(
+            action(&["datui", "config", "init"]),
+            ConfigAction::Init { force: false }
+        ));
+        assert!(matches!(
+            action(&["datui", "config", "init", "--force"]),
+            ConfigAction::Init { force: true }
+        ));
+        assert!(matches!(
+            action(&["datui", "config", "path"]),
+            ConfigAction::Path
+        ));
+        let args =
+            Args::try_parse_from(["datui", "config", "keys", "-c", "display.mouse=false"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Config {
+                action: ConfigAction::Keys
+            })
+        ));
+        assert_eq!(args.config.len(), 1, "-c applies to config keys");
+        assert!(Args::try_parse_from(["datui", "--generate-config"]).is_err());
     }
 
     #[test]
@@ -270,17 +282,5 @@ mod tests {
         let args = result.unwrap();
         assert!(args.paths.is_empty());
         assert!(args.remove_templates);
-    }
-
-    #[test]
-    fn test_path_accepted_with_generate_config() {
-        use clap::Parser;
-
-        let result = Args::try_parse_from(vec!["datui", "--generate-config", "test.csv"]);
-        assert!(result.is_ok());
-
-        let args = result.unwrap();
-        assert_eq!(args.paths, vec![PathBuf::from("test.csv")]);
-        assert!(args.generate_config);
     }
 }

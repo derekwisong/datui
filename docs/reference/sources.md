@@ -82,9 +82,9 @@ after everything else:
 | Drop it | `[data] builtin_catalog = false`. A configured `public` still shows |
 | Hide a collection, `public` or yours | `[data] hide_sources = ["public", "my-datasets"]` |
 
-`datui --generate-config` writes the catalog as an active `public` collection to
+`datui config init` writes the catalog as an active `public` collection to
 edit. It is a snapshot: later datui releases do not change it. Run
-`datui --generate-config --force` for a new one, after saving any edits you want
+`datui config init --force` for a new one, after saving any edits you want
 to keep.
 
 Across [imported files](../user-guide/configuration.md#importing-other-config-files), collections are listed in

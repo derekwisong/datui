@@ -435,8 +435,8 @@ pub fn column_schema_of(
 ) -> Option<Vec<(String, DataType)>> {
     use polars::prelude::{LazyCsvReader, LazyFileListReader, LazyJsonLineReader};
     let pl_path = PlRefPath::try_from_path(path).ok()?;
-    let lf = match format {
-        crate::FileFormat::Csv | crate::FileFormat::Tsv | crate::FileFormat::Psv => {
+    let lf = match format.descriptor().lines {
+        Some(crate::cli::Lines::Delimited(_)) => {
             // Read the way the open will read it. Where the header is and how far the
             // reader looks before settling a type both change what comes back, and a
             // sample that used its own answers would describe a file nobody opened.
@@ -452,12 +452,12 @@ pub fn column_schema_of(
             );
             crate::csv_dialect::name_columns(reader.finish().ok()?, header.as_deref()).ok()?
         }
-        crate::FileFormat::Jsonl => {
+        Some(crate::cli::Lines::Json) => {
             LazyJsonLineReader::new(crate::source::polars_literal_path(path).ok()?)
                 .finish()
                 .ok()?
         }
-        _ => return None,
+        None => return None,
     };
     let schema = lf.clone().collect_schema().ok()?;
     // Trimmed, because `trim_csv_column_names` trims what the read produces: one

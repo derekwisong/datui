@@ -499,13 +499,9 @@ pub fn how_read(entry: &Entry) -> Option<HowRead> {
     let choice = match &entry.format_spec {
         Some(name) => crate::cli::FormatChoice::Spec(name.clone()),
         // A table inside a file of tables, at its path inside it (`shop.db/orders`).
-        None if entry.table.is_some() => crate::cli::FormatChoice::Builtin(
-            entry
-                .table
-                .as_ref()
-                .and_then(|t| t.format)
-                .unwrap_or(crate::FileFormat::Sqlite),
-        ),
+        None if entry.table.is_some() => {
+            crate::cli::FormatChoice::Builtin(entry.table.as_ref().and_then(|t| t.format)?)
+        }
         None => crate::cli::FormatChoice::Builtin(data_format(&entry.path)?),
     };
     let mode = choice.read_mode(stored)?;
@@ -750,10 +746,8 @@ pub fn unreadable_by_name(path: &Path) -> bool {
 /// which is how `.txt` came to be listed and refused and `.psv` readable and invisible.
 pub fn data_format(path: &Path) -> Option<crate::FileFormat> {
     // A sharded checkpoint's index is the model, not a JSON table.
-    if crate::model_files::is_safetensors_index(path) {
-        return Some(crate::FileFormat::Safetensors);
-    }
-    crate::FileFormat::from_extension(&data_extension(path)?)
+    crate::FileFormat::from_name_ending(path)
+        .or_else(|| crate::FileFormat::from_extension(&data_extension(path)?))
 }
 
 /// The two path segments `is_parquet_key` needs, as it splits them.

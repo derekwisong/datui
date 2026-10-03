@@ -4,11 +4,121 @@
 use color_eyre::Result;
 
 use super::{BASE, EVERYWHERE, Kind, Reader, ScanIn, Signature, Trusted, Unnamed};
-use crate::OpenOptions;
 use crate::export_modal::ExportFormat;
 use crate::python_script::{self as py, Python};
 use crate::scan::Scan;
 use crate::widgets::datatable::DataTableState;
+use crate::{FileFormat, OpenOptions};
+
+/// A prefix of CSV in an object store, read with the flags the user gave as they are
+/// for a local file.
+#[cfg(feature = "cloud")]
+fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> {
+    use polars::prelude::{LazyCsvReader, LazyFileListReader};
+    let super::BucketIn {
+        url,
+        path,
+        cloud,
+        glob,
+        options,
+        format,
+    } = input;
+    let failed = || format!("Could not read {url} as {}", format.name());
+    let reader = || {
+        LazyCsvReader::new(path.clone())
+            .with_cloud_options(Some(cloud.clone()))
+            .with_glob(glob)
+    };
+    // Each object has its own header lines, and the scan reads them all as one; the
+    // names cannot come from one of them.
+    if options.header_rows().is_some() {
+        return Err(color_eyre::eyre::eyre!(
+            "--header-rows reads a file's own lines, so it cannot read {url} in place. Download the files, or name the header with --skip-lines"
+        ));
+    }
+    let nv = DataTableState::build_null_values_with(options, None, || {
+        DataTableState::csv_schema_for_null_values(reader(), options)
+    })?;
+    // No `--parse-strings` here: its sample would be a second read of the bucket. Nor
+    // Polars' `try_parse_dates`, which fails the whole read on a value it cannot parse,
+    // even one like those it inferred the type from. Timestamps stay text, and so do
+    // padded numbers: `--skip-initial-space` only takes their padding off.
+    let lf = DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
+        .finish()
+        .and_then(|lf| crate::csv_dialect::name_columns(lf, None))
+        .and_then(|lf| {
+            if !options.skip_initial_space {
+                return Ok(lf);
+            }
+            crate::csv_dialect::skip_initial_space(lf, |column| {
+                DataTableState::csv_null_values_for(options, column)
+            })
+        })
+        .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", failed()))?;
+    DataTableState::apply_skip_tail_rows_csv(lf, options).map_err(|e| e.wrap_err(failed()))
+}
+
+/// A prefix of NDJSON in an object store.
+#[cfg(feature = "cloud")]
+fn bucket_json_lines(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> {
+    use polars::prelude::LazyFileListReader;
+    polars::prelude::LazyJsonLineReader::new(input.path)
+        .with_cloud_options(Some(input.cloud))
+        .finish()
+        .map_err(|e| {
+            color_eyre::eyre::eyre!(
+                "Could not read {} as {}: {e}",
+                input.url,
+                input.format.name()
+            )
+        })
+}
+
+/// IPC files in an object store, by range from their footers. A prefix is listed
+/// before it gets here (`cloud_arrow`), so this is a glob: a stream among its objects
+/// has no footer, and is read by its folder, which downloads it.
+#[cfg(feature = "cloud")]
+fn bucket_arrow(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> {
+    let url = input.url;
+    let args = polars::prelude::UnifiedScanArgs {
+        cloud_options: Some(input.cloud),
+        glob: input.glob,
+        ..Default::default()
+    };
+    polars::prelude::LazyFrame::scan_ipc(input.path, Default::default(), args).map_err(|e| {
+        let folder = url
+            .split('*')
+            .next()
+            .and_then(|head| head.rsplit_once('/'))
+            .map_or(url, |(folder, _)| folder);
+        color_eyre::eyre::eyre!(
+            "Could not read {url} as Arrow IPC files: {e}. A glob reads IPC files in place; Arrow streams are read by their folder: open {folder}/"
+        )
+    })
+}
+
+/// What text no format's signature claims is taken for, from its first bytes:
+/// starting with `[` it is a JSON array; with `{`, one object per line, unless the
+/// first line leaves the object open, as a pretty-printed object does, which is read as
+/// JSON. A first line with tabs and no commas is TSV; anything else is CSV.
+pub(crate) fn guess_text(head: &[u8]) -> FileFormat {
+    let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
+    let text = &text[text
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(text.len())..];
+    // Up to the first newline; a line longer than the head is taken as it stands.
+    let line = text.split(|&b| b == b'\n').next().unwrap_or_default();
+    match text.first() {
+        Some(b'[') => FileFormat::Json,
+        Some(b'{') if !line.trim_ascii_end().ends_with(b"}") && line.len() < text.len() => {
+            FileFormat::Json
+        }
+        Some(b'{') => FileFormat::Jsonl,
+        _ if line.contains(&b'\t') && !line.contains(&b',') => FileFormat::Tsv,
+        _ => FileFormat::Csv,
+    }
+}
 
 /// The paging options every Polars reader takes, in the order they take them.
 type Paging = (
@@ -141,6 +251,7 @@ fn scan_excel(input: ScanIn<'_>) -> Result<Scan> {
 }
 
 pub(crate) const PARQUET: Reader = Reader {
+    preview: Some(super::Preview::RowGroup),
     python: Some(Python {
         call: "pl.scan_parquet",
         eager: false,
@@ -166,6 +277,9 @@ pub(crate) const PARQUET: Reader = Reader {
 
 /// CSV, TSV and PSV export as CSV: the export's own delimiter option says the rest.
 pub(crate) const CSV: Reader = Reader {
+    #[cfg(feature = "cloud")]
+    bucket_scan: Some(bucket_csv),
+    preview: Some(super::Preview::Scan),
     python: Some(Python {
         call: "pl.scan_csv",
         eager: false,
@@ -179,6 +293,9 @@ pub(crate) const CSV: Reader = Reader {
 
 pub(crate) const TSV: Reader = Reader {
     scan: scan_delimited,
+    // No prefix of it is read in place.
+    #[cfg(feature = "cloud")]
+    bucket_scan: None,
     ..CSV
 };
 
@@ -197,6 +314,9 @@ pub(crate) const JSON: Reader = Reader {
 };
 
 pub(crate) const JSONL: Reader = Reader {
+    #[cfg(feature = "cloud")]
+    bucket_scan: Some(bucket_json_lines),
+    preview: Some(super::Preview::Scan),
     // `scan_ndjson` has no `glob` flag: a name with a glob character is escaped.
     python: Some(Python {
         call: "pl.scan_ndjson",
@@ -210,6 +330,9 @@ pub(crate) const JSONL: Reader = Reader {
 };
 
 pub(crate) const ARROW: Reader = Reader {
+    #[cfg(feature = "cloud")]
+    bucket_scan: Some(bucket_arrow),
+    preview: Some(super::Preview::Scan),
     python: Some(Python {
         call: "pl.scan_ipc",
         eager: false,

@@ -731,7 +731,7 @@ fn arrow_read(inputs: &[(String, bool)], extra: Option<&str>) -> String {
 fn format_extension(format: FileFormat) -> Option<&'static str> {
     python_of(format)?;
     let d = format.descriptor();
-    (d.many_files || d.separator.is_some())
+    (d.many_files || format.separator().is_some())
         .then(|| d.extensions.first().copied())
         .flatten()
 }

@@ -41,14 +41,20 @@ const LONGEST_RECORD: usize = 16 << 20;
 /// line can: a file whose footer is written last (Parquet, Arrow IPC, Excel) cannot be
 /// read before it is finished, and a compressed one cannot be read from the middle.
 pub fn refusal(format: Option<FileFormat>, options: &OpenOptions) -> Option<String> {
-    let format = format.unwrap_or(FileFormat::Csv);
-    if !matches!(
-        format,
-        FileFormat::Csv | FileFormat::Tsv | FileFormat::Psv | FileFormat::Jsonl
-    ) {
+    let format = format.unwrap_or(FileFormat::TEXT);
+    if !format.follows() {
+        let followed: Vec<&str> = FileFormat::ALL
+            .into_iter()
+            .filter(|f| f.follows())
+            .map(FileFormat::title)
+            .collect();
+        let followed = match followed.split_last() {
+            Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+            _ => followed.join(""),
+        };
         return Some(format!(
-            "Only CSV, TSV, PSV and NDJSON can be followed as they grow; {} is read once it is finished.",
-            format_name(format)
+            "Only {followed} can be followed as they grow; {} is read once it is finished.",
+            format.title()
         ));
     }
     if options.compression.is_some() {
@@ -63,19 +69,6 @@ pub fn refusal(format: Option<FileFormat>, options: &OpenOptions) -> Option<Stri
         return Some("A file read through a format spec cannot be followed.".to_string());
     }
     None
-}
-
-fn format_name(format: FileFormat) -> &'static str {
-    match format {
-        FileFormat::Parquet => "Parquet",
-        FileFormat::Arrow => "Arrow IPC",
-        FileFormat::Excel => "Excel",
-        FileFormat::Json => "a JSON document",
-        FileFormat::Avro => "Avro",
-        FileFormat::Orc => "ORC",
-        FileFormat::Sqlite => "SQLite",
-        _ => "this format",
-    }
 }
 
 /// Whether `path`'s format, as `options` say or its name does, is one `--follow` reads.
@@ -132,7 +125,7 @@ pub(crate) fn format_of(path: &Path, found: Option<FileFormat>) -> FileFormat {
                 .and_then(|e| e.to_str())
                 .and_then(FileFormat::from_extension)
         })
-        .unwrap_or(FileFormat::Csv)
+        .unwrap_or(FileFormat::TEXT)
 }
 
 /// An NDJSON file followed, scanned lazily rather than read whole as an unfollowed one

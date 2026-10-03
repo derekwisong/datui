@@ -36,41 +36,17 @@ fn parse_compression(s: &str) -> PyResult<CompressionFormat> {
 fn parse_format(s: &str) -> PyResult<FileFormat> {
     // A FIX log has no extension; it is named.
     FileFormat::from_extension(s).or_else(|| FileFormat::from_name(s)).ok_or_else(|| {
+        let names: Vec<&str> = FileFormat::ALL.iter().map(|f| f.name()).collect();
         PyValueError::new_err(format!(
-            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, wav, aiff, midi, sqlite, vcd, fix, sdf (got {:?})",
+            "format must be one of: {}, or an extension such as wav (got {:?})",
+            names.join(", "),
             s
         ))
     })
 }
 
 fn format_to_str(f: FileFormat) -> &'static str {
-    match f {
-        FileFormat::Parquet => "parquet",
-        FileFormat::Csv => "csv",
-        FileFormat::Tsv => "tsv",
-        FileFormat::Psv => "psv",
-        FileFormat::Json => "json",
-        FileFormat::Jsonl => "jsonl",
-        FileFormat::Arrow => "arrow",
-        FileFormat::Avro => "avro",
-        FileFormat::Orc => "orc",
-        FileFormat::Excel => "excel",
-        FileFormat::Safetensors => "safetensors",
-        FileFormat::Gguf => "gguf",
-        FileFormat::Nmea => "nmea",
-        FileFormat::Gpx => "gpx",
-        FileFormat::Audio => "audio",
-        FileFormat::Midi => "midi",
-        FileFormat::Sqlite => "sqlite",
-        FileFormat::Vcd => "vcd",
-        FileFormat::Fix => "fix",
-        FileFormat::Sdf => "sdf",
-        FileFormat::Numpy => "numpy",
-        FileFormat::Elf => "elf",
-        FileFormat::Ulog => "ulog",
-        FileFormat::Dataflash => "dataflash",
-        FileFormat::Candump => "candump",
-    }
+    f.name()
 }
 
 fn delimiter_from_py(any: &Bound<'_, pyo3::types::PyAny>) -> PyResult<Option<u8>> {

@@ -115,11 +115,8 @@ pub fn refuse(paths: &[PathBuf], piped: bool) -> Option<&'static str> {
 }
 
 /// The format and compression the first bytes of a file say it is: compression by its
-/// magic numbers, then whatever a format's signature says ([`crate::readers::sniff`]).
-/// Text no format claims is guessed at: starting with `[` it is a JSON array; with
-/// `{`, one object per line, unless the first line leaves the object open, as a
-/// pretty-printed object does, which is read as JSON. A first line with tabs and no
-/// commas is TSV; anything else is CSV.
+/// magic numbers, then whatever a format's signature says ([`crate::readers::sniff`]),
+/// and text no format claims as JSON or delimited text by its first line.
 pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     const COMPRESSED: [(&[u8], CompressionFormat); 4] = [
         (b"\x1f\x8b", CompressionFormat::Gzip),
@@ -134,22 +131,7 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     if let Some(format) = crate::readers::sniff(head, None, crate::readers::Asked::Pipe, |_| true) {
         return (format, None);
     }
-    let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
-    let text = &text[text
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(text.len())..];
-    // Up to the first newline; a line longer than the head is taken as it stands.
-    let line = text.split(|&b| b == b'\n').next().unwrap_or_default();
-    match text.first() {
-        Some(b'[') => (FileFormat::Json, None),
-        Some(b'{') if !line.trim_ascii_end().ends_with(b"}") && line.len() < text.len() => {
-            (FileFormat::Json, None)
-        }
-        Some(b'{') => (FileFormat::Jsonl, None),
-        _ if line.contains(&b'\t') && !line.contains(&b',') => (FileFormat::Tsv, None),
-        _ => (FileFormat::Csv, None),
-    }
+    (crate::readers::polars::guess_text(head), None)
 }
 
 /// Bytes [`sniff`] looks at.
@@ -194,7 +176,7 @@ pub(crate) fn spool<R: Read>(
         },
         // Named by the user: theirs, compression and all.
         (Some(_), _) | (None, Some(_)) => OpenOptions {
-            format: options.format.or(Some(FileFormat::Csv)),
+            format: options.format.or(Some(FileFormat::TEXT)),
             ..options
         },
         (None, None) => OpenOptions {

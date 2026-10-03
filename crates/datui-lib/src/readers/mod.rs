@@ -3,13 +3,36 @@
 //! A format's descriptor ([`crate::FileFormat::descriptor`], in datui-cli) says what is
 //! true of it without a file to read. Its [`Reader`] holds the code: the bytes that say
 //! it, the scan that opens it, the conversion of a format read into files of its own,
-//! the tables a file of it lists, Copy as Python's Polars call and the format a view of
-//! it exports to by default.
-//! What a file says besides its rows is the scan's to report, as the Info panel tab of
-//! [`crate::members::Opened::detail`]. Each format's reader
-//! lives beside its parser (`crate::sqlite::READER`), and those of the formats Polars
-//! reads in [`polars`]. [`of`] maps every format to its reader, exhaustively, so a
-//! format without one does not compile.
+//! the tables a file of it lists, the home preview, Copy as Python's Polars call and
+//! the format a view of it exports to by default. What a file says besides its rows is
+//! the scan's to report, as the Info panel tab of [`crate::members::Opened::detail`].
+//!
+//! Each format's reader lives beside its parser (`crate::sqlite::READER`), and those of
+//! the formats Polars reads in [`polars`]. [`of`] maps every format to its reader,
+//! exhaustively, so a format without one does not compile.
+//!
+//! Adding a format is its variant and descriptor in datui-cli, its parser and reader
+//! in a module of its own, and a line in [`of`].
+//!
+//! Outside a format's own module, the descriptors and this registry, a format is named
+//! only where it changes what the app does, beyond what a descriptor or reader says:
+//!
+//! - Parquet: hive partitions and footers. A directory or glob of it is one scan with
+//!   partition columns, a part file is Parquet by its directory's name, its rows are
+//!   counted from footers, and a directory in an object store is read as Parquet only.
+//! - Arrow IPC: streams have no footer and are converted to one file first
+//!   (`Scan::Streams`, `Conversion::Streams`); Hugging Face caches and DatasetDicts are
+//!   Arrow files with JSON metadata beside them, read a split at a time.
+//! - JSON: Hugging Face metadata, and a model's config beside its weights, are not data
+//!   left out.
+//! - SafeTensors and GGUF: a directory of weights is the model, and a remote model is
+//!   read by its headers ([`crate::remote_model`]).
+//! - SQLite, NumPy and ELF on the home screen: a `.db` file that is not SQLite cannot
+//!   open, a database's tables sort by name, a database table or NumPy array previews
+//!   its schema, and an ELF file opens its symbols, so its sections are not counted.
+//! - CSV: what text with nothing else to say is read as ([`FileFormat::TEXT`]), and
+//!   the reader a delimited spec reads through.
+//! - Audio: a full quality run checks a recording's signal ([`crate::audio::recording`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -69,10 +92,32 @@ pub(crate) type ConvertOut = Result<(Converted, Option<Arc<Detail>>)>;
 /// Reads files of a format into files of their own, which the dataset scans.
 pub(crate) type ConvertFn = fn(&ConvertIn<'_>) -> ConvertOut;
 
+/// What a scan of a prefix or glob in an object store is given: the URL as the user
+/// named it, and as Polars lists it.
+#[cfg(feature = "cloud")]
+pub(crate) struct BucketIn<'a> {
+    pub url: &'a str,
+    pub path: ::polars::prelude::PlRefPath,
+    pub cloud: ::polars::io::cloud::CloudOptions,
+    pub glob: bool,
+    pub options: &'a OpenOptions,
+    pub format: FileFormat,
+}
+
+/// Scans a prefix or glob of a format in an object store as one table, in place.
+#[cfg(feature = "cloud")]
+pub(crate) type BucketScan = fn(BucketIn<'_>) -> Result<::polars::prelude::LazyFrame>;
+
 /// The code behind one format.
 pub(crate) struct Reader {
     /// Opens a file of it, or several of a format that reads many as one table.
     pub scan: ScanFn,
+    /// Scans a prefix of it in an object store in place, for a format other than
+    /// Parquet whose descriptor says a prefix is ([`FileFormat::reads_bucket_prefix`]).
+    /// Parquet's own scan has hive partitioning, and a prefix of model files is read by
+    /// its headers before a scan.
+    #[cfg(feature = "cloud")]
+    pub bucket_scan: Option<BucketScan>,
     /// Reads a file of it into files of its own: a format the scan answers with
     /// [`Scan::ReadInto`], or an archive's compressed member ([`Scan::Unpack`]).
     pub convert: Option<ConvertFn>,
@@ -82,11 +127,23 @@ pub(crate) struct Reader {
     /// schema, an archive's directory. Only for a format whose descriptor says it holds
     /// tables that are listed.
     pub tables: Option<ListTables>,
+    /// How the home screen's preview reads a file of it before it is opened, where its
+    /// first rows are cheap.
+    pub preview: Option<Preview>,
     /// How Copy as Python reads it with Polars, where Polars does.
     pub python: Option<crate::python_script::Python>,
     /// What a view of it is exported as unless the user picks: the format itself where
     /// datui writes it.
     pub export: Option<ExportFormat>,
+}
+
+/// How the home screen's preview reads a file's first rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Preview {
+    /// A scan from the start, of a file no larger than the preview reads.
+    Scan,
+    /// Its first row group, of a file whose groups are no larger.
+    RowGroup,
 }
 
 /// The reader of a format nothing is written for: no tables, no export default.
@@ -97,9 +154,12 @@ pub(crate) const BASE: Reader = Reader {
             input.format.name()
         ))
     },
+    #[cfg(feature = "cloud")]
+    bucket_scan: None,
     convert: None,
     signatures: &[],
     tables: None,
+    preview: None,
     python: None,
     export: None,
 };
@@ -419,8 +479,9 @@ mod tests {
         assert_eq!(sniff(npy, None, Asked::Tables, |_| true), None);
     }
 
-    /// A format whose descriptor says its tables are listed has a way to list them, and
-    /// only such a format does.
+    /// A reader does what its descriptor says: a format whose tables are listed has a
+    /// way to list them, and only such a format does; one read into files of its own
+    /// converts; a prefix is scanned in place only where the descriptor says it is.
     #[test]
     fn readers_agree_with_their_descriptors() {
         for format in FileFormat::ALL {
@@ -431,6 +492,14 @@ mod tests {
                 "{}",
                 format.name()
             );
+            // A format read into files of its own has a conversion to do it.
+            if format.reads_into() {
+                assert!(reader.convert.is_some(), "{}", format.name());
+            }
+            #[cfg(feature = "cloud")]
+            if reader.bucket_scan.is_some() {
+                assert!(format.reads_bucket_prefix(), "{}", format.name());
+            }
         }
     }
 }

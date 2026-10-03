@@ -443,19 +443,10 @@ pub fn door_lands(door: &Entry) -> bool {
     matches!(door_kind(door), DoorKind::Hive | DoorKind::OneSchema)
 }
 
-/// A format as prose names it: `Parquet`, `CSV`.
+/// A format as prose names it, by the name the listing counted: `Parquet`, `CSV`.
 fn format_title(name: &str) -> String {
-    match name {
-        "parquet" => "Parquet".to_string(),
-        "arrow" => "Arrow".to_string(),
-        "avro" => "Avro".to_string(),
-        "excel" => "Excel".to_string(),
-        "safetensors" => "SafeTensors".to_string(),
-        "gguf" => "GGUF".to_string(),
-        "audio" => "Audio".to_string(),
-        "midi" => "MIDI".to_string(),
-        other => other.to_ascii_uppercase(),
-    }
+    crate::FileFormat::from_name(name)
+        .map_or_else(|| name.to_ascii_uppercase(), |f| f.title().to_string())
 }
 
 /// The partition keys a hive door names: the layout the footers pass found, else the

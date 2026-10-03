@@ -8,7 +8,8 @@
 //!
 //! What needs a reader (the bytes that say a format, the scan, the Info tab, Copy as
 //! Python, the export default) is `datui_lib::readers`, keyed by the same
-//! [`FileFormat`].
+//! [`FileFormat`]. Its docs list where a format is still named by the app because it
+//! changes what the app does: Parquet's partitions, Arrow's streams, SQLite's tables.
 //!
 //! Adding a format: a variant, its descriptor below, and its line in
 //! [`FileFormat::descriptor`] and [`FileFormat::ALL`]. The match is exhaustive, so a
@@ -76,15 +77,23 @@ pub struct Descriptor {
     pub bucket_prefix: Option<RemoteRead>,
     /// Whether many files of it are read as one table.
     pub many_files: bool,
-    /// The column separator of a delimited format, when `--delimiter` does not say.
-    pub separator: Option<u8>,
-    /// Whether `--follow` reads it as it grows: text read a line at a time.
-    pub follows: bool,
+    /// How a line of it is read, for text read a line at a time: what `--follow` reads
+    /// as it grows.
+    pub lines: Option<Lines>,
     /// The tables a file of it can hold, and how one is picked.
     pub tables: Option<Tables>,
     /// What the loading screen and the control bar say while a file of it is read into
     /// files of its own before it is scanned.
     pub conversion: Option<Conversion>,
+}
+
+/// How a line of a line-oriented text format is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lines {
+    /// Split into columns by this separator, when `--delimiter` does not say.
+    Delimited(u8),
+    /// One JSON object.
+    Json,
 }
 
 /// How a compressed file of a format is read.
@@ -153,8 +162,7 @@ const BASE: Descriptor = Descriptor {
     bucket_object: RemoteRead::Downloaded,
     bucket_prefix: None,
     many_files: false,
-    separator: None,
-    follows: false,
+    lines: None,
     tables: None,
     conversion: None,
 };
@@ -164,7 +172,7 @@ const BASE: Descriptor = Descriptor {
 const DELIMITED: Descriptor = Descriptor {
     read: ReadMode::Lazy,
     compressed: Compressed::Decompressed,
-    follows: true,
+    lines: Some(Lines::Delimited(b',')),
     ..BASE
 };
 
@@ -204,7 +212,6 @@ const CSV: Descriptor = Descriptor {
     extensions: &["csv"],
     bucket_prefix: Some(RemoteRead::InPlace),
     many_files: true,
-    separator: Some(b','),
     ..DELIMITED
 };
 
@@ -213,7 +220,7 @@ const TSV: Descriptor = Descriptor {
     name: "tsv",
     title: "TSV",
     extensions: &["tsv"],
-    separator: Some(b'\t'),
+    lines: Some(Lines::Delimited(b'\t')),
     ..DELIMITED
 };
 
@@ -221,7 +228,7 @@ const PSV: Descriptor = Descriptor {
     name: "psv",
     title: "PSV",
     extensions: &["psv"],
-    separator: Some(b'|'),
+    lines: Some(Lines::Delimited(b'|')),
     ..DELIMITED
 };
 
@@ -239,7 +246,7 @@ const JSONL: Descriptor = Descriptor {
     extensions: &["jsonl", "ndjson"],
     bucket_prefix: Some(RemoteRead::InPlace),
     many_files: true,
-    follows: true,
+    lines: Some(Lines::Json),
     ..BASE
 };
 
@@ -553,20 +560,23 @@ impl FileFormat {
     /// A name ending a descriptor lists (`model.safetensors.index.json`) says its format
     /// before the extension does.
     pub fn from_path(path: &Path) -> Option<Self> {
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            let name = name.to_ascii_lowercase();
-            if let Some(format) = Self::ALL.into_iter().find(|f| {
-                f.descriptor()
-                    .name_endings
-                    .iter()
-                    .any(|end| name.ends_with(end))
-            }) {
-                return Some(format);
-            }
-        }
-        path.extension()
-            .and_then(|e| e.to_str())
-            .and_then(Self::from_extension)
+        Self::from_name_ending(path).or_else(|| {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .and_then(Self::from_extension)
+        })
+    }
+
+    /// The format a whole-name ending says (`model.safetensors.index.json`), before
+    /// the extension does.
+    pub fn from_name_ending(path: &Path) -> Option<Self> {
+        let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+        Self::ALL.into_iter().find(|f| {
+            f.descriptor()
+                .name_endings
+                .iter()
+                .any(|end| name.ends_with(end))
+        })
     }
 
     /// The format's name, as a row on the home screen says it: `12 parquet`, `3 csv`.
@@ -676,7 +686,16 @@ impl FileFormat {
     /// The column separator a delimited format is read with when `--delimiter` is not
     /// given. `None` for the formats that are not delimited text.
     pub fn separator(self) -> Option<u8> {
-        self.descriptor().separator
+        match self.descriptor().lines {
+            Some(Lines::Delimited(separator)) => Some(separator),
+            _ => None,
+        }
+    }
+
+    /// Whether `--follow` reads a file of this format as it grows: text read a line
+    /// at a time.
+    pub fn follows(self) -> bool {
+        self.descriptor().lines.is_some()
     }
 
     /// What the open says while a file of this format is read into files of its own.

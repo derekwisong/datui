@@ -8190,8 +8190,12 @@ impl App {
         let named = |e: color_eyre::Report| {
             crate::error_display::user_message_from_report(&e, path.as_deref())
         };
+        // NDJSON followed is scanned rather than read whole.
         let followed_lines = options.follow
-            && crate::follow::format_of(&paths[0], options.format) == FileFormat::Jsonl;
+            && crate::follow::format_of(&paths[0], options.format)
+                .descriptor()
+                .lines
+                == Some(crate::cli::Lines::Json);
         let scan = if followed_lines {
             crate::follow::scan_lines(&paths[0], &options, &mut report.read_python).map(Scan::from)
         } else {
@@ -8608,7 +8612,7 @@ impl App {
                 // Only delimited text comes this way, its format said by the loader;
                 // CSV when not, so it can have its header turned off.
                 let options = OpenOptions {
-                    format: options.format.or(Some(FileFormat::Csv)),
+                    format: options.format.or(Some(FileFormat::TEXT)),
                     ..options
                 };
                 let formats = self.formats.clone();
@@ -10016,7 +10020,6 @@ impl App {
         glob: bool,
         options: &OpenOptions,
     ) -> Option<Result<LazyFrame>> {
-        use polars::prelude::{LazyCsvReader, LazyFileListReader};
         // The formats the docs say a prefix reads in place. Parquet takes the caller's
         // own scan, and a prefix of model files is read by its headers before this.
         if !format.reads_bucket_prefix() {
@@ -10030,82 +10033,15 @@ impl App {
         } else {
             PlRefPath::new(url)
         };
-        let named = |e: polars::error::PolarsError| {
-            color_eyre::eyre::eyre!("Could not read {} as {}: {e}", url, format.name())
-        };
-        let lf = match format {
-            FileFormat::Csv => {
-                // The flags the user gave mean what they mean for a local file.
-                let reader = || {
-                    LazyCsvReader::new(pl_path.clone())
-                        .with_cloud_options(Some(cloud_opts.clone()))
-                        .with_glob(glob)
-                };
-                // Each object has its own header lines, and the scan reads them all as
-                // one; the names cannot come from one of them.
-                if options.header_rows().is_some() {
-                    return Some(Err(color_eyre::eyre::eyre!(
-                        "--header-rows reads a file's own lines, so it cannot read {url} in place. Download the files, or name the header with --skip-lines"
-                    )));
-                }
-                let nv = match DataTableState::build_null_values_with(options, None, || {
-                    DataTableState::csv_schema_for_null_values(reader(), options)
-                }) {
-                    Ok(nv) => nv,
-                    Err(e) => return Some(Err(e)),
-                };
-                // No `--parse-strings` here: its sample would be a second read of
-                // the bucket. Nor Polars' `try_parse_dates`, which fails the whole
-                // read on a value it cannot parse, even one like those it inferred
-                // the type from. Timestamps stay text, and so do padded numbers:
-                // `--skip-initial-space` only takes their padding off.
-                DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
-                    .finish()
-                    .and_then(|lf| crate::csv_dialect::name_columns(lf, None))
-                    .and_then(|lf| {
-                        if !options.skip_initial_space {
-                            return Ok(lf);
-                        }
-                        crate::csv_dialect::skip_initial_space(lf, |column| {
-                            DataTableState::csv_null_values_for(options, column)
-                        })
-                    })
-                    .map_err(named)
-                    .and_then(|lf| {
-                        DataTableState::apply_skip_tail_rows_csv(lf, options).map_err(|e| {
-                            e.wrap_err(format!("Could not read {} as {}", url, format.name()))
-                        })
-                    })
-            }
-            FileFormat::Jsonl => polars::prelude::LazyJsonLineReader::new(pl_path)
-                .with_cloud_options(Some(cloud_opts))
-                .finish()
-                .map_err(named),
-            // IPC files, by range from their footers. A prefix is listed before it gets
-            // here (`cloud_arrow`), so this is a glob: a stream among its objects has no
-            // footer, and is read by its folder, which downloads it.
-            FileFormat::Arrow => {
-                let args = polars::prelude::UnifiedScanArgs {
-                    cloud_options: Some(cloud_opts),
-                    glob,
-                    ..Default::default()
-                };
-                LazyFrame::scan_ipc(pl_path, Default::default(), args).map_err(|e| {
-                    let folder = url
-                        .split('*')
-                        .next()
-                        .and_then(|head| head.rsplit_once('/'))
-                        .map_or(url, |(folder, _)| folder);
-                    color_eyre::eyre::eyre!(
-                        "Could not read {url} as Arrow IPC files: {e}. A glob reads IPC files in place; Arrow streams are read by their folder: open {folder}/"
-                    )
-                })
-            }
-            // Parquet has its own branch, and the rest have no multi-file cloud reader
-            // in Polars — an ORC or Avro prefix is still a file at a time.
-            _ => return None,
-        };
-        Some(lf)
+        let scan = crate::readers::of(format).bucket_scan?;
+        Some(scan(crate::readers::BucketIn {
+            url,
+            path: pl_path,
+            cloud: cloud_opts,
+            glob,
+            options,
+            format,
+        }))
     }
 
     /// The format a prefix or glob in a store is read as, other than Parquet: what

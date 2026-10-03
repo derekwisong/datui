@@ -503,18 +503,24 @@ pub fn marked(c: char) -> bool {
 
 fn escape_into(s: &str, out: &mut String) {
     for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\0' => out.push_str("\\0"),
-            c if invisible(c) => {
-                let _ = write!(out, "\\u{{{:x}}}", c as u32);
-            }
-            c => out.push(c),
+        escape_char(c, out);
+    }
+}
+
+/// One character of [`escaped`]'s literal, without the quotes around it: the
+/// inspector escapes a long value a piece at a time.
+pub fn escape_char(c: char, out: &mut String) {
+    match c {
+        '\\' => out.push_str("\\\\"),
+        '"' => out.push_str("\\\""),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\0' => out.push_str("\\0"),
+        c if invisible(c) => {
+            let _ = write!(out, "\\u{{{:x}}}", c as u32);
         }
+        c => out.push(c),
     }
 }
 

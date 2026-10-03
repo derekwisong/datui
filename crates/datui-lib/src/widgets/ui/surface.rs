@@ -37,6 +37,20 @@ impl<'a> Surface<'a> {
         self
     }
 
+    /// The content area [`Self::render`] returns for `area` with a footer, known
+    /// before drawing: a layout that decides the footer needs it first.
+    pub fn content_area(area: Rect) -> Rect {
+        // The frame's two rows, then the footer and the gap above it, as `render`.
+        let inside = area.height.saturating_sub(2);
+        let gap = u16::from(inside > 2);
+        Rect {
+            x: area.x + 2,
+            y: area.y + 1,
+            width: area.width.saturating_sub(4),
+            height: inside.saturating_sub(1 + gap),
+        }
+    }
+
     /// Clear the area, draw the frame and footer, and return the content area:
     /// the inside minus a one-column gutter each side, the footer row, and the blank
     /// row that keeps the content's last line off the chips (#650).
@@ -127,6 +141,8 @@ mod tests {
         // gutter.
         assert_eq!(content, Rect::new(2, 1, 36, 4));
         assert!(rows[5].trim_matches(['│', ' ']).is_empty(), "{:?}", rows[5]);
+        // Known before drawing, for a layout that sizes the footer from it.
+        assert_eq!(Surface::content_area(Rect::new(0, 0, 40, 8)), content);
     }
 
     #[test]

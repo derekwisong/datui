@@ -76,6 +76,7 @@ pub mod event_pump;
 pub mod exact;
 pub mod export;
 pub mod export_modal;
+pub mod external_open;
 pub mod filter_modal;
 pub mod find;
 mod first_rows_trace;
@@ -90,8 +91,10 @@ pub mod gps;
 pub(crate) mod help_strings;
 pub mod hf_splits;
 pub mod home;
+pub mod inspector_bytes;
 pub mod inspector_drill;
 pub mod inspector_modal;
+pub mod inspector_reader;
 pub mod intent_modal;
 pub mod ipc_stream;
 mod jobs;
@@ -10679,6 +10682,11 @@ pub struct App {
     pub export_modal: ExportModal,
     pub copy_modal: copy_modal::CopyModal,
     pub inspector_modal: inspector_modal::InspectorModal,
+    /// A value the inspector wrote for another program, for the run loop to open:
+    /// it owns the terminal that a waiting program takes over.
+    external_open: Option<external_open::ExternalOpen>,
+    /// Where those values are written; removed when the app is.
+    open_dir: Option<tempfile::TempDir>,
     /// The shown columns, narrowed by what is typed, while `g` is choosing one.
     pub go_to_column: crate::widgets::ui::PickerState,
     /// The Value Counts screen (`F`).
@@ -14584,6 +14592,8 @@ impl App {
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
             inspector_modal: inspector_modal::InspectorModal::new(),
+            external_open: None,
+            open_dir: None,
             go_to_column: crate::widgets::ui::PickerState::default(),
             value_counts: value_counts_modal::ValueCountsModal::default(),
             export_counts: None,
@@ -15287,6 +15297,7 @@ impl App {
         if self.input_mode == InputMode::Normal {
             self.load_ahead();
         }
+        self.inspector_needs();
         if self.input_mode != InputMode::Home {
             return;
         }
@@ -23575,27 +23586,7 @@ impl App {
                     self.open_inspector();
                     return None;
                 }
-                let state = self.data_table_state.as_ref()?;
-                // An empty result has no row selected, and says so like any other.
-                let drill = state
-                    .table_state
-                    .selected()
-                    .map(|selected| state.start_row() + selected)
-                    .and_then(|index| Some((index, state.drill_row(index)?)));
-                match drill {
-                    None => self.flash_note("Nothing to drill into".to_string()),
-                    Some((group_index, DrillRow::Buffered(row))) => {
-                        self.drill_into(group_index, &row)
-                    }
-                    Some((group_index, DrillRow::Read(lf))) => {
-                        let streaming = state.polars_streaming();
-                        self.spawn_job(Job::DrillRow, Some(Self::READING_GROUP), move |_| {
-                            let row = crate::statistics::collect_lazy(*lf, streaming)
-                                .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
-                            Ok(Answer::DrillRow { group_index, row })
-                        });
-                    }
-                }
+                self.drill_selected_row();
                 None
             }
             KeyCode::Char('i') if event.is_press() => {
@@ -26217,6 +26208,29 @@ impl App {
                 }
                 None
             }
+            Answer::Indented(text) => {
+                let Job::InspectPretty { token } = job else {
+                    return None;
+                };
+                let modal = &mut self.inspector_modal;
+                if current
+                    && let Some(inspector_modal::Pretty::Pending { token: t, place }) =
+                        modal.pretty.as_ref()
+                    && *t == token
+                {
+                    modal.pretty = Some(inspector_modal::Pretty::Ready {
+                        place: place.clone(),
+                        text,
+                    });
+                }
+                None
+            }
+            Answer::ValueWritten(open) => {
+                if current && self.inspector_modal.active {
+                    self.external_open = Some(open);
+                }
+                None
+            }
             Answer::Exported(path) => {
                 if current {
                     self.export_progress = None;
@@ -26343,6 +26357,26 @@ impl App {
                         "Could not read the JSON; see the log".to_string()
                     } else {
                         sentence(message)
+                    });
+                }
+            }
+            Job::InspectPretty { token } => {
+                let modal = &mut self.inspector_modal;
+                if let Some(inspector_modal::Pretty::Pending { token: t, place }) =
+                    modal.pretty.as_ref()
+                    && t == token
+                {
+                    modal.pretty = Some(inspector_modal::Pretty::Failed {
+                        place: place.clone(),
+                    });
+                }
+            }
+            Job::OpenValue => {
+                if current {
+                    self.flash_note(if panicked {
+                        "Could not open the value; see the log".to_string()
+                    } else {
+                        format!("Could not open the value: {message}")
                     });
                 }
             }
@@ -27409,6 +27443,737 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    /// Enter on a row of a grouped view: its group's rows, read off this thread
+    /// when the buffer does not hold the row.
+    fn drill_selected_row(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        // An empty result has no row selected, and says so like any other.
+        let drill = state
+            .table_state
+            .selected()
+            .map(|selected| state.start_row() + selected)
+            .and_then(|index| Some((index, state.drill_row(index)?)));
+        match drill {
+            None => self.flash_note("Nothing to drill into".to_string()),
+            Some((group_index, DrillRow::Buffered(row))) => self.drill_into(group_index, &row),
+            Some((group_index, DrillRow::Read(lf))) => {
+                let streaming = state.polars_streaming();
+                self.spawn_job(Job::DrillRow, Some(Self::READING_GROUP), move |_| {
+                    let row = crate::statistics::collect_lazy(*lf, streaming)
+                        .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+                    Ok(Answer::DrillRow { group_index, row })
+                });
+            }
+        }
+    }
+
+    /// The inspector's list as the row shown has it: Filled, Compare and the find
+    /// text depend on the row's values, which a key may have moved.
+    fn refresh_inspector_list(&mut self) {
+        if let Some(state) = self.data_table_state.as_ref() {
+            let visible = crate::widgets::inspector::visible_fields(&self.inspector_modal, state);
+            self.inspector_modal.set_visible(visible);
+        }
+    }
+
+    /// The pane for the focused value: as last drawn while that is still the
+    /// focused value, else built for the key (without the table's preview, which
+    /// only a frame knows).
+    fn inspector_pane(&self) -> Option<crate::widgets::inspector::Pane> {
+        let modal = &self.inspector_modal;
+        if modal.drill.is_some() {
+            return modal.pane.as_ref().map(|(_, pane)| pane.clone());
+        }
+        let state = self.data_table_state.as_ref()?;
+        let row = state.inspect_row()?;
+        let field = modal.focused()?;
+        if let Some(pane) = modal.pane_for(row.frame, row.row, &field.name) {
+            return Some(pane.clone());
+        }
+        let shown = crate::widgets::inspector::shown(field, &row, modal.read.as_ref(), state);
+        Some(crate::widgets::inspector::pane(
+            &field.dtype,
+            &shown,
+            &crate::widgets::inspector::PaneAsk {
+                choice: modal.view,
+                width: modal
+                    .pane
+                    .as_ref()
+                    .map_or(80, |(key, _)| key.width as usize),
+                table: None,
+                indented: crate::widgets::inspector::Indented::None,
+                not_json: modal.known_not_json(row.frame, row.row, &field.name),
+                read_key: "Enter",
+            },
+        ))
+    }
+
+    /// The inspector's keys. Moving between rows moves the table's cursor, so the
+    /// table is where the inspector left it on close.
+    fn inspector_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        if !event.is_press() {
+            return None;
+        }
+        let modal = &mut self.inspector_modal;
+        if modal.finding {
+            match event.code {
+                KeyCode::Esc => modal.clear_find(),
+                KeyCode::Enter | KeyCode::Tab | KeyCode::Down => modal.finding = false,
+                KeyCode::Up => {
+                    modal.finding = false;
+                    self.refresh_inspector_list();
+                    self.inspector_modal.prev_field();
+                    return None;
+                }
+                KeyCode::Backspace => modal.find_backspace(),
+                KeyCode::Char(c) => modal.find_key(c, event.modifiers),
+                _ => {}
+            }
+            // The focus follows the narrowing now, not at the next frame: a key
+            // replayed before it acts on the field the find left focused.
+            self.refresh_inspector_list();
+            return None;
+        }
+        if modal.value_find.as_ref().is_some_and(|f| f.editing) {
+            self.value_find_key(event);
+            return None;
+        }
+        if event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return None;
+        }
+        if modal.focus == inspector_modal::Focus::Value {
+            return self.inspector_value_key(event);
+        }
+        if modal.drill.is_some() {
+            return self.drill_key(event);
+        }
+        self.refresh_inspector_list();
+        let modal = &mut self.inspector_modal;
+        match event.code {
+            KeyCode::Esc if !modal.filter.is_empty() => modal.clear_find(),
+            KeyCode::Esc | KeyCode::Char(' ') => self.close_inspector(),
+            KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
+            KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
+            KeyCode::Home => modal.first_field(),
+            KeyCode::End => modal.last_field(),
+            KeyCode::PageDown => modal.page_fields(1),
+            KeyCode::PageUp => modal.page_fields(-1),
+            KeyCode::Tab => {
+                if modal.focused().is_some() {
+                    modal.focus = inspector_modal::Focus::Value;
+                }
+            }
+            KeyCode::Char('/') => modal.finding = true,
+            KeyCode::Char('e') => self.inspector_view(),
+            KeyCode::Char('w') => self.inspector_wrap(),
+            KeyCode::Char('f') => {
+                modal.filled_only = !modal.filled_only;
+                modal.list_offset = 0;
+            }
+            KeyCode::Char('s') => {
+                modal.order = modal.order.next();
+                modal.list_offset = 0;
+            }
+            KeyCode::Char('c') => {
+                modal.compare = !modal.compare;
+                if !modal.compare {
+                    modal.filled_only = false;
+                }
+            }
+            KeyCode::Char('m') => self.toggle_inspector_pin(),
+            KeyCode::Right | KeyCode::Char('l') => return self.step_row(1),
+            KeyCode::Left | KeyCode::Char('h') => return self.step_row(-1),
+            KeyCode::Char('y') => self.copy_inspected_field(),
+            KeyCode::Char('Y') => self.copy_inspected_row(),
+            KeyCode::Char('o') => self.open_inspected_value(),
+            KeyCode::Char('r') => self.read_focused_field(),
+            KeyCode::Enter => return self.inspector_enter(),
+            _ => {}
+        }
+        None
+    }
+
+    /// The keys with the focus in the value: scroll it, search it, change its view.
+    fn inspector_value_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let Some(pane) = self.inspector_pane() else {
+            self.inspector_modal.focus = inspector_modal::Focus::List;
+            return None;
+        };
+        let modal = &mut self.inspector_modal;
+        let h = modal.page.max(1);
+        let content = &pane.content;
+        let page = h.saturating_sub(1).max(1) as isize;
+        match event.code {
+            KeyCode::Esc
+                if modal
+                    .value_find
+                    .as_ref()
+                    .is_some_and(|f| !f.text.is_empty()) =>
+            {
+                modal.value_find = None;
+            }
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
+                modal.focus = inspector_modal::Focus::List;
+            }
+            KeyCode::Char(' ') => self.close_inspector(),
+            KeyCode::Down | KeyCode::Char('j') => modal.reader.scroll(content, h, 1),
+            KeyCode::Up | KeyCode::Char('k') => modal.reader.scroll(content, h, -1),
+            KeyCode::PageDown => modal.reader.scroll(content, h, page),
+            KeyCode::PageUp => modal.reader.scroll(content, h, -page),
+            KeyCode::Home => modal.reader.home(),
+            KeyCode::End => modal.reader.end(content, h),
+            KeyCode::Char('/') => {
+                modal.value_find = Some(inspector_modal::ValueFind {
+                    editing: true,
+                    pane: pane.id,
+                    ..Default::default()
+                });
+            }
+            KeyCode::Char('n') => self.next_value_hit(1),
+            KeyCode::Char('N') => self.next_value_hit(-1),
+            KeyCode::Char('e') => self.inspector_view(),
+            KeyCode::Char('w') => self.inspector_wrap(),
+            KeyCode::Char('y') => {
+                if modal.drill.is_some() {
+                    self.copy_drilled_item();
+                } else {
+                    self.copy_inspected_field();
+                }
+            }
+            KeyCode::Char('o') if modal.drill.is_none() => self.open_inspected_value(),
+            KeyCode::Right | KeyCode::Char('l') if modal.drill.is_none() => {
+                return self.step_row(1);
+            }
+            KeyCode::Left | KeyCode::Char('h') if modal.drill.is_none() => {
+                return self.step_row(-1);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// A key typed into the value's find line. Enter finds every place and goes
+    /// to the first at or after the pane's top.
+    fn value_find_key(&mut self, event: &KeyEvent) {
+        let pane = self.inspector_pane();
+        let modal = &mut self.inspector_modal;
+        let Some(find) = modal.value_find.as_mut() else {
+            return;
+        };
+        match event.code {
+            KeyCode::Esc => modal.value_find = None,
+            KeyCode::Enter => {
+                find.editing = false;
+                let Some(pane) = pane else {
+                    return;
+                };
+                find.hits = inspector_reader::find_hits(&pane.content, &find.text);
+                find.pane = pane.id;
+                let h = modal.page.max(1);
+                let from = modal.reader.window(&pane.content, h).from;
+                let at = find.hits.partition_point(|&p| p < from);
+                find.current = (!find.hits.is_empty()).then(|| at % find.hits.len());
+                if let Some(at) = find.current {
+                    let pos = find.hits[at];
+                    modal.reader.jump(&pane.content, h, pos);
+                }
+            }
+            KeyCode::Backspace => {
+                find.text.pop();
+            }
+            KeyCode::Char(c) => inspector_modal::edit_find(&mut find.text, c, event.modifiers),
+            _ => {}
+        }
+    }
+
+    /// `n` and `N` in the value: the next or the last place found, round the ends.
+    fn next_value_hit(&mut self, step: isize) {
+        let Some(pane) = self.inspector_pane() else {
+            return;
+        };
+        let modal = &mut self.inspector_modal;
+        let Some(find) = modal.value_find.as_mut() else {
+            return;
+        };
+        if find.pane != pane.id && !find.text.is_empty() {
+            find.hits = inspector_reader::find_hits(&pane.content, &find.text);
+            find.pane = pane.id;
+            find.current = None;
+        }
+        let n = find.hits.len();
+        if n == 0 {
+            return;
+        }
+        let at = match find.current {
+            Some(at) => (at as isize + step).rem_euclid(n as isize) as usize,
+            None if step > 0 => 0,
+            None => n - 1,
+        };
+        find.current = Some(at);
+        let pos = find.hits[at];
+        let h = modal.page.max(1);
+        modal.reader.jump(&pane.content, h, pos);
+    }
+
+    /// The inspector's keys inside a level drilled into: the same moves as at the
+    /// row, but `→` and Enter open the focused item and `←` and Esc step back up.
+    fn drill_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let modal = &mut self.inspector_modal;
+        match event.code {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
+                modal.drill_out();
+            }
+            KeyCode::Char(' ') => self.close_inspector(),
+            KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
+            KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
+            KeyCode::Home => modal.first_field(),
+            KeyCode::End => modal.last_field(),
+            KeyCode::PageDown => modal.page_fields(1),
+            KeyCode::PageUp => modal.page_fields(-1),
+            KeyCode::Tab => modal.focus = inspector_modal::Focus::Value,
+            KeyCode::Char('e') => self.inspector_view(),
+            KeyCode::Char('w') => self.inspector_wrap(),
+            KeyCode::Char('y') => self.copy_drilled_item(),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                let drill = modal.drill.as_ref()?;
+                let (frame, row) = (drill.frame, drill.row);
+                let (label, node) = drill.level().focused()?;
+                let path = drill.item_key(&label);
+                if node.opens() && !modal.known_not_json(frame, row, &path) {
+                    self.inspector_open(frame, row, label, path, node);
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// `e` in the inspector: the focused value's next view, where it has more than
+    /// one. A number never has, so it never changes how a text field is then shown.
+    fn inspector_view(&mut self) {
+        if let Some(view) = self.inspector_pane().and_then(|pane| pane.next_view()) {
+            self.inspector_modal.choose_view(view);
+        }
+    }
+
+    /// `w`: word wrap or hard wrap, for every value until it is pressed again.
+    fn inspector_wrap(&mut self) {
+        let modal = &mut self.inspector_modal;
+        modal.wrap = match modal.wrap {
+            inspector_reader::Wrap::Word => inspector_reader::Wrap::Hard,
+            inspector_reader::Wrap::Hard => inspector_reader::Wrap::Word,
+        };
+    }
+
+    /// `m`: pin this row for Compare, or let the pin go when it is this row.
+    fn toggle_inspector_pin(&mut self) {
+        let Some(row) = self.data_table_state.as_ref().and_then(|s| s.inspect_row()) else {
+            return;
+        };
+        let modal = &mut self.inspector_modal;
+        let here = modal
+            .pinned
+            .as_ref()
+            .is_some_and(|p| (p.frame, p.row) == (row.frame, row.row));
+        if here {
+            modal.pinned = None;
+            self.flash_note("Unpinned".to_string());
+        } else {
+            let n = row.display_row;
+            modal.pinned = Some(row);
+            modal.compare = true;
+            self.flash_note(format!(
+                "Pinned row {}; Compare shows it",
+                copy_modal::thousands(n)
+            ));
+        }
+    }
+
+    /// Enter in the inspector: on a group's row, its rows, as at the table; else
+    /// open a nested value, or read the row's fields the buffer does not hold.
+    fn inspector_enter(&mut self) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        if state.can_drill_down() {
+            self.close_inspector();
+            self.drill_selected_row();
+            return None;
+        }
+        let row = state.inspect_row()?;
+        let field = self.inspector_modal.focused().cloned()?;
+        let shown = crate::widgets::inspector::shown(
+            &field,
+            &row,
+            self.inspector_modal.read.as_ref(),
+            state,
+        );
+        use crate::widgets::inspector::Shown;
+        match shown {
+            // A failed read is asked again: the pane said why, and Enter is the retry.
+            Shown::Unread | Shown::Failed(_) => self.read_focused_field(),
+            Shown::Value(ref v)
+                if crate::widgets::inspector::value_opens(v)
+                    && !self
+                        .inspector_modal
+                        .known_not_json(row.frame, row.row, &field.name) =>
+            {
+                let column = if field.buffered() {
+                    row.values.column(&field.name).ok()
+                } else {
+                    self.inspector_modal
+                        .read_values(row.frame, row.row)
+                        .and_then(|values| values.column(&field.name).ok())
+                };
+                if let Some(column) = column {
+                    let node =
+                        inspector_drill::Node::Native(column.as_materialized_series().clone());
+                    let path = inspector_drill::path_key([field.name.as_str()]);
+                    self.inspector_open(row.frame, row.row, field.name.clone(), path, node);
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Read the focused row's hidden and binary fields, waited on; from then on the
+    /// rows moved to are read too while the focus stays on this field.
+    fn read_focused_field(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let Some(row) = state.inspect_row() else {
+            return;
+        };
+        let Some(field) = self.inspector_modal.focused().cloned() else {
+            return;
+        };
+        let shown = crate::widgets::inspector::shown(
+            &field,
+            &row,
+            self.inspector_modal.read.as_ref(),
+            state,
+        );
+        if matches!(
+            shown,
+            crate::widgets::inspector::Shown::Unread | crate::widgets::inspector::Shown::Failed(_)
+        ) {
+            self.inspector_modal.follow = Some(field.name.clone());
+            self.read_inspected_fields(&row, true);
+        }
+    }
+
+    /// What the inspector needs after a pass: the row moved to read while a read
+    /// follows the rows, and long JSON indented for its JSON view. Neither holds
+    /// the keys: moving on drops what is no longer wanted.
+    fn inspector_needs(&mut self) {
+        if self.input_mode != InputMode::Inspect || !self.inspector_modal.active {
+            return;
+        }
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let Some(row) = state.inspect_row() else {
+            return;
+        };
+        let modal = &self.inspector_modal;
+        if modal.drill.is_some() {
+            return;
+        }
+        let Some(field) = modal.focused().cloned() else {
+            return;
+        };
+        let read_here = modal
+            .read
+            .as_ref()
+            .is_some_and(|r| r.key() == (row.frame, row.row));
+        if modal.follow.as_deref() == Some(field.name.as_str()) && !field.buffered() && !read_here {
+            self.read_inspected_fields(&row, false);
+            return;
+        }
+        // Long JSON text, asked for the JSON view and not yet indented.
+        let wants = modal
+            .pane_for(row.frame, row.row, &field.name)
+            .is_some_and(|pane| pane.indent);
+        let place = (row.frame, row.row, field.name.clone());
+        if !wants || modal.pretty.as_ref().is_some_and(|p| *p.place() == place) {
+            return;
+        }
+        let column = if field.buffered() {
+            row.values.column(&field.name).ok().cloned()
+        } else {
+            modal
+                .read_values(row.frame, row.row)
+                .and_then(|values| values.column(&field.name).ok().cloned())
+        };
+        let Some(column) = column else {
+            return;
+        };
+        let modal = &mut self.inspector_modal;
+        modal.pretty_token += 1;
+        let token = modal.pretty_token;
+        modal.pretty = Some(inspector_modal::Pretty::Pending { token, place });
+        self.spawn_job(Job::InspectPretty { token }, None, move |_| {
+            let value = column.get(0).map_err(|e| e.to_string())?;
+            let text = match &value {
+                polars::prelude::AnyValue::String(s) => *s,
+                polars::prelude::AnyValue::StringOwned(s) => s.as_str(),
+                _ => return Err("not text".to_string()),
+            };
+            let json = inspector_drill::parse_json(text)?;
+            let (pretty, _) = inspector_drill::json_text(&json, true, usize::MAX);
+            Ok(Answer::Indented(std::sync::Arc::from(pretty)))
+        });
+    }
+
+    /// The value the inspector wrote for another program, for the run loop.
+    pub fn take_external_open(&mut self) -> Option<external_open::ExternalOpen> {
+        self.external_open.take()
+    }
+
+    /// Whether the session reports the mouse, to take it again after a program
+    /// had the terminal.
+    pub fn mouse_enabled(&self) -> bool {
+        self.app_config.display.mouse
+    }
+
+    /// The run loop opened `open`: a program that waited is done with its file;
+    /// a failure is said on the bar.
+    pub fn external_opened(&mut self, open: &external_open::ExternalOpen, failed: Option<String>) {
+        let program = external_open::program_for(open.document, |name| std::env::var(name).ok());
+        if matches!(program, external_open::Program::Wait(_)) {
+            let _ = std::fs::remove_file(&open.path);
+        }
+        match failed {
+            Some(e) => self.flash_note(format!("Could not open the value: {e}")),
+            None if matches!(program, external_open::Program::Opener(_)) => {
+                self.flash_note("Opened in the system viewer".to_string())
+            }
+            None => {}
+        }
+    }
+
+    /// `y` in the inspector: the focused value as its view shows it — the stored
+    /// value exact, indented JSON in the JSON view, the text bytes hold in their
+    /// Text view, bytes otherwise as base64 — through the same clipboard path as
+    /// the copy dialog. One over a capped destination's limit is refused
+    /// unformatted; a large one is written off this thread.
+    fn copy_inspected_field(&mut self) {
+        use copy_modal::thousands;
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let (Some(row), Some(field)) = (state.inspect_row(), self.inspector_modal.focused()) else {
+            return;
+        };
+        let field = field.clone();
+        let column = if field.buffered() {
+            row.values.column(&field.name).ok().cloned()
+        } else {
+            self.inspector_modal
+                .read_values(row.frame, row.row)
+                .and_then(|values| values.column(&field.name).ok().cloned())
+        };
+        let Some(column) = column else {
+            self.flash_note(format!("{} is not read yet; Enter reads it", field.name));
+            return;
+        };
+        let message = format!(
+            "Copied {} of row {}",
+            field.name,
+            thousands(row.display_row)
+        );
+        use crate::widgets::inspector::CopyAs;
+        match self.inspector_pane().map(|pane| pane.copy) {
+            Some(CopyAs::Text(text)) => self.copy_string(text.to_string(), message),
+            Some(CopyAs::Escaped) => {
+                let text = column
+                    .get(0)
+                    .map(|v| crate::exact::escaped(&crate::exact::value_text(&v)))
+                    .unwrap_or_default();
+                self.copy_string(text, message);
+            }
+            _ => self.copy_value(column, message),
+        }
+    }
+
+    /// Copy `text`, refused when it is over a capped destination's limit.
+    fn copy_string(&mut self, text: String, message: String) {
+        let limit = match self.copy_destination() {
+            Ok(destination) => destination.accepts().base64_limit,
+            Err(e) => {
+                self.error_modal.show(e);
+                return;
+            }
+        };
+        if let Some(limit) = limit
+            && text.len() > limit / 4 * 3
+        {
+            self.error_modal
+                .show(clipboard::over_osc52_limit(None, limit));
+            return;
+        }
+        self.finish_copy(clipboard::Payload::text(text), message);
+    }
+
+    /// `Y` in the inspector: the whole row as one JSON object, exact, without
+    /// leaving. Fields not read are left out, and the flash counts them.
+    fn copy_inspected_row(&mut self) {
+        use copy_modal::thousands;
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let Some(row) = state.inspect_row() else {
+            return;
+        };
+        let fields = self.inspector_modal.fields.clone();
+        let read = self.inspector_modal.read.clone();
+        let display = row.display_row;
+        let size = row.values.estimated_size()
+            + self
+                .inspector_modal
+                .read_values(row.frame, row.row)
+                .map_or(0, |v| v.estimated_size());
+        let build = move || {
+            let (json, kept, unread) =
+                crate::widgets::inspector::row_json(&fields, &row, read.as_ref());
+            let message = if unread > 0 {
+                format!(
+                    "Copied row {}: {} fields, {} not read",
+                    thousands(display),
+                    thousands(kept),
+                    thousands(unread)
+                )
+            } else {
+                format!("Copied row {} as JSON", thousands(display))
+            };
+            (json, message)
+        };
+        if size <= Self::FIELD_COPY_INLINE_BYTES {
+            let (json, message) = build();
+            self.copy_string(json, message);
+            return;
+        }
+        let limit = match self.copy_destination() {
+            Ok(destination) => destination.accepts().base64_limit,
+            Err(e) => {
+                self.error_modal.show(e);
+                return;
+            }
+        };
+        self.spawn_job(Job::Copy, Some("Copying..."), move |_| {
+            let (json, message) = build();
+            if let Some(limit) = limit
+                && json.len() > limit / 4 * 3
+            {
+                return Err(clipboard::over_osc52_limit(None, limit));
+            }
+            Ok(Answer::Copied {
+                payload: clipboard::Payload::text(json),
+                message,
+            })
+        });
+    }
+
+    /// `o` in the inspector: the value written to a file of its own, in the view
+    /// it is shown in, for another program to open; see [`external_open`].
+    fn open_inspected_value(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let Some(row) = state.inspect_row() else {
+            return;
+        };
+        let Some(field) = self.inspector_modal.focused().cloned() else {
+            return;
+        };
+        let column = if field.buffered() {
+            row.values.column(&field.name).ok().cloned()
+        } else {
+            self.inspector_modal
+                .read_values(row.frame, row.row)
+                .and_then(|values| values.column(&field.name).ok().cloned())
+        };
+        let Some(column) = column else {
+            self.flash_note(format!("{} is not read yet; Enter reads it", field.name));
+            return;
+        };
+        if self.open_dir.is_none() {
+            match tempfile::Builder::new().prefix("datui-values-").tempdir() {
+                Ok(dir) => self.open_dir = Some(dir),
+                Err(e) => {
+                    self.flash_note(format!("Could not open the value: {e}"));
+                    return;
+                }
+            }
+        }
+        let dir = self
+            .open_dir
+            .as_ref()
+            .map(|d| d.path().to_path_buf())
+            .unwrap_or_default();
+        let shown_as = self.inspector_pane().map(|pane| pane.copy);
+        let name = field.name.clone();
+        let display = row.display_row;
+        self.spawn_job(Job::OpenValue, Some("Writing the value..."), move |_| {
+            use crate::widgets::inspector::CopyAs;
+            let value = column.get(0).map_err(|e| e.to_string())?;
+            let (bytes, extension, document): (Vec<u8>, &str, bool) = match (&shown_as, &value) {
+                (Some(CopyAs::Text(text)), _) => {
+                    let ext = if inspector_drill::looks_like_json(text) {
+                        "json"
+                    } else {
+                        "txt"
+                    };
+                    (text.as_bytes().to_vec(), ext, false)
+                }
+                (_, polars::prelude::AnyValue::Binary(b)) => {
+                    let kind = inspector_bytes::sniff(b);
+                    (
+                        b.to_vec(),
+                        kind.map_or("bin", |k| k.extension()),
+                        kind.is_some_and(|k| k.is_document()),
+                    )
+                }
+                (_, polars::prelude::AnyValue::BinaryOwned(b)) => {
+                    let kind = inspector_bytes::sniff(b);
+                    (
+                        b.clone(),
+                        kind.map_or("bin", |k| k.extension()),
+                        kind.is_some_and(|k| k.is_document()),
+                    )
+                }
+                (_, v) if crate::exact::is_nested_value(v) => {
+                    let text = crate::exact::copy_text(&column).map_err(|e| e.to_string())?;
+                    (text.into_bytes(), "json", false)
+                }
+                (_, v) => {
+                    let text = crate::exact::value_text(v);
+                    let trimmed = text.trim_start();
+                    let ext = if inspector_drill::looks_like_json(&text) {
+                        "json"
+                    } else if trimmed.starts_with('<') {
+                        "xml"
+                    } else {
+                        "txt"
+                    };
+                    (text.into_bytes(), ext, false)
+                }
+            };
+            let file = external_open::file_name(&name, display, extension);
+            let path =
+                external_open::write_value(&dir, &file, &bytes).map_err(|e| e.to_string())?;
+            Ok(Answer::ValueWritten(external_open::ExternalOpen {
+                path,
+                document,
+            }))
+        });
+    }
+
     /// Move the table's cursor `delta` rows, reading the next page in the
     /// background when the buffer does not hold the row: the table's own ↑↓.
     fn step_row(&mut self, delta: i64) -> Option<AppEvent> {
@@ -27431,94 +28196,6 @@ impl App {
 
     /// The inspector's keys. Moving between rows moves the table's cursor, so the
     /// table is where the inspector left it on close.
-    fn inspector_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        if !event.is_press() {
-            return None;
-        }
-        let modal = &mut self.inspector_modal;
-        if modal.finding {
-            match event.code {
-                KeyCode::Esc => modal.clear_find(),
-                KeyCode::Enter | KeyCode::Tab | KeyCode::Down => modal.finding = false,
-                KeyCode::Up => {
-                    modal.finding = false;
-                    modal.prev_field();
-                }
-                KeyCode::Backspace => modal.find_backspace(),
-                KeyCode::Char(c) => modal.find_key(c, event.modifiers),
-                _ => {}
-            }
-            return None;
-        }
-        if event
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            return None;
-        }
-        if modal.drill.is_some() {
-            return self.drill_key(event);
-        }
-        match event.code {
-            KeyCode::Esc if !modal.picker.filter.is_empty() => modal.clear_find(),
-            KeyCode::Esc | KeyCode::Char(' ') => self.close_inspector(),
-            KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
-            KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
-            KeyCode::Home => modal.first_field(),
-            KeyCode::End => modal.last_field(),
-            KeyCode::PageDown => modal.scroll_by(modal.page.saturating_sub(1).max(1) as isize),
-            KeyCode::PageUp => modal.scroll_by(-(modal.page.saturating_sub(1).max(1) as isize)),
-            KeyCode::Char('/') => modal.finding = true,
-            KeyCode::Char('e') => self.inspector_escape(),
-            KeyCode::Right | KeyCode::Char('l') => return self.step_row(1),
-            KeyCode::Left | KeyCode::Char('h') => return self.step_row(-1),
-            KeyCode::Char('y') => self.copy_inspected_field(),
-            KeyCode::Enter => self.inspector_enter(),
-            _ => {}
-        }
-        None
-    }
-
-    /// The inspector's keys inside a level drilled into: the same moves as at the
-    /// row, but `→` and Enter open the focused item and `←` and Esc step back up.
-    fn drill_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        let modal = &mut self.inspector_modal;
-        match event.code {
-            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
-                modal.drill_out();
-            }
-            KeyCode::Char(' ') => self.close_inspector(),
-            KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
-            KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
-            KeyCode::Home => modal.first_field(),
-            KeyCode::End => modal.last_field(),
-            KeyCode::PageDown => modal.scroll_by(modal.page.saturating_sub(1).max(1) as isize),
-            KeyCode::PageUp => modal.scroll_by(-(modal.page.saturating_sub(1).max(1) as isize)),
-            KeyCode::Char('e') => {
-                let escapable = modal.body.as_ref().is_some_and(|(_, body)| body.escapable);
-                if escapable {
-                    modal.toggle_escaped();
-                }
-            }
-            KeyCode::Char('y') => self.copy_drilled_item(),
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                let drill = modal.drill.as_ref()?;
-                let (frame, row) = (drill.frame, drill.row);
-                let (label, node) = drill.level().focused()?;
-                let path = drill.item_key(&label);
-                if node.opens() && !modal.known_not_json(frame, row, &path) {
-                    self.inspector_open(frame, row, label, path, node);
-                } else if event.code == KeyCode::Enter
-                    && modal.body.as_ref().is_some_and(|(_, body)| body.more)
-                {
-                    modal.more();
-                }
-            }
-            _ => {}
-        }
-        None
-    }
-
     /// Open `node` as a level under the one shown: a list or struct at once, text as
     /// the JSON it holds, parsed here when short and on a worker when long. `path`
     /// is the text's place, remembered when it does not parse.
@@ -27636,92 +28313,12 @@ impl App {
         }
     }
 
-    /// `e` in the inspector: escaped text or as itself, only where the focused
-    /// value has an escaped form, so a number never flips the mode a text field
-    /// is then shown in.
-    fn inspector_escape(&mut self) {
-        let Some(state) = self.data_table_state.as_ref() else {
-            return;
-        };
-        let (Some(row), Some(field)) = (state.inspect_row(), self.inspector_modal.focused()) else {
-            return;
-        };
-        let shown = crate::widgets::inspector::shown(
-            field,
-            &row,
-            self.inspector_modal.read.as_ref(),
-            state,
-        );
-        if crate::widgets::inspector::escapable(&shown) {
-            self.inspector_modal.toggle_escaped();
-        }
-    }
-
-    /// Enter in the inspector: read the row's fields the buffer does not hold,
-    /// or show more of a long value.
-    fn inspector_enter(&mut self) {
-        let Some(state) = self.data_table_state.as_ref() else {
-            return;
-        };
-        let Some(row) = state.inspect_row() else {
-            return;
-        };
-        let Some(field) = self.inspector_modal.focused().cloned() else {
-            return;
-        };
-        let shown = crate::widgets::inspector::shown(
-            &field,
-            &row,
-            self.inspector_modal.read.as_ref(),
-            state,
-        );
-        use crate::widgets::inspector::Shown;
-        match shown {
-            // A failed read is asked again: the pane said why, and Enter is the retry.
-            Shown::Unread | Shown::Failed(_) => self.read_inspected_fields(&row),
-            Shown::Value(ref v)
-                if crate::widgets::inspector::value_opens(v)
-                    && !self
-                        .inspector_modal
-                        .known_not_json(row.frame, row.row, &field.name) =>
-            {
-                let column = if field.buffered() {
-                    row.values.column(&field.name).ok()
-                } else {
-                    self.inspector_modal
-                        .read_values(row.frame, row.row)
-                        .and_then(|values| values.column(&field.name).ok())
-                };
-                if let Some(column) = column {
-                    let node =
-                        inspector_drill::Node::Native(column.as_materialized_series().clone());
-                    let path = inspector_drill::path_key([field.name.as_str()]);
-                    self.inspector_open(row.frame, row.row, field.name.clone(), path, node);
-                }
-            }
-            // Only while the pane, as last drawn for this field, has more to show.
-            Shown::Value(_)
-                if self
-                    .inspector_modal
-                    .body
-                    .as_ref()
-                    .is_some_and(|(key, body)| {
-                        body.more
-                            && (key.frame, key.row) == (row.frame, row.row)
-                            && key.field == field.name
-                    }) =>
-            {
-                self.inspector_modal.more()
-            }
-            _ => {}
-        }
-    }
-
     /// Read, off this thread, the fields of `row` the buffer does not hold — the
     /// hidden columns and the binary ones — with the shown columns beside them, so a
     /// sort that orders ties differently on a second read cannot pass another row's
-    /// fields off as this one's.
-    fn read_inspected_fields(&mut self, row: &crate::widgets::datatable::InspectRow) {
+    /// fields off as this one's. `wait`: the user waits on it, as on Enter; a read
+    /// that follows the rows does not hold the keys.
+    fn read_inspected_fields(&mut self, row: &crate::widgets::datatable::InspectRow, wait: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -27754,7 +28351,7 @@ impl App {
         self.inspector_modal.read = Some(inspector_modal::FieldRead::Reading { frame, row: index });
         self.spawn_job(
             Job::InspectRow { frame, row: index },
-            Some(Self::READING_FIELDS),
+            wait.then_some(Self::READING_FIELDS),
             move |_| {
                 let read = crate::statistics::collect_lazy(lf, streaming)
                     .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
@@ -27776,36 +28373,6 @@ impl App {
                 Ok(Answer::FieldsRead(values))
             },
         );
-    }
-
-    /// `y` in the inspector: the focused field's whole value, exact, through the
-    /// same clipboard path as the copy dialog. One over a capped destination's
-    /// limit is refused unformatted; a large one is written off this thread.
-    fn copy_inspected_field(&mut self) {
-        use copy_modal::thousands;
-        let Some(state) = self.data_table_state.as_ref() else {
-            return;
-        };
-        let (Some(row), Some(field)) = (state.inspect_row(), self.inspector_modal.focused()) else {
-            return;
-        };
-        let column = if field.buffered() {
-            row.values.column(&field.name).ok().cloned()
-        } else {
-            self.inspector_modal
-                .read_values(row.frame, row.row)
-                .and_then(|values| values.column(&field.name).ok().cloned())
-        };
-        let Some(column) = column else {
-            self.flash_note(format!("{} is not read yet; Enter reads it", field.name));
-            return;
-        };
-        let message = format!(
-            "Copied {} of row {}",
-            field.name,
-            thousands(row.display_row)
-        );
-        self.copy_value(column, message);
     }
 
     /// Copy the one value of `column`, exact, and flash `message`.
@@ -29023,6 +29590,7 @@ fn run_impl(
     // Declared before the pump, so it drops after it: the app's own files go with the
     // app, and this then removes what a worker was still writing.
     let _sweep = app.exit_sweep();
+    let input_tx = tx.clone();
     let mut pump = EventPump::new(app, tx, rx);
     // The open goes out before the keys typed while the settings were read, so they
     // meet it as they would any open in flight: Ctrl+O puts it down, `q` quits. Sent
@@ -29030,6 +29598,11 @@ fn run_impl(
     // opened behind the home screen, or behind whatever was opened from there.
     pump.handle_first(backlog.into_iter().chain(open));
     let end = pump.run(|app| {
+        if let Some(open) = app.take_external_open() {
+            let mouse = app.mouse_enabled();
+            let note = open_externally(&open, &mut reader, &input_tx, mouse, terminal.get());
+            app.external_opened(&open, note);
+        }
         terminal
             .get()
             .draw(|frame| frame.render_widget(app, frame.area()))?;
@@ -29044,6 +29617,46 @@ fn run_impl(
         let _ = writeln!(std::io::stderr(), "datui: {note}");
     }
     result
+}
+
+/// Open a value the inspector wrote: a program that takes the terminal gets it
+/// (the key reader stopped, the screen and raw mode handed back) until it
+/// returns; an opener is only started. Says what went wrong, if anything.
+fn open_externally(
+    open: &external_open::ExternalOpen,
+    reader: &mut terminal_input::TerminalInput,
+    tx: &std::sync::mpsc::Sender<AppEvent>,
+    mouse: bool,
+    terminal: &mut ratatui::DefaultTerminal,
+) -> Option<String> {
+    let program = external_open::program_for(open.document, |name| std::env::var(name).ok());
+    let result = match &program {
+        external_open::Program::Opener(_) => external_open::run(&program, &open.path),
+        external_open::Program::Wait(_) => {
+            reader.stop();
+            restore_terminal();
+            let result = external_open::run(&program, &open.path);
+            let _ = crossterm::terminal::enable_raw_mode();
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::terminal::EnterAlternateScreen,
+                crossterm::cursor::Hide
+            );
+            push_keyboard_flags();
+            if mouse {
+                let _ = crossterm::execute!(std::io::stdout(), pointer::EnableMouse);
+            }
+            let _ = terminal.clear();
+            match terminal_input::TerminalInput::start(tx.clone()) {
+                Ok(started) => *reader = started,
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Crash(format!("Could not read keys again: {e}")));
+                }
+            }
+            result
+        }
+    };
+    result.err().map(|e| e.to_string())
 }
 
 /// Ask the terminal to tell Ctrl+Enter from Enter.
@@ -30496,10 +31109,10 @@ mod inspector_tests {
         assert_eq!(drill.level().node.len(), 40_001);
     }
 
-    /// #615: text too long to open as JSON, or that did not parse, keeps Enter as
-    /// More: the footer stops offering Open, and Enter shows the next chunk.
+    /// #615: text too long to open as JSON, or that did not parse, is not offered
+    /// to open again; the whole of it is read in the value pane (#548).
     #[test]
-    fn json_text_that_cannot_open_keeps_enter_as_more() {
+    fn json_text_that_cannot_open_stops_offering_open() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let huge = format!(
@@ -30515,11 +31128,10 @@ mod inspector_tests {
         press(&mut app, KeyCode::Char(' '));
         let screen = draw(&mut app);
         assert!(
-            screen.contains("More") && !screen.contains("Open"),
+            !screen.contains("Open") && !screen.contains("More"),
             "{screen}"
         );
         press(&mut app, KeyCode::Enter);
-        assert_eq!(app.inspector_modal.chunks, 2, "Enter is More over the cap");
         assert!(app.inspector_modal.drill.is_none());
 
         press(&mut app, KeyCode::Down);
@@ -30531,12 +31143,8 @@ mod inspector_tests {
                 .is_some_and(|m| m.starts_with("Not JSON"))
         );
         let screen = draw(&mut app);
-        assert!(
-            screen.contains("More") && !screen.contains("Open"),
-            "{screen}"
-        );
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(app.inspector_modal.chunks, 2, "then Enter is More");
+        assert!(!screen.contains("Open"), "{screen}");
+        assert!(!screen.contains("json"), "no JSON view either: {screen}");
         assert!(app.inspector_modal.drill.is_none());
     }
 
@@ -30635,9 +31243,9 @@ mod inspector_layout_tests {
         }
     }
 
-    /// #548 M1: the title counts the rows; the thirteen fields are all listed
-    /// where they fit beside a short value (D11), and half the rows hold the list
-    /// where they do not.
+    /// #548: the title counts the rows; the thirteen fields are all listed where
+    /// they fit beside the value (D11); where they do not, the value keeps the rows
+    /// its lines need, up to half, and the list the rest.
     #[test]
     fn the_list_takes_what_the_value_does_not_need() {
         for (width, height, whole) in [(80, 24, true), (120, 30, true), (60, 20, false)] {
@@ -30652,7 +31260,10 @@ mod inspector_layout_tests {
                 assert_eq!(listed, 12, "{width}x{height}:\n{text}");
                 assert!(!text.contains(" more"), "{width}x{height}:\n{text}");
             } else {
-                assert_eq!(listed, 6, "half of 14 rows: {width}x{height}:\n{text}");
+                // The value's five rows whole, the list the rest (less the blank row
+                // above the footer), its top counted.
+                assert_eq!(listed, 6, "{width}x{height}:\n{text}");
+                assert!(text.contains("6 above"), "{width}x{height}:\n{text}");
             }
             // The value keeps its lines under the list, and its rule follows the list.
             let rule = rows.iter().position(|r| r.contains("note  str")).unwrap();

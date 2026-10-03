@@ -70,6 +70,8 @@ pub enum JobKind {
     DrillRow,
     InspectRow,
     InspectJson,
+    InspectPretty,
+    OpenValue,
     Export,
     Copy,
     QualityReport,
@@ -137,6 +139,11 @@ pub(crate) enum Job {
     /// The inspector's text parsed as JSON to drill into: the
     /// [`crate::inspector_drill::JsonWait`] it answers.
     InspectJson { token: u64 },
+    /// The inspector's long JSON text indented for its JSON view: the
+    /// [`crate::inspector_modal::Pretty`] it answers.
+    InspectPretty { token: u64 },
+    /// The inspector's value written to a file for another program to open.
+    OpenValue,
     /// An export, from plan to committed file.
     Export,
     /// Collecting and formatting the view for a copy.
@@ -200,6 +207,8 @@ impl Job {
             Job::DrillRow => JobKind::DrillRow,
             Job::InspectRow { .. } => JobKind::InspectRow,
             Job::InspectJson { .. } => JobKind::InspectJson,
+            Job::InspectPretty { .. } => JobKind::InspectPretty,
+            Job::OpenValue => JobKind::OpenValue,
             Job::Export => JobKind::Export,
             Job::Copy => JobKind::Copy,
             Job::QualityReport => JobKind::QualityReport,
@@ -315,6 +324,10 @@ pub(crate) enum Answer {
     FieldsRead(DataFrame),
     /// [`Job::InspectJson`]: the document.
     JsonParsed(std::sync::Arc<serde_json::Value>),
+    /// [`Job::InspectPretty`]: the text, indented.
+    Indented(std::sync::Arc<str>),
+    /// [`Job::OpenValue`]: the file, written.
+    ValueWritten(crate::external_open::ExternalOpen),
     /// [`Job::Export`]: the file, committed.
     Exported(PathBuf),
     /// [`Job::Copy`]: the view or a field, formatted, and the flash that says what was

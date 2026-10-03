@@ -1,12 +1,22 @@
 //! The row inspector: every field of the table's selected row, and the focused
-//! field's whole value. A takeover over the table — one Surface titled with the
-//! row, the fields as a list (name, type, the table's preview), and under a
-//! section rule the value itself: exact, wrapped, scrolled, never rounded.
+//! field's whole value. A takeover over the table: one Surface titled with the
+//! row. Below 140 columns the fields are listed above the value; wider, the
+//! fields sit on the left, in as many columns as fit, and the value on the right
+//! at full height. Tab moves the focus between the list and the value, and the
+//! rail moves with it.
+//!
+//! The value pane reads any length: only the rows on screen are wrapped (see
+//! [`crate::inspector_reader`]), so the end of a 2 MiB value is a key away.
 
 use crate::copy_modal::thousands;
 use crate::exact;
-use crate::inspector_drill::{Node, Shape, json_text, opens_as_json};
-use crate::inspector_modal::{BodyKey, CHUNK_BYTES, FieldRead, InspectorModal};
+use crate::inspector_bytes::{self, Sniffed};
+use crate::inspector_drill::{JSON_INLINE_BYTES, Node, Shape, json_text, looks_like_json};
+use crate::inspector_modal::{
+    CHUNK_BYTES, FieldRead, Focus, InspectorModal, Order, PaneKey, Pretty, View,
+};
+pub use crate::inspector_reader::Tone;
+use crate::inspector_reader::{self as reader, Content, TextForm, Window};
 use crate::render::context::RenderContext;
 use crate::widgets::datatable::{DataTableState, InspectField, InspectRow, NullKind, dtype_label};
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
@@ -17,14 +27,28 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use serde_json::Value as JsonValue;
+use std::sync::Arc;
 
 /// The longest line the value pane wraps to: a reading surface keeps its
 /// measure on a wide terminal.
 const MEASURE: usize = 100;
 /// Cells between a field's name, type and preview.
 const GAP: usize = 2;
-/// The fewest lines the value pane keeps when the field list takes the rest.
+/// The fewest lines the value pane keeps beside the field list.
 const VALUE_MIN: usize = 3;
+/// The Surface's inner width from which the fields and the value sit side by
+/// side: a 140-column terminal.
+pub const WIDE: usize = 136;
+/// Cells between the field list and the value side by side.
+const PANE_GAP: usize = 3;
+/// The narrowest preview a column of fields keeps.
+const PREVIEW_MIN: usize = 16;
+/// JSON text up to this long has a JSON view; longer text reads raw.
+pub const PRETTY_MAX: usize = 1024 * 1024;
+/// Bytes shown escaped: the start of a long binary value.
+const ESCAPED_BYTES: usize = 64 * 1024;
+/// Bytes of a value matched by the find text.
+const MATCH_BYTES: usize = 4096;
 
 /// What the inspector has for one field of the row.
 #[derive(Debug, Clone)]
@@ -80,39 +104,40 @@ pub fn shown<'a>(
     }
 }
 
+/// Whether a field holds something: a value, nothing (null or empty), or not
+/// known until it is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tone {
-    Plain,
-    Dim,
-    Warn,
-}
-
-/// What a cut value holds past the lines formatted so far, so the pane's last
-/// line can count the whole value and not only the part formatted.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Rest {
-    /// The value is formatted whole.
-    #[default]
-    None,
-    /// This many more lines, known without formatting them: a hex dump.
-    Lines(usize),
-    /// This much more of the value, in its unit: `2,031,616 chars`.
-    Units(String),
-    /// More, of a length not known without formatting it: a nested value.
+pub enum Fill {
+    Value,
+    Null,
+    Empty,
     Unknown,
 }
 
-/// The value pane: its lines, the facts for its rule, and whether Enter has
-/// more to show.
-#[derive(Debug, Clone, Default)]
-pub struct Body {
-    pub lines: Vec<(String, Tone)>,
-    pub facts: String,
-    pub more: bool,
-    /// Past the last line, when the value was cut. The last line then says so.
-    pub rest: Rest,
-    /// Whether `e` changes what the pane shows: text and bytes only.
-    pub escapable: bool,
+pub fn fill_of(shown: &Shown) -> Fill {
+    match shown {
+        Shown::Null(_) => Fill::Null,
+        Shown::Value(v) if empty_preview(v).is_some() => Fill::Empty,
+        Shown::Value(_) => Fill::Value,
+        _ => Fill::Unknown,
+    }
+}
+
+/// Whether two rows' values of a field differ; None when either is not read.
+pub fn differs(a: &Shown, b: &Shown) -> Option<bool> {
+    match (a, b) {
+        (Shown::Value(x), Shown::Value(y)) => {
+            if x == y {
+                return Some(false);
+            }
+            // NaN is not equal to itself; their exact texts are.
+            let nested = exact::is_nested_value(x) || exact::is_nested_value(y);
+            Some(nested || exact::value_text(x) != exact::value_text(y))
+        }
+        (Shown::Null(_), Shown::Null(_)) => Some(false),
+        (Shown::Null(_), Shown::Value(_)) | (Shown::Value(_), Shown::Null(_)) => Some(true),
+        _ => None,
+    }
 }
 
 /// A type as the pane names it, with the unit and zone the short label drops.
@@ -134,134 +159,300 @@ pub fn type_text(dtype: &DataType) -> String {
     }
 }
 
-/// Split `line` into rows of at most `width` cells, at grapheme boundaries.
-fn wrap_into(line: &str, width: usize, tone: Tone, out: &mut Vec<(String, Tone)>) {
-    use ratatui::buffer::CellWidth;
-    let width = width.max(1);
-    if line.is_empty() {
-        out.push((String::new(), tone));
-        return;
-    }
-    if line.bytes().all(|b| (0x20..0x7f).contains(&b)) {
-        for chunk in line.as_bytes().chunks(width) {
-            out.push((String::from_utf8_lossy(chunk).into_owned(), tone));
-        }
-        return;
-    }
-    let span = Span::raw(line);
-    let mut row = String::new();
-    let mut used = 0usize;
-    for g in span.styled_graphemes(Style::default()) {
-        let w = usize::from(g.symbol.cell_width());
-        if used + w > width && !row.is_empty() {
-            out.push((std::mem::take(&mut row), tone));
-            used = 0;
-        }
-        row.push_str(g.symbol);
-        used += w;
-    }
-    if !row.is_empty() {
-        out.push((row, tone));
-    }
-}
-
-/// A sentence of the pane's own, wrapped at spaces; a word wider than the pane
-/// is split.
-fn wrap_words(text: &str, width: usize, tone: Tone, out: &mut Vec<(String, Tone)>) {
-    let mut row = String::new();
-    for word in text.split(' ') {
-        let sep = usize::from(!row.is_empty());
-        if !row.is_empty()
-            && crate::glyphs::cell_width(&row) + sep + crate::glyphs::cell_width(word) > width
-        {
-            wrap_into(&std::mem::take(&mut row), width, tone, out);
-        }
-        if !row.is_empty() {
-            row.push(' ');
-        }
-        row.push_str(word);
-    }
-    wrap_into(&row, width, tone, out);
-}
-
-/// Text as it reads raw: a line per line break, tabs to the next stop of
-/// four, and any other control character or direction control as the control
-/// mark, as in a table cell.
-fn raw_lines(text: &str, width: usize, out: &mut Vec<(String, Tone)>) {
-    let g = crate::glyphs::get();
-    for line in text.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        let mut expanded = String::with_capacity(line.len());
-        let mut column = 0usize;
-        for c in line.chars() {
-            match c {
-                '\t' => {
-                    let stop = 4 - column % 4;
-                    expanded.extend(std::iter::repeat_n(' ', stop));
-                    column += stop;
-                }
-                c if exact::marked(c) => {
-                    expanded.push_str(g.control_mark);
-                    column += 1;
-                }
-                c => {
-                    expanded.push(c);
-                    column += 1;
-                }
-            }
-        }
-        wrap_into(&expanded, width, Tone::Plain, out);
-    }
-}
-
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{} {}", thousands(n), if n == 1 { one } else { many })
 }
 
-/// `… 1,234 more chars`: what a cut-off pane has past its last line.
-fn more_line(n: usize, one: &str, many: &str) -> String {
-    let g = crate::glyphs::get();
-    format!(
-        "{} {} more {}",
-        g.ellipsis,
-        thousands(n),
-        if n == 1 { one } else { many }
-    )
+/// A byte count as people read it, and exactly: `1.0 MB (1,048,576 bytes)`.
+pub fn size_text(n: usize) -> String {
+    if n < 1024 {
+        plural(n, "byte", "bytes")
+    } else {
+        format!(
+            "{} ({} bytes)",
+            crate::discover::format_size(n as u64),
+            thousands(n)
+        )
+    }
 }
 
-/// The value pane for `field`. Shows at most `chunks` × [`CHUNK_BYTES`] of a
-/// long value, wrapped to `width`; `table` is the table's preview of it, said
-/// beside the exact value when the two differ.
-pub fn body(
-    field: &InspectField,
-    shown: &Shown,
-    escaped: bool,
-    chunks: usize,
-    width: usize,
-    table: Option<&str>,
-) -> Body {
+/// What `y` copies from the pane.
+#[derive(Debug, Clone)]
+pub enum CopyAs {
+    /// The stored value, exact: text as itself, numbers exact, lists as JSON.
+    Stored,
+    /// Bytes, as base64.
+    Base64,
+    /// The text the view shows: indented JSON, or text decoded from bytes.
+    Text(Arc<str>),
+    /// The escaped literal of the stored text.
+    Escaped,
+}
+
+/// The value pane for the focused value: what its rule says, what it reads, the
+/// views it has and the one shown, and what `y` copies.
+#[derive(Debug, Clone)]
+pub struct Pane {
+    pub id: u64,
+    pub facts: String,
+    pub content: Content,
+    /// The views that apply, the default first. Empty: `e` does nothing.
+    pub views: Vec<View>,
+    pub view: Option<View>,
+    pub copy: CopyAs,
+    /// Text longer than is indented on a key, shown raw until a worker indents it.
+    pub indent: bool,
+}
+
+impl Pane {
+    fn lines(lines: Vec<(String, Tone)>, facts: Vec<String>) -> Self {
+        Self {
+            id: 0,
+            facts: join_facts(&facts),
+            content: Content::Lines(lines),
+            views: Vec::new(),
+            view: None,
+            copy: CopyAs::Stored,
+            indent: false,
+        }
+    }
+
+    /// The view `e` moves to: the next of those that apply.
+    pub fn next_view(&self) -> Option<View> {
+        if self.views.len() < 2 {
+            return None;
+        }
+        let at = self
+            .view
+            .and_then(|v| self.views.iter().position(|w| *w == v))
+            .unwrap_or(0);
+        Some(self.views[(at + 1) % self.views.len()])
+    }
+}
+
+fn join_facts(facts: &[String]) -> String {
+    facts.join(&format!(" {} ", crate::glyphs::get().middot))
+}
+
+/// Where an indented copy of long JSON text stands.
+#[derive(Debug, Clone)]
+pub enum Indented {
+    /// Not asked for, or not wanted.
+    None,
+    Pending,
+    Ready(Arc<str>),
+    Failed,
+}
+
+impl Indented {
+    fn code(&self) -> u8 {
+        match self {
+            Indented::None => 0,
+            Indented::Pending => 1,
+            Indented::Ready(_) => 2,
+            Indented::Failed => 3,
+        }
+    }
+}
+
+/// The pane for text: as itself, escaped, or indented when it is JSON.
+fn text_pane(
+    s: &str,
+    kind: String,
+    choice: Option<View>,
+    indented: &Indented,
+    not_json: bool,
+) -> Pane {
+    let f = exact::text_facts(s);
+    let mut facts = vec![kind];
+    facts.push(if s.is_empty() {
+        "empty".to_string()
+    } else {
+        plural(f.chars, "char", "chars")
+    });
+    if f.lines > 1 {
+        facts.push(plural(f.lines, "line", "lines"));
+    }
+    if f.leading_spaces > 0 {
+        facts.push(plural(f.leading_spaces, "leading space", "leading spaces"));
+    }
+    if f.trailing_spaces > 0 {
+        facts.push(plural(
+            f.trailing_spaces,
+            "trailing space",
+            "trailing spaces",
+        ));
+    }
+    let json = !not_json && s.len() <= PRETTY_MAX && looks_like_json(s);
+    let (json_ok, pretty) = if json && s.len() <= JSON_INLINE_BYTES {
+        match serde_json::from_str::<JsonValue>(s) {
+            Ok(v) => (
+                true,
+                Some(Arc::<str>::from(json_text(&v, true, usize::MAX).0)),
+            ),
+            Err(_) => (false, None),
+        }
+    } else if json {
+        match indented {
+            Indented::Ready(text) => (true, Some(text.clone())),
+            Indented::Failed => (false, None),
+            _ => (true, None),
+        }
+    } else {
+        (false, None)
+    };
+    let mut views = Vec::new();
+    if json_ok {
+        views.push(View::Json);
+    }
+    views.extend([View::Raw, View::Escaped]);
+    let view = choice.filter(|v| views.contains(v)).unwrap_or(views[0]);
+    let mut pane = Pane {
+        id: 0,
+        facts: String::new(),
+        content: Content::Lines(Vec::new()),
+        views,
+        view: Some(view),
+        copy: CopyAs::Stored,
+        indent: false,
+    };
+    match view {
+        View::Json => match pretty {
+            Some(text) => {
+                facts.push("json".to_string());
+                pane.content = Content::text(text.clone(), TextForm::Raw);
+                pane.copy = CopyAs::Text(text);
+            }
+            None => {
+                facts.push("json, indenting...".to_string());
+                pane.content = Content::text(Arc::from(s), TextForm::Raw);
+                pane.indent = true;
+            }
+        },
+        View::Escaped => {
+            facts.push("escaped".to_string());
+            pane.content = Content::text(Arc::from(s), TextForm::Escaped);
+            pane.copy = CopyAs::Escaped;
+        }
+        _ if s.is_empty() => {
+            pane.content = Content::Lines(vec![("empty string".to_string(), Tone::Dim)]);
+        }
+        _ => pane.content = Content::text(Arc::from(s), TextForm::Raw),
+    }
+    pane.facts = join_facts(&facts);
+    pane
+}
+
+/// The pane for bytes: a hex dump, the text they hold, or escaped.
+fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
+    let sniffed = inspector_bytes::sniff(bytes);
+    let mut facts = vec!["binary".to_string(), size_text(bytes.len())];
+    if bytes.is_empty() {
+        facts.push("empty".to_string());
+    }
+    if let Some(kind) = sniffed.filter(|k| *k != Sniffed::Utf8) {
+        facts.push(kind.label());
+    }
+    let decoded = inspector_bytes::decode_text(bytes, sniffed);
+    let mut views = Vec::new();
+    if decoded.is_some() && sniffed == Some(Sniffed::Utf8) {
+        views.push(View::Text);
+    }
+    views.push(View::Hex);
+    if decoded.is_some() && sniffed != Some(Sniffed::Utf8) {
+        views.push(View::Text);
+    }
+    views.push(View::Escaped);
+    let view = choice.filter(|v| views.contains(v)).unwrap_or(views[0]);
+    let mut pane = Pane {
+        id: 0,
+        facts: String::new(),
+        content: Content::Lines(Vec::new()),
+        views,
+        view: Some(view),
+        copy: CopyAs::Base64,
+        indent: false,
+    };
+    match (view, decoded) {
+        (View::Text, Some(d)) => {
+            facts.push(if d.from == "UTF-8" {
+                "UTF-8 text".to_string()
+            } else {
+                format!("{} text", d.from)
+            });
+            if d.cut {
+                facts.push(format!("first {} KB", inspector_bytes::DECODE_MAX / 1024));
+            }
+            let text: Arc<str> = Arc::from(d.text);
+            pane.content = Content::text(text.clone(), TextForm::Raw);
+            pane.copy = CopyAs::Text(text);
+        }
+        (View::Escaped, _) => {
+            let head = &bytes[..bytes.len().min(ESCAPED_BYTES)];
+            let mut literal = exact::escaped_bytes(head);
+            if head.len() < bytes.len() {
+                literal.pop();
+                facts.push(format!("first {} KB", ESCAPED_BYTES / 1024));
+            }
+            facts.push("escaped".to_string());
+            pane.content = Content::text(Arc::from(literal), TextForm::Raw);
+        }
+        _ if bytes.is_empty() => {
+            pane.content = Content::Lines(vec![("empty binary".to_string(), Tone::Dim)]);
+        }
+        _ => {
+            pane.content = Content::Hex {
+                bytes: Arc::from(bytes),
+                per_line: reader::hex_per_line(width),
+            };
+        }
+    }
+    pane.facts = join_facts(&facts);
+    pane
+}
+
+/// Everything a pane is built from beside the value.
+pub struct PaneAsk<'a> {
+    pub choice: Option<View>,
+    pub width: usize,
+    /// The table's preview of a scalar, said beside the exact value when they differ.
+    pub table: Option<&'a str>,
+    pub indented: Indented,
+    /// Text found not to be JSON: no JSON view.
+    pub not_json: bool,
+    /// The key that reads a field not read yet.
+    pub read_key: &'a str,
+}
+
+/// The value pane for `shown`, a value of type `dtype`.
+pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
     let g = crate::glyphs::get();
-    let budget = CHUNK_BYTES.saturating_mul(chunks.max(1));
-    let kind = type_text(&field.dtype);
+    let width = ask.width.max(1);
+    let kind = type_text(dtype);
     let mut lines = Vec::new();
-    let mut facts = vec![kind.clone()];
-    let mut more = false;
-    let mut rest = Rest::None;
     match shown {
         Shown::Unread => {
-            facts.push("not read".to_string());
-            wrap_words(
-                "Not read with the table's rows; Enter reads this row's hidden and binary fields",
+            reader::wrap_lines(
+                &format!(
+                    "Not read with the table's rows; {} reads this row's hidden and binary fields",
+                    ask.read_key
+                ),
                 width,
                 Tone::Dim,
                 &mut lines,
             );
-            more = true;
+            Pane::lines(lines, vec![kind, "not read".to_string()])
         }
-        Shown::Reading => wrap_words("Reading...", width, Tone::Dim, &mut lines),
-        Shown::Failed(message) => wrap_words(message, width, Tone::Warn, &mut lines),
-        Shown::Null(kind) => {
-            let (glyph, word, why) = match kind {
+        Shown::Reading => {
+            reader::wrap_lines("Reading...", width, Tone::Dim, &mut lines);
+            Pane::lines(lines, vec![kind])
+        }
+        Shown::Failed(message) => {
+            reader::wrap_lines(message, width, Tone::Warn, &mut lines);
+            Pane::lines(lines, vec![kind])
+        }
+        Shown::Null(null) => {
+            let (glyph, word, why) = match null {
                 NullKind::Null => (g.null, "null", None),
                 NullKind::Absent => (
                     g.absent,
@@ -274,115 +465,29 @@ pub fn body(
                     Some("this row's file holds the column in another type, so it was not read"),
                 ),
             };
-            facts.push(word.to_string());
             let text = match why {
                 Some(why) => format!("{glyph} {word}: {why}"),
                 None => format!("{glyph} {word}"),
             };
-            wrap_words(&text, width, Tone::Dim, &mut lines);
+            reader::wrap_lines(&text, width, Tone::Dim, &mut lines);
+            Pane::lines(lines, vec![kind, word.to_string()])
         }
         Shown::Value(value) => match value {
-            AnyValue::String(_)
-            | AnyValue::StringOwned(_)
-            | AnyValue::Categorical(..)
+            AnyValue::String(s) => text_pane(s, kind, ask.choice, &ask.indented, ask.not_json),
+            AnyValue::StringOwned(s) => {
+                text_pane(s.as_str(), kind, ask.choice, &ask.indented, ask.not_json)
+            }
+            AnyValue::Categorical(..)
             | AnyValue::CategoricalOwned(..)
             | AnyValue::Enum(..)
             | AnyValue::EnumOwned(..) => {
-                let owned;
-                let s: &str = match value {
-                    AnyValue::String(s) => s,
-                    AnyValue::StringOwned(s) => s.as_str(),
-                    v => {
-                        owned = exact::value_text(v);
-                        &owned
-                    }
-                };
-                let f = exact::text_facts(s);
-                facts.push(if s.is_empty() {
-                    "empty".to_string()
-                } else {
-                    plural(f.chars, "char", "chars")
-                });
-                if f.lines > 1 {
-                    facts.push(plural(f.lines, "line", "lines"));
-                }
-                if f.leading_spaces > 0 {
-                    facts.push(plural(f.leading_spaces, "leading space", "leading spaces"));
-                }
-                if f.trailing_spaces > 0 {
-                    facts.push(plural(
-                        f.trailing_spaces,
-                        "trailing space",
-                        "trailing spaces",
-                    ));
-                }
-                let shown_text = exact::prefix(s, budget);
-                let cut = shown_text.len() < s.len();
-                if escaped {
-                    let mut literal = exact::escaped(shown_text);
-                    if cut {
-                        literal.pop();
-                    }
-                    wrap_into(&literal, width, Tone::Plain, &mut lines);
-                } else if s.is_empty() {
-                    lines.push(("empty string".to_string(), Tone::Dim));
-                } else {
-                    raw_lines(shown_text, width, &mut lines);
-                }
-                if cut {
-                    let left = s[shown_text.len()..].chars().count();
-                    lines.push((more_line(left, "char", "chars"), Tone::Dim));
-                    rest = Rest::Units(plural(left, "char", "chars"));
-                    more = true;
-                }
+                let s = exact::value_text(value);
+                text_pane(&s, kind, ask.choice, &Indented::None, true)
             }
-            AnyValue::Binary(_) | AnyValue::BinaryOwned(_) => {
-                let bytes: &[u8] = match value {
-                    AnyValue::Binary(b) => b,
-                    AnyValue::BinaryOwned(b) => b,
-                    _ => unreachable!(),
-                };
-                facts.push(plural(bytes.len(), "byte", "bytes"));
-                if bytes.is_empty() {
-                    facts.push("empty".to_string());
-                }
-                let n = bytes.len().min(budget / 4);
-                if escaped {
-                    let mut literal = exact::escaped_bytes(&bytes[..n]);
-                    if n < bytes.len() {
-                        literal.pop();
-                    }
-                    wrap_into(&literal, width, Tone::Plain, &mut lines);
-                    if n < bytes.len() {
-                        rest = Rest::Units(plural(bytes.len() - n, "byte", "bytes"));
-                    }
-                } else if bytes.is_empty() {
-                    lines.push(("empty binary".to_string(), Tone::Dim));
-                } else {
-                    let per_line = match width {
-                        w if w >= 76 => 16,
-                        w if w >= 42 => 8,
-                        _ => 4,
-                    };
-                    let dumps = exact::hex_lines(&bytes[..n], per_line);
-                    let first = lines.len();
-                    let count = dumps.len();
-                    for line in dumps {
-                        wrap_into(&line, width, Tone::Plain, &mut lines);
-                    }
-                    // Every dump line is padded to one width, so each wraps to as many
-                    // rows, and the lines past the cut are counted, not formatted.
-                    let rows_each = (lines.len() - first) / count.max(1);
-                    if n < bytes.len() {
-                        rest = Rest::Lines((bytes.len() - n).div_ceil(per_line) * rows_each);
-                    }
-                }
-                if n < bytes.len() {
-                    lines.push((more_line(bytes.len() - n, "byte", "bytes"), Tone::Dim));
-                    more = true;
-                }
-            }
+            AnyValue::Binary(b) => binary_pane(b, ask.choice, width),
+            AnyValue::BinaryOwned(b) => binary_pane(b, ask.choice, width),
             v if exact::is_nested_value(v) => {
+                let mut facts = vec![kind];
                 if let Some(n) = exact::nested_len(v) {
                     facts.push(match v {
                         AnyValue::Struct(..) | AnyValue::StructOwned(_) => {
@@ -391,84 +496,35 @@ pub fn body(
                         _ => plural(n, "item", "items"),
                     });
                 }
-                let pretty = exact::nested_pretty(v, budget);
-                for line in pretty.text.split('\n') {
-                    wrap_into(line, width, Tone::Plain, &mut lines);
-                }
+                let pretty = exact::nested_pretty(v, CHUNK_BYTES);
                 if pretty.cut {
-                    lines.push((format!("{} more", g.ellipsis), Tone::Dim));
-                    rest = Rest::Unknown;
-                    more = true;
+                    facts.push(format!("first {} KB", CHUNK_BYTES / 1024));
+                }
+                Pane {
+                    id: 0,
+                    facts: join_facts(&facts),
+                    content: Content::text(Arc::from(pretty.text), TextForm::Raw),
+                    views: Vec::new(),
+                    view: None,
+                    copy: CopyAs::Stored,
+                    indent: false,
                 }
             }
             v => {
                 let text = exact::value_text(v);
-                wrap_into(&text, width, Tone::Plain, &mut lines);
-                if let Some(table) = table.filter(|t| *t != text) {
+                reader::wrap_lines(&text, width, Tone::Plain, &mut lines);
+                if let Some(table) = ask.table.filter(|t| *t != text) {
                     lines.push((String::new(), Tone::Plain));
-                    wrap_into(
+                    reader::wrap_lines(
                         &format!("In the table: {table}"),
                         width,
                         Tone::Dim,
                         &mut lines,
                     );
                 }
+                Pane::lines(lines, vec![kind])
             }
         },
-    }
-    // Only text and bytes have an escaped form to be in.
-    let has_text = escapable(shown);
-    if escaped && has_text {
-        facts.push("escaped".to_string());
-    }
-    Body {
-        lines,
-        facts: facts.join(&format!(" {} ", g.middot)),
-        more,
-        rest,
-        escapable: has_text,
-    }
-}
-
-/// Whether `e` changes how `shown` reads: only text and bytes have an escaped
-/// form.
-pub fn escapable(shown: &Shown) -> bool {
-    matches!(
-        shown,
-        Shown::Value(
-            AnyValue::String(_)
-                | AnyValue::StringOwned(_)
-                | AnyValue::Categorical(..)
-                | AnyValue::CategoricalOwned(..)
-                | AnyValue::Enum(..)
-                | AnyValue::EnumOwned(..)
-                | AnyValue::Binary(_)
-                | AnyValue::BinaryOwned(_)
-        )
-    )
-}
-
-/// The pane's last line when `hidden` lines of `body` do not fit: every line
-/// left, counted over the whole value and not only the part formatted.
-fn overflow_line(body: &Body, hidden: usize) -> String {
-    let g = crate::glyphs::get();
-    // A cut value's own last line says what was cut; it is not a line of the value.
-    let content = match body.rest {
-        Rest::None => hidden,
-        _ => hidden.saturating_sub(1),
-    };
-    let cut_line = || {
-        body.lines
-            .last()
-            .map(|(t, _)| t.clone())
-            .unwrap_or_default()
-    };
-    match &body.rest {
-        Rest::None => more_line(hidden, "line", "lines"),
-        Rest::Lines(n) => more_line(content + n, "line", "lines"),
-        _ if content == 0 => cut_line(),
-        Rest::Units(units) => format!("{}, then {units}", more_line(content, "line", "lines")),
-        Rest::Unknown => format!("{} {}+ more lines", g.ellipsis, thousands(content)),
     }
 }
 
@@ -485,31 +541,33 @@ fn empty_preview(value: &AnyValue) -> Option<String> {
     }
 }
 
-/// Rows of the field list for `fields` visible fields in `avail` rows shared
-/// with the value: every field when they all fit beside a short value, else
-/// half. Depends on the row's fields, never on the focused one, so moving
-/// between fields moves nothing.
-pub fn list_rows(fields: usize, avail: usize) -> usize {
-    if fields + VALUE_MIN <= avail {
-        return fields.max(1);
-    }
-    fields
-        .max(1)
-        .min((avail / 2).max(3))
-        .min(avail.saturating_sub(2))
-        .max(1)
-}
-
 /// The table's one-line preview of a value, formatted as the table formats it,
-/// and only as much of it as `room` cells can show.
+/// and only as much of it as `room` cells can show. A long text or bytes say
+/// their size after a cut preview, so a huge value shows before it is focused.
 fn preview(field: &InspectField, value: &AnyValue, room: usize, ctx: &RenderContext) -> String {
     let g = crate::glyphs::get();
     let budget = room.saturating_mul(4).max(16);
+    let sized = |text: String, len: usize| {
+        if len > 1024 && crate::glyphs::cell_width(&text) > room {
+            let size = format!(" {} {}", g.middot, crate::discover::format_size(len as u64));
+            let keep = room.saturating_sub(crate::glyphs::cell_width(&size));
+            let cut = crate::glyphs::fit_cells(&text, keep, g.ellipsis).into_owned();
+            format!("{cut}{size}")
+        } else {
+            text
+        }
+    };
     match value {
-        AnyValue::String(s) => exact::preview(exact::prefix(s, budget), g).into_owned(),
-        AnyValue::StringOwned(s) => exact::preview(exact::prefix(s, budget), g).into_owned(),
-        AnyValue::Binary(b) => plural(b.len(), "byte", "bytes"),
-        AnyValue::BinaryOwned(b) => plural(b.len(), "byte", "bytes"),
+        AnyValue::String(s) => sized(
+            exact::preview(exact::prefix(s, budget), g).into_owned(),
+            s.len(),
+        ),
+        AnyValue::StringOwned(s) => sized(
+            exact::preview(exact::prefix(s, budget), g).into_owned(),
+            s.len(),
+        ),
+        AnyValue::Binary(b) => binary_preview(b),
+        AnyValue::BinaryOwned(b) => binary_preview(b),
         v if exact::is_nested_value(v) => {
             exact::preview(&exact::nested_compact(v, budget).text, g).into_owned()
         }
@@ -520,6 +578,37 @@ fn preview(field: &InspectField, value: &AnyValue, room: usize, ctx: &RenderCont
             exact::preview(&text, g).into_owned()
         }
     }
+}
+
+/// Bytes in the list: their size, and what they are when that is known.
+fn binary_preview(b: &[u8]) -> String {
+    let size = if b.len() < 1024 {
+        plural(b.len(), "byte", "bytes")
+    } else {
+        crate::discover::format_size(b.len() as u64)
+    };
+    match inspector_bytes::sniff(&b[..b.len().min(4096)]) {
+        // A prefix that is UTF-8 says little about the rest.
+        Some(Sniffed::Utf8) | None => size,
+        Some(kind) => format!("{size} {} {}", crate::glyphs::get().middot, kind.label()),
+    }
+}
+
+/// The text of a value the find text is matched against: its start, lowercased.
+fn match_text(shown: &Shown) -> Option<String> {
+    let Shown::Value(v) = shown else {
+        return None;
+    };
+    Some(
+        match v {
+            AnyValue::String(s) => exact::prefix(s, MATCH_BYTES).to_string(),
+            AnyValue::StringOwned(s) => exact::prefix(s, MATCH_BYTES).to_string(),
+            AnyValue::Binary(_) | AnyValue::BinaryOwned(_) => return None,
+            v if exact::is_nested_value(v) => exact::nested_compact(v, MATCH_BYTES).text,
+            v => exact::value_text(v),
+        }
+        .to_lowercase(),
+    )
 }
 
 /// A value the pane shows as one exact line: not text, bytes or nested.
@@ -542,9 +631,98 @@ fn null_glyph(kind: NullKind) -> &'static str {
     }
 }
 
-/// The inspector's title: the row, of how many, and the group it is in inside
-/// a drill-down, as the breadcrumb the takeover covers says it.
-fn title(display_row: usize, state: &DataTableState) -> String {
+/// The row Compare puts beside `row`: the pinned one, or the next.
+pub fn compare_row(
+    modal: &InspectorModal,
+    state: &DataTableState,
+    row: &InspectRow,
+) -> Option<InspectRow> {
+    if !modal.compare {
+        return None;
+    }
+    match &modal.pinned {
+        Some(pinned) if (pinned.frame, pinned.row) != (row.frame, row.row) => Some(pinned.clone()),
+        _ => state.inspect_row_at(row.row + 1),
+    }
+}
+
+/// The fields listed, in the order listed: the order chosen, then Filled (or,
+/// comparing, only the fields that differ), then the find text — names first,
+/// then values.
+pub fn visible_fields(modal: &InspectorModal, state: &DataTableState) -> Vec<usize> {
+    let fields = &modal.fields;
+    let row = state.inspect_row();
+    let mut order: Vec<usize> = (0..fields.len()).collect();
+    if modal.order == Order::Name {
+        order.sort_by_cached_key(|&i| fields[i].name.to_lowercase());
+    }
+    let Some(row) = row else {
+        return order;
+    };
+    let read = modal.read.as_ref();
+    let shown_at = |i: usize| shown(&fields[i], &row, read, state);
+    if modal.order == Order::Filled {
+        order.sort_by_key(|&i| fill_of(&shown_at(i)) != Fill::Value);
+    }
+    if modal.filled_only {
+        match compare_row(modal, state, &row) {
+            Some(other) => order.retain(|&i| {
+                differs(&shown_at(i), &shown(&fields[i], &other, None, state)) == Some(true)
+            }),
+            None => order.retain(|&i| matches!(fill_of(&shown_at(i)), Fill::Value | Fill::Unknown)),
+        }
+    }
+    if !modal.filter.is_empty() {
+        let needle = modal.filter.to_lowercase();
+        let (names, rest): (Vec<usize>, Vec<usize>) = order
+            .into_iter()
+            .partition(|&i| fields[i].name.to_lowercase().contains(&needle));
+        let values = rest
+            .into_iter()
+            .filter(|&i| match_text(&shown_at(i)).is_some_and(|t| t.contains(&needle)));
+        order = names.into_iter().chain(values).collect();
+    }
+    order
+}
+
+/// Counts for the list's rule: nulls and empties, and with Compare, how many
+/// fields differ.
+struct Counts {
+    nulls: usize,
+    empties: usize,
+    differ: Option<usize>,
+}
+
+fn counts(
+    modal: &InspectorModal,
+    state: &DataTableState,
+    row: &InspectRow,
+    other: Option<&InspectRow>,
+) -> Counts {
+    let mut c = Counts {
+        nulls: 0,
+        empties: 0,
+        differ: other.map(|_| 0),
+    };
+    for field in &modal.fields {
+        let this = shown(field, row, modal.read.as_ref(), state);
+        match fill_of(&this) {
+            Fill::Null => c.nulls += 1,
+            Fill::Empty => c.empties += 1,
+            _ => {}
+        }
+        if let (Some(other), Some(n)) = (other, c.differ.as_mut())
+            && differs(&this, &shown(field, other, None, state)) == Some(true)
+        {
+            *n += 1;
+        }
+    }
+    c
+}
+
+/// The inspector's title: the row, of how many, the group it is in inside a
+/// drill-down (the breadcrumb the takeover covers), and the row compared with.
+fn title(display_row: usize, state: &DataTableState, other: Option<(usize, bool)>) -> String {
     let g = crate::glyphs::get();
     let mut title = format!("Row {}", thousands(display_row));
     if let Some(total) = state.num_rows_if_valid() {
@@ -566,7 +744,233 @@ fn title(display_row: usize, state: &DataTableState) -> String {
             ));
         }
     }
+    if let Some((other, pinned)) = other {
+        let pinned = if pinned { "pinned " } else { "" };
+        title.push_str(&format!(
+            " {} compare with {pinned}{}",
+            g.middot,
+            thousands(other)
+        ));
+    }
     title
+}
+
+/// Where the list starts, given `cap` slots for `n` items with the focus on
+/// `sel` and the list last starting at `offset`; and whether the first slot
+/// counts the items above and the last the items below.
+pub fn list_window(n: usize, sel: usize, offset: usize, cap: usize) -> (usize, bool, bool) {
+    if n <= cap {
+        return (0, false, false);
+    }
+    if cap < 3 {
+        let o = sel.min(n.saturating_sub(cap));
+        return (o, false, false);
+    }
+    let fits = |o: usize| {
+        let above = o > 0;
+        let room = cap - usize::from(above);
+        let below = o + room < n;
+        (above, below, room - usize::from(below))
+    };
+    // No room left empty past the end: the last page is full.
+    let mut o = offset.min(n + 1 - cap);
+    for _ in 0..4 {
+        let (above, below, items) = fits(o);
+        if sel < o {
+            o = sel;
+        } else if sel >= o + items {
+            o += sel + 1 - (o + items);
+        } else {
+            return (o, above, below);
+        }
+    }
+    let (above, below, _) = fits(o);
+    (o, above, below)
+}
+
+/// Where each part of the inspector goes inside the Surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    pub wide: bool,
+    pub list_rule: Rect,
+    pub list: Rect,
+    /// Columns of fields across the list.
+    pub cols: usize,
+    pub value_rule: Rect,
+    /// The value's rows, with a column for the rail at its left.
+    pub value: Rect,
+}
+
+/// Lay out `content` for `fields` listed and a value that needs `value_need`
+/// rows. Below [`WIDE`] the list sits above the value and takes the rows it
+/// needs, leaving the value what its lines need; with the focus on the value,
+/// the list keeps a few rows around the focused field. From [`WIDE`] the two
+/// sit side by side, each at full height, and fields flow into as many columns
+/// of `min_col` cells as fit.
+pub fn layout(
+    content: Rect,
+    fields: usize,
+    value_need: usize,
+    focus: Focus,
+    single_column: bool,
+    min_col: usize,
+) -> Layout {
+    let line = |y: u16, x: u16, width: u16| Rect {
+        x,
+        y,
+        width,
+        height: 1,
+    };
+    let width = content.width as usize;
+    let h = content.height as usize;
+    if width >= WIDE {
+        let value_w = (MEASURE + 1).min(width * 45 / 100);
+        let list_w = width - value_w - PANE_GAP;
+        let rows = h.saturating_sub(1).max(1);
+        let mut cols = ((list_w + GAP) / (min_col + GAP)).max(1);
+        if single_column {
+            cols = 1;
+        }
+        while cols > 1 && (cols - 1) * rows >= fields {
+            cols -= 1;
+        }
+        let value_x = content.x + (list_w + PANE_GAP) as u16;
+        return Layout {
+            wide: true,
+            list_rule: line(content.y, content.x, list_w as u16),
+            list: Rect {
+                x: content.x,
+                y: content.y + 1,
+                width: list_w as u16,
+                height: rows as u16,
+            },
+            cols,
+            value_rule: line(content.y, value_x, value_w as u16),
+            value: Rect {
+                x: value_x,
+                y: content.y + 1,
+                width: value_w as u16,
+                height: rows as u16,
+            },
+        };
+    }
+    let avail = h.saturating_sub(2);
+    let fields = fields.max(1);
+    let list_h = if focus == Focus::Value {
+        fields.min(VALUE_MIN.max(avail / 5))
+    } else if fields + value_need.max(VALUE_MIN) <= avail {
+        fields
+    } else {
+        // A long value takes up to half, and the rest goes to the list, but only
+        // the rows its fields fill: the value has the remainder.
+        let value_h = value_need.clamp(VALUE_MIN, (avail / 2).max(VALUE_MIN));
+        avail.saturating_sub(value_h).clamp(1, fields)
+    }
+    .min(avail.saturating_sub(1))
+    .max(1);
+    let value_y = content.y + 1 + list_h as u16;
+    Layout {
+        wide: false,
+        list_rule: line(content.y, content.x, content.width),
+        list: Rect {
+            x: content.x,
+            y: content.y + 1,
+            width: content.width,
+            height: list_h as u16,
+        },
+        cols: 1,
+        value_rule: line(value_y, content.x, content.width),
+        value: Rect {
+            x: content.x,
+            y: value_y + 1,
+            width: content.width,
+            height: (content.y + content.height).saturating_sub(value_y + 1),
+        },
+    }
+}
+
+/// The pane's wrapping width inside `value`: past the rail column, capped at the
+/// reading measure.
+fn value_width(value: Rect) -> usize {
+    (value.width as usize).saturating_sub(1).clamp(1, MEASURE)
+}
+
+/// Build, or take from the cache, the pane for the focused field of `row`.
+fn field_pane(
+    modal: &mut InspectorModal,
+    state: &DataTableState,
+    row: &InspectRow,
+    field: &InspectField,
+    width: usize,
+    ctx: &RenderContext,
+) -> Pane {
+    let value = shown(field, row, modal.read.as_ref(), state);
+    let place = (row.frame, row.row, field.name.clone());
+    let indented = match &modal.pretty {
+        Some(Pretty::Pending { place: p, .. }) if *p == place => Indented::Pending,
+        Some(Pretty::Ready { place: p, text }) if *p == place => Indented::Ready(text.clone()),
+        Some(Pretty::Failed { place: p }) if *p == place => Indented::Failed,
+        _ => Indented::None,
+    };
+    let key = PaneKey {
+        frame: row.frame,
+        row: row.row,
+        field: field.name.clone(),
+        view: modal.view,
+        width: width as u16,
+        state: value.kind(),
+        pretty: indented.code(),
+    };
+    if let Some((cached, pane)) = &modal.pane
+        && *cached == key
+    {
+        return pane.clone();
+    }
+    // Text, bytes and nested values are shown whole; only a scalar's preview can
+    // say something the exact text does not.
+    let table = match &value {
+        Shown::Value(v) if is_scalar(v) => Some(preview(field, v, 64, ctx)),
+        _ => None,
+    };
+    let read_key = if state.can_drill_down() { "r" } else { "Enter" };
+    let mut built = pane(
+        &field.dtype,
+        &value,
+        &PaneAsk {
+            choice: modal.view,
+            width,
+            table: table.as_deref(),
+            indented,
+            not_json: modal.known_not_json(row.frame, row.row, &field.name),
+            read_key,
+        },
+    );
+    built.id = modal.next_pane_id();
+    modal.pane = Some((key, built.clone()));
+    built
+}
+
+/// What Enter does on the focused field, for the footer.
+fn enter_label(
+    modal: &InspectorModal,
+    state: &DataTableState,
+    row: &InspectRow,
+    field: &InspectField,
+) -> Option<&'static str> {
+    // On a group's row, Enter drills into its rows, as at the table.
+    if state.can_drill_down() {
+        return Some("Rows");
+    }
+    match shown(field, row, modal.read.as_ref(), state) {
+        Shown::Unread => Some("Read"),
+        Shown::Failed(_) => Some("Retry"),
+        Shown::Value(v)
+            if value_opens(&v) && !modal.known_not_json(row.frame, row.row, &field.name) =>
+        {
+            Some("Open")
+        }
+        _ => None,
+    }
 }
 
 /// Draw the inspector over `area` for the table's selected row.
@@ -577,182 +981,49 @@ pub fn render(
     state: &DataTableState,
     ctx: &RenderContext,
 ) {
-    let g = crate::glyphs::get();
     let row = state.inspect_row();
     if let Some(row) = &row {
         modal.row_shown(row.frame, row.row);
     }
     if let (Some(row), Some(_)) = (&row, &modal.drill) {
-        let title = title(row.display_row, state);
+        let title = title(row.display_row, state, None);
         render_drill(area, buf, modal, &title, ctx);
         return;
     }
-    let content_w = area.width.saturating_sub(4) as usize;
-    let measure = content_w.min(MEASURE);
+    let visible = visible_fields(modal, state);
+    modal.set_visible(visible);
+    let other = row.as_ref().and_then(|r| compare_row(modal, state, r));
 
-    // The focused field's pane, from the cache while nothing it shows changed.
+    let content = Surface::content_area(area);
     let focused = modal.focused().cloned();
-    // What Enter does here, for the footer: read, retry a failed read, or show more.
-    let mut enter = None;
-    let body = match (&row, &focused) {
-        (Some(row), Some(field)) => {
-            let value = shown(field, row, modal.read.as_ref(), state);
-            enter = match &value {
-                Shown::Unread => Some("Read"),
-                Shown::Failed(_) => Some("Retry"),
-                Shown::Value(v)
-                    if value_opens(v) && !modal.known_not_json(row.frame, row.row, &field.name) =>
-                {
-                    Some("Open")
-                }
-                _ => None,
-            };
-            let key = BodyKey {
-                frame: row.frame,
-                row: row.row,
-                field: field.name.clone(),
-                escaped: modal.escaped,
-                chunks: modal.chunks,
-                width: measure as u16,
-                state: value.kind(),
-            };
-            match &modal.body {
-                Some((cached, body)) if *cached == key => body.clone(),
-                _ => {
-                    // Text, bytes and nested values are shown whole below; only a
-                    // scalar's preview can say something the exact text does not.
-                    let table = match &value {
-                        Shown::Value(v) if is_scalar(v) => Some(preview(field, v, 64, ctx)),
-                        _ => None,
-                    };
-                    let built = body(
-                        field,
-                        &value,
-                        modal.escaped,
-                        modal.chunks,
-                        measure,
-                        table.as_deref(),
-                    );
-                    modal.body = Some((key, built.clone()));
-                    built
-                }
-            }
-        }
-        (None, _) => Body {
-            lines: vec![("Reading the row...".to_string(), Tone::Dim)],
-            ..Body::default()
-        },
-        (Some(_), None) => Body {
-            lines: vec![("No field matches".to_string(), Tone::Dim)],
-            ..Body::default()
-        },
+    let probe = layout(
+        content,
+        modal.visible.len(),
+        VALUE_MIN,
+        modal.focus,
+        true,
+        1,
+    );
+    let width = value_width(probe.value);
+    let pane = match (&row, &focused) {
+        (Some(row), Some(field)) => Some(field_pane(modal, state, row, field, width, ctx)),
+        _ => None,
     };
-
-    // The layout, worked out before the footer: the footer offers the scroll
-    // keys only when the value overflows its pane.
-    let visible = modal.visible();
-    // The Surface's content: inside the border, less the footer row.
-    let content_h = area.height.saturating_sub(3) as usize;
-    let avail = content_h.saturating_sub(2);
-    let list_h = list_rows(visible.len(), avail);
-    let body_h = content_h.saturating_sub(list_h + 2);
-    let overflows = body.lines.len() > body_h;
-    let list_overflows = visible.len() > list_h;
-
-    let escape_label = if modal.escaped { "Raw" } else { "Escaped" };
-    let footer = if modal.finding {
-        HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Done", 3)
-            .hint_weighted("type", "Find", 1)
-            .hint_weighted("Esc", "Clear", 4)
-    } else {
-        // Only keys that act here; the weights say which yield first on a narrow
-        // footer, the way out last.
-        let mut bar = HintBar::from_ctx(ctx);
-        if let Some(label) = enter.or(body.more.then_some("More")) {
-            bar = bar.hint_weighted("Enter", label, 9);
-        }
-        // A field not read yet has nothing to copy: `y` only says so.
-        if !matches!(enter, Some("Read" | "Retry")) && row.is_some() && focused.is_some() {
-            bar = bar.hint_weighted("y", "Copy", 8);
-        }
-        if visible.len() > 1 {
-            bar = bar.hint_weighted(g.updown, "Field", 7);
-        }
-        bar = bar
-            .hint_weighted(g.updown_lr, "Row", 6)
-            .hint_weighted("/", "Find", 5);
-        if overflows {
-            bar = bar.hint_weighted("PgUp/PgDn", "Scroll", 4);
-        }
-        if body.escapable {
-            bar = bar.hint_weighted("e", escape_label, 3);
-        }
-        if list_overflows {
-            bar = bar.hint_weighted("Home/End", "First/Last", 2);
-        }
-        let esc = if modal.picker.filter.is_empty() {
-            "Close"
+    let pane = pane.unwrap_or_else(|| {
+        let message = if row.is_none() {
+            "Reading the row..."
         } else {
-            "Clear"
+            "No field matches"
         };
-        bar.hint_weighted("Esc", esc, 10)
-    };
-    let title = match &row {
-        Some(row) => title(row.display_row, state),
-        None => "Row".to_string(),
-    };
-    let title = crate::glyphs::fit_cells(&title, area.width.saturating_sub(4) as usize, g.ellipsis);
-    let content = Surface::new(&title).footer(&footer).render(area, buf, ctx);
-    if content.height < 4 || content.width < 12 {
-        return;
-    }
+        Pane::lines(vec![(message.to_string(), Tone::Dim)], Vec::new())
+    });
+    modal.reader.prepare(pane.id, width, modal.wrap);
+    let need = modal
+        .reader
+        .rows_needed(&pane.content, content.height as usize);
 
-    let line = |y: u16| Rect {
-        y,
-        height: 1,
-        ..content
-    };
-
-    // The find line stands where the list's rule stands, so finding moves nothing.
-    if modal.finding || !modal.picker.filter.is_empty() {
-        let label_style = if modal.finding {
-            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(ctx.dimmed)
-        };
-        let mut spans = vec![
-            Span::styled("Find: ", label_style),
-            Span::styled(
-                modal.picker.filter.clone(),
-                Style::default().fg(ctx.text_primary),
-            ),
-        ];
-        if modal.finding {
-            spans.push(Span::styled(g.cursor, Style::default().fg(ctx.accent)));
-        }
-        spans.push(Span::styled(
-            format!(
-                "   {} of {}",
-                thousands(visible.len()),
-                thousands(modal.fields.len())
-            ),
-            Style::default().fg(ctx.dimmed),
-        ));
-        Paragraph::new(Line::from(spans)).render(line(content.y), buf);
-    } else {
-        let count = thousands(modal.fields.len());
-        SectionRule {
-            title: "Fields",
-            chip: Some(&count),
-            focused: false,
-        }
-        .render(line(content.y), buf, ctx);
-    }
-
-    // The fields: name, type, the table's preview.
-    let list_y = content.y + 1;
-    let width = content.width as usize;
+    // The list's columns, measured over every field so moving moves nothing.
+    let g = crate::glyphs::get();
     let name_w = modal
         .fields
         .iter()
@@ -766,7 +1037,7 @@ pub fn render(
         })
         .max()
         .unwrap_or(0)
-        .clamp(4, (width / 3).clamp(4, 28));
+        .clamp(4, 28);
     let type_w = modal
         .fields
         .iter()
@@ -774,28 +1045,404 @@ pub fn render(
         .max()
         .unwrap_or(0)
         .min(14);
-    let preview_w = width.saturating_sub(1 + name_w + GAP + type_w + GAP);
-    let selected = modal.picker.visible_selection();
-    let offset = selected.saturating_sub(list_h.saturating_sub(1));
-    let below = visible.len().saturating_sub(offset + list_h);
-    if visible.is_empty() {
+    let min_col = 1 + name_w + GAP + type_w + GAP + PREVIEW_MIN;
+    let lay = layout(
+        content,
+        modal.visible.len(),
+        need,
+        modal.focus,
+        other.is_some(),
+        min_col,
+    );
+
+    // The footer, from what the layout leaves visible.
+    let enter = match (&row, &focused) {
+        (Some(row), Some(field)) => enter_label(modal, state, row, field),
+        _ => None,
+    };
+    let unread_on_group = state.can_drill_down()
+        && matches!(
+            (&row, &focused),
+            (Some(row), Some(field))
+                if matches!(shown(field, row, modal.read.as_ref(), state), Shown::Unread | Shown::Failed(_))
+        );
+    let value_rows = lay.value.height as usize;
+    let overflows = need > value_rows || modal.reader.window(&pane.content, value_rows).above;
+    let footer = footer(
+        modal,
+        &pane,
+        &FooterFacts {
+            enter,
+            read_key: unread_on_group,
+            has_value: row.is_some() && focused.is_some(),
+            many_fields: modal.visible.len() > 1,
+            list_overflows: modal.visible.len() > lay.list.height as usize * lay.cols,
+            value_overflows: overflows,
+            comparing: other.is_some(),
+        },
+        ctx,
+    );
+    let title = match &row {
+        Some(row) => title(
+            row.display_row,
+            state,
+            other.as_ref().map(|o| {
+                (
+                    o.display_row,
+                    modal
+                        .pinned
+                        .as_ref()
+                        .is_some_and(|p| (p.frame, p.row) == (o.frame, o.row)),
+                )
+            }),
+        ),
+        None => "Row".to_string(),
+    };
+    let title = crate::glyphs::fit_cells(&title, area.width.saturating_sub(4) as usize, g.ellipsis);
+    let content = Surface::new(&title).footer(&footer).render(area, buf, ctx);
+    if content.height < 4 || content.width < 12 {
+        return;
+    }
+
+    // The list's rule: the find line while finding, else the counts.
+    if modal.finding || !modal.filter.is_empty() {
+        draw_find_line(
+            buf,
+            lay.list_rule,
+            &modal.filter,
+            modal.finding,
+            &format!(
+                "{} of {}",
+                thousands(modal.visible.len()),
+                thousands(modal.fields.len())
+            ),
+            ctx,
+        );
+    } else {
+        let chip = match &row {
+            Some(row) => list_chip(modal, state, row, other.as_ref()),
+            None => thousands(modal.fields.len()),
+        };
+        SectionRule {
+            title: "Fields",
+            chip: Some(&chip),
+            focused: modal.focus == Focus::List && lay.wide,
+        }
+        .render(lay.list_rule, buf, ctx);
+    }
+
+    draw_fields(
+        buf,
+        &lay,
+        modal,
+        state,
+        ListOf {
+            row: row.as_ref(),
+            other: other.as_ref(),
+            name_w,
+            type_w,
+        },
+        ctx,
+    );
+
+    let name = focused.as_ref().map(|f| f.name.clone()).unwrap_or_default();
+    draw_value(buf, &lay, &name, &pane, modal, ctx);
+}
+
+/// The chip on the list's rule: how many fields, how many null and empty, how
+/// many differ, and the order when it is not the table's.
+fn list_chip(
+    modal: &InspectorModal,
+    state: &DataTableState,
+    row: &InspectRow,
+    other: Option<&InspectRow>,
+) -> String {
+    let c = counts(modal, state, row, other);
+    let total = thousands(modal.fields.len());
+    let mut parts = vec![if modal.visible.len() < modal.fields.len() {
+        format!("{} of {total}", thousands(modal.visible.len()))
+    } else {
+        total
+    }];
+    match c.differ {
+        Some(n) => parts.push(format!("{} differ", thousands(n))),
+        None => {
+            if c.nulls > 0 {
+                parts.push(format!("{} null", thousands(c.nulls)));
+            }
+            if c.empties > 0 {
+                parts.push(format!("{} empty", thousands(c.empties)));
+            }
+        }
+    }
+    if modal.filled_only {
+        parts.push(
+            if c.differ.is_some() {
+                "differ only"
+            } else {
+                "filled"
+            }
+            .to_string(),
+        );
+    }
+    if let Some(order) = modal.order.label() {
+        parts.push(order.to_string());
+    }
+    join_facts(&parts)
+}
+
+/// A find line where a rule stands: the text, the cursor while typing, a count.
+fn draw_find_line(
+    buf: &mut Buffer,
+    at: Rect,
+    text: &str,
+    typing: bool,
+    count: &str,
+    ctx: &RenderContext,
+) {
+    let g = crate::glyphs::get();
+    let label_style = if typing {
+        Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ctx.dimmed)
+    };
+    let mut spans = vec![
+        Span::styled("Find: ", label_style),
+        Span::styled(text.to_string(), Style::default().fg(ctx.text_primary)),
+    ];
+    if typing {
+        spans.push(Span::styled(g.cursor, Style::default().fg(ctx.accent)));
+    }
+    spans.push(Span::styled(
+        format!("   {count}"),
+        Style::default().fg(ctx.dimmed),
+    ));
+    Paragraph::new(Line::from(spans)).render(at, buf);
+}
+
+/// What the footer offers, as the frame found it.
+struct FooterFacts {
+    enter: Option<&'static str>,
+    /// On a group's row, a field not read yet: `r` reads it.
+    read_key: bool,
+    has_value: bool,
+    many_fields: bool,
+    list_overflows: bool,
+    value_overflows: bool,
+    comparing: bool,
+}
+
+/// The keys that act now, primary first; the weights say which yield first on
+/// a narrow footer, the way out last.
+fn footer<'a>(
+    modal: &InspectorModal,
+    pane: &'a Pane,
+    f: &FooterFacts,
+    ctx: &RenderContext,
+) -> HintBar<'a> {
+    let g = crate::glyphs::get();
+    let mut bar = HintBar::from_ctx(ctx);
+    if modal.finding {
+        return bar
+            .hint_weighted("Enter", "Done", 3)
+            .hint_weighted("type", "Find", 1)
+            .hint_weighted("Esc", "Clear", 4);
+    }
+    if modal.value_find.as_ref().is_some_and(|f| f.editing) {
+        return bar
+            .hint_weighted("Enter", "Find", 3)
+            .hint_weighted("type", "Text", 1)
+            .hint_weighted("Esc", "Clear", 4);
+    }
+    let copy = match pane.copy {
+        CopyAs::Base64 => "Copy base64",
+        CopyAs::Text(_) if pane.view == Some(View::Json) => "Copy JSON",
+        CopyAs::Text(_) => "Copy text",
+        _ => "Copy",
+    };
+    let view = pane.next_view().map(View::label);
+    if modal.focus == Focus::Value {
+        if f.value_overflows {
+            bar = bar
+                .hint_weighted(g.updown, "Scroll", 8)
+                .hint_weighted("Home/End", "Top/End", 6);
+        }
+        bar = bar.hint_weighted("/", "Find", 7);
+        if modal
+            .value_find
+            .as_ref()
+            .is_some_and(|f| !f.hits.is_empty())
+        {
+            bar = bar.hint_weighted("n/N", "Next", 7);
+        }
+        if let Some(view) = view {
+            bar = bar.hint_weighted("e", view, 5);
+        }
+        if pane.content.wraps() {
+            let wrap = match modal.wrap {
+                reader::Wrap::Word => "Hard wrap",
+                reader::Wrap::Hard => "Word wrap",
+            };
+            bar = bar.hint_weighted("w", wrap, 3);
+        }
+        if f.has_value {
+            bar = bar
+                .hint_weighted("y", copy, 4)
+                .hint_weighted("o", "Open", 2);
+        }
+        bar = bar.hint_weighted(g.updown_lr, "Row", 1);
+        return bar.hint_weighted("Esc", "Fields", 10);
+    }
+    if let Some(label) = f.enter {
+        bar = bar.hint_weighted("Enter", label, 9);
+    }
+    if f.read_key {
+        bar = bar.hint_weighted("r", "Read", 9);
+    }
+    if f.has_value {
+        bar = bar.hint_weighted("Tab", "Value", 8);
+        if !matches!(f.enter, Some("Read" | "Retry")) {
+            bar = bar.hint_weighted("y", copy, 7);
+        }
+    }
+    // The arrows are the first keys anyone tries: their chip yields before the
+    // view key, which nothing else would reveal.
+    if f.many_fields {
+        bar = bar.hint_weighted(g.updown, "Field", 4);
+    }
+    bar = bar
+        .hint_weighted(g.updown_lr, "Row", 6)
+        .hint_weighted("/", "Find", 5);
+    if let Some(view) = view {
+        bar = bar.hint_weighted("e", view, 5);
+    }
+    if f.list_overflows {
+        bar = bar.hint_weighted("PgUp/PgDn", "Page", 3);
+    }
+    let filled = if f.comparing { "Differ" } else { "Filled" };
+    bar = bar
+        .hint_weighted("Y", "Row", 2)
+        .hint_weighted("c", if f.comparing { "No compare" } else { "Compare" }, 2)
+        .hint_weighted("f", filled, 1);
+    if f.comparing {
+        bar = bar.hint_weighted("m", "Pin", 1);
+    }
+    let esc = if modal.filter.is_empty() {
+        "Close"
+    } else {
+        "Clear"
+    };
+    bar.hint_weighted("Esc", esc, 10)
+}
+
+/// The rows the list shows, and its name and type columns' widths.
+struct ListOf<'a> {
+    row: Option<&'a InspectRow>,
+    other: Option<&'a InspectRow>,
+    name_w: usize,
+    type_w: usize,
+}
+
+/// The fields, in as many columns as the layout has: rail, name, type, the
+/// table's preview, and with Compare the other row's preview and a mark where
+/// they differ. The first slot counts the fields above, the last those below.
+fn draw_fields(
+    buf: &mut Buffer,
+    lay: &Layout,
+    modal: &mut InspectorModal,
+    state: &DataTableState,
+    of: ListOf,
+    ctx: &RenderContext,
+) {
+    let ListOf {
+        row,
+        other,
+        name_w,
+        type_w,
+    } = of;
+    let g = crate::glyphs::get();
+    let rows = lay.list.height as usize;
+    let cols = lay.cols.max(1);
+    let cap = rows * cols;
+    let n = modal.visible.len();
+    let sel = modal.focused_position();
+    let (offset, above, below) = list_window(n, sel, modal.list_offset, cap);
+    let items = cap - usize::from(above) - usize::from(below);
+    modal.list_offset = offset;
+    modal.list_page = items.max(1);
+    let list_w = lay.list.width as usize;
+    let col_w = if cols > 1 {
+        (list_w - GAP * (cols - 1)) / cols
+    } else {
+        list_w
+    };
+    let name_w = name_w.min((col_w / 3).max(4));
+    let rest = col_w.saturating_sub(1 + name_w + GAP + type_w + GAP);
+    let (this_w, other_w) = if other.is_some() {
+        let each = rest.saturating_sub(GAP + 2) / 2;
+        (each, each)
+    } else {
+        (rest, 0)
+    };
+    let slot_rect = |slot: usize| {
+        let col = slot / rows;
+        let r = slot % rows;
+        Rect {
+            x: lay.list.x + (col * (col_w + GAP)) as u16,
+            y: lay.list.y + r as u16,
+            width: col_w as u16,
+            height: 1,
+        }
+    };
+    if n == 0 {
         Paragraph::new("No field matches")
             .style(Style::default().fg(ctx.dimmed))
-            .render(line(list_y), buf);
+            .render(slot_rect(0), buf);
+        return;
     }
-    for (i, &index) in visible.iter().enumerate().skip(offset).take(list_h) {
-        let y = list_y + (i - offset) as u16;
-        let is_selected = i == selected;
-        if i + 1 == offset + list_h && below > 0 && !is_selected {
-            Paragraph::new(format!("  {} {} more", g.ellipsis, below + 1))
-                .style(Style::default().fg(ctx.dimmed))
-                .render(line(y), buf);
-            break;
-        }
+    let dim = Style::default().fg(ctx.dimmed);
+    if above {
+        Paragraph::new(format!("  {} {} above", g.ellipsis, thousands(offset)))
+            .style(dim)
+            .render(slot_rect(0), buf);
+    }
+    if below {
+        let left = n - offset - items;
+        Paragraph::new(format!("  {} {} more", g.ellipsis, thousands(left)))
+            .style(dim)
+            .render(slot_rect(cap - 1), buf);
+    }
+    let list_focused = modal.focus == Focus::List && !modal.finding;
+    let read = modal.read.as_ref();
+    let value_cell = |field: &InspectField, at: Option<&InspectRow>, room: usize, own_read| match at
+    {
+        Some(r) => match shown(field, r, own_read, state) {
+            Shown::Value(v) => match empty_preview(&v) {
+                Some(empty) => (empty, dim),
+                None => (
+                    preview(field, &v, room, ctx),
+                    Style::default().fg(ctx.text_primary),
+                ),
+            },
+            Shown::Null(kind) => (
+                null_glyph(kind).to_string(),
+                dim.add_modifier(Modifier::ITALIC),
+            ),
+            Shown::Unread => ("not read".to_string(), dim),
+            Shown::Reading => ("reading...".to_string(), dim),
+            Shown::Failed(_) => ("not read".to_string(), Style::default().fg(ctx.warning)),
+        },
+        None => (String::new(), Style::default()),
+    };
+    for k in 0..items.min(n - offset) {
+        let i = offset + k;
+        let index = modal.visible[i];
         let field = &modal.fields[index];
-        let marker = match (is_selected, modal.finding) {
-            (true, false) => g.rail,
-            (true, true) => g.middot,
+        let at = slot_rect(k + usize::from(above));
+        let is_selected = i == sel;
+        let marker = match (is_selected, modal.finding, list_focused) {
+            (true, false, true) => g.rail,
+            (true, true, _) => g.middot,
             _ => " ",
         };
         let mut name = field.name.clone();
@@ -807,28 +1454,8 @@ pub fn render(
         let label =
             crate::glyphs::fit_cells(&dtype_label(&field.dtype), type_w, g.ellipsis).into_owned();
         let label_pad = type_w.saturating_sub(crate::glyphs::cell_width(&label));
-        let (value_text, value_style) = match &row {
-            Some(row) => match shown(field, row, modal.read.as_ref(), state) {
-                Shown::Value(v) => match empty_preview(&v) {
-                    Some(empty) => (empty, Style::default().fg(ctx.dimmed)),
-                    None => (
-                        preview(field, &v, preview_w, ctx),
-                        Style::default().fg(ctx.text_primary),
-                    ),
-                },
-                Shown::Null(kind) => (
-                    null_glyph(kind).to_string(),
-                    Style::default()
-                        .fg(ctx.dimmed)
-                        .add_modifier(Modifier::ITALIC),
-                ),
-                Shown::Unread => ("not read".to_string(), Style::default().fg(ctx.dimmed)),
-                Shown::Reading => ("reading...".to_string(), Style::default().fg(ctx.dimmed)),
-                Shown::Failed(_) => ("not read".to_string(), Style::default().fg(ctx.warning)),
-            },
-            None => (String::new(), Style::default()),
-        };
-        let value_text = crate::glyphs::fit_cells(&value_text, preview_w, g.ellipsis);
+        let (text, style) = value_cell(field, row, this_w, read);
+        let text = crate::glyphs::fit_cells(&text, this_w, g.ellipsis).into_owned();
         let name_style = if is_selected {
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
         } else if ctx.column_colors {
@@ -836,86 +1463,180 @@ pub fn render(
         } else {
             Style::default().fg(ctx.text_primary)
         };
-        let spans = vec![
+        let mut spans = vec![
             Span::styled(marker, Style::default().fg(ctx.accent)),
             Span::styled(name.into_owned(), name_style),
             Span::raw(" ".repeat(name_pad + GAP)),
-            Span::styled(label, Style::default().fg(ctx.dimmed)),
+            Span::styled(label, dim),
             Span::raw(" ".repeat(label_pad + GAP)),
-            Span::styled(value_text.into_owned(), value_style),
         ];
+        if let (Some(other), Some(this_row)) = (other, row) {
+            let pad = this_w.saturating_sub(crate::glyphs::cell_width(&text));
+            spans.push(Span::styled(text, style));
+            spans.push(Span::raw(" ".repeat(pad + GAP)));
+            let (o_text, o_style) = value_cell(field, Some(other), other_w, None);
+            let o_text = crate::glyphs::fit_cells(&o_text, other_w, g.ellipsis).into_owned();
+            let o_pad = other_w.saturating_sub(crate::glyphs::cell_width(&o_text));
+            spans.push(Span::styled(o_text, o_style));
+            spans.push(Span::raw(" ".repeat(o_pad + 1)));
+            let differ = differs(
+                &shown(field, this_row, read, state),
+                &shown(field, other, None, state),
+            );
+            if differ == Some(true) {
+                spans.push(Span::styled(
+                    g.diff_mark,
+                    Style::default()
+                        .fg(ctx.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        } else {
+            spans.push(Span::styled(text, style));
+        }
         let mut paragraph = Paragraph::new(Line::from(spans));
-        if is_selected && !modal.finding {
+        if is_selected && list_focused {
             paragraph = paragraph.style(ctx.highlight_style());
         }
-        paragraph.render(line(y), buf);
+        paragraph.render(at, buf);
     }
-
-    // The focused value.
-    let rule_y = list_y + list_h as u16;
-    let name = focused.as_ref().map(|f| f.name.clone()).unwrap_or_default();
-    draw_value(buf, content, rule_y, &name, &body, modal, ctx);
 }
 
-/// The focused value under its rule from `rule_y` to the bottom of `content`:
-/// its lines from the pane's scroll, and a last line counting what is left.
+/// The focused value under its rule: its rows from where the reader is, the
+/// rail down its left while it has the focus, and where it is on the rule.
 fn draw_value(
     buf: &mut Buffer,
-    content: Rect,
-    rule_y: u16,
+    lay: &Layout,
     name: &str,
-    body: &Body,
+    pane: &Pane,
     modal: &mut InspectorModal,
     ctx: &RenderContext,
 ) {
-    let measure = (content.width as usize).min(MEASURE);
     let g = crate::glyphs::get();
-    let line = |y: u16| Rect {
-        y,
-        height: 1,
-        ..content
-    };
-    let width = content.width as usize;
-    let name = crate::glyphs::fit_cells(name, width / 2, g.ellipsis);
-    SectionRule {
-        title: &name,
-        chip: (!body.facts.is_empty()).then_some(body.facts.as_str()),
-        focused: false,
-    }
-    .render(line(rule_y), buf, ctx);
-
-    let body_y = rule_y + 1;
-    let body_h = (content.y + content.height).saturating_sub(body_y) as usize;
-    modal.page = body_h.max(1);
-    let last_start = body.lines.len().saturating_sub(body_h);
-    modal.scroll = modal.scroll.min(last_start);
-    let below = body.lines.len().saturating_sub(modal.scroll + body_h);
-    for (i, (text, tone)) in body
-        .lines
-        .iter()
-        .skip(modal.scroll)
-        .take(body_h)
-        .enumerate()
+    let h = lay.value.height as usize;
+    modal.page = h.max(1);
+    let focused = modal.focus == Focus::Value;
+    // A search's places are for the pane they were found in.
+    if let Some(find) = modal.value_find.as_mut()
+        && find.pane != pane.id
+        && !find.text.is_empty()
     {
-        let y = body_y + i as u16;
-        if i + 1 == body_h && below > 0 {
-            Paragraph::new(overflow_line(body, below + 1))
-                .style(Style::default().fg(ctx.dimmed))
-                .render(line(y), buf);
-            break;
+        find.hits = reader::find_hits(&pane.content, &find.text);
+        find.current = None;
+        find.pane = pane.id;
+    }
+    let win: Window = modal.reader.window(&pane.content, h);
+    let rule = lay.value_rule;
+    match modal
+        .value_find
+        .as_ref()
+        .filter(|f| f.editing || !f.text.is_empty())
+    {
+        Some(find) => {
+            let count = match (find.hits.len(), find.current) {
+                (0, _) if !find.editing => "no match".to_string(),
+                (0, _) => String::new(),
+                (n, Some(at)) => format!("{} of {}", thousands(at + 1), thousands(n)),
+                (n, None) => plural(n, "match", "matches"),
+            };
+            draw_find_line(buf, rule, &find.text, find.editing, &count, ctx);
         }
-        let style = match tone {
+        None => {
+            let width = rule.width as usize;
+            let name = crate::glyphs::fit_cells(name, width / 3, g.ellipsis);
+            let name_w = crate::glyphs::cell_width(&name);
+            let overflows = win.above || win.below;
+            // The position, at its widest plus its padding and a cell of rule after
+            // it, comes before the facts: reading a long value, where you are
+            // matters more than its size, and the facts must not shift as it changes.
+            let reserve = if overflows {
+                reader::Reader::position_width(&pane.content) + 3
+            } else {
+                0
+            };
+            // The title and its space, the chip's padding and space, a bit of rule.
+            let room = width.saturating_sub(name_w + 1 + 3 + 2 + reserve);
+            let facts = (!pane.facts.is_empty() && room >= 4)
+                .then(|| crate::glyphs::fit_cells(&pane.facts, room, g.ellipsis));
+            SectionRule {
+                title: &name,
+                chip: facts.as_deref(),
+                focused,
+            }
+            .render(rule, buf, ctx);
+            let used = name_w
+                + 1
+                + facts
+                    .as_deref()
+                    .map_or(0, |f| crate::glyphs::cell_width(f) + 3);
+            if overflows {
+                let text = format!(" {} ", modal.reader.position(&pane.content, &win));
+                let w = crate::glyphs::cell_width(&text);
+                // Over the rule's tail, where the rule has room for it.
+                if used + 2 + w < width {
+                    Paragraph::new(text).style(dim_or(ctx, focused)).render(
+                        Rect {
+                            x: rule.x + (width - w - 1) as u16,
+                            width: w as u16,
+                            ..rule
+                        },
+                        buf,
+                    );
+                }
+            }
+        }
+    }
+    let needle = modal
+        .value_find
+        .as_ref()
+        .map(|f| f.text.clone())
+        .unwrap_or_default();
+    let text_w = value_width(lay.value) as u16;
+    for (i, row) in win.rows.iter().enumerate() {
+        let y = lay.value.y + i as u16;
+        if focused {
+            Paragraph::new(g.rail)
+                .style(Style::default().fg(ctx.accent))
+                .render(
+                    Rect {
+                        x: lay.value.x,
+                        y,
+                        width: 1,
+                        height: 1,
+                    },
+                    buf,
+                );
+        }
+        let style = match row.tone {
             Tone::Plain => Style::default().fg(ctx.text_primary),
             Tone::Dim => Style::default().fg(ctx.dimmed),
             Tone::Warn => Style::default().fg(ctx.warning),
         };
-        Paragraph::new(text.as_str()).style(style).render(
+        let mut spans = Vec::new();
+        let mut at = 0;
+        for (a, b) in reader::hits_in_row(&row.text, &needle) {
+            spans.push(Span::styled(row.text[at..a].to_string(), style));
+            spans.push(Span::styled(row.text[a..b].to_string(), ctx.find_match));
+            at = b;
+        }
+        spans.push(Span::styled(row.text[at..].to_string(), style));
+        Paragraph::new(Line::from(spans)).render(
             Rect {
-                width: content.width.min(measure as u16),
-                ..line(y)
+                x: lay.value.x + 1,
+                y,
+                width: text_w.min(lay.value.width.saturating_sub(1)),
+                height: 1,
             },
             buf,
         );
+    }
+}
+
+fn dim_or(ctx: &RenderContext, focused: bool) -> Style {
+    if focused {
+        Style::default().fg(ctx.accent)
+    } else {
+        Style::default().fg(ctx.dimmed)
     }
 }
 
@@ -923,70 +1644,50 @@ fn draw_value(
 /// reads as a JSON object or array.
 pub fn value_opens(value: &AnyValue) -> bool {
     match value {
-        AnyValue::String(s) => opens_as_json(s),
-        AnyValue::StringOwned(s) => opens_as_json(s),
+        AnyValue::String(s) => crate::inspector_drill::opens_as_json(s),
+        AnyValue::StringOwned(s) => crate::inspector_drill::opens_as_json(s),
         v => exact::is_nested_value(v),
     }
 }
 
 /// The value pane for an item of a level drilled into, labelled `label`.
-pub fn node_body(label: &str, node: &Node, escaped: bool, chunks: usize, width: usize) -> Body {
+pub fn node_pane(node: &Node, choice: Option<View>, width: usize) -> Pane {
+    let ask = PaneAsk {
+        choice,
+        width,
+        table: None,
+        indented: Indented::None,
+        not_json: false,
+        read_key: "Enter",
+    };
     match node {
         Node::Native(series) => {
-            let field = InspectField {
-                name: label.to_string(),
-                dtype: series.dtype().clone(),
-                hidden: false,
-            };
             let shown = match series.get(0) {
                 Ok(AnyValue::Null) | Err(_) => Shown::Null(NullKind::Null),
                 Ok(v) => Shown::Value(v),
             };
-            body(&field, &shown, escaped, chunks, width, None)
+            pane(series.dtype(), &shown, &ask)
         }
-        Node::Json { .. } => json_body(
-            node.json().unwrap_or(&JsonValue::Null),
-            escaped,
-            chunks,
-            width,
-        ),
+        Node::Json { .. } => json_pane(node.json().unwrap_or(&JsonValue::Null), &ask),
     }
 }
 
 /// The value pane for a JSON value: text as text is shown, an object or array
-/// indented up to the pane's budget.
-fn json_body(value: &JsonValue, escaped: bool, chunks: usize, width: usize) -> Body {
+/// indented up to a few chunks.
+fn json_pane(value: &JsonValue, ask: &PaneAsk) -> Pane {
     let g = crate::glyphs::get();
+    let width = ask.width.max(1);
     let scalar = |text: String, kind: &str| {
         let mut lines = Vec::new();
-        wrap_into(&text, width, Tone::Plain, &mut lines);
-        Body {
-            lines,
-            facts: kind.to_string(),
-            ..Body::default()
-        }
+        reader::wrap_lines(&text, width, Tone::Plain, &mut lines);
+        Pane::lines(lines, vec![kind.to_string()])
     };
     match value {
-        JsonValue::String(s) => {
-            let field = InspectField {
-                name: String::new(),
-                dtype: DataType::String,
-                hidden: false,
-            };
-            body(
-                &field,
-                &Shown::Value(AnyValue::String(s)),
-                escaped,
-                chunks,
-                width,
-                None,
-            )
-        }
-        JsonValue::Null => Body {
-            lines: vec![(format!("{} null", g.null), Tone::Dim)],
-            facts: "null".to_string(),
-            ..Body::default()
-        },
+        JsonValue::String(s) => pane(&DataType::String, &Shown::Value(AnyValue::String(s)), ask),
+        JsonValue::Null => Pane::lines(
+            vec![(format!("{} null", g.null), Tone::Dim)],
+            vec!["null".to_string()],
+        ),
         JsonValue::Bool(b) => scalar(b.to_string(), "bool"),
         JsonValue::Number(n) => scalar(n.to_string(), "number"),
         JsonValue::Array(_) | JsonValue::Object(_) => {
@@ -995,23 +1696,20 @@ fn json_body(value: &JsonValue, escaped: bool, chunks: usize, width: usize) -> B
                 JsonValue::Array(items) => ("array", plural(items.len(), "item", "items")),
                 _ => unreachable!(),
             };
-            let budget = CHUNK_BYTES.saturating_mul(chunks.max(1));
-            let (text, cut) = json_text(value, true, budget);
-            let mut lines = Vec::new();
-            for line in text.split('\n') {
-                wrap_into(line, width, Tone::Plain, &mut lines);
-            }
-            let mut rest = Rest::None;
+            let cap = CHUNK_BYTES * 4;
+            let (text, cut) = json_text(value, true, cap);
+            let mut facts = vec![kind.to_string(), count];
             if cut {
-                lines.push((format!("{} more", g.ellipsis), Tone::Dim));
-                rest = Rest::Unknown;
+                facts.push(format!("first {} KB", cap / 1024));
             }
-            Body {
-                lines,
-                facts: format!("{kind} {} {count}", g.middot),
-                more: cut,
-                rest,
-                escapable: false,
+            Pane {
+                id: 0,
+                facts: join_facts(&facts),
+                content: Content::text(Arc::from(text), TextForm::Raw),
+                views: Vec::new(),
+                view: None,
+                copy: CopyAs::Stored,
+                indent: false,
             }
         }
     }
@@ -1082,7 +1780,7 @@ fn drill_title(root: &str, labels: &[&str], max: usize) -> String {
     crate::glyphs::fit_cells(&last, max, g.ellipsis).into_owned()
 }
 
-/// Draw a level of a drill: its items (a table, for a list of structs) and the
+/// Draw a level of a drill: its items (a table, for a list of structs) above the
 /// focused item's value.
 fn render_drill(
     area: Rect,
@@ -1101,116 +1799,154 @@ fn render_drill(
     let len = node.len();
     let selected = level.selected.min(len.saturating_sub(1));
     let focused = node.child(selected);
-    let measure = (area.width.saturating_sub(4) as usize).min(MEASURE);
+    let content = Surface::content_area(area);
+    let columns = node.table_columns();
+    let header = usize::from(columns.is_some());
+    // Stacked at every width: a table of items wants the width.
+    let stacked = Rect {
+        width: content.width.min(WIDE as u16 - 1),
+        ..content
+    };
+    let width = value_width(Rect {
+        width: content.width,
+        ..content
+    });
 
-    let body = match &focused {
+    let pane = match &focused {
         Some((label, child)) => {
-            let key = BodyKey {
+            let key = PaneKey {
                 frame: drill.frame,
                 row: drill.row,
                 field: drill.item_key(label),
-                escaped: modal.escaped,
-                chunks: modal.chunks,
-                width: measure as u16,
+                view: modal.view,
+                width: width as u16,
                 state: 5,
+                pretty: 0,
             };
-            match &modal.body {
-                Some((cached, body)) if *cached == key => body.clone(),
+            match &modal.pane {
+                Some((cached, pane)) if *cached == key => pane.clone(),
                 _ => {
-                    let built = node_body(label, child, modal.escaped, modal.chunks, measure);
-                    modal.body = Some((key, built.clone()));
+                    let mut built = node_pane(child, modal.view, width);
+                    built.id = modal.next_pane_id();
+                    modal.pane = Some((key, built.clone()));
                     built
                 }
             }
         }
-        None => Body {
-            lines: vec![(
+        None => Pane::lines(
+            vec![(
                 format!("No {}", shape.items_title().to_lowercase()),
                 Tone::Dim,
             )],
-            ..Body::default()
-        },
+            Vec::new(),
+        ),
     };
-
-    let columns = node.table_columns();
-    let header = usize::from(columns.is_some());
-    let content_h = area.height.saturating_sub(3) as usize;
-    let avail = content_h.saturating_sub(2 + header);
-    let list_h = list_rows(len, avail);
-    let body_h = content_h.saturating_sub(list_h + 2 + header);
-    let overflows = body.lines.len() > body_h;
-    let list_overflows = len > list_h;
+    modal.reader.prepare(pane.id, width, modal.wrap);
+    let need = modal
+        .reader
+        .rows_needed(&pane.content, content.height as usize);
+    let mut lay = layout(
+        Rect {
+            height: content.height.saturating_sub(header as u16),
+            ..stacked
+        },
+        len,
+        need,
+        modal.focus,
+        true,
+        1,
+    );
+    // The table's header takes the row under the rule; the rest move down one.
+    lay.list.y += header as u16;
+    lay.value_rule.y += header as u16;
+    lay.value.y += header as u16;
+    lay.value_rule.width = content.width;
+    lay.value.width = content.width;
+    lay.list.width = content.width;
+    lay.list_rule.width = content.width;
+    let list_h = lay.list.height as usize;
+    let value_rows = lay.value.height as usize;
+    let overflows = need > value_rows || modal.reader.window(&pane.content, value_rows).above;
     let opens = focused.as_ref().is_some_and(|(label, child)| {
         child.opens() && !modal.known_not_json(drill.frame, drill.row, &drill.item_key(label))
     });
 
     let mut bar = HintBar::from_ctx(ctx);
-    if opens {
-        bar = bar.hint_weighted("Enter", "Open", 9);
-    } else if body.more {
-        bar = bar.hint_weighted("Enter", "More", 9);
+    if modal.focus == Focus::Value {
+        bar = footer(
+            modal,
+            &pane,
+            &FooterFacts {
+                enter: None,
+                read_key: false,
+                has_value: focused.is_some(),
+                many_fields: len > 1,
+                list_overflows: false,
+                value_overflows: overflows,
+                comparing: false,
+            },
+            ctx,
+        );
+    } else {
+        if opens {
+            bar = bar.hint_weighted("Enter", "Open", 9);
+        }
+        if focused.is_some() {
+            bar = bar
+                .hint_weighted("Tab", "Value", 8)
+                .hint_weighted("y", "Copy", 7);
+        }
+        if len > 1 {
+            let word = match shape {
+                Shape::Struct => "Field",
+                Shape::Object => "Key",
+                _ => "Item",
+            };
+            bar = bar.hint_weighted(g.updown, word, 6);
+        }
+        if let Some(view) = pane.next_view() {
+            bar = bar.hint_weighted("e", view.label(), 3);
+        }
+        if len > list_h {
+            bar = bar.hint_weighted("PgUp/PgDn", "Page", 2);
+        }
+        bar = bar.hint_weighted("Esc", "Back", 10);
     }
-    if focused.is_some() {
-        bar = bar.hint_weighted("y", "Copy", 8);
-    }
-    if len > 1 {
-        let word = match shape {
-            Shape::Struct => "Field",
-            Shape::Object => "Key",
-            _ => "Item",
-        };
-        bar = bar.hint_weighted(g.updown, word, 7);
-    }
-    if overflows {
-        bar = bar.hint_weighted("PgUp/PgDn", "Scroll", 4);
-    }
-    if body.escapable {
-        let label = if modal.escaped { "Raw" } else { "Escaped" };
-        bar = bar.hint_weighted("e", label, 3);
-    }
-    if list_overflows {
-        bar = bar.hint_weighted("Home/End", "First/Last", 2);
-    }
-    let footer = bar.hint_weighted("Esc", "Back", 10);
 
     let labels: Vec<&str> = drill.levels.iter().map(|l| l.label.as_str()).collect();
     let title = drill_title(root_title, &labels, area.width.saturating_sub(4) as usize);
-    let content = Surface::new(&title).footer(&footer).render(area, buf, ctx);
+    let content = Surface::new(&title).footer(&bar).render(area, buf, ctx);
     if content.height < 4 || content.width < 12 {
         return;
     }
-    let line = |y: u16| Rect {
-        y,
-        height: 1,
-        ..content
-    };
     let count = thousands(len);
     SectionRule {
         title: shape.items_title(),
         chip: Some(&count),
         focused: false,
     }
-    .render(line(content.y), buf, ctx);
+    .render(lay.list_rule, buf, ctx);
 
-    let list_y = content.y + 1;
-    let offset = selected.saturating_sub(list_h.saturating_sub(1));
+    let offset = list_window(len, selected, modal.list_offset, list_h).0;
+    modal.list_offset = offset;
+    modal.list_page = list_h.saturating_sub(2).max(1);
     let below = len.saturating_sub(offset + list_h);
     let page = node.children(offset, list_h);
     let rows = ListRows {
-        y: list_y + header as u16,
+        y: lay.list.y,
         offset,
         selected,
         below,
         list_h,
+        focused: modal.focus == Focus::List,
     };
     match columns {
         Some(columns) => draw_table(buf, content, node, &columns, &page, &rows, ctx),
         None => draw_items(buf, content, node, &page, &rows, ctx),
     }
 
-    let rule_y = list_y + (header + list_h) as u16;
     let name = focused.map(|(label, _)| label).unwrap_or_default();
-    draw_value(buf, content, rule_y, &name, &body, modal, ctx);
+    draw_value(buf, &lay, &name, &pane, modal, ctx);
 }
 
 /// Where a level's items are drawn, and which of them.
@@ -1221,6 +1957,7 @@ struct ListRows {
     /// Items past the last row drawn.
     below: usize,
     list_h: usize,
+    focused: bool,
 }
 
 impl ListRows {
@@ -1244,6 +1981,7 @@ fn item_head(
     label_w: usize,
     name_style: Style,
     is_selected: bool,
+    focused: bool,
     ctx: &RenderContext,
 ) -> Vec<Span<'static>> {
     let g = crate::glyphs::get();
@@ -1257,7 +1995,7 @@ fn item_head(
     };
     vec![
         Span::styled(
-            if is_selected { g.rail } else { " " },
+            if is_selected && focused { g.rail } else { " " },
             Style::default().fg(ctx.accent),
         ),
         Span::styled(label, name_style),
@@ -1321,7 +2059,7 @@ fn draw_items(
         } else {
             Style::default().fg(ctx.text_primary)
         };
-        let mut spans = item_head(label, label_w, name_style, is_selected, ctx);
+        let mut spans = item_head(label, label_w, name_style, is_selected, rows.focused, ctx);
         let kind = crate::glyphs::fit_cells(&child.type_label(), type_w, g.ellipsis).into_owned();
         let kind_pad = type_w.saturating_sub(crate::glyphs::cell_width(&kind));
         spans.push(Span::styled(kind, Style::default().fg(ctx.dimmed)));
@@ -1330,7 +2068,7 @@ fn draw_items(
         let text = crate::glyphs::fit_cells(&text, preview_w, g.ellipsis).into_owned();
         spans.push(Span::styled(text, style));
         let mut paragraph = Paragraph::new(Line::from(spans));
-        if is_selected {
+        if is_selected && rows.focused {
             paragraph = paragraph.style(ctx.highlight_style());
         }
         paragraph.render(at, buf);
@@ -1444,6 +2182,7 @@ fn draw_table(
             label_w,
             Style::default().fg(ctx.dimmed),
             is_selected,
+            rows.focused,
             ctx,
         );
         for (k, ((column, _), &w)) in columns.iter().zip(&widths).enumerate() {
@@ -1456,10 +2195,85 @@ fn draw_table(
             spans.push(Span::raw(pad));
         }
         let mut paragraph = Paragraph::new(Line::from(spans));
-        if is_selected {
+        if is_selected && rows.focused {
             paragraph = paragraph.style(ctx.highlight_style());
         }
         paragraph.render(at, buf);
+    }
+}
+
+/// The row as one JSON object, field by field in the table's order: numbers
+/// exact, text and dates as strings, lists and structs as JSON, bytes as base64.
+/// Fields not read are left out and counted.
+pub fn row_json(
+    fields: &[InspectField],
+    row: &InspectRow,
+    read: Option<&FieldRead>,
+) -> (String, usize, usize) {
+    let mut out = String::from("{");
+    let (mut kept, mut unread) = (0usize, 0usize);
+    for field in fields {
+        let column = if field.buffered() {
+            row.values.column(&field.name).ok().cloned()
+        } else {
+            match read {
+                Some(FieldRead::Read { values, .. })
+                    if read.is_some_and(|r| r.key() == (row.frame, row.row)) =>
+                {
+                    values.column(&field.name).ok().cloned()
+                }
+                _ => None,
+            }
+        };
+        let Some(column) = column else {
+            unread += 1;
+            continue;
+        };
+        let Ok(value) = column.get(0) else {
+            unread += 1;
+            continue;
+        };
+        if kept > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&serde_json::to_string(&field.name).unwrap_or_default());
+        out.push_str(": ");
+        out.push_str(&json_value_text(&column, &value));
+        kept += 1;
+    }
+    out.push('}');
+    (out, kept, unread)
+}
+
+/// One value as JSON: exact numbers bare, everything else as the exact text in
+/// quotes, nested values as the JSON a copy writes.
+fn json_value_text(column: &Column, value: &AnyValue) -> String {
+    let quoted = |s: &str| serde_json::to_string(s).unwrap_or_default();
+    match value {
+        AnyValue::Null => "null".to_string(),
+        AnyValue::Boolean(b) => b.to_string(),
+        AnyValue::Int8(_)
+        | AnyValue::Int16(_)
+        | AnyValue::Int32(_)
+        | AnyValue::Int64(_)
+        | AnyValue::Int128(_)
+        | AnyValue::UInt8(_)
+        | AnyValue::UInt16(_)
+        | AnyValue::UInt32(_)
+        | AnyValue::UInt64(_) => exact::value_text(value),
+        AnyValue::Float32(_) | AnyValue::Float64(_) => {
+            let text = exact::value_text(value);
+            // NaN and the infinities have no JSON number.
+            if text.parse::<f64>().is_ok_and(f64::is_finite) {
+                text
+            } else {
+                quoted(&text)
+            }
+        }
+        v if exact::is_nested_value(v) => {
+            exact::copy_text(column).unwrap_or_else(|_| "null".to_string())
+        }
+        v => quoted(&exact::value_text(v)),
     }
 }
 
@@ -1467,71 +2281,94 @@ fn draw_table(
 mod tests {
     use super::*;
 
-    fn field(name: &str, dtype: DataType) -> InspectField {
-        InspectField {
-            name: name.to_string(),
-            dtype,
-            hidden: false,
+    fn ask(width: usize) -> PaneAsk<'static> {
+        PaneAsk {
+            choice: None,
+            width,
+            table: None,
+            indented: Indented::None,
+            not_json: false,
+            read_key: "Enter",
         }
     }
 
-    fn texts(body: &Body) -> Vec<&str> {
-        body.lines.iter().map(|(t, _)| t.as_str()).collect()
+    fn lines(p: &Pane) -> Vec<String> {
+        let mut r = reader::Reader::default();
+        r.prepare(1, 100, reader::Wrap::Word);
+        r.window(&p.content, 1000)
+            .rows
+            .into_iter()
+            .map(|s| s.text)
+            .collect()
     }
 
     #[test]
     fn a_float_shows_exact_and_what_the_table_rounds_it_to() {
-        let f = field("amount", DataType::Float64);
-        let b = body(
-            &f,
+        let p = pane(
+            &DataType::Float64,
             &Shown::Value(AnyValue::Float64(1000000.125)),
-            false,
-            1,
-            40,
-            Some("1.0000e6"),
+            &PaneAsk {
+                table: Some("1.0000e6"),
+                ..ask(40)
+            },
         );
-        assert_eq!(texts(&b), ["1000000.125", "", "In the table: 1.0000e6"]);
-        assert_eq!(b.facts, "f64");
-        // When the table shows the value as it is, nothing more is said.
-        let b = body(
-            &f,
+        assert_eq!(lines(&p), ["1000000.125", "", "In the table: 1.0000e6"]);
+        assert_eq!(p.facts, "f64");
+        let p = pane(
+            &DataType::Float64,
             &Shown::Value(AnyValue::Float64(2.5)),
-            false,
-            1,
-            40,
-            Some("2.5"),
+            &PaneAsk {
+                table: Some("2.5"),
+                ..ask(40)
+            },
         );
-        assert_eq!(texts(&b), ["2.5"]);
+        assert_eq!(lines(&p), ["2.5"]);
+        assert!(p.views.is_empty(), "a number has one view");
     }
 
     #[test]
-    fn raw_text_breaks_lines_and_escaped_text_shows_the_escapes() {
-        let f = field("note", DataType::String);
+    fn text_reads_raw_or_escaped_and_names_its_facts() {
         let value = Shown::Value(AnyValue::String("line1\nline2\ttab\\n"));
-        let raw = body(&f, &value, false, 1, 40, None);
-        assert_eq!(texts(&raw), ["line1", "line2   tab\\n"]);
+        let raw = pane(&DataType::String, &value, &ask(40));
+        assert_eq!(lines(&raw), ["line1", "line2   tab\\n"]);
         let m = crate::glyphs::get().middot;
         assert_eq!(raw.facts, format!("str {m} 17 chars {m} 2 lines"));
-        let esc = body(&f, &value, true, 1, 40, None);
-        assert_eq!(texts(&esc), [r#""line1\nline2\ttab\\n""#]);
+        assert_eq!(raw.views, [View::Raw, View::Escaped]);
+        assert_eq!(raw.next_view(), Some(View::Escaped));
+        let esc = pane(
+            &DataType::String,
+            &value,
+            &PaneAsk {
+                choice: Some(View::Escaped),
+                ..ask(40)
+            },
+        );
+        assert_eq!(lines(&esc), [r#""line1\nline2\ttab\\n""#]);
         assert!(esc.facts.ends_with("escaped"));
+        assert_eq!(esc.next_view(), Some(View::Raw));
     }
 
     #[test]
     fn empty_text_and_edge_spaces_are_named() {
-        let f = field("s", DataType::String);
-        let empty = body(&f, &Shown::Value(AnyValue::String("")), false, 1, 40, None);
-        assert_eq!(texts(&empty), ["empty string"]);
-        assert_eq!(empty.lines[0].1, Tone::Dim);
-        let esc = body(&f, &Shown::Value(AnyValue::String("")), true, 1, 40, None);
-        assert_eq!(texts(&esc), ["\"\""]);
-        let padded = body(
-            &f,
+        let empty = pane(
+            &DataType::String,
+            &Shown::Value(AnyValue::String("")),
+            &ask(40),
+        );
+        assert_eq!(lines(&empty), ["empty string"]);
+        let esc = pane(
+            &DataType::String,
+            &Shown::Value(AnyValue::String("")),
+            &PaneAsk {
+                choice: Some(View::Escaped),
+                ..ask(40)
+            },
+        );
+        assert_eq!(lines(&esc), ["\"\""]);
+        let padded = pane(
+            &DataType::String,
             &Shown::Value(AnyValue::String("  x ")),
-            false,
-            1,
-            40,
-            None,
+            &ask(40),
         );
         assert!(
             padded.facts.contains("2 leading spaces"),
@@ -1547,236 +2384,104 @@ mod tests {
 
     #[test]
     fn a_null_is_not_an_empty_string_and_says_which_null() {
-        let f = field("s", DataType::String);
-        let null = body(&f, &Shown::Null(NullKind::Null), false, 1, 60, None);
         let g = crate::glyphs::get();
-        assert_eq!(texts(&null), [format!("{} null", g.null).as_str()]);
-        let absent = body(&f, &Shown::Null(NullKind::Absent), false, 1, 80, None);
-        assert!(texts(&absent)[0].starts_with(&format!("{} absent", g.absent)));
-        let conflict = body(&f, &Shown::Null(NullKind::Conflict), false, 1, 80, None);
-        assert!(texts(&conflict)[0].starts_with(&format!("{} conflicting", g.conflict)));
+        let null = pane(&DataType::String, &Shown::Null(NullKind::Null), &ask(60));
+        assert_eq!(lines(&null), [format!("{} null", g.null)]);
+        let absent = pane(&DataType::String, &Shown::Null(NullKind::Absent), &ask(80));
+        assert!(lines(&absent)[0].starts_with(&format!("{} absent", g.absent)));
+    }
+
+    /// Improvement 5: JSON text reads indented, with `json` on the rule; `e`
+    /// cycles JSON, raw and escaped, and copy follows the view.
+    #[test]
+    fn json_text_reads_indented_and_cycles_its_views() {
+        let doc = r#"{"order": {"id": 1, "items": [{"sku": "A1"}]}, "flags": ["vip"]}"#;
+        let p = pane(
+            &DataType::String,
+            &Shown::Value(AnyValue::String(doc)),
+            &ask(80),
+        );
+        assert_eq!(p.views, [View::Json, View::Raw, View::Escaped]);
+        assert_eq!(p.view, Some(View::Json));
+        assert!(p.facts.ends_with("json"), "{}", p.facts);
+        assert_eq!(lines(&p)[..3], ["{", "  \"order\": {", "    \"id\": 1,"]);
+        assert!(matches!(p.copy, CopyAs::Text(_)));
+        assert_eq!(p.next_view(), Some(View::Raw));
+        // Text that only looks like JSON has no JSON view.
+        let bad = pane(
+            &DataType::String,
+            &Shown::Value(AnyValue::String("{not json}")),
+            &ask(80),
+        );
+        assert_eq!(bad.views, [View::Raw, View::Escaped]);
+        // Long JSON waits on a worker, raw meanwhile.
+        let long = format!("[{}0]", "1, ".repeat(30_000));
+        let p = pane(
+            &DataType::String,
+            &Shown::Value(AnyValue::String(&long)),
+            &ask(80),
+        );
+        assert!(p.indent && p.facts.ends_with("indenting..."), "{}", p.facts);
+    }
+
+    /// M4: bytes say their size in human units and what they are; UTF-8 bytes
+    /// read as text by default, gzip offers its text, and hex is 32 bytes a row
+    /// where that fits.
+    #[test]
+    fn bytes_are_sized_sniffed_and_read_as_text_where_they_are() {
+        let m = crate::glyphs::get().middot;
+        let utf8 = "Grüße\nsecond line".as_bytes();
+        let p = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(utf8)),
+            &ask(80),
+        );
+        assert_eq!(p.views, [View::Text, View::Hex, View::Escaped]);
+        assert_eq!(lines(&p), ["Grüße", "second line"]);
+        assert!(p.facts.contains("UTF-8 text"), "{}", p.facts);
+
+        let big = vec![0x90u8; 1 << 20];
+        let p = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(&big)),
+            &ask(140),
+        );
+        assert_eq!(p.facts, format!("binary {m} 1.0 MB (1,048,576 bytes)"));
+        assert_eq!(p.views, [View::Hex, View::Escaped]);
+        assert!(matches!(p.content, Content::Hex { per_line: 32, .. }));
+        assert!(matches!(p.copy, CopyAs::Base64));
+
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut e, b"hello gzip").unwrap();
+        let gz = e.finish().unwrap();
+        let p = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(&gz)),
+            &ask(80),
+        );
+        assert!(p.facts.ends_with("gzip"), "{}", p.facts);
+        assert_eq!(p.views, [View::Hex, View::Text, View::Escaped]);
+        let text = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(&gz)),
+            &PaneAsk {
+                choice: Some(View::Text),
+                ..ask(80)
+            },
+        );
+        assert_eq!(lines(&text), ["hello gzip"]);
+
+        let empty = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(b"")),
+            &ask(80),
+        );
+        assert_eq!(lines(&empty), ["empty binary"]);
+        assert!(empty.facts.contains("empty"));
     }
 
     #[test]
-    fn a_huge_value_shows_a_chunk_and_offers_more() {
-        let f = field("blob", DataType::String);
-        let big = "x".repeat(CHUNK_BYTES * 3 + 5);
-        let value = Shown::Value(AnyValue::String(&big));
-        let first = body(&f, &value, false, 1, 100, None);
-        assert!(first.more);
-        assert_eq!(
-            first.lines.len(),
-            CHUNK_BYTES / 100 + 2,
-            "the chunk, then the count"
-        );
-        let last = &first.lines.last().unwrap().0;
-        assert!(
-            last.ends_with(&format!("{} more chars", thousands(CHUNK_BYTES * 2 + 5))),
-            "{last}"
-        );
-        let all = body(&f, &value, false, 4, 100, None);
-        assert!(!all.more);
-        assert!(all.facts.contains(&thousands(big.len())));
-    }
-
-    #[test]
-    fn wrapping_keeps_wide_characters_whole() {
-        let mut out = Vec::new();
-        wrap_into("東京大阪京都", 5, Tone::Plain, &mut out);
-        let rows: Vec<&str> = out.iter().map(|(t, _)| t.as_str()).collect();
-        assert_eq!(rows, ["東京", "大阪", "京都"]);
-    }
-
-    #[test]
-    fn nested_values_expand_and_binary_dumps() {
-        let f = field("l", DataType::List(Box::new(DataType::Float64)));
-        let list = AnyValue::List(Series::new("".into(), [1.5f64, -0.0]));
-        let b = body(&f, &Shown::Value(list), false, 1, 40, None);
-        assert_eq!(texts(&b), ["[", "  1.5,", "  -0.0", "]"]);
-        assert!(b.facts.contains("2 items"), "{}", b.facts);
-
-        let f = field("b", DataType::Binary);
-        let bin = body(
-            &f,
-            &Shown::Value(AnyValue::Binary(b"AB\x00")),
-            false,
-            1,
-            80,
-            None,
-        );
-        assert_eq!(
-            texts(&bin)[0],
-            format!("00000000  41 42 00{}  AB.", " ".repeat(39))
-        );
-        let esc = body(
-            &f,
-            &Shown::Value(AnyValue::Binary(b"AB\x00")),
-            true,
-            1,
-            80,
-            None,
-        );
-        assert_eq!(texts(&esc), [r#"b"AB\x00""#]);
-    }
-
-    #[test]
-    fn an_unread_field_says_enter_reads_it() {
-        let f = InspectField {
-            hidden: true,
-            ..field("secret", DataType::String)
-        };
-        let b = body(&f, &Shown::Unread, false, 1, 100, None);
-        assert!(b.more, "Enter has something to do");
-        assert!(texts(&b)[0].contains("Enter reads"), "{:?}", texts(&b));
-        // The pane's own sentences wrap at spaces, not inside a word.
-        let narrow = body(&f, &Shown::Unread, false, 1, 30, None);
-        let joined = texts(&narrow).join(" ");
-        assert_eq!(
-            joined,
-            "Not read with the table's rows; Enter reads this row's hidden and binary fields"
-        );
-        assert!(texts(&narrow).iter().all(|l| l.chars().count() <= 30));
-    }
-
-    /// D3: a cut value's last line counts the whole value, not only the chunk
-    /// formatted: a hex dump in lines, text in its chars past the lines shown.
-    #[test]
-    fn the_overflow_line_counts_the_whole_value() {
-        let f = field("blob", DataType::Binary);
-        let bytes = vec![7u8; 1 << 20];
-        let b = body(
-            &f,
-            &Shown::Value(AnyValue::Binary(&bytes)),
-            false,
-            1,
-            80,
-            None,
-        );
-        // 4 KiB dumped at 16 bytes a line; the rest counted, not formatted.
-        assert_eq!(b.lines.len(), 256 + 1);
-        assert_eq!(b.rest, Rest::Lines((bytes.len() - 4096) / 16));
-        // 20 lines on screen: the 19th onward of 65,536 are left.
-        let hidden = b.lines.len() - 19;
-        assert_eq!(
-            overflow_line(&b, hidden),
-            more_line(65_536 - 19, "line", "lines")
-        );
-
-        let f = field("text", DataType::String);
-        let big = "x".repeat(CHUNK_BYTES * 2);
-        let b = body(
-            &f,
-            &Shown::Value(AnyValue::String(&big)),
-            false,
-            1,
-            100,
-            None,
-        );
-        assert_eq!(b.rest, Rest::Units(plural(CHUNK_BYTES, "char", "chars")));
-        let line = overflow_line(&b, 10);
-        assert!(
-            line.ends_with(&format!(
-                "9 more lines, then {} chars",
-                thousands(CHUNK_BYTES)
-            )),
-            "{line}"
-        );
-        // Only the cut line itself left: it says what was cut.
-        assert_eq!(overflow_line(&b, 1), b.lines.last().unwrap().0);
-
-        // A value formatted whole counts its own lines.
-        let short = body(
-            &f,
-            &Shown::Value(AnyValue::String("a\nb\nc")),
-            false,
-            1,
-            40,
-            None,
-        );
-        assert_eq!(short.rest, Rest::None);
-        assert_eq!(overflow_line(&short, 2), more_line(2, "line", "lines"));
-    }
-
-    /// The hex dump's count is exact at the edges: every size is ceil(len / 16) lines,
-    /// formatted or counted, however many chunks were formatted.
-    #[test]
-    fn hex_line_counts_are_exact_at_the_edges() {
-        let f = field("blob", DataType::Binary);
-        for len in [
-            0usize,
-            1,
-            15,
-            16,
-            17,
-            4095,
-            4096,
-            4097,
-            1 << 20,
-            (1 << 20) + 1,
-        ] {
-            for chunks in [1, 2] {
-                let bytes = vec![1u8; len];
-                let b = body(
-                    &f,
-                    &Shown::Value(AnyValue::Binary(&bytes)),
-                    false,
-                    chunks,
-                    80,
-                    None,
-                );
-                let formatted = match b.rest {
-                    // The last line says what was cut; it is not a line of the dump.
-                    Rest::Lines(n) => b.lines.len() - 1 + n,
-                    Rest::None => b.lines.len(),
-                    ref other => panic!("{len}: {other:?}"),
-                };
-                let want = len.div_ceil(16).max(1);
-                assert_eq!(formatted, want, "{len} bytes, {chunks} chunks");
-                // Every line of it hidden but the first: the count is all the rest.
-                if len > 4096 * chunks {
-                    let hidden = b.lines.len() - 1;
-                    assert_eq!(
-                        overflow_line(&b, hidden),
-                        more_line(want - 1, "line", "lines"),
-                        "{len}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// A cut text's count is of chars, not bytes, whatever their width.
-    #[test]
-    fn a_cut_text_counts_multi_byte_chars() {
-        let f = field("text", DataType::String);
-        for ch in ["é", "€", "🦀"] {
-            let big = ch.repeat(CHUNK_BYTES);
-            let b = body(
-                &f,
-                &Shown::Value(AnyValue::String(&big)),
-                false,
-                1,
-                100,
-                None,
-            );
-            let shown = exact::prefix(&big, CHUNK_BYTES).chars().count();
-            assert!(shown > 0 && shown < CHUNK_BYTES, "{ch}");
-            assert_eq!(
-                b.rest,
-                Rest::Units(plural(CHUNK_BYTES - shown, "char", "chars")),
-                "{ch}"
-            );
-            assert!(
-                b.facts.contains(&plural(CHUNK_BYTES, "char", "chars")),
-                "{}",
-                b.facts
-            );
-        }
-    }
-
-    /// D5: empty text and empty bytes are said, in the list and in the pane.
-    #[test]
-    fn empty_values_are_visible() {
+    fn empty_values_are_visible_in_the_list() {
         let g = crate::glyphs::get();
         assert_eq!(
             empty_preview(&AnyValue::String("")).as_deref(),
@@ -1787,45 +2492,83 @@ mod tests {
             empty_preview(&AnyValue::Binary(b"")),
             Some(format!("0 bytes {} empty", g.middot))
         );
-        assert_eq!(empty_preview(&AnyValue::Binary(b"a")), None);
-        let f = field("b", DataType::Binary);
-        let b = body(&f, &Shown::Value(AnyValue::Binary(b"")), false, 1, 80, None);
-        assert_eq!(texts(&b), ["empty binary"]);
-        assert_eq!(b.lines[0].1, Tone::Dim);
-        assert!(b.facts.ends_with("empty"), "{}", b.facts);
+        assert_eq!(fill_of(&Shown::Value(AnyValue::String(""))), Fill::Empty);
+        assert_eq!(fill_of(&Shown::Null(NullKind::Null)), Fill::Null);
+        assert_eq!(fill_of(&Shown::Unread), Fill::Unknown);
     }
 
-    /// D6: `e` acts on text and bytes only.
     #[test]
-    fn only_text_and_bytes_are_escapable() {
-        let cases = [
-            (DataType::String, Shown::Value(AnyValue::String("a")), true),
-            (DataType::Binary, Shown::Value(AnyValue::Binary(b"a")), true),
-            (DataType::Int64, Shown::Value(AnyValue::Int64(1)), false),
-            (DataType::Date, Shown::Value(AnyValue::Date(1)), false),
-            (DataType::String, Shown::Null(NullKind::Null), false),
-            (DataType::Binary, Shown::Unread, false),
-        ];
-        for (dtype, shown, escapable) in cases {
-            let b = body(&field("f", dtype.clone()), &shown, false, 1, 40, None);
-            assert_eq!(b.escapable, escapable, "{dtype:?} {shown:?}");
+    fn values_differ_by_their_exact_text() {
+        let v = |x: f64| Shown::Value(AnyValue::Float64(x));
+        assert_eq!(differs(&v(1.0), &v(1.0)), Some(false));
+        assert_eq!(differs(&v(f64::NAN), &v(f64::NAN)), Some(false));
+        assert_eq!(differs(&v(1.0), &v(2.0)), Some(true));
+        assert_eq!(differs(&v(1.0), &Shown::Null(NullKind::Null)), Some(true));
+        assert_eq!(differs(&v(1.0), &Shown::Unread), None);
+    }
+
+    /// The list counts what is above and below, and the focus is always among
+    /// the fields shown.
+    #[test]
+    fn the_list_window_keeps_the_focus_and_marks_both_ends() {
+        assert_eq!(list_window(10, 3, 0, 20), (0, false, false));
+        // 214 fields in 20 slots: the last slot counts the rest.
+        let (o, above, below) = list_window(214, 0, 0, 20);
+        assert_eq!((o, above, below), (0, false, true));
+        let (o, above, below) = list_window(214, 19, 0, 20);
+        assert!(above && below);
+        assert!(19 >= o && 19 < o + 18, "{o}");
+        let (o, above, below) = list_window(214, 213, 0, 20);
+        assert!(above && !below);
+        assert_eq!(o, 214 - 19);
+        for sel in 0..214 {
+            let (o, above, below) = list_window(214, sel, 100, 20);
+            let items = 20 - usize::from(above) - usize::from(below);
+            assert!(sel >= o && sel < o + items, "{sel}: {o}");
         }
     }
 
-    /// D11: every field is listed when they all fit beside a short value; a long
-    /// list keeps half. The value always keeps its few lines.
+    /// M2: a short row lists whole at 80x24; a long one shares the rows and the
+    /// value keeps what its lines need; from 140 columns the panes sit side by
+    /// side at full height, and the fields flow into columns that fit.
     #[test]
-    fn the_list_takes_the_rows_the_value_does_not_need() {
-        // 80x24: 18 rows shared by the 14-field list and the value.
-        assert_eq!(list_rows(14, 18), 14);
-        assert_eq!(list_rows(15, 18), 15);
-        assert_eq!(list_rows(16, 18), 9);
-        assert_eq!(list_rows(214, 18), 9);
-        assert_eq!(list_rows(1, 18), 1);
-        assert_eq!(list_rows(0, 18), 1);
-        // 60x20: 14 rows.
-        assert_eq!(list_rows(14, 14), 7);
-        assert_eq!(list_rows(11, 14), 11);
+    fn the_layout_fits_the_row_and_the_terminal() {
+        // 80x24: the Surface's content is 76x20, 18 rows past the two rules.
+        let content = Rect::new(2, 1, 76, 20);
+        let l = layout(content, 14, 1, Focus::List, false, 40);
+        assert!(!l.wide);
+        assert_eq!(l.list.height, 14, "every field listed");
+        assert_eq!(l.value.height, 4);
+        let l = layout(content, 214, 1, Focus::List, false, 40);
+        assert_eq!(
+            (l.list.height, l.value.height),
+            (15, 3),
+            "the value keeps three"
+        );
+        let l = layout(content, 214, 40, Focus::List, false, 40);
+        assert_eq!(l.value.height, 9, "a long value takes half");
+        let l = layout(content, 214, 40, Focus::Value, false, 40);
+        assert_eq!(l.list.height, 3, "reading, the list keeps a few rows");
+        // Two fields and a long value: the list takes its two rows, the value the rest.
+        let l = layout(content, 2, 1_000, Focus::List, false, 40);
+        assert_eq!((l.list.height, l.value.height), (2, 16));
+        // 200x50: side by side, two columns of fields.
+        let content = Rect::new(2, 1, 196, 46);
+        let l = layout(content, 214, 1, Focus::List, false, 45);
+        assert!(l.wide);
+        assert_eq!(l.value.height, 45);
+        assert_eq!(l.cols, 2);
+        assert!(l.cols * l.list.height as usize >= 44);
+        // 300x80: every one of 214 fields.
+        let content = Rect::new(2, 1, 296, 76);
+        let l = layout(content, 214, 1, Focus::List, false, 45);
+        assert!(l.cols * l.list.height as usize >= 214, "{l:?}");
+        // A short row keeps one column.
+        let l = layout(content, 14, 1, Focus::List, false, 45);
+        assert_eq!(l.cols, 1);
+        // 140 columns: side by side.
+        assert!(layout(Rect::new(2, 1, 136, 30), 14, 1, Focus::List, false, 45).wide);
+        assert!(!layout(Rect::new(2, 1, 135, 30), 14, 1, Focus::List, false, 45).wide);
     }
 
     /// A long trail keeps the row and where the drill is now; the steps between
@@ -1845,7 +2588,6 @@ mod tests {
             cut,
             format!("Row 1 of 5 {t} {} {t} geo {t} point", g.ellipsis)
         );
-        // A key with a line break is marked, not broken.
         let marked = drill_title("Row 1", &["a\nb"], 40);
         assert!(!marked.contains('\n'), "{marked}");
     }
@@ -1854,19 +2596,17 @@ mod tests {
     fn json_values_show_as_themselves() {
         let m = crate::glyphs::get().middot;
         let doc: JsonValue = serde_json::from_str(r#"{"a": [1, 2], "s": "x\ny"}"#).unwrap();
-        let b = json_body(&doc, false, 1, 40);
+        let b = json_pane(&doc, &ask(40));
         assert_eq!(b.facts, format!("object {m} 2 keys"));
-        assert_eq!(texts(&b)[..2], ["{", "  \"a\": ["]);
-        let s = json_body(&doc["s"], false, 1, 40);
-        assert_eq!(texts(&s), ["x", "y"]);
-        assert!(s.escapable, "text has an escaped form");
-        let n = json_body(&JsonValue::from(1.5), false, 1, 40);
-        assert_eq!((texts(&n), n.facts.as_str()), (vec!["1.5"], "number"));
-        // An array too long for the budget is cut and says so.
-        let big: JsonValue = serde_json::from_str(&format!("[{}0]", "0,".repeat(20_000))).unwrap();
-        let b = json_body(&big, false, 1, 40);
-        assert_eq!(b.rest, Rest::Unknown);
-        assert!(b.lines.len() < 20_000);
+        assert_eq!(lines(&b)[..2], ["{", "  \"a\": ["]);
+        let s = json_pane(&doc["s"], &ask(40));
+        assert_eq!(lines(&s), ["x", "y"]);
+        assert!(s.views.contains(&View::Escaped), "text has an escaped form");
+        let n = json_pane(&JsonValue::from(1.5), &ask(40));
+        assert_eq!(
+            (lines(&n), n.facts.as_str()),
+            (vec!["1.5".to_string()], "number")
+        );
     }
 
     #[test]
@@ -1877,5 +2617,12 @@ mod tests {
             "datetime[us, Europe/Paris]"
         );
         assert_eq!(type_text(&DataType::Decimal(10, 4)), "decimal(10,4)");
+    }
+
+    #[test]
+    fn sizes_read_in_human_units_and_exactly() {
+        assert_eq!(size_text(73), "73 bytes");
+        assert_eq!(size_text(1), "1 byte");
+        assert_eq!(size_text(4 << 20), "4.0 MB (4,194,304 bytes)");
     }
 }

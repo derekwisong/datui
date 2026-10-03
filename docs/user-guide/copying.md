@@ -144,6 +144,7 @@ with no extension) is read as too:
 | ULog | `df = ...` |
 | DataFlash | `df = ...` |
 | candump | `df = ...` |
+| text | `pl.LazyFrame` |
 
 A reader that is not a scan reads the file whole and ends in `.lazy()`; so
 does an Arrow IPC stream, read with `pl.read_ipc_stream`. A SQLite table is

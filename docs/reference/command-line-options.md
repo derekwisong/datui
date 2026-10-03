@@ -26,6 +26,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, vcd, fix, sdf, or the name of a binary format spec such as acme.l2feed |
 | `--spec <FILE>` | Read the file (or directory of column files) through this binary format spec, whatever else matches it |
 | `--fix-dict <FILE>` | Read a FIX log with this dictionary too, over the built-in one and those on the format search path: a QuickFIX XML data dictionary, or TOML with kind = "fix" |
+| `--variant <NAME>` | Read one variant of a binary format spec's records alone, as its own table: only its records, and only its columns |
 | `--hex` | Show the file's bytes in the hex view, whatever it holds. A local file no reader and no spec takes opens there anyway |
 | `--record-size <N>` | Bytes a row of the hex view holds, so that records line up (default: 8, 16, 32 or 64, as many as fit) |
 | `--debug` | Enable debug mode to show operational information |

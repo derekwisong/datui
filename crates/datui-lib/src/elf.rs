@@ -24,6 +24,16 @@ use crate::text_formats::Detail;
 
 /// What datui does with an ELF file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    // Never in a listing, which would list every executable.
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::Trusted {
+            listing: false,
+            tables: true,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
     tables: Some(|_| Ok(tables())),
     ..crate::readers::BASE
 };

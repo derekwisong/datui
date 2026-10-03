@@ -20,10 +20,24 @@ use polars::prelude::*;
 use crate::FileFormat;
 
 /// What datui does with a SafeTensors file: see [`crate::readers`].
-pub(crate) const SAFETENSORS: crate::readers::Reader = crate::readers::BASE;
+pub(crate) const SAFETENSORS: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like_safetensors(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::EVERYWHERE,
+    }],
+    ..crate::readers::BASE
+};
 
 /// What datui does with a GGUF file: see [`crate::readers`].
-pub(crate) const GGUF: crate::readers::Reader = crate::readers::BASE;
+pub(crate) const GGUF: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like_gguf(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::EVERYWHERE,
+    }],
+    ..crate::readers::BASE
+};
 
 /// The largest SafeTensors header read: the limit the reference implementation sets.
 pub const MAX_SAFETENSORS_HEADER: u64 = 100_000_000;

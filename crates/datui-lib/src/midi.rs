@@ -20,6 +20,11 @@ use polars::prelude::*;
 
 /// What datui does with a MIDI file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like_midi(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::EVERYWHERE,
+    }],
     ..crate::readers::BASE
 };
 

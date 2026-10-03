@@ -7,7 +7,6 @@
 //! however long the file. What a file says besides its rows (a VCD header, the FIX
 //! dictionaries used, an SDF file's fields) is a [`Detail`] for the Info panel.
 
-use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,12 +20,10 @@ use crate::notes::Note;
 use crate::numfmt::group_chrome;
 use crate::segments::Converted;
 use crate::unfinished::Writer;
-use crate::{CompressionFormat, FileFormat, OpenOptions};
+use crate::{FileFormat, OpenOptions};
 
 /// How much of the file is read at a time.
 const CHUNK: usize = 1 << 16;
-/// Bytes looked at to tell a file by its content.
-pub const HEAD: usize = 4096;
 /// The most rows of a [`Detail`] list; a file of more says how many are left out.
 pub const MAX_DETAIL_ROWS: usize = 10_000;
 
@@ -54,50 +51,6 @@ pub fn is_text_format(format: FileFormat) -> bool {
 /// Whether `format` is read into a table of its own before it is scanned.
 pub fn reads_into(format: FileFormat) -> bool {
     is_text_format(format) || crate::gps::is_gps(format)
-}
-
-/// The text format a name says, looking through a compression suffix:
-/// `library.sdf.gz` is SDF.
-pub fn format_by_name(path: &Path) -> Option<FileFormat> {
-    FileFormat::from_path(path)
-        .or_else(|| {
-            CompressionFormat::from_extension(path)?;
-            FileFormat::from_path(Path::new(path.file_stem()?))
-        })
-        .filter(|f| is_text_format(*f))
-}
-
-/// The text format the first bytes of a file say, if they say one.
-pub fn sniff(head: &[u8]) -> Option<FileFormat> {
-    if crate::fix::looks_like(head) {
-        Some(FileFormat::Fix)
-    } else if crate::vcd::looks_like(head) {
-        Some(FileFormat::Vcd)
-    } else if crate::sdf::looks_like(head) {
-        Some(FileFormat::Sdf)
-    } else {
-        None
-    }
-}
-
-/// The text format of the file at `path` by its first bytes, decompressed when its
-/// name or `compression` says it is compressed. Only for a file whose name says no
-/// format, so a file that opens as something today opens the same way.
-pub fn sniff_path(path: &Path, compression: Option<CompressionFormat>) -> Option<FileFormat> {
-    let compression = compression.or_else(|| CompressionFormat::from_extension(path));
-    let head = match compression {
-        Some(_) => crate::formats::head_of(path, compression, HEAD as u64)?,
-        None => {
-            let mut head = Vec::with_capacity(HEAD);
-            File::open(path)
-                .ok()?
-                .take(HEAD as u64)
-                .read_to_end(&mut head)
-                .ok()?;
-            head
-        }
-    };
-    sniff(&head)
 }
 
 /// Read `files` (named `display` to the user) as `format` into temporary IPC files,
@@ -208,49 +161,4 @@ pub(crate) fn capped_list(
         ));
     }
     list
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_name_through_compression() {
-        assert_eq!(
-            format_by_name(Path::new("lib.sdf.gz")),
-            Some(FileFormat::Sdf)
-        );
-        assert_eq!(format_by_name(Path::new("dump.vcd")), Some(FileFormat::Vcd));
-        assert_eq!(format_by_name(Path::new("dump.csv")), None);
-    }
-
-    #[test]
-    fn each_format_by_its_first_bytes() {
-        assert_eq!(
-            sniff(b"8=FIX.4.4\x019=5\x0135=0\x0110=000\x01\n"),
-            Some(FileFormat::Fix)
-        );
-        assert_eq!(
-            sniff(b"$timescale 1ns $end\n$scope module top $end\n"),
-            Some(FileFormat::Vcd)
-        );
-        assert_eq!(
-            sniff(b"aspirin\n  RDKit\n\n  0  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n$$$$\n"),
-            Some(FileFormat::Sdf)
-        );
-        assert_eq!(sniff(b"a,b\n1,2\n"), None);
-    }
-
-    #[test]
-    fn a_compressed_file_by_what_it_holds() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("session.log.gz");
-        let mut gz =
-            flate2::write::GzEncoder::new(File::create(&path).unwrap(), Default::default());
-        gz.write_all(b"20260101-00:00:00 : 8=FIX.4.2|9=5|35=0|10=000|\n")
-            .unwrap();
-        gz.finish().unwrap();
-        assert_eq!(sniff_path(&path, None), Some(FileFormat::Fix));
-    }
 }

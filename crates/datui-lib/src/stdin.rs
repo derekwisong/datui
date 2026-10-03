@@ -114,8 +114,9 @@ pub fn refuse(paths: &[PathBuf], piped: bool) -> Option<&'static str> {
         .then_some("Nothing is piped to standard input. Pipe data in, as in: cat data.csv | datui")
 }
 
-/// The format and compression the first bytes of a file say it is. Columnar formats
-/// and compression have magic numbers. Text starting with `[` is a JSON array; with
+/// The format and compression the first bytes of a file say it is: compression by its
+/// magic numbers, then whatever a format's signature says ([`crate::readers::sniff`]).
+/// Text no format claims is guessed at: starting with `[` it is a JSON array; with
 /// `{`, one object per line, unless the first line leaves the object open, as a
 /// pretty-printed object does, which is read as JSON. A first line with tabs and no
 /// commas is TSV; anything else is CSV.
@@ -128,57 +129,10 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     ];
     if let Some((_, compression)) = COMPRESSED.iter().find(|(magic, _)| head.starts_with(magic)) {
         // What is inside is not looked at: CSV, unless `--format` names TSV or PSV.
-        return (FileFormat::Csv, Some(*compression));
+        return (FileFormat::TEXT, Some(*compression));
     }
-    if head.starts_with(b"PAR1") {
-        return (FileFormat::Parquet, None);
-    }
-    if head.starts_with(b"ARROW1") {
-        return (FileFormat::Arrow, None);
-    }
-    if head.starts_with(b"Obj\x01") {
-        return (FileFormat::Avro, None);
-    }
-    if crate::sqlite::looks_like(head) {
-        return (FileFormat::Sqlite, None);
-    }
-    if crate::numpy::looks_like(head) {
-        return (FileFormat::Numpy, None);
-    }
-    if crate::elf::looks_like(head) {
-        return (FileFormat::Elf, None);
-    }
-    if crate::ulog::looks_like(head) {
-        return (FileFormat::Ulog, None);
-    }
-    if crate::dataflash::looks_like(head) {
-        return (FileFormat::Dataflash, None);
-    }
-    if crate::model_files::looks_like_gguf(head) {
-        return (FileFormat::Gguf, None);
-    }
-    if crate::model_files::looks_like_safetensors(head) {
-        return (FileFormat::Safetensors, None);
-    }
-    if crate::audio::looks_like_audio(head) {
-        return (FileFormat::Audio, None);
-    }
-    if crate::midi::looks_like_midi(head) {
-        return (FileFormat::Midi, None);
-    }
-    // An Arrow IPC stream, which is what pyarrow and Polars write to a pipe.
-    if crate::ipc_stream::is_stream_head(head) {
-        return (FileFormat::Arrow, None);
-    }
-    // Before the text guesses below: a GPS log is text that says what it is.
-    if let Some(gps) = crate::gps::sniff(head) {
-        return (gps, None);
-    }
-    if let Some(text) = crate::text_formats::sniff(head) {
-        return (text, None);
-    }
-    if crate::candump::looks_like(head) {
-        return (FileFormat::Candump, None);
+    if let Some(format) = crate::readers::sniff(head, None, crate::readers::Asked::Pipe, |_| true) {
+        return (format, None);
     }
     let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
     let text = &text[text
@@ -199,7 +153,7 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
 }
 
 /// Bytes [`sniff`] looks at.
-const HEAD: usize = 4096;
+const HEAD: usize = crate::readers::HEAD;
 
 /// Read what `open` answers with into a temporary file in `--temp-dir` (the system's
 /// otherwise), counting the bytes into `read`, and say what it holds: `options` with

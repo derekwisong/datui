@@ -23,6 +23,14 @@ use crate::unfinished::Writer;
 
 /// What datui does with a VCD dump: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Text,
+        trusted: crate::readers::Trusted {
+            listing: false,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
     ..crate::readers::BASE
 };
 

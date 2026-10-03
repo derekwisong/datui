@@ -32,6 +32,24 @@ use crate::text_formats::Detail;
 
 /// What datui does with a NumPy file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[
+        crate::readers::Signature {
+            says: |head, _| looks_like(head),
+            kind: crate::readers::Kind::Magic,
+            trusted: crate::readers::EVERYWHERE,
+        },
+        // An archive is a zip file named `.npz`: a zip file is many things.
+        crate::readers::Signature {
+            says: |head, file| file.is_some_and(|file| is_archive(file, head)),
+            kind: crate::readers::Kind::Magic,
+            trusted: crate::readers::Trusted {
+                pipe: false,
+                open: crate::readers::Unnamed::Any,
+                listing: false,
+                tables: true,
+            },
+        },
+    ],
     tables: Some(tables),
     ..crate::readers::BASE
 };

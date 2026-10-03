@@ -1,8 +1,9 @@
 //! The readers: what datui does with a file of each format.
 //!
 //! A format's descriptor ([`crate::FileFormat::descriptor`], in datui-cli) says what is
-//! true of it without a file to read. Its [`Reader`] holds the code: the tables a file
-//! of it lists and the format a view of it exports to by default. Each format's reader
+//! true of it without a file to read. Its [`Reader`] holds the code: the bytes that say
+//! it, the tables a file of it lists and the format a view of it exports to by default.
+//! Each format's reader
 //! lives beside its parser (`crate::sqlite::READER`), and those of the formats Polars
 //! reads in [`polars`]. [`of`] maps every format to its reader, exhaustively, so a
 //! format without one does not compile.
@@ -22,6 +23,8 @@ pub(crate) type ListTables = fn(&Path) -> Result<Vec<Table>>;
 
 /// The code behind one format.
 pub(crate) struct Reader {
+    /// The bytes at the start of a file that say it is this format, if any do.
+    pub signatures: &'static [Signature],
     /// The tables a file of it lists on the home screen, read cheaply: a database's
     /// schema, an archive's directory. Only for a format whose descriptor says it holds
     /// tables that are listed.
@@ -33,6 +36,7 @@ pub(crate) struct Reader {
 
 /// The reader of a format nothing is written for: no tables, no export default.
 pub(crate) const BASE: Reader = Reader {
+    signatures: &[],
     tables: None,
     export: None,
 };
@@ -68,6 +72,168 @@ pub(crate) fn of(format: FileFormat) -> &'static Reader {
     }
 }
 
+/// Bytes read from the start of a file to tell its format by.
+pub const HEAD: usize = 4096;
+
+/// The bytes at the start of a file that say a format.
+pub(crate) struct Signature {
+    /// Whether `head`, a file's first bytes ([`HEAD`] of them, or the whole of a shorter
+    /// file), say the format. `file` is the file they came from, where there is one:
+    /// for bytes another format shares (an NPZ archive is a zip file) or that are
+    /// confirmed further in (Parquet's footer).
+    pub says: fn(&[u8], Option<&Path>) -> bool,
+    /// How the bytes say it, which orders the signatures: magic numbers are asked
+    /// first, then structure read from lengths, then text.
+    pub kind: Kind,
+    /// Where the bytes are believed.
+    pub trusted: Trusted,
+}
+
+/// How a signature says its format. See [`Signature::kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Magic,
+    Structure,
+    Text,
+}
+
+/// Where a signature is believed. A weak one (`ORC`, three letters a text file may
+/// start with) is believed in fewer places than a strong one.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Trusted {
+    /// Data piped in, which has no name.
+    pub pipe: bool,
+    /// A file opened whose name says no format.
+    pub open: Unnamed,
+    /// A file a directory listing looks inside ([`crate::discover::worth_sniffing`]).
+    /// Never ELF, which would list every executable, nor text, which is a parse.
+    pub listing: bool,
+    /// The bytes say a file of several tables, each a place inside it
+    /// (`shop.db/orders`), whatever the file is called.
+    pub tables: bool,
+}
+
+/// Which files whose names say no format a signature is believed for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unnamed {
+    Never,
+    /// Any: `.bin`, `.log`, `.txt`, or none.
+    Any,
+    /// Only a file with no extension at all, such as a part file.
+    NoExtension,
+}
+
+/// Believed everywhere, but not as a file of tables.
+pub(crate) const EVERYWHERE: Trusted = Trusted {
+    pipe: true,
+    open: Unnamed::Any,
+    listing: true,
+    tables: false,
+};
+
+/// Where a file's first bytes are asked to say its format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asked {
+    /// Data piped in.
+    Pipe,
+    /// A file being opened whose name says no format; `extension` is whether it has
+    /// one at all.
+    Open { extension: bool },
+    /// A file a directory listing looks inside.
+    Listing,
+    /// Whether a file of any name holds several tables.
+    Tables,
+}
+
+impl Asked {
+    fn believes(self, format: FileFormat, trusted: Trusted) -> bool {
+        match self {
+            Asked::Pipe => trusted.pipe,
+            Asked::Open { extension } => match trusted.open {
+                Unnamed::Never => false,
+                Unnamed::Any => true,
+                Unnamed::NoExtension => !extension,
+            },
+            Asked::Listing => trusted.listing,
+            Asked::Tables => trusted.tables && format.holds_tables(),
+        }
+    }
+}
+
+/// The format `head`, the first bytes of `file` (none for a pipe), says, as believed
+/// where it is `asked`, of the formats `among` admits. The one sniffer: every format's
+/// signatures, magic numbers first.
+pub(crate) fn sniff(
+    head: &[u8],
+    file: Option<&Path>,
+    asked: Asked,
+    among: impl Fn(FileFormat) -> bool,
+) -> Option<FileFormat> {
+    [Kind::Magic, Kind::Structure, Kind::Text]
+        .into_iter()
+        .find_map(|kind| {
+            FileFormat::ALL.into_iter().find(|&format| {
+                among(format)
+                    && of(format).signatures.iter().any(|sig| {
+                        sig.kind == kind
+                            && asked.believes(format, sig.trusted)
+                            && (sig.says)(head, file)
+                    })
+            })
+        })
+}
+
+/// [`sniff`] for the file at `path`, by its first [`HEAD`] bytes.
+pub(crate) fn sniff_file(path: &Path, asked: Asked) -> Option<FileFormat> {
+    let head = head_of(path)?;
+    sniff(&head, Some(path), asked, |_| true)
+}
+
+/// The format of a local file being opened whose name says none, by its first bytes;
+/// `compression` is `--compression`. A format read through its compression (a GPS log,
+/// a VCD dump) is named under it (`track.nmea.gz`) and known by its bytes inside it.
+pub(crate) fn sniff_open(
+    path: &Path,
+    compression: Option<crate::CompressionFormat>,
+) -> Option<FileFormat> {
+    let read_through = |f: FileFormat| f.reads_into();
+    let asked = Asked::Open {
+        extension: path.extension().is_some(),
+    };
+    let is_file = path.is_file();
+    if is_file
+        && let Some(found) =
+            head_of(path).and_then(|head| sniff(&head, Some(path), asked, |_| true))
+    {
+        return Some(found);
+    }
+    let compression = compression.or_else(|| crate::CompressionFormat::from_extension(path))?;
+    if let Some(named) = path
+        .file_stem()
+        .and_then(|stem| FileFormat::from_path(Path::new(stem)))
+        .filter(|f| read_through(*f))
+    {
+        return Some(named);
+    }
+    if !is_file {
+        return None;
+    }
+    let head = crate::formats::head_of(path, Some(compression), HEAD as u64)?;
+    sniff(&head, Some(path), asked, read_through)
+}
+
+/// The first [`HEAD`] bytes of the file at `path`, or all of a shorter one.
+fn head_of(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut head = Vec::with_capacity(HEAD);
+    std::fs::File::open(path)
+        .ok()?
+        .take(HEAD as u64)
+        .read_to_end(&mut head)
+        .ok()?;
+    Some(head)
+}
+
 /// The format a view read as `format` is exported as by default.
 pub(crate) fn export_default(format: FileFormat) -> Option<ExportFormat> {
     of(format).export
@@ -76,6 +242,80 @@ pub(crate) fn export_default(format: FileFormat) -> Option<ExportFormat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn piped(head: &[u8]) -> Option<FileFormat> {
+        sniff(head, None, Asked::Pipe, |_| true)
+    }
+
+    /// Text formats are known by their first bytes, and text no format claims is none.
+    #[test]
+    fn text_formats_by_their_first_bytes() {
+        let said = [
+            (
+                &b"8=FIX.4.4\x019=5\x0135=0\x0110=000\x01\n"[..],
+                FileFormat::Fix,
+            ),
+            (
+                b"$timescale 1ns $end\n$scope module top $end\n",
+                FileFormat::Vcd,
+            ),
+            (
+                b"aspirin\n  RDKit\n\n  0  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n$$$$\n",
+                FileFormat::Sdf,
+            ),
+            (b"$GPGGA,1,2", FileFormat::Nmea),
+            (b"<?xml version=\"1.0\"?>\n<gpx>", FileFormat::Gpx),
+        ];
+        for (head, format) in said {
+            assert_eq!(piped(head), Some(format), "{format:?}");
+        }
+        assert_eq!(piped(b"a,b\n1,2\n"), None);
+    }
+
+    /// A file read through its compression is named under it and known by its bytes
+    /// inside it; a name that says a format needs no look.
+    #[test]
+    fn a_compressed_file_by_its_name_or_what_it_holds() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.log.gz");
+        let mut gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(&path).unwrap(),
+            Default::default(),
+        );
+        gz.write_all(b"20260101-00:00:00 : 8=FIX.4.2|9=5|35=0|10=000|\n")
+            .unwrap();
+        gz.finish().unwrap();
+        assert_eq!(sniff_open(&path, None), Some(FileFormat::Fix));
+        for (name, format) in [
+            ("lib.sdf.gz", Some(FileFormat::Sdf)),
+            ("a.nmea.gz", Some(FileFormat::Nmea)),
+            ("a.csv.gz", None),
+        ] {
+            assert_eq!(sniff_open(&dir.path().join(name), None), format, "{name}");
+        }
+    }
+
+    /// Signatures are believed where they say: an executable is never listed, ORC's
+    /// three letters are never piped, and only a file of tables is one.
+    #[test]
+    fn a_signature_is_believed_where_it_says() {
+        let elf = b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0";
+        assert_eq!(piped(elf), Some(FileFormat::Elf));
+        assert_eq!(sniff(elf, None, Asked::Listing, |_| true), None);
+        assert_eq!(
+            sniff(elf, None, Asked::Tables, |_| true),
+            Some(FileFormat::Elf)
+        );
+        assert_eq!(piped(b"ORC\x00"), None);
+        assert_eq!(
+            sniff(b"ORC\x00", None, Asked::Listing, |_| true),
+            Some(FileFormat::Orc)
+        );
+        let npy = b"\x93NUMPY\x01\x00";
+        assert_eq!(piped(npy), Some(FileFormat::Numpy));
+        assert_eq!(sniff(npy, None, Asked::Tables, |_| true), None);
+    }
 
     /// A format whose descriptor says its tables are listed has a way to list them, and
     /// only such a format does.

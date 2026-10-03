@@ -29,6 +29,14 @@ use crate::text_formats::Detail;
 
 /// What datui does with a candump log: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Text,
+        trusted: crate::readers::Trusted {
+            tables: true,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
     tables: Some(|path| {
         listed(path).ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables."))
     }),

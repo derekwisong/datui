@@ -25,6 +25,11 @@ use polars::prelude::*;
 
 /// What datui does with an audio file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like_audio(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::EVERYWHERE,
+    }],
     ..crate::readers::BASE
 };
 

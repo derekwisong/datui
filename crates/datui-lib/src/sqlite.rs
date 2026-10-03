@@ -24,6 +24,14 @@ use std::path::Path;
 
 /// What datui does with a SQLite database: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::Trusted {
+            tables: true,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
     tables: Some(tables),
     ..crate::readers::BASE
 };

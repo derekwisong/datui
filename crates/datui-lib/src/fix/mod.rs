@@ -32,6 +32,14 @@ use dict::{FixType, Layers, Resolved};
 
 /// What datui does with a FIX log: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Text,
+        trusted: crate::readers::Trusted {
+            listing: false,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
     ..crate::readers::BASE
 };
 

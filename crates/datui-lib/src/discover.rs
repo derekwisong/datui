@@ -633,102 +633,10 @@ mod parquet_key_tests {
 /// else were not data at all as far as datui was concerned.
 ///
 /// CSV and JSON are deliberately absent: they have no signature, and guessing from the
-/// first line is a parse rather than a look.
+/// first line is a parse rather than a look. Which signatures a listing believes is each
+/// format's to say ([`crate::readers::Trusted::listing`]).
 pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
-    // Enough for a candump log's first line.
-    let mut head = [0u8; 64];
-    let head = read_head(path, &mut head)?;
-    if let Some(signed) = signed_format_of(head) {
-        return Some(signed);
-    }
-    if crate::sqlite::looks_like(head) {
-        return Some(crate::FileFormat::Sqlite);
-    }
-    if head.starts_with(b"PAR1") {
-        // Both ends, because `PAR1` at the front alone is a truncated write — the
-        // footer is what a Parquet reader actually needs.
-        return has_parquet_magic(path).then_some(crate::FileFormat::Parquet);
-    }
-    if head.starts_with(b"ARROW1") {
-        return Some(crate::FileFormat::Arrow);
-    }
-    if head.starts_with(b"Obj\x01") {
-        return Some(crate::FileFormat::Avro);
-    }
-    if head.starts_with(b"ORC") {
-        return Some(crate::FileFormat::Orc);
-    }
-    if crate::audio::looks_like_audio(head) {
-        return Some(crate::FileFormat::Audio);
-    }
-    if crate::ulog::looks_like(head) {
-        return Some(crate::FileFormat::Ulog);
-    }
-    if crate::dataflash::looks_like(head) {
-        return Some(crate::FileFormat::Dataflash);
-    }
-    if crate::candump::looks_like(head) {
-        return Some(crate::FileFormat::Candump);
-    }
-    // An Arrow IPC stream has no magic, only its schema message, read whole to be sure.
-    if crate::ipc_stream::is_stream_file(path) {
-        return Some(crate::FileFormat::Arrow);
-    }
-    None
-}
-
-/// The first bytes of `path`, as many as fit in `buf`. A short read is the whole file:
-/// a signature that does not fit is not one.
-fn read_head<'a>(path: &Path, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut filled = 0;
-    loop {
-        match file.read(&mut buf[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(_) => return None,
-        }
-        if filled == buf.len() {
-            break;
-        }
-    }
-    Some(&buf[..filled])
-}
-
-/// A model, MIDI or NumPy file by its first bytes: GGUF's magic, a SafeTensors header's
-/// length and the `{` after it, `MThd` and its length of 6, or `\x93NUMPY`.
-fn signed_format_of(head: &[u8]) -> Option<crate::FileFormat> {
-    if crate::model_files::looks_like_gguf(head) {
-        Some(crate::FileFormat::Gguf)
-    } else if crate::model_files::looks_like_safetensors(head) {
-        Some(crate::FileFormat::Safetensors)
-    } else if crate::midi::looks_like_midi(head) {
-        Some(crate::FileFormat::Midi)
-    } else if crate::numpy::looks_like(head) {
-        Some(crate::FileFormat::Numpy)
-    } else {
-        None
-    }
-}
-
-/// Whether a file whose name says nothing is a SafeTensors or GGUF model or a MIDI
-/// file, by its first bytes. Checkpoints are often saved as `.bin` or with no extension
-/// at all.
-///
-/// Only these: their signatures are specific enough to trust on a file of any name,
-/// where `ORC` at the front of a text file is a word, not a format.
-pub fn sniff_signed_format(path: &Path) -> Option<crate::FileFormat> {
-    let mut head = [0u8; 16];
-    signed_format_of(read_head(path, &mut head)?)
-}
-
-/// Whether a file whose name says nothing is WAV or AIFF audio, by its first bytes.
-/// Their signatures (`RIFF....WAVE`, `FORM....AIFF`) are specific enough to trust on a
-/// file of any name.
-pub fn sniff_audio_format(path: &Path) -> Option<crate::FileFormat> {
-    let mut head = [0u8; 12];
-    crate::audio::looks_like_audio(read_head(path, &mut head)?).then_some(crate::FileFormat::Audio)
+    crate::readers::sniff_file(path, crate::readers::Asked::Listing)
 }
 
 /// How many extension-less files one listing looks inside. A directory of Spark output
@@ -2269,6 +2177,24 @@ fn table_entry(
     entry
 }
 
+/// The first bytes of `path`, as many as fit in `buf`. A short read is the whole file.
+fn read_head<'a>(path: &Path, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut filled = 0;
+    loop {
+        match file.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => return None,
+        }
+        if filled == buf.len() {
+            break;
+        }
+    }
+    Some(&buf[..filled])
+}
+
 /// Whether an Arrow file is an IPC stream: an IPC file starts `ARROW1`, a stream with
 /// its schema message. Eight bytes, so a listing can say which will be converted.
 fn enrich_arrow(entry: &mut Entry) {
@@ -3712,14 +3638,12 @@ mod classification_tests {
         let text = dir.path().join("notes");
         std::fs::write(&text, b"just some text").unwrap();
         assert_eq!(sniff_format(&gguf), Some(crate::FileFormat::Gguf));
-        assert_eq!(
-            sniff_signed_format(&st),
-            Some(crate::FileFormat::Safetensors)
-        );
-        assert_eq!(sniff_signed_format(&text), None);
+        let opened = |path: &Path| crate::readers::sniff_open(path, None);
+        assert_eq!(opened(&st), Some(crate::FileFormat::Safetensors));
+        assert_eq!(opened(&text), None);
         let midi = dir.path().join("song.bin");
         std::fs::write(&midi, b"MThd\0\0\0\x06\0\0\0\x01\0\x60").unwrap();
-        assert_eq!(sniff_signed_format(&midi), Some(crate::FileFormat::Midi));
+        assert_eq!(opened(&midi), Some(crate::FileFormat::Midi));
     }
 
     /// A directory is offered as one dataset only when its format can be read as many

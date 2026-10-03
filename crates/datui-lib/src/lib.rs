@@ -11096,56 +11096,18 @@ impl App {
         }
 
         // A file with no extension may still be Parquet: a part file in a directory named
-        // `.parquet`, or anything whose bytes say so. A regular file is only read when
-        // nothing else settled it.
+        // `.parquet`. A regular file is only read when nothing else settled it.
         let effective_format = options
             .format
             .or_else(|| FileFormat::from_path(path))
             .or_else(|| {
                 (path.extension().is_none()
-                    && (crate::discover::is_parquet_key(&path.to_string_lossy())
-                        || (path.is_file() && crate::discover::has_parquet_magic(path))))
+                    && crate::discover::is_parquet_key(&path.to_string_lossy()))
                 .then_some(FileFormat::Parquet)
             })
-            // A model, audio or MIDI file is known by its first bytes whatever it is called.
-            .or_else(|| {
-                path.is_file()
-                    .then(|| {
-                        crate::discover::sniff_signed_format(path)
-                            .or_else(|| crate::discover::sniff_audio_format(path))
-                    })
-                    .flatten()
-            })
-            .or_else(|| {
-                (path.extension().is_none()
-                    && path.is_file()
-                    && crate::ipc_stream::is_stream_file(path))
-                .then_some(FileFormat::Arrow)
-            })
-            // A SQLite database, an ELF file or another file of tables is known by its
-            // first bytes whatever it is called.
-            .or_else(|| {
-                path.is_file()
-                    .then(|| crate::members::holder(path))
-                    .flatten()
-            })
-            // A GPS log by a name under compression (`track.nmea.gz`), or by its first
-            // bytes when its name says no format at all (`gps.log`, `capture.txt`).
-            .or_else(|| crate::gps::format_by_name(path))
-            .or_else(|| {
-                (path.is_file() && options.compression.is_none())
-                    .then(|| crate::gps::sniff_path(path))
-                    .flatten()
-            })
-            // A VCD dump or an SDF file by a name under compression, and a FIX log (which
-            // has no extension of its own) or any of them by its first bytes, read through
-            // its compression.
-            .or_else(|| crate::text_formats::format_by_name(path))
-            .or_else(|| {
-                path.is_file()
-                    .then(|| crate::text_formats::sniff_path(path, options.compression))
-                    .flatten()
-            });
+            // Any other file whose name says no format, by its first bytes: each
+            // format's signature says where it is believed (`crate::readers`).
+            .or_else(|| crate::readers::sniff_open(path, options.compression));
         report.format = effective_format;
 
         // Refused rather than ignored: a file of one table opened with `--table` would

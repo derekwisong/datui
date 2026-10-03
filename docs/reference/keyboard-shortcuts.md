@@ -20,7 +20,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
 | <kbd>:</kbd> | Go to a row number: type it, <kbd>Enter</kbd>. <kbd>Esc</kbd> cancels; <kbd>F1</kbd> opens help |
 | <kbd>f</kbd> | [Find](../user-guide/finding.md) text or a regex; the cursor, column cursor and all, goes to the first match at or after its row |
-| <kbd>n</kbd> <kbd>N</kbd> | Next and previous match from the cursor's cell, wrapping round the view; each one typed while a find reads runs in turn. <kbd>Esc</kbd> stops a find still reading, and those typed behind it |
+| <kbd>n</kbd> <kbd>N</kbd> | Next and previous match from the cursor's cell, wrapping round the view; each one typed while a find reads runs in turn. <kbd>Esc</kbd> stops a find still reading, and those typed behind it; with none reading, <kbd>Esc</kbd> clears the find |
 | <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill into its rows. <kbd>Esc</kbd> comes back. Anywhere else, inspect the row, as <kbd>Space</kbd> does |
 | <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
@@ -37,13 +37,15 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>v</kbd> | [Views](../user-guide/views.md) |
 | <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |
 | <kbd>#</kbd> | Toggle row numbers |
+| <kbd>&lt;</kbd> <kbd>&gt;</kbd> | The column cursor's column 4 cells narrower or wider ([widths](../user-guide/filtering-sorting.md#column-widths)) |
+| <kbd>=</kbd> <kbd>w</kbd> | Fit the column cursor's column to the rows on screen; back to its automatic width |
 | <kbd>,</kbd> | Toggle [digit grouping](settings.md#number-formatting) (was <kbd>F</kbd>) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
 | <kbd>q</kbd> | Back to the home screen when the dataset was opened from it; otherwise quit — the control bar says which |
-| <kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load; <kbd>Ctrl</kbd>+<kbd>C</kbd> anywhere outside a text field) |
+| <kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load; <kbd>Ctrl</kbd>+<kbd>C</kbd> too, a text field or form included) |
 
 The three toggles last for the session; the config file sets the state at
 launch. A letter with <kbd>Ctrl</kbd> or <kbd>Alt</kbd> held is not a table
@@ -58,7 +60,7 @@ key, beyond the paging chords above.
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | Regex on or off |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Only the column cursor's column, or every column shown |
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | History |
-| <kbd>Enter</kbd> | Find |
+| <kbd>Enter</kbd> | Find; on an empty field, clear the find |
 | <kbd>Esc</kbd> | Cancel |
 
 ## Go to column
@@ -407,7 +409,9 @@ The bar at the bottom of the screen shows the ones that matter
 most. A spinner in that bar means datui is busy. While it is, at the plain
 table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
 <kbd>l</kbd>), <kbd>[</kbd> <kbd>]</kbd>, <kbd>{</kbd> <kbd>}</kbd>,
-<kbd>?</kbd> and <kbd>F1</kbd> act at once, and
+<kbd>#</kbd>, <kbd>,</kbd>, <kbd>D</kbd>, the width keys, <kbd>?</kbd> and <kbd>F1</kbd> act
+at once, as do <kbd>↑</kbd> <kbd>↓</kbd> (<kbd>j</kbd> <kbd>k</kbd>) inside
+the rows already read while all that is awaited is more rows; and
 <kbd>Ctrl</kbd>+<kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> and
 <kbd>Ctrl</kbd>+<kbd>O</kbd> act from anywhere. Other keys are queued and
 replayed in order once the work is done — except a bare <kbd>Esc</kbd>, or

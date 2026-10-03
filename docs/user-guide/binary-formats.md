@@ -194,7 +194,11 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
 | `[columns]` | Derived columns, below |
 
 Lines count from 1 at the top of the file. Each option the spec sets replaces
-the command line's and the config's; the others keep theirs. The header lines
+the config's; a flag typed on the command line (`--delimiter`,
+`--comment-char`, `--skip-initial-space`, `--header-rows`, `--skip-lines`)
+wins over the spec. The options the spec does not set keep theirs.
+`datui --delimiter 44 formats check SPEC FILE` reads the file as an open with
+those flags would, and names the flags that override the spec. The header lines
 and the metadata line are the only lines read apart from the CSV reader.
 
 ### Units

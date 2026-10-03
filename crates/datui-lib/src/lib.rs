@@ -4887,7 +4887,7 @@ pub mod tests {
             .map(|c| KeyCode::Char(c as char))
             .collect();
         candidates.extend((1..=12).map(KeyCode::F));
-        candidates.extend("[]{}".chars().map(KeyCode::Char));
+        candidates.extend("[]{}#,<>=".chars().map(KeyCode::Char));
         candidates.extend([
             KeyCode::Left,
             KeyCode::Right,
@@ -8436,6 +8436,29 @@ pub enum ParseStringsTarget {
     Columns(Vec<String>),
 }
 
+/// Which CSV dialect options were typed on the command line. A delimited spec's
+/// options replace config values but not these (#651).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TypedDialect {
+    pub delimiter: bool,
+    pub comment_char: bool,
+    pub skip_initial_space: bool,
+    pub header_rows: bool,
+    pub skip_lines: bool,
+}
+
+impl TypedDialect {
+    pub fn from_args(args: &cli::Args) -> Self {
+        Self {
+            delimiter: args.delimiter.is_some(),
+            comment_char: args.comment_char.is_some(),
+            skip_initial_space: args.skip_initial_space.is_some(),
+            header_rows: !args.header_rows.is_empty(),
+            skip_lines: args.skip_lines.is_some(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenOptions {
     pub delimiter: Option<u8>,
@@ -8530,6 +8553,8 @@ pub struct OpenOptions {
     pub header_join: String,
     /// Ignore the spaces after a CSV delimiter (`skipInitialSpace`).
     pub skip_initial_space: bool,
+    /// Which dialect options were typed on the command line, so a spec leaves them.
+    pub typed_dialect: TypedDialect,
     /// When true, show the debug overlay (session info, performance, query, etc.).
     pub debug: bool,
     /// What a SafeTensors or GGUF header said besides its tensors: its metadata and
@@ -8623,6 +8648,7 @@ impl OpenOptions {
             header_rows: Vec::new(),
             header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
             skip_initial_space: false,
+            typed_dialect: TypedDialect::default(),
             debug: false,
             spec_file: None,
             fix_dict: None,
@@ -8815,6 +8841,7 @@ impl OpenOptions {
             .skip_initial_space
             .or(config.file_loading.skip_initial_space)
             .unwrap_or(false);
+        opts.typed_dialect = TypedDialect::from_args(args);
 
         opts.parse_strings_sample_rows = config
             .file_loading
@@ -12983,15 +13010,13 @@ impl App {
     }
 
     /// The escapes that act at once while busy and jump ahead of anything queued: Ctrl-Q
-    /// (and Ctrl-C outside a text field) quit, Ctrl-O goes home, so a slow load never
+    /// and Ctrl-C quit, Ctrl-O goes home, so a slow load never
     /// traps the user; a confirmation modal keeps its keys so it can be answered; and the
     /// home screen is never busy on its own account (only work left running behind it sets
     /// `busy`), so it keeps every key.
     pub fn hard_escape_while_busy(&self, key: &KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let quit = ctrl
-            && (key.code == KeyCode::Char('q')
-                || (key.code == KeyCode::Char('c') && !self.text_field_focused()));
+        let quit = ctrl && matches!(key.code, KeyCode::Char('q' | 'c'));
         let home = ctrl && key.code == KeyCode::Char('o');
         let cancel_analysis = self.analysis_modal.active
             && self.analysis_modal.computing.is_some()
@@ -13055,11 +13080,40 @@ impl App {
         if self.hard_escape_while_busy(key) {
             return true;
         }
-        self.in_normal_table_view()
-            && matches!(
-                key.code,
-                KeyCode::Char('q')
+        if !self.in_normal_table_view() {
+            return false;
+        }
+        // One row up or down inside the rows held, while all that is awaited is more
+        // rows (#646): the table on screen is the one they are for.
+        let step = match key.code {
+            KeyCode::Down | KeyCode::Char('j') => Some(1),
+            KeyCode::Up | KeyCode::Char('k') => Some(-1),
+            _ => None,
+        };
+        if let Some(step) = step {
+            return !self.busy
+                && !self.loading.waits()
+                && self
+                    .jobs
+                    .keys_held_only_by(|job| matches!(job, Job::Rows(_) | Job::OwedRows { .. }))
+                && self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|s| !s.scroll_would_trigger_collect(step));
+        }
+        matches!(
+            key.code,
+            KeyCode::Char('q')
                     | KeyCode::Char('Q')
+                    // Drawn from what the table holds: row numbers, digit grouping, the
+                    // type row (#646), a column's width (#647).
+                    | KeyCode::Char('#')
+                    | KeyCode::Char('<')
+                    | KeyCode::Char('>')
+                    | KeyCode::Char('=')
+                    | KeyCode::Char('w')
+                    | KeyCode::Char(',')
+                    | KeyCode::Char('D')
                     | KeyCode::Left
                     | KeyCode::Right
                     | KeyCode::Char('h')
@@ -13070,7 +13124,7 @@ impl App {
                     | KeyCode::Char('}')
                     | KeyCode::F(1)
                     | KeyCode::Char('?')
-            )
+        )
     }
 
     /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
@@ -13084,8 +13138,8 @@ impl App {
             && !self.confirmation_modal.active
     }
 
-    /// Whether a text field currently owns typed characters, so Ctrl-C copies rather than
-    /// quits. The home filter is deliberately excluded: Ctrl-C quits from the home screen.
+    /// Whether a text field currently owns typed characters, so the wheel and `?` leave
+    /// it alone. The home filter is deliberately excluded.
     pub fn text_field_focused(&self) -> bool {
         match self.input_mode {
             InputMode::Editing => true,
@@ -20174,9 +20228,9 @@ impl App {
         if ctrl && event.code == KeyCode::Char('q') {
             return Some(AppEvent::Exit);
         }
-        // Ctrl-C also quits from anywhere, except in a focused text field, where it is
-        // the textarea's Copy binding and must reach it.
-        if ctrl && event.code == KeyCode::Char('c') && !self.text_field_focused() {
+        // Ctrl-C too, a text field included: a terminal user's reflex for leaving, and
+        // the field copies with Alt+W instead.
+        if ctrl && event.code == KeyCode::Char('c') {
             return Some(AppEvent::Exit);
         }
 
@@ -23043,6 +23097,24 @@ impl App {
                 }
                 None
             }
+            // The column cursor's width, applied as typed so its effect shows (#647).
+            KeyCode::Char('<' | '>' | '=' | 'w')
+                if event.is_press() && !event.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if let Some(state) = self.data_table_state.as_mut()
+                    && let Some(name) = state.current_column().map(str::to_string)
+                {
+                    let (choice, shown) = (state.width_choice(&name), state.shown_width(&name));
+                    let width = match event.code {
+                        KeyCode::Char('<') => choice.narrower(shown),
+                        KeyCode::Char('>') => choice.wider(shown),
+                        KeyCode::Char('=') => WidthChoice::Fit,
+                        _ => WidthChoice::Auto,
+                    };
+                    state.set_width_choices([(name, width)]);
+                }
+                None
+            }
             // Ctrl+F pages down, below.
             KeyCode::Char('f')
                 if event.is_press() && !event.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -23092,7 +23164,11 @@ impl App {
                 None
             }
             KeyCode::Esc => {
-                // First check if we're in drill-down mode
+                // The find is the nearest layer: its mark goes first, then a drill.
+                if self.find_shown() {
+                    self.find.active = None;
+                    return None;
+                }
                 let mut from_counts = false;
                 let drilled_up = if let Some(ref mut state) = self.data_table_state {
                     if state.is_drilled_down() {

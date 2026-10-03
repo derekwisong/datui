@@ -430,6 +430,14 @@ impl Widget for &Controls {
                 // inspects, and help says so.
                 defaults[0].1 = "Drill";
             }
+            if self.find.is_some() {
+                // Beside Find: how the find on the bar is taken back.
+                let at = defaults
+                    .iter()
+                    .position(|(key, _)| *key == "f")
+                    .map_or(defaults.len(), |i| i + 1);
+                defaults.insert(at, ("Esc", "Clear Find"));
+            }
             if self.format_key {
                 // Beside Info, whose Notes say which spec read the file and why.
                 let at = defaults

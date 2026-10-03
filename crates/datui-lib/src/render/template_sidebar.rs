@@ -415,7 +415,7 @@ fn render_delete_confirm(
     };
     let message = format!("Delete \"{}\"? This cannot be undone.", template.name);
     const WIDTH: u16 = 52;
-    const HEIGHT: u16 = 5;
+    const HEIGHT: u16 = 6;
     let confirm_area = centered_rect_fixed(area, WIDTH, HEIGHT);
     let footer = HintBar::from_ctx(ctx)
         .hint_weighted("Enter", "Delete", 1)
@@ -438,7 +438,8 @@ fn render_score_details(
         return;
     };
     // Sized to the breakdown, not the terminal: a compact centered dialog.
-    let height = (body.lines().count() as u16 + 3).min(area.height);
+    // The body, the blank above the footer, the footer and the frame.
+    let height = (body.lines().count() as u16 + 4).min(area.height);
     let details_area = centered_rect_fixed(area, 56, height);
     let footer = HintBar::from_ctx(ctx).hint("Esc", "Close");
     let content = Surface::new(title.as_str())

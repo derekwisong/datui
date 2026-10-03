@@ -77,7 +77,8 @@ Build these once in `widgets/ui/` and reuse them everywhere; a screen that
 hand-rolls one of these is a migration target.
 
 **Surface** — the one border. Rounded, Title Case title on the frame,
-optional one-line footer of chips. Confirm/Success/Error, every modal, every
+optional one-line footer of chips, with a blank row between it and the
+content so a focused field's accent never reads as part of a chip (#650). Confirm/Success/Error, every modal, every
 sidebar, the help overlay: all Surfaces.
 
 **FormRow** — `label  value` on one line inside a Surface, behind a reserved
@@ -227,7 +228,8 @@ leaving:
   `h/l` scrolled the view a column).
 - Esc's layered back-out; `q` pops to home when the dataset was opened
   from it and quits otherwise (the control bar says which); `Ctrl+Q` quits
-  from anywhere and `Ctrl+C` from anywhere outside a text field; `Q` quits
+  and `Ctrl+C` from anywhere, a text field included (#649; a field copies
+  with `Alt+W`); `Q` quits
   at the table and during a load, and is an ordinary key inside other
   surfaces (chart deliberately has no quit key); `Ctrl+O` home. (#320
   landed the approved `q` evolution.)

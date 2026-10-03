@@ -183,19 +183,23 @@ pub const MAX_HEAD_LINE: usize = 1000;
 
 impl Delimited {
     /// `options` with the spec's dialect: each option the spec gives replaces what the
-    /// command line or the config said, and the file is read as CSV unless its name
-    /// says TSV or PSV.
+    /// config said, but not a flag typed on the command line (#651), and the file is
+    /// read as CSV unless its name says TSV or PSV.
     pub fn apply(&self, options: &mut crate::OpenOptions) {
-        if let Some(d) = self.delimiter {
+        let typed = options.typed_dialect;
+        if let Some(d) = self.delimiter.filter(|_| !typed.delimiter) {
             options.delimiter = Some(d);
         }
-        if let Some(c) = &self.comment_char {
+        if let Some(c) = self.comment_char.as_ref().filter(|_| !typed.comment_char) {
             options.comment_char = Some(c.clone());
         }
-        if let Some(s) = self.skip_initial_space {
+        if let Some(s) = self
+            .skip_initial_space
+            .filter(|_| !typed.skip_initial_space)
+        {
             options.skip_initial_space = s;
         }
-        if let Some(rows) = &self.header_rows {
+        if let Some(rows) = self.header_rows.as_ref().filter(|_| !typed.header_rows) {
             options.header_rows = rows.name.clone();
             // The unit line is a header line too: the data starts after the last one.
             options.skip_lines = Some(options.skip_lines.unwrap_or(0).max(rows.last()));
@@ -203,7 +207,7 @@ impl Delimited {
         if let Some(join) = &self.header_join {
             options.header_join = join.clone();
         }
-        if let Some(n) = self.skip_lines {
+        if let Some(n) = self.skip_lines.filter(|_| !typed.skip_lines) {
             options.skip_lines = Some(options.skip_lines.unwrap_or(0).max(n));
         }
         if !self.null_values.is_empty() {
@@ -373,11 +377,13 @@ pub fn read_facts(
 }
 
 /// What `datui formats check` prints for a delimited spec and, given `file`, the
-/// file's metadata, units and first `rows` rows as read.
+/// file's metadata, units and first `rows` rows as read with `base`, the command
+/// line's options, whose typed dialect flags win over the spec's.
 pub fn check(
     spec: &Arc<Spec>,
     file: Option<&std::path::Path>,
     rows: usize,
+    base: &crate::OpenOptions,
 ) -> Result<String, String> {
     let delimited = spec
         .delimited
@@ -393,6 +399,10 @@ pub fn check(
             derived.from.join(", ")
         ));
     }
+    let typed = typed_summary(base);
+    if !typed.is_empty() {
+        out.push_str(&format!("  command line, over the spec: {typed}\n"));
+    }
     let Some(file) = file else {
         return Ok(out);
     };
@@ -401,7 +411,7 @@ pub fn check(
     let fail = |out: &str, e: &color_eyre::Report| format!("{out}error: {e:#}\n");
     let mut options = crate::OpenOptions {
         format: crate::FileFormat::from_path(file),
-        ..Default::default()
+        ..base.clone()
     };
     delimited.apply(&mut options);
     let chosen = DelimitedRead::chosen(spec.clone(), Chosen::SpecFile, Vec::new());
@@ -446,6 +456,29 @@ pub fn check(
         .map_err(|e| format!("{out}error: {shown}: {e}\n"))?;
     out.push_str(&crate::formats::text_table(&df));
     Ok(out)
+}
+
+/// The dialect flags typed on the command line, in a line: `delimiter ','`.
+fn typed_summary(options: &crate::OpenOptions) -> String {
+    let typed = options.typed_dialect;
+    let mut said = Vec::new();
+    if let Some(d) = options.delimiter.filter(|_| typed.delimiter) {
+        said.push(format!("delimiter {:?}", d as char));
+    }
+    if let Some(c) = options.comment_char.as_ref().filter(|_| typed.comment_char) {
+        said.push(format!("comment {c:?}"));
+    }
+    if typed.skip_initial_space {
+        said.push(format!("skip initial space {}", options.skip_initial_space));
+    }
+    if typed.header_rows {
+        let rows: Vec<String> = options.header_rows.iter().map(usize::to_string).collect();
+        said.push(format!("header rows {}", rows.join(",")));
+    }
+    if let Some(n) = options.skip_lines.filter(|_| typed.skip_lines) {
+        said.push(format!("skip lines {n}"));
+    }
+    said.join(", ")
 }
 
 impl Delimited {
@@ -694,9 +727,31 @@ mod tests {
             // The reason is the OS's own words, which differ between platforms.
             (dir.path().join("none.csv"), "none.csv: "),
         ] {
-            let e = check(&spec, Some(&file), 5).unwrap_err();
+            let e = check(&spec, Some(&file), 5, &crate::OpenOptions::default()).unwrap_err();
             assert!(e.contains(said), "{e}");
         }
+    }
+
+    /// A flag typed on the command line keeps its value; the rest come from the spec
+    /// (#651).
+    #[test]
+    fn apply_leaves_typed_flags() {
+        let mut options = crate::OpenOptions {
+            delimiter: Some(b','),
+            comment_char: Some("%".into()),
+            typed_dialect: crate::TypedDialect {
+                delimiter: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let spec = Delimited {
+            delimiter: Some(b';'),
+            ..spec()
+        };
+        spec.apply(&mut options);
+        assert_eq!(options.delimiter, Some(b','), "typed");
+        assert_eq!(options.comment_char.as_deref(), Some("#"), "not typed");
     }
 
     #[test]

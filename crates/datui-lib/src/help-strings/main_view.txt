@@ -45,6 +45,8 @@ Data Operations:
 Display:
   i:                Open Info panel (tabs: Schema, Resources, Partitions, Notes)
   #:                Toggle row numbers
+  < / >:            The column cursor's column 4 cells narrower or wider
+  = / w:            Fit it to the rows on screen; back to automatic width
   ,:                Toggle number formatting (digit grouping)
   D:                Toggle the type row under the column headers
   b:                A binary file read through a format spec: read it again
@@ -64,7 +66,7 @@ Help Navigation:
 
 Exit:
   Ctrl+O:           Home screen (works during a load; abandons it)
-  Ctrl+Q:           Quit from anywhere (Ctrl+C too, outside a text field)
+  Ctrl+Q:           Quit from anywhere (Ctrl+C too)
   q:                Back to the home screen when the dataset was opened
                     from it; otherwise quit (the control bar says which)
   Q:                Quit
@@ -80,8 +82,10 @@ Mouse:
   or --mouse=false, leaves the mouse to the terminal.
 
 While busy:
-  At the plain table, q, Q, column scroll (←/→, h/l, [ ], { }), ? and F1
-  act at once; Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load at once.
+  At the plain table, q, Q, column scroll (←/→, h/l, [ ], { }), # , D,
+  the width keys (< > = w),
+  ? and F1 act at once, and so do ↑/↓ (j/k) inside the rows already read
+  while all that is awaited is more rows; Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load at once.
   Other keys are queued and replayed in order once the work is done —
   except a bare Esc, or an Enter that would drill, which is dropped; an
   Enter that would inspect waits as Space. At most 32 keys are held,

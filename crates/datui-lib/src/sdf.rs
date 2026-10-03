@@ -31,7 +31,9 @@ pub const MAX_FIELDS: usize = 4096;
 pub const MAX_NAME: usize = 256;
 /// Rows held before a batch is handed over.
 pub const BATCH_ROWS: usize = 16_384;
-/// Text held before a batch is handed over, whatever its rows.
+/// Text held before a batch is handed over, whatever its rows. Each cell counts
+/// too, empty or not: every field is a column in every row, so a file of thousands
+/// of fields would otherwise hold gigabytes of empty cells in one batch.
 pub const BATCH_TEXT: usize = 32 << 20;
 
 /// The columns every SDF table starts with.
@@ -442,7 +444,7 @@ impl SdfReader {
         let mut values = record.values;
         for (i, column) in self.columns.iter_mut().enumerate() {
             let value = values.remove(&i);
-            self.held += value.as_ref().map_or(0, String::len);
+            self.held += size_of::<Option<String>>() + value.as_ref().map_or(0, String::len);
             column.push(value);
         }
         self.rows += 1;
@@ -686,6 +688,31 @@ $$$$
             .iter()
             .map(|s| s.map(String::from))
             .collect()
+    }
+
+    /// Empty cells count toward a batch: a record of 2,000 fields makes every later
+    /// row 2,000 cells wide, so the batch is handed over long before `BATCH_ROWS`.
+    #[test]
+    fn a_wide_file_hands_over_small_batches() {
+        let mut reader = SdfReader::new();
+        let mut wide = String::from("wide\n\n\n  0  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n");
+        for i in 0..2_000 {
+            wide.push_str(&format!("> <F{i}>\nx\n\n"));
+        }
+        wide.push_str("$$$$\n");
+        reader.push(wide.as_bytes());
+        let narrow = "n\n\n\n  0  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n$$$$\n";
+        let mut rows_at_batch = None;
+        for row in 1..BATCH_ROWS {
+            reader.push(narrow.as_bytes());
+            if let Some(df) = reader.take_batch().unwrap() {
+                rows_at_batch = Some((row, df.height()));
+                break;
+            }
+        }
+        let (row, height) = rows_at_batch.expect("a batch is handed over");
+        assert!(height < BATCH_ROWS / 8, "{height} rows of 2,003 columns");
+        assert_eq!(height, row + 1);
     }
 
     #[test]

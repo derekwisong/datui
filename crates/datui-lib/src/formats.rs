@@ -2977,6 +2977,7 @@ impl Read {
 /// code (non-zero when the check finds an error).
 pub fn command(
     action: Option<&crate::cli::FormatsAction>,
+    args: &crate::cli::Args,
     config: &crate::config::AppConfig,
 ) -> (String, i32) {
     let path = search_path_for(config);
@@ -2984,7 +2985,8 @@ pub fn command(
     match action {
         None => (registry.listing(&path), 0),
         Some(crate::cli::FormatsAction::Check { spec, file }) => {
-            match check(spec, file.as_deref(), &registry) {
+            let options = crate::OpenOptions::from_args_and_config(args, config);
+            match check(spec, file.as_deref(), &registry, &options) {
                 Ok(text) => (text, 0),
                 Err(text) => (text, 1),
             }
@@ -2997,7 +2999,12 @@ const CHECK_ROWS: usize = 10;
 
 /// Check the spec `named` (a file, or a name on the search path) and, given `file`,
 /// read its first rows.
-fn check(named: &str, file: Option<&Path>, registry: &Registry) -> Result<String, String> {
+fn check(
+    named: &str,
+    file: Option<&Path>,
+    registry: &Registry,
+    options: &crate::OpenOptions,
+) -> Result<String, String> {
     let as_file = Path::new(named);
     if let Some(dict) = fix_dict_named(named, registry)? {
         return check_fix(&dict, file);
@@ -3026,7 +3033,7 @@ fn check(named: &str, file: Option<&Path>, registry: &Registry) -> Result<String
         out.push_str(&format!("  matches {summary}\n"));
     }
     if spec.is_delimited() {
-        return crate::delimited_spec::check(&spec, file, CHECK_ROWS)
+        return crate::delimited_spec::check(&spec, file, CHECK_ROWS, options)
             .map(|rest| out.clone() + &rest)
             .map_err(|rest| out.clone() + &rest);
     }
@@ -3753,7 +3760,13 @@ fields = [{{ name = "x", type = "u1" }}]"#
         let data = dir.path().join("day.l2");
         std::fs::write(&data, l2_file(&[(1, "AAPL", 1, 10_000)], 1, &[7])).unwrap();
         let registry = Registry::default();
-        let text = check(&spec.to_string_lossy(), Some(&data), &registry).unwrap();
+        let text = check(
+            &spec.to_string_lossy(),
+            Some(&data),
+            &registry,
+            &crate::OpenOptions::default(),
+        )
+        .unwrap();
         assert!(text.starts_with("acme.l2feed: ok"), "{text}");
         assert!(text.contains("warning: day.l2 has 1 byte after"), "{text}");
         assert!(
@@ -3761,9 +3774,23 @@ fields = [{{ name = "x", type = "u1" }}]"#
             "{text}"
         );
         std::fs::write(&spec, "name = \"a.b\"\n[records]\nfields = 1").unwrap();
-        let e = check(&spec.to_string_lossy(), None, &registry).unwrap_err();
+        let e = check(
+            &spec.to_string_lossy(),
+            None,
+            &registry,
+            &crate::OpenOptions::default(),
+        )
+        .unwrap_err();
         assert!(e.contains("l2.toml:3:10: fields: expected an array"), "{e}");
-        assert!(check("acme.nothing", None, &registry).is_err());
+        assert!(
+            check(
+                "acme.nothing",
+                None,
+                &registry,
+                &crate::OpenOptions::default()
+            )
+            .is_err()
+        );
     }
 
     const LOG: &str = r##"
@@ -3932,7 +3959,13 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         let data = dir.path().join("flight.csv");
         std::fs::write(&data, LOG_TEXT).unwrap();
         let registry = Registry::default();
-        let text = check(&spec.to_string_lossy(), Some(&data), &registry).unwrap();
+        let text = check(
+            &spec.to_string_lossy(),
+            Some(&data),
+            &registry,
+            &crate::OpenOptions::default(),
+        )
+        .unwrap();
         assert!(text.starts_with("acme.instrument-log: ok"), "{text}");
         assert!(
             text.contains("delimited: names on line 3, units on line 2, metadata on line 1"),
@@ -4002,7 +4035,13 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             "8=FIX.4.4|9=20|35=0|49=BROKERX|9001=x|10=000|\n8=FIX.4.4|9=5|35=0|49=OTHER|10=000|\n",
         )
         .unwrap();
-        let text = check("acme.fix.broker-x", Some(&log), &registry).unwrap();
+        let text = check(
+            "acme.fix.broker-x",
+            Some(&log),
+            &registry,
+            &crate::OpenOptions::default(),
+        )
+        .unwrap();
         assert!(text.starts_with("acme.fix.broker-x: ok"), "{text}");
         assert!(text.contains("matches sender BROKERX"), "{text}");
         assert!(text.contains("2 messages, 1 of them matched"), "{text}");
@@ -4011,6 +4050,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             &dir.path().join("broken.toml").to_string_lossy(),
             None,
             &registry,
+            &crate::OpenOptions::default(),
         )
         .unwrap_err();
         assert!(e.contains("tags.nine"), "{e}");

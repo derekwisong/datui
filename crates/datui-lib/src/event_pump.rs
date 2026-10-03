@@ -1746,6 +1746,43 @@ mod tests {
         assert!(!p.app.is_busy(), "with the keyboard back");
     }
 
+    /// While rows are being read, keys that only redraw the table act at once (#646):
+    /// `#` toggles row numbers and `j` moves inside the rows held. Busy with anything
+    /// else, `j` waits in the order typed.
+    #[test]
+    fn view_keys_act_while_rows_load() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.owe_rows_for_tests("Loading buffer...");
+        assert!(p.app.is_busy());
+        let numbered = p.app.data_table_state.as_ref().unwrap().row_numbers();
+
+        p.terminal_key(plain(KeyCode::Char('#'))).unwrap();
+        assert_ne!(
+            p.app.data_table_state.as_ref().unwrap().row_numbers(),
+            numbered,
+            "# toggles at once"
+        );
+        let row = p.app.data_table_state.as_ref().unwrap().cursor_row();
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        assert_eq!(
+            p.app.data_table_state.as_ref().unwrap().cursor_row(),
+            row + 1,
+            "j inside the rows held moves at once"
+        );
+        assert!(p.held.is_empty(), "nothing waits");
+
+        // Busy with more than rows, a key waits, and the j typed after it waits
+        // behind it.
+        p.app.busy = true;
+        p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        assert_eq!(p.held.len(), 2);
+        assert_eq!(
+            p.app.data_table_state.as_ref().unwrap().cursor_row(),
+            row + 1
+        );
+    }
+
     /// The app hands a key it cannot act on back to the caller rather than dropping
     /// it; `event()`, for callers with nowhere to hold one, drops it as before.
     #[test]
@@ -1988,36 +2025,33 @@ mod tests {
 
     // --- Fixes from the high-effort review of #162 --------------------------------
 
-    /// Item 1: Ctrl-C in a focused text field copies (reaches the textarea) rather than
-    /// quitting; Ctrl-Q still quits from there.
+    /// Ctrl-C quits from a focused text field too (#649), as Ctrl-Q always has; the
+    /// field copies with Alt+W instead.
     #[test]
-    fn ctrl_c_in_the_query_bar_does_not_quit() {
+    fn ctrl_c_in_the_query_bar_quits() {
         let (mut p, _dir) = loaded_pump();
         p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
         assert_eq!(p.app.input_mode, InputMode::Editing);
-
-        let out = p.app.handle(&AppEvent::Key(ctrl('c')));
-        assert!(
-            !matches!(out, Ok(Some(AppEvent::Exit))),
-            "Ctrl-C in the query bar must not quit"
-        );
+        assert!(matches!(
+            p.app.handle(&AppEvent::Key(ctrl('c'))),
+            Ok(Some(AppEvent::Exit))
+        ));
+        let alt_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT);
+        assert!(!matches!(
+            p.app.handle(&AppEvent::Key(alt_w)),
+            Ok(Some(AppEvent::Exit))
+        ));
         assert_eq!(
             p.app.input_mode,
             InputMode::Editing,
-            "still in the query bar"
+            "Alt+W stays in the field"
         );
-        // Ctrl-Q quits from anywhere, the query bar included.
-        assert!(matches!(
-            p.app.handle(&AppEvent::Key(ctrl('q'))),
-            Ok(Some(AppEvent::Exit))
-        ));
     }
 
-    /// Ctrl-C copies in every search box, not only the query bar: the Sort tab's column
-    /// search and the chart view's open column Picker are text fields too. At the plain
-    /// table it still quits.
+    /// Ctrl-C quits from every search box and modal (#649): the Sort tab's column
+    /// search, the chart view's open column Picker, and the plain table.
     #[test]
-    fn ctrl_c_copies_in_the_sort_and_chart_search_boxes() {
+    fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
         use crate::chart_modal::ChartFocus;
         use crate::sort_filter_modal::{SortFilterFocus, SortFilterTab};
         use crate::sort_modal::SortFocus;
@@ -2032,7 +2066,7 @@ mod tests {
             p.app.text_field_focused(),
             "the sort search is a text field"
         );
-        assert!(!matches!(
+        assert!(matches!(
             p.app.handle(&AppEvent::Key(ctrl('c'))),
             Ok(Some(AppEvent::Exit))
         ));
@@ -2049,16 +2083,12 @@ mod tests {
             0,
         );
         p2.app.chart_modal.focus = ChartFocus::XColumn;
-        assert!(
-            !p2.app.text_field_focused(),
-            "the closed form is not a text field"
-        );
         p2.app.chart_modal.open_picker();
         assert!(
             p2.app.text_field_focused(),
             "the open Picker narrows by typing"
         );
-        assert!(!matches!(
+        assert!(matches!(
             p2.app.handle(&AppEvent::Key(ctrl('c'))),
             Ok(Some(AppEvent::Exit))
         ));

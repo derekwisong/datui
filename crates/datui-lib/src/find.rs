@@ -682,6 +682,8 @@ impl App {
             TextInputEvent::Submit => {
                 let spec = self.find.prompt_spec();
                 if spec.pattern.is_empty() {
+                    // An emptied field is how a find is taken back (#644).
+                    self.find.active = None;
                     self.close_find_prompt();
                     return None;
                 }
@@ -747,6 +749,14 @@ impl App {
             ));
         }
         Some(mark)
+    }
+
+    /// Whether a find is in effect on this dataset, so Esc at the table clears it.
+    pub(crate) fn find_shown(&self) -> bool {
+        self.find
+            .active
+            .as_ref()
+            .is_some_and(|active| active.dataset == self.dataset_generation)
     }
 
     /// Whether a find is reading.
@@ -1575,6 +1585,42 @@ mod app_tests {
         settle(app, rx);
     }
 
+    /// Enter on an emptied field takes the find back (#644): no mark, no hit, and `n`
+    /// has nothing to repeat.
+    #[test]
+    fn an_emptied_find_clears_the_find() {
+        let (mut app, rx) = app_over(haystack(1_000, &[5, 700]));
+        find(&mut app, &rx, "needle");
+        assert!(app.find_mark().is_some());
+
+        key(&mut app, KeyCode::Char('f'));
+        // The old pattern is selected, so Backspace empties the field.
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.find.input.value(), "");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.find_mark(), None);
+        assert_eq!(app.find_hit(), None);
+
+        let at = cursor(&app);
+        key(&mut app, KeyCode::Char('n'));
+        settle(&mut app, &rx);
+        assert_eq!(cursor(&app), at, "n does not move");
+        assert_eq!(app.flash_message(), Some("Nothing to find yet: f finds"));
+    }
+
+    /// Esc at the table clears a find before it backs out of anything else (#644).
+    #[test]
+    fn esc_at_the_table_clears_the_find() {
+        let (mut app, rx) = app_over(haystack(1_000, &[5, 700]));
+        find(&mut app, &rx, "needle");
+        assert!(app.find_mark().is_some());
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.find_mark(), None);
+        assert_eq!(app.find_hit(), None);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
     #[test]
     fn f_then_n_and_capital_n_walk_the_matches_past_the_buffer() {
         let (mut app, rx) = app_over(haystack(300_000, &[5, 250_123]));
@@ -1815,6 +1861,35 @@ mod app_tests {
         assert!(app.data_table_state.as_ref().unwrap().row_numbers());
         key(&mut app, KeyCode::Char('#'));
         assert!(!app.data_table_state.as_ref().unwrap().row_numbers());
+    }
+
+    /// `<` `>` `=` `w` at the table set the column cursor's width at once (#647).
+    #[test]
+    fn width_keys_set_the_column_cursors_width() {
+        use crate::widgets::column_widths::{UNSEEN_WIDTH, WIDTH_STEP, WidthChoice};
+        let (mut app, _rx) = app_over(haystack(5, &[]));
+        let name = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .current_column()
+            .unwrap()
+            .to_string();
+        let width = |app: &App| app.data_table_state.as_ref().unwrap().width_choice(&name);
+        let start = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .shown_width(&name)
+            .unwrap_or(UNSEEN_WIDTH);
+        key(&mut app, KeyCode::Char('>'));
+        assert_eq!(width(&app), WidthChoice::Manual(start + WIDTH_STEP));
+        key(&mut app, KeyCode::Char('<'));
+        assert_eq!(width(&app), WidthChoice::Manual(start));
+        key(&mut app, KeyCode::Char('='));
+        assert_eq!(width(&app), WidthChoice::Fit);
+        key(&mut app, KeyCode::Char('w'));
+        assert_eq!(width(&app), WidthChoice::Auto);
     }
 
     /// After the view changes under it, `n` starts from the cursor in the new view:

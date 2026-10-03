@@ -1481,11 +1481,10 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
 }
 
-/// The Data Quality scope input is a text field: Ctrl-C must reach the
-/// textarea's Copy binding instead of quitting, and `?` must type into the
-/// scope command instead of opening help.
+/// The Data Quality scope input is a text field: `?` must type into the scope
+/// command instead of opening help. Ctrl-C quits from it, as from anywhere (#649).
 #[test]
-fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
+fn test_data_quality_scope_input_owns_question_mark() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
     use datui::data_quality::QualityPage;
 
@@ -1542,13 +1541,14 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
     );
     assert!(app.text_field_focused());
 
+    // Ctrl-C quits from a text row too (#649).
     let quit = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
     )));
     assert!(
-        !matches!(quit, Some(AppEvent::Exit)),
-        "Ctrl-C in a sample text row must not quit"
+        matches!(quit, Some(AppEvent::Exit)),
+        "Ctrl-C in a sample text row quits"
     );
 
     let scope = |app: &App| {
@@ -1560,14 +1560,14 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
             .value()
             .to_string()
     };
-    let before = scope(&app);
+    // The prefilled value is selected, so what is typed replaces it.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
     assert_eq!(
         scope(&app),
-        format!("{before}?"),
+        "?",
         "? in a sample text row must type, not open help"
     );
 }
@@ -8399,7 +8399,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
         KeyModifiers::NONE,
     )));
     // A short panel cannot show six notes at two lines each plus a gap.
-    let area = Rect::new(0, 0, 100, 14);
+    let area = Rect::new(0, 0, 100, 15);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
@@ -8536,8 +8536,9 @@ fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
     let shortest = (4u16..14)
         .find(|height| drawn_at(*height).contains("is in 1 of 2 files"))
         .expect("some panel in this range draws a note");
+    // Eight: the note, the panel's rows and the blank row above its footer (#650).
     assert!(
-        shortest <= 7,
+        shortest <= 8,
         "a note fits in a short panel; {shortest} rows to draw one means the panel has \
          got greedier, and the loop below would pass on one height and prove nothing"
     );
@@ -19368,8 +19369,9 @@ fn test_inspector_counts_the_lines_of_the_whole_value() {
     for (width, height) in [(80usize, 24usize), (200, 50)] {
         let rows = rows_at(&mut app, width as u16, height as u16);
         let text = rows.join("\n");
-        // The pane's rows: less the bar, the frame, the footer, two rules, two fields.
-        let shown = height - 8;
+        // The pane's rows: less the bar, the frame, the footer and the blank above it,
+        // two rules, two fields.
+        let shown = height - 9;
         let more = format!(
             "{} {} more lines",
             g.ellipsis,

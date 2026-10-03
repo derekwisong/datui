@@ -278,9 +278,9 @@ mod tests {
         }
         let spec = format!("dept {} job {} avg(salary)", g.times, g.arrow_right);
         assert!(
-            rows[17].contains(&spec),
-            "the spec line above the footer: {:?}",
-            rows[17]
+            rows[16].contains(&spec),
+            "the spec line, a row above the footer: {:?}",
+            rows[16]
         );
         assert!(
             rows[18].contains("Enter") && rows[18].contains("Apply"),
@@ -297,9 +297,9 @@ mod tests {
         let rows = render_rows(&mut m, 50, 20);
         assert!(rows[3].contains("none"), "empty index: {:?}", rows[3]);
         assert!(
-            rows[17].contains("Select at least one index column."),
+            rows[16].contains("Select at least one index column."),
             "the gap is named: {:?}",
-            rows[17]
+            rows[16]
         );
     }
 

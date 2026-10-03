@@ -619,6 +619,8 @@ const SPACED_LIST_HEIGHT: usize = 30;
 /// cell. A row that has no meta columns of its own is drawn to the same edge, so
 /// the width is named here rather than measured on every row.
 const META_COLUMNS_WIDTH: usize = 13 + 2 + 9 + 2 + 4;
+/// The shape cell and the gap after it, at the head of the meta columns.
+const SHAPE_COLUMNS_WIDTH: usize = 13 + 2;
 
 /// Where an entry row drawn with `name_width` ends: the marker, the name's cells, the
 /// meta columns when shown, and one cell of air. The rows that carry no meta columns
@@ -1209,6 +1211,33 @@ fn entry_line<'a>(
     };
     let place_cell = format!("{place} ");
 
+    // A recent from a store or a share that nothing has measured: the probe that
+    // measures remote rows runs over roots, and a recent's place is not one, so what it
+    // shows is what an open or a listing remembered — or, until then, that nothing is
+    // known.
+    let unmeasured = indent > 0
+        && entry.rows.is_none()
+        && entry.cols.is_none()
+        && entry.kind != EntryKind::Unknown
+        && matches!(
+            locality,
+            Some(crate::locality::Locality::Object | crate::locality::Locality::Network)
+        );
+    let meta = show_meta.then(|| meta_columns(entry, unmeasured));
+    // A row with nothing to say in the meta columns (a public dataset, a directory not
+    // looked into) gives them to its name rather than cutting it beside blank cells
+    // (#648).
+    // An empty shape cell goes to the name the same way; size and age keep their
+    // columns.
+    let (name_width, meta) = match meta {
+        Some(meta) if meta.trim().is_empty() => (name_width + META_COLUMNS_WIDTH, None),
+        Some(meta) if meta.chars().take(SHAPE_COLUMNS_WIDTH).all(|c| c == ' ') => (
+            name_width + SHAPE_COLUMNS_WIDTH,
+            Some(meta.chars().skip(SHAPE_COLUMNS_WIDTH).collect()),
+        ),
+        meta => (name_width, meta),
+    };
+
     // A label counts now — `5000+ parquet` is thirteen characters where `iceberg` was
     // seven — and on a narrow screen it can leave the name nothing to be truncated
     // into, which puts the meta columns out of their alignment and clips them. The name
@@ -1355,7 +1384,11 @@ fn entry_line<'a>(
         name_positions.clear();
     } else if name.chars().count() > budget && budget > 1 {
         let original_len = name.chars().count();
-        if name.starts_with('/') || name.starts_with('~') {
+        // A relative path too (a search hit under a directory): its leaf is the file.
+        if name.starts_with('/')
+            || name.starts_with('~')
+            || name.trim_end_matches('/').contains('/')
+        {
             name = truncate_start(&name, budget);
             // The tail survived: shift every position left by what was dropped, and
             // right by the ellipsis now standing in for it.
@@ -1467,24 +1500,15 @@ fn entry_line<'a>(
         }
         None => spans.push(Span::styled(kind_cell.clone(), kind_style)),
     }
-    if show_meta {
-        spans.push(Span::styled(" ".repeat(pad), base));
-        // A recent from a store or a share that nothing has measured: the probe that
-        // measures remote rows runs over roots, and a recent's place is not one, so
-        // what it shows is what an open or a listing remembered — or, until then, that
-        // nothing is known.
-        let unmeasured = indent > 0
-            && entry.rows.is_none()
-            && entry.cols.is_none()
-            && entry.kind != EntryKind::Unknown
-            && matches!(
-                locality,
-                Some(crate::locality::Locality::Object | crate::locality::Locality::Network)
-            );
-        spans.push(Span::styled(
-            meta_columns(entry, unmeasured),
-            base.fg(ctx.dimmed),
-        ));
+    match meta {
+        Some(meta) => {
+            spans.push(Span::styled(" ".repeat(pad), base));
+            spans.push(Span::styled(meta, base.fg(ctx.dimmed)));
+        }
+        // The meta columns went to the name: padded across them, so the selection bar
+        // still runs to the edge.
+        None if show_meta => spans.push(Span::styled(" ".repeat(pad), base)),
+        None => {}
     }
     // Carry the reverse to the edge, so the bar is a bar and not a ragged highlight.
     spans.push(Span::styled(" ", base));
@@ -2324,6 +2348,59 @@ mod tests {
         }
     }
 
+    /// A row with nothing in the meta columns gives them to its name, and an empty
+    /// shape cell gives its columns too, size and age staying aligned; a relative path
+    /// keeps its leaf (#648).
+    #[test]
+    fn blank_meta_columns_go_to_the_name() {
+        let ctx = RenderContext::for_test();
+        let text = |entry: &Entry| -> String {
+            entry_line(entry, false, 26, true, None, "", None, None, None, 0, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        let mut public = row("/data/food_nutrition.csv", EntryKind::File);
+        public.name = "Food nutrition (fast food)".to_string();
+        assert!(text(&public).contains("Food nutrition (fast food)"));
+
+        let mut sized = row("/data/chart_export_overwrite_test.csv", EntryKind::File);
+        sized.size = Some(25);
+        let mut shaped = sized.clone();
+        shaped.rows = Some(3);
+        shaped.cols = Some(2);
+        let (sized, shaped) = (text(&sized), text(&shaped));
+        assert!(
+            sized.contains("chart_export_overwrite_test.csv"),
+            "{sized:?}"
+        );
+        assert!(
+            !shaped.contains("chart_export_overwrite_test.csv"),
+            "{shaped:?}"
+        );
+        assert_eq!(
+            sized.chars().count(),
+            shaped.chars().count(),
+            "the same width either way"
+        );
+        assert_eq!(
+            sized.find("25 B").map(|at| sized[..at].chars().count()),
+            shaped.find("25 B").map(|at| shaped[..at].chars().count()),
+            "size stays in its column"
+        );
+
+        let mut hit = row(
+            "/data/tests/sample-data/sales_by_region.csv",
+            EntryKind::File,
+        );
+        hit.name = "tests/sample-data/sales_by_region.csv".to_string();
+        hit.size = Some(25);
+        hit.rows = Some(3);
+        hit.cols = Some(2);
+        assert!(text(&hit).contains("region.csv"), "{:?}", text(&hit));
+    }
+
     /// The row and the pane beside it say the same word about one directory. They are two
     /// renderers with the same question to answer, and answering it in two orders is
     /// how a list says `12 parquet` while the pane says `dataset`.
@@ -2638,6 +2715,8 @@ mod tests {
         // Real metadata, so the meta columns are a string the offset can be found by.
         entry.size = Some(4096);
         entry.rows = Some(12);
+        // A shape too: a row with an empty shape cell gives it to the name (#648).
+        entry.cols = Some(3);
         entry.holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 5000)],
             truncated: true,
@@ -2671,6 +2750,7 @@ mod tests {
         let mut short = row("/data/exports", crate::discover::EntryKind::MultiFile);
         short.size = Some(4096);
         short.rows = Some(12);
+        short.cols = Some(3);
         short.holds = crate::discover::Holds {
             formats: vec![("csv".to_string(), 2)],
             ..Default::default()
@@ -2729,6 +2809,8 @@ mod tests {
         // consults `place_kind`; a `multi` prefix in a collection does not.
         let mut curated_multi = row("s3://bucket/occurrence", EntryKind::MultiFile);
         curated_multi.size = Some(4096);
+        curated_multi.rows = Some(12);
+        curated_multi.cols = Some(3);
         curated_multi.holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 5000)],
             truncated: true,
@@ -2763,6 +2845,8 @@ mod tests {
         // into is the misalignment all of this is for.
         let mut gone = row("s3://averylongsourcename@bucket/exports", EntryKind::File);
         gone.size = Some(4096);
+        gone.rows = Some(12);
+        gone.cols = Some(3);
         let known: [String; 1] = ["other".to_string()];
         let missing = |width: usize| -> usize {
             let line = entry_line(
@@ -2823,6 +2907,7 @@ mod tests {
         let mut named = row("s3://prod@bucket/exports", EntryKind::MultiFile);
         named.size = Some(4096);
         named.rows = Some(12);
+        named.cols = Some(3);
         named.holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 12000)],
             ..Default::default()
@@ -3049,6 +3134,8 @@ mod tests {
         let mut entry = row("/data/exports", EntryKind::MultiFile);
         entry.size = Some(4096);
         entry.rows = Some(12);
+        // A shape too: a row with an empty shape cell gives it to the name (#648).
+        entry.cols = Some(3);
         entry.holds = crate::discover::Holds {
             formats: vec![("parquet".to_string(), 5000)],
             truncated: true,

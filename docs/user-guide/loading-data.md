@@ -698,7 +698,7 @@ columns and no rows.
 
 A [delimited format spec](binary-formats.md#delimited-text) holds these options
 for a family of files, with their units and metadata line, so they open with no
-flags.
+flags. A flag typed on the command line still wins over the spec.
 
 Padded numbers become numbers with or without `--skip-initial-space`, as long
 as string parsing is on (the default). With the flag, cells of spaces are null

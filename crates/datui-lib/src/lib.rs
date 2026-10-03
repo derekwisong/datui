@@ -9484,9 +9484,16 @@ impl App {
             let listing_began = std::time::Instant::now();
             let pattern = pattern.cloned();
             let progress = report.progress.clone();
+            let plan = cloud_hive::ListShards::for_url(full);
             let (files, skipped) = wait_on_runtime(runtime, async move {
-                cloud_hive::list_dataset_files_reporting(&store, &key, pattern.as_ref(), &progress)
-                    .await
+                cloud_hive::list_dataset_files_reporting(
+                    &store,
+                    &key,
+                    pattern.as_ref(),
+                    plan,
+                    &progress,
+                )
+                .await
             })?
             .ok()?;
             report

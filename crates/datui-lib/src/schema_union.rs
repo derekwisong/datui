@@ -50,6 +50,11 @@ impl Listing<'_> {
     pub fn advance(&self) {
         self.0.listed.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// The count itself, for listing tasks that outlive the borrow.
+    pub fn counter(&self) -> std::sync::Arc<AtomicUsize> {
+        self.0.listed.clone()
+    }
 }
 
 impl Drop for Listing<'_> {
@@ -97,7 +102,7 @@ pub struct FooterProgress {
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Objects a listing has found so far, while `listing` is set. A listing of a large
     /// prefix is the longest wait before any footer, and it has no total to count to.
-    listed: AtomicUsize,
+    listed: std::sync::Arc<AtomicUsize>,
     listing: std::sync::atomic::AtomicBool,
 }
 

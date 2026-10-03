@@ -180,6 +180,9 @@ pub struct BrokenView {
     pub error: String,
 }
 
+/// How long a read or a write of the views waits for another instance's write.
+const VIEWS_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct ViewManager {
     config: ConfigManager,
     views: Vec<SavedView>,
@@ -325,6 +328,13 @@ impl ViewManager {
             return Ok(());
         }
 
+        // Listed under the views lock, shared. A save renames a temp file over the
+        // view, and a listing taken meanwhile on btrfs can miss the view entirely: the
+        // new name takes a later directory slot than the listing reaches. A directory
+        // that will not take the lock file (read-only) is listed without it.
+        let _lock = crate::cache::lock_file_shared(&self.views_lock(), VIEWS_LOCK_TIMEOUT)
+            .ok()
+            .flatten();
         let entries = fs::read_dir(&self.views_dir)?;
         for entry in entries {
             let entry = entry?;
@@ -357,6 +367,10 @@ impl ViewManager {
         Ok(())
     }
 
+    fn views_lock(&self) -> PathBuf {
+        self.views_dir.join("views.lock")
+    }
+
     fn view_path(&self, id: &str) -> PathBuf {
         self.views_dir.join(format!("view_{id}.json"))
     }
@@ -366,11 +380,8 @@ impl ViewManager {
     fn locked<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
         self.config.ensure_config_dir()?;
         fs::create_dir_all(&self.views_dir)?;
-        let lock = crate::cache::lock_file(
-            &self.views_dir.join("views.lock"),
-            std::time::Duration::from_secs(2),
-        )?
-        .ok_or_else(|| color_eyre::eyre::eyre!("another datui is saving views; try again"))?;
+        let lock = crate::cache::lock_file(&self.views_lock(), VIEWS_LOCK_TIMEOUT)?
+            .ok_or_else(|| color_eyre::eyre::eyre!("another datui is saving views; try again"))?;
         let result = work();
         drop(lock);
         result

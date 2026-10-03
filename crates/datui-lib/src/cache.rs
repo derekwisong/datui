@@ -259,6 +259,22 @@ pub(crate) fn lock_file(
     path: &Path,
     timeout: std::time::Duration,
 ) -> std::io::Result<Option<fs::File>> {
+    take_lock(path, timeout, false)
+}
+
+/// [`lock_file`], shared: readers hold it together, and never while a writer does.
+pub(crate) fn lock_file_shared(
+    path: &Path,
+    timeout: std::time::Duration,
+) -> std::io::Result<Option<fs::File>> {
+    take_lock(path, timeout, true)
+}
+
+fn take_lock(
+    path: &Path,
+    timeout: std::time::Duration,
+    shared: bool,
+) -> std::io::Result<Option<fs::File>> {
     use fs2::FileExt;
 
     let lock = fs::OpenOptions::new()
@@ -268,7 +284,12 @@ pub(crate) fn lock_file(
         .open(path)?;
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if lock.try_lock_exclusive().is_ok() {
+        let taken = if shared {
+            FileExt::try_lock_shared(&lock)
+        } else {
+            FileExt::try_lock_exclusive(&lock)
+        };
+        if taken.is_ok() {
             return Ok(Some(lock));
         }
         if std::time::Instant::now() >= deadline {

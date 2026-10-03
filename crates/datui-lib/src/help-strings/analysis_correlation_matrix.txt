@@ -15,5 +15,7 @@ Actions:
   v:             View the sample's rows as a table; Esc comes back
   r:             Draw another sample (when the result is a sample)
   a:             Read every row instead, after confirming
+  t:             While following a file, read again with the rows that
+                 arrived since the results were read
   Esc:           Cancel a run in progress; otherwise close the analysis
                  view or this help

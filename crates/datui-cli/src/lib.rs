@@ -477,6 +477,10 @@ pub struct Args {
     #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
+    /// Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops
+    #[arg(short = 'f', long = "follow", action, help_heading = "Reading")]
+    pub follow: bool,
+
     /// Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows
     #[arg(long = "skip-lines", value_name = "N", help_heading = "Reading")]
     pub skip_lines: Option<usize>,

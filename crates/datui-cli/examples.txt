@@ -11,6 +11,8 @@ Examples:
       Files of the same shape, as one table
   curl -s https://example.com/data.csv.gz | datui
       Data piped in; the format is read from its first bytes
+  serial-logger | datui -f -
+      Rows as they arrive; t pauses, Esc stops following
   datui --hive "/data/events/**/*.parquet"
       A glob, read as one partitioned table
   datui --format csv --no-header raw.txt

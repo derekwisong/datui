@@ -957,6 +957,12 @@ impl Loader {
             self.load = None;
             return Step::Crash(message.to_string());
         }
+        if options.follow
+            && let Some(message) = crate::follow::refuse_paths(&paths, &options)
+        {
+            self.load = None;
+            return Step::Crash(message);
+        }
         if stdin::is_stdin(&first) {
             // Read once: opened again (`H`), the copy on hand is read.
             if let Some(kept) = self.kept.clone().filter(|kept| {

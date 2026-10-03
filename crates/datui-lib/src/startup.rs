@@ -51,6 +51,11 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
             if let Some(refused) = crate::stdin::refuse(&paths, piped) {
                 return Err(color_eyre::eyre::eyre!(refused));
             }
+            if opts.follow && paths.is_empty() {
+                return Err(color_eyre::eyre::eyre!(
+                    "--follow needs a file to follow, or data piped in: some_logger | datui -f -"
+                ));
+            }
             (RunInput::Paths(paths, opts), config)
         }
         RunInput::Paths(paths, opts) => {

@@ -423,6 +423,8 @@ pub struct DataTableState {
     /// Set by the render code when `visible_rows` changes. The App event loop checks this
     /// after each render and triggers an async collect if needed.
     pub needs_recollect: bool,
+    /// The watcher of the file this dataset follows (`--follow`), while it does.
+    follow: Option<crate::follow::Follow>,
 }
 
 /// What string-column inference may turn a column into, besides Time.
@@ -1408,7 +1410,6 @@ fn asks_of_subquery_values(e: &Expr, names: &[PlSmallStr]) -> bool {
 }
 
 /// Calls `f` on each plan `plan` reads from.
-#[cfg(feature = "sql")]
 pub(crate) fn for_each_input(
     plan: &mut polars::lazy::dsl::DslPlan,
     f: &mut dyn FnMut(&mut polars::lazy::dsl::DslPlan),
@@ -2038,6 +2039,7 @@ impl DataTableState {
             polars_streaming,
             defer_collect: false,
             needs_recollect: false,
+            follow: None,
         })
     }
 
@@ -2188,6 +2190,7 @@ impl DataTableState {
             polars_streaming: options.polars_streaming,
             defer_collect: false,
             needs_recollect: false,
+            follow: None,
         })
     }
 
@@ -4072,6 +4075,9 @@ impl DataTableState {
         }
         reader
             .with_ignore_errors(options.ignore_errors)
+            // A followed file's later rows may have a field too many; they are counted
+            // as not fitting rather than failing the read.
+            .with_truncate_ragged_lines(options.follow)
             .with_try_parse_dates(options.csv_try_parse_dates())
             .with_null_values(null_values.cloned())
     }
@@ -8549,6 +8555,97 @@ impl DataTableState {
             Some(groups) => self.record_file_row_groups(groups),
             None => self.set_num_rows(rows),
         }
+    }
+
+    /// The follow of the file this dataset reads, while it is followed.
+    pub fn follow(&self) -> Option<&crate::follow::Follow> {
+        self.follow.as_ref()
+    }
+
+    pub fn follow_mut(&mut self) -> Option<&mut crate::follow::Follow> {
+        self.follow.as_mut()
+    }
+
+    /// Follow the file this dataset reads with `follow`, whose watcher is running.
+    pub fn start_following(&mut self, follow: crate::follow::Follow) {
+        self.follow = Some(follow);
+    }
+
+    /// Stop following. The rows read so far stay.
+    pub fn stop_following(&mut self) {
+        if let Some(mut follow) = self.follow.take() {
+            follow.end();
+        }
+    }
+
+    /// Whether the cursor is on the last row of a view whose length is known.
+    pub fn on_last_row(&self) -> bool {
+        self.num_rows_valid
+            && (self.num_rows == 0
+                || self.start_row + self.table_state.selected().unwrap_or(0) + 1 >= self.num_rows)
+    }
+
+    /// Every frame the view holds that carries the scan of the data as loaded.
+    fn each_frame(&mut self, mut f: impl FnMut(&mut LazyFrame)) {
+        f(&mut self.original_lf);
+        f(&mut self.base_lf);
+        f(&mut self.lf);
+        if let Some(lf) = self.unsorted_lf.as_mut() {
+            f(lf);
+        }
+        if let Some(lf) = self.reshaped_lf.as_mut() {
+            f(lf);
+        }
+        if let Some(source) = self.group_source.as_mut() {
+            f(&mut source.rows);
+        }
+        if let Some(grouped) = self.grouped.as_mut() {
+            f(&mut grouped.lf);
+            f(&mut grouped.base_lf);
+            if let Some(source) = grouped.group_source.as_mut() {
+                f(&mut source.rows);
+            }
+        }
+    }
+
+    /// The followed file holds `rows` complete rows now: every frame reads that many,
+    /// so the query, filters and sort run over the new ones too. `restarted` when the
+    /// file was read again from its start. Returns whether the rows on hand still
+    /// stand: a view that only filters, with nothing reordered, keeps the rows it had,
+    /// since rows only arrive after them.
+    pub(crate) fn follow_to(&mut self, rows: usize, restarted: bool) -> bool {
+        let Some(path) = self.follow.as_ref().map(|f| f.path().to_path_buf()) else {
+            return true;
+        };
+        let rows_stand = !restarted
+            && self.sort_columns.is_empty()
+            && self.sort_ascending
+            && self.scan_is_the_root();
+        self.each_frame(|lf| crate::follow::bound(lf, &path, rows));
+        self.invalidate_num_rows();
+        if self.is_pristine() {
+            // The watcher counted them as the scan reads them: nothing to count again.
+            self.set_num_rows(rows);
+        } else if self.scan_is_the_root() {
+            self.pristine_rows = Some(rows);
+        }
+        if restarted {
+            self.start_row = 0;
+            self.table_state.select(Some(0));
+        }
+        if !rows_stand {
+            self.drop_buffer();
+        }
+        rows_stand
+    }
+
+    /// The followed file was deleted: every frame reads it through `file`, a handle
+    /// held on it, which still reads what it held.
+    pub(crate) fn read_followed_through(&mut self, file: &std::fs::File) {
+        let Some(path) = self.follow.as_ref().map(|f| f.path().to_path_buf()) else {
+            return;
+        };
+        self.each_frame(|lf| crate::follow::read_through(lf, &path, file));
     }
 
     /// The frame on screen: the root, then the query or reshape, the filters and the

@@ -3248,6 +3248,42 @@ fn test_csv_dialect_keys() {
     }
 }
 
+/// How often a followed file is checked: 250 ms unless set, layered by presence, and
+/// refused outside 10 ms to a minute.
+#[test]
+fn test_follow_interval() {
+    let config = layered(&[]);
+    assert_eq!(config.file_loading.follow_interval_ms, None);
+    assert_eq!(
+        config.file_loading.follow_interval(),
+        std::time::Duration::from_millis(250)
+    );
+    let config = layered(&[
+        "[file_loading]\nfollow_interval_ms = 1000\n",
+        "[file_loading]\nfollow_interval_ms = 250\n",
+    ]);
+    assert_eq!(
+        config.file_loading.follow_interval_ms,
+        Some(250),
+        "an explicit default over an import wins"
+    );
+    let config = layered(&["[file_loading]\nfollow_interval_ms = 100\n"]);
+    assert_eq!(
+        config.file_loading.follow_interval(),
+        std::time::Duration::from_millis(100)
+    );
+    assert!(config.validate().is_ok());
+    for bad in [0, 9, 60_001] {
+        let config = layered(&[&format!("[file_loading]\nfollow_interval_ms = {bad}\n")]);
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("follow_interval_ms"), "{bad}: {err}");
+    }
+    for good in [10, 60_000] {
+        let config = layered(&[&format!("[file_loading]\nfollow_interval_ms = {good}\n")]);
+        assert!(config.validate().is_ok(), "{good}");
+    }
+}
+
 /// `formats_path` adds up across imports, each entry relative to the file that names
 /// it, and is empty when no file names one.
 #[test]

@@ -21,6 +21,8 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap, Bar.
                     label; bars that do not fit are counted
   e:                Export the chart to PNG or EPS. Needs the chart's
                     required columns picked first
+  t:                While following a file, draw again with the rows
+                    that arrived since; the bar says how many
   ? / F1:           Show this help (with a picker open ? types into the
                     filter; F1 still opens help)
   Esc:              Back to the table

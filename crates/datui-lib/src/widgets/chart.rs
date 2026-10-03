@@ -17,7 +17,9 @@ use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::render::context::RenderContext;
-use crate::widgets::axes::{AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels};
+use crate::widgets::axes::{
+    AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels, resolution,
+};
 use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
 use unicode_width::UnicodeWidthStr;
 
@@ -668,8 +670,14 @@ fn render_xy_chart(
                 all_y_max = all_y_max.max(y_max);
             }
 
+            // A scatter of few points marks each with a dot a cell wide; past one
+            // point per four cells, the line's finer marks keep them apart.
+            let points: usize = names_and_points.iter().map(|s| s.points.len()).sum();
+            let cells = usize::from(area.width) * usize::from(area.height);
+            let finer = resolution(g.plot.line) > resolution(g.plot.point);
             let marker = match chart_type {
                 ChartType::Line => g.plot.line,
+                ChartType::Scatter if finer && points * 4 > cells => g.plot.line,
                 ChartType::Scatter => g.plot.point,
                 ChartType::Bar => g.plot.bar,
             };
@@ -878,7 +886,8 @@ fn render_histogram_chart(
         modal.grid,
     );
 
-    let points: Vec<(f64, f64)> = data.bins.iter().map(|b| (b.center, b.count)).collect();
+    let columns = axes.frame(area).graph.width;
+    let points = bin_columns(data, [x_min_bounds, x_max_bounds], columns);
     let style = Style::default().fg(theme.get("primary_chart_series_color"));
     let dataset = Dataset::default()
         .name("")
@@ -888,6 +897,29 @@ fn render_histogram_chart(
         .data(&points);
 
     axes.render(Chart::new(vec![dataset]), area, buf, g);
+}
+
+/// A histogram's bars as a column of the plot each, `columns` wide over `bounds`: a
+/// bin fills the columns its values land on, less one between it and the next when
+/// it is three or more wide, so the bars read as bins and not as needles.
+fn bin_columns(data: &HistogramData, [lo, hi]: [f64; 2], columns: u16) -> Vec<(f64, f64)> {
+    let n = data.bins.len();
+    if n == 0 || columns < 2 || hi <= lo {
+        return data.bins.iter().map(|b| (b.center, b.count)).collect();
+    }
+    let last = f64::from(columns - 1);
+    // The value at a column's center, as the canvas maps values to columns.
+    let at = |c: u16| lo + f64::from(c) / last * (hi - lo);
+    let bin_of = |v: f64| (((v - lo) / (hi - lo) * n as f64).floor() as usize).min(n - 1);
+    let bin_cols: Vec<u16> = (0..columns).map(|c| bin_of(at(c)) as u16).collect();
+    (0..columns)
+        .filter_map(|c| {
+            let bin = bin_cols[c as usize];
+            let wide = bin_cols.iter().filter(|b| **b == bin).count();
+            let last_of_bin = bin_cols.get(c as usize + 1).is_some_and(|b| *b != bin);
+            (!(last_of_bin && wide >= 3)).then(|| (at(c), data.bins[bin as usize].count))
+        })
+        .collect()
 }
 
 fn render_kde_chart(
@@ -2227,6 +2259,79 @@ mod tests {
                 .filter(|c| c.symbol() == g.plot.grid_across)
                 .all(|c| c.fg == grid)
         );
+    }
+
+    /// A scatter of a few points marks each with a whole-cell dot; a dense one
+    /// switches to braille, which keeps neighbors apart.
+    #[test]
+    fn a_scatter_picks_its_marker_by_density() {
+        let g = crate::glyphs::unicode();
+        let mut modal = open_modal();
+        modal.x_column = Some("price".to_string());
+        modal.y_columns = vec!["volume".to_string()];
+        modal.chart_type = ChartType::Scatter;
+        let draw = |n: usize| {
+            let series = vec![
+                (0..n)
+                    .map(|i| (i as f64, ((i * 7919) % 1000) as f64))
+                    .collect::<Vec<_>>(),
+            ];
+            let data = ChartRenderData::XY {
+                series: Some(&series),
+                breaks: None,
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+            };
+            plot_text_in(&modal, data, g, Rect::new(0, 0, 60, 20))
+        };
+        let braille = |text: &str| text.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
+        let sparse = draw(20);
+        assert!(
+            sparse.contains(ratatui::symbols::DOT) && !braille(&sparse),
+            "{sparse}"
+        );
+        let dense = draw(2000);
+        assert!(
+            braille(&dense) && !dense.contains(ratatui::symbols::DOT),
+            "{dense}"
+        );
+    }
+
+    /// A histogram's bins fill their columns, with a column of air between bins wide
+    /// enough to spare one.
+    #[test]
+    fn histogram_bins_fill_their_columns() {
+        use crate::chart_data::HistogramBin;
+        let histogram = HistogramData {
+            column: "price".to_string(),
+            bins: (0..4)
+                .map(|i| HistogramBin {
+                    center: f64::from(i) * 25.0 + 12.5,
+                    count: 10.0,
+                })
+                .collect(),
+            x_min: 0.0,
+            x_max: 100.0,
+            max_count: 10.0,
+            rows: Default::default(),
+            clipped: None,
+        };
+        let points = bin_columns(&histogram, [0.0, 100.0], 41);
+        // Four bins of about ten columns, less a gap after each but the last.
+        assert_eq!(points.len(), 41 - 3, "{points:?}");
+        let text = plot_text_in(
+            &open_modal(),
+            ChartRenderData::Histogram {
+                data: Some(&histogram),
+                x: AxisNumbers::default(),
+            },
+            crate::glyphs::unicode(),
+            Rect::new(0, 0, 60, 20),
+        );
+        let row = text.lines().find(|r| r.contains('█')).expect(&text);
+        let bars: Vec<&str> = row.split(' ').filter(|r| r.contains('█')).collect();
+        assert_eq!(bars.len(), 4, "{text}");
     }
 
     #[test]

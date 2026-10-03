@@ -4827,6 +4827,9 @@ fn test_rows_that_cannot_be_measured_are_not_located_on_the_mount_table() {
     for day in 1..=40 {
         fs::create_dir_all(tmp.path().join(format!("2009-01-{day:02}"))).unwrap();
     }
+    // The listing has a section for the working directory, and other tests here move
+    // it into a directory of data files; held, it lists only the partitions.
+    let _cwd = in_cwd(tmp.path());
 
     let mut home = HomeState::default();
     home.rebuild(&[tmp.path().to_path_buf()], &[]);

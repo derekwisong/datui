@@ -426,11 +426,17 @@ impl TemplateManager {
     /// best-scored one. Scores mix in usage and recency, so with no gate the
     /// most-used template "matches" every dataset ever opened; `T` applying it
     /// silently is how templates lose the user's trust.
-    pub fn get_most_relevant(&self, file_path: &Path, schema: &Schema) -> Option<Template> {
+    pub fn get_most_relevant(
+        &self,
+        file_path: &Path,
+        schema: &Schema,
+    ) -> Option<(Template, MatchReason)> {
         self.find_relevant_templates(file_path, schema)
             .into_iter()
-            .find(|(template, _)| criteria_match(template, file_path, schema))
-            .map(|(template, _)| template)
+            .find_map(|(template, _)| {
+                let reason = match_reason(&template, file_path, schema)?;
+                Some((template, reason))
+            })
     }
 
     /// A name for a view saved from this state: the file stem, or failing
@@ -551,12 +557,12 @@ impl TemplateManager {
 
 /// Why a view's criteria fit the open file, in the words the list annotates
 /// rows with. The strongest reason wins: the same file beats the same columns
-/// beats a pattern.
+/// beats a glob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchReason {
     SameFile,
     SameColumns,
-    Pattern,
+    Glob,
 }
 
 impl MatchReason {
@@ -564,7 +570,7 @@ impl MatchReason {
         match self {
             MatchReason::SameFile => "same file",
             MatchReason::SameColumns => "same columns",
-            MatchReason::Pattern => "pattern",
+            MatchReason::Glob => "glob",
         }
     }
 }
@@ -698,7 +704,7 @@ pub fn match_reason(template: &Template, file_path: &Path, schema: &Schema) -> O
         }
     }
     if path_pattern_matches(criteria, file_path) || filename_pattern_matches(criteria, file_path) {
-        return Some(MatchReason::Pattern);
+        return Some(MatchReason::Glob);
     }
     None
 }
@@ -1035,7 +1041,7 @@ mod tests {
     }
 
     /// The list's annotation names the strongest criterion that fits: the
-    /// same file beats the same columns beats a pattern.
+    /// same file beats the same columns beats a glob.
     #[test]
     fn match_reason_names_the_strongest_criterion() {
         use polars::prelude::DataType;
@@ -1078,7 +1084,7 @@ mod tests {
         );
         assert_eq!(
             match_reason(&by_pattern, path, &schema),
-            Some(MatchReason::Pattern)
+            Some(MatchReason::Glob)
         );
 
         let fits_nothing = a_template(
@@ -1177,7 +1183,7 @@ mod tests {
         );
         assert_eq!(
             match_reason(&by_pattern, opened, &schema),
-            Some(MatchReason::Pattern)
+            Some(MatchReason::Glob)
         );
         assert!(calculate_relevance(&by_pattern, opened, &schema) >= 50.0);
     }

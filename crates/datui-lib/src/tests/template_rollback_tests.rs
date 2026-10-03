@@ -407,7 +407,7 @@ fn a_stale_view_pivot_is_dropped() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let template = pivot_view(&mut app, "pivot");
     // A view's pivot on a generation since passed.
-    let passed = app.job_for_tests(Job::ViewPivot(Box::new(template.clone())), None);
+    let passed = app.job_for_tests(Job::ViewPivot(Box::new((template.clone(), None))), None);
     app.jobs.advance();
     assert!(app.apply_template(&template).is_ok());
 

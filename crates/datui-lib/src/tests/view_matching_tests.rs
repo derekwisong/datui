@@ -85,4 +85,10 @@ fn a_view_on_a_queried_remote_dataset_matches_by_url_and_source_columns() {
     assert!(app.active_template_id.is_some(), "the view is applied");
     let names: Vec<&str> = state.schema().iter_names().map(|n| n.as_str()).collect();
     assert_eq!(names, ["day", "high_c"]);
+    // Once its rows are in, the bar says which view and why.
+    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+    assert_eq!(
+        app.flash_message(),
+        Some("View \"ELEMENT=TMAX\" applied: same columns")
+    );
 }

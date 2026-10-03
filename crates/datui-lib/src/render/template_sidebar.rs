@@ -564,7 +564,7 @@ mod tests {
         assert!(
             !other_row.contains("same file")
                 && !other_row.contains("same columns")
-                && !other_row.contains("pattern"),
+                && !other_row.contains("glob"),
             "a view that fits nothing carries no annotation: {other_row:?}"
         );
         let footer = &rows[14];

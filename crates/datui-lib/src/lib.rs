@@ -726,8 +726,12 @@ enum RunOrigin {
     /// it is open in this mode, else a dialog.
     Query(QueryMode),
     /// A view applied. Its failure is a dialog, and the view marked applied before
-    /// it is marked again.
-    View { previous: Option<String> },
+    /// it is marked again. Applied for a match rather than picked, `matched` says
+    /// why once its rows are in.
+    View {
+        previous: Option<String>,
+        matched: Option<(String, template::MatchReason)>,
+    },
 }
 
 /// Focus within the query prompt: the tab bar or the current mode's input.
@@ -4657,26 +4661,35 @@ impl App {
         // A fresh dataset starts with no view applied: the previous file's view
         // must not wear the check mark here, nor count as applied when edited.
         self.active_template_id = None;
-        let template = match self.startup_template.take() {
+        let (template, reason) = match self.startup_template.take() {
             Some(name) => match self.template_manager.get_template_by_name(&name).cloned() {
-                Some(template) => Some(template),
+                Some(template) => (Some(template), None),
                 None => {
                     self.error_modal.show(format!("No view named \"{name}\""));
-                    None
+                    (None, None)
                 }
             },
-            None if self.app_config.templates.auto_apply => self.view_path().and_then(|path| {
-                self.data_table_state.as_ref().and_then(|state| {
+            None if self.app_config.templates.auto_apply => self
+                .view_path()
+                .zip(self.data_table_state.as_ref())
+                .and_then(|(path, state)| {
                     self.template_manager
                         .get_most_relevant(path, state.source_schema())
                 })
-            }),
-            None => None,
+                .map_or((None, None), |(template, reason)| {
+                    (Some(template), Some(reason))
+                }),
+            None => (None, None),
         };
         let Some(template) = template else {
             return false;
         };
-        match self.apply_template(&template) {
+        let applied = match reason {
+            // Applied unasked, it says which view and why.
+            Some(why) => self.apply_matched_view(&template, why),
+            None => self.apply_template(&template),
+        };
+        match applied {
             // The view reads its own first rows, so the dataset's are never read.
             Ok(()) => true,
             Err(e) => {
@@ -4685,6 +4698,11 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Say that the view `name` was applied because its criteria fit as `why` says.
+    fn flash_view_applied(&mut self, name: &str, why: template::MatchReason) {
+        self.flash_note(format!("View \"{name}\" applied: {}", why.as_str()));
     }
 
     /// Ensures file path has an extension when user did not provide one; only adds
@@ -12336,8 +12354,8 @@ impl App {
                         .template_manager
                         .get_most_relevant(path, state.source_schema())
                     {
-                        Some(template) => {
-                            if let Err(e) = self.apply_template(&template) {
+                        Some((template, why)) => {
+                            if let Err(e) = self.apply_matched_view(&template, why) {
                                 self.error_modal.show(format!("Error applying view: {}", e));
                             }
                         }
@@ -14473,13 +14491,31 @@ impl App {
     /// then the view's first rows — run in the background, and the view is installed
     /// when they are in. One that fails there puts the view before it back (#400).
     fn apply_template(&mut self, template: &Template) -> Result<()> {
+        self.apply_view(template, None)
+    }
+
+    /// [`Self::apply_template`], for a view applied because its criteria fit as `why`
+    /// says: once its rows are in, a flash names it and the reason.
+    fn apply_matched_view(
+        &mut self,
+        template: &Template,
+        why: template::MatchReason,
+    ) -> Result<()> {
+        self.apply_view(template, Some(why))
+    }
+
+    fn apply_view(
+        &mut self,
+        template: &Template,
+        why: Option<template::MatchReason>,
+    ) -> Result<()> {
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
         let Some(state) = self.data_table_state.as_mut() else {
             return Ok(());
         };
         match state.try_transition(|s| Self::replay_view(s, &template.settings, None))? {
             (Replayed::Planned, rollback) => {
-                self.view_planned(template, rollback);
+                self.view_planned(template, rollback, why);
                 Ok(())
             }
             (Replayed::Pivot(job), rollback) => {
@@ -14488,7 +14524,7 @@ impl App {
                 // Past any load-ahead for the view on screen, whose rows must not land
                 // in the one that replaces it.
                 self.jobs.try_advance();
-                let view = Job::ViewPivot(Box::new(template.clone()));
+                let view = Job::ViewPivot(Box::new((template.clone(), why)));
                 self.spawn_job(view, Some(Self::APPLYING_VIEW), move |_| {
                     let pivoted = job
                         .run()
@@ -14507,6 +14543,7 @@ impl App {
         &mut self,
         template: &Template,
         rollback: crate::widgets::datatable::ViewRollback,
+        why: Option<template::MatchReason>,
     ) {
         if let Some(path) = &self.path {
             let mut used = template.clone();
@@ -14520,7 +14557,10 @@ impl App {
             return;
         };
         self.query_running = Some(QueryRun {
-            origin: RunOrigin::View { previous },
+            origin: RunOrigin::View {
+                previous,
+                matched: why.map(|why| (template.name.clone(), why)),
+            },
             frame: state.len_generation(),
             rollback,
             len_count_inflight: self.len_count_inflight,
@@ -14531,6 +14571,9 @@ impl App {
         if !self.spawn_async_collect(Self::APPLYING_VIEW) {
             // Nothing to read: the view has no rows. Applied on open, it was the
             // open's last step.
+            if let Some(why) = why {
+                self.flash_view_applied(&template.name, why);
+            }
             self.query_running = None;
             self.busy = false;
             self.status_message = None;
@@ -14790,10 +14833,16 @@ impl App {
                 // way meanwhile keeps its spinner and its message.
                 if waited {
                     self.first_rows_settled();
-                    if let Some(RunOrigin::Query(mode)) = ran.map(|run| run.origin)
-                        && self.query_prompt_mode() == Some(mode)
-                    {
-                        self.leave_query_prompt_after_run();
+                    match ran.map(|run| run.origin) {
+                        Some(RunOrigin::Query(mode)) if self.query_prompt_mode() == Some(mode) => {
+                            self.leave_query_prompt_after_run();
+                        }
+                        // Shown once the wait is over, or the spinner's message hides it.
+                        Some(RunOrigin::View {
+                            matched: Some((name, why)),
+                            ..
+                        }) => self.flash_view_applied(&name, why),
+                        _ => {}
                     }
                 }
                 None
@@ -14888,9 +14937,10 @@ impl App {
             Answer::ViewPivoted(pivoted) => {
                 // Superseded means the view was cancelled or something replaced it, which
                 // owns the wait.
-                let Job::ViewPivot(template) = job else {
+                let Job::ViewPivot(view) = job else {
                     return None;
                 };
+                let (template, why) = *view;
                 if !current {
                     return None;
                 }
@@ -14904,7 +14954,7 @@ impl App {
                 });
                 match planned {
                     // The wait passes to the read of its rows.
-                    Some(Ok(rollback)) => self.view_planned(&template, rollback),
+                    Some(Ok(rollback)) => self.view_planned(&template, rollback, why),
                     Some(Err(message)) => self.view_pivot_failed(&message),
                     None => {}
                 }
@@ -15463,7 +15513,7 @@ impl App {
         self.len_count_inflight = run.len_count_inflight;
         self.count_after_paint = run.count_after_paint;
         self.len_count_failed = run.len_count_failed;
-        if let RunOrigin::View { previous } = &run.origin {
+        if let RunOrigin::View { previous, .. } = &run.origin {
             self.active_template_id = previous.clone();
         }
         run.origin

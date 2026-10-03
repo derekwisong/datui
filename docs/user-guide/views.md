@@ -33,6 +33,10 @@ to store. In the description field, <kbd>Enter</kbd> inserts a newline;
 | <kbd>v</kbd> | Open the views list |
 | <kbd>V</kbd> | Apply the best-matching view without opening the list; when none matches, the list opens instead |
 
+When <kbd>V</kbd> or [automatic application](#applying-on-open) applies a
+view, the bottom bar names it and says why it matched:
+`View "Central Park highs" applied: same columns`.
+
 Or from the command line:
 
 ```bash
@@ -46,8 +50,13 @@ that fails on the data is not applied, and a dialog says why.
 ## List controls
 
 Views are listed by how well they fit the open file. A check mark marks the
-one currently applied, and the Match column says why a view fits: the same
-file, the same columns, or a pattern.
+one currently applied, and the Match column says why a view fits:
+
+| Match | The view's rule that fits |
+|---|---|
+| `same file` | Exact path or relative path |
+| `same columns` | Schema |
+| `glob` | Path pattern or filename pattern |
 
 | Key | Action |
 |---|---|

@@ -44,7 +44,9 @@ const MAX_NAMES: usize = 8;
 const MAX_VIEWS: usize = 1024;
 /// Rows held before a batch is handed over.
 pub const BATCH_ROWS: usize = 32_768;
-/// Text held before a batch is handed over, whatever its rows.
+/// Text held before a batch is handed over, whatever its rows. Each cell counts
+/// too, empty or not: every tag seen is a column in every row, so a log of
+/// thousands of tags would otherwise hold gigabytes of empty cells in one batch.
 pub const BATCH_TEXT: usize = 32 << 20;
 
 /// The columns that are not tags, in front of them and after them.
@@ -600,6 +602,8 @@ impl FixReader {
         }
         self.rows += 1;
         for t in &mut self.tags {
+            self.held += size_of::<Option<String>>()
+                * (1 + usize::from(t.codes.is_some()) + usize::from(t.rest.is_some()));
             if t.values.len() < self.rows {
                 t.values.push(None);
             }
@@ -1060,6 +1064,28 @@ mod tests {
             .iter()
             .map(|s| s.map(String::from))
             .collect()
+    }
+
+    /// Empty cells count toward a batch: one message of 2,000 tags makes every later
+    /// row 2,000 cells wide, so the batch is handed over long before `BATCH_ROWS`.
+    #[test]
+    fn a_wide_log_hands_over_small_batches() {
+        let mut reader = FixReader::new(Layers::default());
+        let tags: Vec<(u32, String)> = (20_000..22_000).map(|t| (t, "x".to_string())).collect();
+        let tags: Vec<(u32, &str)> = tags.iter().map(|(t, v)| (*t, v.as_str())).collect();
+        reader.push(format!("{}\n", message("FIX.4.4", &tags, "\x01")).as_bytes());
+        let narrow = format!("{}\n", message("FIX.4.4", &[(35, "0")], "\x01"));
+        let mut rows_at_batch = None;
+        for row in 1..BATCH_ROWS {
+            reader.push(narrow.as_bytes());
+            if let Some(df) = reader.take_batch().unwrap() {
+                rows_at_batch = Some((row, df.height()));
+                break;
+            }
+        }
+        let (row, height) = rows_at_batch.expect("a batch is handed over");
+        assert!(height < BATCH_ROWS / 8, "{height} rows of 2,000 tags");
+        assert_eq!(height, row + 1);
     }
 
     fn log() -> String {

@@ -4634,6 +4634,15 @@ impl Registry {
         self.specs.is_empty()
     }
 
+    /// The spec whose glob names the file `file` first, when it reads the file's
+    /// records as several variants: the home screen lists them inside the file.
+    pub fn variants_of(&self, file: &Path) -> Option<Arc<Spec>> {
+        self.by_glob(file, false)
+            .into_iter()
+            .find(|s| !s.is_delimited())
+            .filter(|s| s.records.variants.len() > 1 && s.variant.is_none())
+    }
+
     /// The specs whose globs match `path`, a file or (for the columns layout) a
     /// directory, by name alone.
     pub fn by_glob(&self, path: &Path, is_dir: bool) -> Vec<Arc<Spec>> {

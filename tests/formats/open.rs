@@ -598,3 +598,73 @@ fn compressed_blocks_open_and_scroll_to_the_last_row() {
     let last = screen(&mut app);
     assert!(last.contains("19999") && last.contains("-999"), "{last}");
 }
+
+/// A file a spec reads as several variants lists them inside it, as an archive lists
+/// its arrays: → on its row goes in, and each variant opens alone, recorded at its
+/// path inside the file. Enter on the file still opens every record.
+#[test]
+fn a_files_variants_are_listed_inside_it_and_open_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("listed.itch");
+    std::fs::write(&data, itch_bytes(300, &[])).unwrap();
+    let registry = Registry::of(vec![spec(ITCH)]);
+
+    // Its row upstairs counts the variants and names the spec.
+    let mut rows = vec![datui::discover::Entry::for_test(&data, "listed.itch")];
+    rows[0].kind = datui::discover::EntryKind::Other;
+    datui::home::name_by_spec(&registry, &mut rows);
+    assert_eq!(rows[0].format_spec.as_deref(), Some("acme.itch"));
+    assert_eq!(rows[0].cost.tables, Some(2));
+    assert!(!rows[0].enter_lists_tables(), "Enter opens the whole file");
+
+    // Inside it, a row per variant with its columns.
+    let mut home = datui::home::HomeState {
+        browsing: Some(data.clone()),
+        formats: Arc::new(registry.clone()),
+        ..datui::home::HomeState::default()
+    };
+    home.rebuild(&[], &[]);
+    let listed: Vec<datui::discover::Entry> = home
+        .visible()
+        .iter()
+        .filter_map(|r| match r {
+            datui::home::Row::Entry { entry, .. } => Some((*entry).clone()),
+            _ => None,
+        })
+        .collect();
+    let names: Vec<&str> = listed.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["add", "exec"]);
+    assert_eq!(listed[1].path, data.join("exec"));
+    assert_eq!(listed[1].columns, ["len", "kind", "ref", "shares"]);
+    // A recent at that path is listed again by it.
+    let row = datui::discover::variant_row(&data.join("exec"), &registry).unwrap();
+    assert_eq!(row.name, "exec");
+    assert!(datui::discover::variant_row(&data.join("nope"), &registry).is_none());
+
+    // Opened by its path, it is the variant alone, named by that path.
+    let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![data.join("exec")],
+        OpenOptions::default(),
+    );
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 300);
+    assert_eq!(app.open_path(), Some(data.join("exec").as_path()));
+    let shown = screen(&mut app);
+    assert!(
+        shown.contains("shares") && !shown.contains("stock"),
+        "{shown}"
+    );
+
+    // `--variant` on the file is the same table, recorded at the same path.
+    let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);
+    let options = OpenOptions {
+        spec_variant: Some("add".into()),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![data.clone()], options);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 300);
+    assert_eq!(app.open_path(), Some(data.join("add").as_path()));
+}

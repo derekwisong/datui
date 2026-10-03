@@ -150,7 +150,7 @@ pub(crate) enum Preview {
 pub(crate) const BASE: Reader = Reader {
     scan: |input| {
         Err(eyre!(
-            "datui has no reader for {} files",
+            "datui has no reader for {} files.",
             input.format.name()
         ))
     },
@@ -163,6 +163,16 @@ pub(crate) const BASE: Reader = Reader {
     python: None,
     export: None,
 };
+
+/// Opens `input`'s files as their format's reader does. An error opening one file
+/// names it ([`crate::error_display::FileError`]); one of several names its own.
+pub(crate) fn scan(input: ScanIn<'_>) -> Result<Scan> {
+    let one = (input.paths.len() == 1).then(|| input.paths[0].clone());
+    (of(input.format).scan)(input).map_err(|e| match one {
+        Some(path) => crate::error_display::in_file(&path, e),
+        None => e,
+    })
+}
 
 /// The reader of `format`.
 pub(crate) fn of(format: FileFormat) -> &'static Reader {
@@ -366,7 +376,8 @@ pub(crate) fn read_into(input: ScanIn<'_>) -> Result<Scan> {
     })
 }
 
-/// Read `input`'s files into files of their own as their format's reader does.
+/// Read `input`'s files into files of their own as their format's reader does, an
+/// error named by the file the user opened.
 pub(crate) fn convert(input: &ConvertIn<'_>) -> ConvertOut {
     match of(input.format).convert {
         Some(convert) => convert(input),
@@ -375,6 +386,7 @@ pub(crate) fn convert(input: &ConvertIn<'_>) -> ConvertOut {
             input.format.name()
         )),
     }
+    .map_err(|e| crate::error_display::in_file(input.display, e))
 }
 
 /// Why several files of a format that reads one at a time are refused.

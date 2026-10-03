@@ -3130,7 +3130,7 @@ mod tests {
             &jobs,
         );
         let reason = format!(
-            "Failed to load {}: bad csv\nIt stopped at {}.",
+            "\"{}\": Bad csv.\nIt stopped at {}.",
             at.display(),
             at.display()
         );
@@ -3139,7 +3139,7 @@ mod tests {
         };
         assert_eq!(
             failed.message,
-            format!("Failed to load {url}: bad csv\nIt stopped at {url}."),
+            format!("\"{url}\": Bad csv.\nIt stopped at {url}."),
             "named by the URL opened, never the temp file (#511)"
         );
         assert!(!at.exists(), "a failed open keeps no download");

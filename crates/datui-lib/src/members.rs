@@ -116,6 +116,7 @@ pub fn tables(file: &Path, format: FileFormat) -> color_eyre::Result<Vec<Table>>
             format.name()
         )),
     }
+    .map_err(|e| crate::error_display::in_file(file, e))
 }
 
 /// What a file of tables calls one of them, singular and plural.

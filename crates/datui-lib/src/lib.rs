@@ -11082,7 +11082,7 @@ impl App {
             }
             return Err(color_eyre::eyre::eyre!(crate::readers::many_files_refused()));
         }
-        (crate::readers::of(format).scan)(crate::readers::ScanIn {
+        crate::readers::scan(crate::readers::ScanIn {
             format,
             paths,
             options,

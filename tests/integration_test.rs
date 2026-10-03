@@ -10318,7 +10318,7 @@ fn a_load_chosen_at_home_fails_at_home() {
     assert_eq!(app.input_mode, InputMode::Home);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    assert!(rendered_text(&buf).contains("Failed to load"));
+    assert!(rendered_text(&buf).contains("broken.parquet\": "));
 
     // Nor is it a recent: recorded when a dataset installs, not when it is asked for.
     // The one that did load is, and recording is off-thread, so that is waited for.

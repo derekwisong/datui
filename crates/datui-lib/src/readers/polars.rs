@@ -4,11 +4,11 @@
 use color_eyre::Result;
 
 use super::{BASE, EVERYWHERE, Kind, Reader, ScanIn, Signature, Trusted, Unnamed};
+use crate::FileFormat;
 use crate::export_modal::ExportFormat;
 use crate::python_script::{self as py, Python};
 use crate::scan::Scan;
 use crate::widgets::datatable::DataTableState;
-use crate::{FileFormat, OpenOptions};
 
 /// A prefix of CSV in an object store, read with the flags the user gave as they are
 /// for a local file.
@@ -120,27 +120,6 @@ pub(crate) fn guess_text(head: &[u8]) -> FileFormat {
     }
 }
 
-/// The paging options every Polars reader takes, in the order they take them.
-type Paging = (
-    Option<usize>,
-    Option<usize>,
-    Option<usize>,
-    Option<usize>,
-    bool,
-    usize,
-);
-
-fn paging(options: &OpenOptions) -> Paging {
-    (
-        options.pages_lookahead,
-        options.pages_lookback,
-        options.max_buffered_rows,
-        options.max_buffered_mb,
-        options.row_numbers,
-        options.row_start_index,
-    )
-}
-
 /// The frame of a state a Polars reader built, with what the read did to its rows for
 /// Copy as Python.
 fn frame(state: DataTableState, input: ScanIn<'_>) -> Result<Scan> {
@@ -160,10 +139,9 @@ fn json_frame(state: DataTableState, input: ScanIn<'_>) -> Result<Scan> {
 }
 
 fn scan_parquet(input: ScanIn<'_>) -> Result<Scan> {
-    let (a, b, c, d, e, f) = paging(input.options);
     let state = match input.paths {
-        [one] => DataTableState::from_parquet(one, a, b, c, d, e, f)?,
-        many => DataTableState::from_parquet_paths(many, a, b, c, d, e, f)?,
+        [one] => DataTableState::from_parquet(one, input.options)?,
+        many => DataTableState::from_parquet_paths(many, input.options)?,
     };
     frame(state, input)
 }
@@ -207,12 +185,11 @@ fn scan_arrow(input: ScanIn<'_>) -> Result<Scan> {
     if crate::ipc_stream::starts_with_stream(paths) {
         return Ok(Scan::Streams(paths.to_vec()));
     }
-    let (a, b, c, d, e, f) = paging(input.options);
     let state = match paths {
-        [one] => DataTableState::from_ipc(one, a, b, c, d, e, f)?,
+        [one] => DataTableState::from_ipc(one, input.options)?,
         // Polars reads every IPC file's footer for the schema, and fails on a stream
         // among them: only then is each file looked at.
-        many => match DataTableState::from_ipc_paths(many, a, b, c, d, e, f) {
+        many => match DataTableState::from_ipc_paths(many, input.options) {
             Ok(state) => state,
             Err(_) if crate::ipc_stream::any_stream(many) => {
                 return Ok(Scan::Streams(many.to_vec()));
@@ -224,19 +201,17 @@ fn scan_arrow(input: ScanIn<'_>) -> Result<Scan> {
 }
 
 fn scan_avro(input: ScanIn<'_>) -> Result<Scan> {
-    let (a, b, c, d, e, f) = paging(input.options);
     let state = match input.paths {
-        [one] => DataTableState::from_avro(one, a, b, c, d, e, f)?,
-        many => DataTableState::from_avro_paths(many, a, b, c, d, e, f)?,
+        [one] => DataTableState::from_avro(one, input.options)?,
+        many => DataTableState::from_avro_paths(many, input.options)?,
     };
     frame(state, input)
 }
 
 fn scan_orc(input: ScanIn<'_>) -> Result<Scan> {
-    let (a, b, c, d, e, f) = paging(input.options);
     let state = match input.paths {
-        [one] => DataTableState::from_orc(one, a, b, c, d, e, f)?,
-        many => DataTableState::from_orc_paths(many, a, b, c, d, e, f)?,
+        [one] => DataTableState::from_orc(one, input.options)?,
+        many => DataTableState::from_orc_paths(many, input.options)?,
     };
     frame(state, input)
 }

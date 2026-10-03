@@ -2503,15 +2503,7 @@ impl DataTableState {
         Ok(state)
     }
 
-    pub fn from_parquet(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_parquet(path: &Path, options: &OpenOptions) -> Result<Self> {
         let is_glob = crate::source::expands_as_glob(path);
         let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
@@ -2519,17 +2511,7 @@ impl DataTableState {
             ..Default::default()
         };
         let lf = LazyFrame::scan_parquet(pl_path, args)?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Load multiple Parquet files and concatenate them into one LazyFrame (same schema assumed).
@@ -2568,28 +2550,12 @@ impl DataTableState {
         }
     }
 
-    pub fn from_parquet_paths(
-        paths: &[impl AsRef<Path>],
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_parquet_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) -> Result<Self> {
         if paths.is_empty() {
             return Err(color_eyre::eyre::eyre!("No paths provided"));
         }
         if paths.len() == 1 {
-            return Self::from_parquet(
-                paths[0].as_ref(),
-                pages_lookahead,
-                pages_lookback,
-                max_buffered_rows,
-                max_buffered_mb,
-                row_numbers,
-                row_start_index,
-            );
+            return Self::from_parquet(paths[0].as_ref(), options);
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
@@ -2602,71 +2568,27 @@ impl DataTableState {
             lazy_frames.push(lf);
         }
         let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Load a single Arrow IPC / Feather v2 file (lazy).
-    pub fn from_ipc(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_ipc(path: &Path, options: &OpenOptions) -> Result<Self> {
         let pl_path = PlRefPath::try_from_path(path)?;
         let args = UnifiedScanArgs {
             glob: crate::source::expands_as_glob(path),
             ..Default::default()
         };
         let lf = LazyFrame::scan_ipc(pl_path, Default::default(), args)?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Load multiple Arrow IPC / Feather files and concatenate into one LazyFrame.
-    pub fn from_ipc_paths(
-        paths: &[impl AsRef<Path>],
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_ipc_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) -> Result<Self> {
         if paths.is_empty() {
             return Err(color_eyre::eyre::eyre!("No paths provided"));
         }
         if paths.len() == 1 {
-            return Self::from_ipc(
-                paths[0].as_ref(),
-                pages_lookahead,
-                pages_lookback,
-                max_buffered_rows,
-                max_buffered_mb,
-                row_numbers,
-                row_start_index,
-            );
+            return Self::from_ipc(paths[0].as_ref(), options);
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
@@ -2679,68 +2601,24 @@ impl DataTableState {
             lazy_frames.push(lf);
         }
         let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Load a single Avro file (eager read, then lazy).
-    pub fn from_avro(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_avro(path: &Path, options: &OpenOptions) -> Result<Self> {
         let file = File::open(path)?;
         let df = polars::io::avro::AvroReader::new(file).finish()?;
         let lf = df.lazy();
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Load multiple Avro files and concatenate into one LazyFrame.
-    pub fn from_avro_paths(
-        paths: &[impl AsRef<Path>],
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_avro_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) -> Result<Self> {
         if paths.is_empty() {
             return Err(color_eyre::eyre::eyre!("No paths provided"));
         }
         if paths.len() == 1 {
-            return Self::from_avro(
-                paths[0].as_ref(),
-                pages_lookahead,
-                pages_lookback,
-                max_buffered_rows,
-                max_buffered_mb,
-                row_numbers,
-                row_start_index,
-            );
+            return Self::from_avro(paths[0].as_ref(), options);
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
@@ -2749,17 +2627,7 @@ impl DataTableState {
             lazy_frames.push(df.lazy());
         }
         let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Load a single Excel file (xls, xlsx, xlsm, xlsb) using calamine (eager read, then lazy).
@@ -3017,15 +2885,7 @@ impl DataTableState {
 
     /// Load a single ORC file (eager read via orc-rust → Arrow, then convert to Polars, then lazy).
     /// ORC is read fully into memory; see loading-data docs for large-file notes.
-    pub fn from_orc(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_orc(path: &Path, options: &OpenOptions) -> Result<Self> {
         let file = File::open(path)?;
         let reader = ArrowReaderBuilder::try_new(file)
             .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?
@@ -3035,42 +2895,16 @@ impl DataTableState {
             .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?;
         let df = Self::arrow_record_batches_to_dataframe(&batches)?;
         let lf = df.lazy();
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Load multiple ORC files and concatenate into one LazyFrame.
-    pub fn from_orc_paths(
-        paths: &[impl AsRef<Path>],
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_orc_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) -> Result<Self> {
         if paths.is_empty() {
             return Err(color_eyre::eyre::eyre!("No paths provided"));
         }
         if paths.len() == 1 {
-            return Self::from_orc(
-                paths[0].as_ref(),
-                pages_lookahead,
-                pages_lookback,
-                max_buffered_rows,
-                max_buffered_mb,
-                row_numbers,
-                row_start_index,
-            );
+            return Self::from_orc(paths[0].as_ref(), options);
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
@@ -3085,17 +2919,7 @@ impl DataTableState {
             lazy_frames.push(df.lazy());
         }
         let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Convert Arrow (arrow crate 57) RecordBatches to Polars DataFrame by value (ORC uses
@@ -13186,7 +13010,7 @@ mod tests {
     fn test_from_parquet() {
         // Ensure sample data is generated before running test
         let path = crate::tests::sample_data_dir().join("people.parquet");
-        let state = DataTableState::from_parquet(&path, None, None, None, None, false, 1).unwrap();
+        let state = DataTableState::from_parquet(&path, &OpenOptions::default()).unwrap();
         assert!(!state.schema.is_empty());
     }
 
@@ -13205,7 +13029,7 @@ mod tests {
         let mut writer = BufWriter::new(file);
         IpcWriter::new(&mut writer).finish(&mut df).unwrap();
         drop(writer);
-        let state = DataTableState::from_ipc(&path, None, None, None, None, false, 1).unwrap();
+        let state = DataTableState::from_ipc(&path, &OpenOptions::default()).unwrap();
         assert_eq!(state.schema.len(), 2);
         assert!(state.schema.contains("x"));
         assert!(state.schema.contains("y"));
@@ -13226,7 +13050,7 @@ mod tests {
         let mut writer = BufWriter::new(file);
         AvroWriter::new(&mut writer).finish(&mut df).unwrap();
         drop(writer);
-        let state = DataTableState::from_avro(&path, None, None, None, None, false, 1).unwrap();
+        let state = DataTableState::from_avro(&path, &OpenOptions::default()).unwrap();
         assert_eq!(state.schema.len(), 2);
         assert!(state.schema.contains("id"));
         assert!(state.schema.contains("name"));
@@ -13257,7 +13081,7 @@ mod tests {
         orc_writer.write(&batch).unwrap();
         orc_writer.close().unwrap();
 
-        let state = DataTableState::from_orc(&path, None, None, None, None, false, 1).unwrap();
+        let state = DataTableState::from_orc(&path, &OpenOptions::default()).unwrap();
         assert_eq!(state.schema.len(), 2);
         assert!(state.schema.contains("id"));
         assert!(state.schema.contains("name"));

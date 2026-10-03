@@ -379,8 +379,18 @@ impl SdfReader {
             None => {
                 let i = self.fields.len();
                 self.by_name.insert(name.clone(), i);
+                // A field may be called `name`, or what an earlier one became; its
+                // column takes a suffix, as columns of one table must differ.
+                let mut column = name.clone();
+                let mut n = 1;
+                while CORE.contains(&column.as_str())
+                    || self.fields.iter().any(|f| f.name == column)
+                {
+                    n += 1;
+                    column = format!("{name}_{n}");
+                }
                 self.fields.push(FieldColumn {
-                    name,
+                    name: column,
                     values: 0,
                     integers: true,
                     numbers: true,
@@ -762,5 +772,19 @@ $$$$
             !looks_like(b"model,code\nx,1\ny,2\nz,V2000\n"),
             "a word, not a counts line"
         );
+    }
+
+    #[test]
+    fn a_field_named_like_a_core_column_gets_its_own() {
+        let mut reader = SdfReader::new();
+        reader.push(
+            b"aspirin\n\n\n  0  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n\
+              > <name>\nASA\n\n> <name_2>\nx\n\n$$$$\n",
+        );
+        let df = reader.finish().unwrap();
+        let names: Vec<&str> = df.get_column_names().iter().map(|c| c.as_str()).collect();
+        assert_eq!(names, ["name", "atoms", "bonds", "name_2", "name_2_2"]);
+        assert_eq!(strings(&df, "name"), [Some("aspirin".into())]);
+        assert_eq!(strings(&df, "name_2"), [Some("ASA".into())]);
     }
 }

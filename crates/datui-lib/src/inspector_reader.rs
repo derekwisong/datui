@@ -362,6 +362,9 @@ pub struct Reader {
     formatted: usize,
     /// A byte, and the line it is on, so a line number is counted from near it.
     line_at: Option<(usize, usize)>,
+    /// The first byte of the top row before a rewrap: the row that holds it goes
+    /// back to the top once the unit is wrapped again.
+    resume: Option<usize>,
 }
 
 impl Reader {
@@ -371,22 +374,57 @@ impl Reader {
         match self.key {
             Some(k) if k == key => {}
             Some((same, _, _)) if same == id => {
-                // Rewrapped: the same unit stays at the top.
+                // Rewrapped (a resize, or `w`): the top row's first byte stays at
+                // the top. Lines and hex rows keep their index; `carry` rescales hex.
+                if let Some(start) = self
+                    .cache
+                    .get(&self.top.0)
+                    .and_then(|rows| rows.get(self.top.1))
+                    .map(|r| r.start)
+                {
+                    self.resume = Some(start);
+                    self.top.1 = 0;
+                }
                 self.key = Some(key);
                 self.cache.clear();
-                self.top.1 = 0;
             }
             _ => {
                 self.key = Some(key);
                 self.cache.clear();
                 self.top = (0, 0);
                 self.line_at = None;
+                self.resume = None;
             }
         }
     }
 
     fn width(&self) -> usize {
         self.key.map_or(1, |k| k.1)
+    }
+
+    /// The same value built again at another width: a hex dump's top row moves to
+    /// the row holding the same offset.
+    pub fn carry(&mut self, old: &Content, new: &Content) {
+        if let (Content::Hex { per_line: was, .. }, Content::Hex { per_line: now, .. }) = (old, new)
+            && was != now
+        {
+            self.top.1 = self.top.1 * was / now;
+        }
+    }
+
+    /// After a rewrap, find the row that holds the byte that was at the top.
+    fn settle(&mut self, c: &Content) {
+        let Content::Text { text, form, .. } = c else {
+            return;
+        };
+        if let Some(pos) = self.resume.take() {
+            let unit = self.top.0;
+            self.top.1 = self
+                .rows_of(text, *form, unit)
+                .iter()
+                .rposition(|r| r.start <= pos)
+                .unwrap_or(0);
+        }
     }
 
     fn wrap(&self) -> Wrap {
@@ -427,10 +465,12 @@ impl Reader {
 
     pub fn home(&mut self) {
         self.top = (0, 0);
+        self.resume = None;
     }
 
     /// The last rows of the value, filling a pane of `h` rows.
     pub fn end(&mut self, c: &Content, h: usize) {
+        self.resume = None;
         match c {
             Content::Text { text, form, .. } => {
                 let last = last_unit(text, *form == TextForm::Raw);
@@ -488,6 +528,7 @@ impl Reader {
     /// Move `delta` rows, never past the top or past where the last row is at the
     /// bottom of a pane of `h` rows.
     pub fn scroll(&mut self, c: &Content, h: usize, delta: isize) {
+        self.settle(c);
         if delta < 0 {
             self.up(c, delta.unsigned_abs());
         } else {
@@ -511,6 +552,7 @@ impl Reader {
 
     /// Put byte `pos` (a row, for lines) near the top of a pane of `h` rows.
     pub fn jump(&mut self, c: &Content, h: usize, pos: usize) {
+        self.resume = None;
         match c {
             Content::Text { text, form, .. } => {
                 let pos = pos.min(text.len());
@@ -531,6 +573,7 @@ impl Reader {
 
     /// The rows of a pane of `h` rows from the top.
     pub fn window(&mut self, c: &Content, h: usize) -> Window {
+        self.settle(c);
         let mut win = Window::default();
         match c {
             Content::Lines(lines) => {
@@ -964,6 +1007,42 @@ mod tests {
             hits_in_row("a Status x status", "status"),
             [(2, 8), (11, 17)]
         );
+    }
+
+    /// A resize rewraps the value: the row at the top still holds the byte that
+    /// was there, and a hex dump keeps its offset at another row length.
+    #[test]
+    fn a_rewrap_keeps_the_place_in_the_value() {
+        let text: String = (0..200)
+            .map(|i| format!("line {i} {}\n", "word ".repeat(30)))
+            .collect();
+        let (mut r, c) = reader(&text, 60);
+        r.scroll(&c, 10, 75);
+        let pos = r.window(&c, 10).from;
+        assert!(pos > 0);
+        r.prepare(1, 100, Wrap::Word);
+        let from = r.window(&c, 10).from;
+        assert!(from <= pos && pos - from < 100, "{from} for {pos}");
+        r.prepare(1, 40, Wrap::Hard);
+        let from = r.window(&c, 10).from;
+        assert!(from <= pos && pos - from < 40, "{from} for {pos}");
+
+        let bytes: Arc<[u8]> = Arc::from(vec![0u8; 4096]);
+        let narrow = Content::Hex {
+            bytes: bytes.clone(),
+            per_line: 8,
+        };
+        let wide = Content::Hex {
+            bytes,
+            per_line: 32,
+        };
+        let mut r = Reader::default();
+        r.prepare(2, 50, Wrap::Word);
+        r.scroll(&narrow, 10, 100);
+        assert_eq!(r.window(&narrow, 10).from, 800);
+        r.prepare(2, 140, Wrap::Word);
+        r.carry(&narrow, &wide);
+        assert_eq!(r.window(&wide, 10).from, 800);
     }
 
     #[test]

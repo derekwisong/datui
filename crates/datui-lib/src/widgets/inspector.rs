@@ -945,9 +945,24 @@ fn field_pane(
             read_key,
         },
     );
-    built.id = modal.next_pane_id();
+    built.id = renewed(modal, &key, &built);
     modal.pane = Some((key, built.clone()));
     built
+}
+
+/// The id for a pane just built for `key`: the last one's while it shows the same
+/// value at another width, so the reader stays where it was; else a new one,
+/// which the reader starts at the top of.
+fn renewed(modal: &mut InspectorModal, key: &PaneKey, built: &Pane) -> u64 {
+    match &modal.pane {
+        Some((cached, old)) if cached.same_value(key) => {
+            let id = old.id;
+            let old = old.content.clone();
+            modal.reader.carry(&old, &built.content);
+            id
+        }
+        _ => modal.next_pane_id(),
+    }
 }
 
 /// What Enter does on the focused field, for the footer.
@@ -1827,7 +1842,7 @@ fn render_drill(
                 Some((cached, pane)) if *cached == key => pane.clone(),
                 _ => {
                     let mut built = node_pane(child, modal.view, width);
-                    built.id = modal.next_pane_id();
+                    built.id = renewed(modal, &key, &built);
                     modal.pane = Some((key, built.clone()));
                     built
                 }

@@ -168,6 +168,18 @@ pub struct PaneKey {
     pub pretty: u8,
 }
 
+impl PaneKey {
+    /// The same value in the same view, perhaps at another width: a resize keeps
+    /// the pane's place in it.
+    pub fn same_value(&self, other: &Self) -> bool {
+        *self
+            == Self {
+                width: self.width,
+                ..other.clone()
+            }
+    }
+}
+
 #[derive(Default)]
 pub struct InspectorModal {
     pub active: bool,

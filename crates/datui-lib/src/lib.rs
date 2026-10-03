@@ -32331,6 +32331,51 @@ mod inspector_layout_tests {
         }
     }
 
+    /// #661: a resize while reading a value keeps the place in it, at every size
+    /// and across the switch between the stacked and the side-by-side layouts.
+    #[test]
+    fn a_resize_keeps_the_place_in_the_value() {
+        use polars::prelude::{IntoLazy, df};
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let text: String = (1..=500).map(|i| format!("line {i}\n")).collect();
+        let df = df!("id" => [1i64], "text" => [text]).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.set_column_order(state.headers());
+        app.data_table_state = Some(state);
+        rows_at(&mut app, 100, 30);
+        // A frame after each key, as the event loop draws.
+        for code in [KeyCode::Char(' '), KeyCode::Down, KeyCode::Tab]
+            .into_iter()
+            .chain([KeyCode::PageDown; 3])
+        {
+            press(&mut app, code);
+            rows_at(&mut app, 100, 30);
+        }
+        let first_line = |rows: &[String]| {
+            let text = rows.join("\n");
+            // The position comes after the facts, which count `501 lines` too.
+            let at = text.rfind(" lines ").expect(&text) + " lines ".len();
+            text[at..]
+                .split('-')
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .expect(&text)
+        };
+        let before = first_line(&rows_at(&mut app, 100, 30));
+        assert!(before > 40, "{before}");
+        for (width, height) in [(160, 40), (80, 24), (300, 80), (100, 30)] {
+            let rows = rows_at(&mut app, width, height);
+            assert_eq!(
+                first_line(&rows),
+                before,
+                "{width}x{height}:\n{}",
+                rows.join("\n")
+            );
+        }
+    }
+
     /// An object's keys past the thousand measured for the name column are whole
     /// when the page shows them, not cut to the width of `k999`.
     #[test]

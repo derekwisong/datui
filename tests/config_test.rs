@@ -2873,6 +2873,7 @@ fn the_generated_config_materializes_the_builtin_catalog() {
             "Earthquakes (past month)",
             "Space launches (1957-2018)",
             "Palmer penguins",
+            "Aqueous solubility (SDF)",
             "Bitcoin and Ethereum",
             "Overture Maps"
         ],

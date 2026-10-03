@@ -85,6 +85,14 @@ license = "CC0; credit Horst, Hill and Gorman (2020)"
 homepage = "https://allisonhorst.github.io/palmerpenguins/"
 
 [[sources.datasets]]
+name = "Aqueous solubility (SDF)"
+url = "https://raw.githubusercontent.com/rdkit/rdkit/master/Docs/Book/data/solubility.train.sdf"
+description = "1,025 molecules: measured solubility (log mol/L), a low, medium or high class, and SMILES"
+publisher = "Huuskonen (2000); SDF from the RDKit book's data"
+license = "BSD-3-Clause (RDKit)"
+homepage = "https://github.com/rdkit/rdkit/tree/master/Docs/Book/data"
+
+[[sources.datasets]]
 name = "Bitcoin and Ethereum"
 url = "s3://aws-public-blockchain/v1.0/"
 auth = "anonymous"

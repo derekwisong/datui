@@ -822,6 +822,13 @@ fn section_header<'a>(
             Some(subtitle) => format!("listing {} {subtitle}", g.middot),
             None => "listing".to_string(),
         }
+    } else if matches == 0
+        && section.door.is_none()
+        && section.origin == Some(crate::home::RootOrigin::Cwd.note())
+    {
+        // Launched somewhere with nothing to open, the heading says so and where to go:
+        // the public rows below would otherwise read as this directory's (#547 D9).
+        format!("nothing to open here {} ~ types a path", g.middot)
     } else {
         section.subtitle.clone().unwrap_or_default()
     };
@@ -3047,6 +3054,44 @@ mod tests {
     /// A dot in a directory's name does not make it a file. A local row nothing has
     /// looked into came from a listing that saw a directory, so the name is not the
     /// evidence.
+    /// Launched where there is nothing to open, the directory's heading says so and
+    /// points at `~`, rather than a bare `0` above the public rows (#547 D9).
+    #[test]
+    fn an_empty_current_directory_says_so_and_points_at_the_path_prompt() {
+        let ctx = RenderContext::for_test();
+        let section = Section {
+            door: None,
+            title: "/home/me/empty".to_string(),
+            subtitle: None,
+            origin: Some(crate::home::RootOrigin::Cwd.note()),
+            rows: Vec::new(),
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+            grouped_by_place: false,
+            place_labels: Default::default(),
+            root: None,
+        };
+        let text = |matches: usize, section: &Section| -> String {
+            section_header(section, matches, false, false, 80, 0, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        let empty = text(0, &section);
+        assert!(empty.contains("nothing to open here"), "{empty:?}");
+        assert!(empty.contains("~ types a path"), "{empty:?}");
+        assert!(!text(3, &section).contains("nothing to open"));
+        let configured = Section {
+            origin: Some("configured"),
+            ..section
+        };
+        assert!(!text(0, &configured).contains("nothing to open"));
+    }
+
     #[test]
     fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
         let ctx = RenderContext::for_test();

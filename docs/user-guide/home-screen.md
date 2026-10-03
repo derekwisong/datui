@@ -44,7 +44,8 @@ right when every key fits; each section's rule counts its rows.
 Folded sections stay folded between runs. Path sections show why they are
 listed and their status: for example `configured`, `nfs4`, `listing` (with
 `1,200 so far` once a slow share sends its first rows, which show as they
-arrive), `unavailable`, or `first 5,000` when a listing is incomplete.
+arrive), `unavailable`, or `first 5,000` when a listing is incomplete. An
+empty current directory says `nothing to open here · ~ types a path`.
 
 ### Recent
 

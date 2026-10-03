@@ -21328,6 +21328,8 @@ fn a_stream_behind_an_ipc_file_opens_with_it() {
         copy < file + stream / 2 && copy >= stream / 2,
         "the stream only: {copy}"
     );
+}
+
 /// A directory of CSV opened as one table counts its rows by a scan. The Parquet
 /// footer count it was given found no Parquet, and the count stayed unknown.
 #[test]

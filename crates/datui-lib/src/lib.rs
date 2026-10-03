@@ -19164,6 +19164,7 @@ impl App {
             let nested = OpenOptions {
                 hive: false,
                 format: Some(found),
+                splits: report.splits.clone(),
                 ..options.clone()
             };
             return Self::read_with_delimited_spec(files, &nested, report, formats, choice);
@@ -19171,6 +19172,7 @@ impl App {
         let nested = OpenOptions {
             hive: false,
             format: Some(options.format.unwrap_or(found)),
+            splits: report.splits.clone(),
             ..options.clone()
         };
         Self::build_local_lazyframe(files, &nested, report, formats)
@@ -19337,13 +19339,6 @@ impl App {
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
                             report.files_disagree = Self::files_disagree(&files, options, found);
-                            let nested = OpenOptions {
-                                hive: false,
-                                format: Some(format),
-                                splits: report.splits.clone(),
-                                ..options.clone()
-                            };
-                            return Self::build_local_lazyframe(&files, &nested, report, formats);
                             return Self::read_directory_files(
                                 &files, options, found, report, formats,
                             );
@@ -19362,13 +19357,6 @@ impl App {
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
                             report.files_disagree = Self::files_disagree(&files, options, found);
-                            let nested = OpenOptions {
-                                hive: false,
-                                format: Some(format),
-                                splits: report.splits.clone(),
-                                ..options.clone()
-                            };
-                            let lf = Self::build_local_lazyframe(&files, &nested, report, formats)?;
                             let lf = Self::read_directory_files(
                                 &files, options, found, report, formats,
                             )?;

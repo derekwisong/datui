@@ -2262,6 +2262,46 @@ mod tests {
         );
     }
 
+    /// The light theme's grid stays a color under 16 colors, not the white of the
+    /// background, and the grid draws in it.
+    #[test]
+    fn the_light_grid_survives_sixteen_colors() {
+        use ratatui::style::Color;
+        let g = crate::glyphs::unicode();
+        let sixteen = |hex: &str| {
+            let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
+            crate::config::rgb_to_basic_ansi(channel(1), channel(3), channel(5))
+        };
+        let light = crate::config::ColorConfig::light();
+        let grid = sixteen(&light.chart_grid);
+        assert!(
+            !matches!(grid, Color::White | Color::Black | Color::Reset),
+            "{grid:?}"
+        );
+        let dark = sixteen(&crate::config::ColorConfig::default().chart_grid);
+        assert!(!matches!(dark, Color::White | Color::Black), "{dark:?}");
+
+        let mut theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        theme.colors.insert("chart_grid".to_string(), grid);
+        let mut modal = open_modal();
+        modal.x_column = Some("date".to_string());
+        modal.y_columns = vec!["price".to_string()];
+        modal.toggle_grid();
+        let series = decade();
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let ctx = RenderContext::for_test();
+        render_plot(area, &mut buf, &modal, &theme, &ctx, xy_dates(&series), g);
+        let cells: Vec<_> = buf
+            .content()
+            .iter()
+            .filter(|c| c.symbol() == g.plot.grid_across || c.symbol() == g.plot.grid_down)
+            .collect();
+        assert!(cells.len() > 50);
+        assert!(cells.iter().all(|c| c.fg == grid));
+    }
+
     /// A scatter of a few points marks each with a whole-cell dot; a dense one
     /// switches to braille, which keeps neighbors apart.
     #[test]

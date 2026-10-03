@@ -3015,7 +3015,9 @@ impl ColorConfig {
             chart_series_color_5: "#007197".to_string(),
             chart_series_color_6: "#f52a65".to_string(),
             chart_series_color_7: "#b15c00".to_string(),
-            chart_grid: "#c4c8da".to_string(),
+            // The theme's cyan halfway to the background: a grey this light is white
+            // on a 16-color terminal, and the grid vanished into the background.
+            chart_grid: "#70aabf".to_string(),
             accent: "#2e7de9".to_string(),
             accent_bright: "#1a6cd0".to_string(),
             gradient_start: "#2e7de9".to_string(),

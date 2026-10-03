@@ -579,6 +579,7 @@ jobs:
           - elf_symbols
           - flight_log
           - can_parse
+          - text_lines
           - hex_input
     env:
       # The deep configuration. AddressSanitizer can reach the unsafe code inside polars

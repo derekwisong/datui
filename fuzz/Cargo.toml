@@ -193,3 +193,10 @@ path = "fuzz_targets/hex_input.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "text_lines"
+path = "fuzz_targets/text_lines.rs"
+test = false
+doc = false
+bench = false

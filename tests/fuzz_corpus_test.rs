@@ -50,6 +50,8 @@ mod sdf_parse;
 #[cfg(feature = "sql")]
 #[path = "../fuzz/src/sql_group_plan.rs"]
 mod sql_group_plan;
+#[path = "../fuzz/src/text_lines.rs"]
+mod text_lines;
 #[path = "../fuzz/src/vcd_parse.rs"]
 mod vcd_parse;
 
@@ -152,6 +154,7 @@ fn every_corpus_input_passes_its_target() {
     replay("elf_symbols", &mut failures, elf_symbols::run);
     replay("flight_log", &mut failures, flight_log::run);
     replay("can_parse", &mut failures, can_parse::run);
+    replay("text_lines", &mut failures, text_lines::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
     });
@@ -202,6 +205,7 @@ fn every_corpus_has_a_replay() {
         "parse_query",
         "sdf_parse",
         "sql_group_plan",
+        "text_lines",
         "vcd_parse",
     ]
     .map(String::from)

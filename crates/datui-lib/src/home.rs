@@ -875,6 +875,8 @@ pub struct CollectionDataset {
     pub location: PathBuf,
     /// `key  value` lines for the details pane.
     pub details: Vec<(String, String)>,
+    /// What the collection says a remote file weighs, before it is downloaded.
+    pub size: Option<u64>,
 }
 
 impl Collection {
@@ -922,6 +924,7 @@ impl Collection {
                         name: dataset.name.clone(),
                         location,
                         details,
+                        size: dataset.size,
                     }
                 })
                 .collect(),
@@ -984,6 +987,8 @@ fn collection_entry(
         entry
     };
     entry.name = dataset.name.clone();
+    // A remote file is named, not stat'ed: its size is the collection's word for it.
+    entry.size = entry.size.or(dataset.size);
     entry
 }
 
@@ -1818,7 +1823,18 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             if let Some(known) = probed_entry(probed, p) {
                 return known;
             }
-            entry_for_path(p, network_check(p))
+            let mut entry = entry_for_path(p, network_check(p));
+            // A dataset opened from a collection comes back under the collection's name
+            // for it, not its URL's last segment (#547 D12).
+            if let Some(dataset) = collections
+                .iter()
+                .flat_map(|c| &c.datasets)
+                .find(|d| d.location == *p)
+            {
+                entry.name = dataset.name.clone();
+                entry.size = entry.size.or(dataset.size);
+            }
+            entry
         })
         .collect();
 

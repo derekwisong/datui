@@ -346,6 +346,17 @@ impl Entry {
                 let n = self.cost.tables.unwrap_or_default();
                 format!("{n} {}", if n == 1 { "table" } else { "tables" }).into()
             }
+            // A file named for what it holds rather than by its file name, as a
+            // collection names one: its format, which the name no longer says.
+            EntryKind::File
+                if crate::FileFormat::from_path(Path::new(&self.name)).is_none()
+                    && crate::FileFormat::from_path(&self.path).is_some() =>
+            {
+                crate::FileFormat::from_path(&self.path)
+                    .map(crate::FileFormat::name)
+                    .unwrap_or_default()
+                    .into()
+            }
             kind => kind.label().into(),
         }
     }

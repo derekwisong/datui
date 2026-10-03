@@ -134,3 +134,90 @@ fn a_web_file_in_a_collection_is_fetched_only_when_opened() {
         "back to the listing it was opened from"
     );
 }
+
+/// A web file opened from a collection comes back under Recent by the collection's
+/// name for it, with the shape its open measured: nothing lists a web file, so the
+/// open is what has to remember it (#547 D12).
+#[test]
+fn a_downloaded_dataset_comes_back_named_and_measured() {
+    common::isolate_cache();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/penguins.csv", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let body = "species,island,mass\nAdelie,Torgersen,3750\nGentoo,Biscoe,5000\nChinstrap,Dream,3800\n";
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                if head.starts_with(b"GET") { body } else { "" }
+            );
+        }
+    });
+    let config = common::layered_config(&[
+        "[data]\nuse_desktop_recents = false\n[cloud]\ndiscover = false\n",
+        &format!(
+            "[[sources]]\nname = \"birds\"\n[[sources.datasets]]\nname = \"Palmer penguins\"\nurl = {url:?}\n"
+        ),
+    ]);
+    config.validate().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: Default::default(),
+        },
+        config,
+    );
+    let cache = tempfile::TempDir::new().unwrap();
+    let manager = datui::CacheManager::with_dir(cache.path().to_path_buf());
+    app.use_cache(manager.clone());
+    app.enter_home();
+    let named = |app: &App| {
+        app.home.visible().iter().position(|row| {
+            matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "Palmer penguins")
+        })
+    };
+    pump(&mut app, &rx, |app| named(app).is_some());
+    app.home.selected = named(&app).unwrap();
+    drive(&mut app, key(KeyCode::Enter));
+    pump(&mut app, &rx, App::awaiting_download_confirmation);
+    drive(&mut app, key(KeyCode::Enter));
+    pump(&mut app, &rx, |app| {
+        app.data_table_state.is_some() && !app.is_busy()
+    });
+    // Its shape is kept under the URL it was opened from.
+    let key_url = std::path::PathBuf::from(&url);
+    pump(&mut app, &rx, |_| {
+        manager
+            .load_dataset_facts()
+            .get(&key_url)
+            .is_some_and(|facts| facts.rows == Some(3) && facts.cols == Some(3))
+    });
+
+    drive(&mut app, key(KeyCode::Char('q')));
+    // Under Recent, not only the collection's own row, which shares its URL.
+    let recent = |app: &App| {
+        app.home
+            .sections
+            .iter()
+            .find(|s| s.title == datui::home::HomeState::RECENT_SECTION)
+            .and_then(|s| {
+                s.rows
+                    .iter()
+                    .find(|e| e.path == key_url && e.rows.is_some())
+                    .cloned()
+            })
+    };
+    pump(&mut app, &rx, |app| recent(app).is_some());
+    let entry = recent(&app).unwrap();
+    assert_eq!(entry.name, "Palmer penguins");
+    assert_eq!((entry.rows, entry.cols), (Some(3), Some(3)));
+}

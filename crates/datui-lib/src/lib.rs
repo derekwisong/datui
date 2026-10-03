@@ -8685,6 +8685,27 @@ pub struct OpenOptions {
     /// The dataset the home screen's preview built and read the first page of, for
     /// this open to install rather than read again. Taken once.
     pub prepared: Option<crate::home_preview::Handoff>,
+    /// A file of the built-in catalog: downloaded without asking when it is small.
+    pub download_unasked: Option<UnaskedDownload>,
+}
+
+/// A remote file downloaded without asking: one the built-in catalog lists, at most
+/// `limit` bytes by what the server says or, when it says nothing, by the catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnaskedDownload {
+    pub limit: u64,
+    pub listed: Option<u64>,
+}
+
+impl UnaskedDownload {
+    /// The largest built-in catalog file downloaded without asking.
+    pub const LIMIT: u64 = 50 * 1024 * 1024;
+
+    /// Whether a file of `size` bytes, if the server said, is downloaded unasked.
+    pub fn covers(&self, size: Option<u64>) -> bool {
+        size.or(self.listed)
+            .is_some_and(|bytes| bytes <= self.limit)
+    }
 }
 
 impl OpenOptions {
@@ -8759,6 +8780,7 @@ impl OpenOptions {
             tee_raw: false,
             force: false,
             prepared: None,
+            download_unasked: None,
         }
     }
 }
@@ -10823,6 +10845,9 @@ pub struct App {
     pub home_previews: crate::home_preview::Previews,
     /// The reads of data started this session, by kind.
     pub reads: crate::home_preview::ReadCounts,
+    /// The dataset whose downloaded shape is kept already. See
+    /// [`Self::remember_a_downloads_shape`].
+    shape_remembered: Option<u64>,
     path: Option<PathBuf>,
     original_file_format: Option<ExportFormat>, // Track original file format for default export
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
@@ -14063,6 +14088,48 @@ impl App {
         }
     }
 
+    /// Keep the shape of a downloaded dataset under the URL it was opened from, once its
+    /// rows are counted: nothing lists a web file, so this is the only way its recent,
+    /// and its catalog row, can say `344 × 9` (#547 D12). Once per dataset.
+    fn remember_a_downloads_shape(&mut self) {
+        if self.shape_remembered == Some(self.dataset_generation) {
+            return;
+        }
+        let Some(url) = self.path.clone().filter(|p| source::is_remote_url(p)) else {
+            return;
+        };
+        let Some(state) = self.data_table_state.as_ref().filter(|s| s.fetched()) else {
+            return;
+        };
+        let Some(rows) = state.num_rows_if_valid().filter(|_| !state.changes_rows()) else {
+            return;
+        };
+        self.shape_remembered = Some(self.dataset_generation);
+        let columns: Vec<String> = state
+            .source_schema()
+            .iter_names()
+            .map(|name| name.to_string())
+            .collect();
+        let facts = crate::cache::DatasetFacts {
+            mtime: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default(),
+            size: 0,
+            rows: Some(rows),
+            cols: Some(columns.len()),
+            cols_sampled: false,
+            columns,
+            kind: Some(discover::EntryKind::File),
+            classified_by: discover::CLASSIFIER_VERSION,
+            cost: Default::default(),
+            holds: Default::default(),
+        };
+        // Off the UI thread: the index takes a lock other instances may hold.
+        let cache = self.cache.clone();
+        std::thread::spawn(move || cache.record_dataset_facts(&[(url, facts)]));
+    }
+
     /// The first rows of an open are on screen, or will not be read: its wait is over.
     fn first_rows_settled(&mut self) {
         self.loading.first_rows_settled();
@@ -15174,6 +15241,7 @@ impl App {
             home_schema_cache: HashMap::new(),
             home_previews: crate::home_preview::Previews::default(),
             reads: crate::home_preview::ReadCounts::default(),
+            shape_remembered: None,
             original_file_format: None,
             original_file_delimiter: None,
             stdin_reader: None,
@@ -17054,9 +17122,24 @@ impl App {
         let prepared = (!directory)
             .then(|| self.home_previews.take_prepared(&path))
             .flatten();
+        // A small file of the built-in catalog is fetched without a question: the row
+        // already said what it is and what it weighs. A URL the user typed still asks.
+        let unasked = self
+            .home
+            .collection_dataset(&path)
+            .filter(|(collection, _)| {
+                !jump
+                    && collection.builtin
+                    && matches!(source::input_source(&path), source::InputSource::Http(_))
+            })
+            .map(|(_, dataset)| UnaskedDownload {
+                limit: UnaskedDownload::LIMIT,
+                listed: dataset.size,
+            });
         match self.home_open_path(path, directory) {
-            AppEvent::Open(paths, mut options) if prepared.is_some() => {
-                options.prepared = Some(Arc::new(Mutex::new(prepared)));
+            AppEvent::Open(paths, mut options) => {
+                options.prepared = prepared.map(|p| Arc::new(Mutex::new(Some(p))));
+                options.download_unasked = unasked;
                 Some(AppEvent::Open(paths, options))
             }
             event => Some(event),
@@ -18244,6 +18327,14 @@ impl App {
                         }
                     }
                 };
+                // How much, when the server said: a download nobody was asked about
+                // says what it is fetching.
+                let sized = pending
+                    .parts()
+                    .1
+                    .filter(|_| status == "Downloading...")
+                    .map(|size| format!("Downloading {}...", discover::format_size(size)));
+                let status = sized.as_deref().unwrap_or(status);
                 self.spawn_job(job, Some(status), move |_| {
                     let (url, _, options) = pending.parts();
                     let (download, options) = match &pending {
@@ -25970,6 +26061,7 @@ impl App {
                     // its own, in a directory they did not press it in, is not.
                     self.retire_the_end_that_was_waiting();
                 }
+                self.remember_a_downloads_shape();
                 None
             }
             AppEvent::FramePainted => {
@@ -27288,6 +27380,7 @@ impl App {
                     state.apply_async_collect(result);
                 }
                 self.retire_a_count_the_rows_answered();
+                self.remember_a_downloads_shape();
                 // Rows a follow counted while these were read are shown next.
                 self.catch_up_follow();
                 // The query's first rows are in: it stands.

@@ -282,7 +282,7 @@ alike, shown as a section under its label. See
 | Local directory | Steps inside | What is inside (`1 csv`, `hive`) |
 | Local path with nothing there | Says it does not exist | `missing` |
 | Directory in an object store | Steps inside; <kbd>Backspace</kbd> at its top comes back here | `dataset` |
-| File in an object store or on the web | Opens it; a web file is downloaded after asking | |
+| File in an object store or on the web | Opens it; a web file is downloaded after asking | Its format, such as `csv`, and its `size` when given |
 
 Nothing remote is asked for until you open or enter a dataset. Inside one, the
 title bar's trail starts with the collection and the dataset's name:
@@ -313,6 +313,11 @@ leaves out the rows it cannot open.
 | Aqueous solubility (SDF) | 1,025 molecules: measured solubility (log mol/L), a low, medium or high class, and SMILES | BSD-3-Clause (RDKit) |
 | Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
+
+Each web file's row gives its format and its size. One under 50 MB downloads
+without a question; the bottom bar says `Downloading 16.1 KB...` while it does.
+A URL typed at <kbd>~</kbd> is always asked about. Opened once, a dataset comes
+back under Recent by its catalog name, with the rows and columns its open counted.
 
 The details pane gives each one's publisher, license and homepage. The license is
 the publisher's: check it before you use the data.

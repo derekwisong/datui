@@ -61,7 +61,8 @@ Sections, in order:
   Configured:         Directories from [data] directories in the config,
                       then those remembered with Ctrl+D
   Public datasets:    The built-in collection, after your own. Its data stays
-                      with the publisher until you open it
+                      with the publisher until you open it; a web file under
+                      50 MB downloads without a question
   Elsewhere:          Directories your desktop recorded; starts folded
   Found:              Search results, shown while typing
 

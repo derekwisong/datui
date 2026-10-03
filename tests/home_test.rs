@@ -4432,6 +4432,7 @@ fn test_collections_are_sections_of_named_datasets() {
         name: name.to_string(),
         location: location.to_path_buf(),
         details: vec![("about".to_string(), format!("{name} data"))],
+        size: None,
     };
     let mut home = HomeState {
         collections: vec![
@@ -7310,5 +7311,144 @@ mod first_rows {
             .find_map(|line| line.find("ROWS").map(|i| line[..i].chars().count()))
             .expect("ROWS in the pane");
         assert!(rows_at < 100, "the pane takes the width: ROWS at {rows_at}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The public catalog: rows that say what they are, one key away (#547 M5, D12)
+// ---------------------------------------------------------------------------
+
+mod catalog {
+    use super::coming_back::{press, settle};
+    use crossterm::event::KeyCode;
+    use datui::home::Row;
+    use datui::{App, AppEvent, UnaskedDownload};
+    use std::sync::mpsc::Receiver;
+    use tempfile::TempDir;
+
+    fn app_with_catalog(config: datui::config::AppConfig) -> (App, Receiver<AppEvent>, TempDir) {
+        let mut config = config;
+        config.data.use_desktop_recents = false;
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        let cache = TempDir::new().unwrap();
+        app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
+        app.enter_home();
+        settle(&mut app, &rx, |_| true);
+        (app, rx, cache)
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let index = app
+            .home
+            .visible()
+            .iter()
+            .position(|row| matches!(row, Row::Entry { entry, .. } if entry.name == name))
+            .unwrap_or_else(|| panic!("a row named {name}"));
+        app.home.selected = index;
+    }
+
+    fn screen(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// A built-in web file's row says its format and what it weighs before anything is
+    /// fetched, at 80 and at 200 columns.
+    #[test]
+    fn catalog_rows_say_their_format_and_size() {
+        let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
+        for (w, h) in [(80, 24), (200, 50)] {
+            // Folded sections ahead of it would push it off a short screen.
+            select_named(&mut app, "Palmer penguins");
+            let lines = screen(&mut app, w, h);
+            let row = lines
+                .iter()
+                .find(|line| line.find("Palmer penguins").is_some_and(|at| at < 12))
+                .unwrap_or_else(|| panic!("{w}x{h}: {lines:#?}"));
+            assert!(row.contains("Palmer penguins csv"), "{w}x{h}: {row:?}");
+            assert!(row.contains("16.1 KB"), "{w}x{h}: {row:?}");
+        }
+    }
+
+    /// Enter on a small built-in web file asks for its download without a question;
+    /// the same URL typed at `~` keeps the question.
+    #[test]
+    fn a_small_builtin_file_opens_without_a_question_and_a_typed_url_asks() {
+        let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
+        select_named(&mut app, "Palmer penguins");
+        let Some(AppEvent::Open(paths, options)) = press(&mut app, KeyCode::Enter) else {
+            panic!("Enter opens it");
+        };
+        let unasked = options.download_unasked.expect("downloaded unasked");
+        assert_eq!(unasked.limit, UnaskedDownload::LIMIT);
+        assert!(unasked.covers(None), "its listed size is under the limit");
+        let url = paths[0].to_string_lossy().into_owned();
+
+        let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
+        press(&mut app, KeyCode::Char('~'));
+        for c in url.chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        let Some(AppEvent::Open(_, options)) = press(&mut app, KeyCode::Enter) else {
+            panic!("Enter at ~ opens the URL");
+        };
+        assert_eq!(options.download_unasked, None, "a typed URL is asked about");
+    }
+
+    /// A recent opened from a collection is named as the collection names it, with the
+    /// format its name no longer says (#547 D12).
+    #[test]
+    fn a_recent_from_a_collection_keeps_its_name() {
+        use datui::home::{Collection, CollectionDataset, ListingRequest, build_listing};
+        let url = std::path::PathBuf::from("https://example.com/data/penguins.csv");
+        let listing = build_listing(&ListingRequest {
+            recents: vec![url.clone()],
+            collections: vec![Collection {
+                name: "public".to_string(),
+                label: "Public datasets".to_string(),
+                builtin: true,
+                datasets: vec![CollectionDataset {
+                    name: "Palmer penguins".to_string(),
+                    location: url.clone(),
+                    details: Vec::new(),
+                    size: Some(16_480),
+                }],
+            }],
+            config_dirs: Vec::new(),
+            remembered_dirs: Vec::new(),
+            desktop_dirs: Vec::new(),
+            browsing: None,
+            probed: Default::default(),
+            unreachable: Default::default(),
+            listing_so_far: Default::default(),
+            cut_short: Default::default(),
+            probe_errors: Default::default(),
+            network_check: |_| true,
+            cloud: Vec::new(),
+            known: Default::default(),
+        });
+        let recent = listing
+            .sections
+            .iter()
+            .find(|s| s.title == datui::home::HomeState::RECENT_SECTION)
+            .expect("a Recent section");
+        let row = recent.rows.iter().find(|r| r.path == url).unwrap();
+        assert_eq!(row.name, "Palmer penguins");
+        assert_eq!(row.label(), "csv");
+        assert_eq!(row.size, Some(16_480));
     }
 }

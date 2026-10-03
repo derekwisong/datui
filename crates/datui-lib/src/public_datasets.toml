@@ -3,7 +3,9 @@
 # files open directly, and nothing is fetched until an entry is opened.
 #
 # Each entry is labeled with its actual scope, and must be readable without
-# credentials or requester-pays access.
+# credentials or requester-pays access. An HTTP(S) file gives its `size` in bytes, as
+# measured when it was added: its row shows it, and one under 50 MB is downloaded
+# without asking. A rolling file's size is a typical one.
 #
 # The weekly `Public datasets` workflow checks every entry.
 
@@ -14,6 +16,7 @@ label = "Public datasets"
 [[sources.datasets]]
 name = "NYC flights (2013)"
 url = "https://vincentarelbundock.github.io/Rdatasets/csv/nycflights13/flights.csv"
+size = 33206996
 description = "Departures from JFK, LaGuardia and Newark; delays in minutes"
 publisher = "BTS / nycflights13; CSV hosted by Rdatasets"
 license = "CC0 (nycflights13)"
@@ -22,6 +25,7 @@ homepage = "https://nycflights13.tidyverse.org/reference/flights.html"
 [[sources.datasets]]
 name = "Food nutrition (fast food)"
 url = "https://vincentarelbundock.github.io/Rdatasets/csv/openintro/fastfood.csv"
+size = 44271
 description = "515 menu items; nutrients per item, not per 100 g"
 publisher = "OpenIntro; CSV hosted by Rdatasets"
 license = "GPL-3 (OpenIntro package)"
@@ -30,6 +34,7 @@ homepage = "https://www.openintro.org/data/index.php?data=fastfood"
 [[sources.datasets]]
 name = "US baby names (1880-2017)"
 url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2022/2022-03-22/babynames.csv"
+size = 48788378
 description = "Published name counts by year and sex; counts below five are suppressed"
 publisher = "SSA / babynames; CSV hosted by TidyTuesday"
 license = "CC0 / public domain"
@@ -47,6 +52,7 @@ homepage = "https://registry.opendata.aws/noaa-ghcn/"
 [[sources.datasets]]
 name = "Premier League (2020-21)"
 url = "https://raw.githubusercontent.com/footballcsv/england/master/2020s/2020-21/eng.1.csv"
+size = 17834
 description = "Match rounds, dates, teams and full-time scores"
 publisher = "OpenFootball / football.csv"
 license = "CC0"
@@ -55,6 +61,7 @@ homepage = "https://github.com/footballcsv/england"
 [[sources.datasets]]
 name = "NYC yellow taxis (January 2025)"
 url = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet"
+size = 59158238
 description = "One original monthly trip file; fares, distances and congestion fees"
 publisher = "NYC Taxi and Limousine Commission"
 license = "NYC Open Data terms"
@@ -63,6 +70,7 @@ homepage = "https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page"
 [[sources.datasets]]
 name = "Earthquakes (past month)"
 url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.csv"
+size = 2153157
 description = "Rolling month of worldwide earthquakes; magnitudes, depth and location"
 publisher = "USGS"
 license = "Public domain"
@@ -71,6 +79,7 @@ homepage = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/csv.php"
 [[sources.datasets]]
 name = "Space launches (1957-2018)"
 url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2019/2019-01-15/launches.csv"
+size = 430817
 description = "Historical launch records and agencies; includes failed attempts"
 publisher = "Jonathan McDowell / The Economist; CSV hosted by TidyTuesday"
 license = "MIT (The Economist extract); credit Jonathan McDowell"
@@ -79,6 +88,7 @@ homepage = "https://github.com/TheEconomist/graphic-detail-data/tree/master/data
 [[sources.datasets]]
 name = "Palmer penguins"
 url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+size = 16480
 description = "344 penguins: species, island, bill, flipper length and body mass"
 publisher = "Palmer Station LTER / palmerpenguins; CSV hosted by Rdatasets"
 license = "CC0; credit Horst, Hill and Gorman (2020)"
@@ -87,6 +97,7 @@ homepage = "https://allisonhorst.github.io/palmerpenguins/"
 [[sources.datasets]]
 name = "Aqueous solubility (SDF)"
 url = "https://raw.githubusercontent.com/rdkit/rdkit/master/Docs/Book/data/solubility.train.sdf"
+size = 1376487
 description = "1,025 molecules: measured solubility (log mol/L), a low, medium or high class, and SMILES"
 publisher = "Huuskonen (2000); SDF from the RDKit book's data"
 license = "BSD-3-Clause (RDKit)"

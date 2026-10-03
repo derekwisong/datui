@@ -1012,6 +1012,10 @@ pub struct DatasetConfig {
     pub license: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub homepage: String,
+    /// About how many bytes an HTTP(S) file is, for its row before anything is
+    /// downloaded. What the server says replaces it once the file is opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
     /// Keys that are not recognized, kept so validation can name them.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
@@ -1019,7 +1023,7 @@ pub struct DatasetConfig {
 
 const SOURCE_KEYS: &str = "name, label, datasets";
 const DATASET_KEYS: &str =
-    "name, path, url, auth, connection, description, publisher, license, homepage";
+    "name, path, url, auth, connection, description, publisher, license, homepage, size";
 const AUTH_VALUES: &str = "auto or anonymous";
 
 /// Where a dataset URL lives, as far as reading it is concerned.

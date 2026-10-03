@@ -63,7 +63,7 @@ Tabs:
   Arrow, Avro, ORC:
                The record batches, record or stripes, codec and metadata at
                an end of the file. Read when the panel first opens
-  Excel:       A workbook's sheets, each with its range and size, and which
+  Excel:       A workbook's worksheets, each with its range and size, and which
                one is open. Only for Excel files
   SQLite:      A database's page size, versions and tables, with their
                columns and the rows ANALYZE stored. Only for SQLite tables

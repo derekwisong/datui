@@ -58,7 +58,7 @@ pub fn sheets(path: &Path) -> Result<Vec<Table>> {
         .filter_map(|attrs| {
             Some(Table {
                 name: attr(&attrs, "name")?,
-                kind: "sheet".to_string(),
+                kind: "worksheet".to_string(),
                 internal: attr(&attrs, "state").is_some_and(|s| s != "visible"),
                 columns: Vec::new(),
             })
@@ -217,7 +217,7 @@ pub fn detail<RS: std::io::Read + std::io::Seek>(
     Detail {
         tab: crate::text_formats::tab(FileFormat::Excel),
         lines: vec![first, format!("Opened: {opened}")],
-        list_title: "Sheets",
+        list_title: "Worksheets",
         list,
         ..Default::default()
     }

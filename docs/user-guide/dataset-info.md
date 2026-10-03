@@ -44,7 +44,7 @@ tables lists them on the [home screen](home-screen.md) as places inside it
 | VCD | **VCD** | no |
 | FIX | **FIX** | no |
 | SDF | **SDF** | no |
-| NumPy | **NumPy** | arrays |
+| NumPy | **NumPy** | tables |
 | ELF | **ELF** | tables |
 | ULog | **ULog** | tables |
 | DataFlash | **DataFlash** | tables |

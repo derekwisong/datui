@@ -80,6 +80,11 @@ const ALLOWED: &[(&str, &str)] = &[
         "docs/user-guide/system-theming.md",
         "before rendering templates",
     ),
+    // The Excel reader: the workbook XML's own tag, and Excel's kinds of sheet that
+    // are not worksheets (chart sheet, dialog sheet, macro sheet).
+    ("crates/datui-lib/src/excel.rs", "sheet"),
+    // The check describing itself.
+    ("docs/for-developers/tests.md", "\"opens anything\" claims"),
     // GGUF's own key.
     ("docs/", "chat template"),
     ("release-notes/", "chat template"),

@@ -2,7 +2,8 @@
 
 Run `datui` without a path, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>, to find and
 open a dataset. Type to filter the list; press <kbd>Enter</kbd> to open the
-selected row. The details pane previews its schema when available.
+selected row. The details pane shows the selected file's first rows and its
+schema when available.
 
 ## Open a file or directory
 
@@ -143,7 +144,23 @@ crossing onto network shares or triggering automounts during a search.
 | Partitions | Keys and values found in directory names |
 | Schema | Known columns and their types |
 
-Parquet previews read metadata, not data rows. Counts cover up to 64 files;
+### First rows
+
+For a local CSV, TSV, PSV, JSON Lines, Arrow IPC or Parquet file, the pane's
+`ROWS` block shows the first eight rows of the leading columns, read in the
+background when the row is selected. The read is the open's own first page:
+<kbd>Enter</kbd> installs it, so opening the file reads nothing again.
+
+| Setting | Effect |
+|---|---|
+| `[data] preview_max_mb = 64` | Largest file previewed; for Parquet, its average row group. `0` turns the preview off |
+
+Files on network shares and in object stores are not read before they are
+opened. Below about 100 columns, where there is no pane, the rows show in a
+strip at the bottom of the screen when the list leaves at least four lines
+free, as it does inside a small directory.
+
+Parquet facts read metadata, not data rows. Counts cover up to 64 files;
 for a larger dataset the pane shows an unknown row count and a sampled column
 count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts.
 

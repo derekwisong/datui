@@ -7070,3 +7070,209 @@ fn test_a_file_row_says_how_it_will_be_read() {
         screen.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// The ROWS preview: the first rows of the selected file, read once (#547 M4, M8)
+// ---------------------------------------------------------------------------
+
+mod first_rows {
+    use super::coming_back::{draw, go_into, home_app, press, select, settle};
+    use crossterm::event::KeyCode;
+    use datui::AppEvent;
+    use datui::home_preview::Stamp;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc::Receiver;
+    use tempfile::TempDir;
+
+    /// `people.csv` of `rows` rows, in a directory of its own under `dir`.
+    fn people(dir: &Path, rows: usize) -> PathBuf {
+        let mut text = String::from("id,name,score\n");
+        for i in 0..rows {
+            text.push_str(&format!("{i},person_{i:03},{}.5\n", i * 3));
+        }
+        let path = dir.join("small").join("people.csv");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn config(dir: &Path) -> datui::config::AppConfig {
+        let mut config = datui::config::AppConfig::default();
+        config.data.directories = vec![dir.to_string_lossy().into_owned()];
+        config
+    }
+
+    fn render(app: &mut datui::App, w: u16, h: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// Draw at `w`×`h` until the selected file's preview has landed.
+    fn wait_for_rows(app: &mut datui::App, rx: &Receiver<AppEvent>, w: u16, h: u16) {
+        let entry = app.home.selected_entry().expect("a row selected");
+        let stamp = Stamp::of_entry(&entry);
+        render(app, w, h);
+        settle(app, rx, |app| {
+            app.home_previews
+                .rows(&entry.path, stamp)
+                .is_some_and(|rows| rows.is_some())
+        });
+    }
+
+    /// Into `small/`, where the file is the only row and the list leaves rows free.
+    fn into_small(tmp: &Path) -> (datui::App, Receiver<AppEvent>, PathBuf) {
+        let file = people(tmp, 40);
+        let (mut app, rx) = home_app(config(tmp));
+        select(&mut app, &tmp.join("small"));
+        go_into(&mut app, &rx, KeyCode::Right, &tmp.join("small"));
+        select(&mut app, &file);
+        (app, rx, file)
+    }
+
+    fn open(app: &mut datui::App, rx: &Receiver<AppEvent>) -> bool {
+        let Some(AppEvent::Open(paths, options)) = press(app, KeyCode::Enter) else {
+            panic!("Enter on a file opens it");
+        };
+        let prepared = options.prepared.is_some();
+        crate::common::pump_open_until_loaded(app, rx, paths, options);
+        prepared
+    }
+
+    fn first_cell(app: &datui::App, column: &str) -> String {
+        let df = app
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.display_df())
+            .expect("rows on screen");
+        df.column(column).unwrap().get(0).unwrap().to_string()
+    }
+
+    /// The pane shows the file's first rows, and Enter opens the dataset that read
+    /// built: no scan and no page of its own. Read once, shown twice.
+    #[test]
+    fn a_previewed_file_opens_on_the_page_its_preview_read() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, rx, file) = into_small(tmp.path());
+        wait_for_rows(&mut app, &rx, 200, 50);
+        let screen = render(&mut app, 200, 50).join("\n");
+        assert!(screen.contains("ROWS"), "{screen}");
+        assert!(screen.contains("person_000"), "real values: {screen}");
+        assert_eq!(app.reads.previews, 1);
+        // Drawn again, at another size too, it is not read again.
+        render(&mut app, 80, 24);
+        render(&mut app, 200, 50);
+        assert_eq!(app.reads.previews, 1);
+
+        let read = app.reads;
+        assert!(open(&mut app, &rx), "the open takes what the preview built");
+        assert_eq!(app.reads, read, "the open read nothing of {file:?} again");
+        assert_eq!(first_cell(&app, "name"), "\"person_000\"");
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(40),
+            "the page held them all"
+        );
+    }
+
+    /// Without a preview, the same open scans and reads its page: the counter above
+    /// is one that moves.
+    #[test]
+    fn a_file_with_no_preview_is_read_by_its_open() {
+        let tmp = TempDir::new().unwrap();
+        let file = people(tmp.path(), 40);
+        let mut config = config(tmp.path());
+        config.data.preview_max_mb = 0;
+        let (mut app, rx) = home_app(config);
+        select(&mut app, &tmp.path().join("small"));
+        go_into(&mut app, &rx, KeyCode::Right, &tmp.path().join("small"));
+        select(&mut app, &file);
+        render(&mut app, 200, 50);
+        let before = app.reads;
+        assert!(!open(&mut app, &rx));
+        assert_eq!(app.reads.previews, before.previews, "nothing previewed");
+        assert_eq!(app.reads.scans, before.scans + 1);
+        assert!(app.reads.pages > before.pages);
+        assert_eq!(first_cell(&app, "name"), "\"person_000\"");
+    }
+
+    /// A file changed since its preview is opened as it is now, not as it was.
+    #[test]
+    fn a_file_changed_since_its_preview_is_read_again() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, rx, file) = into_small(tmp.path());
+        wait_for_rows(&mut app, &rx, 200, 50);
+        std::fs::write(&file, "id,name,score\n7,changed,1.0\n").unwrap();
+        let before = app.reads;
+        assert!(!open(&mut app, &rx), "the old page is not installed");
+        assert_eq!(app.reads.scans, before.scans + 1);
+        assert_eq!(first_cell(&app, "name"), "\"changed\"");
+    }
+
+    /// Parquet's first page too, and its columns in the pane from the same read.
+    #[test]
+    fn a_parquet_file_previews_its_first_page() {
+        let tmp = TempDir::new().unwrap();
+        crate::common::ensure_sample_data();
+        let dir = tmp.path().join("small");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("people.parquet");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/sample-data/people.parquet"),
+            &file,
+        )
+        .unwrap();
+        let (mut app, rx) = home_app(config(tmp.path()));
+        select(&mut app, &dir);
+        go_into(&mut app, &rx, KeyCode::Right, &dir);
+        select(&mut app, &file);
+        wait_for_rows(&mut app, &rx, 200, 50);
+        let screen = render(&mut app, 200, 50).join("\n");
+        assert!(screen.contains("ROWS"), "{screen}");
+        let read = app.reads;
+        assert!(open(&mut app, &rx));
+        assert_eq!(app.reads, read, "nothing read again");
+    }
+
+    /// Below the pane's width the rows take the lines the list leaves free, at the
+    /// bottom of the screen; a list with none free gets no strip, and nothing is read
+    /// for one.
+    #[test]
+    fn the_rows_strip_at_80_by_24() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, rx, _file) = into_small(tmp.path());
+        wait_for_rows(&mut app, &rx, 80, 24);
+        let screen = render(&mut app, 80, 24);
+        let heading = screen
+            .iter()
+            .position(|line| line.trim_start().starts_with("ROWS"))
+            .unwrap_or_else(|| panic!("a strip: {screen:#?}"));
+        assert!(screen[heading + 1].contains("id") && screen[heading + 1].contains("name"));
+        assert!(screen[heading + 2].contains("person_000"), "{screen:#?}");
+        // Its last row sits on the line above the control bar.
+        assert!(screen[22].contains("person_"), "{screen:#?}");
+        // The list is above it, whole.
+        assert!(screen[..heading].iter().any(|l| l.contains("people.csv")));
+
+        // A directory that fills the screen leaves no room: no strip, no read.
+        let full = TempDir::new().unwrap();
+        for i in 0..40 {
+            super::touch(full.path(), &format!("f{i:02}.csv"));
+        }
+        let (mut app, rx) = home_app(config(full.path()));
+        settle(&mut app, &rx, |_| true);
+        select(&mut app, &full.path().join("f00.csv"));
+        let before = app.reads;
+        let screen = render(&mut app, 80, 24);
+        assert!(!screen.iter().any(|l| l.contains("ROWS")), "{screen:#?}");
+        assert_eq!(app.reads.previews, before.previews);
+        draw(&mut app);
+    }
+}

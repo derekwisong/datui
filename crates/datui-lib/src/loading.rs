@@ -908,12 +908,48 @@ impl Loader {
         } = request;
         // What an earlier load found of its Arrow is not this one's to read.
         options.arrow_parts = None;
+        let prepared = options
+            .prepared
+            .take()
+            .and_then(|handoff| handoff.lock().ok()?.take());
         let load = self.start(false);
         load.path = Some(shown.unwrap_or_else(|| stdin::named(&paths[0])));
         load.size = size;
         load.recent = recent;
         load.paths = Some(paths.clone());
-        self.first_step(paths, options)
+        match prepared {
+            Some(prepared) => self.install_prepared(*prepared),
+            None => self.first_step(paths, options),
+        }
+    }
+
+    /// Install the dataset the home screen's preview built: its scan, schema and first
+    /// page are read already, so the open goes straight to its first rows, which are
+    /// on hand.
+    fn install_prepared(&mut self, prepared: crate::home_preview::Prepared) -> Step {
+        let crate::home_preview::Prepared {
+            state,
+            options,
+            debug_label,
+            progress,
+        } = prepared;
+        let writer = self.unfinished.writer(progress.cancel_flag());
+        let load = self.load.as_mut().expect("started by the open");
+        load.phase = Phase::FirstRows;
+        // The dataset was built reporting to the preview's counter, which is the one
+        // its own footer pass goes on with.
+        load.progress = progress;
+        load.writer = writer;
+        Step::Install(Box::new(Loaded {
+            state: *state,
+            path: load.path.clone(),
+            options,
+            debug_label,
+            paths: load.paths.clone(),
+            recent: load.recent.clone(),
+            from_home: load.from_home,
+            footers: load.progress.clone(),
+        }))
     }
 
     /// Open a frame handed over (the Python binding's): only its schema is read.

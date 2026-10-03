@@ -1076,6 +1076,13 @@ pub struct CollectResult {
     count_known: bool,
 }
 
+impl CollectResult {
+    /// The rows read, as the buffer will hold them.
+    pub(crate) fn rows(&self) -> &DataFrame {
+        &self.df
+    }
+}
+
 /// Rows the display buffer may hold when `display.max_buffered_rows` is not set. Also
 /// the window a remote scan buffers when the cap is switched off.
 pub const DEFAULT_MAX_BUFFERED_ROWS: usize = 100_000;

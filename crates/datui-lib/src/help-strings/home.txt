@@ -86,6 +86,10 @@ Reading a row:
   A file row that is not read lazily says how opening it reads it, dim
   beside its name: "converts" (read once into a temporary file), "in
   memory" (read whole), or "downloads" (a remote file copied first).
+  The details pane shows a local file's first rows under ROWS, read when
+  the row is selected; Enter opens the file on those same rows, so they
+  are read once. Without the pane, they take the free lines at the bottom
+  of the screen. [data] preview_max_mb sets the largest file read.
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)

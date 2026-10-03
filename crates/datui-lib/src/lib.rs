@@ -15754,6 +15754,7 @@ impl App {
             paths,
             options: &options,
             format: state.read_as().or(options.format),
+            read_mode: state.read_mode(),
             schema: state.source_schema(),
             remote_objects: state
                 .remote_objects()

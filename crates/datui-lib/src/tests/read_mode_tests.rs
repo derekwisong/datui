@@ -206,3 +206,29 @@ fn every_reader_reads_as_its_format_says() {
         }
     }
 }
+
+/// The home screen page's marker table says what `ReadMode::marker` and each format's
+/// read mode say: every format a marker is put on is named in its row.
+#[test]
+fn the_home_docs_name_each_format_a_marker_is_put_on() {
+    let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/user-guide/home-screen.md");
+    let text = std::fs::read_to_string(&page).expect("the home screen page");
+    let row = |marker: &str| -> String {
+        text.lines()
+            .find(|l| l.starts_with(&format!("| `{marker}` |")))
+            .unwrap_or_else(|| panic!("a row for {marker}"))
+            .to_string()
+    };
+    for format in FileFormat::ALL {
+        let Some(marker) = format.read_mode(Stored::Plain).and_then(ReadMode::marker) else {
+            continue;
+        };
+        assert!(
+            row(marker).contains(format.title()),
+            "{} is marked `{marker}`",
+            format.title()
+        );
+    }
+    assert_eq!(ReadMode::Lazy.marker(), None);
+}

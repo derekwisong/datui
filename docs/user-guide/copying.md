@@ -149,7 +149,10 @@ A reader that is not a scan reads the file whole and ends in `.lazy()`; so
 does an Arrow IPC stream, read with `pl.read_ipc_stream`. A SQLite table is
 read with `SELECT *` through Python's `sqlite3`, the one table of a database
 opened without `--table` included. A NumPy array is loaded with `np.load`,
-an archive's by its name, and named as datui names its columns.
+an archive's by its name, and named as datui names its columns. Where datui
+read the data lazily and the script reads it whole, a comment says so in the
+words of the Info panel's `Read:` line: `# Read: lazy in datui; pl.read_database
+reads the file whole into memory.`
 
 These start from `df = ...` for you to fill in, with a comment naming the
 file and the table on screen (`flight.bin --table GPS`):

@@ -482,6 +482,8 @@ pub struct OpenRecord<'a> {
     /// chose, which the name may not say (a `.bin` DataFlash log, a part file with no
     /// extension). Before `--format` and the extension.
     pub format: Option<FileFormat>,
+    /// How datui read the data ([`crate::ReadMode`]), as the Info panel's `Read:` says.
+    pub read_mode: Option<crate::ReadMode>,
     /// The data as loaded.
     pub schema: &'a Schema,
     /// Each object a remote dataset reads, for the format of a prefix.
@@ -999,6 +1001,7 @@ fn sql_ident(name: &str) -> String {
 /// The source a format read whole by a call of its own, with the steps the open
 /// recorded after it.
 fn whole(call: &mut Call<'_>, read: String, imports: Vec<&'static str>) -> Source {
+    call.notes.extend(read_whole_note(call.record, &read));
     let mut after = std::mem::take(&mut call.after);
     after.extend(call.skip_tail.take());
     Source::Read {
@@ -1007,6 +1010,18 @@ fn whole(call: &mut Call<'_>, read: String, imports: Vec<&'static str>) -> Sourc
         notes: std::mem::take(&mut call.notes),
         imports,
     }
+}
+
+/// What the script's read costs where datui's did not: the `Read:` fact the Info
+/// panel states, beside the call that reads the file whole.
+fn read_whole_note(record: &OpenRecord, call: &str) -> Option<String> {
+    let name = call.split('(').next().unwrap_or(call);
+    (record.read_mode == Some(crate::ReadMode::Lazy)).then(|| {
+        format!(
+            "Read: {} in datui; {name} reads the file whole into memory.",
+            crate::ReadMode::Lazy.label()
+        )
+    })
 }
 
 /// SQLite: the table on screen, read through Python's own `sqlite3`.
@@ -1235,6 +1250,7 @@ pub fn source(record: &OpenRecord) -> Source {
     }
     let mut call = format!("{}({})", python.call, args.join(", "));
     if python.eager {
+        notes.extend(read_whole_note(record, &call));
         call.push_str(".lazy()");
     }
     Source::Read {
@@ -1604,6 +1620,7 @@ mod tests {
             s3_region: None,
             unsigned: false,
             format: None,
+            read_mode: None,
             read_as_text: Vec::new(),
             spec: None,
         };
@@ -1636,6 +1653,7 @@ mod tests {
                 s3_region: None,
                 unsigned: false,
                 format: None,
+                read_mode: None,
                 read_as_text: Vec::new(),
                 spec: spec.map(str::to_string),
             };
@@ -1673,6 +1691,7 @@ mod tests {
             paths: Some(paths),
             options,
             format: None,
+            read_mode: None,
             schema,
             remote_objects: Vec::new(),
             s3_endpoint: None,
@@ -1761,6 +1780,32 @@ mod tests {
         );
     }
 
+    /// A table datui read lazily that the script reads whole says so, as the Info
+    /// panel's `Read:` line does; one datui read in memory too says nothing more.
+    #[test]
+    fn a_whole_read_of_a_lazy_table_says_so() {
+        let schema = Schema::default();
+        let mut options = OpenOptions::new();
+        options.table = Some("orders".into());
+        let db = [PathBuf::from("shop.db")];
+        let mut record = record_for(&db, &options, &schema);
+        record.format = Some(FileFormat::Sqlite);
+        record.read_mode = Some(crate::ReadMode::Lazy);
+        let (call, notes) = call_of(source(&record));
+        assert!(call.starts_with("pl.read_database("), "{call}");
+        assert!(
+            notes.contains(
+                &"Read: lazy in datui; pl.read_database reads the file whole into memory."
+                    .to_string()
+            ),
+            "{notes:?}"
+        );
+        let json = [PathBuf::from("a.json")];
+        let mut record = record_for(&json, &options, &schema);
+        record.read_mode = Some(crate::ReadMode::InMemory);
+        assert!(call_of(source(&record)).1.is_empty());
+    }
+
     /// `--comment-char` is Polars' `comment_prefix`.
     #[test]
     fn a_comment_character_is_the_comment_prefix() {
@@ -1786,6 +1831,7 @@ mod tests {
             paths: Some(&paths),
             options: &options,
             format: Some(FileFormat::Dataflash),
+            read_mode: None,
             schema: &schema,
             remote_objects: Vec::new(),
             s3_endpoint: None,
@@ -1827,6 +1873,7 @@ mod tests {
             s3_region: None,
             unsigned: false,
             format: None,
+            read_mode: None,
             read_as_text: Vec::new(),
             spec: None,
         };
@@ -1857,6 +1904,7 @@ mod tests {
             s3_region: None,
             unsigned: false,
             format: None,
+            read_mode: None,
             read_as_text: Vec::new(),
             spec: None,
         };

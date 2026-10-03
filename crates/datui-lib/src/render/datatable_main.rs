@@ -253,9 +253,9 @@ pub fn render(
         // it drops into.
         let modal_width = (area.width * 3 / 4).min(46);
         let wanted = if app.copy_modal.picker.is_some() {
-            14
+            15
         } else {
-            app.copy_modal.row_order().len() as u16 + 5
+            app.copy_modal.row_order().len() as u16 + 6
         };
         let modal_height = wanted.min(area.height);
         let modal_area = Rect {
@@ -343,8 +343,8 @@ fn render_picker(
         .max()
         .unwrap_or(0) as u16;
     let width = (widest + 6).clamp(30, 48).min(area.width);
-    // Frame, filter line, footer, and up to ten names.
-    let height = (all.len().max(1) as u16 + 4).min(14).min(area.height);
+    // Frame, filter line, the blank above the footer, footer, and up to ten names.
+    let height = (all.len().max(1) as u16 + 5).min(15).min(area.height);
     let items = picker.filtered();
     if width < 4 || height < 4 {
         return;

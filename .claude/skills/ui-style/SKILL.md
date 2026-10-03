@@ -77,7 +77,8 @@ Build these once in `widgets/ui/` and reuse them everywhere; a screen that
 hand-rolls one of these is a migration target.
 
 **Surface** — the one border. Rounded, Title Case title on the frame,
-optional one-line footer of chips. Confirm/Success/Error, every modal, every
+optional one-line footer of chips, with a blank row between it and the
+content so a focused field's accent never reads as part of a chip (#650). Confirm/Success/Error, every modal, every
 sidebar, the help overlay: all Surfaces.
 
 **FormRow** — `label  value` on one line inside a Surface, behind a reserved

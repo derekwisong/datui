@@ -8399,7 +8399,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
         KeyModifiers::NONE,
     )));
     // A short panel cannot show six notes at two lines each plus a gap.
-    let area = Rect::new(0, 0, 100, 14);
+    let area = Rect::new(0, 0, 100, 15);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
@@ -8536,8 +8536,9 @@ fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
     let shortest = (4u16..14)
         .find(|height| drawn_at(*height).contains("is in 1 of 2 files"))
         .expect("some panel in this range draws a note");
+    // Eight: the note, the panel's rows and the blank row above its footer (#650).
     assert!(
-        shortest <= 7,
+        shortest <= 8,
         "a note fits in a short panel; {shortest} rows to draw one means the panel has \
          got greedier, and the loop below would pass on one height and prove nothing"
     );
@@ -19368,8 +19369,9 @@ fn test_inspector_counts_the_lines_of_the_whole_value() {
     for (width, height) in [(80usize, 24usize), (200, 50)] {
         let rows = rows_at(&mut app, width as u16, height as u16);
         let text = rows.join("\n");
-        // The pane's rows: less the bar, the frame, the footer, two rules, two fields.
-        let shown = height - 8;
+        // The pane's rows: less the bar, the frame, the footer and the blank above it,
+        // two rules, two fields.
+        let shown = height - 9;
         let more = format!(
             "{} {} more lines",
             g.ellipsis,

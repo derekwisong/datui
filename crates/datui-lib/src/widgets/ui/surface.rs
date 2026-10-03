@@ -38,7 +38,8 @@ impl<'a> Surface<'a> {
     }
 
     /// Clear the area, draw the frame and footer, and return the content area:
-    /// the inside minus a one-column gutter each side and the footer row.
+    /// the inside minus a one-column gutter each side, the footer row, and the blank
+    /// row that keeps the content's last line off the chips (#650).
     pub fn render(&self, area: Rect, buf: &mut Buffer, ctx: &RenderContext) -> Rect {
         Clear.render(area, buf);
         let block = Block::default()
@@ -68,8 +69,10 @@ impl<'a> Surface<'a> {
                 };
                 footer.render_flush(footer_area, buf);
             }
+            // The gap only where there is content left to keep apart.
+            let gap = u16::from(padded.height > 2);
             return Rect {
-                height: padded.height.saturating_sub(1),
+                height: padded.height.saturating_sub(1 + gap),
                 ..padded
             };
         }
@@ -120,8 +123,10 @@ mod tests {
             "the footer is the last inner row: {:?}",
             rows[6]
         );
-        // Content sits above the footer, inside a one-column gutter.
-        assert_eq!(content, Rect::new(2, 1, 36, 5));
+        // Content sits above the footer, a blank row between, inside a one-column
+        // gutter.
+        assert_eq!(content, Rect::new(2, 1, 36, 4));
+        assert!(rows[5].trim_matches(['│', ' ']).is_empty(), "{:?}", rows[5]);
     }
 
     #[test]

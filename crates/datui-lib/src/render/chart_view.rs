@@ -159,7 +159,7 @@ pub fn render(
         // A commitment, so a compact centered dialog: the format list plus a
         // row per option, never scaling with the terminal.
         let modal_width = (chart_area.width * 3 / 4).min(66);
-        let modal_height = 8.min(chart_area.height);
+        let modal_height = 9.min(chart_area.height);
         let modal_x = chart_area.x + chart_area.width.saturating_sub(modal_width) / 2;
         let modal_y = chart_area.y + chart_area.height.saturating_sub(modal_height) / 2;
         let modal_area = Rect {

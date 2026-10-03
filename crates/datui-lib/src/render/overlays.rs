@@ -23,8 +23,9 @@ fn message_popup(area: Rect, message: &str, extra_rows: u16, max_width: u16) -> 
     // disagree with the render.
     let inner = width.saturating_sub(4).max(1) as usize;
     let lines: usize = wrap_message(message, inner).len().max(1);
-    // Text, a blank, any extra rows, the footer, and the frame.
-    let height = (lines as u16 + extra_rows + 4)
+    // Text, a blank, any extra rows, the blank above the footer, the footer, and
+    // the frame.
+    let height = (lines as u16 + extra_rows + 5)
         .min(area.height * 3 / 4)
         .max(6);
     let x = area.x + (area.width.saturating_sub(width)) / 2;

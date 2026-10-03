@@ -34,9 +34,10 @@ fn parse_compression(s: &str) -> PyResult<CompressionFormat> {
 }
 
 fn parse_format(s: &str) -> PyResult<FileFormat> {
-    FileFormat::from_extension(s).ok_or_else(|| {
+    // A FIX log has no extension; it is named.
+    FileFormat::from_extension(s).or_else(|| FileFormat::from_name(s)).ok_or_else(|| {
         PyValueError::new_err(format!(
-            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, wav, aiff, midi, sqlite (got {:?})",
+            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, wav, aiff, midi, sqlite, vcd, fix, sdf (got {:?})",
             s
         ))
     })
@@ -61,6 +62,9 @@ fn format_to_str(f: FileFormat) -> &'static str {
         FileFormat::Audio => "audio",
         FileFormat::Midi => "midi",
         FileFormat::Sqlite => "sqlite",
+        FileFormat::Vcd => "vcd",
+        FileFormat::Fix => "fix",
+        FileFormat::Sdf => "sdf",
     }
 }
 

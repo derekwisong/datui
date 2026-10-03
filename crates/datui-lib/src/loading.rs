@@ -1347,6 +1347,9 @@ impl Drop for Loader {
 fn reading(format: Option<FileFormat>) -> &'static str {
     match format {
         Some(FileFormat::Nmea | FileFormat::Gpx) => "Reading GPS log",
+        Some(FileFormat::Vcd) => "Reading value change dump",
+        Some(FileFormat::Fix) => "Reading FIX log",
+        Some(FileFormat::Sdf) => "Reading SDF records",
         _ => "Reading",
     }
 }
@@ -1498,6 +1501,8 @@ mod tests {
             "wav",
             "mid",
             "db",
+            "vcd",
+            "sdf",
         ] {
             let format = FileFormat::from_extension(ext).expect(ext);
             seen.push(format);
@@ -1518,6 +1523,14 @@ mod tests {
                 assert_eq!(in_place(&gz, false), said(compressed), "{gz}");
             }
         }
+        // A FIX log has no extension, so no URL names it: it is found by its content
+        // once downloaded, as `http_file` and `bucket_object` say for it.
+        assert_eq!(FileFormat::Fix.http_file(), RemoteRead::Downloaded);
+        assert_eq!(
+            FileFormat::Fix.bucket_object(Stored::Plain),
+            RemoteRead::Downloaded
+        );
+        seen.push(FileFormat::Fix);
         for f in FileFormat::ALL {
             assert!(seen.contains(&f), "{} is checked", f.name());
         }

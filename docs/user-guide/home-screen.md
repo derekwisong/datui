@@ -274,6 +274,7 @@ leaves out the rows it cannot open.
 | Earthquakes (past month) | Rolling month of worldwide earthquakes; magnitudes, depth and location | Public domain |
 | Space launches (1957-2018) | Historical launch records and agencies; includes failed attempts | MIT (The Economist extract); credit Jonathan McDowell |
 | Palmer penguins | 344 penguins: species, island, bill, flipper length and body mass | CC0; credit Horst, Hill and Gorman (2020) |
+| Aqueous solubility (SDF) | 1,025 molecules: measured solubility (log mol/L), a low, medium or high class, and SMILES | BSD-3-Clause (RDKit) |
 | Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
 
@@ -292,6 +293,7 @@ the publisher's: check it before you use the data.
 | Earthquakes (past month) | [A map as a scatter chart](charting.md#examples-on-the-built-in-datasets) |
 | NOAA daily weather (GHCN-D) | [Public data in S3](remote-data.md#examples-on-public-data), [views](views.md) |
 | Bitcoin and Ethereum | [Partitions by date](remote-data.md#examples-on-public-data) |
+| Aqueous solubility (SDF) | [SDF compound files](loading-data.md#sdf-compound-files) |
 
 A collection named `public` replaces this one,
 `[data] builtin_catalog = false` drops it, and

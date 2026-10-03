@@ -41,6 +41,9 @@ names it:
 | `{`, the object open past the first line | JSON |
 | an NMEA sentence (`$GPGGA,`) with a checksum that matches, or of a type receivers write | NMEA |
 | XML whose first element is `<gpx` | GPX |
+| a line with `8=FIX`, a delimiter and `9=` | FIX |
+| `$date`, `$version`, `$timescale`, `$comment`, `$scope` or `$var`, with an `$end` | VCD |
+| a `V2000` or `V3000` counts line, or `M  END` with a data item or `$$$$` | SDF |
 | a first line with tabs and no commas | TSV |
 | anything else | CSV |
 
@@ -99,6 +102,9 @@ The format is taken from the extension, or from `--format` when there is none.
 | [GPX](#gps-logs) | `.gpx` | converted once | converted once | downloaded | downloaded | no |
 | [WAV, BWF, RF64, AIFF](#audio-files) | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy | no | downloaded | downloaded | no |
 | [MIDI](#midi-files) | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | in memory | no | downloaded | downloaded | no |
+| [VCD](#vcd-value-change-dumps) | `.vcd` | converted once | converted once | downloaded | downloaded | no |
+| [FIX logs](#fix-logs) | any, by content (`8=FIX`), or `--format fix` | converted once | converted once | downloaded | downloaded | no |
+| [SDF](#sdf-compound-files) | `.sdf`, `.sd` | converted once | converted once | downloaded | downloaded | no |
 | [SQLite](#sqlite-databases) | `.db`, `.sqlite`, `.sqlite3`, `.db3` | lazy | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
@@ -472,6 +478,171 @@ The database is only read:
 | Not a SQLite database, or damaged | An error |
 
 A compressed database (`shop.db.gz`) is not read; decompress it first.
+### VCD value change dumps
+
+Read: [converted once](#how-each-format-is-read).
+
+```bash
+datui waves.vcd
+datui waves.vcd.gz
+```
+
+A VCD file from an HDL simulator or logic analyzer opens as a long table, one row
+per value change of each signal, read once into a temporary Arrow IPC file.
+
+| Column | Holds |
+|---|---|
+| `time` | The change's time: a Duration in nanoseconds for a timescale of `1 ns` or coarser; for `ps` and `fs`, an integer count of them (a Notes line says which) |
+| `signal` | The dotted scope path and name with its bit range: `tb.dut.count[3:0]` |
+| `value` | The value as written, a short vector padded to the signal's width (`b1` of a 4-bit signal is `0001`; `bx` is `xxxx`); a real's text |
+| `int` | The value as an integer, when it is binary with no `x` or `z` and fits 64 bits |
+| `width` | The signal's width from its `$var` |
+
+- A file with another name opens when it starts with a VCD section, such as
+  `$date` or `$timescale`.
+- An identifier declared at two paths (an alias) gives a row for each.
+- Press <kbd>i</kbd> for the VCD tab: timescale, date, version, comments, the
+  number of value changes and their time span, and each signal's type, width
+  and identifier. The Notes tab counts tokens that are not VCD and changes to
+  undeclared identifiers.
+- A token is at most 1 MiB, and a header holds at most 1,048,576 signals, 256
+  scopes deep.
+
+The wide table, one row per time and one column per signal, each carried
+forward from its last change, is this SQL query (list the signals you want):
+
+```sql
+SELECT time,
+       MAX(clk) OVER (PARTITION BY clk_n) AS clk,
+       MAX(count) OVER (PARTITION BY count_n) AS count
+FROM (
+  SELECT *, COUNT(clk) OVER (ORDER BY time) AS clk_n,
+            COUNT(count) OVER (ORDER BY time) AS count_n
+  FROM (
+    SELECT time,
+           MAX(CASE WHEN signal = 'tb.clk' THEN value END) AS clk,
+           MAX(CASE WHEN signal = 'tb.count[3:0]' THEN value END) AS count
+    FROM df GROUP BY time
+  )
+)
+ORDER BY time
+```
+
+The inner `GROUP BY` is the pivot: one row per time, null where a signal did not
+change. Each `COUNT(...) OVER` numbers the runs between changes, and `MAX` over a
+run fills it with the change that starts it. Without the fill,
+[Pivot](reshaping.md#pivot) (<kbd>p</kbd>) with Index `time`, Columns `signal`,
+Values `value` and Aggregate `last` gives the same table with nulls between
+changes.
+
+### FIX logs
+
+Read: [converted once](#how-each-format-is-read).
+
+```bash
+datui session.log                       # known by its content
+datui --format fix capture.bin
+datui --fix-dict broker.toml session.log
+```
+
+A log of FIX `tag=value` messages, delimited by SOH, `|` or `^A`, opens as one row
+per message, read once into a temporary Arrow IPC file. A file of any name opens
+when a line in its first 4 KiB holds `8=FIX`, a delimiter and `9=`; messages may
+be one per line or back to back.
+
+| Column | Holds |
+|---|---|
+| `prefix` | The text before `8=FIX` on the line, such as a log timestamp; only when a line has one |
+| `direction` | `in` or `out`, from a word in the prefix: `IN`, `OUT`, `<`, `>`, `RECV`, `SENT` and the like |
+| `session` | A session in the prefix: `FIX.4.4:SENDER->TARGET` |
+| a column per tag | Named from the dictionary (`35` is `MsgType`, `55` is `Symbol`), in the order the tags first appear; a tag no dictionary names keeps its number |
+| `<name>_code` | Beside an enumerated tag: the code, where the tag's column shows its name (`54=1` is `Buy`) |
+| `<name>_rest` | Beside a tag repeated within a message, as a repeating group's tags are: a list of its later values; the tag's column keeps the first |
+| `body_length_ok` | Tag 9 matches the message's length; null for a message cut short of tag 10 |
+| `checksum_ok` | Tag 10 matches the message's checksum; null for a message cut short |
+
+- Prices, quantities and amounts are numbers, integers and sequence numbers
+  `i64`, UTC timestamps (`52`, `60`) datetimes, dates dates and `Y`/`N` booleans,
+  when every value of the tag reads as one; otherwise text.
+- A length-tagged value (`95`/`96` RawData, `90`/`91`, `93`/`89`, `212`/`213`
+  XmlData and the encoded text fields) is read by its length, so it may hold
+  the delimiter or a newline.
+- A bad message stays: its checks are false, and the Notes tab counts them, the
+  lines with no message, and messages cut short.
+- A message is at most 1 MiB and holds at most 4,096 fields; at most 4,096 tags
+  become columns.
+- Press <kbd>i</kbd> for the FIX tab: messages per BeginString, the dictionaries
+  read with the log, and each column's tag number and the names the dictionaries
+  give it.
+- Binary FIX encodings (SBE, FAST) are not read.
+
+#### FIX dictionaries
+
+The built-in dictionary is FIX 4.2, 4.4 and 5.0 SP2 together, the newest
+version's names winning. Venues and brokers add their own tags (5000-9999 and
+10000 up), so dictionaries can be added: on the
+[format search path](binary-formats.md#where-specs-live), or with
+`--fix-dict FILE`.
+
+| Form | |
+|---|---|
+| QuickFIX XML (`.xml`) | A QuickFIX or QuickFIX/J data dictionary, read as it is: its fields, types and enums. It applies to the messages of its version's BeginString |
+| TOML (`.toml`, `kind = "fix"`) | As below |
+
+```toml
+name = "acme.fix.broker-x"
+kind = "fix"
+match = { sender = "BROKERX", begin_string = "FIX.4.4" }   # optional
+tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 = "Low", 2 = "High" } } }
+```
+
+| Key | |
+|---|---|
+| `name` | A namespaced name, such as `acme.fix.broker-x` |
+| `match` | `sender` (49), `target` (56), `begin_string` (8): the dictionary applies only to messages with these values |
+| `tags` | Tag number to a name, or to `name`, `type` (`int`, `float`, `price`, `qty`, `string`, `char`, `timestamp`, `date`, `bool`, `length`, `data`), `enum` (code to name) and, for a length tag, `data` (the tag it sizes) |
+
+The built-in dictionary comes first, then each matching dictionary on the search
+path in order, then `--fix-dict`; a later one renames a tag or adds to its enums.
+One log can hold two counterparties that name tag 9001 differently: each
+message is read with its own, the column falls back to the tag number, and the
+FIX tab shows both names. `datui formats` lists FIX dictionaries beside the
+binary specs, and `datui formats check NAME [LOG]` checks one, and with a log
+says how many messages it matches and which of its tags they hold.
+
+The built-in dictionary is generated from QuickFIX's data dictionaries. This
+product includes software developed by quickfixengine.org
+(http://www.quickfixengine.org/).
+
+### SDF compound files
+
+Read: [converted once](#how-each-format-is-read).
+
+```bash
+datui compounds.sdf
+datui compounds.sdf.gz
+datui https://example.com/library.sdf.gz
+```
+
+An SDF (structure-data) file of molecules, as PubChem, ChEMBL and screening
+libraries publish them, opens as one row per record (`$$$$`), read once into a
+temporary Arrow IPC file. The atom and bond blocks are passed over, never held.
+
+| Column | Holds |
+|---|---|
+| `name` | The molecule's name, the record's first line; null when blank |
+| `atoms`, `bonds` | From the counts line, or a V3000 `COUNTS` line |
+| a column per data item | Each `> <FIELD>` (also `>  <FIELD>`, `> <FIELD> (ID)`, `> 25 <FIELD>`, `> DT12`), in the order first seen; null in a record without it. Integers or floats when every value is one, text otherwise |
+
+- A value of several lines keeps them, joined by newlines.
+- A record that names a field twice keeps the first; the Notes tab counts the rest.
+- A line or value is at most 1 MiB, and a file has at most 4,096 fields.
+- Press <kbd>i</kbd> for the SDF tab: the record count, and each field's type and
+  how many records hold it.
+- **Aqueous solubility (SDF)** in the home screen's
+  [public datasets](home-screen.md#public-datasets) is one to try: 1,025
+  molecules with `SOL` as a float and `SOL_classification` as text. Sort by
+  `SOL`, or filter `SOL_classification` to `(C) high`.
 
 ### CSV options
 

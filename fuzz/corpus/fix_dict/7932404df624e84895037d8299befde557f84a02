@@ -1,0 +1,4 @@
+name = "acme.fix.broker-x"
+kind = "fix"
+match = { sender = "BROKERX", begin_string = "FIX.4.4" }
+tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 = "Low", 2 = "High" } }, 9003 = { name = "BlobLen", data = 9004 } }

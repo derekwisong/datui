@@ -44,6 +44,12 @@ pub enum FileFormat {
     Midi,
     /// SQLite database (.db, .sqlite, .sqlite3, .db3): one table, picked with --table
     Sqlite,
+    /// VCD value change dump (.vcd): one row per value change of each signal
+    Vcd,
+    /// FIX log (tag=value messages, SOH or | delimited): one row per message
+    Fix,
+    /// SDF compound file (.sdf, .sd): one row per record, data items as columns
+    Sdf,
 }
 
 impl FileFormat {
@@ -88,6 +94,9 @@ impl FileFormat {
             Self::Audio => "audio",
             Self::Midi => "midi",
             Self::Sqlite => "sqlite",
+            Self::Vcd => "vcd",
+            Self::Fix => "fix",
+            Self::Sdf => "sdf",
         }
     }
 
@@ -100,7 +109,7 @@ impl FileFormat {
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
     /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -118,6 +127,9 @@ impl FileFormat {
         Self::Audio,
         Self::Midi,
         Self::Sqlite,
+        Self::Vcd,
+        Self::Fix,
+        Self::Sdf,
     ];
 
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
@@ -137,9 +149,9 @@ impl FileFormat {
     /// Tsv and Psv have a single-file reader and no multi-path one; an Excel workbook
     /// is sheets rather than rows, with nothing to concatenate. Reading the first two
     /// as a list is #275 phase 4's ("never refuse"). A GPS log is read into a file of
-    /// its own before it is scanned, one log per open. Audio files are recordings,
-    /// each with its own channels and rate, not parts of one table, and a database is
-    /// tables rather than rows.
+    /// its own before it is scanned, one log per open, as are VCD dumps, FIX logs and
+    /// SDF files. Audio files are recordings, each with its own channels and rate, not
+    /// parts of one table, and a database is tables rather than rows.
     pub fn reads_many_files(self) -> bool {
         !matches!(
             self,
@@ -150,6 +162,9 @@ impl FileFormat {
                 | Self::Gpx
                 | Self::Audio
                 | Self::Sqlite
+                | Self::Vcd
+                | Self::Fix
+                | Self::Sdf
         )
     }
 
@@ -164,8 +179,9 @@ impl FileFormat {
     /// file's tensor list is small by nature: one row per tensor, from the header. A
     /// MIDI file is decoded whole, and is refused over 64 MiB. A SQLite table is read
     /// in place, a page at a time, with sort and filters run in SQLite.
-    /// Arrow streams and GPS logs cannot be scanned where they are, so they are read
-    /// once into an IPC file that is; compressed text is decompressed once to a file.
+    /// Arrow streams, GPS logs, VCD dumps, FIX logs and SDF files cannot be scanned
+    /// where they are, so they are read once into an IPC file that is; compressed text
+    /// is decompressed once to a file.
     pub fn read_mode(self, stored: Stored) -> Option<ReadMode> {
         let plain = match self {
             Self::Parquet
@@ -175,7 +191,7 @@ impl FileFormat {
             | Self::Arrow
             | Self::Audio
             | Self::Sqlite => ReadMode::Lazy,
-            Self::Nmea | Self::Gpx => ReadMode::Converted,
+            Self::Nmea | Self::Gpx | Self::Vcd | Self::Fix | Self::Sdf => ReadMode::Converted,
             Self::Json
             | Self::Jsonl
             | Self::Avro
@@ -188,8 +204,14 @@ impl FileFormat {
         match stored {
             Stored::Plain => Some(plain),
             Stored::Stream => (self == Self::Arrow).then_some(ReadMode::Converted),
-            // A GPS log is decompressed as it is read, into the file it is read into.
-            Stored::Compressed { .. } if matches!(self, Self::Nmea | Self::Gpx) => {
+            // A GPS log, VCD dump, FIX log or SDF file is decompressed as it is read,
+            // into the file it is read into.
+            Stored::Compressed { .. }
+                if matches!(
+                    self,
+                    Self::Nmea | Self::Gpx | Self::Vcd | Self::Fix | Self::Sdf
+                ) =>
+            {
                 Some(ReadMode::Converted)
             }
             Stored::Compressed { in_memory } => self.separator().map(|_| match in_memory {
@@ -290,6 +312,8 @@ impl FileFormat {
             "wav" | "wave" | "bwf" | "rf64" | "aif" | "aiff" | "aifc" => Some(Self::Audio),
             "mid" | "midi" | "smf" | "kar" | "rmi" => Some(Self::Midi),
             "db" | "db3" | "sqlite" | "sqlite3" => Some(Self::Sqlite),
+            "vcd" => Some(Self::Vcd),
+            "sdf" | "sd" => Some(Self::Sdf),
             _ => None,
         }
     }
@@ -526,13 +550,17 @@ pub struct Args {
     #[arg(long = "compression", value_enum, help_heading = "Reading")]
     pub compression: Option<CompressionFormat>,
 
-    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, or the name of a binary format spec such as acme.l2feed
+    /// File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, vcd, fix, sdf, or the name of a binary format spec such as acme.l2feed
     #[arg(long = "format", value_name = "FORMAT", value_parser = parse_format, help_heading = "Reading")]
     pub format: Option<FormatChoice>,
 
     /// Read the file (or directory of column files) through this binary format spec, whatever else matches it
     #[arg(long = "spec", value_name = "FILE", help_heading = "Reading")]
     pub spec: Option<std::path::PathBuf>,
+
+    /// Read a FIX log with this dictionary too, over the built-in one and those on the format search path: a QuickFIX XML data dictionary, or TOML with kind = "fix"
+    #[arg(long = "fix-dict", value_name = "FILE", help_heading = "Reading")]
+    pub fix_dict: Option<std::path::PathBuf>,
 
     /// Enable debug mode to show operational information
     #[arg(long = "debug", action)]
@@ -786,7 +814,7 @@ fn parse_format(text: &str) -> Result<FormatChoice, String> {
 /// Commands besides opening data.
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
-    /// List the binary format specs on the search path: each one's name, what it matches, the file it came from, and the copies it overrides
+    /// List the binary format specs and FIX dictionaries on the search path: each one's name, what it matches, the file it came from, and the copies it overrides
     Formats {
         #[command(subcommand)]
         action: Option<FormatsAction>,
@@ -796,9 +824,9 @@ pub enum Command {
 /// What `datui formats` does besides listing.
 #[derive(Clone, Debug, Subcommand)]
 pub enum FormatsAction {
-    /// Check a spec, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error
+    /// Check a spec or FIX dictionary, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error
     Check {
-        /// A spec name on the search path, or a spec file
+        /// A spec or FIX dictionary name on the search path, or its file
         #[arg(value_name = "SPEC")]
         spec: String,
         /// A file (or directory of column files) to read with it
@@ -1122,6 +1150,17 @@ mod tests {
             Some(FileFormat::Midi)
         );
         assert_eq!(
+            FileFormat::from_path(Path::new("dump.vcd")),
+            Some(FileFormat::Vcd)
+        );
+        for name in ["lib.sdf", "lib.SD"] {
+            assert_eq!(
+                FileFormat::from_path(Path::new(name)),
+                Some(FileFormat::Sdf),
+                "{name}"
+            );
+        }
+        assert_eq!(
             FileFormat::from_path(Path::new("config.json")),
             Some(FileFormat::Json)
         );
@@ -1170,7 +1209,10 @@ mod format_tests {
                 | FileFormat::Gpx
                 | FileFormat::Audio
                 | FileFormat::Midi
-                | FileFormat::Sqlite => FileFormat::ALL.contains(&f),
+                | FileFormat::Sqlite
+                | FileFormat::Vcd
+                | FileFormat::Fix
+                | FileFormat::Sdf => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -1203,7 +1245,10 @@ mod format_tests {
                 "gpx",
                 "audio",
                 "midi",
-                "sqlite"
+                "sqlite",
+                "vcd",
+                "fix",
+                "sdf"
             ]
         );
     }
@@ -1343,6 +1388,12 @@ mod format_tests {
             let choices: Vec<FormatChoice> = if extensions.contains("format spec") {
                 spec_row = true;
                 vec![FormatChoice::Spec("any.spec".into())]
+            } else if let Some((_, name)) = extensions.split_once("--format ") {
+                // A format found by content, with no extension: FIX.
+                let name = name.trim_matches('`');
+                vec![FormatChoice::Builtin(
+                    FileFormat::from_name(name).unwrap_or_else(|| panic!("{name} is a format")),
+                )]
             } else {
                 extensions
                     .split(", ")

@@ -6,6 +6,8 @@
 //! check added to `run` reaches both.
 pub mod audio_header;
 pub mod config_parse;
+pub mod fix_dict;
+pub mod fix_parse;
 pub mod format_spec;
 pub mod fuzzy_match;
 pub mod glob_match;
@@ -15,4 +17,6 @@ pub mod midi_file;
 pub mod model_header;
 pub mod number_format;
 pub mod parse_query;
+pub mod sdf_parse;
 pub mod sql_group_plan;
+pub mod vcd_parse;

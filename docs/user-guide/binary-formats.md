@@ -107,10 +107,14 @@ wins, as with `PATH`.
 
 `datui formats` lists each spec, what it matches, the file it came from, any copy
 of the same name it overrides, and the files that could not be read, with the
-line and column of each problem.
+line and column of each problem. The same places hold
+[FIX dictionaries](loading-data.md#fix-dictionaries): QuickFIX XML files and TOML
+files of `kind = "fix"`, listed after the specs.
 
 `datui formats check SPEC [FILE]` checks one spec, by name or file. With a file,
-it prints the warnings and the first ten rows. It exits non-zero on an error, so
+it prints the warnings and the first ten rows. Given a FIX dictionary, it checks
+that, and with a FIX log says how many messages it matches and which of its tags
+they hold. It exits non-zero on an error, so
 a repository of specs can run it in CI.
 
 ## Which spec reads a file

@@ -36,10 +36,11 @@ aggregate the period first to chart every step of it.
 ## Know what gets read
 
 - Parquet, CSV, JSONL and Arrow IPC use scans. JSON arrays, Avro, Excel and ORC
-  are loaded in full. NMEA and GPX logs are read once into a temporary Arrow
-  file, then scanned. SQLite tables are read in place, a page at a time, with
-  the sidebar's sort and filters run in SQLite; an index on the column makes
-  them fast. See [formats](../user-guide/loading-data.md#formats).
+  are loaded in full. NMEA and GPX logs, VCD dumps, FIX logs and SDF files are
+  read once into a temporary Arrow file, then scanned. SQLite tables are read in
+  place, a page at a time, with the sidebar's sort and filters run in SQLite; an
+  index on the column makes them fast. See
+  [formats](../user-guide/loading-data.md#formats).
 - A local Parquet directory normally reads file footers to combine schemas.
   Beyond 20,000 files the schema uses sampled footers. Large cloud directories
   can open before the background footer pass finishes. See

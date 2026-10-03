@@ -130,3 +130,31 @@ path = "fuzz_targets/midi_file.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "vcd_parse"
+path = "fuzz_targets/vcd_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fix_parse"
+path = "fuzz_targets/fix_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fix_dict"
+path = "fuzz_targets/fix_dict.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sdf_parse"
+path = "fuzz_targets/sdf_parse.rs"
+test = false
+doc = false
+bench = false

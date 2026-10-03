@@ -369,10 +369,10 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch Schema, Model, Audio, MIDI, Metadata, Resources, Partitions, Notes. Afterward focus rests on the tab bar |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch Schema, Model, Audio, MIDI, Metadata, VCD, FIX, SDF, Resources, Partitions, Notes. Afterward focus rests on the tab bar |
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | On Schema, move between the tab bar and the column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the column table (when it is focused), move through the notes, or scroll the model's, audio file's or delimited file's metadata or the MIDI tracks |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | On Model, Audio, MIDI or Metadata, page through the list |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the column table (when it is focused), move through the notes, or scroll the model's, audio file's or delimited file's metadata, the MIDI tracks, or the VCD, FIX or SDF list |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | On Model, Audio, MIDI, Metadata, VCD, FIX or SDF, page through the list |
 | <kbd>Enter</kbd> | On a note, take its offer, where it has one |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
 

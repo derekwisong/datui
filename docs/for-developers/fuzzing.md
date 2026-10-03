@@ -19,6 +19,10 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `model_header` | `model_files::read_safetensors`, `model_files::read_gguf`, `model_files::read_header_ranged_from` | Hand-written readers for model file headers that allocate and skip by lengths read from the file. Every input goes to both; a corrupt header must be an error, never a panic or an allocation sized by the file, and a header that parses must build its table. Read again by range, in ranges of a few bytes, each finds the same header or fails as the file reader does. |
 | `format_spec` | `formats::Spec`, `fixed_records` | A binary format spec and a file it reads, split at the first NUL byte. A spec parses or fails with a line and column; a file reads or fails; every row the reader counts decodes, and a window of the rows matches the same rows read from the start. |
 | `gps_parse` | `gps::nmea::NmeaReader`, `gps::gpx::GpxReader` | Hand-written readers for GPS logs that take the file a piece at a time. The first byte picks the NMEA table and the size of the pieces, so every line, tag and entity is cut somewhere. Never a panic, a frame of another schema, or a coordinate off the globe; every length is bounded by the reader. |
+| `vcd_parse` | `vcd::VcdReader` | A hand-written reader of VCD tokens that takes the file a piece at a time, with token, header text, scope depth and signal bounds. The first byte picks the piece size. Never a panic or a batch of another schema; the rows add up and the header stays within its bounds. |
+| `fix_parse` | `fix::FixReader` | A hand-written reader of FIX messages a piece at a time: tag and value framing, length-tagged values read by the length they state, checksums and body lengths. The first byte picks the piece size. Never a panic; the rows add up to the messages, and the last batch renames and types into a frame that collects. |
+| `fix_dict` | `fix::dict::Dictionary` | QuickFIX XML data dictionaries, read by a hand-written scanner of tags and attributes, and the TOML form. Any text must parse or fail, never panic, and a dictionary that parses keeps its names within bounds. |
+| `sdf_parse` | `sdf::SdfReader` | A hand-written reader of SDF records a piece at a time, with line, value and field bounds. The first byte picks the piece size. Never a panic; the rows add up to the records and no value passes its bound. |
 
 ## Layout
 
@@ -108,6 +112,15 @@ arrays and tensors of several types, and GGUF v2.
 type it reads, a prefixed line, a vendor sentence, out-of-range coordinates) and a GPX
 file (a DOCTYPE, CDATA, entities, namespaced extensions), each behind several first
 bytes, and a nesting past the depth bound.
+
+`vcd_parse`, `fix_parse` and `sdf_parse` take the bytes as they are, behind a first
+byte that picks the piece size. Their seeds are a small dump (scopes, an alias,
+vectors, a real, `x` and `z`), a picosecond timescale and a time past `i64`; FIX
+messages with SOH, `|`, `^A` and `;` delimiters, a prefix, a repeating group, a
+length-tagged value holding the delimiter, a bad checksum and a message cut short;
+and SDF records with a blank name, V3000 counts, multi-line values and a missing
+`$$$$`. `fix_dict` takes text: a QuickFIX XML dictionary, a TOML one, and a broken
+one of each.
 
 `audio_header` takes the bytes as they are too. Its seeds are tiny audio files: 16-bit
 PCM, a Broadcast WAV with `bext`, iXML, `cue ` and `LIST` chunks, extensible float with

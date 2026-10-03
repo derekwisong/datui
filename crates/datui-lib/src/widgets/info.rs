@@ -598,6 +598,8 @@ pub enum InfoTab {
     Midi,
     /// A delimited spec's metadata line, as key and value.
     Metadata,
+    /// A VCD, FIX or SDF file's header and what it holds; titled by the format.
+    Format,
     Resources,
     Partitions,
     Notes,
@@ -614,6 +616,8 @@ pub struct TabsOffered {
     pub midi: bool,
     /// A delimited spec read a metadata line.
     pub metadata: bool,
+    /// The dataset is a VCD, FIX or SDF file's rows.
+    pub format: bool,
     pub partitions: bool,
     pub notes: bool,
 }
@@ -628,6 +632,7 @@ impl TabsOffered {
             metadata: state
                 .delimited_read()
                 .is_some_and(|read| read.metadata.is_some()),
+            format: state.format_detail().is_some(),
             partitions: state
                 .partition_columns()
                 .map(|v| !v.is_empty())
@@ -655,6 +660,9 @@ impl InfoTab {
         if offered.metadata {
             tabs.push(InfoTab::Metadata);
         }
+        if offered.format {
+            tabs.push(InfoTab::Format);
+        }
         tabs.push(InfoTab::Resources);
         if offered.partitions {
             tabs.push(InfoTab::Partitions);
@@ -672,6 +680,7 @@ impl InfoTab {
             InfoTab::Audio => "Audio",
             InfoTab::Midi => "MIDI",
             InfoTab::Metadata => "Metadata",
+            InfoTab::Format => "Format",
             InfoTab::Resources => "Resources",
             InfoTab::Partitions => "Partitions",
             InfoTab::Notes => "Notes",
@@ -1747,6 +1756,20 @@ impl<'a> DataTableInfo<'a> {
         self.render_detail(area, buf, &lines, "Metadata", &shown);
     }
 
+    /// A VCD, FIX or SDF file's lines, then its list: signals, tags or fields.
+    fn render_format_tab(&mut self, area: Rect, buf: &mut Buffer) {
+        let state = self.state;
+        let Some(detail) = state.format_detail() else {
+            return;
+        };
+        let lines: Vec<(String, Style)> = detail
+            .lines
+            .iter()
+            .map(|line| (line.clone(), Style::default()))
+            .collect();
+        self.render_detail(area, buf, &lines, detail.list_title, &detail.list);
+    }
+
     /// A detail tab's head lines, then a blank line, a rule titled `title` and the list
     /// as key and value, scrolled by `detail_scroll`. Each value is drawn whole: it
     /// wraps over as many lines as it takes.
@@ -2165,6 +2188,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Audio => offered.audio,
             InfoTab::Midi => offered.midi,
             InfoTab::Metadata => offered.metadata,
+            InfoTab::Format => offered.format,
             _ => false,
         };
         let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
@@ -2213,7 +2237,12 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             } else {
                 Style::default().fg(ctx.text_secondary)
             };
-            spans.push(Span::styled(t.title(), style));
+            // The Format tab is named for the format: VCD, FIX, SDF.
+            let title = match (t, self.state.format_detail()) {
+                (InfoTab::Format, Some(detail)) => detail.tab,
+                _ => t.title(),
+            };
+            spans.push(Span::styled(title, style));
         }
         Paragraph::new(Line::from(spans)).render(
             Rect {
@@ -2237,6 +2266,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Audio if offered.audio => self.render_audio_tab(body, buf),
             InfoTab::Midi if offered.midi => self.render_midi_tab(body, buf),
             InfoTab::Metadata if offered.metadata => self.render_metadata_tab(body, buf),
+            InfoTab::Format if offered.format => self.render_format_tab(body, buf),
             InfoTab::Partitions if offered.partitions => {
                 self.render_partitioned_data_tab(body, buf)
             }
@@ -2245,6 +2275,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             | InfoTab::Audio
             | InfoTab::Midi
             | InfoTab::Metadata
+            | InfoTab::Format
             | InfoTab::Partitions
             | InfoTab::Notes => self.render_schema_tab(body, buf),
         }
@@ -2269,6 +2300,7 @@ mod tests {
             audio: false,
             midi: false,
             metadata: false,
+            format: false,
             partitions,
             notes,
         }
@@ -2773,6 +2805,73 @@ mod tests {
         );
     }
 
+    /// The format tab is named for the format, shows its lines, then its list under a
+    /// rule with a count, and says how much of the list is out of view.
+    #[test]
+    fn the_format_tab_shows_its_lines_and_list() {
+        use crate::model_files::MetaValue;
+        use crate::text_formats::Detail;
+        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        use polars::prelude::*;
+
+        let theme = RenderContext::for_test();
+        let mut lf = df!("time" => &[1i64]).unwrap().lazy();
+        let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+        let list: Vec<(String, MetaValue)> = (0..30)
+            .map(|i| {
+                (
+                    format!("tb.sig{i}"),
+                    MetaValue::Text(format!("wire 1 bit id {i}")),
+                )
+            })
+            .collect();
+        let state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            lf,
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap()
+        .with_open(OpenFacts {
+            detail: Some(std::sync::Arc::new(Detail {
+                tab: "VCD",
+                lines: vec!["VCD timescale 1ns".into(), "Version: Icarus".into()],
+                list_title: "Signals",
+                list,
+                first: true,
+            })),
+            ..Default::default()
+        });
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut modal = InfoModal::default();
+        modal.open_on(InfoTab::Format);
+        let mut panel = DataTableInfo::new(
+            &state,
+            InfoContext {
+                format: None,
+                facts: None,
+                parquet_file: false,
+            },
+            &mut modal,
+            &theme,
+        );
+        (&mut panel).render(area, &mut buf);
+        let text: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let has = |needle: &str| text.iter().any(|row| row.contains(needle));
+        assert!(has("VCD") && !has("Format"), "{text:#?}");
+        assert!(has("Version: Icarus"), "{text:#?}");
+        assert!(has("Signals") && has("30"), "{text:#?}");
+        assert!(has("tb.sig0") && has("wire 1 bit id 0"), "{text:#?}");
+        assert!(has("below"), "the rest is counted: {text:#?}");
+    }
+
     /// Focus is the accent: in the schema, the section rule brightens and the row
     /// carries the rail; on the tab bar, the rail sits beside the active tab and
     /// the row keeps only the accent. One frame either way, the footer inside it.
@@ -2903,6 +3002,7 @@ mod tests {
             audio: false,
             midi: false,
             metadata: false,
+            format: false,
             partitions: false,
             notes: true,
         };
@@ -2943,6 +3043,25 @@ mod tests {
             [InfoTab::Schema, InfoTab::Midi, InfoTab::Resources]
         );
         assert_eq!(InfoTab::Midi.prev(offered), InfoTab::Schema);
+    }
+
+    #[test]
+    fn the_format_tab_sits_beside_the_schema() {
+        let offered = TabsOffered {
+            format: true,
+            ..offer(false, true)
+        };
+        assert_eq!(
+            InfoTab::visible(offered),
+            [
+                InfoTab::Schema,
+                InfoTab::Format,
+                InfoTab::Resources,
+                InfoTab::Notes
+            ]
+        );
+        assert_eq!(InfoTab::Format.prev(offered), InfoTab::Schema);
+        assert_eq!(InfoTab::Format.index(offer(false, false)), 0, "not offered");
     }
 
     #[test]

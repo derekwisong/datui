@@ -162,6 +162,9 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     if let Some(gps) = crate::gps::sniff(head) {
         return (gps, None);
     }
+    if let Some(text) = crate::text_formats::sniff(head) {
+        return (text, None);
+    }
     let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
     let text = &text[text
         .iter()
@@ -256,9 +259,16 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 27] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 30] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
             (b"SQLite format 3\0\x10\x00", FileFormat::Sqlite, None),
+            (b"8=FIX.4.4|9=5|35=0|10=000|\n", FileFormat::Fix, None),
+            (b"$version Verilator $end\n", FileFormat::Vcd, None),
+            (
+                b"aspirin\n\n\n  1  0  0  0  0  0  0  0  0  0999 V2000\n",
+                FileFormat::Sdf,
+                None,
+            ),
             (b"GGUF\x03\x00\x00\x00", FileFormat::Gguf, None),
             (b"MThd\0\0\0\x06\0\x01", FileFormat::Midi, None),
             (

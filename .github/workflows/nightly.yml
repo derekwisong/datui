@@ -571,6 +571,10 @@ jobs:
           - gps_parse
           - audio_header
           - midi_file
+          - vcd_parse
+          - fix_parse
+          - fix_dict
+          - sdf_parse
     env:
       # The deep configuration. AddressSanitizer can reach the unsafe code inside polars
       # and arrow that these targets feed, which the pull request checks skip

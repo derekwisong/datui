@@ -13,6 +13,10 @@ extern crate datui as datui_lib;
 mod audio_header;
 #[path = "../fuzz/src/config_parse.rs"]
 mod config_parse;
+#[path = "../fuzz/src/fix_dict.rs"]
+mod fix_dict;
+#[path = "../fuzz/src/fix_parse.rs"]
+mod fix_parse;
 #[path = "../fuzz/src/format_spec.rs"]
 mod format_spec;
 #[path = "../fuzz/src/fuzzy_match.rs"]
@@ -31,9 +35,13 @@ mod model_header;
 mod number_format;
 #[path = "../fuzz/src/parse_query.rs"]
 mod parse_query;
+#[path = "../fuzz/src/sdf_parse.rs"]
+mod sdf_parse;
 #[cfg(feature = "sql")]
 #[path = "../fuzz/src/sql_group_plan.rs"]
 mod sql_group_plan;
+#[path = "../fuzz/src/vcd_parse.rs"]
+mod vcd_parse;
 
 use arbitrary::{Arbitrary, Unstructured};
 use std::collections::BTreeSet;
@@ -125,6 +133,10 @@ fn every_corpus_input_passes_its_target() {
     replay("model_header", &mut failures, model_header::run);
     replay("gps_parse", &mut failures, gps_parse::run);
     replay("audio_header", &mut failures, audio_header::run);
+    replay("vcd_parse", &mut failures, vcd_parse::run);
+    replay("fix_parse", &mut failures, fix_parse::run);
+    replay("fix_dict", &mut failures, fix_dict::run);
+    replay("sdf_parse", &mut failures, sdf_parse::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
     });
@@ -157,6 +169,8 @@ fn every_corpus_has_a_replay() {
     let replayed: BTreeSet<String> = [
         "audio_header",
         "config_parse",
+        "fix_dict",
+        "fix_parse",
         "format_spec",
         "fuzzy_match",
         "glob_match",
@@ -166,7 +180,9 @@ fn every_corpus_has_a_replay() {
         "gps_parse",
         "number_format",
         "parse_query",
+        "sdf_parse",
         "sql_group_plan",
+        "vcd_parse",
     ]
     .map(String::from)
     .into();

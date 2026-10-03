@@ -114,7 +114,7 @@ they were applied:
 | Hidden and moved columns | `.select([...])` |
 
 Data piped in on standard input, in a format Polars has no reader for
-(ORC, SafeTensors, GGUF, NMEA, GPX, WAV, AIFF, bzip2 or xz), read through a
+(ORC, SafeTensors, GGUF, NMEA, GPX, WAV, AIFF, MIDI, VCD, FIX, SDF, bzip2 or xz), read through a
 [binary format spec](binary-formats.md), or read with `--comment-char`,
 `--header-rows` or `--skip-initial-space`, starts from `df = ...` for you to
 fill in. A step the script cannot repeat, such as a drill into a group whose

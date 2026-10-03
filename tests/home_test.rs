@@ -57,6 +57,9 @@ fn test_recognises_data_extensions() {
         "a.ipc",
         "a.orc",
         "a.xlsx",
+        "waves.vcd",
+        "compounds.sdf",
+        "compounds.sd",
     ] {
         assert!(
             discover::is_data_file(std::path::Path::new(name)),
@@ -77,6 +80,9 @@ fn test_recognises_compressed_data() {
     assert!(discover::is_data_file(std::path::Path::new("sales.csv.gz")));
     assert!(discover::is_data_file(std::path::Path::new(
         "sales.json.zst"
+    )));
+    assert!(discover::is_data_file(std::path::Path::new(
+        "compounds.sdf.gz"
     )));
     assert!(!discover::is_data_file(std::path::Path::new(
         "backup.tar.gz"

@@ -2526,10 +2526,12 @@ impl FramedRecords {
                 }
                 Source::Walk | Source::Summed => {
                     let mut pos = start;
-                    if walker
-                        .record(file, &mut pos, range.end, Some(&mut out), None)
-                        .is_err()
-                    {
+                    // A row the walk does not finish (the file changed under the map)
+                    // is null rather than missing.
+                    if !matches!(
+                        walker.record(file, &mut pos, range.end, Some(&mut out), None),
+                        Ok(Got::Row)
+                    ) {
                         out.finish_row();
                     }
                 }

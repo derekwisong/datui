@@ -69,6 +69,7 @@ fn format_to_str(f: FileFormat) -> &'static str {
         FileFormat::Elf => "elf",
         FileFormat::Ulog => "ulog",
         FileFormat::Dataflash => "dataflash",
+        FileFormat::Candump => "candump",
     }
 }
 

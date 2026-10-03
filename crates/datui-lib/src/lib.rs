@@ -45,6 +45,7 @@ pub mod aws_profiles;
 #[cfg(feature = "cloud")]
 pub mod azure;
 pub mod cache;
+pub mod candump;
 pub mod canonical;
 pub mod chart_data;
 pub mod chart_export;
@@ -68,6 +69,7 @@ pub mod copy_modal;
 pub mod csv_dialect;
 pub mod data_quality;
 pub mod dataflash;
+pub mod dbc;
 pub mod delimited_spec;
 pub mod discover;
 pub mod distribution_fit;
@@ -230,7 +232,8 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         | FileFormat::Numpy
         | FileFormat::Elf
         | FileFormat::Ulog
-        | FileFormat::Dataflash => None,
+        | FileFormat::Dataflash
+        | FileFormat::Candump => None,
     }
 }
 
@@ -8625,6 +8628,8 @@ pub struct OpenOptions {
     pub spec_file: Option<PathBuf>,
     /// `--fix-dict FILE`: a FIX dictionary over the built-in one and the search path's.
     pub fix_dict: Option<PathBuf>,
+    /// `--dbc FILE`: a DBC file over the search path's, for a candump log.
+    pub dbc: Option<PathBuf>,
     /// The format spec named by `--format NAME`, or picked with `b`.
     pub spec_name: Option<String>,
     /// `--variant NAME`: one variant of the spec's records, read alone.
@@ -8728,6 +8733,7 @@ impl OpenOptions {
             debug: false,
             spec_file: None,
             fix_dict: None,
+            dbc: None,
             spec_name: None,
             spec_variant: None,
             spec_choice: None,
@@ -8860,6 +8866,7 @@ impl OpenOptions {
             .and_then(|f| f.spec().map(str::to_string));
         opts.spec_file = args.spec.clone();
         opts.fix_dict = args.fix_dict.clone();
+        opts.dbc = args.dbc.clone();
         opts.spec_variant = args.variant.clone();
         opts.hex = args.hex;
         opts.record_size = args.record_size.map(usize::from);
@@ -19910,7 +19917,7 @@ impl App {
     fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
         let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
         color_eyre::eyre::eyre!(
-            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's, an ELF file's, a flight log's or an NMEA log's, or a Hugging Face dataset's split."
+            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's, an ELF file's, a flight or CAN log's or an NMEA log's, or a Hugging Face dataset's split."
         )
     }
 
@@ -20351,6 +20358,32 @@ impl App {
                 format,
             },
         })
+    }
+
+    /// What opening a candump log reads: its frames, or with DBC files that name its
+    /// messages, the table `--table` names or the list of them. The pass that indexes
+    /// the log is kept, as a flight log's is.
+    fn scan_candump(
+        file: &Path,
+        options: &OpenOptions,
+        report: &mut ReadReport,
+        formats: &crate::formats::Registry,
+    ) -> Result<Scan> {
+        report.format = Some(FileFormat::Candump);
+        let layers = crate::candump::Layers::new(formats, options.dbc.as_deref())?;
+        Ok(
+            match crate::candump::open(file, options.table.as_deref(), layers)? {
+                crate::candump::Open::Table { lf, opened } => {
+                    report.opened = Some(Arc::new(*opened));
+                    (*lf).into()
+                }
+                crate::candump::Open::Several(tables) => Scan::Tables {
+                    file: file.to_path_buf(),
+                    tables,
+                    format: FileFormat::Candump,
+                },
+            },
+        )
     }
 
     /// What opening the NumPy file `file` reads: an `.npy` file's array, or the array
@@ -20826,6 +20859,7 @@ impl App {
                 | Some(FileFormat::Elf)
                 | Some(FileFormat::Ulog)
                 | Some(FileFormat::Dataflash)
+                | Some(FileFormat::Candump)
                 | None => {
                     // The home screen asks `reads_many_files` before it offers a
                     // directory as one dataset, so a format that is refused here and
@@ -20846,7 +20880,7 @@ impl App {
                         .into());
                     }
                     return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs, SDF files, NumPy arrays, ELF files and flight logs one at a time)"
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs, SDF files, NumPy arrays, ELF files, flight logs and CAN logs one at a time)"
                     ));
                 }
             }
@@ -20949,6 +20983,9 @@ impl App {
                 Some(FileFormat::Numpy) => return Self::scan_numpy(path, options, report),
                 Some(format @ (FileFormat::Ulog | FileFormat::Dataflash)) => {
                     return Self::scan_flight_log(path, format, options, report);
+                }
+                Some(FileFormat::Candump) => {
+                    return Self::scan_candump(path, options, report, formats);
                 }
                 Some(FileFormat::Elf) => {
                     let (lf, opened) = crate::elf::open(path, options.table.as_deref())?;

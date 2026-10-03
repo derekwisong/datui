@@ -27,6 +27,12 @@ pub enum Offsets {
     Wide(Vec<u64>),
 }
 
+impl Default for Offsets {
+    fn default() -> Self {
+        Self::Narrow(Vec::new())
+    }
+}
+
 impl Offsets {
     /// An empty list for a file of `len` bytes.
     pub fn for_file(len: usize) -> Self {

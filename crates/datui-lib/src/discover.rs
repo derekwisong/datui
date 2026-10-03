@@ -610,7 +610,8 @@ mod parquet_key_tests {
 /// CSV and JSON are deliberately absent: they have no signature, and guessing from the
 /// first line is a parse rather than a look.
 pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
-    let mut head = [0u8; 16];
+    // Enough for a candump log's first line.
+    let mut head = [0u8; 64];
     let head = read_head(path, &mut head)?;
     if let Some(signed) = signed_format_of(head) {
         return Some(signed);
@@ -640,6 +641,9 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     }
     if crate::dataflash::looks_like(head) {
         return Some(crate::FileFormat::Dataflash);
+    }
+    if crate::candump::looks_like(head) {
+        return Some(crate::FileFormat::Candump);
     }
     // An Arrow IPC stream has no magic, only its schema message, read whole to be sure.
     if crate::ipc_stream::is_stream_file(path) {
@@ -713,10 +717,10 @@ pub fn has_no_extension(path: &Path) -> bool {
 
 /// Whether a listing looks inside a file to say what it is: one with no extension, or
 /// one whose extension says nothing (`.bin`, which ArduPilot's logs and model
-/// checkpoints share with everything else).
+/// checkpoints share with everything else; `.log`, which candump writes).
 pub fn worth_sniffing(path: &Path) -> bool {
     path.extension()
-        .is_none_or(|e| e.eq_ignore_ascii_case("bin"))
+        .is_none_or(|e| e.eq_ignore_ascii_case("bin") || e.eq_ignore_ascii_case("log"))
 }
 
 /// Whether a local file is Parquet by its contents: `PAR1` at both ends.

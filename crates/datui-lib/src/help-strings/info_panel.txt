@@ -25,7 +25,7 @@ on Schema for anything else.
 Tabs:
   Schema:      Every column, its type, and which footers the schema came from.
                A column's unit too, when a delimited format spec read a unit row
-               or the file names one (DataFlash)
+               or the file names one (DataFlash, a DBC file)
   Model:       A SafeTensors or GGUF file's parameter count, size, dtype or
                quantization mix, and its header metadata, each value whole up
                to 64 KiB. Only for model files
@@ -54,6 +54,9 @@ Tabs:
                each parameter's starting value. Only for ULog files
   DataFlash:   A DataFlash log's message types, each with its records,
                format and length. Only for DataFlash logs
+  CAN:         A candump log's frames and interfaces, the DBC files read
+               with it, and each message's id, frames and signals. Only for
+               CAN logs
   Resources:   What the data costs to hold and to read, and how it is read:
                lazy, converted once, or in memory
   Partitions:  The layout of a partitioned dataset. Only when it has one

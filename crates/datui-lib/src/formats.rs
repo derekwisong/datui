@@ -4416,8 +4416,19 @@ pub struct Registry {
     pub specs: Vec<Found>,
     /// FIX dictionaries: QuickFIX XML files and `kind = "fix"` TOML files.
     pub fix: Vec<FixFound>,
+    /// DBC files for CAN logs: `.dbc` files and `kind = "dbc"` TOML files, in the order
+    /// they are read.
+    pub dbc: Vec<DbcFound>,
     /// Spec files that could not be read, each with why.
     pub errors: Vec<SpecError>,
+}
+
+/// A DBC file found on the search path.
+#[derive(Debug, Clone)]
+pub struct DbcFound {
+    pub dbc: Arc<crate::dbc::Dbc>,
+    /// The file it was found as: the `.dbc`, or the TOML that names it.
+    pub path: PathBuf,
 }
 
 /// A FIX dictionary found on the search path, and the copies of the same name it hides.
@@ -4495,7 +4506,8 @@ pub fn search_path_for(config: &crate::config::AppConfig) -> Vec<PathBuf> {
 impl Registry {
     /// Read every spec on `path`. A directory gives its `*.toml` files in name order; a
     /// file gives itself. What cannot be read is kept as an error, not fatal. A TOML
-    /// file of `kind = "fix"`, or a QuickFIX XML file, is a FIX dictionary.
+    /// file of `kind = "fix"`, or a QuickFIX XML file, is a FIX dictionary; a `.dbc`
+    /// file, or a TOML file of `kind = "dbc"`, is a DBC file.
     pub fn load(path: &[PathBuf]) -> Self {
         let mut registry = Self::default();
         for entry in path {
@@ -4509,7 +4521,9 @@ impl Registry {
                     .filter(|p| {
                         p.is_file()
                             && p.extension().is_some_and(|e| {
-                                e.eq_ignore_ascii_case("toml") || e.eq_ignore_ascii_case("xml")
+                                e.eq_ignore_ascii_case("toml")
+                                    || e.eq_ignore_ascii_case("xml")
+                                    || e.eq_ignore_ascii_case("dbc")
                             })
                     })
                     .collect();
@@ -4521,6 +4535,26 @@ impl Registry {
                 continue;
             };
             for file in files {
+                // A DBC file, or a TOML file of `kind = "dbc"` that names one.
+                let dbc_like = file.extension().is_some_and(|e| {
+                    e.eq_ignore_ascii_case("dbc") || e.eq_ignore_ascii_case("toml")
+                });
+                if dbc_like {
+                    match crate::dbc::load(&file) {
+                        Ok(Some(dbc)) => {
+                            registry.dbc.push(DbcFound {
+                                dbc: Arc::new(dbc),
+                                path: file,
+                            });
+                            continue;
+                        }
+                        Err(e) => {
+                            registry.errors.push(e);
+                            continue;
+                        }
+                        Ok(None) => {}
+                    }
+                }
                 match crate::fix::dict::Dictionary::load(&file) {
                     Ok(Some(dict)) => {
                         registry.add_fix(dict, file);
@@ -4719,6 +4753,22 @@ impl Registry {
             for hidden in &found.overrides {
                 out.push_str(&format!("  overrides {}\n", hidden.display()));
             }
+        }
+        if !self.dbc.is_empty() {
+            out.push_str("\nDBC files:\n");
+        }
+        for found in &self.dbc {
+            let dbc = &found.dbc;
+            out.push_str(&format!(
+                "{}  ({}{})\n  {}\n",
+                dbc.name,
+                crate::text_formats::count(dbc.messages.len() as u64, "message", "messages"),
+                dbc.interface
+                    .as_ref()
+                    .map(|i| format!(", interface {i}"))
+                    .unwrap_or_default(),
+                found.path.display()
+            ));
         }
         if !self.errors.is_empty() {
             out.push_str("\nCould not read:\n");
@@ -6331,6 +6381,49 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         let listing = Registry::of(vec![Spec::parse(LOG, None).unwrap()]).listing(&[]);
         assert!(
             listing.contains("acme.instrument-log  (delimited; magic \"#device_info\")"),
+            "{listing}"
+        );
+    }
+
+    /// DBC files share the search path: a `.dbc` file for every interface, a
+    /// `kind = "dbc"` TOML file that names one for an interface, and one that does not
+    /// parse is an error with its line.
+    #[test]
+    fn dbc_files_on_the_search_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("l2.toml"), L2).unwrap();
+        std::fs::write(
+            dir.path().join("car.dbc"),
+            "BO_ 291 ENGINE: 8 ECU\n SG_ Speed : 0|16@1+ (0.125,0) [0|8191] \"rpm\" GW\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("body.toml"),
+            "kind = \"dbc\"\nfile = \"body/body.dbc\"\n[match]\ninterface = \"can1\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join("body")).unwrap();
+        std::fs::write(
+            dir.path().join("body/body.dbc"),
+            "BO_ 512 DOORS: 1 GW\n SG_ Open : 0|1@1+ (1,0) [0|1] \"\" ECU\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("bad.dbc"), "BO_ 1 A: 8 X\n SG_ nope\n").unwrap();
+        let path = vec![dir.path().to_path_buf()];
+        let registry = Registry::load(&path);
+        assert_eq!(registry.specs.len(), 1);
+        let names: Vec<(&str, Option<&str>)> = registry
+            .dbc
+            .iter()
+            .map(|f| (f.dbc.name.as_str(), f.dbc.interface.as_deref()))
+            .collect();
+        assert_eq!(names, [("body", Some("can1")), ("car", None)]);
+        assert_eq!(registry.errors.len(), 1, "{:?}", registry.errors);
+        assert_eq!(registry.errors[0].line, 2);
+        let listing = registry.listing(&path);
+        assert!(listing.contains("DBC files:"), "{listing}");
+        assert!(
+            listing.contains("body  (1 message, interface can1)"),
             "{listing}"
         );
     }

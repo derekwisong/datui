@@ -12,7 +12,7 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 | **Audio** | An audio file's format, length, metadata and markers; appears for audio files |
 | **MIDI** | A MIDI file's format, timing, length, tempo and tracks; appears for MIDI files |
 | **Metadata** | The metadata line a [delimited format spec](binary-formats.md#delimited-text) names, as key and value; appears for files read through one |
-| **VCD**, **FIX**, **SDF**, **NumPy**, **ELF**, **ULog**, **DataFlash** | A value change dump's header and signals, a FIX log's versions, dictionaries and tags, an SDF file's fields, a NumPy array's shape and fields, an ELF file's flash and RAM and sections, or a flight log's messages, info and parameters; appears for those files |
+| **VCD**, **FIX**, **SDF**, **NumPy**, **ELF**, **ULog**, **DataFlash**, **CAN** | A value change dump's header and signals, a FIX log's versions, dictionaries and tags, an SDF file's fields, a NumPy array's shape and fields, an ELF file's flash and RAM and sections, a flight log's messages, info and parameters, or a CAN log's DBC files and messages; appears for those files |
 | **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
@@ -94,8 +94,9 @@ For a [VCD dump](loading-data.md#vcd-value-change-dumps), <kbd>i</kbd> opens on 
 VCD tab; for a [FIX log](loading-data.md#fix-logs), an
 [SDF file](loading-data.md#sdf-compound-files), a
 [NumPy array](loading-data.md#numpy-arrays), an
-[ELF file](loading-data.md#elf-symbol-tables) or a
-[flight log](loading-data.md#flight-logs) the tab sits beside Schema.
+[ELF file](loading-data.md#elf-symbol-tables), a
+[flight log](loading-data.md#flight-logs) or a [CAN log](loading-data.md#can-logs)
+the tab sits beside Schema.
 
 | Tab | Lines | List |
 |---|---|---|
@@ -106,6 +107,7 @@ VCD tab; for a [FIX log](loading-data.md#fix-logs), an
 | ELF | Class, machine, type, entry point; bytes in loaded, unwritten sections (flash) and in written ones (RAM); the symbol count | Sections: each one's address, size and flags |
 | ULog | Version, topic tables, dropouts | Info and parameters: each info message, and each parameter's starting value |
 | DataFlash | Message types with records and defined; records; whether the log has units | Messages: each type's records, format characters and length |
+| CAN | Frames, interfaces, whether timestamps are wall-clock; each DBC file read and what it matches; frames no DBC names | Messages: each one's id, frames, signals and comment |
 
 A list of more than 10,000 shows the first 10,000 and how many more there are.
 

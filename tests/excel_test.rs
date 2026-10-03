@@ -162,16 +162,11 @@ fn a_bad_sheet_error_names_the_sheets_that_exist() {
     common::ensure_sample_data();
     let path = PathBuf::from("tests/sample-data/people.xlsx");
     let from_excel = |sheet: &str| {
-        datui::widgets::datatable::DataTableState::from_excel(
-            &path,
-            None,
-            None,
-            None,
-            None,
-            false,
-            1,
-            Some(sheet),
-        )
+        let options = OpenOptions {
+            excel_sheet: Some(sheet.to_string()),
+            ..OpenOptions::default()
+        };
+        datui::widgets::datatable::DataTableState::from_excel(&path, &options)
     };
 
     let msg = match from_excel("99") {

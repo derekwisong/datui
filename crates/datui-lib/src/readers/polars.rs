@@ -184,19 +184,17 @@ fn scan_delimited(input: ScanIn<'_>) -> Result<Scan> {
 }
 
 fn scan_json(input: ScanIn<'_>) -> Result<Scan> {
-    let (a, b, c, d, e, f) = paging(input.options);
     let state = match input.paths {
-        [one] => DataTableState::from_json(one, a, b, c, d, e, f)?,
-        many => DataTableState::from_json_paths(many, a, b, c, d, e, f)?,
+        [one] => DataTableState::from_json(one, input.options)?,
+        many => DataTableState::from_json_paths(many, input.options)?,
     };
     json_frame(state, input)
 }
 
 fn scan_json_lines(input: ScanIn<'_>) -> Result<Scan> {
-    let (a, b, c, d, e, f) = paging(input.options);
     let state = match input.paths {
-        [one] => DataTableState::from_json_lines(one, a, b, c, d, e, f)?,
-        many => DataTableState::from_json_lines_paths(many, a, b, c, d, e, f)?,
+        [one] => DataTableState::from_json_lines(one, input.options)?,
+        many => DataTableState::from_json_lines_paths(many, input.options)?,
     };
     json_frame(state, input)
 }
@@ -244,9 +242,7 @@ fn scan_orc(input: ScanIn<'_>) -> Result<Scan> {
 }
 
 fn scan_excel(input: ScanIn<'_>) -> Result<Scan> {
-    let (a, b, c, d, e, f) = paging(input.options);
-    let sheet = input.options.excel_sheet.as_deref();
-    let state = DataTableState::from_excel(input.path(), a, b, c, d, e, f, sheet)?;
+    let state = DataTableState::from_excel(input.path(), input.options)?;
     frame(state, input)
 }
 

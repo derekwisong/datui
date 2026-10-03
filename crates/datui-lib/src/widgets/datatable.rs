@@ -2485,6 +2485,24 @@ impl DataTableState {
         }
     }
 
+    /// A file reader's state, with the open's paging and row numbers.
+    ///
+    /// Streaming is always on here, whatever `options.polars_streaming` says: the
+    /// per-format readers have always built that way.
+    fn read_with(lf: LazyFrame, options: &OpenOptions) -> Result<Self> {
+        let mut state = Self::new(
+            lf,
+            options.pages_lookahead,
+            options.pages_lookback,
+            options.max_buffered_rows,
+            options.max_buffered_mb,
+            true,
+        )?;
+        state.row_numbers = options.row_numbers;
+        state.row_start_index = options.row_start_index;
+        Ok(state)
+    }
+
     pub fn from_parquet(
         path: &Path,
         pages_lookahead: Option<usize>,
@@ -2745,18 +2763,8 @@ impl DataTableState {
     }
 
     /// Load a single Excel file (xls, xlsx, xlsm, xlsb) using calamine (eager read, then lazy).
-    /// Sheet is selected by 0-based index or name via `excel_sheet`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_excel(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-        excel_sheet: Option<&str>,
-    ) -> Result<Self> {
+    /// Sheet is selected by 0-based index or name via `options.excel_sheet`.
+    pub fn from_excel(path: &Path, options: &OpenOptions) -> Result<Self> {
         let mut workbook =
             open_workbook_auto(path).map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?;
         let sheet_names = workbook.sheet_names().to_vec();
@@ -2772,7 +2780,7 @@ impl DataTableState {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let range = if let Some(sheet_sel) = excel_sheet {
+        let range = if let Some(sheet_sel) = options.excel_sheet.as_deref() {
             if let Ok(idx) = sheet_sel.parse::<usize>() {
                 workbook
                     .worksheet_range_at(idx)
@@ -2804,17 +2812,7 @@ impl DataTableState {
         let rows: Vec<Vec<Data>> = range.rows().map(|r| r.to_vec()).collect();
         if rows.is_empty() {
             let empty_df = DataFrame::empty();
-            let mut state = Self::new(
-                empty_df.lazy(),
-                pages_lookahead,
-                pages_lookback,
-                max_buffered_rows,
-                max_buffered_mb,
-                true,
-            )?;
-            state.row_numbers = row_numbers;
-            state.row_start_index = row_start_index;
-            return Ok(state);
+            return Self::read_with(empty_df.lazy(), options);
         }
         let headers: Vec<String> = rows[0]
             .iter()
@@ -2835,17 +2833,7 @@ impl DataTableState {
             series_vec.push(series.into());
         }
         let df = DataFrame::new_infer_height(series_vec)?;
-        let mut state = Self::new(
-            df.lazy(),
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(df.lazy(), options)
     }
 
     /// Infers column type: prefers Int64 for whole-number floats; infers Date/Datetime for
@@ -5050,57 +5038,17 @@ impl DataTableState {
         Ok(state)
     }
 
-    pub fn from_json(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
-        Self::from_json_with_format(
-            path,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            row_numbers,
-            row_start_index,
-            JsonFormat::Json,
-        )
+    pub fn from_json(path: &Path, options: &OpenOptions) -> Result<Self> {
+        Self::from_json_with_format(path, options, JsonFormat::Json)
     }
 
-    pub fn from_json_lines(
-        path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
-        Self::from_json_with_format(
-            path,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            row_numbers,
-            row_start_index,
-            JsonFormat::JsonLines,
-        )
+    pub fn from_json_lines(path: &Path, options: &OpenOptions) -> Result<Self> {
+        Self::from_json_with_format(path, options, JsonFormat::JsonLines)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn from_json_with_format(
         path: &Path,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
+        options: &OpenOptions,
         format: JsonFormat,
     ) -> Result<Self> {
         let file = File::open(path)?;
@@ -5108,88 +5056,32 @@ impl DataTableState {
             .with_json_format(format)
             .finish()?
             .lazy();
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Load multiple JSON (array) files and concatenate into one LazyFrame.
-    pub fn from_json_paths(
-        paths: &[impl AsRef<Path>],
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
-        Self::from_json_with_format_paths(
-            paths,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            row_numbers,
-            row_start_index,
-            JsonFormat::Json,
-        )
+    pub fn from_json_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) -> Result<Self> {
+        Self::from_json_with_format_paths(paths, options, JsonFormat::Json)
     }
 
     /// Load multiple JSON Lines files and concatenate into one LazyFrame.
     pub fn from_json_lines_paths(
         paths: &[impl AsRef<Path>],
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
+        options: &OpenOptions,
     ) -> Result<Self> {
-        Self::from_json_with_format_paths(
-            paths,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            row_numbers,
-            row_start_index,
-            JsonFormat::JsonLines,
-        )
+        Self::from_json_with_format_paths(paths, options, JsonFormat::JsonLines)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn from_json_with_format_paths(
         paths: &[impl AsRef<Path>],
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
+        options: &OpenOptions,
         format: JsonFormat,
     ) -> Result<Self> {
         if paths.is_empty() {
             return Err(color_eyre::eyre::eyre!("No paths provided"));
         }
         if paths.len() == 1 {
-            return Self::from_json_with_format(
-                paths[0].as_ref(),
-                pages_lookahead,
-                pages_lookback,
-                max_buffered_rows,
-                max_buffered_mb,
-                row_numbers,
-                row_start_index,
-                format,
-            );
+            return Self::from_json_with_format(paths[0].as_ref(), options, format);
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
@@ -5207,17 +5099,7 @@ impl DataTableState {
             lazy_frames.push(lf);
         }
         let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
-        let mut state = Self::new(
-            lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
-            true,
-        )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
-        Ok(state)
+        Self::read_with(lf, options)
     }
 
     /// Returns true if a scroll by `rows` would trigger a collect (view would leave the buffer).

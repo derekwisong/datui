@@ -85,8 +85,11 @@ pub fn draw(
         ..area
     };
     let bytes_area = if geometry.panel {
+        // The panel sits against the bytes, not at the far edge: on a wide screen the
+        // readings stay next to the bytes they read.
+        let used = crate::hex_view::row_width(geometry.shown, geometry.digits, geometry.ascii) + 2;
         Rect {
-            width: body.width - crate::hex_view::PANEL_WIDTH - 1,
+            width: (used as u16).min(body.width - crate::hex_view::PANEL_WIDTH - 1),
             ..body
         }
     } else {
@@ -711,5 +714,39 @@ mod tests {
         draw(area, &mut buf, &mut v, &ctx, true);
         let last: String = (0..120).map(|x| buf[(x, 9)].symbol().to_string()).collect();
         assert!(last.contains("B reads it with a spec"), "{last}");
+    }
+    /// The screen at each size the issue names, against the text in `snapshots/`,
+    /// drawn with the Unicode glyphs; the active set's glyphs stand in for them.
+    #[test]
+    fn screens_match_their_snapshots() {
+        let (u, g) = (crate::glyphs::unicode(), crate::glyphs::get());
+        for (width, height, expected) in [
+            (60, 20, include_str!("snapshots/hex_view_60x20.txt")),
+            (80, 24, include_str!("snapshots/hex_view_80x24.txt")),
+            (140, 40, include_str!("snapshots/hex_view_140x40.txt")),
+            (250, 60, include_str!("snapshots/hex_view_250x60.txt")),
+        ] {
+            let mut v = view(sample());
+            v.go(5);
+            let shown = screen(&mut v, width, height);
+            let last = expected.lines().count() - 1;
+            // The header and status lines separate with a middot; the gutter's dots
+            // are the hex view's own glyph.
+            let expected: Vec<String> = expected
+                .lines()
+                .enumerate()
+                .map(|(i, line)| {
+                    let dot = if i == 0 || i == last {
+                        g.middot
+                    } else {
+                        g.hex_dot
+                    };
+                    line.replace(u.hex_dot, dot)
+                        .replace(u.rule_h, g.rule_h)
+                        .replace(u.rule, g.rule)
+                })
+                .collect();
+            assert_eq!(shown, expected, "{width}x{height}");
+        }
     }
 }

@@ -27239,6 +27239,23 @@ impl App {
                 }
                 None
             }
+            Answer::Unpacked(decoded) => {
+                let Job::InspectUnpack { token } = job else {
+                    return None;
+                };
+                let modal = &mut self.inspector_modal;
+                if current
+                    && let Some(inspector_modal::Unpack::Pending { token: t, place }) =
+                        modal.unpack.as_ref()
+                    && *t == token
+                {
+                    modal.unpack = Some(inspector_modal::Unpack::Ready {
+                        place: place.clone(),
+                        text: std::sync::Arc::new(decoded),
+                    });
+                }
+                None
+            }
             Answer::ValueWritten(open) => {
                 if current && self.inspector_modal.active {
                     self.external_open = Some(open);
@@ -27389,6 +27406,17 @@ impl App {
                     && t == token
                 {
                     modal.pretty = Some(inspector_modal::Pretty::Failed {
+                        place: place.clone(),
+                    });
+                }
+            }
+            Job::InspectUnpack { token } => {
+                let modal = &mut self.inspector_modal;
+                if let Some(inspector_modal::Unpack::Pending { token: t, place }) =
+                    modal.unpack.as_ref()
+                    && t == token
+                {
+                    modal.unpack = Some(inspector_modal::Unpack::Failed {
                         place: place.clone(),
                     });
                 }
@@ -28553,6 +28581,7 @@ impl App {
                 table: None,
                 indented: crate::widgets::inspector::Indented::None,
                 not_json: modal.known_not_json(row.frame, row.row, &field.name),
+                unpacked: modal.unpacked(&(row.frame, row.row, field.name.clone())),
                 read_key: "Enter",
             },
         ))
@@ -28916,8 +28945,9 @@ impl App {
     }
 
     /// What the inspector needs after a pass: the row moved to read while a read
-    /// follows the rows, and long JSON indented for its JSON view. Neither holds
-    /// the keys: moving on drops what is no longer wanted.
+    /// follows the rows, long JSON indented for its JSON view, and compressed
+    /// bytes decompressed for their Text view. None holds the keys: moving on
+    /// drops what is no longer wanted.
     fn inspector_needs(&mut self) {
         if self.input_mode != InputMode::Inspect || !self.inspector_modal.active {
             return;
@@ -28943,12 +28973,15 @@ impl App {
             self.read_inspected_fields(&row, false);
             return;
         }
-        // Long JSON text, asked for the JSON view and not yet indented.
-        let wants = modal
-            .pane_for(row.frame, row.row, &field.name)
-            .is_some_and(|pane| pane.indent);
+        // Long JSON text asked for the JSON view and not yet indented, or
+        // compressed bytes asked for the Text view and not yet decompressed.
+        let pane = modal.pane_for(row.frame, row.row, &field.name);
         let place = (row.frame, row.row, field.name.clone());
-        if !wants || modal.pretty.as_ref().is_some_and(|p| *p.place() == place) {
+        let indent = pane.is_some_and(|pane| pane.indent)
+            && !modal.pretty.as_ref().is_some_and(|p| *p.place() == place);
+        let unpack = pane.is_some_and(|pane| pane.unpack)
+            && !modal.unpack.as_ref().is_some_and(|u| *u.place() == place);
+        if !indent && !unpack {
             return;
         }
         let column = if field.buffered() {
@@ -28962,6 +28995,23 @@ impl App {
             return;
         };
         let modal = &mut self.inspector_modal;
+        if unpack {
+            modal.unpack_token += 1;
+            let token = modal.unpack_token;
+            modal.unpack = Some(inspector_modal::Unpack::Pending { token, place });
+            self.spawn_job(Job::InspectUnpack { token }, None, move |_| {
+                let value = column.get(0).map_err(|e| e.to_string())?;
+                let bytes = match &value {
+                    polars::prelude::AnyValue::Binary(b) => *b,
+                    polars::prelude::AnyValue::BinaryOwned(b) => b.as_slice(),
+                    _ => return Err("not bytes".to_string()),
+                };
+                inspector_bytes::decode_text(bytes, inspector_bytes::sniff(bytes))
+                    .map(Answer::Unpacked)
+                    .ok_or_else(|| "not text".to_string())
+            });
+            return;
+        }
         modal.pretty_token += 1;
         let token = modal.pretty_token;
         modal.pretty = Some(inspector_modal::Pretty::Pending { token, place });

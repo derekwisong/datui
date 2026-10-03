@@ -20087,6 +20087,70 @@ fn test_inspector_widens_hex_rows_and_keeps_the_place_on_a_resize() {
     }
 }
 
+/// #661: gzip bytes are decompressed for their Text view by a worker, never
+/// while the pane is built; bytes that hold no text lose the view and say so.
+#[test]
+fn test_inspector_decompresses_bytes_off_the_ui_thread() {
+    use std::io::Write;
+    let gzip = |bytes: &[u8]| {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(bytes).unwrap();
+        e.finish().unwrap()
+    };
+    let text = gzip(b"hello gzip");
+    let noise = gzip(&[0u8, 1, 2, 0xff]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gzip.parquet");
+    let mut df = df!(
+        "id" => [1i64, 2],
+        "blob" => [text.as_slice(), noise.as_slice()],
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_inspector(&mut app);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let pending = |app: &App| {
+        matches!(
+            app.inspector_modal.unpack,
+            Some(datui::inspector_modal::Unpack::Pending { .. })
+        )
+    };
+
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("gzip"), "{screen}");
+    assert!(screen.contains("00000000"), "hex first: {screen}");
+    for (row, shows) in [(1, "hello gzip"), (2, "not text")] {
+        if row == 1 {
+            press_key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+        } else {
+            // The next row keeps the Text view chosen for the field.
+            press_key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+            press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            pump_until_idle(&mut app, &rx, &tx);
+        }
+        let screen = draw_inspector(&mut app);
+        assert!(screen.contains("Decompressing..."), "row {row}: {screen}");
+        assert!(app.inspector_modal.unpack.is_none(), "not in the frame");
+        app.request_what_the_frame_needs();
+        assert!(pending(&app));
+        pump_until(&mut app, &rx, &tx, |app| !pending(app));
+        let screen = draw_inspector(&mut app);
+        assert!(screen.contains(shows), "row {row}: {screen}");
+    }
+    // The bytes that hold no text are back on their hex dump.
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("00000000"), "{screen}");
+}
+
 /// A field past a megabyte is copied off the UI thread, whole.
 #[test]
 fn test_inspector_copies_a_large_field_in_the_background() {

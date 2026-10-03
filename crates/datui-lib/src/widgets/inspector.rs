@@ -10,7 +10,7 @@
 
 use crate::copy_modal::thousands;
 use crate::exact;
-use crate::inspector_bytes::{self, Sniffed};
+use crate::inspector_bytes::{self, Decoded, Sniffed};
 use crate::inspector_drill::{JSON_INLINE_BYTES, Node, Shape, json_text, looks_like_json};
 use crate::inspector_modal::{
     CHUNK_BYTES, FieldRead, Focus, InspectorModal, Order, PaneKey, Pretty, View,
@@ -211,6 +211,8 @@ pub struct Pane {
     pub copy: CopyAs,
     /// Text longer than is indented on a key, shown raw until a worker indents it.
     pub indent: bool,
+    /// Compressed bytes in their Text view, waiting on a worker to decompress them.
+    pub unpack: bool,
 }
 
 impl Pane {
@@ -223,6 +225,7 @@ impl Pane {
             view: None,
             copy: CopyAs::Stored,
             indent: false,
+            unpack: false,
         }
     }
 
@@ -324,6 +327,7 @@ fn text_pane(
         view: Some(view),
         copy: CopyAs::Stored,
         indent: false,
+        unpack: false,
     };
     match view {
         View::Json => match pretty {
@@ -352,8 +356,35 @@ fn text_pane(
     pane
 }
 
-/// The pane for bytes: a hex dump, the text they hold, or escaped.
-fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
+/// Where text decompressed from gzip or zstd bytes stands, for the pane.
+#[derive(Debug, Clone)]
+pub enum Unpacked {
+    /// No worker answers here (a level drilled into): compressed bytes have no
+    /// Text view.
+    Unavailable,
+    /// Not asked for yet.
+    None,
+    Pending,
+    Ready(Arc<Decoded>),
+    Failed,
+}
+
+impl Unpacked {
+    fn code(&self) -> u8 {
+        match self {
+            Unpacked::Unavailable => 0,
+            Unpacked::None => 1,
+            Unpacked::Pending => 2,
+            Unpacked::Ready(_) => 3,
+            Unpacked::Failed => 4,
+        }
+    }
+}
+
+/// The pane for bytes: a hex dump, the text they hold, or escaped. UTF-8 is its
+/// own text; gzip and zstd are decompressed by a worker when their Text view is
+/// asked for (`unpack`), never while the pane is built.
+fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize, unpacked: &Unpacked) -> Pane {
     let sniffed = inspector_bytes::sniff(bytes);
     let mut facts = vec!["binary".to_string(), size_text(bytes.len())];
     if bytes.is_empty() {
@@ -362,13 +393,22 @@ fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
     if let Some(kind) = sniffed.filter(|k| *k != Sniffed::Utf8) {
         facts.push(kind.label());
     }
-    let decoded = inspector_bytes::decode_text(bytes, sniffed);
+    let compressed = matches!(sniffed, Some(Sniffed::Gzip | Sniffed::Zstd));
+    let decoded = match unpacked {
+        Unpacked::Ready(d) if compressed => Some(Decoded::clone(d)),
+        _ if compressed => None,
+        _ => inspector_bytes::decode_text(bytes, sniffed),
+    };
+    if compressed && matches!(unpacked, Unpacked::Failed) {
+        facts.push("not text".to_string());
+    }
+    let unpacks = compressed && matches!(unpacked, Unpacked::None | Unpacked::Pending);
     let mut views = Vec::new();
     if decoded.is_some() && sniffed == Some(Sniffed::Utf8) {
         views.push(View::Text);
     }
     views.push(View::Hex);
-    if decoded.is_some() && sniffed != Some(Sniffed::Utf8) {
+    if (decoded.is_some() || unpacks) && sniffed != Some(Sniffed::Utf8) {
         views.push(View::Text);
     }
     views.push(View::Escaped);
@@ -381,6 +421,7 @@ fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
         view: Some(view),
         copy: CopyAs::Base64,
         indent: false,
+        unpack: false,
     };
     match (view, decoded) {
         (View::Text, Some(d)) => {
@@ -395,6 +436,11 @@ fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
             let text: Arc<str> = Arc::from(d.text);
             pane.content = Content::text(text.clone(), TextForm::Raw);
             pane.copy = CopyAs::Text(text);
+        }
+        (View::Text, None) => {
+            facts.push("decompressing...".to_string());
+            pane.content = Content::Lines(vec![("Decompressing...".to_string(), Tone::Dim)]);
+            pane.unpack = true;
         }
         (View::Escaped, _) => {
             let head = &bytes[..bytes.len().min(ESCAPED_BYTES)];
@@ -431,6 +477,8 @@ pub struct PaneAsk<'a> {
     pub indented: Indented,
     /// Text found not to be JSON: no JSON view.
     pub not_json: bool,
+    /// Where text decompressed from the bytes stands.
+    pub unpacked: Unpacked,
     /// The key that reads a field not read yet.
     pub read_key: &'a str,
 }
@@ -495,8 +543,8 @@ pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
                 let s = exact::value_text(value);
                 text_pane(&s, kind, ask.choice, &Indented::None, true)
             }
-            AnyValue::Binary(b) => binary_pane(b, ask.choice, ask.width),
-            AnyValue::BinaryOwned(b) => binary_pane(b, ask.choice, ask.width),
+            AnyValue::Binary(b) => binary_pane(b, ask.choice, ask.width, &ask.unpacked),
+            AnyValue::BinaryOwned(b) => binary_pane(b, ask.choice, ask.width, &ask.unpacked),
             v if exact::is_nested_value(v) => {
                 let mut facts = vec![kind];
                 if let Some(n) = exact::nested_len(v) {
@@ -519,6 +567,7 @@ pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
                     view: None,
                     copy: CopyAs::Stored,
                     indent: false,
+                    unpack: false,
                 }
             }
             v => {
@@ -1020,6 +1069,7 @@ fn field_pane(
         Some(Pretty::Failed { place: p }) if *p == place => Indented::Failed,
         _ => Indented::None,
     };
+    let unpacked = modal.unpacked(&place);
     let key = PaneKey {
         frame: row.frame,
         row: row.row,
@@ -1028,6 +1078,7 @@ fn field_pane(
         width: width as u16,
         state: value.kind(),
         pretty: indented.code(),
+        unpacked: unpacked.code(),
     };
     if let Some((cached, pane)) = &modal.pane
         && *cached == key
@@ -1050,6 +1101,7 @@ fn field_pane(
             table: table.as_deref(),
             indented,
             not_json: modal.known_not_json(row.frame, row.row, &field.name),
+            unpacked,
             read_key,
         },
     );
@@ -1839,6 +1891,7 @@ pub fn node_pane(node: &Node, choice: Option<View>, width: usize) -> Pane {
         table: None,
         indented: Indented::None,
         not_json: false,
+        unpacked: Unpacked::Unavailable,
         read_key: "Enter",
     };
     match node {
@@ -1891,6 +1944,7 @@ fn json_pane(value: &JsonValue, ask: &PaneAsk) -> Pane {
                 view: None,
                 copy: CopyAs::Stored,
                 indent: false,
+                unpack: false,
             }
         }
     }
@@ -2001,6 +2055,7 @@ fn render_drill(
                 width: full as u16,
                 state: 5,
                 pretty: 0,
+                unpacked: 0,
             };
             match &modal.pane {
                 Some((cached, pane)) if *cached == key => pane.clone(),
@@ -2471,6 +2526,7 @@ mod tests {
             table: None,
             indented: Indented::None,
             not_json: false,
+            unpacked: Unpacked::None,
             read_key: "Enter",
         }
     }
@@ -2644,6 +2700,8 @@ mod tests {
         );
         assert!(p.facts.ends_with("gzip"), "{}", p.facts);
         assert_eq!(p.views, [View::Hex, View::Text, View::Escaped]);
+        // Its Text view asks a worker to decompress it, and shows what it answers;
+        // building the pane decompresses nothing.
         let text = pane(
             &DataType::Binary,
             &Shown::Value(AnyValue::Binary(&gz)),
@@ -2652,7 +2710,33 @@ mod tests {
                 ..ask(80)
             },
         );
+        assert!(text.unpack);
+        assert_eq!(lines(&text), ["Decompressing..."]);
+        let decoded = inspector_bytes::decode_text(&gz, inspector_bytes::sniff(&gz)).unwrap();
+        let text = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(&gz)),
+            &PaneAsk {
+                choice: Some(View::Text),
+                unpacked: Unpacked::Ready(Arc::new(decoded)),
+                ..ask(80)
+            },
+        );
+        assert!(!text.unpack);
         assert_eq!(lines(&text), ["hello gzip"]);
+        // Bytes that do not decompress to text lose the Text view, and say so.
+        let failed = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(&gz)),
+            &PaneAsk {
+                choice: Some(View::Text),
+                unpacked: Unpacked::Failed,
+                ..ask(80)
+            },
+        );
+        assert_eq!(failed.views, [View::Hex, View::Escaped]);
+        assert_eq!(failed.view, Some(View::Hex));
+        assert!(failed.facts.ends_with("not text"), "{}", failed.facts);
 
         let empty = pane(
             &DataType::Binary,

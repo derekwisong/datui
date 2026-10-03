@@ -153,6 +153,32 @@ impl Pretty {
     }
 }
 
+/// Bytes decompressed on a worker for their Text view, by frame, row and field.
+#[derive(Debug, Clone)]
+pub enum Unpack {
+    Pending {
+        token: u64,
+        place: (u64, usize, String),
+    },
+    Ready {
+        place: (u64, usize, String),
+        text: Arc<crate::inspector_bytes::Decoded>,
+    },
+    Failed {
+        place: (u64, usize, String),
+    },
+}
+
+impl Unpack {
+    pub fn place(&self) -> &(u64, usize, String) {
+        match self {
+            Unpack::Pending { place, .. }
+            | Unpack::Ready { place, .. }
+            | Unpack::Failed { place } => place,
+        }
+    }
+}
+
 /// What the value pane was built from: when any of it changes, the pane is
 /// built again, and a long value is not laid out again every frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +192,8 @@ pub struct PaneKey {
     pub state: u8,
     /// Where an indented copy of long JSON stood: none, asked, ready, failed.
     pub pretty: u8,
+    /// Where text decompressed from bytes stood, the same way.
+    pub unpacked: u8,
 }
 
 impl PaneKey {
@@ -237,6 +265,9 @@ pub struct InspectorModal {
     /// Long JSON text indented off this thread for the JSON view.
     pub pretty: Option<Pretty>,
     pub pretty_token: u64,
+    /// Compressed bytes decompressed off this thread for the Text view.
+    pub unpack: Option<Unpack>,
+    pub unpack_token: u64,
 }
 
 impl InspectorModal {
@@ -266,6 +297,7 @@ impl InspectorModal {
         self.json_wait = None;
         self.not_json = None;
         self.pretty = None;
+        self.unpack = None;
         self.value_find = None;
         self.reader = Reader::default();
     }
@@ -281,6 +313,7 @@ impl InspectorModal {
         self.json_wait = None;
         self.not_json = None;
         self.pretty = None;
+        self.unpack = None;
         self.value_find = None;
     }
 
@@ -288,6 +321,17 @@ impl InspectorModal {
     pub fn next_pane_id(&mut self) -> u64 {
         self.pane_id += 1;
         self.pane_id
+    }
+
+    /// Where text decompressed from the bytes at `place` stands.
+    pub fn unpacked(&self, place: &(u64, usize, String)) -> crate::widgets::inspector::Unpacked {
+        use crate::widgets::inspector::Unpacked;
+        match &self.unpack {
+            Some(Unpack::Pending { place: p, .. }) if p == place => Unpacked::Pending,
+            Some(Unpack::Ready { place: p, text }) if p == place => Unpacked::Ready(text.clone()),
+            Some(Unpack::Failed { place: p }) if p == place => Unpacked::Failed,
+            _ => Unpacked::None,
+        }
     }
 
     /// Whether the text at `path` of row `row` of frame `frame` was found not to be JSON.
@@ -506,6 +550,13 @@ impl InspectorModal {
                 .is_some_and(|p| (p.place().0, p.place().1) != (frame, row))
             {
                 self.pretty = None;
+            }
+            if self
+                .unpack
+                .as_ref()
+                .is_some_and(|u| (u.place().0, u.place().1) != (frame, row))
+            {
+                self.unpack = None;
             }
         }
     }

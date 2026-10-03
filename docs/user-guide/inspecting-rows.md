@@ -108,7 +108,10 @@ one shown. The footer offers <kbd>e</kbd> only where there is more than one.
 | Other bytes | Hex, Escaped |
 
 JSON text over 64 KB is indented in the background; until then it shows raw,
-with `json, indenting...` on the rule. Escaped text tells a line break (`\n`)
+with `json, indenting...` on the rule. gzip and zstd are decompressed in the
+background when their Text view is chosen, with `decompressing...` on the rule
+until then; bytes that turn out to hold no text go back to Hex, and the rule
+says `not text`. Escaped text tells a line break (`\n`)
 from a backslash followed by `n` (`\\n`), and shows invisible characters such
 as a no-break space as `\u{a0}`.
 

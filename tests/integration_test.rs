@@ -19821,6 +19821,44 @@ fn test_inspector_compares_rows_and_lists_only_the_differences() {
     assert_eq!(first, "amount");
 }
 
+/// #661: from 240 columns Compare shows the row before too: previous, this,
+/// next, in row order and named over their columns; narrower, the next only.
+#[test]
+fn test_inspector_compares_three_rows_on_a_wide_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _rx, _tx) = open_orders_fixture(dir.path());
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+    let rows = rows_at(&mut app, 240, 50);
+    let text = rows.join("\n");
+    assert!(rows[0].contains("Row 2 of 3"), "{text}");
+    assert!(rows[0].contains("compare with 1 and 3"), "{text}");
+    let at = |row: &str, s: &str| row.find(s).unwrap_or_else(|| panic!("{s}:\n{text}"));
+    let rule = &rows[1];
+    assert!(at(rule, "Row 1") < at(rule, "Row 2") && at(rule, "Row 2") < at(rule, "Row 3"));
+    let region = rows.iter().find(|r| r.contains(" region ")).unwrap();
+    assert!(
+        at(region, "north") < at(region, "south") && at(region, "south") < at(region, "east"),
+        "{text}"
+    );
+    // Narrower, the next row only.
+    let rows = rows_at(&mut app, 200, 50);
+    let text = rows.join("\n");
+    assert!(rows[0].contains("compare with 3"), "{text}");
+    let region = rows.iter().find(|r| r.contains(" region ")).unwrap();
+    assert!(!region.contains("north"), "{text}");
+    // A pinned row is the one compared with, at any width.
+    press_key(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+    let rows = rows_at(&mut app, 240, 50);
+    assert!(
+        rows[0].contains("compare with pinned 2"),
+        "{}",
+        rows.join("\n")
+    );
+}
+
 /// #548: `Y` copies the whole row as one JSON object, exact, without leaving;
 /// a field not read is left out and counted.
 #[test]
@@ -19999,6 +20037,118 @@ fn test_inspector_lays_a_wide_row_out_side_by_side() {
     let before = app.inspector_modal.focused_position();
     press_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
     assert!(app.inspector_modal.focused_position() > before + 40);
+}
+
+/// #661: from 240 columns a row with bytes gives its hex dump 32 bytes a row;
+/// a resize while reading keeps the offset at the top, at any row length.
+#[test]
+fn test_inspector_widens_hex_rows_and_keeps_the_place_on_a_resize() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bytes.parquet");
+    let bytes: Vec<u8> = (0..8192u32).map(|i| (i % 251) as u8).collect();
+    let mut df = df!("id" => [1i64], "blob" => [bytes.as_slice()]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    rows_at(&mut app, 300, 80);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "blob");
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let text = rows_at(&mut app, 300, 80).join("\n");
+    assert!(text.contains(" 00000020  "), "{text}");
+    assert!(!text.contains(" 00000010  "), "{text}");
+    let text = rows_at(&mut app, 200, 50).join("\n");
+    assert!(
+        text.contains(" 00000010  "),
+        "16 a row at 200 columns:\n{text}"
+    );
+
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    rows_at(&mut app, 300, 80);
+    press_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    let top = |rows: &[String]| {
+        let text = rows.join("\n");
+        let at = text.find(" of 0x2000").expect(&text);
+        let from = text[..at].rsplit(' ').next().unwrap();
+        from.split('-').next().unwrap().to_string()
+    };
+    let before = top(&rows_at(&mut app, 300, 80));
+    assert_ne!(before, "0x0");
+    for (width, height) in [(200u16, 50u16), (80, 24), (300, 80)] {
+        let rows = rows_at(&mut app, width, height);
+        assert_eq!(top(&rows), before, "{width}x{height}:\n{}", rows.join("\n"));
+    }
+}
+
+/// #661: gzip bytes are decompressed for their Text view by a worker, never
+/// while the pane is built; bytes that hold no text lose the view and say so.
+#[test]
+fn test_inspector_decompresses_bytes_off_the_ui_thread() {
+    use std::io::Write;
+    let gzip = |bytes: &[u8]| {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(bytes).unwrap();
+        e.finish().unwrap()
+    };
+    let text = gzip(b"hello gzip");
+    let noise = gzip(&[0u8, 1, 2, 0xff]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gzip.parquet");
+    let mut df = df!(
+        "id" => [1i64, 2],
+        "blob" => [text.as_slice(), noise.as_slice()],
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_inspector(&mut app);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let pending = |app: &App| {
+        matches!(
+            app.inspector_modal.unpack,
+            Some(datui::inspector_modal::Unpack::Pending { .. })
+        )
+    };
+
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("gzip"), "{screen}");
+    assert!(screen.contains("00000000"), "hex first: {screen}");
+    for (row, shows) in [(1, "hello gzip"), (2, "not text")] {
+        if row == 1 {
+            press_key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+        } else {
+            // The next row keeps the Text view chosen for the field.
+            press_key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+            press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            pump_until_idle(&mut app, &rx, &tx);
+        }
+        let screen = draw_inspector(&mut app);
+        assert!(screen.contains("Decompressing..."), "row {row}: {screen}");
+        assert!(app.inspector_modal.unpack.is_none(), "not in the frame");
+        app.request_what_the_frame_needs();
+        assert!(pending(&app));
+        pump_until(&mut app, &rx, &tx, |app| !pending(app));
+        let screen = draw_inspector(&mut app);
+        assert!(screen.contains(shows), "row {row}: {screen}");
+    }
+    // The bytes that hold no text are back on their hex dump.
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("00000000"), "{screen}");
 }
 
 /// A field past a megabyte is copied off the UI thread, whole.

@@ -71,6 +71,7 @@ pub enum JobKind {
     InspectRow,
     InspectJson,
     InspectPretty,
+    InspectUnpack,
     OpenValue,
     Export,
     Copy,
@@ -144,6 +145,9 @@ pub(crate) enum Job {
     /// The inspector's long JSON text indented for its JSON view: the
     /// [`crate::inspector_modal::Pretty`] it answers.
     InspectPretty { token: u64 },
+    /// The inspector's gzip or zstd bytes decompressed for their Text view: the
+    /// [`crate::inspector_modal::Unpack`] it answers.
+    InspectUnpack { token: u64 },
     /// The inspector's value written to a file for another program to open.
     OpenValue,
     /// An export, from plan to committed file.
@@ -218,6 +222,7 @@ impl Job {
             Job::InspectRow { .. } => JobKind::InspectRow,
             Job::InspectJson { .. } => JobKind::InspectJson,
             Job::InspectPretty { .. } => JobKind::InspectPretty,
+            Job::InspectUnpack { .. } => JobKind::InspectUnpack,
             Job::OpenValue => JobKind::OpenValue,
             Job::Export => JobKind::Export,
             Job::Copy => JobKind::Copy,
@@ -338,6 +343,8 @@ pub(crate) enum Answer {
     JsonParsed(std::sync::Arc<serde_json::Value>),
     /// [`Job::InspectPretty`]: the text, indented.
     Indented(std::sync::Arc<str>),
+    /// [`Job::InspectUnpack`]: the text, as far as it was decompressed.
+    Unpacked(crate::inspector_bytes::Decoded),
     /// [`Job::OpenValue`]: the file, written.
     ValueWritten(crate::external_open::ExternalOpen),
     /// [`Job::Export`]: the file, committed.

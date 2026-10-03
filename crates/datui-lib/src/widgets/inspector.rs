@@ -10,7 +10,7 @@
 
 use crate::copy_modal::thousands;
 use crate::exact;
-use crate::inspector_bytes::{self, Sniffed};
+use crate::inspector_bytes::{self, Decoded, Sniffed};
 use crate::inspector_drill::{JSON_INLINE_BYTES, Node, Shape, json_text, looks_like_json};
 use crate::inspector_modal::{
     CHUNK_BYTES, FieldRead, Focus, InspectorModal, Order, PaneKey, Pretty, View,
@@ -39,10 +39,19 @@ const VALUE_MIN: usize = 3;
 /// The Surface's inner width from which the fields and the value sit side by
 /// side: a 140-column terminal.
 pub const WIDE: usize = 136;
+/// The Surface's inner width from which a row with bytes gives the value pane a
+/// 32-byte hex row: a 240-column terminal.
+pub const WIDER: usize = 236;
 /// Cells between the field list and the value side by side.
 const PANE_GAP: usize = 3;
+/// The narrowest the value pane gets beside a list that needs the room: still a
+/// comfortable measure for prose.
+const VALUE_FLOOR: usize = 56;
+/// The rail and a hex dump row of 32 bytes: the value pane's width for bytes
+/// where the list keeps room beside it.
+const HEX_WIDE: usize = 1 + 8 + 1 + 32 * 3 + 2 + 32;
 /// The narrowest preview a column of fields keeps.
-const PREVIEW_MIN: usize = 16;
+const PREVIEW_MIN: usize = 14;
 /// JSON text up to this long has a JSON view; longer text reads raw.
 pub const PRETTY_MAX: usize = 1024 * 1024;
 /// Bytes shown escaped: the start of a long binary value.
@@ -202,6 +211,8 @@ pub struct Pane {
     pub copy: CopyAs,
     /// Text longer than is indented on a key, shown raw until a worker indents it.
     pub indent: bool,
+    /// Compressed bytes in their Text view, waiting on a worker to decompress them.
+    pub unpack: bool,
 }
 
 impl Pane {
@@ -214,6 +225,7 @@ impl Pane {
             view: None,
             copy: CopyAs::Stored,
             indent: false,
+            unpack: false,
         }
     }
 
@@ -315,6 +327,7 @@ fn text_pane(
         view: Some(view),
         copy: CopyAs::Stored,
         indent: false,
+        unpack: false,
     };
     match view {
         View::Json => match pretty {
@@ -343,8 +356,35 @@ fn text_pane(
     pane
 }
 
-/// The pane for bytes: a hex dump, the text they hold, or escaped.
-fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
+/// Where text decompressed from gzip or zstd bytes stands, for the pane.
+#[derive(Debug, Clone)]
+pub enum Unpacked {
+    /// No worker answers here (a level drilled into): compressed bytes have no
+    /// Text view.
+    Unavailable,
+    /// Not asked for yet.
+    None,
+    Pending,
+    Ready(Arc<Decoded>),
+    Failed,
+}
+
+impl Unpacked {
+    fn code(&self) -> u8 {
+        match self {
+            Unpacked::Unavailable => 0,
+            Unpacked::None => 1,
+            Unpacked::Pending => 2,
+            Unpacked::Ready(_) => 3,
+            Unpacked::Failed => 4,
+        }
+    }
+}
+
+/// The pane for bytes: a hex dump, the text they hold, or escaped. UTF-8 is its
+/// own text; gzip and zstd are decompressed by a worker when their Text view is
+/// asked for (`unpack`), never while the pane is built.
+fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize, unpacked: &Unpacked) -> Pane {
     let sniffed = inspector_bytes::sniff(bytes);
     let mut facts = vec!["binary".to_string(), size_text(bytes.len())];
     if bytes.is_empty() {
@@ -353,13 +393,22 @@ fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
     if let Some(kind) = sniffed.filter(|k| *k != Sniffed::Utf8) {
         facts.push(kind.label());
     }
-    let decoded = inspector_bytes::decode_text(bytes, sniffed);
+    let compressed = matches!(sniffed, Some(Sniffed::Gzip | Sniffed::Zstd));
+    let decoded = match unpacked {
+        Unpacked::Ready(d) if compressed => Some(Decoded::clone(d)),
+        _ if compressed => None,
+        _ => inspector_bytes::decode_text(bytes, sniffed),
+    };
+    if compressed && matches!(unpacked, Unpacked::Failed) {
+        facts.push("not text".to_string());
+    }
+    let unpacks = compressed && matches!(unpacked, Unpacked::None | Unpacked::Pending);
     let mut views = Vec::new();
     if decoded.is_some() && sniffed == Some(Sniffed::Utf8) {
         views.push(View::Text);
     }
     views.push(View::Hex);
-    if decoded.is_some() && sniffed != Some(Sniffed::Utf8) {
+    if (decoded.is_some() || unpacks) && sniffed != Some(Sniffed::Utf8) {
         views.push(View::Text);
     }
     views.push(View::Escaped);
@@ -372,6 +421,7 @@ fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
         view: Some(view),
         copy: CopyAs::Base64,
         indent: false,
+        unpack: false,
     };
     match (view, decoded) {
         (View::Text, Some(d)) => {
@@ -386,6 +436,11 @@ fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
             let text: Arc<str> = Arc::from(d.text);
             pane.content = Content::text(text.clone(), TextForm::Raw);
             pane.copy = CopyAs::Text(text);
+        }
+        (View::Text, None) => {
+            facts.push("decompressing...".to_string());
+            pane.content = Content::Lines(vec![("Decompressing...".to_string(), Tone::Dim)]);
+            pane.unpack = true;
         }
         (View::Escaped, _) => {
             let head = &bytes[..bytes.len().min(ESCAPED_BYTES)];
@@ -414,12 +469,16 @@ fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize) -> Pane {
 /// Everything a pane is built from beside the value.
 pub struct PaneAsk<'a> {
     pub choice: Option<View>,
+    /// The pane's width: text wraps to the reading measure inside it, and a hex
+    /// dump fills it.
     pub width: usize,
     /// The table's preview of a scalar, said beside the exact value when they differ.
     pub table: Option<&'a str>,
     pub indented: Indented,
     /// Text found not to be JSON: no JSON view.
     pub not_json: bool,
+    /// Where text decompressed from the bytes stands.
+    pub unpacked: Unpacked,
     /// The key that reads a field not read yet.
     pub read_key: &'a str,
 }
@@ -427,7 +486,7 @@ pub struct PaneAsk<'a> {
 /// The value pane for `shown`, a value of type `dtype`.
 pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
     let g = crate::glyphs::get();
-    let width = ask.width.max(1);
+    let width = ask.width.clamp(1, MEASURE);
     let kind = type_text(dtype);
     let mut lines = Vec::new();
     match shown {
@@ -484,8 +543,8 @@ pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
                 let s = exact::value_text(value);
                 text_pane(&s, kind, ask.choice, &Indented::None, true)
             }
-            AnyValue::Binary(b) => binary_pane(b, ask.choice, width),
-            AnyValue::BinaryOwned(b) => binary_pane(b, ask.choice, width),
+            AnyValue::Binary(b) => binary_pane(b, ask.choice, ask.width, &ask.unpacked),
+            AnyValue::BinaryOwned(b) => binary_pane(b, ask.choice, ask.width, &ask.unpacked),
             v if exact::is_nested_value(v) => {
                 let mut facts = vec![kind];
                 if let Some(n) = exact::nested_len(v) {
@@ -508,6 +567,7 @@ pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
                     view: None,
                     copy: CopyAs::Stored,
                     indent: false,
+                    unpack: false,
                 }
             }
             v => {
@@ -631,19 +691,76 @@ fn null_glyph(kind: NullKind) -> &'static str {
     }
 }
 
-/// The row Compare puts beside `row`: the pinned one, or the next.
-pub fn compare_row(
+/// The rows Compare puts beside a row: the pinned one, or the next; and from
+/// [`WIDER`], unpinned, the row before it too, the three in row order.
+#[derive(Clone)]
+pub struct Compared {
+    /// The row before, in a three-row compare. None at the first row, whose
+    /// column stays, empty, so nothing moves.
+    pub before: Option<InspectRow>,
+    pub after: Option<InspectRow>,
+    /// Three columns: before, this, after.
+    pub both: bool,
+    pub pinned: bool,
+}
+
+impl Compared {
+    /// The rows compared with, in row order.
+    pub fn rows(&self) -> impl Iterator<Item = &InspectRow> {
+        self.before.iter().chain(self.after.iter())
+    }
+}
+
+/// What Compare puts beside `row`, while it is on.
+pub fn compared(
     modal: &InspectorModal,
     state: &DataTableState,
     row: &InspectRow,
-) -> Option<InspectRow> {
+) -> Option<Compared> {
     if !modal.compare {
         return None;
     }
-    match &modal.pinned {
-        Some(pinned) if (pinned.frame, pinned.row) != (row.frame, row.row) => Some(pinned.clone()),
-        _ => state.inspect_row_at(row.row + 1),
+    if let Some(pinned) = &modal.pinned
+        && (pinned.frame, pinned.row) != (row.frame, row.row)
+    {
+        return Some(Compared {
+            before: None,
+            after: Some(pinned.clone()),
+            both: false,
+            pinned: true,
+        });
     }
+    let after = state.inspect_row_at(row.row + 1);
+    let before = modal
+        .compare_both
+        .then(|| row.row.checked_sub(1))
+        .flatten()
+        .and_then(|r| state.inspect_row_at(r));
+    (after.is_some() || before.is_some()).then_some(Compared {
+        before,
+        after,
+        both: modal.compare_both,
+        pinned: false,
+    })
+}
+
+/// Whether `field`'s value `this` differs from any compared row's; None when
+/// no compared row's value is read.
+fn differs_from(
+    this: &Shown,
+    field: &InspectField,
+    other: &Compared,
+    state: &DataTableState,
+) -> Option<bool> {
+    let mut known = None;
+    for row in other.rows() {
+        match differs(this, &shown(field, row, None, state)) {
+            Some(true) => return Some(true),
+            Some(false) => known = Some(false),
+            None => {}
+        }
+    }
+    known
 }
 
 /// The fields listed, in the order listed: the order chosen, then Filled (or,
@@ -665,10 +782,9 @@ pub fn visible_fields(modal: &InspectorModal, state: &DataTableState) -> Vec<usi
         order.sort_by_key(|&i| fill_of(&shown_at(i)) != Fill::Value);
     }
     if modal.filled_only {
-        match compare_row(modal, state, &row) {
-            Some(other) => order.retain(|&i| {
-                differs(&shown_at(i), &shown(&fields[i], &other, None, state)) == Some(true)
-            }),
+        match compared(modal, state, &row) {
+            Some(other) => order
+                .retain(|&i| differs_from(&shown_at(i), &fields[i], &other, state) == Some(true)),
             None => order.retain(|&i| matches!(fill_of(&shown_at(i)), Fill::Value | Fill::Unknown)),
         }
     }
@@ -697,7 +813,7 @@ fn counts(
     modal: &InspectorModal,
     state: &DataTableState,
     row: &InspectRow,
-    other: Option<&InspectRow>,
+    other: Option<&Compared>,
 ) -> Counts {
     let mut c = Counts {
         nulls: 0,
@@ -712,7 +828,7 @@ fn counts(
             _ => {}
         }
         if let (Some(other), Some(n)) = (other, c.differ.as_mut())
-            && differs(&this, &shown(field, other, None, state)) == Some(true)
+            && differs_from(&this, field, other, state) == Some(true)
         {
             *n += 1;
         }
@@ -722,7 +838,7 @@ fn counts(
 
 /// The inspector's title: the row, of how many, the group it is in inside a
 /// drill-down (the breadcrumb the takeover covers), and the row compared with.
-fn title(display_row: usize, state: &DataTableState, other: Option<(usize, bool)>) -> String {
+fn title(display_row: usize, state: &DataTableState, other: Option<&Compared>) -> String {
     let g = crate::glyphs::get();
     let mut title = format!("Row {}", thousands(display_row));
     if let Some(total) = state.num_rows_if_valid() {
@@ -744,12 +860,13 @@ fn title(display_row: usize, state: &DataTableState, other: Option<(usize, bool)
             ));
         }
     }
-    if let Some((other, pinned)) = other {
-        let pinned = if pinned { "pinned " } else { "" };
+    if let Some(other) = other {
+        let pinned = if other.pinned { "pinned " } else { "" };
+        let rows: Vec<String> = other.rows().map(|r| thousands(r.display_row)).collect();
         title.push_str(&format!(
             " {} compare with {pinned}{}",
             g.middot,
-            thousands(other)
+            rows.join(" and ")
         ));
     }
     title
@@ -788,6 +905,42 @@ pub fn list_window(n: usize, sel: usize, offset: usize, cap: usize) -> (usize, b
     (o, above, below)
 }
 
+/// What the side-by-side layout sizes the field list from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListShape {
+    /// Every field of the row, listed or not: narrowing the list moves nothing.
+    pub fields: usize,
+    /// A column of fields at its narrowest.
+    pub min_col: usize,
+    /// One column: Compare puts other rows beside each field.
+    pub single: bool,
+    /// The row has bytes: the value pane widens for a 32-byte hex row where the
+    /// list keeps room beside it.
+    pub bytes: bool,
+}
+
+/// The value pane's width side by side with the list in `width` cells and
+/// `rows` rows. It depends on the terminal and the row's fields, never on the
+/// focused one, so nothing moves as the focus does. A list longer than the
+/// screen takes the columns it needs, down to [`VALUE_FLOOR`] for the value;
+/// otherwise the value has its measure, or from [`WIDER`] a 32-byte hex row
+/// for a row with bytes.
+fn value_pane_width(width: usize, rows: usize, list: ListShape) -> usize {
+    let mut max = (MEASURE + 1).min(width * 45 / 100);
+    if list.bytes && !list.single && width >= WIDER {
+        max = HEX_WIDE;
+    }
+    if list.single {
+        return max;
+    }
+    let floor = VALUE_FLOOR.min(max);
+    let need = list.fields.div_ceil(rows.max(1)).max(1);
+    let fit = ((width.saturating_sub(floor + PANE_GAP) + GAP) / (list.min_col + GAP)).max(1);
+    let cols = need.min(fit);
+    let list_w = cols * list.min_col + (cols - 1) * GAP;
+    width.saturating_sub(list_w + PANE_GAP).clamp(floor, max)
+}
+
 /// Where each part of the inspector goes inside the Surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
@@ -805,15 +958,15 @@ pub struct Layout {
 /// rows. Below [`WIDE`] the list sits above the value and takes the rows it
 /// needs, leaving the value what its lines need; with the focus on the value,
 /// the list keeps a few rows around the focused field. From [`WIDE`] the two
-/// sit side by side, each at full height, and fields flow into as many columns
-/// of `min_col` cells as fit.
+/// sit side by side, each at full height, the value as wide as
+/// [`value_pane_width`] says, and fields flow into as many columns of
+/// `list.min_col` cells as fit.
 pub fn layout(
     content: Rect,
     fields: usize,
     value_need: usize,
     focus: Focus,
-    single_column: bool,
-    min_col: usize,
+    list: ListShape,
 ) -> Layout {
     let line = |y: u16, x: u16, width: u16| Rect {
         x,
@@ -824,11 +977,11 @@ pub fn layout(
     let width = content.width as usize;
     let h = content.height as usize;
     if width >= WIDE {
-        let value_w = (MEASURE + 1).min(width * 45 / 100);
-        let list_w = width - value_w - PANE_GAP;
         let rows = h.saturating_sub(1).max(1);
-        let mut cols = ((list_w + GAP) / (min_col + GAP)).max(1);
-        if single_column {
+        let value_w = value_pane_width(width, rows, list);
+        let list_w = width - value_w - PANE_GAP;
+        let mut cols = ((list_w + GAP) / (list.min_col + GAP)).max(1);
+        if list.single {
             cols = 1;
         }
         while cols > 1 && (cols - 1) * rows >= fields {
@@ -889,10 +1042,14 @@ pub fn layout(
     }
 }
 
-/// The pane's wrapping width inside `value`: past the rail column, capped at the
-/// reading measure.
+/// The pane's width inside `value`, past the rail column: a hex dump's.
+fn pane_width(value: Rect) -> usize {
+    (value.width as usize).saturating_sub(1).max(1)
+}
+
+/// The pane's wrapping width inside `value`: capped at the reading measure.
 fn value_width(value: Rect) -> usize {
-    (value.width as usize).saturating_sub(1).clamp(1, MEASURE)
+    pane_width(value).min(MEASURE)
 }
 
 /// Build, or take from the cache, the pane for the focused field of `row`.
@@ -912,6 +1069,7 @@ fn field_pane(
         Some(Pretty::Failed { place: p }) if *p == place => Indented::Failed,
         _ => Indented::None,
     };
+    let unpacked = modal.unpacked(&place);
     let key = PaneKey {
         frame: row.frame,
         row: row.row,
@@ -920,6 +1078,7 @@ fn field_pane(
         width: width as u16,
         state: value.kind(),
         pretty: indented.code(),
+        unpacked: unpacked.code(),
     };
     if let Some((cached, pane)) = &modal.pane
         && *cached == key
@@ -942,12 +1101,28 @@ fn field_pane(
             table: table.as_deref(),
             indented,
             not_json: modal.known_not_json(row.frame, row.row, &field.name),
+            unpacked,
             read_key,
         },
     );
-    built.id = modal.next_pane_id();
+    built.id = renewed(modal, &key, &built);
     modal.pane = Some((key, built.clone()));
     built
+}
+
+/// The id for a pane just built for `key`: the last one's while it shows the same
+/// value at another width, so the reader stays where it was; else a new one,
+/// which the reader starts at the top of.
+fn renewed(modal: &mut InspectorModal, key: &PaneKey, built: &Pane) -> u64 {
+    match &modal.pane {
+        Some((cached, old)) if cached.same_value(key) => {
+            let id = old.id;
+            let old = old.content.clone();
+            modal.reader.carry(&old, &built.content);
+            id
+        }
+        _ => modal.next_pane_id(),
+    }
 }
 
 /// What Enter does on the focused field, for the footer.
@@ -990,37 +1165,13 @@ pub fn render(
         render_drill(area, buf, modal, &title, ctx);
         return;
     }
+    let content = Surface::content_area(area);
+    modal.compare_both = content.width as usize >= WIDER;
     let visible = visible_fields(modal, state);
     modal.set_visible(visible);
-    let other = row.as_ref().and_then(|r| compare_row(modal, state, r));
+    let other = row.as_ref().and_then(|r| compared(modal, state, r));
 
-    let content = Surface::content_area(area);
     let focused = modal.focused().cloned();
-    let probe = layout(
-        content,
-        modal.visible.len(),
-        VALUE_MIN,
-        modal.focus,
-        true,
-        1,
-    );
-    let width = value_width(probe.value);
-    let pane = match (&row, &focused) {
-        (Some(row), Some(field)) => Some(field_pane(modal, state, row, field, width, ctx)),
-        _ => None,
-    };
-    let pane = pane.unwrap_or_else(|| {
-        let message = if row.is_none() {
-            "Reading the row..."
-        } else {
-            "No field matches"
-        };
-        Pane::lines(vec![(message.to_string(), Tone::Dim)], Vec::new())
-    });
-    modal.reader.prepare(pane.id, width, modal.wrap);
-    let need = modal
-        .reader
-        .rows_needed(&pane.content, content.height as usize);
 
     // The list's columns, measured over every field so moving moves nothing.
     let g = crate::glyphs::get();
@@ -1045,15 +1196,44 @@ pub fn render(
         .max()
         .unwrap_or(0)
         .min(14);
-    let min_col = 1 + name_w + GAP + type_w + GAP + PREVIEW_MIN;
-    let lay = layout(
-        content,
-        modal.visible.len(),
-        need,
-        modal.focus,
-        other.is_some(),
-        min_col,
-    );
+    let shape = ListShape {
+        fields: modal.fields.len(),
+        min_col: 1 + name_w + GAP + type_w + GAP + PREVIEW_MIN,
+        single: other.is_some(),
+        bytes: modal
+            .fields
+            .iter()
+            .any(|f| matches!(f.dtype, DataType::Binary | DataType::BinaryOffset)),
+    };
+    // The value's width does not depend on what it needs; only the stacked
+    // layout's heights do.
+    let probe = layout(content, modal.visible.len(), VALUE_MIN, modal.focus, shape);
+    let width = value_width(probe.value);
+    let pane = match (&row, &focused) {
+        (Some(row), Some(field)) => Some(field_pane(
+            modal,
+            state,
+            row,
+            field,
+            pane_width(probe.value),
+            ctx,
+        )),
+        _ => None,
+    };
+    let pane = pane.unwrap_or_else(|| {
+        let message = if row.is_none() {
+            "Reading the row..."
+        } else {
+            "No field matches"
+        };
+        Pane::lines(vec![(message.to_string(), Tone::Dim)], Vec::new())
+    });
+    modal.reader.prepare(pane.id, width, modal.wrap);
+    let need = modal
+        .reader
+        .rows_needed(&pane.content, content.height as usize);
+
+    let lay = layout(content, modal.visible.len(), need, modal.focus, shape);
 
     // The footer, from what the layout leaves visible.
     let enter = match (&row, &focused) {
@@ -1083,19 +1263,7 @@ pub fn render(
         ctx,
     );
     let title = match &row {
-        Some(row) => title(
-            row.display_row,
-            state,
-            other.as_ref().map(|o| {
-                (
-                    o.display_row,
-                    modal
-                        .pinned
-                        .as_ref()
-                        .is_some_and(|p| (p.frame, p.row) == (o.frame, o.row)),
-                )
-            }),
-        ),
+        Some(row) => title(row.display_row, state, other.as_ref()),
         None => "Row".to_string(),
     };
     let title = crate::glyphs::fit_cells(&title, area.width.saturating_sub(4) as usize, g.ellipsis);
@@ -1105,6 +1273,7 @@ pub fn render(
     }
 
     // The list's rule: the find line while finding, else the counts.
+    let mut rule_used = None;
     if modal.finding || !modal.filter.is_empty() {
         draw_find_line(
             buf,
@@ -1129,6 +1298,7 @@ pub fn render(
             focused: modal.focus == Focus::List && lay.wide,
         }
         .render(lay.list_rule, buf, ctx);
+        rule_used = Some("Fields".len() + 1 + crate::glyphs::cell_width(&chip) + 3);
     }
 
     draw_fields(
@@ -1141,6 +1311,7 @@ pub fn render(
             other: other.as_ref(),
             name_w,
             type_w,
+            rule_used,
         },
         ctx,
     );
@@ -1155,7 +1326,7 @@ fn list_chip(
     modal: &InspectorModal,
     state: &DataTableState,
     row: &InspectRow,
-    other: Option<&InspectRow>,
+    other: Option<&Compared>,
 ) -> String {
     let c = counts(modal, state, row, other);
     let total = thousands(modal.fields.len());
@@ -1338,14 +1509,18 @@ fn footer<'a>(
 /// The rows the list shows, and its name and type columns' widths.
 struct ListOf<'a> {
     row: Option<&'a InspectRow>,
-    other: Option<&'a InspectRow>,
+    other: Option<&'a Compared>,
     name_w: usize,
     type_w: usize,
+    /// Cells of the list's rule its title and chip take, when it is a rule:
+    /// Compare names its rows over the rest.
+    rule_used: Option<usize>,
 }
 
 /// The fields, in as many columns as the layout has: rail, name, type, the
-/// table's preview, and with Compare the other row's preview and a mark where
-/// they differ. The first slot counts the fields above, the last those below.
+/// table's preview, and with Compare the other rows' previews in row order, a
+/// mark where they differ and the rows named over them on the rule. The first
+/// slot counts the fields above, the last those below.
 fn draw_fields(
     buf: &mut Buffer,
     lay: &Layout,
@@ -1359,6 +1534,7 @@ fn draw_fields(
         other,
         name_w,
         type_w,
+        rule_used,
     } = of;
     let g = crate::glyphs::get();
     let rows = lay.list.height as usize;
@@ -1376,13 +1552,25 @@ fn draw_fields(
     } else {
         list_w
     };
-    let name_w = name_w.min((col_w / 3).max(4));
+    // Names stay whole while a column has its narrowest preview beside them.
+    let beside = 1 + GAP + type_w + GAP + PREVIEW_MIN;
+    let name_w = name_w.min((col_w / 3).max(col_w.saturating_sub(beside)).max(4));
     let rest = col_w.saturating_sub(1 + name_w + GAP + type_w + GAP);
-    let (this_w, other_w) = if other.is_some() {
-        let each = rest.saturating_sub(GAP + 2) / 2;
-        (each, each)
-    } else {
-        (rest, 0)
+    let read = modal.read.as_ref();
+    // The rows previewed, in row order, each with what was read for it.
+    let cells: Vec<(Option<&InspectRow>, Option<&FieldRead>)> = match other {
+        Some(c) if c.both => vec![
+            (c.before.as_ref(), None),
+            (row, read),
+            (c.after.as_ref(), None),
+        ],
+        Some(c) => vec![(row, read), (c.after.as_ref(), None)],
+        None => vec![(row, read)],
+    };
+    // With Compare, a gap between previews and two cells for the mark.
+    let each = match cells.len() {
+        1 => rest,
+        n => rest.saturating_sub(GAP * (n - 1) + 2) / n,
     };
     let slot_rect = |slot: usize| {
         let col = slot / rows;
@@ -1412,8 +1600,18 @@ fn draw_fields(
             .style(dim)
             .render(slot_rect(cap - 1), buf);
     }
+    if let (Some(used), Some(row), Some(_)) = (rule_used, row, other) {
+        let first = 1 + name_w + GAP + type_w + GAP;
+        let rows: Vec<(usize, usize, bool)> = cells
+            .iter()
+            .enumerate()
+            .filter_map(|(j, (at, _))| {
+                at.map(|r| (first + j * (each + GAP), r.display_row, r.row == row.row))
+            })
+            .collect();
+        draw_compare_labels(buf, lay.list_rule, &rows, each, used, ctx);
+    }
     let list_focused = modal.focus == Focus::List && !modal.finding;
-    let read = modal.read.as_ref();
     let value_cell = |field: &InspectField, at: Option<&InspectRow>, room: usize, own_read| match at
     {
         Some(r) => match shown(field, r, own_read, state) {
@@ -1454,8 +1652,6 @@ fn draw_fields(
         let label =
             crate::glyphs::fit_cells(&dtype_label(&field.dtype), type_w, g.ellipsis).into_owned();
         let label_pad = type_w.saturating_sub(crate::glyphs::cell_width(&label));
-        let (text, style) = value_cell(field, row, this_w, read);
-        let text = crate::glyphs::fit_cells(&text, this_w, g.ellipsis).into_owned();
         let name_style = if is_selected {
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
         } else if ctx.column_colors {
@@ -1470,19 +1666,19 @@ fn draw_fields(
             Span::styled(label, dim),
             Span::raw(" ".repeat(label_pad + GAP)),
         ];
-        if let (Some(other), Some(this_row)) = (other, row) {
-            let pad = this_w.saturating_sub(crate::glyphs::cell_width(&text));
+        for (j, (at_row, own)) in cells.iter().enumerate() {
+            let (text, style) = value_cell(field, *at_row, each, *own);
+            let text = crate::glyphs::fit_cells(&text, each, g.ellipsis).into_owned();
+            let pad = each.saturating_sub(crate::glyphs::cell_width(&text));
             spans.push(Span::styled(text, style));
-            spans.push(Span::raw(" ".repeat(pad + GAP)));
-            let (o_text, o_style) = value_cell(field, Some(other), other_w, None);
-            let o_text = crate::glyphs::fit_cells(&o_text, other_w, g.ellipsis).into_owned();
-            let o_pad = other_w.saturating_sub(crate::glyphs::cell_width(&o_text));
-            spans.push(Span::styled(o_text, o_style));
-            spans.push(Span::raw(" ".repeat(o_pad + 1)));
-            let differ = differs(
-                &shown(field, this_row, read, state),
-                &shown(field, other, None, state),
-            );
+            if j + 1 < cells.len() {
+                spans.push(Span::raw(" ".repeat(pad + GAP)));
+            } else if other.is_some() {
+                spans.push(Span::raw(" ".repeat(pad + 1)));
+            }
+        }
+        if let (Some(other), Some(this_row)) = (other, row) {
+            let differ = differs_from(&shown(field, this_row, read, state), field, other, state);
             if differ == Some(true) {
                 spans.push(Span::styled(
                     g.diff_mark,
@@ -1491,14 +1687,51 @@ fn draw_fields(
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-        } else {
-            spans.push(Span::styled(text, style));
         }
         let mut paragraph = Paragraph::new(Line::from(spans));
         if is_selected && list_focused {
             paragraph = paragraph.style(ctx.highlight_style());
         }
         paragraph.render(at, buf);
+    }
+}
+
+/// Compare's rows named over their previews on the list's rule, `Row 41`: the
+/// row shown in the text color, the others dimmed. `rows` are each preview's
+/// cells into the rule and its row's number, and whether it is the row shown.
+/// A name is drawn where it fits its column and clears the rule's title and
+/// chip, the first `used` cells.
+fn draw_compare_labels(
+    buf: &mut Buffer,
+    rule: Rect,
+    rows: &[(usize, usize, bool)],
+    each: usize,
+    used: usize,
+    ctx: &RenderContext,
+) {
+    for &(x, n, this) in rows {
+        let label = format!(" Row {} ", thousands(n));
+        // A name starts a cell left of its preview, over the gap, so its words
+        // sit over the values.
+        if x <= used + 1
+            || crate::glyphs::cell_width(&label) > each + 1
+            || x + each >= rule.width as usize
+        {
+            continue;
+        }
+        let style = if this {
+            Style::default().fg(ctx.text_primary)
+        } else {
+            Style::default().fg(ctx.dimmed)
+        };
+        Paragraph::new(label.clone()).style(style).render(
+            Rect {
+                x: rule.x + (x - 1) as u16,
+                width: crate::glyphs::cell_width(&label) as u16,
+                ..rule
+            },
+            buf,
+        );
     }
 }
 
@@ -1591,7 +1824,7 @@ fn draw_value(
         .as_ref()
         .map(|f| f.text.clone())
         .unwrap_or_default();
-    let text_w = value_width(lay.value) as u16;
+    let text_w = pane_width(lay.value) as u16;
     for (i, row) in win.rows.iter().enumerate() {
         let y = lay.value.y + i as u16;
         if focused {
@@ -1658,6 +1891,7 @@ pub fn node_pane(node: &Node, choice: Option<View>, width: usize) -> Pane {
         table: None,
         indented: Indented::None,
         not_json: false,
+        unpacked: Unpacked::Unavailable,
         read_key: "Enter",
     };
     match node {
@@ -1676,7 +1910,7 @@ pub fn node_pane(node: &Node, choice: Option<View>, width: usize) -> Pane {
 /// indented up to a few chunks.
 fn json_pane(value: &JsonValue, ask: &PaneAsk) -> Pane {
     let g = crate::glyphs::get();
-    let width = ask.width.max(1);
+    let width = ask.width.clamp(1, MEASURE);
     let scalar = |text: String, kind: &str| {
         let mut lines = Vec::new();
         reader::wrap_lines(&text, width, Tone::Plain, &mut lines);
@@ -1710,6 +1944,7 @@ fn json_pane(value: &JsonValue, ask: &PaneAsk) -> Pane {
                 view: None,
                 copy: CopyAs::Stored,
                 indent: false,
+                unpack: false,
             }
         }
     }
@@ -1807,10 +2042,8 @@ fn render_drill(
         width: content.width.min(WIDE as u16 - 1),
         ..content
     };
-    let width = value_width(Rect {
-        width: content.width,
-        ..content
-    });
+    let full = pane_width(content);
+    let width = full.min(MEASURE);
 
     let pane = match &focused {
         Some((label, child)) => {
@@ -1819,15 +2052,16 @@ fn render_drill(
                 row: drill.row,
                 field: drill.item_key(label),
                 view: modal.view,
-                width: width as u16,
+                width: full as u16,
                 state: 5,
                 pretty: 0,
+                unpacked: 0,
             };
             match &modal.pane {
                 Some((cached, pane)) if *cached == key => pane.clone(),
                 _ => {
-                    let mut built = node_pane(child, modal.view, width);
-                    built.id = modal.next_pane_id();
+                    let mut built = node_pane(child, modal.view, full);
+                    built.id = renewed(modal, &key, &built);
                     modal.pane = Some((key, built.clone()));
                     built
                 }
@@ -1853,8 +2087,12 @@ fn render_drill(
         len,
         need,
         modal.focus,
-        true,
-        1,
+        ListShape {
+            fields: len,
+            min_col: 1,
+            single: true,
+            bytes: false,
+        },
     );
     // The table's header takes the row under the rule; the rest move down one.
     lay.list.y += header as u16;
@@ -2288,6 +2526,7 @@ mod tests {
             table: None,
             indented: Indented::None,
             not_json: false,
+            unpacked: Unpacked::None,
             read_key: "Enter",
         }
     }
@@ -2461,6 +2700,8 @@ mod tests {
         );
         assert!(p.facts.ends_with("gzip"), "{}", p.facts);
         assert_eq!(p.views, [View::Hex, View::Text, View::Escaped]);
+        // Its Text view asks a worker to decompress it, and shows what it answers;
+        // building the pane decompresses nothing.
         let text = pane(
             &DataType::Binary,
             &Shown::Value(AnyValue::Binary(&gz)),
@@ -2469,7 +2710,33 @@ mod tests {
                 ..ask(80)
             },
         );
+        assert!(text.unpack);
+        assert_eq!(lines(&text), ["Decompressing..."]);
+        let decoded = inspector_bytes::decode_text(&gz, inspector_bytes::sniff(&gz)).unwrap();
+        let text = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(&gz)),
+            &PaneAsk {
+                choice: Some(View::Text),
+                unpacked: Unpacked::Ready(Arc::new(decoded)),
+                ..ask(80)
+            },
+        );
+        assert!(!text.unpack);
         assert_eq!(lines(&text), ["hello gzip"]);
+        // Bytes that do not decompress to text lose the Text view, and say so.
+        let failed = pane(
+            &DataType::Binary,
+            &Shown::Value(AnyValue::Binary(&gz)),
+            &PaneAsk {
+                choice: Some(View::Text),
+                unpacked: Unpacked::Failed,
+                ..ask(80)
+            },
+        );
+        assert_eq!(failed.views, [View::Hex, View::Escaped]);
+        assert_eq!(failed.view, Some(View::Hex));
+        assert!(failed.facts.ends_with("not text"), "{}", failed.facts);
 
         let empty = pane(
             &DataType::Binary,
@@ -2533,42 +2800,76 @@ mod tests {
     /// side at full height, and the fields flow into columns that fit.
     #[test]
     fn the_layout_fits_the_row_and_the_terminal() {
+        let list = |fields: usize, min_col: usize| ListShape {
+            fields,
+            min_col,
+            single: false,
+            bytes: false,
+        };
         // 80x24: the Surface's content is 76x20, 18 rows past the two rules.
         let content = Rect::new(2, 1, 76, 20);
-        let l = layout(content, 14, 1, Focus::List, false, 40);
+        let l = layout(content, 14, 1, Focus::List, list(14, 40));
         assert!(!l.wide);
         assert_eq!(l.list.height, 14, "every field listed");
         assert_eq!(l.value.height, 4);
-        let l = layout(content, 214, 1, Focus::List, false, 40);
+        let l = layout(content, 214, 1, Focus::List, list(214, 40));
         assert_eq!(
             (l.list.height, l.value.height),
             (15, 3),
             "the value keeps three"
         );
-        let l = layout(content, 214, 40, Focus::List, false, 40);
+        let l = layout(content, 214, 40, Focus::List, list(214, 40));
         assert_eq!(l.value.height, 9, "a long value takes half");
-        let l = layout(content, 214, 40, Focus::Value, false, 40);
+        let l = layout(content, 214, 40, Focus::Value, list(214, 40));
         assert_eq!(l.list.height, 3, "reading, the list keeps a few rows");
         // Two fields and a long value: the list takes its two rows, the value the rest.
-        let l = layout(content, 2, 1_000, Focus::List, false, 40);
+        let l = layout(content, 2, 1_000, Focus::List, list(2, 40));
         assert_eq!((l.list.height, l.value.height), (2, 16));
-        // 200x50: side by side, two columns of fields.
+        // 200x50: side by side. 214 fields take three columns and the value
+        // narrows to its floor; a short row leaves the value its measure.
         let content = Rect::new(2, 1, 196, 46);
-        let l = layout(content, 214, 1, Focus::List, false, 45);
+        let l = layout(content, 214, 1, Focus::List, list(214, 44));
         assert!(l.wide);
         assert_eq!(l.value.height, 45);
-        assert_eq!(l.cols, 2);
-        assert!(l.cols * l.list.height as usize >= 44);
-        // 300x80: every one of 214 fields.
+        assert_eq!(l.cols, 3, "{l:?}");
+        assert!(l.value.width as usize >= VALUE_FLOOR, "{l:?}");
+        assert!(l.cols * l.list.height as usize >= 130);
+        let l = layout(content, 14, 1, Focus::List, list(14, 44));
+        assert_eq!((l.cols, l.value.width), (1, 88), "{l:?}");
+        // Narrowing the list (a find, Filled) moves nothing: the pane is sized
+        // from every field.
+        let narrowed = layout(content, 3, 1, Focus::List, list(214, 44));
+        assert_eq!(
+            narrowed.value,
+            layout(content, 214, 1, Focus::List, list(214, 44)).value
+        );
+        // 300x80: every one of 214 fields; a row with bytes gives the value a
+        // 32-byte hex row.
         let content = Rect::new(2, 1, 296, 76);
-        let l = layout(content, 214, 1, Focus::List, false, 45);
+        let l = layout(content, 214, 1, Focus::List, list(214, 45));
         assert!(l.cols * l.list.height as usize >= 214, "{l:?}");
+        assert_eq!(l.value.width as usize, MEASURE + 1);
+        let bytes = ListShape {
+            bytes: true,
+            ..list(214, 45)
+        };
+        let l = layout(content, 214, 1, Focus::List, bytes);
+        assert_eq!(l.value.width as usize, HEX_WIDE);
+        assert_eq!(reader::hex_per_line(pane_width(l.value)), 32);
+        assert!(l.cols * l.list.height as usize >= 214, "{l:?}");
+        // Compare keeps the list one column and the value its measure.
+        let compare = ListShape {
+            single: true,
+            ..bytes
+        };
+        let l = layout(content, 214, 1, Focus::List, compare);
+        assert_eq!((l.cols, l.value.width as usize), (1, MEASURE + 1));
         // A short row keeps one column.
-        let l = layout(content, 14, 1, Focus::List, false, 45);
+        let l = layout(content, 14, 1, Focus::List, list(14, 45));
         assert_eq!(l.cols, 1);
         // 140 columns: side by side.
-        assert!(layout(Rect::new(2, 1, 136, 30), 14, 1, Focus::List, false, 45).wide);
-        assert!(!layout(Rect::new(2, 1, 135, 30), 14, 1, Focus::List, false, 45).wide);
+        assert!(layout(Rect::new(2, 1, 136, 30), 14, 1, Focus::List, list(14, 45)).wide);
+        assert!(!layout(Rect::new(2, 1, 135, 30), 14, 1, Focus::List, list(14, 45)).wide);
     }
 
     /// A long trail keeps the row and where the drill is now; the steps between

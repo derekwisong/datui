@@ -19,7 +19,10 @@ The list takes the rows its fields need and the value the rest; when they do
 not all fit, the value keeps the lines it needs, up to half the height, and
 the list scrolls, with `… 5 above` and `… 12 more` at its ends. At 140
 columns and wider the fields and the value sit side by side at full height,
-and the fields flow into as many columns as fit. The fields' rule counts
+and the fields flow into as many columns as fit: a row with more fields than
+the screen has rows narrows the value to make room for them. At 240 columns
+and wider, a row with a binary field gives the value room for a hex dump of
+32 bytes a line. The fields' rule counts
 them, `14 · 2 null · 1 empty`, and the footer offers only the keys that act
 now.
 
@@ -105,7 +108,10 @@ one shown. The footer offers <kbd>e</kbd> only where there is more than one.
 | Other bytes | Hex, Escaped |
 
 JSON text over 64 KB is indented in the background; until then it shows raw,
-with `json, indenting...` on the rule. Escaped text tells a line break (`\n`)
+with `json, indenting...` on the rule. gzip and zstd are decompressed in the
+background when their Text view is chosen, with `decompressing...` on the rule
+until then; bytes that turn out to hold no text go back to Hex, and the rule
+says `not text`. Escaped text tells a line break (`\n`)
 from a backslash followed by `n` (`\\n`), and shows invisible characters such
 as a no-break space as `\u{a0}`.
 
@@ -114,7 +120,10 @@ as a no-break space as `\u{a0}`.
 <kbd>c</kbd> adds a column with the next row's values, and `Δ` (`*` in an ASCII
 terminal) marks each field whose values differ. The rule counts them,
 `14 · 5 differ`, and the title names the other row: `Row 2 of 60 · compare
-with 3`. <kbd>f</kbd> then lists only the fields that differ.
+with 3`. At 240 columns and wider the row before is shown as well, in row
+order (previous, this, next), each named over its column, and the title says
+`compare with 1 and 3`; a field is marked when it differs from either.
+<kbd>f</kbd> then lists only the fields that differ.
 
 <kbd>m</kbd> pins the current row: Compare then shows it beside each row you
 move to with <kbd>←</kbd> <kbd>→</kbd>, and the title says `compare with pinned 3`.

@@ -27239,6 +27239,23 @@ impl App {
                 }
                 None
             }
+            Answer::Unpacked(decoded) => {
+                let Job::InspectUnpack { token } = job else {
+                    return None;
+                };
+                let modal = &mut self.inspector_modal;
+                if current
+                    && let Some(inspector_modal::Unpack::Pending { token: t, place }) =
+                        modal.unpack.as_ref()
+                    && *t == token
+                {
+                    modal.unpack = Some(inspector_modal::Unpack::Ready {
+                        place: place.clone(),
+                        text: std::sync::Arc::new(decoded),
+                    });
+                }
+                None
+            }
             Answer::ValueWritten(open) => {
                 if current && self.inspector_modal.active {
                     self.external_open = Some(open);
@@ -27389,6 +27406,17 @@ impl App {
                     && t == token
                 {
                     modal.pretty = Some(inspector_modal::Pretty::Failed {
+                        place: place.clone(),
+                    });
+                }
+            }
+            Job::InspectUnpack { token } => {
+                let modal = &mut self.inspector_modal;
+                if let Some(inspector_modal::Unpack::Pending { token: t, place }) =
+                    modal.unpack.as_ref()
+                    && t == token
+                {
+                    modal.unpack = Some(inspector_modal::Unpack::Failed {
                         place: place.clone(),
                     });
                 }
@@ -28553,6 +28581,7 @@ impl App {
                 table: None,
                 indented: crate::widgets::inspector::Indented::None,
                 not_json: modal.known_not_json(row.frame, row.row, &field.name),
+                unpacked: modal.unpacked(&(row.frame, row.row, field.name.clone())),
                 read_key: "Enter",
             },
         ))
@@ -28916,8 +28945,9 @@ impl App {
     }
 
     /// What the inspector needs after a pass: the row moved to read while a read
-    /// follows the rows, and long JSON indented for its JSON view. Neither holds
-    /// the keys: moving on drops what is no longer wanted.
+    /// follows the rows, long JSON indented for its JSON view, and compressed
+    /// bytes decompressed for their Text view. None holds the keys: moving on
+    /// drops what is no longer wanted.
     fn inspector_needs(&mut self) {
         if self.input_mode != InputMode::Inspect || !self.inspector_modal.active {
             return;
@@ -28943,12 +28973,15 @@ impl App {
             self.read_inspected_fields(&row, false);
             return;
         }
-        // Long JSON text, asked for the JSON view and not yet indented.
-        let wants = modal
-            .pane_for(row.frame, row.row, &field.name)
-            .is_some_and(|pane| pane.indent);
+        // Long JSON text asked for the JSON view and not yet indented, or
+        // compressed bytes asked for the Text view and not yet decompressed.
+        let pane = modal.pane_for(row.frame, row.row, &field.name);
         let place = (row.frame, row.row, field.name.clone());
-        if !wants || modal.pretty.as_ref().is_some_and(|p| *p.place() == place) {
+        let indent = pane.is_some_and(|pane| pane.indent)
+            && !modal.pretty.as_ref().is_some_and(|p| *p.place() == place);
+        let unpack = pane.is_some_and(|pane| pane.unpack)
+            && !modal.unpack.as_ref().is_some_and(|u| *u.place() == place);
+        if !indent && !unpack {
             return;
         }
         let column = if field.buffered() {
@@ -28962,6 +28995,23 @@ impl App {
             return;
         };
         let modal = &mut self.inspector_modal;
+        if unpack {
+            modal.unpack_token += 1;
+            let token = modal.unpack_token;
+            modal.unpack = Some(inspector_modal::Unpack::Pending { token, place });
+            self.spawn_job(Job::InspectUnpack { token }, None, move |_| {
+                let value = column.get(0).map_err(|e| e.to_string())?;
+                let bytes = match &value {
+                    polars::prelude::AnyValue::Binary(b) => *b,
+                    polars::prelude::AnyValue::BinaryOwned(b) => b.as_slice(),
+                    _ => return Err("not bytes".to_string()),
+                };
+                inspector_bytes::decode_text(bytes, inspector_bytes::sniff(bytes))
+                    .map(Answer::Unpacked)
+                    .ok_or_else(|| "not text".to_string())
+            });
+            return;
+        }
         modal.pretty_token += 1;
         let token = modal.pretty_token;
         modal.pretty = Some(inspector_modal::Pretty::Pending { token, place });
@@ -32328,6 +32378,51 @@ mod inspector_layout_tests {
             // The value keeps its lines under the list, and its rule follows the list.
             let rule = rows.iter().position(|r| r.contains("note  str")).unwrap();
             assert!(rows.len() - 3 - rule > 3, "{width}x{height}:\n{text}");
+        }
+    }
+
+    /// #661: a resize while reading a value keeps the place in it, at every size
+    /// and across the switch between the stacked and the side-by-side layouts.
+    #[test]
+    fn a_resize_keeps_the_place_in_the_value() {
+        use polars::prelude::{IntoLazy, df};
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let text: String = (1..=500).map(|i| format!("line {i}\n")).collect();
+        let df = df!("id" => [1i64], "text" => [text]).unwrap();
+        let mut state = DataTableState::from_lazyframe(df.lazy(), &OpenOptions::default()).unwrap();
+        state.set_column_order(state.headers());
+        app.data_table_state = Some(state);
+        rows_at(&mut app, 100, 30);
+        // A frame after each key, as the event loop draws.
+        for code in [KeyCode::Char(' '), KeyCode::Down, KeyCode::Tab]
+            .into_iter()
+            .chain([KeyCode::PageDown; 3])
+        {
+            press(&mut app, code);
+            rows_at(&mut app, 100, 30);
+        }
+        let first_line = |rows: &[String]| {
+            let text = rows.join("\n");
+            // The position comes after the facts, which count `501 lines` too.
+            let at = text.rfind(" lines ").expect(&text) + " lines ".len();
+            text[at..]
+                .split('-')
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .expect(&text)
+        };
+        let before = first_line(&rows_at(&mut app, 100, 30));
+        assert!(before > 40, "{before}");
+        for (width, height) in [(160, 40), (80, 24), (300, 80), (100, 30)] {
+            let rows = rows_at(&mut app, width, height);
+            assert_eq!(
+                first_line(&rows),
+                before,
+                "{width}x{height}:\n{}",
+                rows.join("\n")
+            );
         }
     }
 

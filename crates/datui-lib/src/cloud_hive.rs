@@ -371,25 +371,15 @@ pub fn footers_to_cache(
         .iter()
         .map(|footer| match footer {
             None => crate::cache::CachedFooter::default(),
-            Some(f) => {
-                let columns: Vec<(String, polars::prelude::DataType)> = f
-                    .schema
-                    .iter()
-                    .map(|(name, dtype)| (name.to_string(), dtype.clone()))
-                    .collect();
-                let at = schemas
-                    .iter()
-                    .position(|s| *s == columns)
-                    .unwrap_or_else(|| {
-                        schemas.push(columns);
-                        schemas.len() - 1
-                    });
-                crate::cache::CachedFooter {
-                    schema: Some(at),
-                    row_group_rows: f.row_group_rows.clone(),
-                    row_group_bytes: f.row_group_bytes.clone(),
-                }
-            }
+            Some(f) => crate::cache::CachedFooter {
+                schema: Some(crate::cache::DatasetShape::intern_schema(
+                    &mut schemas,
+                    &f.schema,
+                )),
+                row_group_rows: f.row_group_rows.clone(),
+                row_group_bytes: f.row_group_bytes.clone(),
+                column_bytes: Vec::new(),
+            },
         })
         .collect();
     (cached, schemas)
@@ -413,11 +403,7 @@ pub fn footers_from_cache(
             let Some(at) = f.schema else {
                 return Some(None);
             };
-            let columns = schemas.get(at)?;
-            let mut schema = Schema::with_capacity(columns.len());
-            for (name, dtype) in columns {
-                schema.with_column(name.as_str().into(), dtype.clone());
-            }
+            let schema = crate::cache::DatasetShape::schema_at(schemas, at)?;
             Some(Some(FileFooter {
                 schema: Arc::new(schema),
                 row_group_rows: f.row_group_rows.clone(),
@@ -1093,6 +1079,7 @@ mod tests {
             schema: Some(9),
             row_group_rows: vec![1],
             row_group_bytes: vec![1],
+            column_bytes: Vec::new(),
         }];
         assert!(
             footers_from_cache(&broken, &schemas).is_none(),

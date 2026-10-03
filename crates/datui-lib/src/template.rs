@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -358,53 +357,90 @@ impl TemplateManager {
         Ok(())
     }
 
-    pub fn save_template(&self, template: &Template) -> Result<()> {
-        // Ensure config directory exists first
+    fn template_path(&self, id: &str) -> PathBuf {
+        self.templates_dir.join(format!("template_{id}.json"))
+    }
+
+    /// Run `work` holding the views' lock, which every write and delete takes, so
+    /// another instance cannot land between reading a view and writing it back.
+    fn locked<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
         self.config.ensure_config_dir()?;
-
-        // Always ensure templates directory exists before writing
-        // Don't rely on existence checks - always create if needed
-        // This handles cases where the directory might have been deleted
-        // or where tests run in environments with different file system behavior
         fs::create_dir_all(&self.templates_dir)?;
+        let lock = crate::cache::lock_file(
+            &self.templates_dir.join("views.lock"),
+            std::time::Duration::from_secs(2),
+        )?
+        .ok_or_else(|| color_eyre::eyre::eyre!("another datui is saving views; try again"))?;
+        let result = work();
+        drop(lock);
+        result
+    }
 
-        let filename = format!("template_{}.json", template.id);
-        let file_path = self.templates_dir.join(filename);
+    /// The view as stored now, `None` when it is gone (deleted, perhaps by another
+    /// instance). A file that does not parse is an error: it is not ours to replace.
+    fn read_stored(&self, id: &str) -> Result<Option<Template>> {
+        let text = match fs::read_to_string(self.template_path(id)) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mut template: Template = serde_json::from_str(&text)?;
+        template.match_criteria.unmangle_urls();
+        Ok(Some(template))
+    }
 
-        // Ensure the parent directory exists right before opening the file
-        // Double-check for robustness, especially in CI/test environments
-        if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
+    fn write_stored(&self, template: &Template) -> Result<()> {
         let json = serde_json::to_string_pretty(template)?;
-
-        // Use file locking to prevent race conditions
-        use fs2::FileExt;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&file_path)?;
-
-        file.lock_exclusive()?;
-        file.write_all(json.as_bytes())?;
-        file.flush()?;
-        file.unlock()?;
-
+        crate::cache::atomic_write(&self.template_path(&template.id), json.as_bytes())?;
         Ok(())
     }
 
-    pub fn delete_template(&mut self, id: &str) -> Result<()> {
-        let filename = format!("template_{}.json", id);
-        let file_path = self.templates_dir.join(filename);
+    /// Write `template` as it is, under the lock and by rename: a crash or a reader
+    /// mid-write never meets a half-written view.
+    pub fn save_template(&self, template: &Template) -> Result<()> {
+        self.locked(|| self.write_stored(template))
+    }
 
+    pub fn delete_template(&mut self, id: &str) -> Result<()> {
+        let file_path = self.template_path(id);
         if file_path.exists() {
-            fs::remove_file(&file_path)?;
+            self.locked(|| match fs::remove_file(&file_path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+                _ => Ok(()),
+            })?;
         }
 
         self.templates.retain(|t| t.id != id);
         Ok(())
+    }
+
+    /// Count a use of the view: its stored file is bumped, not this instance's copy
+    /// written back, so an edit made by another instance since this one read the
+    /// views is kept, and a view deleted elsewhere stays deleted.
+    pub fn record_use(&mut self, id: &str, file: &Path) -> Result<()> {
+        let stored = self.locked(|| {
+            let Some(mut stored) = self.read_stored(id)? else {
+                return Ok(None);
+            };
+            stored.last_used = Some(SystemTime::now());
+            stored.usage_count += 1;
+            stored.last_matched_file = Some(file.to_path_buf());
+            self.write_stored(&stored)?;
+            Ok(Some(stored))
+        })?;
+        self.adopt(id, stored);
+        Ok(())
+    }
+
+    /// Replace this instance's copy of a view with the stored one, or drop it.
+    fn adopt(&mut self, id: &str, stored: Option<Template>) {
+        match stored {
+            Some(stored) => match self.templates.iter_mut().find(|t| t.id == id) {
+                Some(existing) => *existing = stored,
+                None => self.templates.push(stored),
+            },
+            None => self.templates.retain(|t| t.id != id),
+        }
     }
 
     pub fn find_relevant_templates<'a>(
@@ -522,43 +558,76 @@ impl TemplateManager {
         Ok(template)
     }
 
-    pub fn update_template(&mut self, template: &Template) -> Result<()> {
-        // Save the updated template
-        self.save_template(template)?;
-
-        // Update in-memory list
-        if let Some(existing) = self.templates.iter_mut().find(|t| t.id == template.id) {
-            *existing = template.clone();
-        } else {
-            // If not found, add it (shouldn't happen, but handle gracefully)
-            self.templates.push(template.clone());
+    /// Save an edit of a view. Only what the edit changed from this instance's copy
+    /// is written, over the view as stored now, so another instance's edit to other
+    /// fields and its usage counts survive. A view deleted elsewhere is not brought
+    /// back: that is an error, and the view leaves this instance too.
+    pub fn update_template(&mut self, edited: &Template) -> Result<()> {
+        let base = self.get_template_by_id(&edited.id).cloned();
+        let stored = self.locked(|| {
+            let Some(mut stored) = self.read_stored(&edited.id)? else {
+                return Ok(None);
+            };
+            merge_edit(&mut stored, base.as_ref(), edited);
+            self.write_stored(&stored)?;
+            Ok(Some(stored))
+        })?;
+        let deleted = stored.is_none();
+        self.adopt(&edited.id, stored);
+        if deleted {
+            return Err(color_eyre::eyre::eyre!(
+                "view \"{}\" was deleted by another datui",
+                edited.name
+            ));
         }
-
         Ok(())
     }
 
     pub fn remove_all_templates(&mut self) -> Result<()> {
         // Delete all template files
         if self.templates_dir.exists() {
-            for entry in fs::read_dir(&self.templates_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file()
-                    && path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|s| s.starts_with("template_") && s.ends_with(".json"))
-                        .unwrap_or(false)
-                {
-                    fs::remove_file(&path)?;
+            self.locked(|| {
+                for entry in fs::read_dir(&self.templates_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.is_file()
+                        && path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.starts_with("template_") && s.ends_with(".json"))
+                            .unwrap_or(false)
+                    {
+                        fs::remove_file(&path)?;
+                    }
                 }
-            }
+                Ok(())
+            })?;
         }
 
         // Clear in-memory list
         self.templates.clear();
 
         Ok(())
+    }
+}
+
+/// Apply to `stored` the fields `edited` changed from `base`, the copy the edit began
+/// from. Without a base every edited field is taken. Usage is never an edit.
+fn merge_edit(stored: &mut Template, base: Option<&Template>, edited: &Template) {
+    fn changed<T: Serialize>(base: Option<&T>, edited: &T) -> bool {
+        base.is_none_or(|base| serde_json::to_value(base).ok() != serde_json::to_value(edited).ok())
+    }
+    if changed(base.map(|b| &b.name), &edited.name) {
+        stored.name = edited.name.clone();
+    }
+    if changed(base.map(|b| &b.description), &edited.description) {
+        stored.description = edited.description.clone();
+    }
+    if changed(base.map(|b| &b.match_criteria), &edited.match_criteria) {
+        stored.match_criteria = edited.match_criteria.clone();
+    }
+    if changed(base.map(|b| &b.settings), &edited.settings) {
+        stored.settings = edited.settings.clone();
     }
 }
 

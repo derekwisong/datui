@@ -191,6 +191,44 @@ fn a_view_returns_before_its_pivot_is_read_and_installs_when_it_is() {
     );
 }
 
+/// Applying a view counts the use on the stored view: a rename made by another
+/// instance since this one read the views is kept, and a view another instance
+/// deleted is not written back.
+#[test]
+fn applying_a_view_keeps_another_instances_edit_and_delete() {
+    let (mut app, rx, tx, dir) = long_csv_app();
+    let mut template = pivot_view(&mut app, "sorted");
+    template.settings.pivot = None;
+    template.settings.sort_columns = vec!["val".to_string()];
+    let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
+    let mut other = TemplateManager::new(&config).unwrap();
+    let mut renamed = other.get_template_by_id(&template.id).cloned().unwrap();
+    renamed.name = "renamed elsewhere".to_string();
+    other.update_template(&renamed).unwrap();
+
+    assert!(app.apply_template(&template).is_ok());
+    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+    let stored = TemplateManager::new(&config).unwrap();
+    let view = stored.get_template_by_id(&template.id).unwrap();
+    assert_eq!(view.name, "renamed elsewhere");
+    assert_eq!(view.usage_count, 1);
+
+    other.delete_template(&template.id).unwrap();
+    assert!(app.apply_template(&template).is_ok());
+    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+    assert!(!app.error_modal.active, "{}", app.error_modal.message);
+    let stored = TemplateManager::new(&config).unwrap();
+    assert!(
+        stored.all_templates().is_empty(),
+        "the deleted view came back"
+    );
+    assert!(
+        app.template_manager
+            .get_template_by_id(&template.id)
+            .is_none()
+    );
+}
+
 /// Without a pivot every step plans at once, and the first rows are read in the
 /// background.
 #[test]

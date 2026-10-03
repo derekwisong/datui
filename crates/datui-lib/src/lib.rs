@@ -11506,7 +11506,23 @@ impl App {
                     reshape_source: state.reshape_source().cloned(),
                 };
             }
-            self.template_manager.update_template(&template).is_ok()
+            match self.template_manager.update_template(&template) {
+                Ok(()) => true,
+                Err(e) => {
+                    // Deleted elsewhere, it has left the list too; otherwise the form
+                    // stays, edits and all, to try again.
+                    if self
+                        .template_manager
+                        .get_template_by_id(&editing_id)
+                        .is_none()
+                    {
+                        self.refresh_view_list();
+                        self.template_modal.exit_form();
+                    }
+                    self.error_modal.show(format!("Error saving view: {e}"));
+                    return;
+                }
+            }
         } else {
             self.create_template_from_current_state(name, description, match_criteria)
                 .is_ok()
@@ -14618,11 +14634,10 @@ impl App {
         why: Option<template::MatchReason>,
     ) {
         if let Some(path) = &self.path {
-            let mut used = template.clone();
-            used.last_used = Some(std::time::SystemTime::now());
-            used.usage_count += 1;
-            used.last_matched_file = Some(path.clone());
-            let _ = self.template_manager.save_template(&used);
+            use crate::logging::LogFailure;
+            self.template_manager
+                .record_use(&template.id, path)
+                .or_log("record a view's use");
         }
         let previous = self.active_template_id.replace(template.id.clone());
         let Some(state) = self.data_table_state.as_ref() else {

@@ -53,6 +53,8 @@ pub mod chart_modal;
 pub mod cli;
 pub mod clipboard;
 #[cfg(feature = "cloud")]
+mod cloud_arrow;
+#[cfg(feature = "cloud")]
 pub mod cloud_browse;
 #[cfg(feature = "cloud")]
 pub mod cloud_command;
@@ -84,6 +86,7 @@ pub mod gcloud;
 pub mod glyphs;
 pub mod gps;
 pub(crate) mod help_strings;
+pub mod hf_splits;
 pub mod home;
 pub mod inspector_drill;
 pub mod inspector_modal;
@@ -8524,6 +8527,14 @@ pub struct OpenOptions {
     /// totals, for the Info panel. Found by the scan, which reads the header once, and
     /// carried to the dataset as `left_out` is. `None` for every other open.
     pub model: Option<Arc<crate::model_files::ModelSummary>>,
+    /// The split of a Hugging Face cache directory this read chose, the others and the
+    /// `map()` files it left out. Found by the read, or by a bucket listing, and carried
+    /// to the dataset as `left_out` is. `None` for every other open.
+    pub splits: Option<Arc<crate::hf_splits::Splits>>,
+    /// Where each Arrow input's rows are once its streams are converted: the IPC files
+    /// read in place and the streams' rows in the converted file the scan names. Set
+    /// by the load, after a conversion or a bucket's listing, never by a request.
+    pub arrow_parts: Option<Arc<Vec<crate::ipc_stream::Part>>>,
     /// `--spec FILE`: read the path through this format spec, whatever else matches it.
     pub spec_file: Option<PathBuf>,
     /// The format spec named by `--format NAME`, or picked with `b`.
@@ -8603,6 +8614,8 @@ impl OpenOptions {
             normalize: false,
             audio: None,
             sqlite: None,
+            splits: None,
+            arrow_parts: None,
         }
     }
 }
@@ -9259,6 +9272,8 @@ pub struct ReadReport {
     pub midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A SQLite table opened in place. See `OpenOptions::sqlite`.
     pub sqlite: Option<Arc<SqliteOpen>>,
+    /// The split a Hugging Face cache directory was read as. See `OpenOptions::splits`.
+    pub splits: Option<Arc<crate::hf_splits::Splits>>,
 }
 
 /// A SQLite table opened in place, carried from the scan to the dataset.
@@ -16896,6 +16911,25 @@ impl App {
                 #[cfg(feature = "cloud")]
                 let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
                 self.spawn_job(job, Some("Checking size..."), move |_| {
+                    // Arrow in a store: its listing says which objects, and which of
+                    // them are streams to download.
+                    #[cfg(feature = "cloud")]
+                    if let loading::PendingDownload::Arrow { url, .. } = &pending {
+                        let (_, _, options) = pending.parts();
+                        let (objects, options) = crate::cloud_arrow::list(
+                            url, options, &cloud, &runtime,
+                        )
+                        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                        let size = crate::cloud_arrow::stream_bytes(&objects);
+                        return Ok(Answer::Load(Box::new(LoadAnswer::Sized(
+                            loading::PendingDownload::Arrow {
+                                url: url.clone(),
+                                objects,
+                                size: Some(size),
+                                options,
+                            },
+                        ))));
+                    }
                     let size = match &pending {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { url, .. } => {
@@ -16907,6 +16941,8 @@ impl App {
                         | loading::PendingDownload::Azure { url, .. } => {
                             Self::fetch_remote_size_cloud(url, &cloud, &runtime).unwrap_or(None)
                         }
+                        #[cfg(feature = "cloud")]
+                        loading::PendingDownload::Arrow { size, .. } => *size,
                     };
                     Ok(Answer::Load(Box::new(LoadAnswer::Sized(
                         pending.with_size(size),
@@ -16930,10 +16966,18 @@ impl App {
                     loading::PendingDownload::Gcs { .. } => "Downloading from GCS...",
                     #[cfg(feature = "cloud")]
                     loading::PendingDownload::Azure { .. } => "Downloading from Azure...",
+                    #[cfg(feature = "cloud")]
+                    loading::PendingDownload::Arrow { url, .. } => {
+                        match source::input_source(Path::new(url)) {
+                            source::InputSource::Gcs(_) => "Downloading from GCS...",
+                            source::InputSource::Azure(_) => "Downloading from Azure...",
+                            _ => "Downloading from S3...",
+                        }
+                    }
                 };
                 self.spawn_job(job, Some(status), move |_| {
                     let (url, _, options) = pending.parts();
-                    let download = match &pending {
+                    let (download, options) = match &pending {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { .. } => {
                             let ext = source::download_suffix(url);
@@ -16943,18 +16987,36 @@ impl App {
                                 ext.as_deref(),
                                 &writer,
                             )
+                            .map(|file| (file, options.clone()))
                         }
                         #[cfg(feature = "cloud")]
                         loading::PendingDownload::S3 { .. }
                         | loading::PendingDownload::Gcs { .. }
                         | loading::PendingDownload::Azure { .. } => {
                             Self::download_cloud_to_temp(url, &cloud, options, &runtime, &writer)
+                                .map(|file| (file, options.clone()))
+                        }
+                        // Its streams, converted as they arrive; its IPC files stay put.
+                        #[cfg(feature = "cloud")]
+                        loading::PendingDownload::Arrow { objects, .. } => {
+                            crate::cloud_arrow::download(
+                                objects, options, &cloud, &runtime, &writer,
+                            )
+                            .map(|(file, parts)| {
+                                let options = OpenOptions {
+                                    format: Some(FileFormat::Arrow),
+                                    hive: false,
+                                    arrow_parts: Some(Arc::new(parts)),
+                                    ..options.clone()
+                                };
+                                (file, options)
+                            })
                         }
                     }
                     .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
                     Ok(Answer::Load(Box::new(LoadAnswer::Downloaded {
                         download,
-                        options: options.clone(),
+                        options,
                     })))
                 });
             }
@@ -17057,7 +17119,7 @@ impl App {
                 // The load's stop flag ends it at the next record batch, removing the
                 // file; quitting removes it even if the process ends first.
                 self.spawn_job(job, Some("Converting Arrow stream..."), move |_| {
-                    let file = crate::ipc_stream::convert(
+                    let converted = crate::ipc_stream::convert(
                         &files,
                         options.temp_dir.as_deref(),
                         &writer,
@@ -17067,7 +17129,8 @@ impl App {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
                     })?;
                     Ok(Answer::Load(Box::new(LoadAnswer::Converted {
-                        file,
+                        file: converted.file,
+                        parts: converted.parts,
                         path,
                         options,
                     })))
@@ -17157,6 +17220,7 @@ impl App {
                         audio: None,
                         midi: None,
                         sqlite: None,
+                        splits: options.splits.clone(),
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
@@ -17185,6 +17249,7 @@ impl App {
                         model: report.model,
                         format_read: report.format_read,
                         sqlite: report.sqlite,
+                        splits: report.splits,
                         spec_choice: None,
                         read_python: report.read_python,
                         audio: report.audio,
@@ -17291,8 +17356,27 @@ impl App {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| std::env::temp_dir().display().to_string());
         let note = note.map(|note| format!("{note}\n\n")).unwrap_or_default();
+        // Only a store's Arrow streams are downloaded, and converted as they arrive.
+        let files = match pending.arrow_files() {
+            Some((1, 0)) => "Arrow stream: converted as it downloads\n".to_string(),
+            Some((streams, 0)) => {
+                format!("Files: {streams} Arrow streams, converted as they download\n")
+            }
+            Some((streams, in_place)) => {
+                let streams = match streams {
+                    1 => "1 Arrow stream, converted as it downloads".to_string(),
+                    n => format!("{n} Arrow streams, converted as they download"),
+                };
+                let in_place = match in_place {
+                    1 => "1 IPC file read in place".to_string(),
+                    n => format!("{n} IPC files read in place"),
+                };
+                format!("Files: {streams}; {in_place}\n")
+            }
+            None => String::new(),
+        };
         format!(
-            "{note}URL: {url}\nFile size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
+            "{note}URL: {url}\n{files}File size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
         )
     }
 
@@ -17484,7 +17568,8 @@ impl App {
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
-        if !options.single_spine_schema {
+        // A prefix of Arrow files is read from its download (`cloud_arrow`).
+        if !options.single_spine_schema || options.format == Some(FileFormat::Arrow) {
             return None;
         }
         // Unlike the local path this does not require --hive: a directory or glob URL
@@ -18193,6 +18278,12 @@ impl App {
         // count of the files and a wrong one of the table.
         facts.not_the_table = options.read_as_plain_files_of;
         facts.model = options.model.clone();
+        if let Some(splits) = &options.splits {
+            facts.other_tables = splits.others.clone();
+            facts
+                .open_notes
+                .extend(crate::notes::map_caches(splits.caches));
+        }
         if let Some(read) = &options.format_read {
             facts.open_notes.extend(read.notes());
             facts.format_read = Some(read.clone());
@@ -18209,7 +18300,14 @@ impl App {
         }
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
-        facts.remote_source = path.is_some_and(source::scans_in_place);
+        // Arrow in a store reads its IPC files in place, and its streams from their
+        // download (`cloud_arrow`).
+        facts.remote_source = match &options.arrow_parts {
+            Some(parts) => parts.iter().any(|part| {
+                matches!(part, crate::ipc_stream::Part::InPlace(p) if source::is_remote_url(p))
+            }),
+            None => path.is_some_and(source::scans_in_place),
+        };
         // The cheap footer-sum row count, for a local Parquet hive directory. Asked
         // here because a stat on a mount that has stopped answering hangs its thread.
         if options.hive
@@ -18302,11 +18400,45 @@ impl App {
                 .with_cloud_options(Some(cloud_opts))
                 .finish()
                 .map_err(named),
+            // IPC files, by range from their footers. A prefix is listed before it gets
+            // here (`cloud_arrow`), so this is a glob: a stream among its objects has no
+            // footer, and is read by its folder, which downloads it.
+            FileFormat::Arrow => {
+                let args = polars::prelude::UnifiedScanArgs {
+                    cloud_options: Some(cloud_opts),
+                    glob,
+                    ..Default::default()
+                };
+                LazyFrame::scan_ipc(pl_path, Default::default(), args).map_err(|e| {
+                    let folder = url
+                        .split('*')
+                        .next()
+                        .and_then(|head| head.rsplit_once('/'))
+                        .map_or(url, |(folder, _)| folder);
+                    color_eyre::eyre::eyre!(
+                        "Could not read {url} as Arrow IPC files: {e}. A glob reads IPC files in place; Arrow streams are read by their folder: open {folder}/"
+                    )
+                })
+            }
             // Parquet has its own branch, and the rest have no multi-file cloud reader
             // in Polars — an ORC or Avro prefix is still a file at a time.
             _ => return None,
         };
         Some(lf)
+    }
+
+    /// The format a prefix or glob in a store is read as, other than Parquet: what
+    /// the listing said, else what a glob's names end in (`*.arrow`).
+    #[cfg(feature = "cloud")]
+    fn cloud_glob_format(url: &str, options: &OpenOptions) -> Option<FileFormat> {
+        options
+            .format
+            .or_else(|| {
+                url.contains('*')
+                    .then(|| FileFormat::from_path(Path::new(url)))
+                    .flatten()
+            })
+            .filter(|f| *f != FileFormat::Parquet)
     }
 
     /// The plain URL and Polars options for one object-store path, through the source
@@ -18512,6 +18644,150 @@ impl App {
             .map(|state| (state, OpenFacts::default(), "full scan".to_string()))
     }
 
+    /// The files of one split, when `dir` is a Hugging Face `datasets` cache: its
+    /// `dataset_info.json` or `state.json` beside Arrow files. What was chosen and left
+    /// out goes in `report`. Any other directory reads every file.
+    fn hugging_face_split(
+        dir: &Path,
+        format: FileFormat,
+        files: Vec<PathBuf>,
+        options: &OpenOptions,
+        report: &mut ReadReport,
+    ) -> Result<Vec<PathBuf>> {
+        let metadata = || {
+            ["dataset_info.json", "state.json"]
+                .iter()
+                .any(|name| dir.join(name).is_file())
+        };
+        if format != FileFormat::Arrow || !metadata() {
+            return Ok(files);
+        }
+        let names: Vec<&str> = files
+            .iter()
+            .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or_default())
+            .collect();
+        let (chosen, splits) = crate::hf_splits::choose(&names, options.table.as_deref())
+            .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", dir.display()))?;
+        report.splits = Some(Arc::new(splits));
+        Ok(chosen.into_iter().map(|i| files[i].clone()).collect())
+    }
+
+    /// Why `--table` was refused for a file of `format`, which holds one table.
+    fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
+        let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
+        color_eyre::eyre::eyre!(
+            "{what} holds one table; --table picks one of a SQLite database's or an NMEA log's, or a Hugging Face dataset's split."
+        )
+    }
+
+    /// The inputs of an Arrow read as one table, in order: each IPC file scanned where
+    /// it is, in a bucket or on disk, and each run of streams as its rows of
+    /// `converted`, the IPC file they were converted to. Stacked as the files of a
+    /// directory are ([`DataTableState::union_of_files`]).
+    fn scan_arrow_parts(
+        cloud: &crate::config::CloudConfig,
+        converted: Option<&PathBuf>,
+        parts: &[crate::ipc_stream::Part],
+    ) -> Result<LazyFrame> {
+        use crate::ipc_stream::Part;
+        #[cfg(not(feature = "cloud"))]
+        let _ = cloud;
+        let scan = |path: &Path| -> Result<LazyFrame> {
+            #[cfg(feature = "cloud")]
+            if source::is_remote_url(path) {
+                let (url, cloud_options) = Self::resolve_cloud_url(path, cloud)?;
+                let args = polars::prelude::UnifiedScanArgs {
+                    cloud_options: Some(cloud_options),
+                    ..Default::default()
+                };
+                return Ok(LazyFrame::scan_ipc(
+                    PlRefPath::new(url.as_str()),
+                    Default::default(),
+                    args,
+                )?);
+            }
+            Ok(LazyFrame::scan_ipc(
+                polars::prelude::PlRefPath::try_from_path(path)?,
+                Default::default(),
+                Default::default(),
+            )?)
+        };
+        let streams = |offset: u64, rows: u64| -> Result<LazyFrame> {
+            let file = converted
+                .ok_or_else(|| color_eyre::eyre::eyre!("No converted Arrow file to read."))?;
+            let lf = scan(file)?;
+            // The whole file needs no slice, which would hide its row count.
+            let whole = offset == 0
+                && parts
+                    .iter()
+                    .all(|part| matches!(part, Part::Converted { .. }));
+            Ok(if whole {
+                lf
+            } else {
+                lf.slice(offset as i64, rows as polars::prelude::IdxSize)
+            })
+        };
+        let mut frames = Vec::new();
+        let mut run: Option<(u64, u64)> = None;
+        for part in parts {
+            match part {
+                Part::Converted { offset, rows, .. } => {
+                    run = Some(match run {
+                        Some((start, n)) if start + n == *offset => (start, n + rows),
+                        Some((start, n)) => {
+                            frames.push(streams(start, n)?);
+                            (*offset, *rows)
+                        }
+                        None => (*offset, *rows),
+                    });
+                }
+                Part::InPlace(path) => {
+                    if let Some((start, n)) = run.take() {
+                        frames.push(streams(start, n)?);
+                    }
+                    frames.push(scan(path)?);
+                }
+            }
+        }
+        if let Some((start, n)) = run {
+            frames.push(streams(start, n)?);
+        }
+        match frames.len() {
+            0 => Err(color_eyre::eyre::eyre!("No Arrow files to read.")),
+            1 => Ok(frames.remove(0)),
+            _ => Ok(polars::prelude::concat(
+                frames.as_slice(),
+                DataTableState::union_of_files(),
+            )?),
+        }
+    }
+
+    /// One split of a `save_to_disk` DatasetDict, `dir`, whose `dataset_dict.json` names
+    /// `splits`: the subdirectory `--table` names, else the first offered, read as any
+    /// directory is. The others are listed, as a cache directory's are.
+    fn dataset_dict_split(
+        dir: &Path,
+        splits: &[String],
+        options: &OpenOptions,
+        report: &mut ReadReport,
+        formats: &crate::formats::Registry,
+    ) -> Result<Scan> {
+        let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
+        let mut picked = crate::hf_splits::pick(&listed, options.table.as_deref())
+            .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", dir.display()))?;
+        let split = dir.join(picked.split.as_deref().unwrap_or_default());
+        let inner = OpenOptions {
+            table: None,
+            splits: None,
+            ..options.clone()
+        };
+        let scan = Self::build_local_lazyframe(&[split], &inner, report, formats)?;
+        // The split's own directory names no splits; its `map()` files are still counted.
+        picked.caches = report.splits.as_ref().map_or(0, |inner| inner.caches);
+        report.splits = Some(Arc::new(picked));
+        Ok(scan)
+    }
+
     /// Build the LazyFrame for `paths`.
     ///
     /// Takes the cloud config by reference rather than reading `self`, so the same
@@ -18598,6 +18874,14 @@ impl App {
         report: &mut ReadReport,
         formats: &crate::formats::Registry,
     ) -> Result<Scan> {
+        // Arrow streams converted, or a bucket's Arrow listed: the load says where
+        // each input's rows are.
+        if let Some(parts) = &options.arrow_parts {
+            if options.table.is_some() && options.splits.is_none() {
+                return Err(Self::one_table(Some(FileFormat::Arrow)));
+            }
+            return Self::scan_arrow_parts(cloud, paths.first(), parts).map(Scan::from);
+        }
         // Only the cloud readers below take the settings.
         #[cfg(not(feature = "cloud"))]
         let _ = cloud;
@@ -18626,7 +18910,7 @@ impl App {
                     let is_glob = source::is_prefix_or_glob(&full);
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
-                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                    if let Some(format) = Self::cloud_glob_format(&full, options)
                         && let Some(lf) = Self::scan_cloud_prefix(
                             &full,
                             cloud_opts.clone(),
@@ -18676,7 +18960,7 @@ impl App {
                     let is_glob = source::is_prefix_or_glob(&full);
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
-                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                    if let Some(format) = Self::cloud_glob_format(&full, options)
                         && let Some(lf) = Self::scan_cloud_prefix(
                             &full,
                             cloud_opts.clone(),
@@ -18722,7 +19006,7 @@ impl App {
                     let is_glob = source::is_prefix_or_glob(&full);
                     // The reader the prefix's own format calls for, when the listing
                     // said what that is. Only Parquet falls through to the scan below.
-                    if let Some(format) = options.format.filter(|f| *f != FileFormat::Parquet)
+                    if let Some(format) = Self::cloud_glob_format(&full, options)
                         && let Some(lf) = Self::scan_cloud_prefix(
                             &full,
                             cloud_opts.clone(),
@@ -18850,6 +19134,11 @@ impl App {
                 // `.json.gz` was opened by seeking each file's last four bytes for a
                 // `PAR1` that was never going to be there — the files were fine, the
                 // reader was never asked to be the right one.
+                if path.is_dir()
+                    && let Some(splits) = crate::hf_splits::dataset_dict(path)
+                {
+                    return Self::dataset_dict_split(path, &splits, options, report, formats);
+                }
                 if path.is_dir() {
                     match crate::discover::directory_format(path) {
                         // Flat and Parquet: the scan below is already right for it.
@@ -18886,10 +19175,14 @@ impl App {
                             // list of files typed on the command line goes through. An
                             // explicit `--format` is the user's own answer and outranks
                             // what the names say.
+                            let format = options.format.unwrap_or(found);
+                            let files =
+                                Self::hugging_face_split(path, format, files, options, report)?;
                             report.files_disagree = Self::files_disagree(&files, options, found);
                             let nested = OpenOptions {
                                 hive: false,
-                                format: Some(options.format.unwrap_or(found)),
+                                format: Some(format),
+                                splits: report.splits.clone(),
                                 ..options.clone()
                             };
                             return Self::build_local_lazyframe(&files, &nested, report, formats);
@@ -18904,10 +19197,14 @@ impl App {
                             // and refusing the whole of it over the stray was datui
                             // deciding that a directory it could read was not worth
                             // reading.
+                            let format = options.format.unwrap_or(found);
+                            let files =
+                                Self::hugging_face_split(path, format, files, options, report)?;
                             report.files_disagree = Self::files_disagree(&files, options, found);
                             let nested = OpenOptions {
                                 hive: false,
-                                format: Some(options.format.unwrap_or(found)),
+                                format: Some(format),
+                                splits: report.splits.clone(),
                                 ..options.clone()
                             };
                             let lf = Self::build_local_lazyframe(&files, &nested, report, formats)?;
@@ -18985,12 +19282,9 @@ impl App {
                 effective_format,
                 Some(FileFormat::Nmea | FileFormat::Sqlite)
             )
+            && options.splits.is_none()
         {
-            let what = effective_format
-                .map_or("This file".to_string(), |f| format!("A {} file", f.name()));
-            return Err(color_eyre::eyre::eyre!(
-                "{what} holds one table; --table picks one of a SQLite database's or an NMEA log's."
-            ));
+            return Err(Self::one_table(effective_format));
         }
 
         // A GPS log is read into a file of its own first: the load converts it
@@ -19060,10 +19354,14 @@ impl App {
                     options.row_start_index,
                 )?,
                 Some(FileFormat::Arrow) => {
-                    if let Some(streams) = crate::ipc_stream::streams_among(paths) {
-                        return Ok(Scan::Streams(streams?));
+                    // The first file says: a `datasets` cache is all streams, and the
+                    // conversion reads each file anyway.
+                    if crate::ipc_stream::starts_with_stream(paths) {
+                        return Ok(Scan::Streams(paths.to_vec()));
                     }
-                    DataTableState::from_ipc_paths(
+                    // Polars reads every IPC file's footer for the schema, and fails on
+                    // a stream among them: only then is each file looked at.
+                    match DataTableState::from_ipc_paths(
                         paths,
                         options.pages_lookahead,
                         options.pages_lookback,
@@ -19071,7 +19369,13 @@ impl App {
                         options.max_buffered_mb,
                         options.row_numbers,
                         options.row_start_index,
-                    )?
+                    ) {
+                        Ok(state) => state,
+                        Err(_) if crate::ipc_stream::any_stream(paths) => {
+                            return Ok(Scan::Streams(paths.to_vec()));
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 Some(FileFormat::Avro) => DataTableState::from_avro_paths(
                     paths,
@@ -19165,8 +19469,8 @@ impl App {
                     options.row_start_index,
                 )?,
                 Some(FileFormat::Arrow) => {
-                    if let Some(streams) = crate::ipc_stream::streams_among(paths) {
-                        return Ok(Scan::Streams(streams?));
+                    if crate::ipc_stream::starts_with_stream(paths) {
+                        return Ok(Scan::Streams(paths.to_vec()));
                     }
                     DataTableState::from_ipc(
                         path,

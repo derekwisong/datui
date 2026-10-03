@@ -21161,6 +21161,137 @@ fn a_directory_of_arrow_ipc_stream_shards_opens_as_one_table() {
     assert_eq!(files_in(scratch.path()), 1, "one copy of all three");
 }
 
+/// A Hugging Face cache opens its train split, both shards, and names the other
+/// splits; `--table` opens another. The files `map()` wrote, with columns of their
+/// own, are left out and said to be. A split that is not there is refused by name.
+#[test]
+fn a_hugging_face_cache_opens_one_split() {
+    common::ensure_sample_data();
+    let cache = PathBuf::from("tests/sample-data/hf_cache");
+    let open = |table: Option<&str>| {
+        let scratch = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        let options = OpenOptions {
+            temp_dir: Some(scratch.path().to_path_buf()),
+            table: table.map(str::to_string),
+            ..OpenOptions::default()
+        };
+        settle_from(&mut app, &rx, AppEvent::Open(vec![cache.clone()], options));
+        (app, scratch)
+    };
+
+    let (app, _scratch) = open(None);
+    assert_eq!(app.error_message(), None);
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the train split opens");
+    assert_eq!(state.num_rows(), 600, "train's two shards");
+    let rows = state.lf().clone().collect().unwrap();
+    assert_eq!(
+        rows.column("id").unwrap().get(0).unwrap(),
+        AnyValue::Int64(1),
+        "shard 0 first"
+    );
+    assert_eq!(state.other_tables(), ["validation", "test"]);
+    let notes: Vec<String> = state.notes().into_iter().map(|n| n.summary).collect();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n == "2 cache files written by map() not read"),
+        "{notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|n| n.contains("commonest")),
+        "the JSON is the cache's own: {notes:?}"
+    );
+
+    let (app, _scratch) = open(Some("validation"));
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("validation opens");
+    assert_eq!(state.num_rows(), 200);
+    assert_eq!(state.other_tables(), ["train", "test"]);
+
+    let (app, _scratch) = open(Some("dev"));
+    let message = app.error_message().expect("no split named dev");
+    assert!(
+        message.contains("No split named dev; this directory holds train, validation, test"),
+        "{message}"
+    );
+}
+
+/// A DatasetDict saved with `save_to_disk` opens one split's directory, train first,
+/// and names the others; `--table` opens another.
+#[test]
+fn a_saved_dataset_dict_opens_one_split() {
+    common::ensure_sample_data();
+    let open = |table: Option<&str>| {
+        let scratch = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        let options = OpenOptions {
+            temp_dir: Some(scratch.path().to_path_buf()),
+            table: table.map(str::to_string),
+            ..OpenOptions::default()
+        };
+        let dict = PathBuf::from("tests/sample-data/hf_dict");
+        settle_from(&mut app, &rx, AppEvent::Open(vec![dict], options));
+        (app, scratch)
+    };
+    let (app, _scratch) = open(None);
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("train opens");
+    assert_eq!(state.num_rows(), 700);
+    assert_eq!(state.other_tables(), ["test"]);
+    let (app, _scratch) = open(Some("test"));
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("test opens");
+    assert_eq!(state.num_rows(), 300);
+    assert_eq!(state.other_tables(), ["train"]);
+    let (app, _scratch) = open(Some("dev"));
+    let message = app.error_message().expect("no split named dev");
+    assert!(message.contains("No split named dev"), "{message}");
+}
+
+/// A stream among IPC files, not first, is found when the scan fails on it. Only the
+/// stream is converted; the IPC file is read where it is, and the rows keep the order
+/// of the names.
+#[test]
+fn a_stream_behind_an_ipc_file_opens_with_it() {
+    common::ensure_sample_data();
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = PathBuf::from("tests/sample-data/arrow_mixed");
+    let (app, _rx, _tx) = open_with_scratch(vec![dir.clone()], scratch.path());
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("the files open");
+    assert_eq!(state.num_rows(), 1000);
+    let ids: Vec<i64> = state
+        .lf()
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(ids, (1..=1000).collect::<Vec<_>>(), "in name order");
+    assert_eq!(files_in(scratch.path()), 1, "a copy of the stream");
+    let copy: u64 = std::fs::read_dir(scratch.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.metadata().unwrap().len())
+        .sum();
+    let file = std::fs::metadata(dir.join("a.arrow")).unwrap().len();
+    let stream = std::fs::metadata(dir.join("b.arrow")).unwrap().len();
+    assert!(
+        copy < file + stream / 2 && copy >= stream / 2,
+        "the stream only: {copy}"
+    );
+}
+
 /// The table a CSV opens as, collected, with `options`.
 fn open_dialect(paths: Vec<PathBuf>, options: OpenOptions) -> DataFrame {
     common::ensure_sample_data();
@@ -21964,6 +22095,67 @@ fn test_copy_as_python_reads_an_arrow_stream() {
     pump_until_idle(&mut app, &rx, &tx);
     let (rows, script) = run_python_script(&app).unwrap();
     assert!(script.contains("pl.read_ipc_stream("), "{script}");
+    assert_eq!(rows, view_csv(&app), "{script}");
+}
+
+/// A Hugging Face cache's script reads the split on screen, not every file; so does
+/// a saved DatasetDict's.
+#[test]
+fn test_copy_as_python_reads_one_hugging_face_split() {
+    common::ensure_sample_data();
+    for (dir, read, not) in [
+        ("hf_cache", "people-test.arrow", "people-train"),
+        ("hf_dict", "test/data-00000", "train/"),
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        let options = OpenOptions {
+            table: Some("test".to_string()),
+            ..OpenOptions::default()
+        };
+        pump_open_until_loaded(
+            &mut app,
+            &rx,
+            vec![PathBuf::from(format!("tests/sample-data/{dir}"))],
+            options,
+        );
+        pump_until_idle(&mut app, &rx, &tx);
+        let Some((rows, script)) = run_python_script(&app) else {
+            eprintln!("skipped: no .venv to run the scripts with");
+            return;
+        };
+        assert!(script.contains(read), "{script}");
+        assert!(!script.contains(not), "{script}");
+        assert_eq!(rows, view_csv(&app), "{script}");
+    }
+}
+
+/// IPC files and streams together: the script reads each as datui did, scanning the
+/// file and reading the stream whole, and stacks them as datui does.
+#[test]
+fn test_copy_as_python_reads_streams_beside_ipc_files() {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/arrow_mixed")],
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    let Some((rows, script)) = run_python_script(&app) else {
+        eprintln!("skipped: no .venv to run the scripts with");
+        return;
+    };
+    assert!(
+        script.contains("pl.scan_ipc(\"tests/sample-data/arrow_mixed/a.arrow\")"),
+        "{script}"
+    );
+    assert!(
+        script.contains("pl.read_ipc_stream(\"tests/sample-data/arrow_mixed/b.arrow\")"),
+        "{script}"
+    );
     assert_eq!(rows, view_csv(&app), "{script}");
 }
 

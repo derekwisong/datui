@@ -80,6 +80,16 @@ pub(crate) enum PendingDownload {
         size: Option<u64>,
         options: OpenOptions,
     },
+    /// Arrow in S3, GCS or Azure, one object or a prefix: `objects` are what the
+    /// probe's listing chose, and `size` is its streams' bytes, which are downloaded
+    /// and converted; its IPC files are scanned where they are (`cloud_arrow`).
+    #[cfg(feature = "cloud")]
+    Arrow {
+        url: String,
+        objects: Vec<crate::cloud_arrow::Object>,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
 }
 
 #[cfg(any(feature = "http", feature = "cloud"))]
@@ -96,6 +106,23 @@ impl PendingDownload {
             PendingDownload::Gcs { url, size, options } => (url, *size, options),
             #[cfg(feature = "cloud")]
             PendingDownload::Azure { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::Arrow {
+                url, size, options, ..
+            } => (url, *size, options),
+        }
+    }
+
+    /// How many Arrow streams the download is, and how many IPC files are read in
+    /// place beside them, for the question about it.
+    pub(crate) fn arrow_files(&self) -> Option<(usize, usize)> {
+        match self {
+            #[cfg(feature = "cloud")]
+            PendingDownload::Arrow { objects, .. } => {
+                let streams = objects.iter().filter(|o| o.stream).count();
+                Some((streams, objects.len() - streams))
+            }
+            _ => None,
         }
     }
 
@@ -110,6 +137,8 @@ impl PendingDownload {
             PendingDownload::Gcs { size, .. } => *size = found,
             #[cfg(feature = "cloud")]
             PendingDownload::Azure { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::Arrow { size, .. } => *size = found,
         }
         self
     }
@@ -295,6 +324,26 @@ impl Phase {
 struct Fetched {
     url: PathBuf,
     file: TempDownload,
+    /// What the listing of a store's Arrow chose, read again with the file: each
+    /// input's place, the split and the `--table` that chose it.
+    arrow: Option<KeptArrow>,
+}
+
+#[derive(Clone)]
+struct KeptArrow {
+    parts: Arc<Vec<crate::ipc_stream::Part>>,
+    splits: Option<Arc<crate::hf_splits::Splits>>,
+    table: Option<String>,
+}
+
+impl Fetched {
+    /// Whether an open with `options` reads what this download holds: not when it
+    /// asks for another split.
+    fn serves(&self, options: &OpenOptions) -> bool {
+        self.arrow
+            .as_ref()
+            .is_none_or(|arrow| arrow.table == options.table)
+    }
 }
 
 /// The open in flight.
@@ -485,9 +534,11 @@ pub(crate) enum LoadAnswer {
         path: Option<PathBuf>,
         options: OpenOptions,
     },
-    /// The streams, converted to one IPC file. Dropped unused, it removes the file.
+    /// The streams, converted to one IPC file, and where each input's rows are. Dropped
+    /// unused, it removes the file.
     Converted {
         file: TempDownload,
+        parts: Vec<crate::ipc_stream::Part>,
         path: Option<PathBuf>,
         options: OpenOptions,
     },
@@ -765,11 +816,13 @@ impl Loader {
         }
         let OpenRequest {
             paths,
-            options,
+            mut options,
             size,
             recent,
             shown,
         } = request;
+        // What an earlier load found of its Arrow is not this one's to read.
+        options.arrow_parts = None;
         let load = self.start(false);
         load.path = Some(shown.unwrap_or_else(|| stdin::named(&paths[0])));
         load.size = size;
@@ -827,11 +880,9 @@ impl Loader {
         }
         if stdin::is_stdin(&first) {
             // Read once: opened again (`H`), the copy on hand is read.
-            if let Some(kept) = self
-                .kept
-                .clone()
-                .filter(|kept| kept.url == first && kept.file.path().exists())
-            {
+            if let Some(kept) = self.kept.clone().filter(|kept| {
+                kept.url == first && kept.file.path().exists() && kept.serves(&options)
+            }) {
                 return self.read_download(kept, options);
             }
             let load = self.load.as_mut().expect("an open has a load");
@@ -870,7 +921,7 @@ impl Loader {
         if let Some(kept) = self
             .kept
             .clone()
-            .filter(|kept| paths.len() == 1 && kept.file.path().exists())
+            .filter(|kept| paths.len() == 1 && kept.file.path().exists() && kept.serves(&options))
         {
             return self.read_download(kept, options);
         }
@@ -919,7 +970,13 @@ impl Loader {
     /// scan it.
     /// Either way the dataset is named by the URL, not the temporary file, and what
     /// was piped in by `stdin`.
-    fn read_download(&mut self, fetched: Fetched, options: OpenOptions) -> Step {
+    fn read_download(&mut self, fetched: Fetched, mut options: OpenOptions) -> Step {
+        if let Some(arrow) = &fetched.arrow {
+            options.format = Some(FileFormat::Arrow);
+            options.hive = false;
+            options.arrow_parts = Some(arrow.parts.clone());
+            options.splits = arrow.splits.clone();
+        }
         let load = self.load.as_mut().expect("a download read has a load");
         let file = fetched.file.path().to_path_buf();
         let url = stdin::named(&fetched.url);
@@ -1010,6 +1067,7 @@ impl Loader {
             (
                 LoadAnswer::Converted {
                     file,
+                    parts,
                     path,
                     options,
                 },
@@ -1029,6 +1087,7 @@ impl Loader {
                     options: OpenOptions {
                         format: Some(FileFormat::Arrow),
                         hive: false,
+                        arrow_parts: Some(Arc::new(parts)),
                         ..options
                     },
                     display: path,
@@ -1137,6 +1196,31 @@ impl Loader {
                     footers: load.progress.clone(),
                 }))
             }
+            // Arrow in a store with no stream in it: nothing to download or ask about.
+            #[cfg(feature = "cloud")]
+            (
+                LoadAnswer::Sized(PendingDownload::Arrow {
+                    url,
+                    objects,
+                    options,
+                    ..
+                }),
+                Phase::CheckingSize { .. },
+            ) if crate::cloud_arrow::in_place(&objects).is_some() => {
+                load.phase = Phase::Scanning { downloaded: false };
+                let parts = crate::cloud_arrow::in_place(&objects).unwrap_or_default();
+                Step::Scan {
+                    paths: vec![PathBuf::from(url)],
+                    options: OpenOptions {
+                        format: Some(FileFormat::Arrow),
+                        hive: false,
+                        arrow_parts: Some(Arc::new(parts)),
+                        ..options
+                    },
+                    display: None,
+                    status: "Scanning...",
+                }
+            }
             #[cfg(any(feature = "http", feature = "cloud"))]
             (LoadAnswer::NoRanges { options }, Phase::ReadingHeaders) => {
                 let first = load.paths.as_ref().and_then(|paths| paths.first().cloned());
@@ -1167,6 +1251,11 @@ impl Loader {
                     // The URL the open was asked for, which is what opening it again names.
                     url: load.path.clone().unwrap_or_default(),
                     file: download,
+                    arrow: options.arrow_parts.clone().map(|parts| KeptArrow {
+                        parts,
+                        splits: options.splits.clone(),
+                        table: options.table.clone(),
+                    }),
                 };
                 self.read_download(fetched, options)
             }
@@ -1175,6 +1264,7 @@ impl Loader {
                 let fetched = Fetched {
                     url: PathBuf::from(stdin::PATH),
                     file: download,
+                    arrow: None,
                 };
                 self.read_download(fetched, options)
             }
@@ -1282,6 +1372,10 @@ pub(crate) const NO_RANGES: &str = "The server does not send byte ranges, so the
 /// file always, and one object of a store that cannot be scanned in place.
 #[cfg(any(feature = "http", feature = "cloud"))]
 fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
+    #[cfg(feature = "cloud")]
+    if let Some(arrow) = cloud_arrow(src, options) {
+        return Some(arrow);
+    }
     let options = options.clone();
     match src {
         #[cfg(feature = "http")]
@@ -1316,6 +1410,38 @@ fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<P
         }),
         _ => None,
     }
+}
+
+/// Arrow in a store, one object or a prefix the listing said holds it, but not a glob:
+/// the probe lists it and tells its streams, which are downloaded, from its IPC files,
+/// which are scanned in place.
+#[cfg(feature = "cloud")]
+fn cloud_arrow(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
+    let url = match src {
+        source::InputSource::S3(url) => format!("s3://{url}"),
+        source::InputSource::Gcs(url) => format!("gs://{url}"),
+        source::InputSource::Azure(url) => url.clone(),
+        _ => return None,
+    };
+    if url.contains('*') {
+        return None;
+    }
+    let arrow = if url.ends_with('/') {
+        options.format == Some(FileFormat::Arrow)
+    } else {
+        // Compressed, it is a download like any other compressed object.
+        options.compression.is_none()
+            && options
+                .format
+                .or_else(|| FileFormat::from_path(Path::new(&url)))
+                == Some(FileFormat::Arrow)
+    };
+    arrow.then(|| PendingDownload::Arrow {
+        url,
+        objects: Vec::new(),
+        size: None,
+        options: options.clone(),
+    })
 }
 
 #[cfg(feature = "cloud")]
@@ -1484,6 +1610,7 @@ mod tests {
             id,
             LoadAnswer::Converted {
                 file: converted,
+                parts: Vec::new(),
                 path: Some(PathBuf::from("cache.arrow")),
                 options: OpenOptions::default(),
             },
@@ -1575,6 +1702,7 @@ mod tests {
             (
                 LoadAnswer::Converted {
                     file,
+                    parts: Vec::new(),
                     path: Some(PathBuf::from("cache.arrow")),
                     options: OpenOptions::default(),
                 },
@@ -2077,6 +2205,79 @@ mod tests {
         ));
     }
 
+    /// Arrow in a bucket, a prefix the listing said holds it or one object, is listed
+    /// first, not sent to the Parquet scan; a prefix of another format, or a glob, is
+    /// scanned in place. A listing of IPC files only is scanned in place, unasked.
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn arrow_in_a_bucket_is_listed_first() {
+        let open = |url: &str, format: Option<FileFormat>| {
+            let mut loader = Loader::default();
+            let mut request = request(url);
+            request.options.format = format;
+            request.options.hive = url.ends_with('/');
+            let step = loader.open(request);
+            (loader, step)
+        };
+        for url in ["s3://lake/hf/", "gs://lake/hf/", "s3://lake/one.arrow"] {
+            let (_, step) = open(url, url.ends_with('/').then_some(FileFormat::Arrow));
+            let Step::Probe(PendingDownload::Arrow { url: listed, .. }) = step else {
+                panic!("{url}: listed first");
+            };
+            assert_eq!(listed, url);
+        }
+        assert!(matches!(
+            open("s3://lake/hf/", Some(FileFormat::Csv)).1,
+            Step::Scan { .. }
+        ));
+        assert!(matches!(
+            open("s3://lake/hf/*.arrow", Some(FileFormat::Arrow)).1,
+            Step::Scan { .. }
+        ));
+
+        let object = |name: &str, stream: bool| crate::cloud_arrow::Object {
+            url: format!("s3://lake/hf/{name}"),
+            size: 10,
+            stream,
+        };
+        let jobs = jobs();
+        let (mut loader, _) = open("s3://lake/hf/", Some(FileFormat::Arrow));
+        let id = loader.id().unwrap();
+        let listed = |objects| {
+            LoadAnswer::Sized(PendingDownload::Arrow {
+                url: "s3://lake/hf/".to_string(),
+                objects,
+                size: Some(0),
+                options: OpenOptions::default(),
+            })
+        };
+        let Step::Scan { paths, options, .. } = loader.answered(
+            id,
+            listed(vec![object("a.arrow", false), object("b.arrow", false)]),
+            &jobs,
+        ) else {
+            panic!("IPC files only: scanned in place");
+        };
+        assert_eq!(paths, [PathBuf::from("s3://lake/hf/")]);
+        assert_eq!(
+            options.arrow_parts.as_deref(),
+            Some(&vec![
+                crate::ipc_stream::Part::InPlace(PathBuf::from("s3://lake/hf/a.arrow")),
+                crate::ipc_stream::Part::InPlace(PathBuf::from("s3://lake/hf/b.arrow")),
+            ])
+        );
+        let (mut loader, _) = open("s3://lake/hf/", Some(FileFormat::Arrow));
+        let id = loader.id().unwrap();
+        assert!(matches!(
+            loader.answered(
+                id,
+                listed(vec![object("a.arrow", false), object("s.arrow", true)]),
+                &jobs
+            ),
+            Step::Ask(PendingDownload::Arrow { .. })
+        ));
+    }
+
     /// A remote file is sized, put to the user, downloaded, then scanned under its URL;
     /// the installed dataset holds the file, and opening the URL again reads that copy
     /// rather than asking again.
@@ -2471,6 +2672,7 @@ mod tests {
             id,
             LoadAnswer::Converted {
                 file: copy,
+                parts: Vec::new(),
                 path: Some(PathBuf::from("stdin")),
                 options: options.clone(),
             },

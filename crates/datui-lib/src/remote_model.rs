@@ -368,8 +368,11 @@ mod tests {
                     }
                     request.push_str(&line);
                 }
-                let _ = stream.write_all(&answer(&request));
+                // Kept before the answer goes out: the client may check what was
+                // sent as soon as it has its answer.
+                let reply = answer(&request);
                 kept.lock().unwrap().push(request);
+                let _ = stream.write_all(&reply);
             }
         });
         (base, seen)

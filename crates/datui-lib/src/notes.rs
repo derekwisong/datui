@@ -619,6 +619,18 @@ pub fn from_the_open(
     notes
 }
 
+/// The `cache-*.arrow` files `map()` wrote beside a Hugging Face cache's splits, which
+/// the read left out: their columns are the mapping's, not the split's.
+pub fn map_caches(count: usize) -> Option<Note> {
+    let files = if count == 1 { "file" } else { "files" };
+    (count > 0).then(|| Note {
+        summary: format!("{count} cache {files} written by map() not read"),
+        scope: "in this directory's listing".to_string(),
+        read_as_text: None,
+        passed_over: None,
+    })
+}
+
 /// Every note the panel shows — what the open did, what the footers said, then what
 /// the view leaves out — with the one fact the first two both report said once.
 ///

@@ -111,20 +111,27 @@ then scanned lazily like any other:
 
 ```bash
 datui ~/.cache/huggingface/datasets/imdb/plain_text/0.0.0/abc123/imdb-train.arrow
+datui ~/.cache/huggingface/datasets/imdb/plain_text/0.0.0/abc123/   # the train split
+datui --table test ~/.cache/huggingface/datasets/imdb/plain_text/0.0.0/abc123/
 datui my_dataset/                 # save_to_disk shards: data-00000-of-00004.arrow ...
+datui --table test my_dataset_dict/   # save_to_disk of a DatasetDict: one split
 ```
 
 | What | How it opens |
 |---|---|
 | One stream | Converted, then scanned |
-| A directory of stream shards | Converted together into one file, in name order; shards with different columns fail |
-| `dataset_info.json`, `state.json` beside `.arrow` files | Left aside as the dataset's metadata |
+| A directory of stream shards | Converted together into one file, in name order; stream shards with different columns fail |
+| IPC files among the streams | Scanned in place, not copied, and stacked with the streams in name order |
+| A `datasets` cache directory (`name-train.arrow`, `name-test-00000-of-00002.arrow`, ...) | One split: the one `--table` names, else `train`, `validation`, `test`, then the first by name. The Schema tab lists the others |
+| A DatasetDict saved with `save_to_disk` (`dataset_dict.json` and a directory per split) | One split's directory, chosen the same way |
+| `cache-*.arrow` files `map()` wrote in a cache directory | Left out; a note on the Notes tab counts them |
+| `dataset_info.json`, `state.json` beside `.arrow` files | Left aside as the dataset's metadata; either one marks a cache directory |
 | LZ4 or ZSTD buffers | Read; written out uncompressed, so the copy can be larger than the stream |
 
 The loading screen shows how far the conversion has got;
 <kbd>Ctrl</kbd>+<kbd>O</kbd> stops it and removes the partial file. `--temp-dir`
-chooses where the copy goes, and it is removed with the dataset. A temp directory
-with less free space than the streams take is refused before anything is written.
+chooses where the copy goes, and it is removed with the dataset. A stream larger
+than the temp directory's free space is refused before it is written.
 
 **Excel** opens the first sheet unless `--sheet` names another, by index
 (`--sheet 0`) or name (`--sheet Sales`).
@@ -223,8 +230,10 @@ first one are dated back from it when it comes within the first 65,536 rows;
 when it comes later, those rows keep a null `time`. A log with neither sentence
 has no dates, and `time` is null throughout.
 
-`--table` is for any file that holds several tables: NMEA logs and
-[SQLite databases](#sqlite-databases). Any other file opened with it is refused.
+`--table` is for any file that holds several tables: an NMEA log's sentence
+types, a [SQLite database](#sqlite-databases)'s tables, or a Hugging Face cache
+directory's splits ([Arrow IPC streams](#formats)). Any other file opened with
+it is refused.
 Excel workbooks take `--sheet`.
 
 **GPX** opens as one row per `trkpt`, `rtept` and `wpt`:

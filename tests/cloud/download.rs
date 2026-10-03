@@ -455,3 +455,251 @@ fn status_kib(field: &str) -> u64 {
         .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
         .expect("a /proc/self/status field")
 }
+
+/// Handle events until nothing is queued or owed, answering Yes to a download. The
+/// question asked, if one was.
+fn settle_confirming(app: &mut App, rx: &mpsc::Receiver<AppEvent>) -> Option<String> {
+    let mut asked = None;
+    while let Some(event) = next_event(app, rx) {
+        chain(app, event);
+        if app.awaiting_download_confirmation() {
+            asked = Some(app.confirmation_modal.message.clone());
+            chain(
+                app,
+                AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            );
+        }
+    }
+    asked
+}
+
+/// A path named on the command line, with downloads landing in `dir`; the download
+/// question, if one was asked.
+fn open_prefix(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    url: &str,
+    dir: &Path,
+    table: Option<&str>,
+) -> Option<String> {
+    let options = OpenOptions {
+        temp_dir: Some(dir.to_path_buf()),
+        table: table.map(str::to_string),
+        ..OpenOptions::default()
+    };
+    chain(app, AppEvent::OpenNamed(vec![PathBuf::from(url)], options));
+    settle_confirming(app, rx)
+}
+
+/// `df` as an Arrow IPC file.
+fn ipc_file(mut df: polars::prelude::DataFrame) -> Vec<u8> {
+    use polars::prelude::*;
+    let mut bytes = Vec::new();
+    IpcWriter::new(&mut bytes).finish(&mut df).unwrap();
+    bytes
+}
+
+/// `n` ids from `from`.
+fn ids(from: i64, n: i64) -> polars::prelude::DataFrame {
+    polars::prelude::df!("id" => (from..from + n).collect::<Vec<_>>()).unwrap()
+}
+
+/// The rows of the dataset on screen.
+fn rows_of(app: &App) -> polars::prelude::DataFrame {
+    let state = app.data_table_state.as_ref().expect("a dataset");
+    state.lf().clone().collect().unwrap()
+}
+
+/// A Hugging Face cache in a bucket opens its train split as on disk: only train's
+/// shards are fetched, each converted as it arrives into one IPC file, the other splits
+/// are named and the file `map()` wrote is left out. Its JSON is the cache's, not a
+/// table to read instead. `--table` opens another split.
+#[test]
+fn a_prefix_of_hugging_face_splits_opens_one() {
+    crate::common::ensure_sample_data();
+    let names = [
+        "people-train-00000-of-00002.arrow",
+        "people-train-00001-of-00002.arrow",
+        "people-test.arrow",
+        "people-validation.arrow",
+        "cache-0f3c2a1b9d8e7f60.arrow",
+        "dataset_info.json",
+    ];
+    let objects: BTreeMap<String, Vec<u8>> = names
+        .iter()
+        .map(|name| {
+            let bytes = std::fs::read(format!("tests/sample-data/hf_cache/{name}")).unwrap();
+            (format!("hf/{name}"), bytes)
+        })
+        .collect();
+    let s3 = FakeS3::serve("lake", objects);
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    let asked = open_prefix(&mut app, &rx, "s3://lake/hf/", dir.path(), None);
+    let asked = asked.expect("the streams are put to the user");
+    assert!(
+        asked.contains("Files: 2 Arrow streams, converted as they download"),
+        "{asked}"
+    );
+    assert_eq!(app.error_message(), None);
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the train split opens");
+    assert_eq!(state.num_rows(), 600);
+    assert_eq!(state.other_tables(), ["validation", "test"]);
+    let notes: Vec<String> = state.notes().into_iter().map(|n| n.summary).collect();
+    assert!(
+        notes.contains(&"1 cache file written by map() not read".to_string()),
+        "{notes:?}"
+    );
+    assert_eq!(
+        s3.wire.count().gets,
+        4,
+        "train's two shards, each peeked at and then read once, nothing else"
+    );
+    assert_eq!(files_in(dir.path()).len(), 1, "one IPC file of both");
+    assert_eq!(app.open_path(), Some(Path::new("s3://lake/hf/")));
+
+    // Opened again, the copy on hand is read, as the same split.
+    let asked = open_prefix(&mut app, &rx, "s3://lake/hf/", dir.path(), None);
+    assert_eq!(asked, None, "read from the copy on hand");
+    let state = app.data_table_state.as_ref().expect("train again");
+    assert_eq!(state.num_rows(), 600);
+    assert_eq!(state.other_tables(), ["validation", "test"]);
+
+    // Another split is not in that copy.
+    let asked = open_prefix(&mut app, &rx, "s3://lake/hf/", dir.path(), Some("test"));
+    assert!(asked.is_some(), "the test split is fetched");
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("the test split opens");
+    assert_eq!(state.num_rows(), 200);
+    assert_eq!(state.other_tables(), ["train", "validation"]);
+}
+
+/// A DatasetDict saved to a bucket, opened as Arrow, reads one split's prefix, as on
+/// disk. Its listing alone says JSON: the splits are prefixes below it.
+#[test]
+fn a_dataset_dict_in_a_bucket_opens_one_split() {
+    crate::common::ensure_sample_data();
+    let root = Path::new("tests/sample-data/hf_dict");
+    let mut objects = BTreeMap::new();
+    for name in [
+        "dataset_dict.json",
+        "train/data-00000-of-00001.arrow",
+        "train/dataset_info.json",
+        "train/state.json",
+        "test/data-00000-of-00001.arrow",
+        "test/dataset_info.json",
+        "test/state.json",
+    ] {
+        objects.insert(
+            format!("dd/{name}"),
+            std::fs::read(root.join(name)).unwrap(),
+        );
+    }
+    let s3 = FakeS3::serve("lake", objects);
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    let options = OpenOptions {
+        temp_dir: Some(dir.path().to_path_buf()),
+        table: Some("test".to_string()),
+        format: Some(datui::FileFormat::Arrow),
+        ..OpenOptions::default()
+    };
+    chain(
+        &mut app,
+        AppEvent::OpenNamed(vec![PathBuf::from("s3://lake/dd/")], options),
+    );
+    let asked = settle_confirming(&mut app, &rx);
+    assert!(asked.is_some(), "the stream is put to the user");
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("the test split opens");
+    assert_eq!(state.num_rows(), 300);
+    assert_eq!(state.other_tables(), ["train"]);
+}
+
+/// IPC files in a bucket, a prefix of them, one object or a glob, are scanned where
+/// they are: nothing is asked or written. A prefix of one stream is converted as it
+/// downloads.
+#[test]
+fn ipc_files_in_a_bucket_are_read_in_place() {
+    crate::common::ensure_sample_data();
+    let s3 = FakeS3::serve(
+        "lake",
+        BTreeMap::from([
+            ("t/a.arrow".to_string(), ipc_file(ids(0, 50))),
+            ("t/b.arrow".to_string(), ipc_file(ids(50, 50))),
+        ]),
+    );
+    for (url, rows) in [
+        ("s3://lake/t/", 100),
+        ("s3://lake/t/b.arrow", 50),
+        ("s3://lake/t/*.arrow", 100),
+    ] {
+        let (mut app, rx) = app(&s3);
+        let dir = tempfile::tempdir().unwrap();
+        let asked = open_prefix(&mut app, &rx, url, dir.path(), None);
+        assert_eq!(asked, None, "{url}: nothing to download");
+        assert_eq!(app.error_message(), None, "{url}");
+        assert_eq!(rows_of(&app).height(), rows, "{url}");
+        assert!(files_in(dir.path()).is_empty(), "{url}: nothing written");
+    }
+
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    open_prefix(&mut app, &rx, "s3://lake/t/", dir.path(), Some("train"));
+    let message = app.error_message().expect("no splits to pick from");
+    assert!(message.contains("holds one table"), "{message}");
+
+    let stream = std::fs::read("tests/sample-data/people_stream.arrow").unwrap();
+    let s3 = FakeS3::serve("lake", BTreeMap::from([("s/s.arrow".to_string(), stream)]));
+    let (mut app, rx) = self::app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    let asked = open_prefix(&mut app, &rx, "s3://lake/s/", dir.path(), None);
+    let asked = asked.expect("the stream is put to the user");
+    assert!(
+        asked.contains("Arrow stream: converted as it downloads"),
+        "{asked}"
+    );
+    assert_eq!(app.error_message(), None);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1000);
+    assert_eq!(files_in(dir.path()).len(), 1);
+}
+
+/// A prefix of an IPC file and a stream converts only the stream, which is all the
+/// question sizes; the IPC file is read where it is, and the rows keep the order of
+/// their names.
+#[test]
+fn only_the_streams_in_a_bucket_are_downloaded() {
+    crate::common::ensure_sample_data();
+    let read = |name: &str| std::fs::read(format!("tests/sample-data/arrow_mixed/{name}")).unwrap();
+    let stream = read("b.arrow");
+    let s3 = FakeS3::serve(
+        "lake",
+        BTreeMap::from([
+            ("m/a.arrow".to_string(), read("a.arrow")),
+            ("m/b.arrow".to_string(), stream),
+        ]),
+    );
+    let (mut app, rx) = app(&s3);
+    let dir = tempfile::tempdir().unwrap();
+    let asked = open_prefix(&mut app, &rx, "s3://lake/m/", dir.path(), None);
+    let asked = asked.expect("the stream is put to the user");
+    assert!(
+        asked
+            .contains("Files: 1 Arrow stream, converted as it downloads; 1 IPC file read in place"),
+        "{asked}"
+    );
+    assert_eq!(app.error_message(), None);
+    let df = rows_of(&app);
+    let got: Vec<i64> = df
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(got, (1..=1000).collect::<Vec<_>>(), "in name order");
+    assert_eq!(files_in(dir.path()).len(), 1, "the stream's copy only");
+}

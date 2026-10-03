@@ -2805,6 +2805,73 @@ mod tests {
         );
     }
 
+    /// The format tab is named for the format, shows its lines, then its list under a
+    /// rule with a count, and says how much of the list is out of view.
+    #[test]
+    fn the_format_tab_shows_its_lines_and_list() {
+        use crate::model_files::MetaValue;
+        use crate::text_formats::Detail;
+        use crate::widgets::datatable::{DataTableState, OpenFacts};
+        use polars::prelude::*;
+
+        let theme = RenderContext::for_test();
+        let mut lf = df!("time" => &[1i64]).unwrap().lazy();
+        let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+        let list: Vec<(String, MetaValue)> = (0..30)
+            .map(|i| {
+                (
+                    format!("tb.sig{i}"),
+                    MetaValue::Text(format!("wire 1 bit id {i}")),
+                )
+            })
+            .collect();
+        let state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            lf,
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap()
+        .with_open(OpenFacts {
+            detail: Some(std::sync::Arc::new(Detail {
+                tab: "VCD",
+                lines: vec!["VCD timescale 1ns".into(), "Version: Icarus".into()],
+                list_title: "Signals",
+                list,
+                first: true,
+            })),
+            ..Default::default()
+        });
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let mut modal = InfoModal::default();
+        modal.open_on(InfoTab::Format);
+        let mut panel = DataTableInfo::new(
+            &state,
+            InfoContext {
+                format: None,
+                facts: None,
+                parquet_file: false,
+            },
+            &mut modal,
+            &theme,
+        );
+        (&mut panel).render(area, &mut buf);
+        let text: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let has = |needle: &str| text.iter().any(|row| row.contains(needle));
+        assert!(has("VCD") && !has("Format"), "{text:#?}");
+        assert!(has("Version: Icarus"), "{text:#?}");
+        assert!(has("Signals") && has("30"), "{text:#?}");
+        assert!(has("tb.sig0") && has("wire 1 bit id 0"), "{text:#?}");
+        assert!(has("below"), "the rest is counted: {text:#?}");
+    }
+
     /// Focus is the accent: in the schema, the section rule brightens and the row
     /// carries the rail; on the tab bar, the rail sits beside the active tab and
     /// the row keeps only the accent. One frame either way, the footer inside it.

@@ -104,7 +104,7 @@ they were applied:
 
 | In datui | In the script |
 |---|---|
-| The file | The reader below, with the reader options datui used (delimiter, header, skipped lines and rows, null values), then the column names it trimmed and the text columns it read as numbers or dates; a directory or bucket prefix as a glob |
+| The file | The reader below, with the reader options datui used (delimiter, header, comment lines, skipped lines and rows, null values), then the column names it trimmed and the text columns it read as numbers or dates; a directory or bucket prefix as a glob |
 | Query | `.filter`, `.group_by().agg()` ordered by the keys, `.select`, `.unique` |
 | SQL | `.sql(..., table_name="df")` |
 | Search | `.filter` with a case-insensitive pattern per word |
@@ -151,14 +151,32 @@ read with `SELECT *` through Python's `sqlite3`, the one table of a database
 opened without `--table` included. A NumPy array is loaded with `np.load`,
 an archive's by its name, and named as datui names its columns.
 
-Data piped in on standard input, in a format with `df = ...` above, read
-through a [binary format spec](binary-formats.md), compressed with bzip2 or
-xz, or read with `--comment-char`, `--header-rows` or `--skip-initial-space`, starts from
-`df = ...` for you to fill in, with a comment naming the file and the table
-on screen (`flight.bin --table GPS`). A step the script cannot repeat, such
-as a drill into a group whose rows are lists, is a comment, and the steps
-after it are commented out.
-An S3 endpoint and region go into `storage_options`; credentials never do.
+These start from `df = ...` for you to fill in, with a comment naming the
+file and the table on screen (`flight.bin --table GPS`):
+
+- Data piped in on standard input; recorded with `--tee FILE`, it is read
+  from FILE instead
+- A format with `df = ...` above, or a read through a
+  [binary format spec](binary-formats.md)
+- A file compressed with bzip2 or xz
+- A CSV read with `--header-rows`, `--skip-initial-space`, or a
+  `--comment-char` longer than five characters
+
+A step the script cannot repeat, such as a drill into a group whose rows are
+lists, is a comment, and the steps after it are commented out.
+
+A file in an object store is read where datui read it, with `storage_options`
+saying what datui read it with that is not a secret:
+
+| Store | `storage_options` |
+|---|---|
+| S3 | The endpoint and region in effect, a named source's own for `s3://<source>@bucket` |
+| Azure | The account an `abfss://` URL names |
+| Any, read with no signature | `skip_signature` |
+
+Credentials never go in: give Polars yours where it looks for them, such as
+the provider's environment variables. `pl.read_json`, `pl.read_avro` and
+`pl.read_excel` read no object store; the script says to download the file.
 A user and password in a URL, and an HTTP URL's query string (where a signed
 URL keeps its signature), are left out, with a comment saying so.
 

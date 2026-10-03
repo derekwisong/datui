@@ -320,7 +320,7 @@ pub(crate) const JSONL: Reader = Reader {
         call: "pl.scan_ndjson",
         eager: false,
         glob_flag: false,
-        arguments: None,
+        arguments: Some(py::ndjson_arguments),
     }),
     scan: scan_json_lines,
     export: Some(ExportFormat::Ndjson),

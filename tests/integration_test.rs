@@ -22899,6 +22899,34 @@ fn test_copy_as_python_reads_a_csv_as_datui_does() {
     }
 }
 
+/// A logger's CSV with comment lines before its header and among its rows, read
+/// with `--comment-char`: the script reads it with `comment_prefix` and computes
+/// datui's rows.
+#[test]
+fn test_copy_as_python_skips_comment_lines_as_datui_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("logger.csv");
+    std::fs::write(
+        &path,
+        "# logger 7\n# firmware 2.1\nt,v\n1,10\n# gap\n2,20\n3,30\n",
+    )
+    .unwrap();
+    let options = OpenOptions {
+        comment_char: Some("#".to_string()),
+        ..OpenOptions::default()
+    };
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], options);
+    pump_until_idle(&mut app, &rx, &tx);
+    let Some((rows, script)) = run_python_script(&app) else {
+        eprintln!("skipped: no .venv to run the scripts with");
+        return;
+    };
+    assert!(script.contains("comment_prefix=\"#\""), "{script}");
+    assert_eq!(rows, view_csv(&app), "{script}");
+}
+
 /// NDJSON with dates held as text: the script types them as datui did.
 #[test]
 fn test_copy_as_python_types_json_dates_as_datui_does() {

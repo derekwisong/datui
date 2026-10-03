@@ -15703,6 +15703,23 @@ impl App {
             // A decompressed file is read into its dataset directly, not through a scan.
             options.read_python = state.read_python().to_vec();
         }
+        // The source an `s3://<id>@bucket` URL names has its own endpoint and region.
+        let remote = paths
+            .and_then(|paths| paths.first())
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| source::is_remote_url(Path::new(p)));
+        let source_of = remote
+            .as_deref()
+            .and_then(|url| source::split_source_id(url).0)
+            .and_then(|id| cloud.connections.iter().find(|c| c.name == id));
+        // What this session learned of the place: read unsigned, it is public.
+        #[cfg(feature = "cloud")]
+        let unsigned = remote
+            .as_deref()
+            .and_then(crate::cloud_sources::known_access)
+            .unwrap_or(false);
+        #[cfg(not(feature = "cloud"))]
+        let unsigned = false;
         let record = python_script::OpenRecord {
             paths,
             options: &options,
@@ -15714,8 +15731,15 @@ impl App {
                 .into_iter()
                 .map(|object| object.url)
                 .collect(),
-            s3_endpoint: cloud.s3_endpoint_url.filter(|s| !s.trim().is_empty()),
-            s3_region: cloud.s3_region.filter(|s| !s.trim().is_empty()),
+            s3_endpoint: source_of
+                .and_then(|c| c.endpoint_url.clone())
+                .or(cloud.s3_endpoint_url.clone())
+                .filter(|s| !s.trim().is_empty()),
+            s3_region: source_of
+                .and_then(|c| c.region.clone())
+                .or(cloud.s3_region.clone())
+                .filter(|s| !s.trim().is_empty()),
+            unsigned,
             read_as_text: state.read_as_text().iter().map(|c| c.to_string()).collect(),
             spec: state.format_read().map(|read| read.spec.name.clone()),
         };

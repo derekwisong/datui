@@ -671,6 +671,14 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         .iter()
         .map(|s| s.name.clone())
         .collect();
+    let list = ListDraw {
+        ctx,
+        width: area.width as usize,
+        name_width,
+        show_meta,
+        filter: &app.home.filter,
+        frame: app.throbber_frame as usize,
+    };
     let mut lines: Vec<Line> = Vec::new();
     // Only the rows on screen are drawn: a search can list a thousand, and building a
     // line for each on every frame was most of what a keystroke cost.
@@ -699,9 +707,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     *matches,
                     *collapsed,
                     selected,
-                    area.width as usize,
-                    app.throbber_frame as usize,
-                    ctx,
+                    &list,
                 ));
             }
             crate::home::Row::Entry { entry, .. }
@@ -729,19 +735,19 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 lines.push(entry_line(
                     entry,
                     selected,
-                    name_width,
-                    show_meta,
-                    via,
-                    &app.home.filter,
-                    // Inside a source the trail already names it.
-                    app.home
-                        .browsing
-                        .is_none()
-                        .then_some(known_sources.as_slice()),
-                    app.home.place_kind(&entry.path),
-                    looking_glyph(app, entry),
-                    if *nested { NEST_INDENT } else { 0 },
-                    ctx,
+                    EntryNotes {
+                        matched_column: via,
+                        // Inside a source the trail already names it.
+                        known_sources: app
+                            .home
+                            .browsing
+                            .is_none()
+                            .then_some(known_sources.as_slice()),
+                        place_kind: app.home.place_kind(&entry.path),
+                        looking: looking_glyph(app, entry),
+                        indent: if *nested { NEST_INDENT } else { 0 },
+                    },
+                    &list,
                 ));
             }
             // Drawn exactly like an entry, because to look at it is one: a row in
@@ -751,15 +757,12 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 lines.push(entry_line(
                     entry,
                     selected,
-                    name_width,
-                    show_meta,
-                    None,
-                    &app.home.filter,
-                    None,
-                    app.home.place_kind(&entry.path),
-                    looking_glyph(app, entry),
-                    0,
-                    ctx,
+                    EntryNotes {
+                        place_kind: app.home.place_kind(&entry.path),
+                        looking: looking_glyph(app, entry),
+                        ..EntryNotes::default()
+                    },
+                    &list,
                 ));
             }
             crate::home::Row::Place {
@@ -1085,18 +1088,45 @@ fn note_row(
     ])
 }
 
+/// What every row of the home list is drawn with in one frame, as opposed to what
+/// each row says.
+#[derive(Clone, Copy)]
+struct ListDraw<'f> {
+    ctx: &'f RenderContext,
+    /// The list's whole width; a section header spans it.
+    width: usize,
+    /// What an entry's name may take beside the meta columns.
+    name_width: usize,
+    show_meta: bool,
+    filter: &'f str,
+    /// The throbber's frame, for a section still listing.
+    frame: usize,
+}
+
+/// What one entry's row says beside its name, worked out by the caller.
+#[derive(Default)]
+struct EntryNotes<'a> {
+    /// The column the filter matched, when the name did not.
+    matched_column: Option<&'a str>,
+    /// Sources a URL may name; `None` where the trail already names it.
+    known_sources: Option<&'a [String]>,
+    place_kind: Option<&'static str>,
+    looking: Option<&'static str>,
+    indent: usize,
+}
+
 /// Section headers carry the collapse marker and the provenance note, so the list
 /// explains itself without a legend.
-#[allow(clippy::too_many_arguments)]
 fn section_header<'a>(
     section: &'a crate::home::Section,
     matches: usize,
     collapsed: bool,
     selected: bool,
-    width: usize,
-    frame: usize,
-    ctx: &RenderContext,
+    list: &ListDraw,
 ) -> Line<'a> {
+    let ListDraw {
+        ctx, width, frame, ..
+    } = *list;
     let g = glyphs::get();
     let note = if section.unavailable {
         // The reason when there is one. A refused bucket listing says what to fix; a
@@ -1384,20 +1414,26 @@ fn source_line<'a>(
     Line::from(spans)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn entry_line<'a>(
     entry: &'a Entry,
     selected: bool,
-    name_width: usize,
-    show_meta: bool,
-    matched_column: Option<&'a str>,
-    filter: &str,
-    known_sources: Option<&[String]>,
-    place_kind: Option<&'static str>,
-    looking: Option<&'static str>,
-    indent: usize,
-    ctx: &RenderContext,
+    notes: EntryNotes<'a>,
+    list: &ListDraw,
 ) -> Line<'a> {
+    let EntryNotes {
+        matched_column,
+        known_sources,
+        place_kind,
+        looking,
+        indent,
+    } = notes;
+    let ListDraw {
+        ctx,
+        name_width,
+        show_meta,
+        filter,
+        ..
+    } = *list;
     // The selection marker is the loudest thing on screen, and the only thing that
     // needs to be found instantly.
     let g = glyphs::get();
@@ -2730,6 +2766,28 @@ mod tests {
     use crate::discover::Entry;
     use crate::home::Section;
 
+    /// The list as an entry row is drawn in, at `name_width`.
+    fn rows<'f>(
+        ctx: &'f RenderContext,
+        name_width: usize,
+        show_meta: bool,
+        filter: &'f str,
+    ) -> ListDraw<'f> {
+        ListDraw {
+            ctx,
+            width: name_width,
+            name_width,
+            show_meta,
+            filter,
+            frame: 0,
+        }
+    }
+
+    /// The list as a section header is drawn in, `width` wide.
+    fn header_row(ctx: &RenderContext, width: usize) -> ListDraw<'_> {
+        rows(ctx, width, true, "")
+    }
+
     /// The pane's guidance reads as one sentence, with no gap left by a wrapped literal.
     ///
     /// These lines are long enough to want writing across two lines of source, and a
@@ -2777,11 +2835,16 @@ mod tests {
     fn blank_meta_columns_go_to_the_name() {
         let ctx = RenderContext::for_test();
         let text = |entry: &Entry| -> String {
-            entry_line(entry, false, 26, true, None, "", None, None, None, 0, &ctx)
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect()
+            entry_line(
+                entry,
+                false,
+                EntryNotes::default(),
+                &rows(&ctx, 26, true, ""),
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
         };
         let mut public = row("/data/food_nutrition.csv", EntryKind::File);
         public.name = "Food nutrition (fast food)".to_string();
@@ -2836,7 +2899,13 @@ mod tests {
         };
         for curated in [None, Some("dataset"), Some("project")] {
             let line = entry_line(
-                &entry, false, 40, false, None, "", None, curated, None, 0, &ctx,
+                &entry,
+                false,
+                EntryNotes {
+                    place_kind: curated,
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, 40, false, ""),
             )
             .spans
             .iter()
@@ -2868,7 +2937,13 @@ mod tests {
         let ctx = RenderContext::for_test();
         let drawn = |entry: &Entry, looking: Option<&'static str>| -> String {
             entry_line(
-                entry, false, 40, false, None, "", None, None, looking, 0, &ctx,
+                entry,
+                false,
+                EntryNotes {
+                    looking,
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, 40, false, ""),
             )
             .spans
             .iter()
@@ -2920,7 +2995,13 @@ mod tests {
         let ctx = RenderContext::for_test();
         let drawn = |entry: &Entry, place_kind: Option<&'static str>| -> String {
             entry_line(
-                entry, false, 60, true, None, "", None, place_kind, None, 0, &ctx,
+                entry,
+                false,
+                EntryNotes {
+                    place_kind,
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, 60, true, ""),
             )
             .spans
             .iter()
@@ -2983,13 +3064,21 @@ mod tests {
             // drawing at all is the thing that was not happening.
             for width in 1..=60usize {
                 let line = entry_line(
-                    &door, false, width, true, None, "", None, None, None, 0, &ctx,
+                    &door,
+                    false,
+                    EntryNotes::default(),
+                    &rows(&ctx, width, true, ""),
                 );
                 let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                 assert!(!text.is_empty(), "at {width} cells, {kind:?}");
             }
             // And with room to spare it reads as itself, with no label beside it.
-            let line = entry_line(&door, false, 40, true, None, "", None, None, None, 0, &ctx);
+            let line = entry_line(
+                &door,
+                false,
+                EntryNotes::default(),
+                &rows(&ctx, 40, true, ""),
+            );
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(text.contains("us-states (all files)"), "{kind:?}: {text:?}");
             assert!(!text.contains("parquet"), "{kind:?}: {text:?}");
@@ -3006,15 +3095,12 @@ mod tests {
         let text: String = entry_line(
             &door,
             false,
-            60,
-            true,
-            None,
-            "",
-            Some(&known),
-            Some("dataset"),
-            None,
-            0,
-            &ctx,
+            EntryNotes {
+                known_sources: Some(&known),
+                place_kind: Some("dataset"),
+                ..EntryNotes::default()
+            },
+            &rows(&ctx, 60, true, ""),
         )
         .spans
         .iter()
@@ -3205,7 +3291,10 @@ mod tests {
         };
         let meta_starts_at = |entry: &Entry, width: usize| -> usize {
             let line = entry_line(
-                entry, false, width, true, None, "", None, None, None, 0, &ctx,
+                entry,
+                false,
+                EntryNotes::default(),
+                &rows(&ctx, width, true, ""),
             );
             offset_of_meta(line, entry)
         };
@@ -3243,15 +3332,11 @@ mod tests {
             entry_line(
                 &named,
                 false,
-                width,
-                true,
-                None,
-                "",
-                None,
-                Some("dataset"),
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    place_kind: Some("dataset"),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, ""),
             )
             .spans
             .iter()
@@ -3285,15 +3370,11 @@ mod tests {
             let line = entry_line(
                 &curated_multi,
                 false,
-                width,
-                true,
-                None,
-                "",
-                None,
-                Some("dataset"),
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    place_kind: Some("dataset"),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, ""),
             );
             offset_of_meta(line, &curated_multi)
         };
@@ -3317,15 +3398,11 @@ mod tests {
             let line = entry_line(
                 &gone,
                 false,
-                width,
-                true,
-                None,
-                "",
-                Some(&known),
-                None,
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    known_sources: Some(&known),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, ""),
             );
             offset_of_meta(line, &gone)
         };
@@ -3344,15 +3421,11 @@ mod tests {
             entry_line(
                 &short,
                 false,
-                width,
-                true,
-                Some("amount"),
-                "amount",
-                None,
-                None,
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    matched_column: Some("amount"),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, "amount"),
             )
             .spans
             .iter()
@@ -3382,15 +3455,11 @@ mod tests {
             let line = entry_line(
                 &named,
                 false,
-                width,
-                true,
-                None,
-                "",
-                Some(&sources),
-                None,
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    known_sources: Some(&sources),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, ""),
             );
             offset_of_meta(line, &named)
         };
@@ -3409,15 +3478,11 @@ mod tests {
             let line = entry_line(
                 entry,
                 false,
-                width,
-                true,
-                Some("transaction_amount"),
-                "",
-                None,
-                None,
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    matched_column: Some("transaction_amount"),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, ""),
             );
             offset_of_meta(line, entry)
         };
@@ -3461,7 +3526,7 @@ mod tests {
             root: None,
         };
         let text = |matches: usize, section: &Section| -> String {
-            section_header(section, matches, false, false, 80, 0, &ctx)
+            section_header(section, matches, false, false, &header_row(&ctx, 80))
                 .spans
                 .iter()
                 .map(|s| s.content.as_ref())
@@ -3497,7 +3562,7 @@ mod tests {
             root: None,
         };
         let text = |width: usize| -> String {
-            section_header(&section, 12, false, false, width, 0, &ctx)
+            section_header(&section, 12, false, false, &header_row(&ctx, width))
                 .spans
                 .iter()
                 .map(|s| s.content.as_ref())
@@ -3556,7 +3621,7 @@ mod tests {
             root: None,
         };
         for width in [40usize, 80, 120] {
-            let text: String = section_header(&section, 60, false, true, width, 0, &ctx)
+            let text: String = section_header(&section, 60, false, true, &header_row(&ctx, width))
                 .spans
                 .iter()
                 .map(|s| s.content.as_ref())
@@ -3574,7 +3639,13 @@ mod tests {
         entry.cost.source = Some("s3".to_string());
         let text = |entry: &Entry, indent: usize| -> String {
             entry_line(
-                entry, false, 60, true, None, "", None, None, None, indent, &ctx,
+                entry,
+                false,
+                EntryNotes {
+                    indent,
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, 60, true, ""),
             )
             .spans
             .iter()
@@ -3647,7 +3718,13 @@ mod tests {
         let meta = meta_columns(&entry, false);
         let meta_at = |indent: usize, width: usize| -> usize {
             let line = entry_line(
-                &entry, false, width, true, None, "", None, None, None, indent, &ctx,
+                &entry,
+                false,
+                EntryNotes {
+                    indent,
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, ""),
             );
             let at = line
                 .spans
@@ -3680,15 +3757,11 @@ mod tests {
             let entry_width = drawn(entry_line(
                 &entry,
                 false,
-                name_width,
-                true,
-                None,
-                "",
-                None,
-                None,
-                None,
-                NEST_INDENT,
-                &ctx,
+                EntryNotes {
+                    indent: NEST_INDENT,
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, name_width, true, ""),
             ));
             assert_eq!(entry_width, row_width(name_width, true));
             let place = place_line(
@@ -3823,7 +3896,7 @@ mod tests {
 
     fn header_width(section: &Section, width: usize) -> usize {
         let ctx = RenderContext::for_test();
-        let line = section_header(section, 3, false, false, width, 0, &ctx);
+        let line = section_header(section, 3, false, false, &header_row(&ctx, width));
         line.spans.iter().map(|s| s.content.chars().count()).sum()
     }
 
@@ -3867,7 +3940,13 @@ mod tests {
         entry.kind = EntryKind::Unknown;
         let text = |known: Option<&[String]>| -> String {
             entry_line(
-                &entry, false, 80, false, None, "", known, None, None, 0, &ctx,
+                &entry,
+                false,
+                EntryNotes {
+                    known_sources: known,
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, 80, false, ""),
             )
             .spans
             .iter()
@@ -3943,15 +4022,12 @@ mod tests {
             let line = entry_line(
                 &entry,
                 false,
-                width,
-                false,
-                Some("transaction_amount_usd"),
-                "usd",
-                Some(&[]),
-                None,
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    matched_column: Some("transaction_amount_usd"),
+                    known_sources: Some(&[]),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, false, "usd"),
             );
             let marked: String = line
                 .spans
@@ -4020,28 +4096,22 @@ mod tests {
             let with_note = entry_line(
                 &sourced,
                 false,
-                width,
-                true,
-                Some("customer_identifier"),
-                "cust",
-                Some(&known),
-                None,
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    matched_column: Some("customer_identifier"),
+                    known_sources: Some(&known),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, "cust"),
             );
             let without = entry_line(
                 &plain,
                 false,
-                width,
-                true,
-                Some("customer_identifier"),
-                "cust",
-                Some(&[]),
-                None,
-                None,
-                0,
-                &ctx,
+                EntryNotes {
+                    matched_column: Some("customer_identifier"),
+                    known_sources: Some(&[]),
+                    ..EntryNotes::default()
+                },
+                &rows(&ctx, width, true, "cust"),
             );
             assert_eq!(
                 meta_offset(&with_note),
@@ -4058,15 +4128,12 @@ mod tests {
         let line = entry_line(
             &entry,
             false,
-            60,
-            false,
-            column,
-            filter,
-            Some(&[]),
-            None,
-            None,
-            0,
-            &ctx,
+            EntryNotes {
+                matched_column: column,
+                known_sources: Some(&[]),
+                ..EntryNotes::default()
+            },
+            &rows(&ctx, 60, false, filter),
         );
         line.spans
             .iter()
@@ -4331,7 +4398,7 @@ mod tests {
             root: None,
         };
         let ctx = RenderContext::for_test();
-        let line = section_header(&section, 3, false, false, 40, 0, &ctx);
+        let line = section_header(&section, 3, false, false, &header_row(&ctx, 40));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             text.contains("FOUND"),
@@ -4353,15 +4420,8 @@ mod tests {
             entry_line(
                 &door,
                 true,
-                width.saturating_sub(META_WIDTH as usize),
-                true,
-                None,
-                "",
-                None,
-                None,
-                None,
-                0,
-                &ctx,
+                EntryNotes::default(),
+                &rows(&ctx, width.saturating_sub(META_WIDTH as usize), true, ""),
             )
             .spans
             .iter()

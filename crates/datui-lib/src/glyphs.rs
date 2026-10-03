@@ -113,6 +113,9 @@ pub struct Glyphs {
     /// After a column's name in a column list: hidden from the table. One column
     /// wide in both sets, like the header marks.
     pub hidden_mark: &'static str,
+    /// After a field in the inspector's Compare column: the two rows' values
+    /// differ. One column wide in both sets.
+    pub diff_mark: &'static str,
     /// Checkbox states, for toggle lists.
     pub checkbox_on: &'static str,
     pub checkbox_off: &'static str,
@@ -344,6 +347,7 @@ const UNICODE: Glyphs = Glyphs {
     arrow_right: "→",
     trail: "›",
     hidden_mark: "⊘",
+    diff_mark: "Δ",
     checkbox_on: "■",
     checkbox_off: "□",
     radio_on: "●",
@@ -420,6 +424,7 @@ const ASCII: Glyphs = Glyphs {
     arrow_right: ">",
     trail: ">",
     hidden_mark: "x",
+    diff_mark: "*",
     checkbox_on: "[x]",
     checkbox_off: "[ ]",
     radio_on: "(*)",
@@ -535,6 +540,7 @@ macro_rules! with_string_slots {
             arrow_right,
             trail,
             hidden_mark,
+            diff_mark,
             checkbox_on,
             checkbox_off,
             radio_on,
@@ -807,6 +813,7 @@ fn ascii_twin(c: char) -> Option<&'static str> {
         '¶' => Some("$"),
         '»' => Some(">"),
         '¤' => Some("?"),
+        'Δ' => Some("*"),
         _ => None,
     }
 }

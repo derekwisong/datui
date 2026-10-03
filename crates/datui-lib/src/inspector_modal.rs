@@ -1,18 +1,22 @@
-//! Row inspector state: which field is focused, the find text, the text mode,
-//! how much of a long value is shown, and the fields read for this row that the
-//! table's rows do not hold.
+//! Row inspector state: which field is focused and which are listed, where the
+//! focus is (the list or the value), the find text, the value's view and where
+//! it is read to, the row compared with, and the fields read for this row that
+//! the table's rows do not hold.
 //!
 //! The values themselves are not kept here. The inspector shows the table's
 //! selected row from the buffer the table already holds, every frame, so moving
 //! the row is moving the table's cursor and nothing is copied out of the buffer.
 
 use crate::inspector_drill::{Drill, JsonWait, Level, Node};
-use crate::widgets::datatable::InspectField;
-use crate::widgets::ui::PickerState;
+use crate::inspector_reader::{Reader, Wrap};
+use crate::widgets::datatable::{InspectField, InspectRow};
+use crate::widgets::inspector::Pane;
 use polars::prelude::DataFrame;
+use std::sync::Arc;
 
-/// Bytes of a value shown per step: the first screenful of a huge string or
-/// list costs this much formatting, and Enter shows as much again.
+/// The most bytes of a value one key formats: a nested value or a JSON document
+/// laid out in the pane stops here, and the reader wraps no more than this of a
+/// long text for a key.
 pub const CHUNK_BYTES: usize = 16 * 1024;
 
 /// The fields of one row that the buffer does not hold, read on request.
@@ -45,40 +49,167 @@ impl FieldRead {
     }
 }
 
-/// The text of the value pane, built for one field at one width and kept until
-/// any of that changes, so a long value is not wrapped again every frame.
+/// Where the keys go: the field list, or the focused value's pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Focus {
+    #[default]
+    List,
+    Value,
+}
+
+/// The order the fields are listed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Order {
+    /// The table's column order, hidden columns last.
+    #[default]
+    Table,
+    /// By name.
+    Name,
+    /// Fields with a value first, then nulls and empties.
+    Filled,
+}
+
+impl Order {
+    pub fn next(self) -> Self {
+        match self {
+            Order::Table => Order::Name,
+            Order::Name => Order::Filled,
+            Order::Filled => Order::Table,
+        }
+    }
+
+    /// As the list's rule says it; nothing for the table's order.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Order::Table => None,
+            Order::Name => Some("A-Z"),
+            Order::Filled => Some("filled first"),
+        }
+    }
+}
+
+/// A way of showing a value. Only the views that apply to a value are offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// Text that parses as JSON, indented.
+    Json,
+    /// Text as itself.
+    Raw,
+    /// Text or bytes as an escaped literal.
+    Escaped,
+    /// Bytes as a hex dump.
+    Hex,
+    /// Bytes as the text they hold: UTF-8, or decompressed gzip or zstd.
+    Text,
+}
+
+impl View {
+    pub fn label(self) -> &'static str {
+        match self {
+            View::Json => "JSON",
+            View::Raw => "Raw",
+            View::Escaped => "Escaped",
+            View::Hex => "Hex",
+            View::Text => "Text",
+        }
+    }
+}
+
+/// A search inside the focused value.
+#[derive(Debug, Clone, Default)]
+pub struct ValueFind {
+    pub text: String,
+    /// The find line has the keys.
+    pub editing: bool,
+    /// Where the text is, for the pane `pane`: bytes, or rows of a short value.
+    pub hits: Vec<usize>,
+    pub current: Option<usize>,
+    pub pane: u64,
+}
+
+/// Long JSON text being indented on a worker, by frame, row and the text's place.
+#[derive(Debug, Clone)]
+pub enum Pretty {
+    Pending {
+        token: u64,
+        place: (u64, usize, String),
+    },
+    Ready {
+        place: (u64, usize, String),
+        text: Arc<str>,
+    },
+    Failed {
+        place: (u64, usize, String),
+    },
+}
+
+impl Pretty {
+    pub fn place(&self) -> &(u64, usize, String) {
+        match self {
+            Pretty::Pending { place, .. }
+            | Pretty::Ready { place, .. }
+            | Pretty::Failed { place } => place,
+        }
+    }
+}
+
+/// What the value pane was built from: when any of it changes, the pane is
+/// built again, and a long value is not laid out again every frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BodyKey {
+pub struct PaneKey {
     pub frame: u64,
     pub row: usize,
     pub field: String,
-    pub escaped: bool,
-    pub chunks: usize,
+    pub view: Option<View>,
     pub width: u16,
     /// What was on hand for the field: a value, a null, or where its read stood.
     pub state: u8,
+    /// Where an indented copy of long JSON stood: none, asked, ready, failed.
+    pub pretty: u8,
 }
 
 #[derive(Default)]
 pub struct InspectorModal {
     pub active: bool,
-    /// The fields in order, with the find text over their names.
-    pub picker: PickerState,
     pub fields: Vec<InspectField>,
-    /// The find field has the keys.
+    /// The find text over the fields' names, then their values.
+    pub filter: String,
+    /// The find line has the keys.
     pub finding: bool,
-    /// Text shown as an escaped literal instead of as itself.
-    pub escaped: bool,
-    /// First line of the value pane on screen.
-    pub scroll: usize,
-    /// How many [`CHUNK_BYTES`] of the value are shown.
-    pub chunks: usize,
+    /// The focused field, an index into `fields`, while it is listed.
+    selected: usize,
+    /// The fields listed, in the order listed: the find text, the Filled toggle and
+    /// the order applied. Kept by [`Self::set_visible`].
+    pub visible: Vec<usize>,
+    /// The first field listed when the list scrolls.
+    pub list_offset: usize,
+    /// Fields the list showed last frame: a page for PgUp/PgDn.
+    pub list_page: usize,
+    pub order: Order,
+    /// Only fields with a value, or with Compare on, only those that differ.
+    pub filled_only: bool,
+    pub focus: Focus,
+    /// The view chosen with `e`, for the field it was chosen on.
+    pub view: Option<View>,
+    view_field: Option<String>,
+    pub wrap: Wrap,
+    /// Where the value pane is in its value.
+    pub reader: Reader,
+    pub pane: Option<(PaneKey, Pane)>,
+    pane_id: u64,
+    pub value_find: Option<ValueFind>,
     /// Lines the value pane showed last frame: a page for PgUp/PgDn.
     pub page: usize,
     /// The row the pane was last drawn for; a new one starts at its top.
     pub shown_row: Option<(u64, usize)>,
     pub read: Option<FieldRead>,
-    pub body: Option<(BodyKey, crate::widgets::inspector::Body)>,
+    /// After Enter read a field, the rows moved to are read too while the focus
+    /// stays on that field.
+    pub follow: Option<String>,
+    /// The list has a column for another row: the pinned one, or the next.
+    pub compare: bool,
+    /// The row `m` pinned for Compare.
+    pub pinned: Option<InspectRow>,
     /// The levels opened under the focused field, when Enter drilled into it.
     pub drill: Option<Drill>,
     /// Text being parsed as JSON off this thread, to open as a level.
@@ -86,8 +217,11 @@ pub struct InspectorModal {
     /// The last [`JsonWait::token`] handed out.
     pub json_token: u64,
     /// Text that looked like JSON and did not parse, by frame, row and path: Enter
-    /// there is More again, not a second try that fails the same way.
+    /// there shows it as text, not a second try that fails the same way.
     pub not_json: Option<(u64, usize, String)>,
+    /// Long JSON text indented off this thread for the JSON view.
+    pub pretty: Option<Pretty>,
+    pub pretty_token: u64,
 }
 
 impl InspectorModal {
@@ -102,30 +236,43 @@ impl InspectorModal {
             .map(str::to_string)
             .or_else(|| self.focused().map(|f| f.name.clone()))
             .and_then(|name| fields.iter().position(|f| f.name == name));
-        self.picker = PickerState::new(fields.iter().map(|f| f.name.clone()).collect());
-        if let Some(index) = keep {
-            self.picker.select_original(index);
-        }
+        self.selected = keep.unwrap_or(0);
+        self.visible = (0..fields.len()).collect();
         self.fields = fields;
         self.active = true;
         self.finding = false;
+        self.focus = Focus::List;
+        self.list_offset = 0;
         self.read = None;
-        self.body = None;
+        self.follow = None;
+        self.pane = None;
         self.shown_row = None;
         self.drill = None;
         self.json_wait = None;
         self.not_json = None;
-        self.reset_pane();
+        self.pretty = None;
+        self.value_find = None;
+        self.reader = Reader::default();
     }
 
     pub fn close(&mut self) {
         self.active = false;
         self.finding = false;
+        self.focus = Focus::List;
         self.read = None;
-        self.body = None;
+        self.follow = None;
+        self.pane = None;
         self.drill = None;
         self.json_wait = None;
         self.not_json = None;
+        self.pretty = None;
+        self.value_find = None;
+    }
+
+    /// A new id for a pane just built: the reader starts at its top.
+    pub fn next_pane_id(&mut self) -> u64 {
+        self.pane_id += 1;
+        self.pane_id
     }
 
     /// Whether the text at `path` of row `row` of frame `frame` was found not to be JSON.
@@ -135,22 +282,60 @@ impl InspectorModal {
             .is_some_and(|(f, r, p)| (*f, *r) == (frame, row) && p == path)
     }
 
-    /// The focused field, or None when the find text admits nothing.
+    /// The focused field: the one selected while it is listed, else the first
+    /// listed. None when nothing is listed.
     pub fn focused(&self) -> Option<&InspectField> {
-        self.fields.get(self.picker.selected_original()?)
+        self.focused_index().and_then(|i| self.fields.get(i))
     }
 
-    /// The fields the find text admits, with their indices in `fields`.
-    pub fn visible(&self) -> Vec<usize> {
-        self.picker.filtered().into_iter().map(|(i, _)| i).collect()
+    fn focused_index(&self) -> Option<usize> {
+        if self.visible.contains(&self.selected) {
+            Some(self.selected)
+        } else {
+            self.visible.first().copied()
+        }
     }
 
-    fn reset_pane(&mut self) {
-        self.scroll = 0;
-        self.chunks = 1;
+    /// Where the focused field is among those listed.
+    pub fn focused_position(&self) -> usize {
+        self.focused_index()
+            .and_then(|i| self.visible.iter().position(|&v| v == i))
+            .unwrap_or(0)
     }
 
-    /// Move the focus `delta` items in the level drilled into, or fields at the row.
+    /// The fields listed. A focused field no longer listed gives the focus to the
+    /// first that is.
+    pub fn set_visible(&mut self, visible: Vec<usize>) {
+        if !visible.contains(&self.selected)
+            && let Some(&first) = visible.first()
+        {
+            self.selected = first;
+        }
+        self.visible = visible;
+    }
+
+    fn select_position(&mut self, at: usize) {
+        if let Some(&i) = self.visible.get(at)
+            && i != self.selected
+        {
+            self.selected = i;
+            self.field_changed();
+        }
+    }
+
+    /// The focus moved to another field: its value shows in its own view, and a
+    /// read follows the rows only while the focus stays on its field.
+    fn field_changed(&mut self) {
+        let name = self.focused().map(|f| f.name.clone());
+        if self.view_field != name {
+            self.view = None;
+        }
+        if self.follow.is_some() && self.follow != name {
+            self.follow = None;
+        }
+    }
+
+    /// Move the focus `delta` items in the level drilled into.
     fn step(&mut self, delta: isize) -> bool {
         let Some(drill) = self.drill.as_mut() else {
             return false;
@@ -158,40 +343,60 @@ impl InspectorModal {
         let level = drill.level_mut();
         let last = level.node.len().saturating_sub(1);
         level.selected = level.selected.saturating_add_signed(delta).min(last);
-        self.reset_pane();
         true
     }
 
     pub fn next_field(&mut self) {
-        if !self.step(1) {
-            self.picker.move_down();
+        if self.step(1) || self.visible.is_empty() {
+            return;
         }
-        self.reset_pane();
+        let n = self.visible.len();
+        self.select_position((self.focused_position() + 1) % n);
     }
 
     pub fn prev_field(&mut self) {
-        if !self.step(-1) {
-            self.picker.move_up();
+        if self.step(-1) || self.visible.is_empty() {
+            return;
         }
-        self.reset_pane();
+        let n = self.visible.len();
+        self.select_position((self.focused_position() + n - 1) % n);
     }
 
     pub fn first_field(&mut self) {
-        if !self.step(isize::MIN)
-            && let Some(&first) = self.visible().first()
-        {
-            self.picker.select_original(first);
+        if !self.step(isize::MIN) {
+            self.select_position(0);
         }
-        self.reset_pane();
     }
 
     pub fn last_field(&mut self) {
-        if !self.step(isize::MAX)
-            && let Some(&last) = self.visible().last()
-        {
-            self.picker.select_original(last);
+        if !self.step(isize::MAX) {
+            self.select_position(self.visible.len().saturating_sub(1));
         }
-        self.reset_pane();
+    }
+
+    /// A page of fields down (`1`) or up (`-1`): the list scrolls a page and the
+    /// focus moves as far.
+    pub fn page_fields(&mut self, direction: isize) {
+        let page = self.list_page.max(1) as isize;
+        if self.step(direction * page) {
+            return;
+        }
+        let last = self.visible.len().saturating_sub(1);
+        let at = self
+            .focused_position()
+            .saturating_add_signed(direction * page)
+            .min(last);
+        self.list_offset = self
+            .list_offset
+            .saturating_add_signed(direction * page)
+            .min(last);
+        self.select_position(at);
+    }
+
+    /// Choose the view `e` moves to.
+    pub fn choose_view(&mut self, view: View) {
+        self.view = Some(view);
+        self.view_field = self.focused().map(|f| f.name.clone());
     }
 
     /// Open `node` as a level under the one shown, or under the row's field.
@@ -212,7 +417,7 @@ impl InspectorModal {
             }
         }
         self.json_wait = None;
-        self.reset_pane();
+        self.focus = Focus::List;
     }
 
     /// Step up one level; false at the row, where there is no level to leave.
@@ -225,7 +430,7 @@ impl InspectorModal {
             self.drill = None;
         }
         self.json_wait = None;
-        self.reset_pane();
+        self.focus = Focus::List;
         true
     }
 
@@ -242,42 +447,26 @@ impl InspectorModal {
         self.json_token
     }
 
-    /// A typed key while finding: narrows the fields.
+    /// A typed key while finding: narrows the fields. Ctrl+W drops a word and
+    /// Ctrl+U the whole text; any other chord types nothing.
     pub fn find_key(&mut self, c: char, mods: crossterm::event::KeyModifiers) {
-        self.picker.filter_key(c, mods);
-        self.reset_pane();
+        edit_find(&mut self.filter, c, mods);
     }
 
     pub fn find_backspace(&mut self) {
-        self.picker.backspace();
-        self.reset_pane();
+        self.filter.pop();
     }
 
     pub fn clear_find(&mut self) {
-        self.picker.clear_filter();
+        self.filter.clear();
         self.finding = false;
     }
 
-    pub fn toggle_escaped(&mut self) {
-        self.escaped = !self.escaped;
-        self.scroll = 0;
-    }
-
-    pub fn scroll_by(&mut self, lines: isize) {
-        self.scroll = self.scroll.saturating_add_signed(lines);
-    }
-
-    /// Show another chunk of a long value.
-    pub fn more(&mut self) {
-        self.chunks += 1;
-    }
-
-    /// The table moved to another row: its pane starts at the top, and what
-    /// was read for the last row is let go.
+    /// The table moved to another row: what was read, opened or indented for the
+    /// last row is let go.
     pub fn row_shown(&mut self, frame: u64, row: usize) {
         if self.shown_row != Some((frame, row)) {
             self.shown_row = Some((frame, row));
-            self.reset_pane();
             // A level opened under another row is not this row's.
             if self
                 .drill
@@ -296,6 +485,13 @@ impl InspectorModal {
             if self.read.as_ref().is_some_and(|r| r.key() != (frame, row)) {
                 self.read = None;
             }
+            if self
+                .pretty
+                .as_ref()
+                .is_some_and(|p| (p.place().0, p.place().1) != (frame, row))
+            {
+                self.pretty = None;
+            }
         }
     }
 
@@ -309,6 +505,33 @@ impl InspectorModal {
             }) if (*f, *r) == (frame, row) => Some(values),
             _ => None,
         }
+    }
+
+    /// The pane as last drawn, while it is for `field` of `(frame, row)`.
+    pub fn pane_for(&self, frame: u64, row: usize, field: &str) -> Option<&Pane> {
+        self.pane
+            .as_ref()
+            .filter(|(key, _)| (key.frame, key.row) == (frame, row) && key.field == field)
+            .map(|(_, pane)| pane)
+    }
+}
+
+/// A key typed into a find line: a character, Ctrl+W to drop a word, Ctrl+U to
+/// clear. Other chords type nothing.
+pub fn edit_find(text: &mut String, c: char, mods: crossterm::event::KeyModifiers) {
+    use crossterm::event::KeyModifiers;
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    if ctrl && c == 'w' {
+        while text.ends_with(' ') {
+            text.pop();
+        }
+        while text.chars().next_back().is_some_and(|c| c != ' ') {
+            text.pop();
+        }
+    } else if ctrl && c == 'u' {
+        text.clear();
+    } else if !ctrl && !mods.contains(KeyModifiers::ALT) {
+        text.push(c);
     }
 }
 
@@ -330,32 +553,56 @@ mod tests {
     }
 
     #[test]
-    fn find_narrows_and_keeps_the_focused_field() {
+    fn the_focus_moves_among_the_fields_listed() {
         let mut m = InspectorModal::new();
         m.open(fields(&["id", "description", "amount", "status"]), None);
         m.next_field();
         assert_eq!(m.focused().unwrap().name, "description");
+        m.set_visible(vec![2, 3]);
+        assert_eq!(
+            m.focused().unwrap().name,
+            "amount",
+            "unlisted: the first listed"
+        );
+        m.next_field();
+        assert_eq!(m.focused().unwrap().name, "status");
+        m.next_field();
+        assert_eq!(m.focused().unwrap().name, "amount", "round to the top");
+        m.set_visible(vec![0, 1, 2, 3]);
+        assert_eq!(m.focused().unwrap().name, "amount");
         m.find_key('a', KeyModifiers::NONE);
-        m.find_key('m', KeyModifiers::NONE);
-        assert_eq!(m.visible(), vec![2]);
-        assert_eq!(m.focused().unwrap().name, "amount");
-        m.clear_find();
-        assert_eq!(m.visible().len(), 4);
-        assert_eq!(m.focused().unwrap().name, "amount");
+        m.find_key('m', KeyModifiers::CONTROL);
+        assert_eq!(m.filter, "a", "a chord types nothing");
+        m.find_key('w', KeyModifiers::CONTROL);
+        assert!(m.filter.is_empty());
     }
 
     #[test]
-    fn a_new_row_starts_at_the_top_and_drops_the_last_read() {
+    fn a_page_moves_the_focus_and_the_list_alike() {
+        let mut m = InspectorModal::new();
+        let names: Vec<String> = (0..50).map(|i| format!("f{i}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        m.open(fields(&names), None);
+        m.list_page = 10;
+        m.page_fields(1);
+        assert_eq!((m.focused_position(), m.list_offset), (10, 10));
+        for _ in 0..4 {
+            m.page_fields(1);
+        }
+        assert_eq!(m.focused_position(), 49, "stops at the last");
+        m.page_fields(-1);
+        assert_eq!(m.focused_position(), 39);
+    }
+
+    #[test]
+    fn a_new_row_drops_the_last_read() {
         let mut m = InspectorModal::new();
         m.open(fields(&["a"]), None);
         m.row_shown(1, 5);
-        m.scroll = 7;
-        m.chunks = 3;
         m.read = Some(FieldRead::Reading { frame: 1, row: 5 });
         m.row_shown(1, 5);
-        assert_eq!((m.scroll, m.chunks), (7, 3), "the same row keeps its place");
+        assert!(m.read.is_some(), "the same row keeps it");
         m.row_shown(1, 6);
-        assert_eq!((m.scroll, m.chunks), (0, 1));
         assert!(m.read.is_none());
     }
 
@@ -382,5 +629,15 @@ mod tests {
         // The cursor wins over the field focused last time.
         m.open(fields(&["a", "b", "c"]), Some("a"));
         assert_eq!(m.focused().unwrap().name, "a");
+    }
+
+    #[test]
+    fn a_view_is_chosen_for_its_field() {
+        let mut m = InspectorModal::new();
+        m.open(fields(&["a", "b"]), None);
+        m.choose_view(View::Escaped);
+        assert_eq!(m.view, Some(View::Escaped));
+        m.next_field();
+        assert_eq!(m.view, None, "another field starts in its own view");
     }
 }

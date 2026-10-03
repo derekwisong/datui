@@ -358,14 +358,23 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move between fields |
 | <kbd>Home</kbd> <kbd>End</kbd> | First and last field |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page of fields; on the footer when the list runs past its rows |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Scroll a long value; on the footer when the value runs past the pane |
-| <kbd>Enter</kbd> | Open a struct, a list or JSON text one level down; show more of a long value; or read the row's hidden and binary fields |
+| <kbd>Tab</kbd> | Move into the value: <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> scroll it, <kbd>Home</kbd> <kbd>End</kbd> reach its top and end, <kbd>/</kbd> finds in it with <kbd>n</kbd> <kbd>N</kbd>; <kbd>Esc</kbd> or <kbd>Tab</kbd> goes back to the fields |
+| <kbd>Enter</kbd> | On a group's row, drill into its rows. Else open a struct, a list or JSON text one level down, or read the row's hidden and binary fields |
+| <kbd>r</kbd> | On a group's row, read the row's hidden and binary fields |
 | <kbd>→</kbd> <kbd>l</kbd> / <kbd>←</kbd> <kbd>h</kbd> | Inside a level: open the focused item / go up a level (at the row they move between rows) |
-| <kbd>y</kbd> | Copy the focused field's exact value |
-| <kbd>e</kbd> | Show text or bytes escaped, or as itself; offered only on text and bytes |
-| <kbd>/</kbd> | Find a field: type to narrow, <kbd>Enter</kbd> or <kbd>↓</kbd> keeps the list narrowed, <kbd>Esc</kbd> clears it |
-| <kbd>Esc</kbd> <kbd>Space</kbd> | Close; <kbd>Esc</kbd> clears a find first, and inside a level goes up one |
+| <kbd>y</kbd> | Copy the focused value as its view shows it |
+| <kbd>Y</kbd> | Copy the whole row as one JSON object |
+| <kbd>e</kbd> | The value's next view: JSON, Raw, Escaped for text; Text, Hex, Escaped for bytes. Offered only where there is more than one |
+| <kbd>w</kbd> | Word wrap or hard wrap for long text |
+| <kbd>o</kbd> | Open the value in `$VISUAL`, `$EDITOR` or `$PAGER`, or the system's opener for images and PDFs |
+| <kbd>f</kbd> | Only the fields with a value; while comparing, only those that differ |
+| <kbd>s</kbd> | Order the fields: the table's, A-Z, or filled first |
+| <kbd>c</kbd> | Compare with the next row, or the pinned one |
+| <kbd>m</kbd> | Pin this row for Compare; again to unpin |
+| <kbd>/</kbd> | Find a field by name, then by value: type to narrow, <kbd>Enter</kbd> or <kbd>↓</kbd> keeps the list narrowed, <kbd>Esc</kbd> clears it |
+| <kbd>Esc</kbd> <kbd>Space</kbd> | Close; <kbd>Esc</kbd> clears a find first, inside a level goes up one, and in the value goes back to the fields |
 
 ## Dataset info
 

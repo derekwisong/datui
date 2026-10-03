@@ -19162,7 +19162,7 @@ fn test_inspector_opens_moves_between_rows_and_fields_and_closes() {
     press_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
     let screen = draw_inspector(&mut app);
     assert!(screen.contains("Row 2"), "{screen}");
-    let side = format!("{} -0.0 ", g.border.vertical_left);
+    let side = format!("{}  -0.0 ", g.border.vertical_left);
     assert!(screen.lines().any(|l| l.contains(&side)), "{screen}");
 
     // Home and End reach the ends of the list.
@@ -19298,7 +19298,7 @@ fn test_inspector_reads_hidden_and_binary_fields_on_enter() {
     // The same read brought the bytes: a hex dump, copied as base64.
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(
-        app.inspector_modal.picker.filter.is_empty(),
+        app.inspector_modal.filter.is_empty(),
         "Esc clears the find first"
     );
     assert!(app.inspector_modal.active);
@@ -19320,6 +19320,10 @@ fn test_inspector_reads_hidden_and_binary_fields_on_enter() {
     pump_until_idle(&mut app, &rx, &tx);
     let screen = draw_inspector(&mut app);
     assert!(screen.contains("Row 3"), "{screen}");
+    // One byte of UTF-8 reads as text; `e` shows it as hex.
+    assert!(screen.contains("UTF-8 text"), "{screen}");
+    press_key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    let screen = draw_inspector(&mut app);
     assert!(screen.contains("00000000  62"), "{screen}");
 }
 
@@ -19357,26 +19361,28 @@ fn test_inspector_follows_the_view_and_leaves_enter_to_drill() {
         screen.lines().any(|l| l.contains("  \"")),
         "one item per line: {screen}"
     );
-    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-
+    // #548: on a group's row Enter drills from the inspector too, in one key.
+    assert!(screen.contains("Enter  Rows"), "{screen}");
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+    assert!(!app.inspector_modal.active);
 }
 
-/// A huge value is formatted a chunk at a time: the first screenful costs one
-/// chunk, Enter shows another, PgDn scrolls, and `y` still copies all of it.
+/// #548: a huge value is read a screen at a time. Tab focuses it and End
+/// reaches its last line at once, with where it is on the rule; there is no
+/// More to press, and `y` still copies all of it.
 #[test]
-fn test_inspector_shows_a_huge_value_a_chunk_at_a_time() {
+fn test_inspector_reads_a_huge_value_to_its_end_in_two_keys() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("huge.parquet");
-    let huge = "0123456789".repeat(5_000);
+    let huge = format!("{}THE END", "0123456789 ".repeat(200_000));
     let mut df = df!("id" => [1i64], "huge" => [huge.as_str()]).unwrap();
     ParquetWriter::new(File::create(&path).unwrap())
         .finish(&mut df)
         .unwrap();
     let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
+    let mut app = App::new(tx.clone(), common::test_runtime());
     pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
     draw_inspector(&mut app);
     let copies = Copies::default();
@@ -19385,26 +19391,31 @@ fn test_inspector_shows_a_huge_value_a_chunk_at_a_time() {
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
     let screen = draw_inspector(&mut app);
-    assert!(screen.contains("50,000 chars"), "{screen}");
-    assert!(
-        screen.contains("Enter") && screen.contains("More"),
-        "{screen}"
-    );
-    let body = &app.inspector_modal.body.as_ref().unwrap().1;
-    assert!(body.more);
-    let first = body.lines.len();
+    assert!(screen.contains("2,200,007 chars"), "{screen}");
+    assert!(!screen.contains("More"), "{screen}");
+    assert!(screen.contains("Tab  Value"), "{screen}");
 
-    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    draw_inspector(&mut app);
-    let body = &app.inspector_modal.body.as_ref().unwrap().1;
-    assert!(body.lines.len() > first, "Enter showed another chunk");
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("THE END"), "{screen}");
+    assert!(screen.contains("100%"), "{screen}");
+    assert!(app.inspector_modal.reader.take_formatted() <= 16 * 1024);
 
-    press_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
-    draw_inspector(&mut app);
-    assert!(app.inspector_modal.scroll > 0, "PgDn scrolls the value");
+    press_key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+    let screen = draw_inspector(&mut app);
+    assert!(!screen.contains("THE END"), "{screen}");
+    assert!(screen.contains(" 0%"), "{screen}");
 
+    // Over a megabyte: copied off this thread, whole.
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(copies.lock().unwrap().last().unwrap().len(), huge.len());
+    // Esc gives the focus back to the list, then closes.
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.inspector_modal.active);
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!app.inspector_modal.active);
 }
 
 /// Every row of `app` drawn at `width`×`height`, one string per terminal row.
@@ -19508,7 +19519,7 @@ fn test_inspector_lists_a_short_row_whole_and_offers_only_keys_that_act() {
     }
     // `e` on the number does nothing; on text it is offered and acts.
     press_key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
-    assert!(!app.inspector_modal.escaped);
+    assert_eq!(app.inspector_modal.view, None, "a number has one view");
     press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(inspected_field(&app), "email");
@@ -19548,13 +19559,23 @@ fn test_inspector_title_names_the_group_inside_a_drill() {
     }
 }
 
-/// #548 M1, D3: a cut value's last line counts the whole value. A 1 MiB blob
-/// dumps 4 KiB, and the count is of all 65,536 hex lines, not the chunk's.
+/// #548 D3: a long value's rule says where the pane is in the whole value, not
+/// in a chunk of it. A 1 MiB blob of noise is sized, read as hex, and its last
+/// offset is two keys away.
 #[test]
 fn test_inspector_counts_the_lines_of_the_whole_value() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("blob.parquet");
-    let blob = vec![0x5au8; 1 << 20];
+    // Noise, so the bytes are not text: a repeated letter would read as UTF-8.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let blob: Vec<u8> = (0..1 << 20)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 24) as u8
+        })
+        .collect();
     let mut df = df!("id" => [1i64], "blob" => [blob.as_slice()]).unwrap();
     ParquetWriter::new(File::create(&path).unwrap())
         .finish(&mut df)
@@ -19573,26 +19594,273 @@ fn test_inspector_counts_the_lines_of_the_whole_value() {
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
     let footer = rows_at(&mut app, 80, 24)[21].clone();
-    assert!(footer.contains("y  Copy"), "{footer}");
-    let g = datui::glyphs::get();
-    for (width, height) in [(80usize, 24usize), (200, 50)] {
-        let rows = rows_at(&mut app, width as u16, height as u16);
-        let text = rows.join("\n");
-        // The pane's rows: less the bar, the frame, the footer and the blank above it,
-        // two rules, two fields.
-        let shown = height - 9;
-        let more = format!(
-            "{} {} more lines",
-            g.ellipsis,
-            datui::copy_modal::thousands(65_536 - (shown - 1))
+    assert!(footer.contains("y  Copy base64"), "{footer}");
+    for (width, height) in [(200u16, 50u16), (80, 24)] {
+        let text = rows_at(&mut app, width, height).join("\n");
+        assert!(
+            text.contains("1,048,576 bytes"),
+            "{width}x{height}:\n{text}"
         );
-        assert!(text.contains(&more), "{more} at {width}x{height}:\n{text}");
-        // The footer keeps Find; the scroll keys join it where there is room.
-        assert!(text.contains("/  Find"), "{width}x{height}:\n{text}");
-        if width == 200 {
-            assert!(text.contains("PgUp/PgDn  Scroll"), "{text}");
-        }
+        assert!(text.contains("of 0x100000"), "{width}x{height}:\n{text}");
+        assert!(!text.contains("more lines"), "{width}x{height}:\n{text}");
+        assert!(text.contains("Tab  Value"), "{width}x{height}:\n{text}");
     }
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    let text = rows_at(&mut app, 80, 24).join("\n");
+    assert!(text.contains("000ffff0"), "the last row: {text}");
+    assert!(text.contains("-0xfffff of 0x100000"), "{text}");
+    assert!(text.contains("Home/End"), "the scroll keys: {text}");
+}
+
+/// #548: `c` puts the next row beside this one and marks and counts the fields
+/// that differ; `f` then lists only those. `m` pins a row to compare others with.
+#[test]
+fn test_inspector_compares_rows_and_lists_only_the_differences() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _rx, _tx) = open_orders_fixture(dir.path());
+    let g = datui::glyphs::get();
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+    let rows = rows_at(&mut app, 80, 24);
+    let text = rows.join("\n");
+    assert!(rows[0].contains("Row 1 of 3"), "{text}");
+    assert!(rows[0].contains("compare with 2"), "{text}");
+    // Every field but the binary one, which neither row has read, differs.
+    assert!(rows[1].contains("13 differ"), "{text}");
+    // The list's rows: the first is `id`, under the focus rail.
+    let field_row = |name: &str| {
+        rows[2..]
+            .iter()
+            .find(|r| {
+                r.contains(&format!("{}{name} ", g.rail)) || r.contains(&format!("  {name} "))
+            })
+            .unwrap()
+            .clone()
+    };
+    let id = field_row("id");
+    assert!(id.contains(g.diff_mark), "{id}");
+    let blob = field_row("blob");
+    assert!(!blob.contains(g.diff_mark), "{blob}");
+
+    press_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+    let text = rows_at(&mut app, 80, 24).join("\n");
+    assert!(text.contains("differ only"), "{text}");
+    assert!(!text.contains(" blob "), "{text}");
+    assert_eq!(app.inspector_modal.visible.len(), 13);
+
+    // Pinned, the row stays beside each row moved to.
+    press_key(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+    let rows = rows_at(&mut app, 80, 24);
+    assert!(rows[0].contains("Row 3 of 3"), "{}", rows.join("\n"));
+    assert!(
+        rows[0].contains("compare with pinned 1"),
+        "{}",
+        rows.join("\n")
+    );
+
+    // Compare off: Filled lists only the fields with a value.
+    press_key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+    let rows = rows_at(&mut app, 80, 24);
+    let text = rows.join("\n");
+    assert!(
+        rows[1].contains("1 null") && rows[1].contains("1 empty"),
+        "{text}"
+    );
+    assert!(rows[1].contains("filled"), "{text}");
+    assert!(!text.contains(" customer_name "), "{text}");
+    assert!(!text.contains(" email "), "{text}");
+    // `s` orders them by name.
+    press_key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+    rows_at(&mut app, 80, 24);
+    let modal = &app.inspector_modal;
+    let first = &modal.fields[modal.visible[0]].name;
+    assert_eq!(first, "amount");
+}
+
+/// #548: `Y` copies the whole row as one JSON object, exact, without leaving;
+/// a field not read is left out and counted.
+#[test]
+fn test_inspector_copies_the_row_as_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _rx, _tx, copies) = open_inspector_fixture(dir.path());
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('Y'), KeyModifiers::NONE);
+    assert!(app.inspector_modal.active, "the inspector stays open");
+    let copied = copies.lock().unwrap().last().unwrap().clone();
+    let json: serde_json::Value = serde_json::from_str(&copied).unwrap();
+    assert_eq!(json["id"], 1);
+    assert_eq!(json["description"], "line1\nline2");
+    assert_eq!(json["tags"], serde_json::json!(["t0", "x"]));
+    assert!(copied.contains("1000000.125"), "{copied}");
+    assert!(json.get("blob").is_none(), "{copied}");
+    let screen = draw_inspector(&mut app);
+    assert!(
+        screen.contains("Copied row 1: 4 fields, 1 not read"),
+        "{screen}"
+    );
+}
+
+/// #548: after Enter reads a field, each row moved to is read too while the
+/// focus stays on it; an answer for a row already left is dropped.
+#[test]
+fn test_inspector_reads_follow_the_row_after_one_enter() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx, tx, _) = open_inspector_fixture(dir.path());
+    let g = datui::glyphs::get();
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(inspected_field(&app), "blob");
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    let screen = draw_inspector(&mut app);
+    assert!(
+        screen.contains("48 69 00"),
+        "row 1's bytes, as hex: {screen}"
+    );
+
+    // Two rows on before the first follow-up read lands: only the last is kept.
+    press_key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+    draw_inspector(&mut app);
+    app.request_what_the_frame_needs();
+    press_key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+    draw_inspector(&mut app);
+    app.request_what_the_frame_needs();
+    // Nobody waits on a follow-up read: pump until it lands.
+    pump_until(&mut app, &rx, &tx, |app| {
+        !matches!(
+            app.inspector_modal.read,
+            Some(datui::inspector_modal::FieldRead::Reading { .. })
+        )
+    });
+    let screen = draw_inspector(&mut app);
+    assert!(screen.contains("Row 3"), "{screen}");
+    assert!(!screen.contains("not read"), "{screen}");
+    let blob = screen
+        .lines()
+        .find(|l| l.contains(&format!("{}blob ", g.rail)))
+        .unwrap();
+    assert!(blob.contains("1 byte"), "row 3's one byte: {blob}");
+    let frame = app.data_table_state.as_ref().unwrap().len_generation();
+    let read = app
+        .inspector_modal
+        .read_values(frame, 2)
+        .and_then(|v| v.column("blob").ok()?.get(0).ok().map(|v| v.to_string()));
+    assert!(read.is_some(), "row 3 was read");
+    assert!(app.inspector_modal.read_values(frame, 1).is_none());
+
+    // Off the field, moving reads nothing.
+    press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+    draw_inspector(&mut app);
+    app.request_what_the_frame_needs();
+    assert!(app.inspector_modal.follow.is_none());
+    assert!(app.inspector_modal.read.is_none());
+}
+
+/// #548: `/` in the value finds text in it; `n` goes round the places found.
+#[test]
+fn test_inspector_finds_text_inside_a_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log.parquet");
+    let log: String = (0..2_000)
+        .map(|i| {
+            if i % 500 == 7 {
+                format!("line {i} ERROR disk full\n")
+            } else {
+                format!("line {i} ok\n")
+            }
+        })
+        .collect();
+    let mut df = df!("id" => [1i64], "log" => [log.as_str()]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    // A frame between keys, as the event loop draws one.
+    let key = |app: &mut App, code: KeyCode| {
+        rows_at(app, 80, 24);
+        press_key(app, code, KeyModifiers::NONE);
+    };
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::End);
+    key(&mut app, KeyCode::Tab);
+    // At 80 columns the rule still says where the pane is, before the facts.
+    let rule = rows_at(&mut app, 80, 24)
+        .into_iter()
+        .find(|r| r.contains("log  str"))
+        .unwrap();
+    assert!(rule.contains("lines 1-") && rule.contains("0%"), "{rule}");
+    key(&mut app, KeyCode::Char('/'));
+    for c in "error".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Enter);
+    let text = rows_at(&mut app, 80, 24).join("\n");
+    assert!(text.contains("1 of 4"), "{text}");
+    assert!(text.contains("line 7 ERROR"), "{text}");
+    press_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+    let text = rows_at(&mut app, 80, 24).join("\n");
+    assert!(text.contains("3 of 4"), "{text}");
+    assert!(text.contains("line 1007 ERROR"), "{text}");
+    assert!(text.contains("n/N  Next"), "{text}");
+    press_key(&mut app, KeyCode::Char('N'), KeyModifiers::NONE);
+    let text = rows_at(&mut app, 80, 24).join("\n");
+    assert!(text.contains("line 507 ERROR"), "{text}");
+    // Esc clears the find, then gives the focus back to the fields.
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.inspector_modal.value_find.is_none());
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.inspector_modal.active);
+}
+
+/// #548: on a wide terminal the fields and the value sit side by side, and a
+/// wide row's fields flow into columns: at least 44 of 214 at 200x50 and 150
+/// at 300x80.
+#[test]
+fn test_inspector_lays_a_wide_row_out_side_by_side() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wide.parquet");
+    let columns: Vec<Column> = (0..214)
+        .map(|i| Column::new(format!("metric_{i:03}").into(), [i as i64, 0]))
+        .collect();
+    let mut df = DataFrame::new(2, columns).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    rows_at(&mut app, 200, 50);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    for (width, height, least) in [(200u16, 50u16, 44usize), (300, 80, 150)] {
+        let rows = rows_at(&mut app, width, height);
+        let text = rows.join("\n");
+        let listed = text.matches("metric_").count();
+        assert!(
+            listed >= least,
+            "{listed} listed at {width}x{height}:\n{text}"
+        );
+        // One rule line holds both panes' titles.
+        assert!(
+            rows[1].contains("Fields") && rows[1].contains("metric_000  i64"),
+            "{width}x{height}:\n{text}"
+        );
+    }
+    // PgDn pages the list.
+    let before = app.inspector_modal.focused_position();
+    press_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    assert!(app.inspector_modal.focused_position() > before + 40);
 }
 
 /// A field past a megabyte is copied off the UI thread, whole.

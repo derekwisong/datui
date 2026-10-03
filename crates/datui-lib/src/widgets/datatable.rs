@@ -557,6 +557,7 @@ impl InspectField {
 }
 
 /// The selected row as the buffer holds it; see [`DataTableState::inspect_row`].
+#[derive(Clone)]
 pub struct InspectRow {
     /// The row's index in the view.
     pub row: usize,
@@ -8946,8 +8947,13 @@ impl DataTableState {
     /// The selected row as the buffer holds it, with the file group that says what
     /// its nulls are. Reads nothing; `None` while the row is not on hand.
     pub fn inspect_row(&self) -> Option<InspectRow> {
+        self.inspect_row_at(self.start_row + self.table_state.selected()?)
+    }
+
+    /// Row `row` of the view as the buffer holds it, as [`Self::inspect_row`] does
+    /// the selected one: Compare's next row. `None` while it is not on hand.
+    pub fn inspect_row_at(&self, row: usize) -> Option<InspectRow> {
         let df = self.buffered_df.as_ref()?;
-        let row = self.start_row + self.table_state.selected()?;
         let offset = row.checked_sub(self.buffered_start_row)?;
         if offset >= df.height() {
             return None;

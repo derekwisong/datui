@@ -7439,13 +7439,19 @@ mod catalog {
             })
         };
         settle(&mut app, &rx, labelled);
+        // Each row selected first, so it is on screen whatever the current directory
+        // lists above it.
         for (w, h) in [(80, 24), (200, 50)] {
-            let lines = screen(&mut app, w, h).join("\n");
-            for expect in [
-                "data/  3 dirs",
-                "events/  hive",
-                "NOAA daily weather (GHCN-D)/  dataset",
+            for (name, expect) in [
+                ("data", "data/  3 dirs"),
+                ("events", "events/  hive"),
+                (
+                    "NOAA daily weather (GHCN-D)",
+                    "NOAA daily weather (GHCN-D)/  dataset",
+                ),
             ] {
+                select_named(&mut app, name);
+                let lines = screen(&mut app, w, h).join("\n");
                 assert!(lines.contains(expect), "{w}x{h}: {expect:?} in\n{lines}");
             }
         }

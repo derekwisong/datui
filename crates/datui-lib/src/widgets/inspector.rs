@@ -642,19 +642,76 @@ fn null_glyph(kind: NullKind) -> &'static str {
     }
 }
 
-/// The row Compare puts beside `row`: the pinned one, or the next.
-pub fn compare_row(
+/// The rows Compare puts beside a row: the pinned one, or the next; and from
+/// [`WIDER`], unpinned, the row before it too, the three in row order.
+#[derive(Clone)]
+pub struct Compared {
+    /// The row before, in a three-row compare. None at the first row, whose
+    /// column stays, empty, so nothing moves.
+    pub before: Option<InspectRow>,
+    pub after: Option<InspectRow>,
+    /// Three columns: before, this, after.
+    pub both: bool,
+    pub pinned: bool,
+}
+
+impl Compared {
+    /// The rows compared with, in row order.
+    pub fn rows(&self) -> impl Iterator<Item = &InspectRow> {
+        self.before.iter().chain(self.after.iter())
+    }
+}
+
+/// What Compare puts beside `row`, while it is on.
+pub fn compared(
     modal: &InspectorModal,
     state: &DataTableState,
     row: &InspectRow,
-) -> Option<InspectRow> {
+) -> Option<Compared> {
     if !modal.compare {
         return None;
     }
-    match &modal.pinned {
-        Some(pinned) if (pinned.frame, pinned.row) != (row.frame, row.row) => Some(pinned.clone()),
-        _ => state.inspect_row_at(row.row + 1),
+    if let Some(pinned) = &modal.pinned
+        && (pinned.frame, pinned.row) != (row.frame, row.row)
+    {
+        return Some(Compared {
+            before: None,
+            after: Some(pinned.clone()),
+            both: false,
+            pinned: true,
+        });
     }
+    let after = state.inspect_row_at(row.row + 1);
+    let before = modal
+        .compare_both
+        .then(|| row.row.checked_sub(1))
+        .flatten()
+        .and_then(|r| state.inspect_row_at(r));
+    (after.is_some() || before.is_some()).then_some(Compared {
+        before,
+        after,
+        both: modal.compare_both,
+        pinned: false,
+    })
+}
+
+/// Whether `field`'s value `this` differs from any compared row's; None when
+/// no compared row's value is read.
+fn differs_from(
+    this: &Shown,
+    field: &InspectField,
+    other: &Compared,
+    state: &DataTableState,
+) -> Option<bool> {
+    let mut known = None;
+    for row in other.rows() {
+        match differs(this, &shown(field, row, None, state)) {
+            Some(true) => return Some(true),
+            Some(false) => known = Some(false),
+            None => {}
+        }
+    }
+    known
 }
 
 /// The fields listed, in the order listed: the order chosen, then Filled (or,
@@ -676,10 +733,9 @@ pub fn visible_fields(modal: &InspectorModal, state: &DataTableState) -> Vec<usi
         order.sort_by_key(|&i| fill_of(&shown_at(i)) != Fill::Value);
     }
     if modal.filled_only {
-        match compare_row(modal, state, &row) {
-            Some(other) => order.retain(|&i| {
-                differs(&shown_at(i), &shown(&fields[i], &other, None, state)) == Some(true)
-            }),
+        match compared(modal, state, &row) {
+            Some(other) => order
+                .retain(|&i| differs_from(&shown_at(i), &fields[i], &other, state) == Some(true)),
             None => order.retain(|&i| matches!(fill_of(&shown_at(i)), Fill::Value | Fill::Unknown)),
         }
     }
@@ -708,7 +764,7 @@ fn counts(
     modal: &InspectorModal,
     state: &DataTableState,
     row: &InspectRow,
-    other: Option<&InspectRow>,
+    other: Option<&Compared>,
 ) -> Counts {
     let mut c = Counts {
         nulls: 0,
@@ -723,7 +779,7 @@ fn counts(
             _ => {}
         }
         if let (Some(other), Some(n)) = (other, c.differ.as_mut())
-            && differs(&this, &shown(field, other, None, state)) == Some(true)
+            && differs_from(&this, field, other, state) == Some(true)
         {
             *n += 1;
         }
@@ -733,7 +789,7 @@ fn counts(
 
 /// The inspector's title: the row, of how many, the group it is in inside a
 /// drill-down (the breadcrumb the takeover covers), and the row compared with.
-fn title(display_row: usize, state: &DataTableState, other: Option<(usize, bool)>) -> String {
+fn title(display_row: usize, state: &DataTableState, other: Option<&Compared>) -> String {
     let g = crate::glyphs::get();
     let mut title = format!("Row {}", thousands(display_row));
     if let Some(total) = state.num_rows_if_valid() {
@@ -755,12 +811,13 @@ fn title(display_row: usize, state: &DataTableState, other: Option<(usize, bool)
             ));
         }
     }
-    if let Some((other, pinned)) = other {
-        let pinned = if pinned { "pinned " } else { "" };
+    if let Some(other) = other {
+        let pinned = if other.pinned { "pinned " } else { "" };
+        let rows: Vec<String> = other.rows().map(|r| thousands(r.display_row)).collect();
         title.push_str(&format!(
             " {} compare with {pinned}{}",
             g.middot,
-            thousands(other)
+            rows.join(" and ")
         ));
     }
     title
@@ -1056,11 +1113,12 @@ pub fn render(
         render_drill(area, buf, modal, &title, ctx);
         return;
     }
+    let content = Surface::content_area(area);
+    modal.compare_both = content.width as usize >= WIDER;
     let visible = visible_fields(modal, state);
     modal.set_visible(visible);
-    let other = row.as_ref().and_then(|r| compare_row(modal, state, r));
+    let other = row.as_ref().and_then(|r| compared(modal, state, r));
 
-    let content = Surface::content_area(area);
     let focused = modal.focused().cloned();
 
     // The list's columns, measured over every field so moving moves nothing.
@@ -1153,19 +1211,7 @@ pub fn render(
         ctx,
     );
     let title = match &row {
-        Some(row) => title(
-            row.display_row,
-            state,
-            other.as_ref().map(|o| {
-                (
-                    o.display_row,
-                    modal
-                        .pinned
-                        .as_ref()
-                        .is_some_and(|p| (p.frame, p.row) == (o.frame, o.row)),
-                )
-            }),
-        ),
+        Some(row) => title(row.display_row, state, other.as_ref()),
         None => "Row".to_string(),
     };
     let title = crate::glyphs::fit_cells(&title, area.width.saturating_sub(4) as usize, g.ellipsis);
@@ -1175,6 +1221,7 @@ pub fn render(
     }
 
     // The list's rule: the find line while finding, else the counts.
+    let mut rule_used = None;
     if modal.finding || !modal.filter.is_empty() {
         draw_find_line(
             buf,
@@ -1199,6 +1246,7 @@ pub fn render(
             focused: modal.focus == Focus::List && lay.wide,
         }
         .render(lay.list_rule, buf, ctx);
+        rule_used = Some("Fields".len() + 1 + crate::glyphs::cell_width(&chip) + 3);
     }
 
     draw_fields(
@@ -1211,6 +1259,7 @@ pub fn render(
             other: other.as_ref(),
             name_w,
             type_w,
+            rule_used,
         },
         ctx,
     );
@@ -1225,7 +1274,7 @@ fn list_chip(
     modal: &InspectorModal,
     state: &DataTableState,
     row: &InspectRow,
-    other: Option<&InspectRow>,
+    other: Option<&Compared>,
 ) -> String {
     let c = counts(modal, state, row, other);
     let total = thousands(modal.fields.len());
@@ -1408,14 +1457,18 @@ fn footer<'a>(
 /// The rows the list shows, and its name and type columns' widths.
 struct ListOf<'a> {
     row: Option<&'a InspectRow>,
-    other: Option<&'a InspectRow>,
+    other: Option<&'a Compared>,
     name_w: usize,
     type_w: usize,
+    /// Cells of the list's rule its title and chip take, when it is a rule:
+    /// Compare names its rows over the rest.
+    rule_used: Option<usize>,
 }
 
 /// The fields, in as many columns as the layout has: rail, name, type, the
-/// table's preview, and with Compare the other row's preview and a mark where
-/// they differ. The first slot counts the fields above, the last those below.
+/// table's preview, and with Compare the other rows' previews in row order, a
+/// mark where they differ and the rows named over them on the rule. The first
+/// slot counts the fields above, the last those below.
 fn draw_fields(
     buf: &mut Buffer,
     lay: &Layout,
@@ -1429,6 +1482,7 @@ fn draw_fields(
         other,
         name_w,
         type_w,
+        rule_used,
     } = of;
     let g = crate::glyphs::get();
     let rows = lay.list.height as usize;
@@ -1450,11 +1504,21 @@ fn draw_fields(
     let beside = 1 + GAP + type_w + GAP + PREVIEW_MIN;
     let name_w = name_w.min((col_w / 3).max(col_w.saturating_sub(beside)).max(4));
     let rest = col_w.saturating_sub(1 + name_w + GAP + type_w + GAP);
-    let (this_w, other_w) = if other.is_some() {
-        let each = rest.saturating_sub(GAP + 2) / 2;
-        (each, each)
-    } else {
-        (rest, 0)
+    let read = modal.read.as_ref();
+    // The rows previewed, in row order, each with what was read for it.
+    let cells: Vec<(Option<&InspectRow>, Option<&FieldRead>)> = match other {
+        Some(c) if c.both => vec![
+            (c.before.as_ref(), None),
+            (row, read),
+            (c.after.as_ref(), None),
+        ],
+        Some(c) => vec![(row, read), (c.after.as_ref(), None)],
+        None => vec![(row, read)],
+    };
+    // With Compare, a gap between previews and two cells for the mark.
+    let each = match cells.len() {
+        1 => rest,
+        n => rest.saturating_sub(GAP * (n - 1) + 2) / n,
     };
     let slot_rect = |slot: usize| {
         let col = slot / rows;
@@ -1484,8 +1548,18 @@ fn draw_fields(
             .style(dim)
             .render(slot_rect(cap - 1), buf);
     }
+    if let (Some(used), Some(row), Some(_)) = (rule_used, row, other) {
+        let first = 1 + name_w + GAP + type_w + GAP;
+        let rows: Vec<(usize, usize, bool)> = cells
+            .iter()
+            .enumerate()
+            .filter_map(|(j, (at, _))| {
+                at.map(|r| (first + j * (each + GAP), r.display_row, r.row == row.row))
+            })
+            .collect();
+        draw_compare_labels(buf, lay.list_rule, &rows, each, used, ctx);
+    }
     let list_focused = modal.focus == Focus::List && !modal.finding;
-    let read = modal.read.as_ref();
     let value_cell = |field: &InspectField, at: Option<&InspectRow>, room: usize, own_read| match at
     {
         Some(r) => match shown(field, r, own_read, state) {
@@ -1526,8 +1600,6 @@ fn draw_fields(
         let label =
             crate::glyphs::fit_cells(&dtype_label(&field.dtype), type_w, g.ellipsis).into_owned();
         let label_pad = type_w.saturating_sub(crate::glyphs::cell_width(&label));
-        let (text, style) = value_cell(field, row, this_w, read);
-        let text = crate::glyphs::fit_cells(&text, this_w, g.ellipsis).into_owned();
         let name_style = if is_selected {
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
         } else if ctx.column_colors {
@@ -1542,19 +1614,19 @@ fn draw_fields(
             Span::styled(label, dim),
             Span::raw(" ".repeat(label_pad + GAP)),
         ];
-        if let (Some(other), Some(this_row)) = (other, row) {
-            let pad = this_w.saturating_sub(crate::glyphs::cell_width(&text));
+        for (j, (at_row, own)) in cells.iter().enumerate() {
+            let (text, style) = value_cell(field, *at_row, each, *own);
+            let text = crate::glyphs::fit_cells(&text, each, g.ellipsis).into_owned();
+            let pad = each.saturating_sub(crate::glyphs::cell_width(&text));
             spans.push(Span::styled(text, style));
-            spans.push(Span::raw(" ".repeat(pad + GAP)));
-            let (o_text, o_style) = value_cell(field, Some(other), other_w, None);
-            let o_text = crate::glyphs::fit_cells(&o_text, other_w, g.ellipsis).into_owned();
-            let o_pad = other_w.saturating_sub(crate::glyphs::cell_width(&o_text));
-            spans.push(Span::styled(o_text, o_style));
-            spans.push(Span::raw(" ".repeat(o_pad + 1)));
-            let differ = differs(
-                &shown(field, this_row, read, state),
-                &shown(field, other, None, state),
-            );
+            if j + 1 < cells.len() {
+                spans.push(Span::raw(" ".repeat(pad + GAP)));
+            } else if other.is_some() {
+                spans.push(Span::raw(" ".repeat(pad + 1)));
+            }
+        }
+        if let (Some(other), Some(this_row)) = (other, row) {
+            let differ = differs_from(&shown(field, this_row, read, state), field, other, state);
             if differ == Some(true) {
                 spans.push(Span::styled(
                     g.diff_mark,
@@ -1563,14 +1635,51 @@ fn draw_fields(
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-        } else {
-            spans.push(Span::styled(text, style));
         }
         let mut paragraph = Paragraph::new(Line::from(spans));
         if is_selected && list_focused {
             paragraph = paragraph.style(ctx.highlight_style());
         }
         paragraph.render(at, buf);
+    }
+}
+
+/// Compare's rows named over their previews on the list's rule, `Row 41`: the
+/// row shown in the text color, the others dimmed. `rows` are each preview's
+/// cells into the rule and its row's number, and whether it is the row shown.
+/// A name is drawn where it fits its column and clears the rule's title and
+/// chip, the first `used` cells.
+fn draw_compare_labels(
+    buf: &mut Buffer,
+    rule: Rect,
+    rows: &[(usize, usize, bool)],
+    each: usize,
+    used: usize,
+    ctx: &RenderContext,
+) {
+    for &(x, n, this) in rows {
+        let label = format!(" Row {} ", thousands(n));
+        // A name starts a cell left of its preview, over the gap, so its words
+        // sit over the values.
+        if x <= used + 1
+            || crate::glyphs::cell_width(&label) > each + 1
+            || x + each >= rule.width as usize
+        {
+            continue;
+        }
+        let style = if this {
+            Style::default().fg(ctx.text_primary)
+        } else {
+            Style::default().fg(ctx.dimmed)
+        };
+        Paragraph::new(label.clone()).style(style).render(
+            Rect {
+                x: rule.x + (x - 1) as u16,
+                width: crate::glyphs::cell_width(&label) as u16,
+                ..rule
+            },
+            buf,
+        );
     }
 }
 

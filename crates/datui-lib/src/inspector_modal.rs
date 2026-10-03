@@ -222,6 +222,9 @@ pub struct InspectorModal {
     pub compare: bool,
     /// The row `m` pinned for Compare.
     pub pinned: Option<InspectRow>,
+    /// Compare shows the row before as well as the next: the last frame was
+    /// wide enough for three.
+    pub compare_both: bool,
     /// The levels opened under the focused field, when Enter drilled into it.
     pub drill: Option<Drill>,
     /// Text being parsed as JSON off this thread, to open as a level.

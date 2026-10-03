@@ -61,7 +61,8 @@ What it shows:
 
 Compare:
   c puts the next row's values beside this row's, and Δ (* in ASCII) marks
-  the fields that differ; the rule counts them. m pins a row, so each row
+  the fields that differ; the rule counts them. At 240 columns and wider the
+  row before is shown too: previous, this, next. m pins a row, so each row
   moved to is compared with it. f then lists only the differences.
 
 Nested values:

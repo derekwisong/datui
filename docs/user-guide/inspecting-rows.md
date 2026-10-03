@@ -117,7 +117,10 @@ as a no-break space as `\u{a0}`.
 <kbd>c</kbd> adds a column with the next row's values, and `Δ` (`*` in an ASCII
 terminal) marks each field whose values differ. The rule counts them,
 `14 · 5 differ`, and the title names the other row: `Row 2 of 60 · compare
-with 3`. <kbd>f</kbd> then lists only the fields that differ.
+with 3`. At 240 columns and wider the row before is shown as well, in row
+order (previous, this, next), each named over its column, and the title says
+`compare with 1 and 3`; a field is marked when it differs from either.
+<kbd>f</kbd> then lists only the fields that differ.
 
 <kbd>m</kbd> pins the current row: Compare then shows it beside each row you
 move to with <kbd>←</kbd> <kbd>→</kbd>, and the title says `compare with pinned 3`.

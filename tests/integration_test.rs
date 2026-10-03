@@ -19821,6 +19821,44 @@ fn test_inspector_compares_rows_and_lists_only_the_differences() {
     assert_eq!(first, "amount");
 }
 
+/// #661: from 240 columns Compare shows the row before too: previous, this,
+/// next, in row order and named over their columns; narrower, the next only.
+#[test]
+fn test_inspector_compares_three_rows_on_a_wide_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _rx, _tx) = open_orders_fixture(dir.path());
+    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+    let rows = rows_at(&mut app, 240, 50);
+    let text = rows.join("\n");
+    assert!(rows[0].contains("Row 2 of 3"), "{text}");
+    assert!(rows[0].contains("compare with 1 and 3"), "{text}");
+    let at = |row: &str, s: &str| row.find(s).unwrap_or_else(|| panic!("{s}:\n{text}"));
+    let rule = &rows[1];
+    assert!(at(rule, "Row 1") < at(rule, "Row 2") && at(rule, "Row 2") < at(rule, "Row 3"));
+    let region = rows.iter().find(|r| r.contains(" region ")).unwrap();
+    assert!(
+        at(region, "north") < at(region, "south") && at(region, "south") < at(region, "east"),
+        "{text}"
+    );
+    // Narrower, the next row only.
+    let rows = rows_at(&mut app, 200, 50);
+    let text = rows.join("\n");
+    assert!(rows[0].contains("compare with 3"), "{text}");
+    let region = rows.iter().find(|r| r.contains(" region ")).unwrap();
+    assert!(!region.contains("north"), "{text}");
+    // A pinned row is the one compared with, at any width.
+    press_key(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+    let rows = rows_at(&mut app, 240, 50);
+    assert!(
+        rows[0].contains("compare with pinned 2"),
+        "{}",
+        rows.join("\n")
+    );
+}
+
 /// #548: `Y` copies the whole row as one JSON object, exact, without leaving;
 /// a field not read is left out and counted.
 #[test]

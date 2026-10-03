@@ -39,6 +39,7 @@ names it:
 | Parquet, Arrow IPC or Avro magic number, or an Arrow IPC stream's schema message | that format |
 | `SQLite format 3` | SQLite; a database of several tables needs `--table` |
 | gzip, zstd, bzip2 or xz magic number | decompressed, then read by what is inside, as below: a text format, CSV or TSV, or lines |
+| `{`, the first line an object with `__CURSOR` and `__REALTIME_TIMESTAMP` | [systemd journal](#systemd-journal) |
 | `[`, then JSON | JSON |
 | `{`, the first line a whole object | NDJSON |
 | `{`, the object open past the first line, JSON so far | JSON |
@@ -211,6 +212,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | [ULog](#flight-logs) | `.ulg` | lazy | no | downloaded | downloaded | no |
 | [DataFlash](#flight-logs) | any, by content, or `--format dataflash` | lazy | no | downloaded | downloaded | no |
 | [candump](#can-logs) | any, by content, or `--format candump` | lazy | no | downloaded | downloaded | no |
+| [systemd journal](#systemd-journal) | any, by content, or `--format journal` | in memory | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
 | Read | What it means |
@@ -273,6 +275,34 @@ SYSTEMD_PAGER=datui journalctl -u nginx
 - Lines are indexed in one pass and read where they are shown. A file of more
   than 67,108,864 lines shows the first that many; the Info panel says how many
   were left out.
+
+### systemd journal
+
+`journalctl -o json` output is read as the journal, from a pipe or a file:
+
+```bash
+journalctl -o json -u nginx --since today | datui
+journalctl -o json -b -p warning | datui
+journalctl -o json -f | datui -f -            # live
+jd() { journalctl -o json "$@" | datui; }     # jd -u nginx -b
+```
+
+| Column | What |
+|---|---|
+| `time` | `__REALTIME_TIMESTAMP` as a UTC datetime |
+| `level` | `PRIORITY` as `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info`, `debug`, ordered by severity: `select where level <= "err"` keeps errors and worse, and a sort puts `emerg` first |
+| `_SYSTEMD_UNIT` | The unit, or `SYSLOG_IDENTIFIER` when no entry has one |
+| `_PID`, `MESSAGE` | Then the rest of the fields as they came, and bookkeeping (`__CURSOR`, `__SEQNUM`, `_BOOT_ID`, ...) last |
+
+- Every field is a column, one first seen late in the journal included. Values
+  stay text as journalctl writes them; `PRIORITY` is kept beside `level`.
+- A `MESSAGE` journalctl wrote as bytes (not UTF-8, or with control
+  characters) is shown as text, lossily; the Info panel says how many.
+- The Info panel's Journal tab gives the time span, the entries, and the units,
+  boots and hosts, with the entries per unit.
+- The entries are read whole into memory. Narrow a large journal with
+  `--since`, `-u` or `-b` before it is piped.
+- Copy as Python reads a journal file with `pl.scan_ndjson` and derives the same columns.
 
 ### Arrow IPC streams
 

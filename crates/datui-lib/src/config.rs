@@ -2938,6 +2938,35 @@ pub fn expand_config_path(raw: &str) -> PathBuf {
     expand_path(raw)
 }
 
+/// `path` with a leading `~` expanded, and nothing else. For a path from the command
+/// line: cmd, and PowerShell before 7.4, pass `~\data\a.csv` on as typed, as every
+/// shell does a quoted `"~/a.csv"`. A `$` there has been through the shell already
+/// and is part of a name. A path that is there as typed, such as a file named `~` in
+/// the working directory, is that path.
+pub fn expand_home(path: &Path) -> PathBuf {
+    expand_home_unless(path, |p| p.symlink_metadata().is_ok())
+}
+
+fn expand_home_unless(path: &Path, there: impl FnOnce(&Path) -> bool) -> PathBuf {
+    path.to_str()
+        .and_then(home_path)
+        .filter(|_| !there(path))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// `~`, `~/x` and, on Windows, `~\x` under the home directory; `None` for anything
+/// else, or with no home directory.
+fn home_path(text: &str) -> Option<PathBuf> {
+    if text == "~" {
+        return dirs::home_dir();
+    }
+    let rest = text
+        .strip_prefix("~/")
+        // What `display_path` writes there, and what a Windows user types.
+        .or_else(|| text.strip_prefix("~\\").filter(|_| cfg!(windows)))?;
+    dirs::home_dir().map(|home| home.join(rest))
+}
+
 /// `path` spelled one way, without asking the filesystem: rebuilt from its components,
 /// so separators compare as one (on Windows `~/a.csv` expands to `C:\Users\me\a.csv`
 /// and `$USERPROFILE/a.csv` to `C:\Users\me/a.csv`), with no `.` and a trailing
@@ -3005,20 +3034,7 @@ pub(crate) fn expand_path(raw: &str) -> PathBuf {
     }
 
     // `~` expands only at the start of the path, as in a shell.
-    if expanded == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-    } else if let Some(rest) = expanded
-        .strip_prefix("~/")
-        // What `display_path` writes there, and what a Windows user types.
-        .or_else(|| expanded.strip_prefix("~\\").filter(|_| cfg!(windows)))
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest);
-    }
-
-    PathBuf::from(expanded)
+    home_path(&expanded).unwrap_or_else(|| PathBuf::from(expanded))
 }
 
 /// One config file's settings as written: the keys it sets and nothing else.
@@ -3602,10 +3618,19 @@ impl ColorParser {
     pub fn new() -> Self {
         let no_color = std::env::var("NO_COLOR").is_ok();
         let support = supports_color::on(Stream::Stdout);
+        #[cfg(windows)]
+        let console = windows_console_true_color(
+            // `FORCE_COLOR` names a level for `supports_color` to answer with.
+            std::env::var_os("TERM").is_some() || std::env::var_os("FORCE_COLOR").is_some(),
+            std::io::IsTerminal::is_terminal(&std::io::stdout()),
+            crossterm::ansi_support::supports_ansi,
+        );
+        #[cfg(not(windows))]
+        let console = false;
 
         Self {
-            supports_true_color: support.as_ref().map(|s| s.has_16m).unwrap_or(false),
-            supports_256: support.as_ref().map(|s| s.has_256).unwrap_or(false),
+            supports_true_color: console || support.as_ref().is_some_and(|s| s.has_16m),
+            supports_256: console || support.as_ref().is_some_and(|s| s.has_256),
             no_color,
         }
     }
@@ -3685,6 +3710,17 @@ impl ColorParser {
             rgb_to_basic_ansi(r, g, b)
         }
     }
+}
+
+/// Whether a Windows console draws 24-bit color, where `supports_color` cannot tell.
+/// It reads `TERM` and `COLORTERM`, which Windows Terminal and conhost do not set, and
+/// so takes both for a 16-color terminal. Both draw 24-bit color once virtual
+/// terminal processing is on, which crossterm turns on where it can (`vt`); a legacy
+/// console refuses it and keeps the 16 colors. With `TERM` set (mintty, an MSYS2
+/// shell), or `FORCE_COLOR`, its answer stands.
+#[cfg(windows)]
+fn windows_console_true_color(env_says: bool, terminal: bool, vt: impl FnOnce() -> bool) -> bool {
+    !env_says && terminal && vt()
 }
 
 impl Default for ColorParser {
@@ -4229,6 +4265,53 @@ fn bracket_depth(line: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
+    /// A path from the command line has been through the shell: only a leading `~`
+    /// is left for datui to expand.
+    #[test]
+    fn a_command_line_path_expands_only_a_leading_tilde() {
+        let home = dirs::home_dir().expect("a home directory");
+        let expand = |p: &str| super::expand_home(Path::new(p));
+        assert_eq!(expand("~"), home);
+        assert_eq!(expand("~/data/a.csv"), home.join("data/a.csv"));
+        for kept in [
+            "a/~/b.csv",
+            "~user/a.csv",
+            "$HOME/a.csv",
+            "-",
+            "s3://b/~/a.csv",
+        ] {
+            assert_eq!(expand(kept), PathBuf::from(kept), "{kept}");
+        }
+        #[cfg(windows)]
+        assert_eq!(expand(r"~\data\a.csv"), home.join(r"data\a.csv"));
+        // A backslash is part of a name off Windows.
+        #[cfg(not(windows))]
+        assert_eq!(expand(r"~\a.csv"), PathBuf::from(r"~\a.csv"));
+        // A file named `~`, or under a directory named `~`, is that file.
+        for there in ["~", "~/a.csv"] {
+            let kept = super::expand_home_unless(Path::new(there), |_| true);
+            assert_eq!(kept, PathBuf::from(there), "{there}");
+        }
+    }
+
+    /// Windows Terminal and conhost set no `TERM`; with virtual terminal processing
+    /// on, they take 24-bit color. A legacy console, or a terminal that sets `TERM`
+    /// for `supports_color` to read, is left to it.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_console_with_vt_takes_true_color() {
+        use super::windows_console_true_color as rule;
+        assert!(rule(false, true, || true));
+        assert!(!rule(false, true, || false), "a legacy console");
+        assert!(
+            !rule(true, true, || true),
+            "TERM or FORCE_COLOR set: supports_color decides"
+        );
+        assert!(!rule(false, false, || true), "not a terminal");
+    }
+
     #[test]
     fn a_path_place_ignores_spelling_but_not_meaning() {
         let place = |p: &str| super::path_place(std::path::Path::new(p));

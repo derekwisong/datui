@@ -11,6 +11,11 @@
 //! while the sweep runs is waited for too, and one created after it is removed by its
 //! writer.
 //!
+//! On Windows a file cannot be removed while a frame still maps it (Polars reads
+//! files through memory maps), so a holder's removal can fail. Its claim then keeps
+//! the path as left over: a later claim letting go tries it again, and so does the
+//! sweep at exit, once the app and its frames are gone.
+//!
 //! A process killed outright (SIGKILL) runs none of this, and a partial file stays in
 //! the temp directory.
 
@@ -22,6 +27,9 @@ use std::time::{Duration, Instant};
 /// How long the sweep at exit waits for writers to stop before removing their files.
 const SWEEP_GRACE: Duration = Duration::from_secs(1);
 
+/// How often the sweep tries a file that would not go again, within its grace.
+const RETRY_EVERY: Duration = Duration::from_millis(50);
+
 /// The files claimed by the writers of one loader's opens.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Unfinished(Arc<(Mutex<Files>, Condvar)>);
@@ -32,6 +40,9 @@ struct Files {
     /// Writers creating a file, not yet claimed: the sweep waits for them too, since
     /// the path is not known until the file exists.
     creating: usize,
+    /// Files whose holder let go but could not remove them. Not waited for: nothing
+    /// is writing them.
+    left_over: Vec<PathBuf>,
     swept: bool,
     /// Set by a sweep as it starts waiting, so a test can tell it is blocked.
     #[cfg(test)]
@@ -100,8 +111,18 @@ impl Unfinished {
                 .0;
         }
         files.swept = true;
-        for path in files.claimed.drain(..) {
-            let _ = std::fs::remove_file(path);
+        let mut left = std::mem::take(&mut files.claimed);
+        left.append(&mut files.left_over);
+        drop(files);
+        loop {
+            left.retain(|path| !removed(path));
+            if left.is_empty() || Instant::now() + RETRY_EVERY > deadline {
+                break;
+            }
+            std::thread::sleep(RETRY_EVERY);
+        }
+        for path in left {
+            log::warn!("Could not remove the temporary file {}", path.display());
         }
     }
 
@@ -197,8 +218,24 @@ impl Drop for Claim {
         if let Some(at) = files.claimed.iter().position(|p| *p == self.path) {
             files.claimed.swap_remove(at);
         }
+        // Ones left over earlier may have been let go since: a frame dropped.
+        let earlier = std::mem::take(&mut files.left_over);
         drop(files);
+        let mut left: Vec<PathBuf> = earlier.into_iter().filter(|p| !removed(p)).collect();
+        // Its holder removed it before letting go, unless that failed.
+        if std::fs::symlink_metadata(&self.path).is_ok() {
+            left.push(self.path.clone());
+        }
+        self.files.lock().left_over.append(&mut left);
         self.files.released();
+    }
+}
+
+/// Whether `path` is gone, removing it if it is there.
+fn removed(path: &Path) -> bool {
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     }
 }
 
@@ -314,6 +351,43 @@ mod tests {
         assert_eq!(files_in(dir.path()), 0, "the sweep waited for the file");
         assert!(!unfinished.writing());
         assert!(worker.join().unwrap(), "a stopped open's file is refused");
+    }
+
+    /// A file its holder could not remove, as on Windows while a frame still maps it,
+    /// is not forgotten: the next claim to let go tries it again, and so does the
+    /// sweep, without waiting on it as on a writer.
+    #[test]
+    fn a_file_its_holder_could_not_remove_is_removed_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let unfinished = Unfinished::default();
+        let writer = unfinished.writer(Arc::default());
+        // A holder whose removal failed: the claim goes, the file stays.
+        let left_over = |name: &str| {
+            let path = dir.path().join(name);
+            let (path, claim) = writer
+                .create(|| std::fs::write(&path, b"x").map(|()| path.clone()))
+                .unwrap()
+                .expect("not stopped yet");
+            drop(claim);
+            assert!(path.exists());
+            path
+        };
+        let first = left_over("first");
+        assert!(!unfinished.writing(), "nothing is writing it");
+        let (file, claim) = writer
+            .create(|| file_in(dir.path()))
+            .unwrap()
+            .expect("not stopped yet");
+        drop(file);
+        drop(claim);
+        assert!(!first.exists(), "the next claim tried it again");
+
+        let second = left_over("second");
+        let began = Instant::now();
+        unfinished.sweep(began + Duration::from_secs(30));
+        assert!(began.elapsed() < Duration::from_secs(10), "not waited on");
+        assert!(!second.exists(), "the sweep removed it");
+        assert_eq!(files_in(dir.path()), 0);
     }
 
     /// A stopped or swept open creates nothing.

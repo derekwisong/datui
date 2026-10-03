@@ -507,7 +507,11 @@ lives in the temp directory while datui uses it.
 |---|---|
 | `q`, Ctrl+Q, Ctrl+C, an error | Removed, including a partial file mid-download, mid-decompression or mid-conversion |
 | SIGTERM, SIGHUP (closing the terminal) | Removed by the `datui` command, which quits as for `q` and exits with status 128 + the signal. Left by `datui.view()` in Python, which leaves signals to Python |
-| SIGKILL | Left in the temp directory |
+| Windows: closing the console window, signing out, shutting down | Removed by the `datui` command, which quits as for `q` |
+| SIGKILL, ending the task in Task Manager | Left in the temp directory |
+
+On Windows a file cannot be removed while datui still reads it through a memory map.
+One that would not go is tried again as datui quits.
 
 ## Hive-partitioned data
 

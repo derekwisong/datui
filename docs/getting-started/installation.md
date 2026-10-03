@@ -96,4 +96,22 @@ cargo build --release --locked --no-default-features --features sql,streaming
 
 Public datasets lists only what the build can open.
 
+## Windows
+
+```powershell
+winget install derekwisong.datui
+```
+
+| | On Windows |
+|---|---|
+| Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Windows Terminal draws datui's glyphs; the classic console draws ASCII unless its code page is UTF-8 (`chcp 65001`). `[display] unicode` overrides either way ([Glyphs or ASCII](../reference/settings.md#glyphs-or-ascii)) |
+| Config file | `%APPDATA%\datui\config.toml` |
+| Format specs | `%APPDATA%\datui\formats` ([Binary formats](../user-guide/binary-formats.md)) |
+| Cache and log | `%LOCALAPPDATA%\datui` |
+| `~` | `datui ~\data\a.csv` opens from your user folder in cmd and PowerShell too |
+| Mouse | <kbd>Shift</kbd>+drag selects text in Windows Terminal while datui has the mouse ([Mouse and text selection](../user-guide/configuration.md#mouse-and-text-selection)) |
+| Globs | cmd and PowerShell pass `*.csv` to datui as typed; quote it in Git Bash, as on Linux |
+| A file open in another program | A spreadsheet app or database that holds a file exclusively stops datui reading it: datui says so. Close it there and reopen |
+| A file datui has open | datui reads files through memory maps, and Windows lets no program truncate, rename or delete a file while it is mapped. A program rotating a log datui has open can fail; close it in datui first (<kbd>Ctrl+O</kbd> or <kbd>q</kbd>) |
+
 [latest-release]: https://github.com/derekwisong/datui/releases/latest

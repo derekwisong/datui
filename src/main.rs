@@ -131,8 +131,8 @@ fn main() -> Result<()> {
     // Cleaned up after, but ended by the signal as far as the caller can tell. A
     // terminal that hung up may have failed the session on its way out; that is the
     // signal's doing, not an error to print to it.
-    if let Some(signal) = datui::ended_by_signal() {
-        std::process::exit(128 + signal);
+    if let Some(status) = datui::ended_by_signal() {
+        std::process::exit(status);
     }
     if let Err(e) = ran {
         eprintln!("Error: {}", e);

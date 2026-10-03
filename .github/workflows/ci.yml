@@ -395,6 +395,117 @@ jobs:
       - name: Run Python tests
         run: . .venv/bin/activate && pytest python/tests/ -v
 
+  # Windows on every pull request: the build, the library and binary tests, and the
+  # binary run without a terminal. The full suite stays on the windows job below
+  # (release versions) and on Nightly; its integration test executables each link
+  # Polars, which is most of that job's hour. No `needs`, like linux.
+  windows-pr:
+    name: Windows build and unit tests
+    runs-on: windows-latest
+    # Cold, the build alone took 24 minutes.
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+
+      # Its own key rather than Nightly's `tests`: that job builds every test
+      # executable, more than this one needs, and has run past its timeout without
+      # saving. Saved from main, like the others.
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: windows-pr
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The fixtures as linux caches them, under a Windows key: see that job.
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Restore sample data
+        id: sample-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            tests/sample-data
+            ${{ runner.temp }}/sample-data.sha256
+          key: sample-data-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('scripts/generate_sample_data.py', 'scripts/requirements-fixtures.txt') }}
+
+      - name: Verify restored sample data
+        id: verify
+        if: steps.sample-data.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.actual"
+          if [ -s "$RUNNER_TEMP/sample-data.sha256" ] && cmp -s "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Restored sample data does not match its manifest; regenerating"
+            diff "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual" || true
+          fi
+
+      - name: Generate sample data
+        id: generate
+        if: steps.verify.outputs.ok != 'true'
+        shell: bash
+        run: |
+          rm -rf tests/sample-data
+          python -m venv .venv
+          .venv/Scripts/python.exe -m pip install --disable-pip-version-check -r scripts/requirements-fixtures.txt
+          .venv/Scripts/python.exe scripts/generate_sample_data.py
+          (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.sha256"
+
+      - name: Save sample data
+        if: steps.generate.outcome == 'success' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            tests/sample-data
+            ${{ runner.temp }}/sample-data.sha256
+          key: ${{ steps.sample-data.outputs.cache-primary-key }}
+
+      # The binary for the smoke run, then the tests: `--bins` builds the binary's
+      # test harness, not the binary.
+      - name: Build
+        run: |
+          cargo build --locked --bin datui
+          cargo test --workspace --locked --lib --bins --no-run
+
+      - name: Run unit tests
+        run: cargo test --workspace --locked --lib --bins --no-fail-fast
+
+      # The runner has a console, so datui takes it, reads its settings and starts the
+      # open; a file that is not there ends the run with its name, as it does without
+      # a console. Enough to see the binary start and expand a `~\` that cmd and older
+      # PowerShell pass on as typed. A file that is there would wait for keys.
+      - name: Smoke run
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          exe=target/debug/datui.exe
+          version=$("$exe" --version) || { echo "::error::--version failed"; exit 1; }
+          echo "$version"
+          [[ "$version" == datui\ * ]] || { echo "::error::--version said: $version"; exit 1; }
+          expect_exit_1() {
+            local said status
+            said=$(timeout 60 "$exe" "$1" 2>&1 </dev/null) && status=0 || status=$?
+            echo "$said"
+            [ "$status" -eq 1 ] || { echo "::error::$1 exited $status"; exit 1; }
+            grep -qF -- "$2" <<<"$said" || { echo "::error::$1 did not say: $2"; exit 1; }
+          }
+          expect_exit_1 datui-no-such-file.csv "File not found: datui-no-such-file.csv"
+          expect_exit_1 '~\datui-no-such-file.csv' "File not found: $USERPROFILE\\datui-no-such-file.csv"
+
   windows:
     runs-on: windows-latest
     needs: [check]
@@ -553,7 +664,7 @@ jobs:
     name: CI passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [check, no-default-features, fuzz, msrv, linux, python, windows, macos]
+    needs: [check, no-default-features, fuzz, msrv, linux, python, windows-pr, windows, macos]
     if: always()
     steps:
       - name: Check that every job passed or was skipped as intended

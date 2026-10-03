@@ -54,14 +54,18 @@ pub fn table_place(db: &Path, table: &str) -> PathBuf {
 /// [`table_place`]: `app.db/users` is the table `users` of `app.db`, and `app.db/a/b`
 /// the table `a/b`. `None` for a path that is there, or that is inside no SQLite file.
 pub fn table_path(path: &Path) -> Option<(PathBuf, String)> {
-    if path.exists() {
+    // A path ending in `..` is a table so named: Windows resolves it before it looks,
+    // and `app.db/..` is the directory the database is in.
+    if path.file_name().is_some() && path.exists() {
         return None;
     }
     let db = path
         .ancestors()
         .skip(1)
         .take_while(|p| !p.as_os_str().is_empty())
-        .find(|p| p.is_file())?;
+        // Windows resolves `..` before it looks, so `app.db/a/..` would be the
+        // database itself and the table `b` rather than `a/../b`.
+        .find(|p| p.file_name().is_some() && p.is_file())?;
     if !is_sqlite_file(db) {
         return None;
     }

@@ -60,6 +60,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui views list ` | List the saved views: name, what files they match, when last used |
 | `datui views rm NAME` | Remove one saved view by name |
 | `datui views clear ` | Remove every saved view |
+| `datui completions` | Print the shell completion script for SHELL |
 
 ## Examples
 

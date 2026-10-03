@@ -96,6 +96,19 @@ cargo build --release --locked --no-default-features --features sql,streaming
 
 Public datasets lists only what the build can open.
 
+## Shell completions
+
+`datui completions SHELL` prints the completion script for the flags, commands
+and format names. Set it up once per shell:
+
+| Shell | Setup |
+|---|---|
+| bash | `source <(datui completions bash)` in `~/.bashrc` |
+| zsh | `source <(datui completions zsh)` in `~/.zshrc`, after `compinit` |
+| fish | `datui completions fish > ~/.config/fish/completions/datui.fish` |
+| PowerShell | `datui completions powershell \| Out-String \| Invoke-Expression` in your `$PROFILE` |
+| elvish | `eval (datui completions elvish \| slurp)` in `~/.config/elvish/rc.elv` |
+
 ## Windows
 
 ```powershell

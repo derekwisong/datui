@@ -24,6 +24,7 @@ fn run_command(command: &Command, args: &Args) -> ! {
             let cache = datui::CacheManager::new(APP_NAME).ok();
             datui::commands::cache(cache.as_ref(), action)
         }
+        Command::Completions { shell } => (datui::cli::completions(*shell), 0),
         Command::Views { action } => match ConfigManager::new(APP_NAME) {
             Ok(manager) => datui::commands::views(&manager, action),
             Err(e) => fail(e),

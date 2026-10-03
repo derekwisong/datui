@@ -448,6 +448,11 @@ pub enum Command {
         #[command(subcommand)]
         action: ViewsAction,
     },
+    /// Print the shell completion script for SHELL
+    Completions {
+        #[arg(value_name = "SHELL")]
+        shell: clap_complete::Shell,
+    },
 }
 
 /// What `datui config` does.
@@ -463,6 +468,13 @@ pub enum ConfigAction {
     Path,
     /// List every key: its type, default, the value in effect and what set it
     Keys,
+}
+
+/// The completion script for `shell`, built from `Args`, for `datui completions`.
+pub fn completions(shell: clap_complete::Shell) -> String {
+    let mut out = Vec::new();
+    clap_complete::generate(shell, &mut Args::command(), "datui", &mut out);
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// What `datui cache` does.
@@ -845,6 +857,26 @@ mod tests {
         let args = Args::try_parse_from(["datui", "data.csv", "--format", "./s.toml"]).unwrap();
         assert_eq!(args.paths, vec![std::path::PathBuf::from("data.csv")]);
         assert!(args.command.is_none());
+    }
+
+    /// Every shell's script names the commands and the flags.
+    #[test]
+    fn completions_cover_commands_and_flags() {
+        use clap::ValueEnum;
+        for shell in clap_complete::Shell::value_variants() {
+            let script = completions(*shell);
+            assert!(!script.is_empty(), "{shell}");
+            assert!(script.contains("config"), "{shell}: a subcommand");
+            assert!(script.contains("infer-types"), "{shell}: a flag");
+        }
+        let args = Args::try_parse_from(["datui", "completions", "fish"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Completions {
+                shell: clap_complete::Shell::Fish
+            })
+        ));
+        assert!(Args::try_parse_from(["datui", "completions", "tcsh"]).is_err());
     }
 
     /// Removed flags are gone, not hidden: the config key or command replaces each.

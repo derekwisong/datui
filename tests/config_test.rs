@@ -40,9 +40,9 @@ fn test_default_config() {
     assert_eq!(config.analysis.sample_rows, 100_000);
 
     // Check theme defaults
-    assert_eq!(config.theme.colors.keybind_hints, "#7dcfff");
-    assert_eq!(config.theme.colors.row_numbers, "#565f89");
-    assert_eq!(config.theme.colors.alternate_row_color, "#1e2030");
+    assert_eq!(config.theme.colors.chip_key, "#7dcfff");
+    assert_eq!(config.theme.colors.table_row_numbers, "#565f89");
+    assert_eq!(config.theme.colors.table_alternate_row, "#1e2030");
 
     // Check query defaults
     assert_eq!(config.query.history_limit, 1000);
@@ -183,13 +183,13 @@ pages_ahead = 5
 sample_rows = 50000
 
 [theme.colors]
-keybind_hints = "blue"
+chip_key = "blue"
 "#]);
 
     assert!(base.display.row_numbers);
     assert_eq!(base.performance.pages_ahead, 5);
     assert_eq!(base.analysis.sample_rows, 50000);
-    assert_eq!(base.theme.colors.keybind_hints, "blue");
+    assert_eq!(base.theme.colors.chip_key, "blue");
 
     // Unwritten keys take the defaults.
     assert_eq!(base.performance.pages_behind, 3);
@@ -247,8 +247,8 @@ pages_behind = 5
 sample_rows = 50000
 
 [theme.colors]
-keybind_hints = "blue"
-keybind_labels = "magenta"
+chip_key = "blue"
+chip_label = "magenta"
 success = "bright_green"
 error = "bright_red"
 warning = "yellow"
@@ -261,7 +261,7 @@ text_secondary = "gray"
 text_inverse = "black"
 table_header = "white"
 table_header_bg = "dark_gray"
-column_separator = "blue"
+table_column_separator = "blue"
 table_selected = "reversed"
 sidebar_border = "blue"
 modal_border_active = "yellow"
@@ -294,7 +294,7 @@ level = "info"
     assert_eq!(config.performance.pages_ahead, 5);
     assert!(config.display.row_numbers);
     assert_eq!(config.analysis.sample_rows, 50000);
-    assert_eq!(config.theme.colors.keybind_hints, "blue");
+    assert_eq!(config.theme.colors.chip_key, "blue");
     assert_eq!(config.query.history_limit, 500);
     assert!(config.views.auto_apply);
 
@@ -597,19 +597,19 @@ fn test_color_config_merge() {
     use datui::config::ColorConfig;
 
     let config = layered(&[
-        "[theme.colors]\nkeybind_hints = \"blue\"\nerror = \"bright_red\"\n",
+        "[theme.colors]\nchip_key = \"blue\"\nerror = \"bright_red\"\n",
         "[theme.colors]\nerror = \"#f7768e\"\n",
     ]);
 
-    assert_eq!(config.theme.colors.keybind_hints, "blue");
+    assert_eq!(config.theme.colors.chip_key, "blue");
     assert_eq!(
         config.theme.colors.error,
         ColorConfig::default().error,
         "a color written as its default value overrides the import"
     );
     assert_eq!(
-        config.theme.colors.keybind_labels,
-        ColorConfig::default().keybind_labels
+        config.theme.colors.chip_label,
+        ColorConfig::default().chip_label
     );
 }
 
@@ -625,21 +625,21 @@ fn test_new_color_fields() {
 
     // Test that new color fields have correct defaults: the dark set, after Tokyo Night
     let config = AppConfig::default();
-    assert_eq!(config.theme.colors.primary_chart_series_color, "#7dcfff");
-    assert_eq!(config.theme.colors.secondary_chart_series_color, "#565f89");
+    assert_eq!(config.theme.colors.chart_1, "#7dcfff");
+    assert_eq!(config.theme.colors.dimmed, "#565f89");
     // Chart view series colors
-    assert_eq!(config.theme.colors.chart_series_color_1, "#7dcfff");
-    assert_eq!(config.theme.colors.chart_series_color_2, "#bb9af7");
-    assert_eq!(config.theme.colors.chart_series_color_3, "#9ece6a");
-    assert_eq!(config.theme.colors.chart_series_color_4, "#e0af68");
-    assert_eq!(config.theme.colors.chart_series_color_5, "#7aa2f7");
-    assert_eq!(config.theme.colors.chart_series_color_6, "#f7768e");
-    assert_eq!(config.theme.colors.chart_series_color_7, "#ff9e64");
+    assert_eq!(config.theme.colors.chart_1, "#7dcfff");
+    assert_eq!(config.theme.colors.chart_2, "#bb9af7");
+    assert_eq!(config.theme.colors.chart_3, "#9ece6a");
+    assert_eq!(config.theme.colors.chart_4, "#e0af68");
+    assert_eq!(config.theme.colors.chart_5, "#7aa2f7");
+    assert_eq!(config.theme.colors.chart_6, "#f7768e");
+    assert_eq!(config.theme.colors.chart_7, "#ff9e64");
     // Three chrome tiers, each its own shade
     assert_eq!(config.theme.colors.controls_bg, "#262a3f");
     assert_eq!(config.theme.colors.table_header_bg, "#2b3047");
-    assert_eq!(config.theme.colors.alternate_row_color, "#1e2030");
-    assert_eq!(config.theme.colors.column_separator, "#3b4261");
+    assert_eq!(config.theme.colors.table_alternate_row, "#1e2030");
+    assert_eq!(config.theme.colors.table_column_separator, "#3b4261");
     assert_eq!(config.theme.colors.sidebar_border, "#565f89");
     assert_eq!(config.theme.colors.accent, "#7dcfff");
     assert_eq!(config.theme.colors.accent_bright, "#a4daff");
@@ -650,16 +650,16 @@ fn test_new_color_fields() {
     // Test that new colors can be parsed and retrieved from theme
     let theme = Theme::from_config(&config.theme).unwrap();
     if std::env::var("NO_COLOR").is_err() {
-        assert_ne!(theme.get("primary_chart_series_color"), Color::Reset);
-        assert_ne!(theme.get("secondary_chart_series_color"), Color::Reset);
-        assert_ne!(theme.get("chart_series_color_1"), Color::Reset);
-        assert_ne!(theme.get("chart_series_color_7"), Color::Reset);
+        assert_ne!(theme.get("chart_1"), Color::Reset);
+        assert_ne!(theme.get("dimmed"), Color::Reset);
+        assert_ne!(theme.get("chart_1"), Color::Reset);
+        assert_ne!(theme.get("chart_7"), Color::Reset);
         // The chrome tiers resolve to real colours. (Whether they stay distinct
         // depends on the terminal: under a test harness stdout is not a terminal, so
         // every hex colour degrades to basic ANSI. The strings are checked above.)
         assert_ne!(theme.get("controls_bg"), Color::Reset);
         assert_ne!(theme.get("table_header_bg"), Color::Reset);
-        assert_ne!(theme.get("column_separator"), Color::Reset);
+        assert_ne!(theme.get("table_column_separator"), Color::Reset);
         assert_ne!(theme.get("sidebar_border"), Color::Reset);
         // The sidebars read their resting border from "modal_border", which is the
         // documented `sidebar_border` slot under the name the widgets use.
@@ -674,10 +674,10 @@ fn test_new_color_fields_custom_values() {
     use datui::config::AppConfig;
 
     let mut config = AppConfig::default();
-    config.theme.colors.primary_chart_series_color = "#00ff00".to_string();
-    config.theme.colors.secondary_chart_series_color = "#ff00ff".to_string();
+    config.theme.colors.chart_1 = "#00ff00".to_string();
+    config.theme.colors.dimmed = "#ff00ff".to_string();
     config.theme.colors.table_header_bg = "indexed(240)".to_string();
-    config.theme.colors.column_separator = "bright_blue".to_string();
+    config.theme.colors.table_column_separator = "bright_blue".to_string();
     config.theme.colors.sidebar_border = "bright_red".to_string();
 
     // Should validate successfully
@@ -691,11 +691,11 @@ fn test_validate_config_with_invalid_chart_series_color() {
     // reading the environment; accepted in tests and never done outside them.
     unsafe { std::env::remove_var("NO_COLOR") };
     let mut config = AppConfig::default();
-    config.theme.colors.chart_series_color_1 = "invalid_color_name".to_string();
+    config.theme.colors.chart_1 = "invalid_color_name".to_string();
     let result = config.validate();
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("theme.colors.chart_series_color_1"), "{}", err);
+    assert!(err.contains("theme.colors.chart_1"), "{}", err);
 }
 
 #[test]
@@ -706,12 +706,12 @@ fn test_validate_config_with_invalid_color() {
     unsafe { std::env::remove_var("NO_COLOR") };
 
     let mut config = AppConfig::default();
-    config.theme.colors.keybind_hints = "not_a_valid_color".to_string();
+    config.theme.colors.chip_key = "not_a_valid_color".to_string();
 
     let result = config.validate();
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("theme.colors.keybind_hints"), "{}", err);
+    assert!(err.contains("theme.colors.chip_key"), "{}", err);
 }
 
 #[test]
@@ -722,8 +722,8 @@ fn test_validate_config_with_valid_hex_color() {
     unsafe { std::env::remove_var("NO_COLOR") };
 
     let mut config = AppConfig::default();
-    config.theme.colors.keybind_hints = "#ff0000".to_string();
-    config.theme.colors.keybind_labels = "#00ff00".to_string();
+    config.theme.colors.chip_key = "#ff0000".to_string();
+    config.theme.colors.chip_label = "#00ff00".to_string();
 
     let result = config.validate();
     assert!(result.is_ok());
@@ -737,7 +737,7 @@ fn test_validate_config_with_mixed_colors() {
     unsafe { std::env::remove_var("NO_COLOR") };
 
     let mut config = AppConfig::default();
-    config.theme.colors.keybind_hints = "cyan".to_string();
+    config.theme.colors.chip_key = "cyan".to_string();
     config.theme.colors.error = "#ff0000".to_string();
     config.theme.colors.success = "bright_green".to_string();
 
@@ -1543,9 +1543,9 @@ fn test_cursor_tints_stay_apart_at_256_colors() {
         ("light", ColorConfig::light()),
     ] {
         let row = index(&colors.table_selected);
-        let column = index(&colors.column_cursor);
-        let cell = index(&colors.cell_cursor);
-        let stripe = index(&colors.alternate_row_color);
+        let column = index(&colors.table_column_cursor);
+        let cell = index(&colors.table_cell_cursor);
+        let stripe = index(&colors.table_alternate_row);
         assert!(
             row != column && row != cell && column != cell && column != stripe,
             "{mode}: row {row}, column {column}, cell {cell}, stripe {stripe}"
@@ -1566,11 +1566,11 @@ fn test_light_chrome_inverts_rather_than_lightens() {
     let light = ColorConfig::light();
     for (name, value) in [
         ("table_header_bg", &light.table_header_bg),
-        ("alternate_row_color", &light.alternate_row_color),
+        ("table_alternate_row", &light.table_alternate_row),
         ("controls_bg", &light.controls_bg),
         ("table_selected", &light.table_selected),
-        ("column_cursor", &light.column_cursor),
-        ("cell_cursor", &light.cell_cursor),
+        ("table_column_cursor", &light.table_column_cursor),
+        ("table_cell_cursor", &light.table_cell_cursor),
     ] {
         assert!(
             luma(value) >= 170,
@@ -1580,11 +1580,11 @@ fn test_light_chrome_inverts_rather_than_lightens() {
     let dark = ColorConfig::dark();
     for (name, value) in [
         ("table_header_bg", &dark.table_header_bg),
-        ("alternate_row_color", &dark.alternate_row_color),
+        ("table_alternate_row", &dark.table_alternate_row),
         ("controls_bg", &dark.controls_bg),
         ("table_selected", &dark.table_selected),
-        ("column_cursor", &dark.column_cursor),
-        ("cell_cursor", &dark.cell_cursor),
+        ("table_column_cursor", &dark.table_column_cursor),
+        ("table_cell_cursor", &dark.table_cell_cursor),
     ] {
         assert!(
             luma(value) <= 80,
@@ -1607,8 +1607,8 @@ fn test_explicit_colors_override_light_mode() {
     assert_eq!(config.theme.colors.table_header_bg, "#123456");
     // Untouched slots still come from the light set.
     assert_eq!(
-        config.theme.colors.alternate_row_color,
-        ColorConfig::light().alternate_row_color
+        config.theme.colors.table_alternate_row,
+        ColorConfig::light().table_alternate_row
     );
 }
 
@@ -1696,8 +1696,8 @@ fn test_light_palette_is_valid_and_complete() {
     let light = ColorConfig::light();
     assert_ne!(light.table_header_bg, dark.table_header_bg);
     assert_ne!(light.controls_bg, dark.controls_bg);
-    assert_ne!(light.alternate_row_color, dark.alternate_row_color);
-    assert_ne!(light.keybind_labels, dark.keybind_labels);
+    assert_ne!(light.table_alternate_row, dark.table_alternate_row);
+    assert_ne!(light.chip_label, dark.chip_label);
 }
 
 // ============================================================================
@@ -2980,18 +2980,20 @@ fn cursor_text_defaults_merges_and_validates() {
     use datui::config::ColorConfig;
 
     let config = AppConfig::default();
-    assert_eq!(config.theme.colors.cursor_text, "default");
-    config.validate().expect("default cursor_text validates");
+    assert_eq!(config.theme.colors.input_cursor_text, "default");
+    config
+        .validate()
+        .expect("default input_cursor_text validates");
 
-    let set = layered(&["[theme.colors]\ncursor_text = \"#1a1b26\"\n"]);
-    assert_eq!(set.theme.colors.cursor_text, "#1a1b26");
+    let set = layered(&["[theme.colors]\ninput_cursor_text = \"#1a1b26\"\n"]);
+    assert_eq!(set.theme.colors.input_cursor_text, "#1a1b26");
     assert_eq!(
-        set.theme.colors.cursor_focused,
-        ColorConfig::default().cursor_focused
+        set.theme.colors.input_cursor,
+        ColorConfig::default().input_cursor
     );
 
     let mut bad = AppConfig::default();
-    bad.theme.colors.cursor_text = "not-a-color".to_string();
+    bad.theme.colors.input_cursor_text = "not-a-color".to_string();
     assert!(bad.validate().is_err());
 }
 
@@ -3012,7 +3014,7 @@ fn cursor_text_auto_contrast_picks_by_luminance() {
     // A configured slot wins outright.
     theme
         .colors
-        .insert("cursor_text".to_string(), Color::Rgb(1, 2, 3));
+        .insert("input_cursor_text".to_string(), Color::Rgb(1, 2, 3));
     assert_eq!(
         theme.cursor_text_for(Color::Rgb(20, 20, 40)),
         Color::Rgb(1, 2, 3)

@@ -53,7 +53,7 @@ Your own `config.toml` wins over anything imported:
 import = ["~/.local/state/omarchy/current/theme/datui.toml"]
 
 [theme.colors]
-int_col = "#ff8800"
+type_int = "#ff8800"
 ```
 
 A color you write wins even when it equals datui's built-in default.
@@ -73,8 +73,8 @@ import = [
 ```toml
 # ~/.config/omarchy/themes/osaka-jade/datui.override.toml
 [theme.colors]
-int_col   = "#ff8800"
-float_col = "#ff00ff"
+type_int   = "#ff8800"
+type_float = "#ff00ff"
 ```
 
 Omarchy copies your theme directory into place before rendering templates, so

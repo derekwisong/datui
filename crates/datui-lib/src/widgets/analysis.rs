@@ -1360,7 +1360,7 @@ fn get_correlation_color(correlation: f64, theme: &Theme) -> Color {
         theme.get("text_primary")
     } else if correlation > 0.0 {
         // Positive correlation - keybind hints color (UI element, not chart)
-        theme.get("keybind_hints")
+        theme.get("chip_key")
     } else {
         // Negative correlation - error/warning color
         theme.get("outlier_marker")
@@ -1825,7 +1825,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
             Bar::default()
                 .value(data_height)
                 .text_value(String::new())
-                .style(Style::default().fg(theme.get("primary_chart_series_color")))
+                .style(Style::default().fg(theme.get("chart_1")))
         })
         .collect();
 
@@ -1923,7 +1923,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         .name("") // Empty name to prevent legend from appearing
         .marker(marker)
         .graph_type(GraphType::Scatter)
-        .style(Style::default().fg(theme.get("secondary_chart_series_color")))
+        .style(Style::default().fg(theme.get("dimmed")))
         .data(&theory_points);
 
     let theory_chart = Chart::new(vec![theory_dataset])
@@ -2099,14 +2099,14 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(theme.get("secondary_chart_series_color")))
+            .style(Style::default().fg(theme.get("dimmed")))
             .graph_type(GraphType::Line)
             .data(&reference_line),
         // Q-Q plot data points
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(theme.get("primary_chart_series_color")))
+            .style(Style::default().fg(theme.get("chart_1")))
             .graph_type(GraphType::Scatter)
             .data(&qq_data),
     ];

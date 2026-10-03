@@ -166,12 +166,14 @@ by gating keys in `App::key`.
 emit an `AppEvent` when applied. Add a new one by copying an existing pair
 (`*_modal.rs` state, `widgets/*.rs` or `render/*.rs` drawing).
 
-**Config** is TOML, three layers: defaults in `Default` impls, imported files,
-`~/.config/datui/config.toml`, then CLI flags. Each file is a partial
-`ConfigLayer` merged by presence. Every option lives in six places; follow
-`docs/for-developers/adding-configuration-options.md`. Cloud
-settings merge config < environment < CLI in one place (`effective_cloud`);
-blank values count as unset.
+**Config** is TOML, in layers: defaults in `Default` impls, imported files,
+`~/.config/datui/config.toml`, `-c KEY=VALUE`, then flags. Each file is a partial
+`ConfigLayer` merged by presence. Every key is one entry in the option registry
+(`crates/datui-cli/src/settings.rs`); `-c`, `datui config init` and `keys`, the
+settings reference and flag help come from it. Follow
+`docs/for-developers/adding-configuration-options.md`. The S3 endpoint, keys
+and region come from the environment alone (`effective_cloud`); blank values
+count as unset.
 
 **Text input** is one editor (`widgets/textarea/`) wrapped by
 `widgets/text_input/` for theming, focus and history. Read the value with
@@ -187,12 +189,12 @@ work. The short version:
 - One accent (`accent`, `accent_bright`) for keys, focused titles and the
   selection rail. `gradient_start`/`gradient_end` color the wordmark only.
 - Three chrome tiers a few shades apart: `controls_bg`, `table_header_bg`,
-  `alternate_row_color`.
+  `table_alternate_row`.
 - The current row is tinted (`table_selected`) and carries a `▎` rail; use the
   theme's `highlight_style` helper, never `Modifier::REVERSED` directly.
-- The column cursor tints its cells (`column_cursor`), its header and the
-  current cell (`cell_cursor`), through the theme's `column_cursor_style` and
-  `cell_cursor_style` helpers.
+- The column cursor tints its cells (`table_column_cursor`), its header and the
+  current cell (`table_cell_cursor`), through the theme's `column_cursor_style`
+  and `cell_cursor_style` helpers.
 - Keys in the control bar are chips: key on the accent, label beside it.
   Section titles sit on a rule with a flat count chip.
 - Column names take their type's color; a second header row names the type.

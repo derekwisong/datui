@@ -197,11 +197,9 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Dark | Light | Description |
 |---|---|---|---|
-| `theme.colors.keybind_hints` | `#7dcfff` | `#2e7de9` | Keys in the control bar and dialogs. |
-| `theme.colors.keybind_labels` | `#a9b1d6` | `#3760bf` | Labels beside keys in the control bar. |
+| `theme.colors.chip_key` | `#7dcfff` | `#2e7de9` | Keys named in dialogs, the breadcrumb and the correlation matrix. |
+| `theme.colors.chip_label` | `#a9b1d6` | `#3760bf` | Labels beside keys in the control bar. |
 | `theme.colors.throbber` | `#7dcfff` | `#2e7de9` | The busy spinner. |
-| `theme.colors.primary_chart_series_color` | `#7dcfff` | `#2e7de9` | Histogram bars, bar charts and Q-Q points. |
-| `theme.colors.secondary_chart_series_color` | `#565f89` | `#848cb5` | Theoretical overlays and the Q-Q reference line. |
 | `theme.colors.success` | `#9ece6a` | `#587539` | Success. |
 | `theme.colors.error` | `#f7768e` | `#f52a65` | Errors. |
 | `theme.colors.warning` | `#e0af68` | `#8c6c3e` | Warnings. |
@@ -214,11 +212,11 @@ lives, imports, the theme and troubleshooting.
 | `theme.colors.text_inverse` | `#1a1b26` | `#e1e2e7` | Text on a key chip. |
 | `theme.colors.table_header` | `#c0caf5` | `#3760bf` | Header text. |
 | `theme.colors.table_header_bg` | `#2b3047` | `#c4c8da` | Header fill. |
-| `theme.colors.row_numbers` | `#565f89` | `#848cb5` | The row-number column. |
-| `theme.colors.column_separator` | `#3b4261` | `#a8aecb` | The rule after frozen columns and beside section titles. |
+| `theme.colors.table_row_numbers` | `#565f89` | `#848cb5` | The row-number column. |
+| `theme.colors.table_column_separator` | `#3b4261` | `#a8aecb` | The rule after frozen columns and beside section titles. |
 | `theme.colors.table_selected` | `#283457` | `#b6bfe2` | Tint under the current row; reversed swaps text and background instead. |
-| `theme.colors.column_cursor` | `#292e42` | `#cbd3f2` | Tint under the column cursor's cells. |
-| `theme.colors.cell_cursor` | `#3b4261` | `#a0aef0` | The column cursor's header and the current cell. |
+| `theme.colors.table_column_cursor` | `#292e42` | `#cbd3f2` | Tint under the column cursor's cells. |
+| `theme.colors.table_cell_cursor` | `#3b4261` | `#a0aef0` | The column cursor's header and the current cell. |
 | `theme.colors.sidebar_border` | `#565f89` | `#6172b0` | Sidebar and dialog borders. |
 | `theme.colors.modal_border_active` | `#7dcfff` | `#2e7de9` | The focused dialog's border. |
 | `theme.colors.modal_border_error` | `#f7768e` | `#f52a65` | An error dialog's border. |
@@ -226,23 +224,22 @@ lives, imports, the theme and troubleshooting.
 | `theme.colors.distribution_skewed` | `#e0af68` | `#8c6c3e` | Analysis: a skewed distribution. |
 | `theme.colors.distribution_other` | `#c0caf5` | `#3760bf` | Analysis: other distributions. |
 | `theme.colors.outlier_marker` | `#f7768e` | `#f52a65` | Analysis: outliers. |
-| `theme.colors.cursor_focused` | `default` | `default` | The text cursor; default reverses the text under it. |
-| `theme.colors.cursor_dimmed` | `default` | `default` | Unused. |
-| `theme.colors.cursor_text` | `default` | `default` | Text under the cursor block; default picks black or white by contrast. |
-| `theme.colors.alternate_row_color` | `#1e2030` | `#dcdfea` | Every other row; default turns the stripe off. |
-| `theme.colors.str_col` | `#9ece6a` | `#587539` | String columns. |
-| `theme.colors.int_col` | `#7aa2f7` | `#2e7de9` | Integer columns. |
-| `theme.colors.float_col` | `#2ac3de` | `#007197` | Float columns. |
-| `theme.colors.bool_col` | `#e0af68` | `#8c6c3e` | Boolean columns. |
-| `theme.colors.temporal_col` | `#bb9af7` | `#9854f1` | Date, time and datetime columns. |
-| `theme.colors.binary_col` | `#565f89` | `#848cb5` | Binary columns' placeholder. |
-| `theme.colors.chart_series_color_1` | `#7dcfff` | `#2e7de9` | Chart series 1. |
-| `theme.colors.chart_series_color_2` | `#bb9af7` | `#9854f1` | Chart series 2. |
-| `theme.colors.chart_series_color_3` | `#9ece6a` | `#587539` | Chart series 3. |
-| `theme.colors.chart_series_color_4` | `#e0af68` | `#8c6c3e` | Chart series 4. |
-| `theme.colors.chart_series_color_5` | `#7aa2f7` | `#007197` | Chart series 5. |
-| `theme.colors.chart_series_color_6` | `#f7768e` | `#f52a65` | Chart series 6. |
-| `theme.colors.chart_series_color_7` | `#ff9e64` | `#b15c00` | Chart series 7. |
+| `theme.colors.input_cursor` | `default` | `default` | The text caret; default reverses the text under it. |
+| `theme.colors.input_cursor_text` | `default` | `default` | Text under the caret block; default picks black or white by contrast. |
+| `theme.colors.table_alternate_row` | `#1e2030` | `#dcdfea` | Every other row; default turns the stripe off. |
+| `theme.colors.type_str` | `#9ece6a` | `#587539` | String columns. |
+| `theme.colors.type_int` | `#7aa2f7` | `#2e7de9` | Integer columns. |
+| `theme.colors.type_float` | `#2ac3de` | `#007197` | Float columns. |
+| `theme.colors.type_bool` | `#e0af68` | `#8c6c3e` | Boolean columns. |
+| `theme.colors.type_temporal` | `#bb9af7` | `#9854f1` | Date, time and datetime columns. |
+| `theme.colors.type_binary` | `#565f89` | `#848cb5` | Binary columns' placeholder. |
+| `theme.colors.chart_1` | `#7dcfff` | `#2e7de9` | Chart series 1; also histogram bars, bar charts and Q-Q points. |
+| `theme.colors.chart_2` | `#bb9af7` | `#9854f1` | Chart series 2. |
+| `theme.colors.chart_3` | `#9ece6a` | `#587539` | Chart series 3. |
+| `theme.colors.chart_4` | `#e0af68` | `#8c6c3e` | Chart series 4. |
+| `theme.colors.chart_5` | `#7aa2f7` | `#007197` | Chart series 5. |
+| `theme.colors.chart_6` | `#f7768e` | `#f52a65` | Chart series 6. |
+| `theme.colors.chart_7` | `#ff9e64` | `#b15c00` | Chart series 7. |
 | `theme.colors.chart_grid` | `#3d4785` | `#70aabf` | The chart grid, a shade dimmer than dimmed. |
 | `theme.colors.accent` | `#7dcfff` | `#2e7de9` | Key chips, focused titles and the selection rail. |
 | `theme.colors.accent_bright` | `#a4daff` | `#1a6cd0` | The section the cursor is in. |

@@ -50,7 +50,7 @@ These are checkable, and CI or review should treat a violation as a defect:
   labels, the selection rail, the active tab. If two things on one screen
   compete for the accent, one of them is wrong.
 - Three chrome tiers a few shades apart: `controls_bg`, `table_header_bg`,
-  `alternate_row_color`. Backgrounds never carry meaning beyond these.
+  `table_alternate_row`. Backgrounds never carry meaning beyond these.
 - Column names take their type's color; nulls are `∅` in `dimmed`.
 - `gradient_start`/`gradient_end` color the wordmark only.
 - Errors use the error slots; warnings `warning`; everything informational

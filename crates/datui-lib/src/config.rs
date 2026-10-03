@@ -1723,68 +1723,15 @@ pub struct ThemeConfig {
     pub colors: ColorConfig,
 }
 
-fn default_row_numbers_color() -> String {
-    "dark_gray".to_string()
-}
-
+/// Color configuration for the application theme: one slot per role, each a name
+/// (`"cyan"`, `"default"`), `"#rrggbb"` or `"indexed(N)"`. The option registry
+/// documents every slot and holds its dark and light defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-/// Color configuration for the application theme.
-///
-/// This struct defines all color settings used throughout the UI. Colors can be specified as:
-/// - Named colors: "cyan", "red", "yellow", etc.
-/// - Hex colors: "#ff0000"
-/// - Indexed colors: "indexed(236)" for 256-color palette
-/// - Special modifiers: "reversed" for selected rows
-///
-/// ## Color Usage:
-///
-/// **UI Element Colors:**
-/// - `keybind_hints`: Keybind hints (modals, breadcrumb, correlation matrix)
-/// - `keybind_labels`: Action labels in controls bar
-/// - `throbber`: Busy indicator (spinner) in control bar
-/// - `table_header`: Table column header text
-/// - `table_header_bg`: Table column header background
-/// - `column_separator`: Vertical line between columns
-/// - `sidebar_border`: Sidebar borders
-/// - `modal_border_active`: Active modal elements
-/// - `modal_border_error`: Error modal borders
-///
-/// **Chart Colors:**
-/// - `primary_chart_series_color`: Chart data (histogram bars, Q-Q plot data points)
-/// - `secondary_chart_series_color`: Chart theory (histogram overlays, Q-Q plot reference line)
-///
-/// **Status Colors:**
-/// - `success`: Success indicators, normal distributions
-/// - `error`: Error messages, outliers
-/// - `warning`: Warnings, skewed distributions
-/// - `distribution_normal`: Normal distribution indicator
-/// - `distribution_skewed`: Skewed distribution indicator
-/// - `distribution_other`: Other distribution types
-/// - `outlier_marker`: Outlier indicators
-///
-/// **Text Colors:**
-/// - `text_primary`: Primary text
-/// - `text_secondary`: Secondary text
-/// - `text_inverse`: Text on light backgrounds
-///
-/// **Background Colors:**
-/// - `background`: Main background
-/// - `surface`: Modal/surface backgrounds
-/// - `controls_bg`: Controls bar and table header backgrounds
-///
-/// **Other:**
-/// - `dimmed`: Dimmed elements, axis lines
-/// - `table_selected`: Selected row style (special modifier)
-/// - `find_match`: The cell a find landed on
-/// - `hex_null`, `hex_printable`, `hex_whitespace`, `hex_control`, `hex_high`,
-///   `hex_ff`: The hex view's bytes, by class
 pub struct ColorConfig {
-    pub keybind_hints: String,
-    pub keybind_labels: String,
+    pub chip_key: String,
+    pub chip_label: String,
     pub throbber: String,
-    pub primary_chart_series_color: String,
-    pub secondary_chart_series_color: String,
     pub success: String,
     pub error: String,
     pub warning: String,
@@ -1797,17 +1744,17 @@ pub struct ColorConfig {
     pub text_inverse: String,
     pub table_header: String,
     pub table_header_bg: String,
-    /// Row numbers column text. Use "default" for terminal default.
-    #[serde(default = "default_row_numbers_color")]
-    pub row_numbers: String,
-    pub column_separator: String,
+    /// The row-number column. "default" is the terminal's.
+    pub table_row_numbers: String,
+    pub table_column_separator: String,
+    /// Tint under the current row; "reversed" swaps text and background instead.
     pub table_selected: String,
-    /// Tint under the column cursor's cells. Absent from older configs.
-    #[serde(default = "default_column_cursor")]
-    pub column_cursor: String,
-    /// The column cursor's header and the current cell (the cursor's row and column).
-    #[serde(default = "default_cell_cursor")]
-    pub cell_cursor: String,
+    /// Tint under the column cursor's cells.
+    pub table_column_cursor: String,
+    /// The column cursor's header and the current cell.
+    pub table_cell_cursor: String,
+    /// Every other row; "default" turns the stripe off.
+    pub table_alternate_row: String,
     pub sidebar_border: String,
     pub modal_border_active: String,
     pub modal_border_error: String,
@@ -1815,110 +1762,46 @@ pub struct ColorConfig {
     pub distribution_skewed: String,
     pub distribution_other: String,
     pub outlier_marker: String,
-    pub cursor_focused: String,
-    pub cursor_dimmed: String,
-    /// Text under the solid cursor block. "default" picks black or white by the
-    /// cursor color's luminance.
-    #[serde(default = "default_cursor_text")]
-    pub cursor_text: String,
-    /// "default" = no alternate row color; any other value is parsed as a color (e.g. "dark_gray")
-    pub alternate_row_color: String,
-    /// Column type colors (main data table): string, integer, float, boolean, temporal
-    pub str_col: String,
-    pub int_col: String,
-    pub float_col: String,
-    pub bool_col: String,
-    pub temporal_col: String,
-    /// Main data table: placeholder color for binary columns (the `‹binary›` stub)
-    pub binary_col: String,
-    /// Chart view: series colors 1–7 (line/scatter/bar series)
-    pub chart_series_color_1: String,
-    pub chart_series_color_2: String,
-    pub chart_series_color_3: String,
-    pub chart_series_color_4: String,
-    pub chart_series_color_5: String,
-    pub chart_series_color_6: String,
-    pub chart_series_color_7: String,
-    /// Chart view: the grid, a shade dimmer than `dimmed`. Absent from older configs.
-    #[serde(default = "default_chart_grid")]
+    /// The text caret; "default" reverses the text under it.
+    pub input_cursor: String,
+    /// Text under the caret block; "default" picks black or white by contrast.
+    pub input_cursor_text: String,
+    /// Cells and headers by column type.
+    pub type_str: String,
+    pub type_int: String,
+    pub type_float: String,
+    pub type_bool: String,
+    pub type_temporal: String,
+    /// The `‹binary›` stub of a binary column.
+    pub type_binary: String,
+    /// The chart series, in order; `chart_1` is also histogram bars and Q-Q points.
+    pub chart_1: String,
+    pub chart_2: String,
+    pub chart_3: String,
+    pub chart_4: String,
+    pub chart_5: String,
+    pub chart_6: String,
+    pub chart_7: String,
+    /// The chart grid, a shade dimmer than `dimmed`.
     pub chart_grid: String,
     /// The one colour that means "this is the thing": focused titles, key chips, the
-    /// selection rail. Absent from older configs, so it falls back to the palette.
-    #[serde(default = "default_accent")]
+    /// selection rail.
     pub accent: String,
     /// A brighter accent for a focused title or a value that just changed.
-    #[serde(default = "default_accent_bright")]
     pub accent_bright: String,
     /// Two stops for the wordmark on the home screen. Used nowhere else on purpose:
     /// a gradient on data would be decoration.
-    #[serde(default = "default_gradient_start")]
     pub gradient_start: String,
-    #[serde(default = "default_gradient_end")]
     pub gradient_end: String,
     /// Behind the cell a find landed on; its text takes black or white by contrast.
-    /// Absent from older configs, so it falls back to the palette.
-    #[serde(default = "default_find_match")]
     pub find_match: String,
-    /// The hex view's bytes by class, as hexyl colors them. Absent from older configs,
-    /// so they fall back to the palette.
-    #[serde(default = "default_hex_null")]
+    /// The hex view's bytes by class, as hexyl colors them.
     pub hex_null: String,
-    #[serde(default = "default_hex_printable")]
     pub hex_printable: String,
-    #[serde(default = "default_hex_whitespace")]
     pub hex_whitespace: String,
-    #[serde(default = "default_hex_control")]
     pub hex_control: String,
-    #[serde(default = "default_hex_high")]
     pub hex_high: String,
-    #[serde(default = "default_hex_ff")]
     pub hex_ff: String,
-}
-
-fn default_cursor_text() -> String {
-    ColorConfig::default().cursor_text
-}
-fn default_column_cursor() -> String {
-    ColorConfig::default().column_cursor
-}
-fn default_cell_cursor() -> String {
-    ColorConfig::default().cell_cursor
-}
-fn default_accent() -> String {
-    ColorConfig::default().accent
-}
-fn default_accent_bright() -> String {
-    ColorConfig::default().accent_bright
-}
-fn default_gradient_start() -> String {
-    ColorConfig::default().gradient_start
-}
-fn default_gradient_end() -> String {
-    ColorConfig::default().gradient_end
-}
-fn default_chart_grid() -> String {
-    ColorConfig::default().chart_grid
-}
-fn default_find_match() -> String {
-    ColorConfig::default().find_match
-}
-fn default_hex_null() -> String {
-    ColorConfig::default().hex_null
-}
-fn default_hex_printable() -> String {
-    ColorConfig::default().hex_printable
-}
-fn default_hex_whitespace() -> String {
-    ColorConfig::default().hex_whitespace
-}
-fn default_hex_control() -> String {
-    ColorConfig::default().hex_control
-}
-fn default_hex_high() -> String {
-    ColorConfig::default().hex_high
-}
-fn default_hex_ff() -> String {
-    ColorConfig::default().hex_ff
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2132,11 +2015,9 @@ impl ColorConfig {
         // rather than one grey shared by everything, and the row under the cursor is
         // tinted rather than reversed so cell colours survive on it.
         Self {
-            keybind_hints: "#7dcfff".to_string(),
-            keybind_labels: "#a9b1d6".to_string(),
+            chip_key: "#7dcfff".to_string(),
+            chip_label: "#a9b1d6".to_string(),
             throbber: "#7dcfff".to_string(),
-            primary_chart_series_color: "#7dcfff".to_string(),
-            secondary_chart_series_color: "#565f89".to_string(),
             success: "#9ece6a".to_string(),
             error: "#f7768e".to_string(),
             warning: "#e0af68".to_string(),
@@ -2149,13 +2030,13 @@ impl ColorConfig {
             text_inverse: "#1a1b26".to_string(),
             table_header: "#c0caf5".to_string(),
             table_header_bg: "#2b3047".to_string(),
-            row_numbers: "#565f89".to_string(),
-            column_separator: "#3b4261".to_string(),
+            table_row_numbers: "#565f89".to_string(),
+            table_column_separator: "#3b4261".to_string(),
             table_selected: "#283457".to_string(),
             // A grey a step off the stripe for the column, and a lighter one where it
             // crosses the current row, so the cell stands out from both.
-            column_cursor: "#292e42".to_string(),
-            cell_cursor: "#3b4261".to_string(),
+            table_column_cursor: "#292e42".to_string(),
+            table_cell_cursor: "#3b4261".to_string(),
             // Box titles are drawn in the border colour, so this has to read as text:
             // the theme's comment grey, not the hairline shade the rules use.
             sidebar_border: "#565f89".to_string(),
@@ -2165,23 +2046,22 @@ impl ColorConfig {
             distribution_skewed: "#e0af68".to_string(),
             distribution_other: "#c0caf5".to_string(),
             outlier_marker: "#f7768e".to_string(),
-            cursor_focused: "default".to_string(),
-            cursor_dimmed: "default".to_string(),
-            cursor_text: "default".to_string(),
-            alternate_row_color: "#1e2030".to_string(),
-            str_col: "#9ece6a".to_string(),
-            int_col: "#7aa2f7".to_string(),
-            float_col: "#2ac3de".to_string(),
-            bool_col: "#e0af68".to_string(),
-            temporal_col: "#bb9af7".to_string(),
-            binary_col: "#565f89".to_string(),
-            chart_series_color_1: "#7dcfff".to_string(),
-            chart_series_color_2: "#bb9af7".to_string(),
-            chart_series_color_3: "#9ece6a".to_string(),
-            chart_series_color_4: "#e0af68".to_string(),
-            chart_series_color_5: "#7aa2f7".to_string(),
-            chart_series_color_6: "#f7768e".to_string(),
-            chart_series_color_7: "#ff9e64".to_string(),
+            input_cursor: "default".to_string(),
+            input_cursor_text: "default".to_string(),
+            table_alternate_row: "#1e2030".to_string(),
+            type_str: "#9ece6a".to_string(),
+            type_int: "#7aa2f7".to_string(),
+            type_float: "#2ac3de".to_string(),
+            type_bool: "#e0af68".to_string(),
+            type_temporal: "#bb9af7".to_string(),
+            type_binary: "#565f89".to_string(),
+            chart_1: "#7dcfff".to_string(),
+            chart_2: "#bb9af7".to_string(),
+            chart_3: "#9ece6a".to_string(),
+            chart_4: "#e0af68".to_string(),
+            chart_5: "#7aa2f7".to_string(),
+            chart_6: "#f7768e".to_string(),
+            chart_7: "#ff9e64".to_string(),
             // Dimmer than `dimmed`, and still blue rather than black on a 16-color
             // terminal, where black is the background.
             chart_grid: "#3d4785".to_string(),
@@ -2211,11 +2091,9 @@ impl ColorConfig {
         // clears 4.5:1 on a white or near-white background. The chrome tiers go the
         // other way — a little darker than the terminal rather than lighter.
         Self {
-            keybind_hints: "#2e7de9".to_string(),
-            keybind_labels: "#3760bf".to_string(),
+            chip_key: "#2e7de9".to_string(),
+            chip_label: "#3760bf".to_string(),
             throbber: "#2e7de9".to_string(),
-            primary_chart_series_color: "#2e7de9".to_string(),
-            secondary_chart_series_color: "#848cb5".to_string(),
             success: "#587539".to_string(),
             error: "#f52a65".to_string(),
             warning: "#8c6c3e".to_string(),
@@ -2228,11 +2106,11 @@ impl ColorConfig {
             text_inverse: "#e1e2e7".to_string(),
             table_header: "#3760bf".to_string(),
             table_header_bg: "#c4c8da".to_string(),
-            row_numbers: "#848cb5".to_string(),
-            column_separator: "#a8aecb".to_string(),
+            table_row_numbers: "#848cb5".to_string(),
+            table_column_separator: "#a8aecb".to_string(),
             table_selected: "#b6bfe2".to_string(),
-            column_cursor: "#cbd3f2".to_string(),
-            cell_cursor: "#a0aef0".to_string(),
+            table_column_cursor: "#cbd3f2".to_string(),
+            table_cell_cursor: "#a0aef0".to_string(),
             sidebar_border: "#6172b0".to_string(),
             modal_border_active: "#2e7de9".to_string(),
             modal_border_error: "#f52a65".to_string(),
@@ -2240,23 +2118,22 @@ impl ColorConfig {
             distribution_skewed: "#8c6c3e".to_string(),
             distribution_other: "#3760bf".to_string(),
             outlier_marker: "#f52a65".to_string(),
-            cursor_focused: "default".to_string(),
-            cursor_dimmed: "default".to_string(),
-            cursor_text: "default".to_string(),
-            alternate_row_color: "#dcdfea".to_string(),
-            str_col: "#587539".to_string(),
-            int_col: "#2e7de9".to_string(),
-            float_col: "#007197".to_string(),
-            bool_col: "#8c6c3e".to_string(),
-            temporal_col: "#9854f1".to_string(),
-            binary_col: "#848cb5".to_string(),
-            chart_series_color_1: "#2e7de9".to_string(),
-            chart_series_color_2: "#9854f1".to_string(),
-            chart_series_color_3: "#587539".to_string(),
-            chart_series_color_4: "#8c6c3e".to_string(),
-            chart_series_color_5: "#007197".to_string(),
-            chart_series_color_6: "#f52a65".to_string(),
-            chart_series_color_7: "#b15c00".to_string(),
+            input_cursor: "default".to_string(),
+            input_cursor_text: "default".to_string(),
+            table_alternate_row: "#dcdfea".to_string(),
+            type_str: "#587539".to_string(),
+            type_int: "#2e7de9".to_string(),
+            type_float: "#007197".to_string(),
+            type_bool: "#8c6c3e".to_string(),
+            type_temporal: "#9854f1".to_string(),
+            type_binary: "#848cb5".to_string(),
+            chart_1: "#2e7de9".to_string(),
+            chart_2: "#9854f1".to_string(),
+            chart_3: "#587539".to_string(),
+            chart_4: "#8c6c3e".to_string(),
+            chart_5: "#007197".to_string(),
+            chart_6: "#f52a65".to_string(),
+            chart_7: "#b15c00".to_string(),
             // The theme's cyan halfway to the background: a grey this light is white
             // on a 16-color terminal, and the grid vanished into the background.
             chart_grid: "#70aabf".to_string(),
@@ -3012,88 +2889,31 @@ impl AppConfig {
 }
 
 impl ColorConfig {
+    /// Every slot by name, as the config writes it.
+    fn slots(&self) -> Vec<(String, String)> {
+        match toml::Value::try_from(self) {
+            Ok(toml::Value::Table(table)) => table
+                .into_iter()
+                .map(|(name, value)| (name, value.as_str().unwrap_or_default().to_string()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Validate all color strings can be parsed
     fn validate(&self, parser: &ColorParser) -> Result<()> {
-        // Helper macro to validate a color field (reports as theme.colors.<name> for config file context)
-        macro_rules! validate_color {
-            ($field:expr_2021, $name:expr_2021) => {
-                parser.parse($field).map_err(|e| {
-                    eyre!(
-                        "theme.colors.{}: {}. Use a valid color name (e.g. red, cyan, bright_red), \
-                         hex (#rrggbb), or indexed(0-255)",
-                        $name,
-                        e
-                    )
-                })?;
-            };
+        for (name, value) in self.slots() {
+            // "default" is no stripe, not a color.
+            if name == "table_alternate_row" && value == "default" {
+                continue;
+            }
+            parser.parse(&value).map_err(|e| {
+                eyre!(
+                    "theme.colors.{name}: {e}. Use a valid color name (e.g. red, cyan, \
+                     bright_red), hex (#rrggbb), or indexed(0-255)"
+                )
+            })?;
         }
-
-        validate_color!(&self.keybind_hints, "keybind_hints");
-        validate_color!(&self.keybind_labels, "keybind_labels");
-        validate_color!(&self.throbber, "throbber");
-        validate_color!(
-            &self.primary_chart_series_color,
-            "primary_chart_series_color"
-        );
-        validate_color!(
-            &self.secondary_chart_series_color,
-            "secondary_chart_series_color"
-        );
-        validate_color!(&self.success, "success");
-        validate_color!(&self.error, "error");
-        validate_color!(&self.warning, "warning");
-        validate_color!(&self.dimmed, "dimmed");
-        validate_color!(&self.background, "background");
-        validate_color!(&self.surface, "surface");
-        validate_color!(&self.controls_bg, "controls_bg");
-        validate_color!(&self.text_primary, "text_primary");
-        validate_color!(&self.text_secondary, "text_secondary");
-        validate_color!(&self.text_inverse, "text_inverse");
-        validate_color!(&self.table_header, "table_header");
-        validate_color!(&self.table_header_bg, "table_header_bg");
-        validate_color!(&self.row_numbers, "row_numbers");
-        validate_color!(&self.column_separator, "column_separator");
-        validate_color!(&self.table_selected, "table_selected");
-        validate_color!(&self.column_cursor, "column_cursor");
-        validate_color!(&self.cell_cursor, "cell_cursor");
-        validate_color!(&self.sidebar_border, "sidebar_border");
-        validate_color!(&self.modal_border_active, "modal_border_active");
-        validate_color!(&self.modal_border_error, "modal_border_error");
-        validate_color!(&self.distribution_normal, "distribution_normal");
-        validate_color!(&self.distribution_skewed, "distribution_skewed");
-        validate_color!(&self.distribution_other, "distribution_other");
-        validate_color!(&self.outlier_marker, "outlier_marker");
-        validate_color!(&self.cursor_focused, "cursor_focused");
-        validate_color!(&self.cursor_dimmed, "cursor_dimmed");
-        validate_color!(&self.cursor_text, "cursor_text");
-        if self.alternate_row_color != "default" {
-            validate_color!(&self.alternate_row_color, "alternate_row_color");
-        }
-        validate_color!(&self.str_col, "str_col");
-        validate_color!(&self.int_col, "int_col");
-        validate_color!(&self.float_col, "float_col");
-        validate_color!(&self.bool_col, "bool_col");
-        validate_color!(&self.temporal_col, "temporal_col");
-        validate_color!(&self.chart_series_color_1, "chart_series_color_1");
-        validate_color!(&self.chart_series_color_2, "chart_series_color_2");
-        validate_color!(&self.chart_series_color_3, "chart_series_color_3");
-        validate_color!(&self.chart_series_color_4, "chart_series_color_4");
-        validate_color!(&self.chart_series_color_5, "chart_series_color_5");
-        validate_color!(&self.chart_series_color_6, "chart_series_color_6");
-        validate_color!(&self.chart_series_color_7, "chart_series_color_7");
-        validate_color!(&self.chart_grid, "chart_grid");
-        validate_color!(&self.accent, "accent");
-        validate_color!(&self.accent_bright, "accent_bright");
-        validate_color!(&self.gradient_start, "gradient_start");
-        validate_color!(&self.gradient_end, "gradient_end");
-        validate_color!(&self.find_match, "find_match");
-        validate_color!(&self.hex_null, "hex_null");
-        validate_color!(&self.hex_printable, "hex_printable");
-        validate_color!(&self.hex_whitespace, "hex_whitespace");
-        validate_color!(&self.hex_control, "hex_control");
-        validate_color!(&self.hex_high, "hex_high");
-        validate_color!(&self.hex_ff, "hex_ff");
-
         Ok(())
     }
 }
@@ -3317,232 +3137,24 @@ impl Theme {
     pub fn from_config(config: &ThemeConfig) -> Result<Self> {
         let parser = ColorParser::new();
         let mut colors = HashMap::new();
-
-        // Parse all colors from config
-        colors.insert(
-            "keybind_hints".to_string(),
-            parser.parse(&config.colors.keybind_hints)?,
-        );
-        colors.insert(
-            "keybind_labels".to_string(),
-            parser.parse(&config.colors.keybind_labels)?,
-        );
-        colors.insert(
-            "throbber".to_string(),
-            parser.parse(&config.colors.throbber)?,
-        );
-        colors.insert(
-            "primary_chart_series_color".to_string(),
-            parser.parse(&config.colors.primary_chart_series_color)?,
-        );
-        colors.insert(
-            "secondary_chart_series_color".to_string(),
-            parser.parse(&config.colors.secondary_chart_series_color)?,
-        );
-        colors.insert("success".to_string(), parser.parse(&config.colors.success)?);
-        colors.insert("error".to_string(), parser.parse(&config.colors.error)?);
-        colors.insert("warning".to_string(), parser.parse(&config.colors.warning)?);
-        colors.insert("dimmed".to_string(), parser.parse(&config.colors.dimmed)?);
-        colors.insert(
-            "background".to_string(),
-            parser.parse(&config.colors.background)?,
-        );
-        colors.insert("surface".to_string(), parser.parse(&config.colors.surface)?);
-        colors.insert(
-            "controls_bg".to_string(),
-            parser.parse(&config.colors.controls_bg)?,
-        );
-        colors.insert(
-            "text_primary".to_string(),
-            parser.parse(&config.colors.text_primary)?,
-        );
-        colors.insert(
-            "text_secondary".to_string(),
-            parser.parse(&config.colors.text_secondary)?,
-        );
-        colors.insert(
-            "text_inverse".to_string(),
-            parser.parse(&config.colors.text_inverse)?,
-        );
-        colors.insert(
-            "table_header".to_string(),
-            parser.parse(&config.colors.table_header)?,
-        );
-        colors.insert(
-            "table_header_bg".to_string(),
-            parser.parse(&config.colors.table_header_bg)?,
-        );
-        colors.insert(
-            "row_numbers".to_string(),
-            parser.parse(&config.colors.row_numbers)?,
-        );
-        colors.insert(
-            "column_separator".to_string(),
-            parser.parse(&config.colors.column_separator)?,
-        );
-        // "reversed" keeps the old swap-fg-and-bg selection; anything else is the tint
-        // painted under the row the cursor is on. Left out of the map for "reversed"
-        // so a widget can ask `get_optional` and tell the two apart.
-        if !config
-            .colors
-            .table_selected
-            .trim()
-            .eq_ignore_ascii_case("reversed")
-        {
-            colors.insert(
-                "table_selected".to_string(),
-                parser.parse(&config.colors.table_selected)?,
-            );
+        for (name, value) in config.colors.slots() {
+            // Left out of the map so a widget can ask `get_optional` and tell them apart:
+            // "reversed" swaps the current row's text and background instead of tinting
+            // it, and "default" is no stripe.
+            let absent = match name.as_str() {
+                "table_selected" => value.trim().eq_ignore_ascii_case("reversed"),
+                "table_alternate_row" => value == "default",
+                _ => false,
+            };
+            if !absent {
+                colors.insert(name, parser.parse(&value)?);
+            }
         }
-        colors.insert(
-            "column_cursor".to_string(),
-            parser.parse(&config.colors.column_cursor)?,
-        );
-        colors.insert(
-            "cell_cursor".to_string(),
-            parser.parse(&config.colors.cell_cursor)?,
-        );
-        let sidebar_border = parser.parse(&config.colors.sidebar_border)?;
-        colors.insert("sidebar_border".to_string(), sidebar_border);
         // Every sidebar and the input strip draw their resting border from
-        // `modal_border`; it is the same slot as `sidebar_border`, which is the name
-        // the config documents.
-        colors.insert("modal_border".to_string(), sidebar_border);
-        colors.insert(
-            "label".to_string(),
-            parser.parse(&config.colors.text_secondary)?,
-        );
-        colors.insert(
-            "modal_border_active".to_string(),
-            parser.parse(&config.colors.modal_border_active)?,
-        );
-        colors.insert(
-            "modal_border_error".to_string(),
-            parser.parse(&config.colors.modal_border_error)?,
-        );
-        colors.insert(
-            "distribution_normal".to_string(),
-            parser.parse(&config.colors.distribution_normal)?,
-        );
-        colors.insert(
-            "distribution_skewed".to_string(),
-            parser.parse(&config.colors.distribution_skewed)?,
-        );
-        colors.insert(
-            "distribution_other".to_string(),
-            parser.parse(&config.colors.distribution_other)?,
-        );
-        colors.insert(
-            "outlier_marker".to_string(),
-            parser.parse(&config.colors.outlier_marker)?,
-        );
-        colors.insert(
-            "cursor_focused".to_string(),
-            parser.parse(&config.colors.cursor_focused)?,
-        );
-        colors.insert(
-            "cursor_dimmed".to_string(),
-            parser.parse(&config.colors.cursor_dimmed)?,
-        );
-        colors.insert(
-            "cursor_text".to_string(),
-            parser.parse(&config.colors.cursor_text)?,
-        );
-        if config.colors.alternate_row_color != "default" {
-            colors.insert(
-                "alternate_row_color".to_string(),
-                parser.parse(&config.colors.alternate_row_color)?,
-            );
-        }
-        colors.insert("str_col".to_string(), parser.parse(&config.colors.str_col)?);
-        colors.insert("int_col".to_string(), parser.parse(&config.colors.int_col)?);
-        colors.insert(
-            "float_col".to_string(),
-            parser.parse(&config.colors.float_col)?,
-        );
-        colors.insert(
-            "bool_col".to_string(),
-            parser.parse(&config.colors.bool_col)?,
-        );
-        colors.insert(
-            "temporal_col".to_string(),
-            parser.parse(&config.colors.temporal_col)?,
-        );
-        colors.insert(
-            "binary_col".to_string(),
-            parser.parse(&config.colors.binary_col)?,
-        );
-        colors.insert(
-            "chart_series_color_1".to_string(),
-            parser.parse(&config.colors.chart_series_color_1)?,
-        );
-        colors.insert(
-            "chart_series_color_2".to_string(),
-            parser.parse(&config.colors.chart_series_color_2)?,
-        );
-        colors.insert(
-            "chart_series_color_3".to_string(),
-            parser.parse(&config.colors.chart_series_color_3)?,
-        );
-        colors.insert(
-            "chart_series_color_4".to_string(),
-            parser.parse(&config.colors.chart_series_color_4)?,
-        );
-        colors.insert(
-            "chart_series_color_5".to_string(),
-            parser.parse(&config.colors.chart_series_color_5)?,
-        );
-        colors.insert(
-            "chart_series_color_6".to_string(),
-            parser.parse(&config.colors.chart_series_color_6)?,
-        );
-        colors.insert(
-            "chart_series_color_7".to_string(),
-            parser.parse(&config.colors.chart_series_color_7)?,
-        );
-        colors.insert(
-            "chart_grid".to_string(),
-            parser.parse(&config.colors.chart_grid)?,
-        );
-        colors.insert("accent".to_string(), parser.parse(&config.colors.accent)?);
-        colors.insert(
-            "accent_bright".to_string(),
-            parser.parse(&config.colors.accent_bright)?,
-        );
-        colors.insert(
-            "gradient_start".to_string(),
-            parser.parse(&config.colors.gradient_start)?,
-        );
-        colors.insert(
-            "gradient_end".to_string(),
-            parser.parse(&config.colors.gradient_end)?,
-        );
-        colors.insert(
-            "find_match".to_string(),
-            parser.parse(&config.colors.find_match)?,
-        );
-        colors.insert(
-            "hex_null".to_string(),
-            parser.parse(&config.colors.hex_null)?,
-        );
-        colors.insert(
-            "hex_printable".to_string(),
-            parser.parse(&config.colors.hex_printable)?,
-        );
-        colors.insert(
-            "hex_whitespace".to_string(),
-            parser.parse(&config.colors.hex_whitespace)?,
-        );
-        colors.insert(
-            "hex_control".to_string(),
-            parser.parse(&config.colors.hex_control)?,
-        );
-        colors.insert(
-            "hex_high".to_string(),
-            parser.parse(&config.colors.hex_high)?,
-        );
-        colors.insert("hex_ff".to_string(), parser.parse(&config.colors.hex_ff)?);
-
+        // `modal_border`, the slot the config calls `sidebar_border`; labels are
+        // secondary text.
+        colors.insert("modal_border".to_string(), colors["sidebar_border"]);
+        colors.insert("label".to_string(), colors["text_secondary"]);
         Ok(Self { colors })
     }
 
@@ -3569,13 +3181,13 @@ impl Theme {
 
     /// Style of the column cursor's cells; see [`column_cursor_style`].
     pub fn column_cursor_style(&self) -> ratatui::style::Style {
-        column_cursor_style(self.get_optional("column_cursor"))
+        column_cursor_style(self.get_optional("table_column_cursor"))
     }
 
     /// Style of the column cursor's header and the current cell; see
     /// [`cell_cursor_style`].
     pub fn cell_cursor_style(&self) -> ratatui::style::Style {
-        cell_cursor_style(self.get_optional("cell_cursor"))
+        cell_cursor_style(self.get_optional("table_cell_cursor"))
     }
 
     /// Style of selected text in a field: the highlight tint, or reversed video
@@ -3605,7 +3217,7 @@ impl Theme {
     /// white by the cursor color's luminance when the slot says "default". Lives
     /// here so widgets never pick colors themselves.
     pub fn cursor_text_for(&self, cursor: Color) -> Color {
-        match self.get("cursor_text") {
+        match self.get("input_cursor_text") {
             Color::Reset => contrasting_text(cursor),
             configured => configured,
         }

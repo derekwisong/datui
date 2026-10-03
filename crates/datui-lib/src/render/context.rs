@@ -133,8 +133,8 @@ impl RenderContext {
         number_format: NumberFormatSettings,
     ) -> Self {
         Self {
-            keybind_hints: theme.get("keybind_hints"),
-            keybind_labels: theme.get("keybind_labels"),
+            keybind_hints: theme.get("chip_key"),
+            keybind_labels: theme.get("chip_label"),
             controls_bg: theme.get("controls_bg"),
             background: theme.get("background"),
             text_primary: theme.get("text_primary"),
@@ -150,7 +150,7 @@ impl RenderContext {
             modal_border_error: theme.get("modal_border_error"),
             surface: theme.get("surface"),
             throbber: theme.get("throbber"),
-            primary_chart_series_color: theme.get("primary_chart_series_color"),
+            primary_chart_series_color: theme.get("chart_1"),
 
             accent: theme.get("accent"),
             accent_bright: theme.get("accent_bright"),
@@ -159,41 +159,41 @@ impl RenderContext {
 
             table_header: theme.get("table_header"),
             table_header_bg: theme.get("table_header_bg"),
-            row_numbers: theme.get("row_numbers"),
-            column_separator: theme.get("column_separator"),
-            alternate_row_color: theme.get_optional("alternate_row_color"),
+            row_numbers: theme.get("table_row_numbers"),
+            column_separator: theme.get("table_column_separator"),
+            alternate_row_color: theme.get_optional("table_alternate_row"),
             table_selected: theme.get_optional("table_selected"),
             find_match: theme.find_match_style(),
-            column_cursor: theme.get_optional("column_cursor"),
-            cell_cursor: theme.get_optional("cell_cursor"),
+            column_cursor: theme.get_optional("table_column_cursor"),
+            cell_cursor: theme.get_optional("table_cell_cursor"),
             dtype_row: true,
 
             str_col: if column_colors {
-                theme.get("str_col")
+                theme.get("type_str")
             } else {
                 Color::Reset
             },
             int_col: if column_colors {
-                theme.get("int_col")
+                theme.get("type_int")
             } else {
                 Color::Reset
             },
             float_col: if column_colors {
-                theme.get("float_col")
+                theme.get("type_float")
             } else {
                 Color::Reset
             },
             bool_col: if column_colors {
-                theme.get("bool_col")
+                theme.get("type_bool")
             } else {
                 Color::Reset
             },
             temporal_col: if column_colors {
-                theme.get("temporal_col")
+                theme.get("type_temporal")
             } else {
                 Color::Reset
             },
-            binary_col: theme.get("binary_col"),
+            binary_col: theme.get("type_binary"),
             hex_null: theme.get("hex_null"),
             hex_printable: theme.get("hex_printable"),
             hex_whitespace: theme.get("hex_whitespace"),

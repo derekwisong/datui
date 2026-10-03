@@ -264,7 +264,7 @@ fn test_theme_from_config() {
     let theme = result.unwrap();
 
     // Check that colors are accessible
-    assert_ne!(theme.get("keybind_hints"), Color::Reset);
+    assert_ne!(theme.get("chip_key"), Color::Reset);
     assert_ne!(theme.get("error"), Color::Reset);
     assert_ne!(theme.get("success"), Color::Reset);
 }
@@ -288,7 +288,7 @@ fn test_theme_get_optional() {
     let theme = Theme::from_config(&config.theme).unwrap();
 
     // Known color should return Some
-    assert!(theme.get_optional("keybind_hints").is_some());
+    assert!(theme.get_optional("chip_key").is_some());
 
     // Unknown color should return None
     assert!(theme.get_optional("unknown_color").is_none());
@@ -300,11 +300,9 @@ fn test_theme_with_custom_colors() {
 
     let mut config = AppConfig::default();
     config.theme.colors = ColorConfig {
-        keybind_hints: "#ff0000".to_string(),
-        keybind_labels: "blue".to_string(),
+        chip_key: "#ff0000".to_string(),
+        chip_label: "blue".to_string(),
         throbber: "cyan".to_string(),
-        primary_chart_series_color: "cyan".to_string(),
-        secondary_chart_series_color: "dark_gray".to_string(),
         success: "bright_green".to_string(),
         error: "red".to_string(),
         warning: "yellow".to_string(),
@@ -316,15 +314,14 @@ fn test_theme_with_custom_colors() {
         text_secondary: "gray".to_string(),
         text_inverse: "black".to_string(),
         table_header: "white".to_string(),
-        cursor_focused: "default".to_string(),
-        cursor_dimmed: "default".to_string(),
-        cursor_text: "default".to_string(),
+        input_cursor: "default".to_string(),
+        input_cursor_text: "default".to_string(),
         table_header_bg: "indexed(236)".to_string(),
-        row_numbers: "dark_gray".to_string(),
-        column_separator: "cyan".to_string(),
+        table_row_numbers: "dark_gray".to_string(),
+        table_column_separator: "cyan".to_string(),
         table_selected: "reversed".to_string(),
-        column_cursor: "indexed(237)".to_string(),
-        cell_cursor: "indexed(239)".to_string(),
+        table_column_cursor: "indexed(237)".to_string(),
+        table_cell_cursor: "indexed(239)".to_string(),
         sidebar_border: "cyan".to_string(),
         modal_border_active: "yellow".to_string(),
         modal_border_error: "red".to_string(),
@@ -332,20 +329,20 @@ fn test_theme_with_custom_colors() {
         distribution_skewed: "yellow".to_string(),
         distribution_other: "white".to_string(),
         outlier_marker: "red".to_string(),
-        alternate_row_color: "default".to_string(),
-        str_col: "green".to_string(),
-        int_col: "cyan".to_string(),
-        float_col: "blue".to_string(),
-        bool_col: "yellow".to_string(),
-        temporal_col: "magenta".to_string(),
-        binary_col: "dark_gray".to_string(),
-        chart_series_color_1: "cyan".to_string(),
-        chart_series_color_2: "magenta".to_string(),
-        chart_series_color_3: "green".to_string(),
-        chart_series_color_4: "yellow".to_string(),
-        chart_series_color_5: "blue".to_string(),
-        chart_series_color_6: "red".to_string(),
-        chart_series_color_7: "bright_cyan".to_string(),
+        table_alternate_row: "default".to_string(),
+        type_str: "green".to_string(),
+        type_int: "cyan".to_string(),
+        type_float: "blue".to_string(),
+        type_bool: "yellow".to_string(),
+        type_temporal: "magenta".to_string(),
+        type_binary: "dark_gray".to_string(),
+        chart_1: "cyan".to_string(),
+        chart_2: "magenta".to_string(),
+        chart_3: "green".to_string(),
+        chart_4: "yellow".to_string(),
+        chart_5: "blue".to_string(),
+        chart_6: "red".to_string(),
+        chart_7: "bright_cyan".to_string(),
         chart_grid: "dark_gray".to_string(),
         accent: "cyan".to_string(),
         accent_bright: "bright_cyan".to_string(),
@@ -370,7 +367,7 @@ fn test_theme_with_invalid_color() {
     use datui::config::AppConfig;
 
     let mut config = AppConfig::default();
-    config.theme.colors.keybind_hints = "invalid_color_name".to_string();
+    config.theme.colors.chip_key = "invalid_color_name".to_string();
 
     let result = Theme::from_config(&config.theme);
     assert!(result.is_err());

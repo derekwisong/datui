@@ -1324,7 +1324,7 @@ pub(crate) fn rule_line(
         glyphs::get()
             .rule_h
             .repeat((width as usize).saturating_sub(used)),
-        Style::default().fg(theme.get("column_separator")),
+        Style::default().fg(theme.get("table_column_separator")),
     ));
     Line::from(spans)
 }

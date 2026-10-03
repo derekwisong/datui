@@ -971,7 +971,7 @@ fn render_histogram_chart(
 
     let columns = axes.frame(area).graph.width;
     let points = bin_columns(data, [x_min_bounds, x_max_bounds], columns);
-    let style = Style::default().fg(theme.get("primary_chart_series_color"));
+    let style = Style::default().fg(theme.get("chart_1"));
     let dataset = Dataset::default()
         .name("")
         .marker(g.plot.bar)
@@ -1031,13 +1031,7 @@ fn render_kde_chart(
     }
 
     let series_colors = [
-        "chart_series_color_1",
-        "chart_series_color_2",
-        "chart_series_color_3",
-        "chart_series_color_4",
-        "chart_series_color_5",
-        "chart_series_color_6",
-        "chart_series_color_7",
+        "chart_1", "chart_2", "chart_3", "chart_4", "chart_5", "chart_6", "chart_7",
     ];
 
     let name_width = legend_width(data.series.iter().map(|s| s.name.as_str()));
@@ -1097,13 +1091,7 @@ fn render_box_plot_chart(
     }
 
     let series_colors = [
-        "chart_series_color_1",
-        "chart_series_color_2",
-        "chart_series_color_3",
-        "chart_series_color_4",
-        "chart_series_color_5",
-        "chart_series_color_6",
-        "chart_series_color_7",
+        "chart_1", "chart_2", "chart_3", "chart_4", "chart_5", "chart_6", "chart_7",
     ];
     let mut segments: Vec<Vec<(f64, f64)>> = Vec::new();
     let mut segment_styles: Vec<Style> = Vec::new();
@@ -1261,7 +1249,7 @@ fn render_heatmap_chart(
             let cell = &mut buf[(plot_area.x + col, plot_area.y + row)];
             let symbol = ch.to_string();
             cell.set_symbol(&symbol);
-            cell.set_style(Style::default().fg(theme.get("primary_chart_series_color")));
+            cell.set_style(Style::default().fg(theme.get("chart_1")));
         }
     }
 

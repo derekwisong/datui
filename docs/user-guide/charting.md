@@ -184,6 +184,5 @@ bar chart exports up to its first 100 bars; the category axis counts the rest.
 
 ## Colors
 
-Series take `chart_series_color_1` through `chart_series_color_7` from the
-[theme](../reference/settings.md#colors); bars and histograms take
-`primary_chart_series_color`, and the grid `chart_grid`.
+Series take `chart_1` through `chart_7` from the
+[theme](../reference/settings.md#colors); bars and histograms take `chart_1`, and the grid `chart_grid`.

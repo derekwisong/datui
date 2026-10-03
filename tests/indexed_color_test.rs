@@ -12,8 +12,8 @@ fn test_indexed_colors_end_to_end() {
     let config_toml = r#"
 
 [theme.colors]
-keybind_hints = "cyan"
-keybind_labels = "yellow"
+chip_key = "cyan"
+chip_label = "yellow"
 success = "green"
 error = "red"
 warning = "yellow"
@@ -26,7 +26,7 @@ text_secondary = "dark_gray"
 text_inverse = "black"
 table_header = "white"
 table_header_bg = "indexed(236)"
-column_separator = "cyan"
+table_column_separator = "cyan"
 table_selected = "reversed"
 sidebar_border = "cyan"
 modal_border_active = "yellow"
@@ -52,7 +52,7 @@ outlier_marker = "red"
     assert_eq!(theme.get("surface"), Color::Indexed(239));
 
     // Verify other colors still work
-    assert_eq!(theme.get("keybind_hints"), Color::Cyan);
+    assert_eq!(theme.get("chip_key"), Color::Cyan);
     assert_eq!(theme.get("error"), Color::Red);
 }
 

@@ -8578,6 +8578,14 @@ impl DataTableState {
         }
     }
 
+    /// Put the view on the last page, leaving the cursor where it is until the rows of
+    /// that page are read: the next read is of that page alone.
+    pub(crate) fn aim_at_end(&mut self) {
+        if self.num_rows_valid && self.visible_rows > 0 {
+            self.start_row = self.num_rows.saturating_sub(self.visible_rows);
+        }
+    }
+
     /// Whether the cursor is on the last row of a view whose length is known.
     pub fn on_last_row(&self) -> bool {
         self.num_rows_valid

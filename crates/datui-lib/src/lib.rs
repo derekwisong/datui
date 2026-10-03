@@ -13169,9 +13169,13 @@ impl App {
         }
         follow.stale_view = !read;
         state.follow_to(rows, restarted);
-        if at_bottom && read && !state.is_num_rows_valid() {
-            // A filtered view's end is known once its count lands.
-            self.end_after_count = Some(state.len_generation());
+        if at_bottom && read {
+            if state.is_num_rows_valid() {
+                state.aim_at_end();
+            } else {
+                // A filtered view's end is known once its count lands.
+                self.end_after_count = Some(state.len_generation());
+            }
         }
         if read && !self.spawn_collect(None) {
             // Nothing to read: the rows on hand already reach the end.

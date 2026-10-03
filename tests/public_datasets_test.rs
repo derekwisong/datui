@@ -119,7 +119,7 @@ fn a_web_file_in_a_collection_is_fetched_only_when_opened() {
         "Right does not list an HTTP URL"
     );
     drive(&mut app, key(KeyCode::Enter));
-    pump(&mut app, &rx, App::awaiting_download_confirmation);
+    pump(&mut app, &rx, App::awaiting_open_confirmation);
     drive(&mut app, key(KeyCode::Enter));
     pump(&mut app, &rx, |app| {
         app.data_table_state.is_some() && !app.is_busy()
@@ -188,7 +188,7 @@ fn a_downloaded_dataset_comes_back_named_and_measured() {
     pump(&mut app, &rx, |app| named(app).is_some());
     app.home.selected = named(&app).unwrap();
     drive(&mut app, key(KeyCode::Enter));
-    pump(&mut app, &rx, App::awaiting_download_confirmation);
+    pump(&mut app, &rx, App::awaiting_open_confirmation);
     drive(&mut app, key(KeyCode::Enter));
     pump(&mut app, &rx, |app| {
         app.data_table_state.is_some() && !app.is_busy()

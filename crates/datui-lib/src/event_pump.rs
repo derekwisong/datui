@@ -842,7 +842,7 @@ mod tests {
     fn settle(pump: &mut EventPump) -> Drained {
         fn owed(app: &App) -> bool {
             crate::tests::work_pending(app)
-                || (app.work_a_bump_would_strand() && !app.awaiting_download_confirmation())
+                || (app.work_a_bump_would_strand() && !app.awaiting_open_confirmation())
         }
         // Only a hang guard; nothing here is timed.
         let deadline = std::time::Instant::now() + Duration::from_secs(300);

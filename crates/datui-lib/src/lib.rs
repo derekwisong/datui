@@ -3952,7 +3952,7 @@ impl App {
     /// Whether a spinner is on screen, so the run loop turns it and redraws.
     pub fn something_is_spinning(&self) -> bool {
         self.is_busy()
-            || (self.row_count_pending() && !self.awaiting_download_confirmation())
+            || (self.row_count_pending() && !self.awaiting_open_confirmation())
             // The clock beside "source read finishing" keeps time until it has.
             || (self.analysis_modal.active && self.cancelled_analysis_running().is_some())
             || self.chart_preparing()
@@ -4149,6 +4149,13 @@ impl App {
                         &pending,
                         self.loading.download_note(),
                     ));
+                None
+            }
+            Step::AskRead(read) => {
+                // As for a download: nothing runs, and the generation is held.
+                self.loading.hold_while_asking(self.jobs.hold());
+                self.confirmation_modal
+                    .show(Self::in_memory_confirmation_message(&read));
                 None
             }
             step => {
@@ -5022,6 +5029,7 @@ impl App {
             size: 0,
             recent: None,
             shown: None,
+            warn_in_memory_above: None,
         });
         self.loading.id().expect("an open was begun")
     }
@@ -8858,7 +8866,28 @@ impl App {
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             Step::Ask(_) => unreachable!("not a phase with a worker"),
+            Step::AskRead(_) => unreachable!("not a phase with a worker"),
         }
+    }
+
+    /// What the user is asked before files past `[file_loading] memory_warning_mb` are
+    /// read whole into memory: `big.json: JSON reads 2.1 GB into memory`.
+    fn in_memory_confirmation_message(read: &loading::InMemory) -> String {
+        let what = match read.files {
+            1 => format!(
+                "{}: {} reads",
+                read.name
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| read.name.display().to_string()),
+                read.format.title()
+            ),
+            n => format!("{n} {} files read", read.format.title()),
+        };
+        format!(
+            "{what} {} into memory before the table appears.\n\nRead it?",
+            Self::format_bytes(read.bytes)
+        )
     }
 
     /// What the user is being asked to agree to before a remote file is downloaded.
@@ -11436,12 +11465,13 @@ impl App {
         }
     }
 
-    /// True while the confirmation modal is asking whether to download a remote file.
+    /// True while the confirmation modal is asking whether to download a remote file,
+    /// or to read a large one whole into memory.
     ///
-    /// That is the one confirmation the user has to be able to walk away from: the
-    /// size probe behind it can take fifteen seconds, and the answer to "actually,
-    /// never mind" is the home screen, not the exit.
-    pub fn awaiting_download_confirmation(&self) -> bool {
+    /// Those are the confirmations the user has to be able to walk away from: the
+    /// size probe behind a download can take fifteen seconds, and the answer to
+    /// "actually, never mind" is the home screen, not the exit.
+    pub fn awaiting_open_confirmation(&self) -> bool {
         self.confirmation_modal.active && self.loading.asking()
     }
 
@@ -11510,7 +11540,7 @@ impl App {
         // not a wait for it to finish.
         if event.code == KeyCode::Char('o')
             && event.modifiers.contains(KeyModifiers::CONTROL)
-            && (!self.confirmation_modal.active || self.awaiting_download_confirmation())
+            && (!self.confirmation_modal.active || self.awaiting_open_confirmation())
         {
             self.enter_home();
             return None;
@@ -11604,11 +11634,10 @@ impl App {
                             self.confirmation_modal.hide();
                             return Some(AppEvent::CopyTable { format, header });
                         }
-                        #[cfg(any(feature = "http", feature = "cloud"))]
                         if self.loading.asking() {
                             self.confirmation_modal.hide();
                             // The loader lets go of its hold on the generation as the
-                            // download starts, and the download's job takes it before
+                            // download or the read starts, and its job takes it before
                             // anything else can look.
                             let step = self.loading.confirmed();
                             return self.run_load_step(step);
@@ -12654,8 +12683,9 @@ impl App {
                 }
                 // Asks the filesystem for the size the loading screen shows, and whether
                 // the path is there to be a recent.
-                let request =
+                let mut request =
                     loading::OpenRequest::named(paths.clone(), options.clone(), &self.formats);
+                request.warn_in_memory_above = self.app_config.file_loading.memory_warning();
                 self.begin_new_dataset();
                 let step = self.loading.open(request);
                 self.run_load_step(step)
@@ -17556,7 +17586,7 @@ impl Widget for &mut App {
             .filter(|_| self.awaiting_dataset() || self.export_progress.is_none());
         let status_msg = match (load, &self.export_progress) {
             // The load is paused on the user; the bar names the modal's keys instead.
-            (Some(_), _) if self.awaiting_download_confirmation() => None,
+            (Some(_), _) if self.awaiting_open_confirmation() => None,
             (Some((current_phase, progress_percent, ..)), _) => {
                 let current_phase = self.loading_phase(current_phase);
                 // The percentage is a constant per phase, which was harmless beside a
@@ -17737,7 +17767,7 @@ impl Widget for &mut App {
             });
         // Nothing is counted while a load waits on the download confirmation, and a
         // spinning count there would read as progress.
-        if self.awaiting_download_confirmation() {
+        if self.awaiting_open_confirmation() {
             controls.row_count = None;
         }
         // The hex view has bytes, not rows: its status line says where the cursor is.

@@ -2758,10 +2758,7 @@ fn the_download_confirmation_is_not_busy() {
     assert!(matches!(answered, AppEvent::JobEnded(_)));
     let _ = app.handle(&answered);
 
-    assert!(
-        app.awaiting_download_confirmation(),
-        "the user is being asked"
-    );
+    assert!(app.awaiting_open_confirmation(), "the user is being asked");
     assert!(!app.is_busy(), "and nothing is running while they decide");
     let bar = control_bar(&mut app);
     assert!(

@@ -9714,7 +9714,7 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
 /// used to quit datui, and Ctrl+O was swallowed while it was up, which made a remote
 /// open the one thing in the app you could not back out of.
 #[cfg(feature = "http")]
-fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
+fn app_awaiting_open_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     // Refused immediately, so the size probe does not sit on its timeout.
@@ -9736,7 +9736,7 @@ fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
     // time Windows had run them. What is being asserted is that datui asks before
     // downloading, not that it asks within any particular time.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !app.awaiting_download_confirmation() && std::time::Instant::now() < deadline {
+    while !app.awaiting_open_confirmation() && std::time::Instant::now() < deadline {
         while let Ok(ev) = rx.try_recv() {
             if let Some(follow_up) = app.event(&ev) {
                 app.event(&follow_up);
@@ -9750,9 +9750,9 @@ fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
 #[cfg(feature = "http")]
 #[test]
 fn test_declining_a_download_goes_home_instead_of_quitting() {
-    let (mut app, _rx) = app_awaiting_download_confirmation();
+    let (mut app, _rx) = app_awaiting_open_confirmation();
     assert!(
-        app.awaiting_download_confirmation(),
+        app.awaiting_open_confirmation(),
         "opening a remote URL should ask before downloading"
     );
 
@@ -9770,14 +9770,14 @@ fn test_declining_a_download_goes_home_instead_of_quitting() {
         InputMode::Home,
         "declining a download should leave the user at home"
     );
-    assert!(!app.awaiting_download_confirmation());
+    assert!(!app.awaiting_open_confirmation());
 }
 
 #[cfg(feature = "http")]
 #[test]
 fn test_ctrl_o_escapes_the_download_confirmation() {
-    let (mut app, _rx) = app_awaiting_download_confirmation();
-    assert!(app.awaiting_download_confirmation());
+    let (mut app, _rx) = app_awaiting_open_confirmation();
+    assert!(app.awaiting_open_confirmation());
 
     app.event(&ctrl_o());
 
@@ -9787,7 +9787,7 @@ fn test_ctrl_o_escapes_the_download_confirmation() {
         "Ctrl+O should work while the download confirmation is up"
     );
     assert!(
-        !app.awaiting_download_confirmation(),
+        !app.awaiting_open_confirmation(),
         "leaving should clear the pending download, not leave it armed"
     );
 }
@@ -16316,7 +16316,7 @@ fn settle_from(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: AppEvent) {
         match next.take() {
             Some(ev) => next = app.event(&ev),
             // A download is asked about first; Yes has the focus.
-            None if app.awaiting_download_confirmation() => next = Some(key(KeyCode::Enter)),
+            None if app.awaiting_open_confirmation() => next = Some(key(KeyCode::Enter)),
             None => match next_event(app, rx) {
                 Some(ev) => next = Some(ev),
                 None => return,
@@ -16478,7 +16478,7 @@ fn an_abandoned_http_download_stops_while_the_server_is_silent() {
         assert!(Instant::now() < deadline, "the first KiB never landed");
         next = match next.take() {
             Some(event) => app.event(&event),
-            None if app.awaiting_download_confirmation() => Some(key(KeyCode::Enter)),
+            None if app.awaiting_open_confirmation() => Some(key(KeyCode::Enter)),
             None => rx.recv_timeout(Duration::from_millis(10)).ok(),
         };
     }
@@ -16549,7 +16549,7 @@ fn quitting_mid_http_download_removes_the_partial_file() {
         assert!(Instant::now() < deadline, "the first KiB never landed");
         next = match next.take() {
             Some(event) => app.event(&event),
-            None if app.awaiting_download_confirmation() => Some(key(KeyCode::Enter)),
+            None if app.awaiting_open_confirmation() => Some(key(KeyCode::Enter)),
             None => rx.recv_timeout(Duration::from_millis(10)).ok(),
         };
     }
@@ -23049,6 +23049,76 @@ fn test_copy_as_python_reads_streams_beside_ipc_files() {
         "{script}"
     );
     assert_eq!(rows, view_csv(&app), "{script}");
+}
+
+/// A file read whole into memory past `[file_loading] memory_warning_mb` is put to
+/// the user before the read: Enter reads it, Esc goes home without reading, and 0
+/// never asks.
+#[test]
+fn test_a_large_in_memory_read_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.json");
+    // Over 1 MiB of JSON.
+    let rows: Vec<String> = (0..40_000)
+        .map(|i| format!("{{\"id\":{i},\"name\":\"row number {i}\"}}"))
+        .collect();
+    std::fs::write(&path, format!("[{}]", rows.join(","))).unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 1024 * 1024);
+    let app_with = |mb: u64| {
+        let mut config = datui::AppConfig::default();
+        config.file_loading.memory_warning_mb = Some(mb);
+        let theme = datui::Theme::from_config(&config.theme).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
+        (app, rx, tx)
+    };
+    // Opened until the question is up, as a download's is: the open waits on it.
+    let ask = |app: &mut App, rx: &mpsc::Receiver<AppEvent>| {
+        let mut next = Some(AppEvent::Open(vec![path.clone()], OpenOptions::default()));
+        while !app.awaiting_open_confirmation() {
+            let event = next
+                .take()
+                .or_else(|| next_event(app, rx))
+                .expect("the open asks");
+            next = app.event(&event);
+        }
+    };
+
+    let (mut app, rx, tx) = app_with(1);
+    ask(&mut app, &rx);
+    assert!(app.confirmation_modal.active, "the read is asked about");
+    let message = app.confirmation_modal.message.clone();
+    assert!(
+        message.starts_with("big.json: JSON reads ") && message.contains("into memory"),
+        "{message}"
+    );
+    assert!(app.data_table_state.is_none(), "nothing was read");
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+        next = app.event(&event);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 40_000);
+
+    let (mut app, rx, _tx) = app_with(1);
+    ask(&mut app, &rx);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    drain_events(&mut app, &rx);
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(app.data_table_state.is_none(), "declined, nothing was read");
+
+    let (mut app, rx, _tx) = app_with(0);
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    assert!(!app.confirmation_modal.active, "0 never asks");
+    assert!(app.data_table_state.is_some());
 }
 
 /// A file known by its bytes rather than its name, an extensionless Parquet file:

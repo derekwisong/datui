@@ -60,7 +60,7 @@ fn open_and_confirm(app: &mut App, rx: &mpsc::Receiver<AppEvent>, dir: &Path) {
         ..OpenOptions::default()
     };
     chain(app, AppEvent::Open(vec![PathBuf::from(URL)], options));
-    while app.error_message().is_none() && !app.awaiting_download_confirmation() {
+    while app.error_message().is_none() && !app.awaiting_open_confirmation() {
         let event = next_event(app, rx).expect("the size probe answers");
         chain(app, event);
     }
@@ -230,7 +230,7 @@ fn a_failed_download_leaves_no_file() {
         ..OpenOptions::default()
     };
     chain(&mut app, AppEvent::Open(vec![PathBuf::from(URL)], options));
-    while !app.awaiting_download_confirmation() {
+    while !app.awaiting_open_confirmation() {
         let event = next_event(&app, &rx).expect("the size probe answers");
         chain(&mut app, event);
     }
@@ -265,7 +265,7 @@ fn an_object_that_will_not_read_is_named_by_its_url() {
         chain(&mut app, AppEvent::Open(vec![PathBuf::from(&url)], options));
         while let Some(event) = next_event(&app, &rx) {
             chain(&mut app, event);
-            if app.awaiting_download_confirmation() {
+            if app.awaiting_open_confirmation() {
                 chain(
                     &mut app,
                     AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
@@ -462,7 +462,7 @@ fn settle_confirming(app: &mut App, rx: &mpsc::Receiver<AppEvent>) -> Option<Str
     let mut asked = None;
     while let Some(event) = next_event(app, rx) {
         chain(app, event);
-        if app.awaiting_download_confirmation() {
+        if app.awaiting_open_confirmation() {
             asked = Some(app.confirmation_modal.message.clone());
             chain(
                 app,

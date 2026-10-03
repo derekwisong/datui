@@ -524,10 +524,10 @@ fn an_s3_object_opens_and_lands_in_recents() {
 
     // A remote open asks before spending egress.
     let asked = pump_until(&mut app, &rx, 30, |app| {
-        app.awaiting_download_confirmation() || app.data_table_state.is_some()
+        app.awaiting_open_confirmation() || app.data_table_state.is_some()
     });
     assert!(asked, "opening a remote object should either ask or load");
-    if app.awaiting_download_confirmation() {
+    if app.awaiting_open_confirmation() {
         // The modal opens focused on No, which is the right default for a prompt that
         // spends somebody's egress budget. Moving to Yes is part of what a user does.
         println!("confirmation raised, accepting");
@@ -1075,10 +1075,10 @@ fn awkward_names_list_and_open() {
                 continue;
             }
             let done = pump_until(&mut app, &rx, 60, |app| {
-                app.awaiting_download_confirmation()
+                app.awaiting_open_confirmation()
                     || (app.data_table_state.is_some() && !app.is_busy())
             });
-            if app.awaiting_download_confirmation() {
+            if app.awaiting_open_confirmation() {
                 app.event(&key(crossterm::event::KeyCode::Left));
                 drive(&mut app, key(crossterm::event::KeyCode::Enter));
                 pump_until(&mut app, &rx, 60, |app| {
@@ -1192,9 +1192,9 @@ fn open_url(url: &str, config: &CloudConfig) -> Result<Vec<String>, String> {
         return Err(crash);
     }
     pump_until(&mut app, &rx, 120, |app| {
-        app.awaiting_download_confirmation() || (app.data_table_state.is_some() && !app.is_busy())
+        app.awaiting_open_confirmation() || (app.data_table_state.is_some() && !app.is_busy())
     });
-    if app.awaiting_download_confirmation() {
+    if app.awaiting_open_confirmation() {
         app.event(&key(crossterm::event::KeyCode::Left));
         drive(&mut app, key(crossterm::event::KeyCode::Enter));
         pump_until(&mut app, &rx, 120, |app| {
@@ -1346,7 +1346,7 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
     assert!(select_row(&mut app, "Palmer penguins"));
     // A small built-in catalog file downloads without asking (#547 M5).
     assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
-    assert!(!app.awaiting_download_confirmation());
+    assert!(!app.awaiting_open_confirmation());
     assert!(pump_until(&mut app, &rx, 120, |app| app
         .data_table_state
         .is_some()

@@ -265,13 +265,13 @@ connection = "onprem"
     select(&mut app, "Penguins");
     drive(&mut app, key(KeyCode::Enter));
     pump(&mut app, &rx, |app| {
-        app.awaiting_download_confirmation()
+        app.awaiting_open_confirmation()
             || app
                 .data_table_state
                 .as_ref()
                 .is_some_and(|t| t.headers().first().map(String::as_str) == Some("species"))
     });
-    if app.awaiting_download_confirmation() {
+    if app.awaiting_open_confirmation() {
         drive(&mut app, key(KeyCode::Enter));
     }
     pump(&mut app, &rx, |app| {

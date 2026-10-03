@@ -1988,36 +1988,33 @@ mod tests {
 
     // --- Fixes from the high-effort review of #162 --------------------------------
 
-    /// Item 1: Ctrl-C in a focused text field copies (reaches the textarea) rather than
-    /// quitting; Ctrl-Q still quits from there.
+    /// Ctrl-C quits from a focused text field too (#649), as Ctrl-Q always has; the
+    /// field copies with Alt+W instead.
     #[test]
-    fn ctrl_c_in_the_query_bar_does_not_quit() {
+    fn ctrl_c_in_the_query_bar_quits() {
         let (mut p, _dir) = loaded_pump();
         p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
         assert_eq!(p.app.input_mode, InputMode::Editing);
-
-        let out = p.app.handle(&AppEvent::Key(ctrl('c')));
-        assert!(
-            !matches!(out, Ok(Some(AppEvent::Exit))),
-            "Ctrl-C in the query bar must not quit"
-        );
+        assert!(matches!(
+            p.app.handle(&AppEvent::Key(ctrl('c'))),
+            Ok(Some(AppEvent::Exit))
+        ));
+        let alt_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT);
+        assert!(!matches!(
+            p.app.handle(&AppEvent::Key(alt_w)),
+            Ok(Some(AppEvent::Exit))
+        ));
         assert_eq!(
             p.app.input_mode,
             InputMode::Editing,
-            "still in the query bar"
+            "Alt+W stays in the field"
         );
-        // Ctrl-Q quits from anywhere, the query bar included.
-        assert!(matches!(
-            p.app.handle(&AppEvent::Key(ctrl('q'))),
-            Ok(Some(AppEvent::Exit))
-        ));
     }
 
-    /// Ctrl-C copies in every search box, not only the query bar: the Sort tab's column
-    /// search and the chart view's open column Picker are text fields too. At the plain
-    /// table it still quits.
+    /// Ctrl-C quits from every search box and modal (#649): the Sort tab's column
+    /// search, the chart view's open column Picker, and the plain table.
     #[test]
-    fn ctrl_c_copies_in_the_sort_and_chart_search_boxes() {
+    fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
         use crate::chart_modal::ChartFocus;
         use crate::sort_filter_modal::{SortFilterFocus, SortFilterTab};
         use crate::sort_modal::SortFocus;
@@ -2032,7 +2029,7 @@ mod tests {
             p.app.text_field_focused(),
             "the sort search is a text field"
         );
-        assert!(!matches!(
+        assert!(matches!(
             p.app.handle(&AppEvent::Key(ctrl('c'))),
             Ok(Some(AppEvent::Exit))
         ));
@@ -2049,16 +2046,12 @@ mod tests {
             0,
         );
         p2.app.chart_modal.focus = ChartFocus::XColumn;
-        assert!(
-            !p2.app.text_field_focused(),
-            "the closed form is not a text field"
-        );
         p2.app.chart_modal.open_picker();
         assert!(
             p2.app.text_field_focused(),
             "the open Picker narrows by typing"
         );
-        assert!(!matches!(
+        assert!(matches!(
             p2.app.handle(&AppEvent::Key(ctrl('c'))),
             Ok(Some(AppEvent::Exit))
         ));

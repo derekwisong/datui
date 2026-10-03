@@ -227,7 +227,8 @@ leaving:
   `h/l` scrolled the view a column).
 - Esc's layered back-out; `q` pops to home when the dataset was opened
   from it and quits otherwise (the control bar says which); `Ctrl+Q` quits
-  from anywhere and `Ctrl+C` from anywhere outside a text field; `Q` quits
+  and `Ctrl+C` from anywhere, a text field included (#649; a field copies
+  with `Alt+W`); `Q` quits
   at the table and during a load, and is an ordinary key inside other
   surfaces (chart deliberately has no quit key); `Ctrl+O` home. (#320
   landed the approved `q` evolution.)

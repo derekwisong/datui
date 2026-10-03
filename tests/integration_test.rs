@@ -1481,11 +1481,10 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
 }
 
-/// The Data Quality scope input is a text field: Ctrl-C must reach the
-/// textarea's Copy binding instead of quitting, and `?` must type into the
-/// scope command instead of opening help.
+/// The Data Quality scope input is a text field: `?` must type into the scope
+/// command instead of opening help. Ctrl-C quits from it, as from anywhere (#649).
 #[test]
-fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
+fn test_data_quality_scope_input_owns_question_mark() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
     use datui::data_quality::QualityPage;
 
@@ -1542,13 +1541,14 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
     );
     assert!(app.text_field_focused());
 
+    // Ctrl-C quits from a text row too (#649).
     let quit = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
     )));
     assert!(
-        !matches!(quit, Some(AppEvent::Exit)),
-        "Ctrl-C in a sample text row must not quit"
+        matches!(quit, Some(AppEvent::Exit)),
+        "Ctrl-C in a sample text row quits"
     );
 
     let scope = |app: &App| {
@@ -1560,14 +1560,14 @@ fn test_data_quality_scope_input_owns_ctrl_c_and_question_mark() {
             .value()
             .to_string()
     };
-    let before = scope(&app);
+    // The prefilled value is selected, so what is typed replaces it.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
     assert_eq!(
         scope(&app),
-        format!("{before}?"),
+        "?",
         "? in a sample text row must type, not open help"
     );
 }

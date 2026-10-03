@@ -12983,15 +12983,13 @@ impl App {
     }
 
     /// The escapes that act at once while busy and jump ahead of anything queued: Ctrl-Q
-    /// (and Ctrl-C outside a text field) quit, Ctrl-O goes home, so a slow load never
+    /// and Ctrl-C quit, Ctrl-O goes home, so a slow load never
     /// traps the user; a confirmation modal keeps its keys so it can be answered; and the
     /// home screen is never busy on its own account (only work left running behind it sets
     /// `busy`), so it keeps every key.
     pub fn hard_escape_while_busy(&self, key: &KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let quit = ctrl
-            && (key.code == KeyCode::Char('q')
-                || (key.code == KeyCode::Char('c') && !self.text_field_focused()));
+        let quit = ctrl && matches!(key.code, KeyCode::Char('q' | 'c'));
         let home = ctrl && key.code == KeyCode::Char('o');
         let cancel_analysis = self.analysis_modal.active
             && self.analysis_modal.computing.is_some()
@@ -13084,8 +13082,8 @@ impl App {
             && !self.confirmation_modal.active
     }
 
-    /// Whether a text field currently owns typed characters, so Ctrl-C copies rather than
-    /// quits. The home filter is deliberately excluded: Ctrl-C quits from the home screen.
+    /// Whether a text field currently owns typed characters, so the wheel and `?` leave
+    /// it alone. The home filter is deliberately excluded.
     pub fn text_field_focused(&self) -> bool {
         match self.input_mode {
             InputMode::Editing => true,
@@ -20174,9 +20172,9 @@ impl App {
         if ctrl && event.code == KeyCode::Char('q') {
             return Some(AppEvent::Exit);
         }
-        // Ctrl-C also quits from anywhere, except in a focused text field, where it is
-        // the textarea's Copy binding and must reach it.
-        if ctrl && event.code == KeyCode::Char('c') && !self.text_field_focused() {
+        // Ctrl-C too, a text field included: a terminal user's reflex for leaving, and
+        // the field copies with Alt+W instead.
+        if ctrl && event.code == KeyCode::Char('c') {
             return Some(AppEvent::Exit);
         }
 

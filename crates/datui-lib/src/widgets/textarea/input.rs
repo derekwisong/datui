@@ -146,7 +146,8 @@ pub(super) fn action_for(input: Input) -> Action {
         // never delete. The field's owner decides what it does.
         (Key::Char('z'), true, false) => Action::Undo,
         (Key::Char('r'), true, false) => Action::Redo,
-        (Key::Char('c'), true, false) => Action::Copy,
+        // Alt+W, readline's copy: Ctrl+C quits datui from anywhere.
+        (Key::Char('w'), false, true) => Action::Copy,
         (Key::Char('x'), true, false) => Action::Cut,
         (Key::Char('y'), true, false) => Action::Paste,
 

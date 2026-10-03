@@ -64,7 +64,7 @@ Help Navigation:
 
 Exit:
   Ctrl+O:           Home screen (works during a load; abandons it)
-  Ctrl+Q:           Quit from anywhere (Ctrl+C too, outside a text field)
+  Ctrl+Q:           Quit from anywhere (Ctrl+C too)
   q:                Back to the home screen when the dataset was opened
                     from it; otherwise quit (the control bar says which)
   Q:                Quit

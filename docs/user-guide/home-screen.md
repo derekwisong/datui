@@ -441,7 +441,7 @@ The bottom bar shows the available action for the selected row.
 
 Entries beyond an inspection limit remain browsable. The listing or search
 heading marks incomplete results: a directory cut short reads `first 5,000`
-beside its name, whether it is local or on a share.
+beside its name, whether it is local, on a share or in a bucket.
 
 ## Narrow and plain terminals
 

@@ -97,6 +97,8 @@ Reading a row:
   read had to decide. In a collection, "dataset" marks a remote directory
   not listed until you enter it, and "missing" a local path with nothing
   there.
+  A directory lists its first 5,000 entries and says "first 5,000". In
+  a bucket, typing past them asks it for the names the filter starts.
   A file row that is not read lazily says how opening it reads it, dim
   beside its name: "converts" (read once into a temporary file), "in
   memory" (read whole), or "downloads" (a remote file copied first).

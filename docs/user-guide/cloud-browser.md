@@ -96,6 +96,15 @@ than under `CLOUD`.
 Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
 objects some tools leave to stand for folders.
 
+A bucket or prefix lists a page of 1,000 names at a time, like a local directory:
+
+| What | Where it shows |
+|---|---|
+| Rows as each page arrives | The heading reads `3,000 so far` |
+| More than 5,000 names | The listing stops; the heading reads `first 5,000` |
+| <kbd>Backspace</kbd> or <kbd>Esc</kbd> while it lists | The listing stops; entering again lists again |
+| Typing past the first 5,000 | The bucket is asked for names starting with the filter, after the part the listed names share: `usw` in a level of `STATION=…` asks for `STATION=USW`. The heading adds `+ 1,907 STATION=USW*` |
+
 ## What a cloud row shows
 
 Bucket listings show name, size and modification time. Row counts and schemas

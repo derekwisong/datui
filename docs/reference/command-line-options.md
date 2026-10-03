@@ -12,6 +12,8 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 |--------|-------------|
 | `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table. `-` reads data piped to standard input, as does no PATH when something is piped in. With no PATH and nothing piped in, datui opens its home screen so you can pick a dataset |
 | `-f, --follow` | Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops |
+| `--tee <FILE>` | Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends |
+| `--tee-raw` | With --tee: leave FILE exactly as the bytes came, a WAV header's sizes included |
 | `--skip-lines <N>` | Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows |
 | `--skip-rows <N>` | Skip this many CSV rows at the start of the file; the header is read after them. Quote-aware: a row with embedded newlines counts once. Compare --skip-lines |
 | `--skip-tail-rows <N>` | Skip this many rows at the end of the file, such as a vendor footer or trailing garbage. Needs the row count first, which reads the whole file; on a directory in a bucket, every file |
@@ -57,7 +59,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--align-numeric-right[=<BOOL>]` | Right-align numeric columns and their headers (default: true) |
 | `--mouse[=<BOOL>]` | Take the mouse: wheel scrolls, click selects (default: true). --mouse=false leaves it to the terminal |
 | `--generate-config` | Write the default configuration to ~/.config/datui/config.toml and exit |
-| `--force` | Overwrite an existing config file (with --generate-config) |
+| `--force` | Overwrite an existing file: the config file with --generate-config, or FILE with --tee |
 | `--s3-endpoint-url <URL>` | S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000 |
 | `--s3-access-key-id <KEY>` | S3 access key (overrides config and AWS_ACCESS_KEY_ID) |
 | `--s3-secret-access-key <SECRET>` | S3 secret key (overrides config and AWS_SECRET_ACCESS_KEY) |

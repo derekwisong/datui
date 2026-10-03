@@ -101,6 +101,32 @@ Parquet, Arrow IPC, Excel and other formats written with a footer cannot be
 read before they are finished, nor can a compressed file be read from the
 middle: `--follow` refuses them, and remote data, with a message.
 
+### Recording standard input
+
+`--tee FILE` records standard input to FILE while you view it: the bytes
+exactly as they arrive, in any format. The table reads FILE itself; there is
+no second copy.
+
+```bash
+some_logger | datui -f --tee run1.csv -
+arecord -f S16_LE -r 48000 -c 2 -t wav - | datui -f --tee take1.wav -
+```
+
+| When | What happens |
+|---|---|
+| The bar | `rec` with the bytes written and the rate; `saved` with the size, length and file once the stream ends; `stopped` and why, in the warning color, if writing failed (a full disk), which the error dialog says too |
+| An existing FILE | Refused; `--force` overwrites it |
+| Quit, <kbd>Ctrl</kbd>+<kbd>O</kbd> while the producer still sends | Asks: Stop recording, or Keep recording until the stream ends (after a quit, datui waits for it with the terminal handed back). <kbd>Esc</kbd> stays |
+| <kbd>Esc</kbd> at the table | Stops following; the recording goes on |
+| SIGTERM, SIGHUP | The file is finished and closed, and datui exits |
+| WAV | A producer writing to a pipe cannot fill in the RIFF and `data` sizes; they are filled in when the stream ends, as RF64 over 4 GB when the producer reserved a `JUNK` chunk for it. `--tee-raw` leaves FILE exactly as it came |
+
+Without `-f`, the whole stream is recorded before the table opens. With
+`-f`, a format that cannot be followed (a WAV file) shows what had arrived
+when it opened, and the recording goes on. The copy holds one megabyte however
+long the stream runs; a producer faster than the disk waits on the pipe.
+FILE is never removed, whatever happens.
+
 ## Directories
 
 `datui <directory>` does what <kbd>Enter</kbd> on that directory's row does on

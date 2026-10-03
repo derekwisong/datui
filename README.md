@@ -15,10 +15,9 @@ datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, O
 
 [Website][site] · [Documentation][docs] · [Quick start][quick-start] · [All demos][demos]
 
-```bash
-datui                              # home screen: your files and a catalog of public datasets
-datui sales.parquet                # open a file
-datui ./exports/                   # open a directory as one table
+```bash,network
+datui                     # home screen: your files and a catalog of public datasets
+datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
 datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/   # 37 million rows of NOAA weather, no login
 ```
 
@@ -28,7 +27,7 @@ datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/   # 37 million rows of NOAA 
 
 On Linux or macOS:
 
-```bash
+```bash,install
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 ```
 
@@ -47,7 +46,7 @@ and building from source. [Prebuilt binaries][latest-release] are also available
 
 | Action | Key | Guide |
 |---|---|---|
-| Query with SQL, q or text | `/` | [Queries][query-guide] |
+| Query with SQL, q or Text | `/` | [Queries][query-guide] |
 | Sort, filter, hide or freeze columns | `s` | [Table controls][filter-guide] |
 | Plot a trend or distribution | `c` | [Charts][chart-guide] |
 | Describe columns, correlations or data quality | `a` | [Analysis][analysis-guide] |
@@ -59,7 +58,7 @@ Press `?` for help on any screen. `Esc` backs out; `Ctrl+Q` quits.
 The [quick start][quick-start] opens Palmer penguins from the built-in catalog
 and asks which species is heaviest:
 
-```sql
+```sql,dataset=penguins,network,rows=3
 SELECT species, AVG(body_mass_g) AS mean_mass_g, COUNT(*) AS penguins
 FROM df GROUP BY species ORDER BY mean_mass_g DESC
 ```
@@ -68,13 +67,13 @@ Gentoo, at 5,076 g over 124 penguins.
 
 Parquet and other scan-based formats use [Polars](https://pola.rs) to load rows
 as needed. Queries, sorting and analysis can read much more than the visible
-page; see [performance tips][performance] for large datasets.
+page; see [large datasets][performance].
 
 ## Python
 
 `pip install datui` includes both the command and the Python module:
 
-```python
+```python,network
 import datui
 import polars as pl
 
@@ -88,7 +87,7 @@ if result is not None:
     print(result.collect())
 ```
 
-[Python guide][python-module] · [Supported formats and cloud access][loading-guide]
+[Python guide][python-module] · [Python API][python-api] · [Formats][formats] · [Open files][loading-guide]
 
 ## Configuration
 
@@ -122,6 +121,8 @@ Released under the [MIT license](LICENSE).
 [performance]: https://derekwisong.github.io/datui/latest/user-guide/large-datasets.html
 [loading-guide]: https://derekwisong.github.io/datui/latest/user-guide/open-files.html
 [python-module]: https://derekwisong.github.io/datui/latest/user-guide/python-module.html
+[python-api]: https://derekwisong.github.io/datui/latest/reference/python-api.html
+[formats]: https://derekwisong.github.io/datui/latest/formats/index.html
 [config-guide]: https://derekwisong.github.io/datui/latest/user-guide/configuration.html
 [for-developers]: https://derekwisong.github.io/datui/latest/for-developers.html
 [issues]: https://github.com/derekwisong/datui/issues

@@ -1,11 +1,11 @@
-# Installation
+# Install datui
 
-Datui runs on Linux, macOS and Windows. Pick one method, then check it with
-`datui --version` and move on to the [Quick Start](quick-start.md).
+datui runs on Linux, macOS and Windows. Pick one method, check it with
+`datui --version`, then go on to the [quick start](quick-start.md).
 
 ## Linux and macOS, one line
 
-```bash
+```bash,install
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 ```
 
@@ -20,7 +20,7 @@ into `~/.local/bin` (or `$XDG_BIN_HOME`) instead, and says how to put that on yo
 `PATH` if it is not there. Pass `--user` to do the same on a machine that has
 `sudo`:
 
-```bash
+```bash,install
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh -s -- --user
 ```
 
@@ -43,7 +43,7 @@ pip package installs the `datui` command and the [Python module](../user-guide/p
 
 Add the signing key and source once:
 
-```bash
+```bash,install
 curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/datui-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | sudo tee /etc/apt/sources.list.d/datui.list
 sudo apt update
@@ -57,20 +57,19 @@ After that, `apt upgrade` keeps datui current.
 Every release on [GitHub][latest-release] carries binaries for Linux (x86_64
 and arm64), macOS (Intel and Apple silicon) and Windows, plus `.deb`, `.rpm`
 and Arch tarballs.
-Download, unpack, and put `datui` somewhere on your `PATH`.
+Download, unpack, and put `datui` somewhere on your `PATH`. To install a
+package instead, replace `<VERSION>` with the release's version, such as `0.4.0`:
 
-```bash
-# .deb
-sudo apt install ./datui_X.Y.Z-1_amd64.deb
-# .rpm
-sudo dnf install https://github.com/derekwisong/datui/releases/download/vX.Y.Z/datui-X.Y.Z-1.x86_64.rpm
+```bash,template
+sudo apt install ./datui_<VERSION>-1_amd64.deb
+sudo dnf install https://github.com/derekwisong/datui/releases/download/v<VERSION>/datui-<VERSION>-1.x86_64.rpm
 ```
 
 ## From source
 
 Needs a [Rust toolchain](https://www.rust-lang.org/tools/install), 1.95 or newer.
 
-```bash
+```bash,install
 git clone https://github.com/derekwisong/datui.git
 cd datui
 cargo build --release --locked
@@ -80,10 +79,10 @@ The binary is `target/release/datui`. To build a specific release, check out
 its tag first (`git tag --list`, then `git checkout vX.Y.Z`). To install into
 `~/.cargo/bin` instead, run `cargo install --path . --locked` from the checkout.
 
-Four features are on by default. `--no-default-features` leaves them all out;
+Five features are on by default. `--no-default-features` leaves them all out;
 add back the ones you want with `--features`:
 
-```bash
+```bash,install
 cargo build --release --locked --no-default-features --features sql,streaming
 ```
 
@@ -92,6 +91,7 @@ cargo build --release --locked --no-default-features --features sql,streaming
 | `cloud` | S3, GCS and Azure URLs fail to open; no cloud sources on the home screen |
 | `http` | HTTP(S) URLs fail to open |
 | `sql` | The query prompt has no SQL tab; a view saved with SQL fails to apply |
+| `sqlite` | SQLite databases fail to open |
 | `streaming` | No Polars streaming engine: an export reads the whole view first, and a Data Quality read runs to its end on <kbd>Esc</kbd> |
 
 Public datasets lists only what the build can open.
@@ -111,7 +111,7 @@ and format names. Set it up once per shell:
 
 ## Windows
 
-```powershell
+```powershell,install
 winget install derekwisong.datui
 ```
 
@@ -119,7 +119,7 @@ winget install derekwisong.datui
 |---|---|
 | Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Windows Terminal draws datui's glyphs; the classic console draws ASCII unless its code page is UTF-8 (`chcp 65001`). `[display] unicode` overrides either way ([Glyphs or ASCII](../user-guide/configuration.md#glyphs-or-ascii)) |
 | Config file | `%APPDATA%\datui\config.toml` |
-| Format specs | `%APPDATA%\datui\formats` ([Binary formats](../formats/format-specs.md)) |
+| Format specs | `%APPDATA%\datui\formats` ([Format specs](../formats/format-specs.md)) |
 | Cache and log | `%LOCALAPPDATA%\datui` |
 | `~` | `datui ~\data\a.csv` opens from your user folder in cmd and PowerShell too |
 | Mouse | <kbd>Shift</kbd>+drag selects text in Windows Terminal while datui has the mouse ([Mouse and text selection](../user-guide/configuration.md#mouse-and-text-selection)) |

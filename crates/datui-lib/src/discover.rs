@@ -2110,6 +2110,10 @@ pub fn enrich_tables(entry: &mut Entry) {
         }
         return;
     };
+    // An ELF file opens its symbols; its sections are a --table away.
+    if format == crate::FileFormat::Elf {
+        return;
+    }
     let Ok(tables) = crate::members::tables(&entry.path, format) else {
         return;
     };

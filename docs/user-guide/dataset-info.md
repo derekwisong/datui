@@ -12,7 +12,7 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 | **Audio** | An audio file's format, length, metadata and markers; appears for audio files |
 | **MIDI** | A MIDI file's format, timing, length, tempo and tracks; appears for MIDI files |
 | **Metadata** | The metadata line a [delimited format spec](binary-formats.md#delimited-text) names, as key and value; appears for files read through one |
-| **VCD**, **FIX**, **SDF**, **NumPy** | A value change dump's header and signals, a FIX log's versions, dictionaries and tags, an SDF file's fields, or a NumPy array's shape and fields; appears for those files |
+| **VCD**, **FIX**, **SDF**, **NumPy**, **ELF** | A value change dump's header and signals, a FIX log's versions, dictionaries and tags, an SDF file's fields, a NumPy array's shape and fields, or an ELF file's flash and RAM and sections; appears for those files |
 | **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
@@ -92,8 +92,9 @@ list is the files that could not be read, with why.
 
 For a [VCD dump](loading-data.md#vcd-value-change-dumps), <kbd>i</kbd> opens on the
 VCD tab; for a [FIX log](loading-data.md#fix-logs), an
-[SDF file](loading-data.md#sdf-compound-files) or a
-[NumPy array](loading-data.md#numpy-arrays) the tab sits beside Schema.
+[SDF file](loading-data.md#sdf-compound-files), a
+[NumPy array](loading-data.md#numpy-arrays) or an
+[ELF file](loading-data.md#elf-symbol-tables) the tab sits beside Schema.
 
 | Tab | Lines | List |
 |---|---|---|
@@ -101,6 +102,7 @@ VCD tab; for a [FIX log](loading-data.md#fix-logs), an
 | FIX | Messages per BeginString; the dictionaries read with the log, each with what it matches and how many messages | Tags: each column with its tag number and the names the dictionaries give it, each dictionary's when they differ |
 | SDF | Records, fields, and how many records are V3000 | Fields: each one's type and how many records hold it |
 | NumPy | Shape, type, order (C or Fortran) and format version; for an archive's array, the archive and how many arrays it holds | Fields: each one's type, subarray shape and byte offset |
+| ELF | Class, machine, type, entry point; bytes in loaded, unwritten sections (flash) and in written ones (RAM); the symbol count | Sections: each one's address, size and flags |
 
 A list of more than 10,000 shows the first 10,000 and how many more there are.
 

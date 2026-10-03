@@ -181,6 +181,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | [SDF](#sdf-compound-files) | `.sdf`, `.sd` | converted once | converted once | downloaded | downloaded | no |
 | [SQLite](#sqlite-databases) | `.db`, `.sqlite`, `.sqlite3`, `.db3` | lazy | no | downloaded | downloaded | no |
 | [NumPy](#numpy-arrays) | `.npy`, `.npz` | lazy | no | downloaded | downloaded | no |
+| [ELF](#elf-symbol-tables) | `.elf`, `.axf` | in memory | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
 | Read | What it means |
@@ -613,6 +614,39 @@ the dataset closes.
 
 Press <kbd>i</kbd> for the NumPy tab: shape, type, order and format version,
 and each field's type and offset.
+### ELF symbol tables
+
+Read: [in memory](#how-each-format-is-read): the symbol and section tables,
+from a map of the file.
+
+```bash
+datui firmware.elf                    # one row per symbol
+datui firmware.elf --table sections   # one row per section
+datui firmware.elf/sections           # the same
+```
+
+| Column | Holds |
+|---|---|
+| `name` | The symbol's name; a Rust name demangled, without its hash. C++ names stay mangled |
+| `addr` | Its address (`u64`) |
+| `size` | Its size in bytes |
+| `kind` | `func`, `object`, `section`, `file`, `common`, `tls`, `ifunc` or `notype` |
+| `bind` | `local`, `global`, `weak` or `unique` |
+| `section` | The section it is in; `UND` for undefined, `ABS` for absolute, `COMMON` |
+| `region` | `flash` when its section is loaded and not written (code, constants), `ram` when it is written (`.data`, `.bss`); null for what is not loaded |
+
+The `sections` table has `name`, `addr`, `size`, `flags` (as `readelf` writes
+them: `W` write, `A` alloc, `X` execute, ...), `kind` and `region`.
+
+- Sort by `size` and group by `section` or `region` to see what fills flash and RAM.
+- The symbol table is `.symtab`, or `.dynsym` for a stripped library.
+- `.elf` and `.axf` files open by name; any file that starts with `\x7fELF`
+  opens too when named on the command line.
+- At most 10 million symbols are read; the Notes tab says how many more there are.
+
+Press <kbd>i</kbd> for the ELF tab: class, machine, type, entry point, the bytes
+in flash and in RAM, and each section's address, size and flags.
+
 ### VCD value change dumps
 
 Read: [converted once](#how-each-format-is-read).

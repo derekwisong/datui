@@ -277,6 +277,7 @@ pub fn ensure_sample_data() {
             "midi/song.mid",
             "sqlite/shop.db",
             "numpy/packed.npz",
+            "elf/tiny.elf",
             "hf_cache/people-test.arrow",
             "arrow_mixed/b.arrow",
             "hf_dict/dataset_dict.json",

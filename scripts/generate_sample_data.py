@@ -18,6 +18,7 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - Short WAV, Broadcast WAV and AIFF files: the wave module, and struct where it cannot
 - SQLite databases: one of several tables and one of a single table, with sqlite3
 - NumPy arrays and archives: each dtype, structured, 2-D in both orders, .npz
+- A tiny ELF executable, written by hand with struct
 
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
@@ -1430,6 +1431,59 @@ def generate_numpy():
     print(f"Generated: {out}")
 
 
+def generate_elf():
+    """A tiny 64-bit ELF executable written by hand: `.text`, `.rodata`, `.data` and
+    `.bss`, with symbols in each and one mangled Rust name."""
+    out = OUTPUT_DIR / "elf"
+    out.mkdir(exist_ok=True)
+    shstr = b"\0.text\0.rodata\0.data\0.bss\0.symtab\0.strtab\0.shstrtab\0"
+    strtab = b"\0main\0TABLE\0counter\0buffer\0_ZN4core3fmt5write17h0123456789abcdefE\0weak_hook\0"
+    sym_names = [b"main", b"TABLE", b"counter", b"buffer", b"_ZN4core3fmt5write17h0123456789abcdefE", b"weak_hook"]
+    # (name, value, size, info, section index)
+    symbols = [(0, 0, 0, 0, 0)] + [
+        (strtab.index(n + b"\0"), value, size, info, shndx)
+        for n, (value, size, info, shndx) in zip(
+            sym_names,
+            [(0x1000, 64, 0x12, 1), (0x2000, 256, 0x11, 2), (0x3000, 4, 0x11, 3),
+             (0x3010, 1024, 0x01, 4), (0x1040, 128, 0x12, 1), (0x10C0, 8, 0x22, 1)],
+        )
+    ]
+    symtab = b"".join(struct.pack("<IBBHQQ", n, i, 0, x, v, z) for n, v, z, i, x in symbols)
+    body = bytearray()
+
+    def place(data):
+        at = 64 + len(body)
+        body.extend(data)
+        while len(body) % 8:
+            body.append(0)
+        return at
+
+    text = b"\xc3" * 0xC8
+    text_at = place(text)
+    rodata_at = place(b"\x01" * 256)
+    data_at = place(b"\x02" * 16)
+    symtab_at = place(symtab)
+    strtab_at = place(strtab)
+    shstr_at = place(shstr)
+    shoff = 64 + len(body)
+    name = lambda n: shstr.index(n + b"\0")
+    sections = [
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        (name(b".text"), 1, 0x6, 0x1000, text_at, len(text), 0, 0, 16, 0),
+        (name(b".rodata"), 1, 0x2, 0x2000, rodata_at, 256, 0, 0, 8, 0),
+        (name(b".data"), 1, 0x3, 0x3000, data_at, 16, 0, 0, 8, 0),
+        (name(b".bss"), 8, 0x3, 0x3010, data_at + 16, 1024, 0, 0, 8, 0),
+        (name(b".symtab"), 2, 0, 0, symtab_at, len(symtab), 6, 1, 8, 24),
+        (name(b".strtab"), 3, 0, 0, strtab_at, len(strtab), 0, 0, 1, 0),
+        (name(b".shstrtab"), 3, 0, 0, shstr_at, len(shstr), 0, 0, 1, 0),
+    ]
+    header = b"\x7fELF" + bytes([2, 1, 1, 0]) + bytes(8)
+    header += struct.pack("<HHIQQQIHHHHHH", 2, 62, 1, 0x1000, 0, shoff, 0, 64, 56, 0, 64, len(sections), 7)
+    shdrs = b"".join(struct.pack("<IIQQQQIIQQ", *sec) for sec in sections)
+    (out / "tiny.elf").write_bytes(header + bytes(body) + shdrs)
+    print(f"Generated: {out}")
+
+
 def _vlq(n):
     """A MIDI variable-length quantity: seven bits a byte, high bit on all but the last."""
     out = [n & 0x7F]
@@ -1669,6 +1723,9 @@ def main():
 
     print("\n19. Generating NumPy arrays...")
     generate_numpy()
+
+    print("\n20. Generating an ELF file...")
+    generate_elf()
 
     print("\nSample data generation complete!")
 

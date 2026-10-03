@@ -6,6 +6,7 @@
 //! check added to `run` reaches both.
 pub mod audio_header;
 pub mod config_parse;
+pub mod elf_symbols;
 pub mod fix_dict;
 pub mod fix_parse;
 pub mod format_spec;

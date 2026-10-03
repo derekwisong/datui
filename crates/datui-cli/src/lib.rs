@@ -52,6 +52,8 @@ pub enum FileFormat {
     Sdf,
     /// NumPy array (.npy), or archive of arrays (.npz): one array, picked with --table
     Numpy,
+    /// ELF file (.elf, .axf, or any by its first bytes): its symbols, or its sections with --table
+    Elf,
 }
 
 impl FileFormat {
@@ -100,6 +102,7 @@ impl FileFormat {
             Self::Fix => "fix",
             Self::Sdf => "sdf",
             Self::Numpy => "numpy",
+            Self::Elf => "elf",
         }
     }
 
@@ -112,7 +115,7 @@ impl FileFormat {
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
     /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -134,6 +137,7 @@ impl FileFormat {
         Self::Fix,
         Self::Sdf,
         Self::Numpy,
+        Self::Elf,
     ];
 
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
@@ -168,6 +172,7 @@ impl FileFormat {
                 | Self::Fix
                 | Self::Sdf
                 | Self::Numpy
+                | Self::Elf
         )
     }
 
@@ -175,7 +180,7 @@ impl FileFormat {
     /// it (`shop.db/orders`, `run.npz/weights`) that the home screen lists like a
     /// directory's files and `--table` names.
     pub fn holds_tables(self) -> bool {
-        matches!(self, Self::Sqlite | Self::Numpy)
+        matches!(self, Self::Sqlite | Self::Numpy | Self::Elf)
     }
 
     /// How a file of this format is read when it is opened, as `stored` on disk.
@@ -187,7 +192,8 @@ impl FileFormat {
     ///
     /// JSON, Avro, ORC and Excel have readers that take the whole file, and a model
     /// file's tensor list is small by nature: one row per tensor, from the header. A
-    /// MIDI file is decoded whole, and is refused over 64 MiB. A SQLite table is read
+    /// MIDI file is decoded whole, and is refused over 64 MiB; an ELF file's symbol
+    /// table is read into memory. A SQLite table is read
     /// in place, a page at a time, with sort and filters run in SQLite. A NumPy array
     /// is decoded from a map of the file where it is shown; a compressed member of an
     /// archive is decompressed once to a file first.
@@ -212,7 +218,8 @@ impl FileFormat {
             | Self::Excel
             | Self::Safetensors
             | Self::Gguf
-            | Self::Midi => ReadMode::InMemory,
+            | Self::Midi
+            | Self::Elf => ReadMode::InMemory,
         };
         match stored {
             Stored::Plain => Some(plain),
@@ -328,6 +335,7 @@ impl FileFormat {
             "vcd" => Some(Self::Vcd),
             "sdf" | "sd" => Some(Self::Sdf),
             "npy" | "npz" => Some(Self::Numpy),
+            "elf" | "axf" => Some(Self::Elf),
             _ => None,
         }
     }
@@ -645,7 +653,7 @@ pub struct Args {
     /// Table to open from a file that holds several. SQLite: a table or view by name.
     /// NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences.
     /// Hugging Face cache and DatasetDict directories: a split (default train).
-    /// NumPy archives (.npz): an array by name
+    /// NumPy archives (.npz): an array by name. ELF files: symbols (default) or sections
     #[arg(long = "table", value_name = "TABLE", help_heading = "Reading")]
     pub table: Option<String>,
     /// Show integer audio samples as float in [-1, 1] (default: the integers as stored)
@@ -1245,7 +1253,8 @@ mod format_tests {
                 | FileFormat::Vcd
                 | FileFormat::Fix
                 | FileFormat::Sdf
-                | FileFormat::Numpy => FileFormat::ALL.contains(&f),
+                | FileFormat::Numpy
+                | FileFormat::Elf => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -1282,7 +1291,8 @@ mod format_tests {
                 "vcd",
                 "fix",
                 "sdf",
-                "numpy"
+                "numpy",
+                "elf"
             ]
         );
     }

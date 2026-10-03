@@ -47,6 +47,8 @@ Tabs:
                records hold it. Only for SDF files
   NumPy:       A NumPy array's shape, type, order and format version, and
                each field's type and offset. Only for NumPy arrays
+  ELF:         An ELF file's class, machine, type, entry point, the bytes in
+               flash and in RAM, and each section. Only for ELF files
   Resources:   What the data costs to hold and to read, and how it is read:
                lazy, converted once, or in memory
   Partitions:  The layout of a partitioned dataset. Only when it has one

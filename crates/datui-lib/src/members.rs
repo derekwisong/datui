@@ -30,6 +30,9 @@ pub fn holder_of(path: &Path, head: &[u8]) -> Option<FileFormat> {
     if crate::numpy::is_archive(path, head) {
         return Some(FileFormat::Numpy);
     }
+    if crate::elf::looks_like(head) {
+        return Some(FileFormat::Elf);
+    }
     None
 }
 
@@ -90,6 +93,7 @@ pub fn tables(file: &Path, format: FileFormat) -> color_eyre::Result<Vec<Table>>
     match format {
         FileFormat::Sqlite => crate::sqlite::tables(file),
         FileFormat::Numpy => crate::numpy::tables(file),
+        FileFormat::Elf => Ok(crate::elf::tables()),
         other => Err(color_eyre::eyre::eyre!(
             "A {} file holds one table.",
             other.name()

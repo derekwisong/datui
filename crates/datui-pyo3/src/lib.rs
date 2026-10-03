@@ -66,6 +66,7 @@ fn format_to_str(f: FileFormat) -> &'static str {
         FileFormat::Fix => "fix",
         FileFormat::Sdf => "sdf",
         FileFormat::Numpy => "numpy",
+        FileFormat::Elf => "elf",
     }
 }
 

@@ -15,6 +15,8 @@ mod audio;
 #[path = "cloud/download.rs"]
 mod cloud_download;
 mod common;
+#[path = "formats/elf.rs"]
+mod elf;
 #[cfg(feature = "cloud")]
 #[path = "common/fake_s3.rs"]
 mod fake_s3;

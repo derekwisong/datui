@@ -56,6 +56,7 @@ scripts/dev/test.sh integration fuzz_corpus_test
 | `fix_parse` | `fix::FixReader` | FIX messages read a piece at a time, length-tagged values by their stated length. The first byte picks the piece size. The rows add up and the last batch types into a frame that collects. |
 | `fix_dict` | `fix::dict::Dictionary` | QuickFIX XML and TOML dictionaries on any text. Never a panic; names stay within bounds. |
 | `sdf_parse` | `sdf::SdfReader` | SDF records read a piece at a time, with line, value and field bounds. The first byte picks the piece size. The rows add up to the records. |
+| `elf_symbols` | `elf::read` | ELF symbol and section tables read at offsets and sizes the file gives. A corrupt file must be an error, never a panic or an allocation sized by the file. |
 | `numpy_header` | `numpy::parse_header`, `numpy::open_in` | The `.npy` header's Python literal and the structured types in it, read by hand. A corrupt header must be an error, never a panic or an allocation sized by the file; the rows a header counts decode. |
 
 ## Corpus

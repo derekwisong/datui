@@ -71,6 +71,7 @@ pub mod delimited_spec;
 pub mod discover;
 pub mod distribution_fit;
 pub mod download;
+pub mod elf;
 pub mod error_display;
 pub mod event_pump;
 pub mod exact;
@@ -223,7 +224,8 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         | FileFormat::Vcd
         | FileFormat::Fix
         | FileFormat::Sdf
-        | FileFormat::Numpy => None,
+        | FileFormat::Numpy
+        | FileFormat::Elf => None,
     }
 }
 
@@ -19863,7 +19865,7 @@ impl App {
     fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
         let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
         color_eyre::eyre::eyre!(
-            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's or an NMEA log's, or a Hugging Face dataset's split."
+            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's, an ELF file's or an NMEA log's, or a Hugging Face dataset's split."
         )
     }
 
@@ -20570,10 +20572,12 @@ impl App {
                     && crate::ipc_stream::is_stream_file(path))
                 .then_some(FileFormat::Arrow)
             })
-            // A SQLite database is known by its header whatever it is called.
+            // A SQLite database, an ELF file or another file of tables is known by its
+            // first bytes whatever it is called.
             .or_else(|| {
-                (path.is_file() && crate::sqlite::is_sqlite_file(path))
-                    .then_some(FileFormat::Sqlite)
+                path.is_file()
+                    .then(|| crate::members::holder(path))
+                    .flatten()
             })
             // A GPS log by a name under compression (`track.nmea.gz`), or by its first
             // bytes when its name says no format at all (`gps.log`, `capture.txt`).
@@ -20738,6 +20742,7 @@ impl App {
                 | Some(FileFormat::Fix)
                 | Some(FileFormat::Sdf)
                 | Some(FileFormat::Numpy)
+                | Some(FileFormat::Elf)
                 | None => {
                     // The home screen asks `reads_many_files` before it offers a
                     // directory as one dataset, so a format that is refused here and
@@ -20758,7 +20763,7 @@ impl App {
                         .into());
                     }
                     return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs, SDF files and NumPy arrays one at a time)"
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs, SDF files, NumPy arrays and ELF files one at a time)"
                     ));
                 }
             }
@@ -20859,6 +20864,11 @@ impl App {
                 }
                 Some(FileFormat::Sqlite) => return Self::scan_sqlite(path, options, report),
                 Some(FileFormat::Numpy) => return Self::scan_numpy(path, options, report),
+                Some(FileFormat::Elf) => {
+                    let (lf, opened) = crate::elf::open(path, options.table.as_deref())?;
+                    report.opened = Some(Arc::new(opened));
+                    return Ok(lf.into());
+                }
                 Some(FileFormat::Orc) => DataTableState::from_orc(
                     path,
                     options.pages_lookahead,

@@ -9,7 +9,7 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
@@ -100,12 +100,13 @@ pub fn sniff_path(path: &Path, compression: Option<CompressionFormat>) -> Option
     sniff(&head)
 }
 
-/// Read `file` (named `display` to the user) as `format` into temporary IPC files,
-/// written through `writer`, counting the bytes of `file` read in `read`. A FIX log is
-/// read with the dictionaries in `formats` and `--fix-dict`. A GPS log goes to
-/// [`crate::gps::convert`]; it has no [`Detail`].
+/// Read `files` (named `display` to the user) as `format` into temporary IPC files,
+/// written through `writer`, counting the bytes read in `read`. A FIX log is read with
+/// the dictionaries in `formats` and `--fix-dict`. GPS logs go to
+/// [`crate::gps::convert`], several as one table, and have no [`Detail`]; the others
+/// are one file.
 pub(crate) fn convert(
-    file: &Path,
+    files: &[PathBuf],
     display: &Path,
     format: FileFormat,
     options: &OpenOptions,
@@ -115,10 +116,13 @@ pub(crate) fn convert(
 ) -> Result<(Converted, Option<Arc<Detail>>)> {
     if crate::gps::is_gps(format) {
         return Ok((
-            crate::gps::convert(file, display, format, options, writer, read)?,
+            crate::gps::convert(files, display, format, options, writer, read)?,
             None,
         ));
     }
+    let [file] = files else {
+        return Err(eyre!("Open {} files one at a time.", format.name()));
+    };
     // Read before the file, so a dictionary that does not parse says so at once.
     let layers = match format {
         FileFormat::Fix => Some(crate::fix::layers(formats, options.fix_dict.as_deref())?),

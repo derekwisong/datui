@@ -17,6 +17,13 @@ use crate::FileFormat;
 use crate::model_files::{self, ModelSummary, RangeError, RangeSource, Remote};
 use crate::source::{self, InputSource};
 
+/// A remote model read: its table, its summary, and what the read noticed.
+pub(crate) struct Read {
+    pub lf: LazyFrame,
+    pub summary: ModelSummary,
+    pub notes: Vec<crate::notes::Note>,
+}
+
 /// The model at `url`: one file, an index, or (in an object store) a prefix holding
 /// model files. `stop` is asked before each request; the open's own stop flag.
 pub(crate) fn read(
@@ -24,8 +31,8 @@ pub(crate) fn read(
     format: FileFormat,
     cloud: &crate::config::CloudConfig,
     runtime: &tokio::runtime::Handle,
-    stop: &dyn Fn() -> bool,
-) -> Result<(LazyFrame, ModelSummary), RangeError> {
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<Read, RangeError> {
     #[cfg(not(feature = "cloud"))]
     let _ = (cloud, runtime);
     match source::input_source(url) {
@@ -43,7 +50,12 @@ pub(crate) fn read(
                 sibling: &http_sibling,
                 stop,
             };
-            model_files::read_remote_model(&[url], format, &remote)
+            let (lf, summary) = model_files::read_remote_model(&[url], format, &remote)?;
+            Ok(Read {
+                lf,
+                summary,
+                notes: Vec::new(),
+            })
         }
         #[cfg(feature = "cloud")]
         InputSource::S3(_) | InputSource::Gcs(_) | InputSource::Azure(_) => {
@@ -232,8 +244,8 @@ fn read_cloud(
     format: FileFormat,
     cloud: &crate::config::CloudConfig,
     runtime: &tokio::runtime::Handle,
-    stop: &dyn Fn() -> bool,
-) -> Result<(LazyFrame, ModelSummary), RangeError> {
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<Read, RangeError> {
     // One store for every file: shards and a prefix's files are in its bucket.
     let (full, _, store) = crate::App::cloud_store_for(url, cloud, runtime)?;
     let open = |url: &str| -> Result<Box<dyn RangeSource>, RangeError> {
@@ -245,10 +257,10 @@ fn read_cloud(
             url: url.to_string(),
         }))
     };
-    let urls = if url.to_string_lossy().ends_with('/') {
-        list_prefix(&full, &store, runtime, format)?
+    let (urls, cut_short) = if url.to_string_lossy().ends_with('/') {
+        list_prefix(&full, &store, runtime, format, MAX_LISTED)?
     } else {
-        vec![full]
+        (vec![full.clone()], false)
     };
     let sibling = |url: &str, name: &str| {
         let dir = url.rsplit_once('/').map_or(url, |(dir, _)| dir);
@@ -259,43 +271,87 @@ fn read_cloud(
         sibling: &sibling,
         stop,
     };
-    model_files::read_remote_model(&urls, format, &remote)
+    let (lf, summary) = model_files::read_remote_model(&urls, format, &remote)?;
+    let notes = cut_short
+        .then(|| crate::notes::Note {
+            summary: format!(
+                "The listing stopped at {} objects; model files after them are not read",
+                crate::numfmt::group_chrome(MAX_LISTED)
+            ),
+            scope: format!("of {full}"),
+            read_as_text: None,
+            passed_over: None,
+        })
+        .into_iter()
+        .collect();
+    Ok(Read { lf, summary, notes })
 }
 
-/// The files of `format` directly under a prefix, in name order: a SafeTensors index
-/// among them, which names the same shards and is read once with them.
+/// The most objects a prefix's listing reads before it stops: far more than any
+/// checkpoint's shards, and a bounded cost for a prefix that holds a whole bucket.
+#[cfg(feature = "cloud")]
+const MAX_LISTED: usize = 10_000;
+
+/// The files of `format` directly under a prefix, in name order — a SafeTensors index
+/// among them, which names the same shards and is read once with them — from the
+/// first `cap` objects under it, and whether there were more.
 #[cfg(feature = "cloud")]
 fn list_prefix(
     prefix_url: &str,
     store: &std::sync::Arc<dyn object_store::ObjectStore>,
     runtime: &tokio::runtime::Handle,
     format: FileFormat,
-) -> Result<Vec<String>, RangeError> {
+    cap: usize,
+) -> Result<(Vec<String>, bool), RangeError> {
+    use futures::StreamExt;
     let (_, key) = crate::App::cloud_bucket_and_key(prefix_url)?;
     let key = key.trim_matches('/').to_string();
     let store = store.clone();
-    let listed = crate::wait_on_runtime(runtime, async move {
+    // The objects a page at a time, stopped at the cap: a listing with a delimiter
+    // reads every page before it answers.
+    let (listed, more) = crate::wait_on_runtime(runtime, async move {
         let prefix = (!key.is_empty()).then(|| crate::cloud_browse::object_path(&key));
-        store.list_with_delimiter(prefix.as_ref()).await
+        let mut stream = store.list(prefix.as_ref());
+        let mut listed = Vec::new();
+        while let Some(meta) = stream.next().await {
+            if listed.len() == cap {
+                return Ok((listed, true));
+            }
+            let meta = meta?;
+            // Directly under the prefix: the parts after it are only the name.
+            let below = meta
+                .location
+                .prefix_match(&prefix.clone().unwrap_or_default())
+                .map_or(0, Iterator::count);
+            listed.push((below == 1).then(|| meta.location.filename().map(str::to_string)));
+        }
+        Ok::<_, object_store::Error>((listed, false))
     })
     .ok_or_else(|| RangeError::Failed("cancelled".to_string()))?
     .map_err(|e| RangeError::Failed(format!("Could not list {prefix_url}: {e}")))?;
     let base = format!("{}/", prefix_url.trim_end_matches('/'));
     let mut urls: Vec<String> = listed
-        .objects
-        .iter()
-        .filter_map(|meta| meta.location.filename())
+        .into_iter()
+        .flatten()
+        .flatten()
         .filter(|name| crate::discover::data_format(Path::new(name)) == Some(format))
         .map(|name| format!("{base}{name}"))
         .collect();
     urls.sort();
     if urls.is_empty() {
+        let among = match more {
+            true => format!(
+                " among the first {} objects",
+                crate::numfmt::group_chrome(cap)
+            ),
+            false => String::new(),
+        };
         return Err(RangeError::Failed(format!(
-            "{prefix_url} holds no {} files",
+            "{prefix_url} holds no {} files{among}",
             format.name()
         )));
     }
-    Ok(urls)
+    Ok((urls, more))
 }
 
 #[cfg(all(test, feature = "http"))]
@@ -472,5 +528,125 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// A sharded checkpoint over HTTP: the index, then each shard in one request of
+    /// its first 64 KiB, several under way at once, the table in the index's order.
+    #[test]
+    fn shards_over_http_take_one_request_each() {
+        let n = crate::model_files::SHARD_READS * 2;
+        let names: Vec<String> = (1..=n)
+            .map(|i| format!("model-{i:05}-of-{n:05}.safetensors"))
+            .collect();
+        let map: Vec<String> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!(r#""t{i}":"{name}""#))
+            .collect();
+        let index = format!(r#"{{"weight_map":{{{}}}}}"#, map.join(","));
+        let shards: Vec<Vec<u8>> = (0..n)
+            .map(|i| {
+                crate::model_files::tests::safetensors_bytes(
+                    &format!(r#"{{"t{i}":{{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}}}"#),
+                    4,
+                )
+            })
+            .collect();
+        let served_names = names.clone();
+        let (base, seen) = scripted(move |request| {
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let file = path.rsplit('/').next().unwrap_or_default();
+            match served_names.iter().position(|name| name == file) {
+                Some(i) => partial(request, &shards[i]),
+                None => partial(request, index.as_bytes()),
+            }
+        });
+        let url = format!("{base}/m/model.safetensors.index.json");
+        let read = read(
+            Path::new(&url),
+            FileFormat::Safetensors,
+            &Default::default(),
+            &tokio::runtime::Runtime::new().unwrap().handle().clone(),
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(read.summary.tensors, n);
+        let df = read.lf.collect().unwrap();
+        let files: Vec<&str> = df
+            .column("file")
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter()
+            .flatten()
+            .collect();
+        assert_eq!(files, names);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1 + n, "the index, and one request a shard");
+        let first = format!(
+            "bytes=0-{}",
+            crate::model_files::FIRST_SAFETENSORS_RANGE - 1
+        );
+        assert!(
+            seen.iter()
+                .filter(|r| r.contains(".safetensors HTTP"))
+                .all(|r| r.to_ascii_lowercase().contains(&first)),
+            "{seen:?}"
+        );
+    }
+}
+
+/// A prefix of model files in a store, listed to a cap.
+#[cfg(all(test, feature = "cloud"))]
+mod listing {
+    use super::*;
+    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as Key};
+
+    fn store(keys: &[&str]) -> std::sync::Arc<dyn object_store::ObjectStore> {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let store = InMemory::new();
+        runtime.block_on(async {
+            for key in keys {
+                store
+                    .put(&Key::from(*key), PutPayload::from_static(b"x"))
+                    .await
+                    .unwrap();
+            }
+        });
+        std::sync::Arc::new(store)
+    }
+
+    /// The files of the format directly under the prefix, in name order; a listing past
+    /// the cap stops there and says so, and one that found none says where it looked.
+    #[test]
+    fn a_prefix_is_listed_to_a_cap() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let handle = runtime.handle().clone();
+        let store = store(&[
+            "m/config.json",
+            "m/model-00002-of-00002.safetensors",
+            "m/model-00001-of-00002.safetensors",
+            "m/original/consolidated.safetensors",
+            "n/model.safetensors",
+        ]);
+        let list = |cap| list_prefix("s3://b/m/", &store, &handle, FileFormat::Safetensors, cap);
+        assert_eq!(
+            list(100).unwrap(),
+            (
+                vec![
+                    "s3://b/m/model-00001-of-00002.safetensors".to_string(),
+                    "s3://b/m/model-00002-of-00002.safetensors".to_string(),
+                ],
+                false
+            )
+        );
+        let (urls, cut_short) = list(3).unwrap();
+        assert!(cut_short, "{urls:?}");
+        assert!(urls.len() <= 2, "{urls:?}");
+        let err = list_prefix("s3://b/m/", &store, &handle, FileFormat::Gguf, 2).unwrap_err();
+        assert!(
+            matches!(err, RangeError::Failed(ref m) if m.ends_with(&format!("no {} files among the first 2 objects", FileFormat::Gguf.name()))),
+            "{err:?}"
+        );
     }
 }

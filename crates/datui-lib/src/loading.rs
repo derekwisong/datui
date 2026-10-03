@@ -248,10 +248,10 @@ pub(crate) enum Phase {
         read: Arc<AtomicU64>,
     },
     Decompressing,
-    /// A file being converted to one the dataset scans, `read` of its `total` bytes:
-    /// Arrow IPC streams to one IPC file, or a GPS log to its table. `what` says which.
+    /// Files being converted to ones the dataset scans, `read` of their `total` bytes:
+    /// Arrow IPC streams to one IPC file, or GPS logs to their table.
     Converting {
-        what: &'static str,
+        what: Conversion,
         read: Arc<AtomicU64>,
         total: u64,
     },
@@ -286,9 +286,9 @@ impl Phase {
             Phase::Decompressing => ("Decompressing", 30),
             Phase::Converting { what, read, total } => {
                 let done = read.load(Ordering::Relaxed).min(*total);
-                // Up to the scan of the converted file that follows.
+                // Up to the scan or the schema read that follows.
                 let share = (done * 20).checked_div(*total).unwrap_or(0);
-                (what, 10 + share as u16)
+                (what.label(), 10 + share as u16)
             }
             Phase::ScanningStrings => ("Scanning string columns", 55),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
@@ -301,7 +301,7 @@ impl Phase {
     /// Whether this phase's worker answers with the dataset itself.
     fn builds_the_dataset(&self) -> bool {
         match self {
-            Phase::ReadingSchema | Phase::Decompressing | Phase::Converting { .. } => true,
+            Phase::ReadingSchema | Phase::Decompressing => true,
             #[cfg(any(feature = "http", feature = "cloud"))]
             Phase::ReadingHeaders => true,
             _ => false,
@@ -365,13 +365,24 @@ pub(crate) struct Load {
     /// The stop flag again, for the workers that write files, and where they claim them.
     writer: Writer,
     download: Option<Fetched>,
-    /// The IPC file its Arrow streams were converted to, which the dataset scans.
-    converted: Option<TempDownload>,
+    /// The IPC files its Arrow streams or GPS logs were converted to, which the
+    /// dataset scans.
+    converted: Vec<TempDownload>,
 }
 
 impl Load {
     pub(crate) fn phase(&self) -> &Phase {
         &self.phase
+    }
+
+    /// The files the frame about to have its schema read is made from: the download,
+    /// and what a conversion wrote.
+    fn made(&self) -> Made {
+        Made {
+            download: self.download.as_ref().map(|fetched| fetched.file.clone()),
+            converted: self.converted.clone(),
+            ..Made::default()
+        }
     }
 
     /// The path the screen names, if it names one.
@@ -433,27 +444,16 @@ pub(crate) enum Step {
         /// The download `file` is, given to the dataset built from it.
         download: Option<TempDownload>,
     },
-    /// Convert the Arrow IPC streams `files` to one IPC file, writing through `writer`
-    /// and counting the bytes read in `read`; `path` names them on screen and in errors.
+    /// Convert `files` as `what` says into temporary IPC files written through
+    /// `writer`, counting the bytes read in `read`; `path` names them on screen and in
+    /// errors.
     Convert {
+        what: Conversion,
         files: Vec<PathBuf>,
         path: Option<PathBuf>,
         options: OpenOptions,
         writer: Writer,
         read: Arc<AtomicU64>,
-    },
-    /// Read `file`, a GPS log, into a table of its own through `writer`, counting its
-    /// progress in `read`, then its schema, reporting to `progress`; `path` names it on
-    /// screen and in errors.
-    ReadInto {
-        file: PathBuf,
-        path: PathBuf,
-        options: OpenOptions,
-        writer: Writer,
-        read: Arc<AtomicU64>,
-        progress: Arc<FooterProgress>,
-        /// The download `file` is, given to the dataset built from it.
-        download: Option<TempDownload>,
     },
     /// Scan `paths`, saying `status` on the control bar; `display` names the dataset when
     /// what is scanned is a download.
@@ -469,8 +469,8 @@ pub(crate) enum Step {
         path: Option<PathBuf>,
         options: OpenOptions,
         progress: Arc<FooterProgress>,
-        /// The download the scan reads, given to the dataset built from it.
-        download: Option<TempDownload>,
+        /// What the open made the frame from, given to the dataset built from it.
+        made: Made,
     },
     /// Install the dataset, then read its first rows.
     Install(Box<Loaded>),
@@ -487,6 +487,73 @@ pub(crate) struct Tables {
     /// The database file, as the user named it.
     pub(crate) database: PathBuf,
     pub(crate) from_home: bool,
+}
+
+/// What a conversion turns into files the dataset scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Conversion {
+    /// Arrow IPC streams, into one IPC file; the IPC files among them stay put.
+    Streams,
+    /// GPS logs of this format, each into IPC files of its own, read as one table; or
+    /// a VCD dump, FIX log or SDF file into its own.
+    Text(FileFormat),
+}
+
+impl Conversion {
+    /// What the loading screen calls it.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Conversion::Streams => "Converting Arrow stream",
+            Conversion::Text(FileFormat::Vcd) => "Reading value change dump",
+            Conversion::Text(FileFormat::Fix) => "Reading FIX log",
+            Conversion::Text(FileFormat::Sdf) => "Reading SDF records",
+            Conversion::Text(_) => "Reading GPS log",
+        }
+    }
+
+    /// What the control bar says while it runs.
+    pub(crate) fn status(self) -> &'static str {
+        match self {
+            Conversion::Streams => "Converting Arrow stream...",
+            Conversion::Text(FileFormat::Gpx) => "Reading GPX...",
+            Conversion::Text(FileFormat::Vcd) => "Reading VCD...",
+            Conversion::Text(FileFormat::Fix) => "Reading FIX log...",
+            Conversion::Text(FileFormat::Sdf) => "Reading SDF...",
+            Conversion::Text(_) => "Reading NMEA...",
+        }
+    }
+}
+
+/// What a conversion wrote. Dropped unused, it removes its files.
+pub(crate) enum Converted {
+    /// The streams in one IPC file, and where each input's rows are: scanned next.
+    Streams {
+        file: TempDownload,
+        parts: Vec<crate::ipc_stream::Part>,
+    },
+    /// The logs' IPC files and the frame over them, which only needs its schema read,
+    /// and what reading them noticed.
+    Frame {
+        files: Vec<TempDownload>,
+        lf: Box<LazyFrame>,
+        notes: Vec<crate::notes::Note>,
+        other_tables: Vec<String>,
+        /// What the file says besides its rows, for the Info panel.
+        detail: Option<Arc<crate::text_formats::Detail>>,
+    },
+}
+
+/// The files an open made or fetched for the frame it scans, and what making them
+/// found: handed to the dataset as it is built, which holds the files from then on.
+#[derive(Default)]
+pub(crate) struct Made {
+    /// The download the frame reads.
+    pub(crate) download: Option<TempDownload>,
+    /// The files a conversion wrote.
+    pub(crate) converted: Vec<TempDownload>,
+    pub(crate) notes: Vec<crate::notes::Note>,
+    pub(crate) other_tables: Vec<String>,
+    pub(crate) detail: Option<Arc<crate::text_formats::Detail>>,
 }
 
 /// A failed open: why, and whether it was chosen on the home screen.
@@ -526,27 +593,18 @@ pub(crate) enum LoadAnswer {
         path: Option<PathBuf>,
         options: OpenOptions,
     },
-    /// The scan found Arrow IPC streams, `bytes` in all, which have to be converted
-    /// before they can be scanned.
-    Streams {
+    /// The scan found `files`, `bytes` in all as stored, which have to be converted as
+    /// `what` says before they can be read: Arrow IPC streams, or GPS logs.
+    Convert {
+        what: Conversion,
         files: Vec<PathBuf>,
         bytes: u64,
         path: Option<PathBuf>,
         options: OpenOptions,
     },
-    /// The streams, converted to one IPC file, and where each input's rows are. Dropped
-    /// unused, it removes the file.
+    /// What the conversion wrote. Dropped unused, it removes its files.
     Converted {
-        file: TempDownload,
-        parts: Vec<crate::ipc_stream::Part>,
-        path: Option<PathBuf>,
-        options: OpenOptions,
-    },
-    /// The scan found a file to read into a table of its own first: a GPS log of
-    /// `total` bytes (as stored).
-    ReadInto {
-        file: PathBuf,
-        total: u64,
+        converted: Converted,
         path: Option<PathBuf>,
         options: OpenOptions,
     },
@@ -745,7 +803,7 @@ impl Loader {
                 writer: self.unfinished.writer(progress.cancel_flag()),
                 progress,
                 download: None,
-                converted: None,
+                converted: Vec::new(),
             });
         }
         let load = self.load.as_mut().expect("started just above");
@@ -844,7 +902,7 @@ impl Loader {
             path: None,
             options,
             progress: load.progress.clone(),
-            download: None,
+            made: Made::default(),
         }
     }
 
@@ -1028,35 +1086,32 @@ impl Loader {
                 Phase::Scanning { .. } | Phase::ScanningStrings,
             ) => {
                 load.phase = Phase::ReadingSchema;
-                // What the frame scans: the converted streams, else the download.
-                let download = load
-                    .converted
-                    .clone()
-                    .or_else(|| load.download.as_ref().map(|fetched| fetched.file.clone()));
                 Step::ReadSchema {
                     lf,
                     path,
                     options,
                     progress: load.progress.clone(),
-                    download,
+                    made: load.made(),
                 }
             }
             (
-                LoadAnswer::Streams {
+                LoadAnswer::Convert {
+                    what,
                     files,
                     bytes,
                     path,
                     options,
                 },
-                Phase::Scanning { .. },
-            ) if load.converted.is_none() => {
+                Phase::Scanning { .. } | Phase::ScanningStrings,
+            ) if load.converted.is_empty() => {
                 let read = Arc::<AtomicU64>::default();
                 load.phase = Phase::Converting {
-                    what: "Converting Arrow stream",
+                    what,
                     read: read.clone(),
                     total: bytes,
                 };
                 Step::Convert {
+                    what,
                     files,
                     path,
                     options,
@@ -1066,8 +1121,7 @@ impl Loader {
             }
             (
                 LoadAnswer::Converted {
-                    file,
-                    parts,
+                    converted: Converted::Streams { file, parts },
                     path,
                     options,
                 },
@@ -1080,7 +1134,7 @@ impl Loader {
                 if let Some(fetched) = load.download.as_mut() {
                     fetched.file = file.clone();
                 }
-                load.converted = Some(file);
+                load.converted = vec![file];
                 load.phase = Phase::Scanning { downloaded: true };
                 Step::Scan {
                     paths,
@@ -1092,6 +1146,36 @@ impl Loader {
                     },
                     display: path,
                     status: "Scanning...",
+                }
+            }
+            (
+                LoadAnswer::Converted {
+                    converted:
+                        Converted::Frame {
+                            files,
+                            lf,
+                            notes,
+                            other_tables,
+                            detail,
+                        },
+                    path,
+                    options,
+                },
+                Phase::Converting { .. },
+            ) => {
+                load.converted = files;
+                load.phase = Phase::ReadingSchema;
+                Step::ReadSchema {
+                    lf,
+                    path,
+                    options,
+                    progress: load.progress.clone(),
+                    made: Made {
+                        notes,
+                        other_tables,
+                        detail,
+                        ..load.made()
+                    },
                 }
             }
             (
@@ -1108,31 +1192,6 @@ impl Loader {
                     file,
                     options,
                     writer: load.writer.clone(),
-                    download: load.download.as_ref().map(|fetched| fetched.file.clone()),
-                }
-            }
-            (
-                LoadAnswer::ReadInto {
-                    file,
-                    total,
-                    path,
-                    options,
-                },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
-            ) => {
-                let read = Arc::<AtomicU64>::default();
-                load.phase = Phase::Converting {
-                    what: reading(options.format),
-                    read: read.clone(),
-                    total,
-                };
-                Step::ReadInto {
-                    path: path.unwrap_or_else(|| file.clone()),
-                    file,
-                    options,
-                    writer: load.writer.clone(),
-                    read,
-                    progress: load.progress.clone(),
                     download: load.download.as_ref().map(|fetched| fetched.file.clone()),
                 }
             }
@@ -1292,9 +1351,11 @@ impl Loader {
             ),
             None => message.to_string(),
         };
-        // So is the IPC file streams were converted to.
-        if let (Some(converted), Some(path)) = (&load.converted, &load.path) {
-            message = crate::error_display::named_by_source(&message, converted.path(), path);
+        // So are the IPC files a conversion wrote.
+        if let Some(path) = &load.path {
+            for converted in &load.converted {
+                message = crate::error_display::named_by_source(&message, converted.path(), path);
+            }
         }
         self.retire();
         Step::Failed(Failed { message, from_home })
@@ -1340,17 +1401,6 @@ impl Drop for Loader {
     /// A download still running stops at its next chunk and removes its partial file.
     fn drop(&mut self) {
         self.retire();
-    }
-}
-
-/// What the loading screen says while a file is read into a table of its own.
-fn reading(format: Option<FileFormat>) -> &'static str {
-    match format {
-        Some(FileFormat::Nmea | FileFormat::Gpx) => "Reading GPS log",
-        Some(FileFormat::Vcd) => "Reading value change dump",
-        Some(FileFormat::Fix) => "Reading FIX log",
-        Some(FileFormat::Sdf) => "Reading SDF records",
-        _ => "Reading",
     }
 }
 
@@ -1654,7 +1704,8 @@ mod tests {
         } = answer(
             &mut loader,
             id,
-            LoadAnswer::Streams {
+            LoadAnswer::Convert {
+                what: Conversion::Streams,
                 files: vec![PathBuf::from("cache.arrow")],
                 bytes: 200,
                 path: Some(PathBuf::from("cache.arrow")),
@@ -1690,8 +1741,10 @@ mod tests {
             &mut loader,
             id,
             LoadAnswer::Converted {
-                file: converted,
-                parts: Vec::new(),
+                converted: Converted::Streams {
+                    file: converted,
+                    parts: Vec::new(),
+                },
                 path: Some(PathBuf::from("cache.arrow")),
                 options: OpenOptions::default(),
             },
@@ -1707,7 +1760,8 @@ mod tests {
                 answer(
                     &mut loader,
                     id,
-                    LoadAnswer::Streams {
+                    LoadAnswer::Convert {
+                        what: Conversion::Streams,
                         files: vec![temp.clone()],
                         bytes: 1,
                         path: None,
@@ -1718,16 +1772,19 @@ mod tests {
             ),
             "converted once"
         );
-        let Step::ReadSchema { download, .. } = answer(&mut loader, id, scanned("cache.arrow"))
-        else {
+        let Step::ReadSchema { made, .. } = answer(&mut loader, id, scanned("cache.arrow")) else {
             panic!("the schema is read");
         };
+        assert!(made.download.is_none(), "nothing was downloaded");
         assert_eq!(
-            download.as_ref().map(|d| d.path().to_path_buf()),
-            Some(temp.clone()),
+            made.converted
+                .iter()
+                .map(|d| d.path().to_path_buf())
+                .collect::<Vec<_>>(),
+            std::slice::from_ref(&temp),
             "the dataset holds the converted file"
         );
-        drop(download);
+        drop(made);
         let Step::Failed(failed) = loader.failed(id, &format!("could not read {}", temp.display()))
         else {
             panic!("the open fails");
@@ -1782,8 +1839,10 @@ mod tests {
             let path = file.path().to_path_buf();
             (
                 LoadAnswer::Converted {
-                    file,
-                    parts: Vec::new(),
+                    converted: Converted::Streams {
+                        file,
+                        parts: Vec::new(),
+                    },
                     path: Some(PathBuf::from("cache.arrow")),
                     options: OpenOptions::default(),
                 },
@@ -1801,7 +1860,8 @@ mod tests {
         let Step::Convert { writer, .. } = answer(
             &mut loader,
             first,
-            LoadAnswer::Streams {
+            LoadAnswer::Convert {
+                what: Conversion::Streams,
                 files: vec![PathBuf::from("cache.arrow")],
                 bytes: 1,
                 path: Some(PathBuf::from("cache.arrow")),
@@ -2014,30 +2074,38 @@ mod tests {
         ));
     }
 
-    /// A GPS log the scan found is converted under the name the open was asked for;
-    /// a second answer for the phase it left changes nothing, the schema read installs,
-    /// and putting the load down mid-conversion stops the writer, so its file goes.
+    /// GPS logs the scan found are converted under the name the open was asked for;
+    /// a second answer for the phase it left changes nothing; the frame the conversion
+    /// built has its schema read holding its files and notes, and installs; putting the
+    /// load down mid-conversion stops the writer, so its files go.
     #[test]
-    fn a_gps_log_the_scan_found_is_converted() {
-        let convert = || LoadAnswer::ReadInto {
-            file: PathBuf::from("drive.nmea"),
-            total: 200,
-            path: Some(PathBuf::from("drive.nmea")),
+    fn gps_logs_the_scan_found_are_converted() {
+        let convert = || LoadAnswer::Convert {
+            what: Conversion::Text(FileFormat::Nmea),
+            files: vec![PathBuf::from("logs/a.nmea"), PathBuf::from("logs/b.nmea")],
+            bytes: 200,
+            path: Some(PathBuf::from("logs")),
             options: OpenOptions {
                 format: Some(FileFormat::Nmea),
                 ..OpenOptions::default()
             },
         };
         let mut loader = Loader::default();
-        let _ = loader.open(request("drive.nmea"));
+        let _ = loader.open(request("logs"));
         let id = loader.id().unwrap();
-        let Step::ReadInto {
-            file, writer, read, ..
+        let Step::Convert {
+            what,
+            files,
+            writer,
+            read,
+            ..
         } = answer(&mut loader, id, convert())
         else {
-            panic!("the log is converted");
+            panic!("the logs are converted");
         };
-        assert_eq!(file, Path::new("drive.nmea"));
+        assert_eq!(what, Conversion::Text(FileFormat::Nmea));
+        assert_eq!(what.status(), "Reading NMEA...");
+        assert_eq!(files.len(), 2);
         assert_eq!(
             loader.current().unwrap().phase().label(),
             ("Reading GPS log", 10)
@@ -2057,17 +2125,55 @@ mod tests {
             "Ctrl+O or another open stops the conversion"
         );
 
+        let dir = tempfile::tempdir().unwrap();
         let mut loader = Loader::default();
-        let _ = loader.open(request("drive.nmea"));
+        let _ = loader.open(request("logs"));
         let id = loader.id().unwrap();
         assert!(matches!(
             answer(&mut loader, id, convert()),
-            Step::ReadInto { .. }
+            Step::Convert { .. }
         ));
-        assert!(matches!(
-            answer(&mut loader, id, schema_read("drive.nmea")),
-            Step::Install(_)
-        ));
+        let file =
+            TempDownload::keep(TempDownload::create(Some(dir.path()), Some("arrow")).unwrap());
+        let temp = file.path().to_path_buf();
+        let note = crate::notes::Note {
+            summary: "1 line is not NMEA and left out".to_string(),
+            scope: "of 9 lines in 2 logs".to_string(),
+            read_as_text: None,
+            passed_over: None,
+        };
+        let Step::ReadSchema { made, path, .. } = answer(
+            &mut loader,
+            id,
+            LoadAnswer::Converted {
+                converted: Converted::Frame {
+                    files: vec![file],
+                    lf: Box::new(frame()),
+                    notes: vec![note],
+                    other_tables: vec!["GSV 3".to_string()],
+                    detail: None,
+                },
+                path: Some(PathBuf::from("logs")),
+                options: OpenOptions::default(),
+            },
+        ) else {
+            panic!("the frame's schema is read");
+        };
+        assert_eq!(path.as_deref(), Some(Path::new("logs")));
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Caching schema", 40)
+        );
+        assert_eq!(made.converted.len(), 1);
+        assert_eq!(made.notes.len(), 1);
+        assert_eq!(made.other_tables, ["GSV 3"]);
+        drop(made);
+        let Step::Failed(failed) = loader.failed(id, &format!("could not read {}", temp.display()))
+        else {
+            panic!("the open fails");
+        };
+        assert_eq!(failed.message, "could not read logs", "named as asked for");
+        assert!(!temp.exists(), "the retired load let the files go");
     }
 
     /// A database of several tables, opened without `--table`, puts the load down and
@@ -2419,7 +2525,10 @@ mod tests {
         assert_eq!(display.as_deref(), Some(Path::new(url)), "named by its URL");
         assert_eq!(status, "Scanning...");
         let Step::ReadSchema {
-            download: Some(download),
+            made: Made {
+                download: Some(download),
+                ..
+            },
             ..
         } = loader.answered(id, scanned(url), &jobs)
         else {
@@ -2494,7 +2603,10 @@ mod tests {
         };
         let _ = loader.answered(id, downloaded, &jobs);
         let Step::ReadSchema {
-            download: Some(held),
+            made: Made {
+                download: Some(held),
+                ..
+            },
             ..
         } = loader.answered(id, scanned(url), &jobs)
         else {
@@ -2675,7 +2787,10 @@ mod tests {
         assert_eq!(paths, vec![at.clone()]);
         assert_eq!(display.as_deref(), Some(Path::new("stdin")));
         let Step::ReadSchema {
-            download: Some(_), ..
+            made: Made {
+                download: Some(_), ..
+            },
+            ..
         } = answer(&mut loader, id, scanned("stdin"))
         else {
             panic!("the dataset holds the file");
@@ -2737,7 +2852,8 @@ mod tests {
         let Step::Convert { .. } = answer(
             &mut loader,
             id,
-            LoadAnswer::Streams {
+            LoadAnswer::Convert {
+                what: Conversion::Streams,
                 files: paths,
                 bytes: 6,
                 path: Some(PathBuf::from("stdin")),
@@ -2752,8 +2868,10 @@ mod tests {
             &mut loader,
             id,
             LoadAnswer::Converted {
-                file: copy,
-                parts: Vec::new(),
+                converted: Converted::Streams {
+                    file: copy,
+                    parts: Vec::new(),
+                },
                 path: Some(PathBuf::from("stdin")),
                 options: options.clone(),
             },
@@ -2765,7 +2883,10 @@ mod tests {
         assert!(!spooled.exists(), "the spool goes once converted");
 
         let Step::ReadSchema {
-            download: Some(_), ..
+            made: Made {
+                download: Some(_), ..
+            },
+            ..
         } = answer(&mut loader, id, scanned("stdin"))
         else {
             panic!("the dataset holds the copy");

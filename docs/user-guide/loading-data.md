@@ -225,9 +225,9 @@ ranged requests:
 
 | Source | Read |
 |---|---|
-| HTTP(S), S3, GCS, Azure file | SafeTensors: 8 bytes, then the header. GGUF: growing ranges until the tensor list ends |
-| `model.safetensors.index.json` | The index, then each shard's header, beside the index's URL |
-| S3, GCS or Azure prefix | Every SafeTensors or GGUF file directly under it, as a directory on disk |
+| HTTP(S), S3, GCS, Azure file | SafeTensors: the first 64 KiB, which holds most headers whole, then the rest of a longer header. GGUF: growing ranges until the tensor list ends |
+| `model.safetensors.index.json` | The index, then each shard's header, beside the index's URL, eight shards at a time |
+| S3, GCS or Azure prefix | Every SafeTensors or GGUF file directly under it, as a directory on disk. The listing stops at 10,000 objects; the Notes tab says when it did |
 
 A server that does not send byte ranges gets the download question instead,
 which says why, and the file is downloaded whole. Shards named by an index
@@ -242,11 +242,14 @@ datui drive.nmea
 datui --table GSV drive.nmea         # one row per satellite in view
 head -n 3000 /dev/ttyACM0 | datui    # NMEA from standard input
 datui ride.gpx
+datui activities/                    # a directory of GPX files, as one table
 ```
 
 An NMEA 0183 log or a GPX file is read once, start to end, into a temporary
 Arrow IPC file, which is then scanned like any other: memory stays at one batch
-of rows however long the log. A file with another name, such as `capture.log`,
+of rows however long the log. Several logs, named together or as a directory of
+them, open as one table with a `file` column first; a column one file lacks is
+null in its rows, and the Notes tab counts across the files. A file with another name, such as `capture.log`,
 opens when its first complete line is an NMEA sentence or its first element is `<gpx`.
 `.nmea.gz` and the other compressions are read as they are decompressed.
 

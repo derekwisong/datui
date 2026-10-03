@@ -148,18 +148,16 @@ impl FileFormat {
     ///
     /// Tsv and Psv have a single-file reader and no multi-path one; an Excel workbook
     /// is sheets rather than rows, with nothing to concatenate. Reading the first two
-    /// as a list is #275 phase 4's ("never refuse"). A GPS log is read into a file of
-    /// its own before it is scanned, one log per open, as are VCD dumps, FIX logs and
-    /// SDF files. Audio files are recordings, each with its own channels and rate, not
-    /// parts of one table, and a database is tables rather than rows.
+    /// as a list is #275 phase 4's ("never refuse"). VCD dumps, FIX logs and SDF files
+    /// are read into files of their own, one per open. Audio files are recordings, each
+    /// with its own channels and rate, not parts of one table, and a database is tables
+    /// rather than rows.
     pub fn reads_many_files(self) -> bool {
         !matches!(
             self,
             Self::Tsv
                 | Self::Psv
                 | Self::Excel
-                | Self::Nmea
-                | Self::Gpx
                 | Self::Audio
                 | Self::Sqlite
                 | Self::Vcd

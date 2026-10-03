@@ -179,6 +179,10 @@ pub struct Holds {
     /// floor. Shown as `5000+`.
     #[serde(default)]
     pub truncated: bool,
+    /// A Hugging Face DatasetDict saved with `save_to_disk`: `dataset_dict.json`
+    /// beside directories, its splits. Read as Arrow, one split at a time.
+    #[serde(default)]
+    pub dataset_dict: bool,
 }
 
 /// How many skipped names are kept for the pane. Enough to recognise the convention.
@@ -269,6 +273,7 @@ impl Holds {
             // turn on an invariant two other functions have to keep.
             && self.partitions == 0
             && self.skipped_names.is_empty()
+            && !self.dataset_dict
             // A listing cut short before it found anything still says something: that
             // what it found is not all there is. Without this the row falls back to its
             // kind and reads `dir`, where `label` would have said `dir+`.

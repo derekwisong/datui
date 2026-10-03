@@ -298,3 +298,48 @@ fn a_log_is_known_by_its_first_bytes() {
     let (app, _rx) = open_with(notes, options);
     assert!(app.error_message().is_some(), "not a GPS log");
 }
+
+/// A directory of GPX activities opens as one table with a `file` column, its logs
+/// converted together and removed with the dataset; the home screen offers it as one.
+#[test]
+fn a_directory_of_activities_is_one_table() {
+    let (options, dir) = scratch();
+    let logs = dir.join("activities");
+    std::fs::create_dir(&logs).unwrap();
+    for name in ["monday.gpx", "tuesday.gpx"] {
+        std::fs::copy(gps().join("ride.gpx"), logs.join(name)).unwrap();
+    }
+    let (kind, holds) = datui::discover::look_at_directory(&logs);
+    assert_eq!(kind, datui::discover::EntryKind::MultiFile);
+    assert_eq!(holds.formats, [("gpx".to_string(), 2)]);
+
+    let (app, _rx) = open_with(logs.clone(), options);
+    assert_eq!(app.error_message(), None);
+    let df = frame(&app);
+    assert_eq!(names(&df)[..3], ["file", "time", "lat"]);
+    assert_eq!(df.height(), 2 * (2 + 150 + 3));
+    let files = df.column("file").unwrap().str().unwrap();
+    assert_eq!(
+        (files.get(0), files.get(155)),
+        (Some("monday.gpx"), Some("tuesday.gpx"))
+    );
+    assert_eq!(df.column("hr").unwrap().dtype(), &DataType::Int64);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.scans_a_temp_file());
+    assert_eq!(state.num_rows(), 310);
+    assert_eq!(files_in(&dir), 3, "the logs' directory and a file per log");
+    drop(app);
+    assert_eq!(files_in(&dir), 1, "removed with the dataset");
+
+    // As the home screen opens it: the directory as one dataset, counted by its rows.
+    let (options, _) = scratch();
+    let (app, _rx) = open_with(
+        logs,
+        OpenOptions {
+            hive: true,
+            ..options
+        },
+    );
+    assert_eq!(app.error_message(), None);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 310);
+}

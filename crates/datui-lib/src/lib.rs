@@ -9330,12 +9330,11 @@ pub(crate) enum Scan {
         file: PathBuf,
         choice: crate::formats::Choice,
     },
-    /// A file read into a table of its own before it is scanned (`Step::ReadInto`): a
-    /// GPS log. `total` is what the loading screen's bar counts to: the log's bytes.
+    /// GPS logs, or a VCD dump, FIX log or SDF file, read into files of their own
+    /// before the frame over them is built (`Step::Convert`).
     ReadInto {
-        file: PathBuf,
+        files: Vec<PathBuf>,
         format: FileFormat,
-        total: u64,
     },
     /// A SQLite database of several tables, named, and no `--table`: the home screen
     /// lists them.
@@ -15897,13 +15896,19 @@ impl App {
     fn cloud_prefix_format(
         holds: &discover::Holds,
     ) -> Option<(FileFormat, Vec<(FileFormat, usize)>)> {
+        // A saved DatasetDict: its splits are Arrow, read one at a time.
+        if holds.dataset_dict {
+            return Some((FileFormat::Arrow, Vec::new()));
+        }
         // A model's weights beside its config and tokenizer JSON: the prefix is the
         // model, as a directory on disk is, and the JSON is not data passed over.
         if let Some((name, _)) = holds.model_weights() {
             return FileFormat::from_name(name).map(|format| (format, Vec::new()));
         }
         let (name, _) = holds.formats.first()?;
-        let format = FileFormat::from_name(name).filter(|f| f.reads_many_files())?;
+        // A GPS log is read whole from disk; a bucket's logs are opened one at a time.
+        let format = FileFormat::from_name(name)
+            .filter(|f| f.reads_many_files() && !crate::gps::is_gps(*f))?;
         // And what taking the commonest passes over. The local read reports its own —
         // it is the pass that decides — but here Polars does the listing and never sees
         // the other formats, so the note has to be written from the listing on screen.
@@ -16979,7 +16984,7 @@ impl App {
                     let read = crate::remote_model::read(&url, format, &cloud, &runtime, &|| {
                         writer.stopped()
                     });
-                    let (lf, summary) = match read {
+                    let crate::remote_model::Read { lf, summary, notes } = match read {
                         Ok(read) => read,
                         Err(crate::model_files::RangeError::NoRanges) => {
                             return Ok(Answer::Load(Box::new(LoadAnswer::NoRanges { options })));
@@ -17007,6 +17012,7 @@ impl App {
                     .map_err(|e| crate::error_display::user_message_from_report(&e, Some(&url)))?
                     .with_open(OpenFacts {
                         model,
+                        open_notes: notes,
                         ..Default::default()
                     });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
@@ -17241,91 +17247,54 @@ impl App {
                 });
             }
             Step::Convert {
+                what,
                 files,
                 path,
                 options,
                 writer,
                 read,
             } => {
-                // The load's stop flag ends it at the next record batch, removing the
-                // file; quitting removes it even if the process ends first.
-                self.spawn_job(job, Some("Converting Arrow stream..."), move |_| {
-                    let converted = crate::ipc_stream::convert(
-                        &files,
-                        options.temp_dir.as_deref(),
-                        &writer,
-                        &read,
-                    )
-                    .map_err(|e| {
+                // The load's stop flag ends it at the next record batch or chunk,
+                // removing its files; quitting removes them even if the process ends
+                // first.
+                let formats = self.formats.clone();
+                self.spawn_job(job, Some(what.status()), move |_| {
+                    let named = |e: color_eyre::Report| {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
-                    })?;
+                    };
+                    let converted = match what {
+                        loading::Conversion::Streams => {
+                            let converted = crate::ipc_stream::convert(
+                                &files,
+                                options.temp_dir.as_deref(),
+                                &writer,
+                                &read,
+                            )
+                            .map_err(named)?;
+                            loading::Converted::Streams {
+                                file: converted.file,
+                                parts: converted.parts,
+                            }
+                        }
+                        loading::Conversion::Text(format) => {
+                            let display = path.clone().unwrap_or_else(|| files[0].clone());
+                            let (converted, detail) = crate::text_formats::convert(
+                                &files, &display, format, &options, &formats, &writer, &read,
+                            )
+                            .map_err(named)?;
+                            loading::Converted::Frame {
+                                files: converted.files,
+                                lf: Box::new(converted.lf),
+                                notes: converted.notes,
+                                other_tables: converted.other_tables,
+                                detail,
+                            }
+                        }
+                    };
                     Ok(Answer::Load(Box::new(LoadAnswer::Converted {
-                        file: converted.file,
-                        parts: converted.parts,
+                        converted,
                         path,
                         options,
-                    })))
-                });
-            }
-            Step::ReadInto {
-                file,
-                path,
-                options,
-                writer,
-                read,
-                progress,
-                download,
-            } => {
-                let cloud = self.app_config.cloud.clone();
-                let runtime = self.runtime.clone();
-                let report = crate::measurements::OpenReport {
-                    progress,
-                    meter: Arc::new(crate::measurements::Meter::default()),
-                    remembered: Some(self.cache.clone()),
-                };
-                let status = match options.format {
-                    Some(FileFormat::Gpx) => "Reading GPX...",
-                    Some(FileFormat::Vcd) => "Reading VCD...",
-                    Some(FileFormat::Fix) => "Reading FIX log...",
-                    Some(FileFormat::Sdf) => "Reading SDF...",
-                    _ => "Reading NMEA...",
-                };
-                let formats = self.formats.clone();
-                self.spawn_job(job, Some(status), move |_| {
-                    let named = |e: color_eyre::Report| {
-                        crate::error_display::user_message_from_report(&e, Some(path.as_path()))
-                    };
-                    let format = options.format.unwrap_or(FileFormat::Nmea);
-                    let (converted, detail) = crate::text_formats::convert(
-                        &file, &path, format, &options, &formats, &writer, &read,
-                    )
-                    .map_err(named)?;
-                    // The converted file is an Arrow IPC file, scanned like one.
-                    let (state, facts, debug_label) = Self::build_schema_state(
-                        converted.lf,
-                        Some(path.as_path()),
-                        &options,
-                        &cloud,
-                        &runtime,
-                        &report,
-                    )
-                    .map_err(named)?;
-                    let mut open_notes = facts.open_notes;
-                    open_notes.extend(converted.notes);
-                    let state = state.with_open(OpenFacts {
-                        fetched: Self::fetched(download.as_ref(), Some(&path)),
-                        download,
-                        converted: converted.files,
-                        other_tables: converted.other_tables,
-                        open_notes,
-                        detail,
-                        ..facts
-                    });
-                    Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
-                        state: Box::new(state),
-                        path: Some(path),
-                        options,
-                        debug_label: Some(format!("{} ({debug_label})", format.name())),
                     })))
                 });
             }
@@ -17340,6 +17309,13 @@ impl App {
                 // A download is scanned from a temp path the user never typed and would not
                 // recognise; the URL they did type is what names the dataset.
                 let path = display.or_else(|| paths.first().cloned());
+                let bytes_of = |files: &[PathBuf]| -> u64 {
+                    files
+                        .iter()
+                        .filter_map(|f| std::fs::metadata(f).ok())
+                        .map(|m| m.len())
+                        .sum()
+                };
                 self.spawn_job(job, Some(status), move |_| {
                     // What the read passed over rides back with the options it was asked
                     // for, so the dataset can say what it left out. Seeded with what the
@@ -17402,12 +17378,9 @@ impl App {
                             path,
                             options,
                         },
-                        Scan::Streams(files) => LoadAnswer::Streams {
-                            bytes: files
-                                .iter()
-                                .filter_map(|f| std::fs::metadata(f).ok())
-                                .map(|m| m.len())
-                                .sum(),
+                        Scan::Streams(files) => LoadAnswer::Convert {
+                            what: loading::Conversion::Streams,
+                            bytes: bytes_of(&files),
                             files,
                             path,
                             options,
@@ -17420,9 +17393,10 @@ impl App {
                                 ..options
                             },
                         },
-                        Scan::ReadInto { file, total, .. } => LoadAnswer::ReadInto {
-                            total,
-                            file,
+                        Scan::ReadInto { files, format } => LoadAnswer::Convert {
+                            what: loading::Conversion::Text(format),
+                            bytes: bytes_of(&files),
+                            files,
                             path,
                             options,
                         },
@@ -17435,7 +17409,7 @@ impl App {
                 path,
                 options,
                 progress,
-                download,
+                made,
             } => {
                 self.debug.schema_load = None;
                 let cloud = self.app_config.cloud.clone();
@@ -17458,9 +17432,24 @@ impl App {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
                     })?;
                     // Everything the open found, given to the dataset as it is built.
+                    let loading::Made {
+                        download,
+                        converted,
+                        notes,
+                        other_tables,
+                        detail,
+                    } = made;
+                    let mut open_notes = facts.open_notes;
+                    open_notes.extend(notes);
+                    let mut other_tables_found = facts.other_tables;
+                    other_tables_found.extend(other_tables);
                     let state = state.with_open(OpenFacts {
                         fetched: Self::fetched(download.as_ref(), path.as_deref()),
                         download,
+                        converted,
+                        other_tables: other_tables_found,
+                        open_notes,
+                        detail: detail.or(facts.detail),
                         ..facts
                     });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
@@ -19540,16 +19529,16 @@ impl App {
             return Err(Self::one_table(effective_format));
         }
 
-        // A GPS log, a VCD dump, a FIX log or an SDF file is read into a file of its own
-        // first: the load converts it (`Step::ReadInto`) into a copy the dataset holds, as
-        // a compressed CSV is.
-        if let [file] = paths
-            && let Some(format) = effective_format.filter(|f| crate::text_formats::reads_into(*f))
+        // A GPS log, a VCD dump, a FIX log or an SDF file is read into files of its own
+        // first: the load converts it (`Step::Convert`) into copies the dataset holds, as
+        // a compressed CSV is. Several GPS logs are one table; the others open one at a
+        // time.
+        if let Some(format) = effective_format.filter(|f| crate::text_formats::reads_into(*f))
+            && (paths.len() == 1 || format.reads_many_files())
         {
             return Ok(Scan::ReadInto {
-                file: file.clone(),
+                files: paths.to_vec(),
                 format,
-                total: std::fs::metadata(file).map_or(0, |m| m.len()),
             });
         }
 
@@ -19659,11 +19648,16 @@ impl App {
                     report.midi = Some(Arc::new(summary));
                     return Ok(lf.into());
                 }
+                Some(format @ (FileFormat::Nmea | FileFormat::Gpx)) => {
+                    // Settled above, before the compression check; here for the match.
+                    return Ok(Scan::ReadInto {
+                        files: paths.to_vec(),
+                        format,
+                    });
+                }
                 Some(FileFormat::Tsv)
                 | Some(FileFormat::Psv)
                 | Some(FileFormat::Excel)
-                | Some(FileFormat::Nmea)
-                | Some(FileFormat::Gpx)
                 | Some(FileFormat::Audio)
                 | Some(FileFormat::Sqlite)
                 | Some(FileFormat::Vcd)
@@ -19689,7 +19683,7 @@ impl App {
                         .into());
                     }
                     return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only; open GPS logs, SQLite databases, VCD dumps, FIX logs and SDF files one at a time)"
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs and SDF files one at a time)"
                     ));
                 }
             }
@@ -19772,9 +19766,8 @@ impl App {
                 ) => {
                     // Settled above, before the compression check; here for the match.
                     return Ok(Scan::ReadInto {
-                        file: path.clone(),
+                        files: paths.to_vec(),
                         format,
-                        total: std::fs::metadata(path).map_or(0, |m| m.len()),
                     });
                 }
                 Some(FileFormat::Audio) => {
@@ -28183,8 +28176,8 @@ impl App {
     /// sitting in an editor was never applied, so it is not here either.
     ///
     /// Refused when the frame would scan a temporary file, because those are removed
-    /// on exit and a plan over deleted paths fails later and worse: a remote download
-    /// or a decompressed archive. The in-TUI export (`e`) writes
+    /// on exit and a plan over deleted paths fails later and worse: a remote download,
+    /// a decompressed archive, or a converted stream or GPS log. The in-TUI export (`e`) writes
     /// real rows and is the way out for those datasets.
     pub fn capture_view(&self) -> Result<Option<LazyFrame>> {
         let Some(state) = &self.data_table_state else {
@@ -28199,7 +28192,7 @@ impl App {
         }
         if state.scans_a_temp_file() {
             return Err(color_eyre::eyre::eyre!(
-                "cannot return this view: the compressed file was decompressed into a \
+                "cannot return this view: the data was decompressed or converted into a \
                  temporary file that is removed when datui exits. Export it from \
                  inside datui (press e) instead."
             ));

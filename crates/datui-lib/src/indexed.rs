@@ -155,9 +155,14 @@ impl crate::pushdown::Windowed for IndexedRecords {
 
 // --- What a pass found, kept -------------------------------------------------------
 
-/// Indexes kept: a few logs open in a session, and each index is the size of its
-/// offsets.
+/// Indexes always kept: a few logs open in a session.
 const KEPT: usize = 4;
+/// More are kept while the files they index total this many bytes: an index's
+/// size follows its file's, so a count alone let four huge logs hold gigabytes
+/// while a fifth small one pushed out an index still listed on the home screen.
+const KEPT_FILE_BYTES: u64 = 2 << 30;
+/// And never more than this many.
+const MOST_KEPT: usize = 64;
 
 type Key = (PathBuf, u64, Option<std::time::SystemTime>, TypeId);
 
@@ -199,7 +204,15 @@ pub fn cached<T: Any + Send + Sync, E>(
         let mut kept = KEPT_INDEXES.lock().unwrap_or_else(|e| e.into_inner());
         kept.retain(|(k, _)| *k != key);
         kept.push((key, index.clone() as Arc<dyn Any + Send + Sync>));
-        let excess = kept.len().saturating_sub(KEPT);
+        // Oldest first, until what is left fits.
+        let mut total: u64 = kept.iter().map(|((_, len, ..), _)| *len).sum();
+        let mut excess = 0;
+        while kept.len() - excess > KEPT
+            && (total > KEPT_FILE_BYTES || kept.len() - excess > MOST_KEPT)
+        {
+            total -= kept[excess].0.1;
+            excess += 1;
+        }
         kept.drain(..excess);
     }
     Ok(index)

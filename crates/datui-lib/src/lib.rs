@@ -128,6 +128,7 @@ pub mod pushdown;
 pub mod python_script;
 pub mod quality_export;
 pub mod quality_intent;
+mod quality_memory;
 pub mod quality_report;
 pub mod quality_trends;
 #[cfg(any(feature = "http", feature = "cloud"))]
@@ -193,6 +194,8 @@ pub use jobs::{JobKind, Progress, Ticket};
 use numfmt::NumberFormatSettings;
 use output_file::Overwrite;
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
+pub use quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
+use quality_memory::{QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob};
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus, order_with_hidden};
 pub use template::{Template, TemplateManager, Templates};
@@ -2488,73 +2491,6 @@ impl Drop for OwedAnswer {
         }
     }
 }
-
-/// A Data Quality report, by everything its plan says: the acquisition it measured
-/// and the report's own choices.
-struct QualityCacheEntry {
-    dataset_generation: u64,
-    view_generation: u64,
-    plan: data_quality::DataQualityPlan,
-    results: data_quality::DataQualityResults,
-    bytes: usize,
-}
-
-/// Rows a sampled Data Quality run read, and what decided which rows they were: its
-/// acquisition identity. A run or a drill that names the same rows cuts these instead
-/// of reading.
-///
-/// The dataset and view generations stand for the source: a session snapshot of
-/// the dataset as opened and the view as it was. A file changed on disk since is not
-/// noticed; opening it again starts a new dataset generation, and reads it again.
-#[derive(Debug, Clone)]
-pub struct KeptQualitySample {
-    dataset_generation: u64,
-    view_generation: u64,
-    sample: sampling::Sample,
-    rows: std::sync::Arc<data_quality::QualitySample>,
-    /// The source as the run that read these rows found it, stated when it began: a
-    /// report measured on them later is labeled with this, not with the file as it
-    /// stands then.
-    source: crate::quality_export::SourceIdentity,
-}
-
-impl KeptQualitySample {
-    fn same_rows(&self, other: &Self) -> bool {
-        self.dataset_generation == other.dataset_generation
-            && self.view_generation == other.view_generation
-            && self.sample == other.sample
-    }
-}
-
-/// Memory Data Quality keeps for the session: the rows its sampled runs read and the
-/// reports they made. Past it, reports that retained rows can remake go first, then
-/// the oldest rows, then the oldest other reports; the newest of each always stays.
-pub const QUALITY_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
-
-/// Where a full scan's passes read a remote source from, decided at Run.
-enum QualityCopyJob {
-    /// The source, in each pass.
-    Source,
-    /// A copy fetched earlier.
-    Kept(Arc<crate::local_copy::LocalCopy>),
-    /// A copy of `objects` fetched under `root` first.
-    Fetch {
-        objects: Vec<crate::local_copy::RemoteObject>,
-        root: PathBuf,
-    },
-}
-
-/// A local copy of a dataset's remote objects, kept for later full scans of the
-/// dataset it was fetched for.
-#[derive(Debug, Clone)]
-pub struct RetainedCopy {
-    dataset_generation: u64,
-    copy: Arc<crate::local_copy::LocalCopy>,
-}
-
-/// Acquisitions released to the budget that Setup still names, so a Run that reads
-/// them again says why.
-const QUALITY_RELEASED_REMEMBERED: usize = 16;
 
 /// Why Data Quality's Run did not start: a cancelled run has not exited yet. Said
 /// on Setup's line until it has.

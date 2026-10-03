@@ -427,3 +427,14 @@ fn test_an_empty_partial_search_says_so() {
             .any(|s| s.title == datui::home::HomeState::SEARCH_SECTION)
     );
 }
+
+/// A found file says what it is stored on, as a listed one does, rather than drawing
+/// the unknown place's glyph on local disk (#547 D10).
+#[test]
+fn test_found_files_say_where_they_live() {
+    let tmp = TempDir::new().unwrap();
+    touch(&tmp.path().join("a/b/deep.parquet"));
+    let (found, _) = walk_all(tmp.path(), &SearchConfig::default());
+    assert_eq!(found.len(), 1);
+    assert!(found[0].cost.source.is_some(), "{:?}", found[0].cost);
+}

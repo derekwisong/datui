@@ -138,6 +138,10 @@ where
     let mut batch: Vec<Entry> = Vec::with_capacity(BATCH);
     let mut found = 0usize;
     let mut last_emit = Instant::now();
+    // Where the files live, for the row's storage glyph (#547 D10). One filesystem unless the walk
+    // may cross into others, and then asked per file.
+    let mounts = crate::locality::Mounts::cached();
+    let root_source = mounts.describe(root).fstype;
 
     for result in builder.build() {
         outcome.scanned += 1;
@@ -182,6 +186,11 @@ where
         if let Ok(meta) = dir_entry.metadata() {
             entry = entry.with_fs_metadata(&meta);
         }
+        entry.cost.source = Some(if config.cross_filesystems {
+            mounts.describe(path).fstype
+        } else {
+            root_source.clone()
+        });
         // The name carries the path relative to where the search started, because
         // "sales.parquet" three times over says nothing about which one you want.
         entry.name = relative_label(root, path);

@@ -2179,6 +2179,13 @@ fn annotate(
             apply_known_facts(row, known, network_check(&row.path));
             row.cost.source = Some(mounts.describe(&row.path).fstype);
         }
+        // The door reads where its directory is; without this it drew the unknown
+        // place's glyph on local disk (#547 D10).
+        if let Some(door) = section.door.as_mut()
+            && !is_cloud_place(&door.path)
+        {
+            door.cost.source = Some(mounts.describe(&door.path).fstype);
+        }
     }
 }
 

@@ -5263,6 +5263,24 @@ fn test_the_door_is_named_the_way_the_title_is() {
 /// own comment says counting a place-to-look makes the figure a lie. It was inconsistent
 /// with itself too: under a filter the door steps out of the way, so the same count meant
 /// one thing with a filter typed and another without.
+/// The door says what its directory is stored on, as the rows beside it do (#547 D10).
+#[test]
+fn test_the_door_says_where_it_reads() {
+    let tmp = TempDir::new().unwrap();
+    for name in ["part-0.parquet", "part-1.parquet"] {
+        touch(tmp.path(), name);
+    }
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    let door = door_of(&home).expect("a door");
+    let row = home.sections[0].rows.first().expect("a row");
+    assert!(door.cost.source.is_some());
+    assert_eq!(door.cost.source, row.cost.source);
+}
+
 #[test]
 fn test_the_door_is_not_counted_among_what_a_directory_holds() {
     let tmp = TempDir::new().unwrap();

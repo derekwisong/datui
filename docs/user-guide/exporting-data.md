@@ -29,6 +29,8 @@ on screen. Numbers use their raw values, without display formatting.
 | Format | Extension | Options |
 |---|---|---|
 | CSV | `.csv` | Delimiter, include header |
+| TSV | `.tsv` | Include header; the delimiter is a tab |
+| PSV | `.psv` | Include header; the delimiter is a pipe |
 | Parquet | `.parquet` | |
 | JSON | `.json` | One array |
 | NDJSON | `.jsonl`, `.ndjson` | One object per line |
@@ -38,13 +40,17 @@ on screen. Numbers use their raw values, without display formatting.
 Every format also offers **Source file** for a dataset whose files disagree; see
 [below](#source-file).
 
+The dialog starts on the format datui read the data as, where it writes that
+format: a TSV file exports as TSV, a Parquet part file with no extension as
+Parquet. Otherwise it keeps the last format picked.
+
 Excel, ORC, NMEA, GPX, VCD, FIX, SDF and SQLite can be read but not written.
 
 ## Lists and structs
 
 A `by` query, SQL `ARRAY_AGG` or a nested source file gives list, array or
-struct columns. CSV has no such types, so a CSV export writes each of those
-cells as JSON text; the dialog says so when the view has one.
+struct columns. CSV, TSV and PSV have no such types, so they write each of
+those cells as JSON text; the dialog says so when the view has one.
 
 | Table shows | CSV cell |
 |---|---|
@@ -60,7 +66,7 @@ Parquet, Arrow, JSON and NDJSON keep lists, arrays and structs as they are.
 
 ## Binary
 
-CSV, JSON and NDJSON have no bytes type, so they write a binary value as
+CSV, TSV, PSV, JSON and NDJSON have no bytes type, so they write a binary value as
 standard base64 text, inside lists and structs too: `hi` is written `aGk=`.
 Polars reads it back with `str.decode("base64")`. Parquet, Arrow and Avro keep
 the bytes.
@@ -169,8 +175,8 @@ can still be replaced. Chart and Data Quality report exports work the same way.
 
 | Export | Written |
 |---|---|
-| CSV without compression, Parquet | Streamed: written in batches as the rows are read; the export never holds the whole view |
-| Compressed CSV, JSON, NDJSON, Arrow IPC, Avro | The whole view is read into memory, then written |
+| CSV, TSV and PSV without compression, Parquet | Streamed: written in batches as the rows are read; the export never holds the whole view |
+| Compressed CSV, TSV and PSV, JSON, NDJSON, Arrow IPC, Avro | The whole view is read into memory, then written |
 
 Streaming needs `polars_streaming` on in `[performance]`, the default, and a
 build with the `streaming` feature; without either, every export reads the

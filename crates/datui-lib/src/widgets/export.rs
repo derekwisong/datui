@@ -139,6 +139,18 @@ pub fn render_export_modal(
                 ExportFocus::CsvCompression,
             ),
         ]),
+        ExportFormat::Tsv | ExportFormat::Psv => rows.extend([
+            (
+                "Include header:",
+                FormValue::Toggle(modal.csv_include_header),
+                ExportFocus::CsvIncludeHeader,
+            ),
+            (
+                "Compression:",
+                FormValue::Choice(compression_name(modal.csv_compression)),
+                ExportFocus::CsvCompression,
+            ),
+        ]),
         ExportFormat::Json => rows.push((
             "Compression:",
             FormValue::Choice(compression_name(modal.json_compression)),
@@ -257,6 +269,24 @@ mod tests {
         let out = painted(&mut modal, 70, 12);
         assert!(out.contains("Format"), "{out}");
         assert!(out.contains("Parquet"), "the list is visible: {out}");
+    }
+
+    /// The dialog's height lists every format, and a preset shows its header and
+    /// compression rows without a delimiter.
+    #[test]
+    fn presets_are_listed_without_a_delimiter_row() {
+        let mut modal = ExportModal::new();
+        modal.active = true;
+        let out = painted(&mut modal, 66, 13);
+        for format in ExportFormat::ALL {
+            assert!(out.contains(format.as_str()), "{format:?}: {out}");
+        }
+        assert!(out.contains("Delimiter:"), "{out}");
+        modal.selected_format = ExportFormat::Tsv;
+        let out = painted(&mut modal, 66, 13);
+        assert!(!out.contains("Delimiter:"), "{out}");
+        assert!(out.contains("Include header:"), "{out}");
+        assert!(out.contains("Compression:"), "{out}");
     }
 
     /// A view with list or struct columns hears how CSV writes them; formats

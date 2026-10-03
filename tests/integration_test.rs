@@ -9161,8 +9161,12 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
         // and the format's last option is gone, a row extra and a gap opens up.
         // Either way this row is no longer the one above the checkbox.
         let last_of_its_own = match format {
-            // All three end on their compression row.
-            ExportFormat::Csv | ExportFormat::Json | ExportFormat::Ndjson => "Compression:",
+            // These end on their compression row.
+            ExportFormat::Csv
+            | ExportFormat::Tsv
+            | ExportFormat::Psv
+            | ExportFormat::Json
+            | ExportFormat::Ndjson => "Compression:",
             // No options of their own, so the checkbox sits right under the path.
             ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => "Path:",
         };

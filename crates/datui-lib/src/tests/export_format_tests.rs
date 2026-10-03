@@ -617,7 +617,9 @@ fn plain_extensions_map_to_their_formats() {
     for (name, expected) in [
         ("a.parquet", Some(ExportFormat::Parquet)),
         ("a.csv", Some(ExportFormat::Csv)),
-        ("a.tsv", Some(ExportFormat::Csv)),
+        ("a.tsv", Some(ExportFormat::Tsv)),
+        ("a.psv", Some(ExportFormat::Psv)),
+        ("a.tsv.gz", Some(ExportFormat::Tsv)),
         ("a.json", Some(ExportFormat::Json)),
         ("a.ndjson", Some(ExportFormat::Ndjson)),
         ("a.jsonl", Some(ExportFormat::Ndjson)),

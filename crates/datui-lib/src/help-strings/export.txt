@@ -14,8 +14,8 @@ Export current data to a file.
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Close without exporting
 
-  Typing a known extension (.csv, .parquet, .json, .jsonl, .ndjson, .arrow,
-  .ipc, .feather, .avro) selects the matching format, and a trailing
+  Typing a known extension (.csv, .tsv, .psv, .parquet, .json, .jsonl,
+  .ndjson, .arrow, .ipc, .feather, .avro) selects the matching format, and a trailing
   .gz/.zst/.bz2/.xz sets the compression. Picking a format rewrites a typed
   format extension to match, so the name and the bytes agree.
 
@@ -29,17 +29,18 @@ If the file exists:
 
 Formats:
   CSV:              Comma-separated values (configurable delimiter, header)
+  TSV, PSV:         CSV with the tab or | as the delimiter (header)
   Parquet:          Columnar format (efficient, compressed)
   JSON:             JSON array format
   NDJSON:           Newline-delimited JSON (one object per line)
   Arrow:            Arrow IPC / Feather v2
   Avro:             Avro row format
 
-  CSV has no lists or structs: those columns are written as JSON text,
+  CSV, TSV and PSV have no lists or structs: those columns are written as JSON text,
   [1,2] or {"x":1}, and the dialog says so when the view has one.
   Parquet, Arrow, JSON and NDJSON keep the real types.
 
-  CSV, JSON and NDJSON write binary as base64 text; the other formats
+  CSV, TSV, PSV, JSON and NDJSON write binary as base64 text; the other formats
   keep the bytes.
 
   Avro writes arrays as lists, categoricals and decimals as strings,
@@ -60,6 +61,5 @@ Source file:
 CSV Options:
   Delimiter:        Separates columns: --delimiter when given, else comma.
                     Only the first ASCII character counts, and Tab moves
-                    focus, so a tab cannot be typed here — TSV needs
-                    --delimiter
+                    focus, so a tab cannot be typed here: pick TSV
   Include header:   Whether to write column names as first row

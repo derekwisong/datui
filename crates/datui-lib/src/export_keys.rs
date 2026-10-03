@@ -147,7 +147,9 @@ impl App {
                     let mut path = home::expand_user_path(&path_str);
                     let format = self.export_modal.selected_format;
                     let compression = match format {
-                        ExportFormat::Csv => self.export_modal.csv_compression,
+                        ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Psv => {
+                            self.export_modal.csv_compression
+                        }
                         ExportFormat::Json => self.export_modal.json_compression,
                         ExportFormat::Ndjson => self.export_modal.ndjson_compression,
                         ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => None,

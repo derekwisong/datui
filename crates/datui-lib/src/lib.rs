@@ -4615,8 +4615,9 @@ impl App {
                 .as_ref()
                 .and_then(DataTableState::read_as);
             self.original_file_format = Self::export_format_for(p, read_as.or(options.format));
-            // A comma unless the user named a separator. A `.tsv` exports as CSV, to a
-            // `.csv` by default, and a tab there would reopen as one column.
+            // CSV's delimiter: a comma unless the user named a separator. A `.tsv`
+            // exports as TSV, whose preset is the tab; a tab in a `.csv` would reopen
+            // as one column.
             self.original_file_delimiter = Some(options.separator_or(b','));
         } else {
             self.original_file_format = None;
@@ -7858,13 +7859,12 @@ impl App {
     fn export_format_for(path: &Path, format: Option<FileFormat>) -> Option<ExportFormat> {
         format
             .or_else(|| FileFormat::from_path(path))
-            .and_then(crate::readers::export_default)
             .or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .filter(|s| s.ends_with(".csv"))
-                    .map(|_| ExportFormat::Csv)
+                CompressionFormat::from_extension(path)
+                    .and(path.file_stem())
+                    .and_then(|stem| FileFormat::from_path(Path::new(stem)))
             })
+            .and_then(crate::readers::export_default)
     }
 
     /// `options` for the compressed delimited file `file`, in the dialect of the

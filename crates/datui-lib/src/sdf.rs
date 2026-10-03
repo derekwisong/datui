@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use color_eyre::Result;
-use color_eyre::eyre::eyre;
 use polars::prelude::*;
 
 use crate::OpenOptions;
@@ -622,7 +621,7 @@ pub(crate) fn convert(
     })?;
     let last = reader.finish()?;
     if reader.stats().records == 0 {
-        return Err(eyre!("No SDF records in {}.", display.display()));
+        return Err(crate::error_display::FileError::new(display, "no SDF records").into());
     }
     segments.write(&last)?;
     let (lf, files) = segments.finish()?;
@@ -641,6 +640,15 @@ pub(crate) fn convert(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file that is not one names itself, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        crate::readers::bad_input::each_names_its_file(
+            crate::FileFormat::Sdf,
+            &[("empty.sdf", b"", "No SDF records")],
+        );
+    }
 
     const SAMPLE: &str = "aspirin
   RDKit          2D

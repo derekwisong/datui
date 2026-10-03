@@ -205,12 +205,15 @@ fn a_database_of_one_table_opens_it_and_several_are_listed() {
         .to_string();
     assert_eq!(
         missing,
-        "No table \"nope\" in app.db. Its tables: users, Orders."
+        "\"app.db\": No table \"nope\". --table names one of its tables: users, Orders."
     );
     let empty = pick(vec![t("sqlite_master", true)], None, display)
         .unwrap_err()
         .to_string();
-    assert!(empty.starts_with("app.db holds no tables"), "{empty}");
+    assert!(
+        empty.starts_with("\"app.db\": The file holds no tables."),
+        "{empty}"
+    );
 }
 
 #[test]
@@ -515,10 +518,13 @@ fn a_file_that_is_not_a_database_says_so() {
     let dir = temp();
     let text = dir.path().join("notes.db");
     std::fs::write(&text, "id,name\n1,ada\n".repeat(100)).unwrap();
-    let message = format!("{:#}", tables(&text).unwrap_err());
-    assert!(
-        message.ends_with("notes.db is not a SQLite database."),
-        "{message}"
+    let message = crate::error_display::user_message_from_report(
+        &crate::members::tables(&text, crate::FileFormat::Sqlite).unwrap_err(),
+        None,
+    );
+    assert_eq!(
+        message,
+        format!("\"{}\": Not a SQLite database.", text.display())
     );
 }
 
@@ -1033,4 +1039,55 @@ fn tables_without_rowids_views_and_a_column_named_rowid() {
         back.column("x").unwrap().i64().unwrap().to_vec(),
         [Some(3), Some(2), Some(1)]
     );
+}
+
+/// Every way a database is refused names it, in the one shape, and a table that is not
+/// there names the ones that are.
+#[test]
+fn errors_name_the_file() {
+    use crate::readers::bad_input::{assert_shape, each_names_its_file, opening};
+    each_names_its_file(
+        crate::FileFormat::Sqlite,
+        &[(
+            "notes.db",
+            &b"id,name\n1,ada\n".repeat(100),
+            "Not a SQLite database",
+        )],
+    );
+    let dir = temp();
+    let made = |sql: &str| {
+        let built = temp();
+        std::fs::read(database(built.path(), "x.db", sql)).unwrap()
+    };
+    let shop = made("CREATE TABLE users (id INTEGER); CREATE TABLE orders (id INTEGER);");
+    let options = crate::OpenOptions {
+        table: Some("nope".into()),
+        ..Default::default()
+    };
+    let message = opening(
+        dir.path(),
+        "shop.db",
+        &shop,
+        crate::FileFormat::Sqlite,
+        &options,
+    )
+    .expect("no such table");
+    eprintln!("{message}");
+    assert_shape(&message, &dir.path().join("shop.db"));
+    assert!(
+        message.contains("--table names one of its tables: users, orders."),
+        "{message}"
+    );
+    let empty = made("PRAGMA user_version = 1;");
+    let message = opening(
+        dir.path(),
+        "empty.db",
+        &empty,
+        crate::FileFormat::Sqlite,
+        &Default::default(),
+    )
+    .expect("no tables");
+    eprintln!("{message}");
+    assert_shape(&message, &dir.path().join("empty.db"));
+    assert!(message.contains("holds no tables"), "{message}");
 }

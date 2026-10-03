@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+
+use crate::error_display::{FileError, in_file};
 use polars::prelude::*;
 
 use crate::fixed_records::{Bytes, ColumnLayout, Logical, Physical};
@@ -731,9 +733,9 @@ pub fn notes(index: &Index) -> Vec<String> {
 
 /// The index of the ULog file at `path`, made by one pass or kept from one.
 pub fn indexed(path: &Path) -> Result<(Arc<Bytes>, Arc<Index>)> {
-    let bytes = Arc::new(Bytes::map(path).map_err(|e| eyre!("{}: {e}", path.display()))?);
+    let bytes = Arc::new(Bytes::map(path).map_err(|e| in_file(path, e.into()))?);
     let index = crate::indexed::cached(path, || index(bytes.as_slice()))
-        .map_err(|e| eyre!("{} is not read: {e}", path.display()))?;
+        .map_err(|e| FileError::new(path, e))?;
     Ok((bytes, index))
 }
 
@@ -775,7 +777,7 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
         let topic = &index.topics[id];
         let records = Arc::new(
             IndexedRecords::new(bytes, topic.offsets.clone(), topic.columns.clone())
-                .map_err(|e| eyre!("{picked}: {e}"))?,
+                .map_err(|e| FileError::new(path, format!("table \"{picked}\": {e}")))?,
         );
         opened.window = Some((records.clone(), records.rows()));
         records.lazy()
@@ -839,6 +841,18 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A file that is not a ULog names itself, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        crate::readers::bad_input::each_names_its_file(
+            crate::FileFormat::Ulog,
+            &[
+                ("text.ulg", b"hello there, this is text", "Not a ULog file"),
+                ("cut.ulg", b"ULog\x01\x12\x35\x01", "cut short"),
+            ],
+        );
+    }
 
     fn message(kind: u8, payload: &[u8]) -> Vec<u8> {
         let mut out = (payload.len() as u16).to_le_bytes().to_vec();

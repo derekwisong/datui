@@ -116,6 +116,7 @@ pub fn tables(file: &Path, format: FileFormat) -> color_eyre::Result<Vec<Table>>
             format.name()
         )),
     }
+    .map_err(|e| crate::error_display::in_file(file, e))
 }
 
 /// What a file of tables calls one of them, singular and plural.
@@ -137,7 +138,7 @@ pub fn pick(
     format: FileFormat,
     empty: &str,
 ) -> color_eyre::Result<Pick> {
-    use color_eyre::eyre::eyre;
+    use crate::error_display::FileError;
     let (one, many) = noun(format);
     let own: Vec<&Table> = tables.iter().filter(|t| !t.internal).collect();
     let names = || {
@@ -163,19 +164,23 @@ pub fn pick(
         });
         return match found {
             Some(table) => Ok(Pick::One(table.clone())),
-            None if own.is_empty() => Err(eyre!(
-                "No {one} {wanted:?} in {}, which holds no {many}.",
-                display.display()
-            )),
-            None => Err(eyre!(
-                "No {one} {wanted:?} in {}. Its {many}: {}.",
-                display.display(),
-                names()
-            )),
+            None if own.is_empty() => Err(FileError::new(
+                display,
+                format!("no {one} \"{wanted}\"; the file holds no {many}."),
+            )
+            .into()),
+            None => Err(FileError::new(
+                display,
+                format!(
+                    "no {one} \"{wanted}\". --table names one of its {many}: {}.",
+                    names()
+                ),
+            )
+            .into()),
         };
     }
     match own.as_slice() {
-        [] => Err(eyre!("{} holds no {many}.{empty}", display.display())),
+        [] => Err(FileError::new(display, format!("the file holds no {many}.{empty}")).into()),
         [one] => Ok(Pick::One((*one).clone())),
         _ => Ok(Pick::Several(tables)),
     }
@@ -300,10 +305,13 @@ fields = [{ name = "b", type = "u1" }]"#,
         let missing = pick(several, Some("z"), display, FileFormat::Numpy, "")
             .unwrap_err()
             .to_string();
-        assert_eq!(missing, "No array \"z\" in run.npz. Its arrays: x, y.");
+        assert_eq!(
+            missing,
+            "\"run.npz\": No array \"z\". --table names one of its arrays: x, y."
+        );
         let empty = pick(Vec::new(), None, display, FileFormat::Numpy, "")
             .unwrap_err()
             .to_string();
-        assert_eq!(empty, "run.npz holds no arrays.");
+        assert_eq!(empty, "\"run.npz\": The file holds no arrays.");
     }
 }

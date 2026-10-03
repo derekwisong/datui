@@ -23,6 +23,8 @@ use std::sync::Arc;
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+
+use crate::error_display::{FileError, in_file};
 use polars::prelude::*;
 
 use crate::fixed_records::{Bytes, ColumnLayout, FixedRecords, Logical, Null, Physical};
@@ -887,7 +889,7 @@ fn leaves(
     match dtype {
         Dtype::Simple(s) => {
             let (physical, values, logical, null) =
-                read_as(s).map_err(|e| format!("{name}: {e}"))?;
+                read_as(s).map_err(|e| format!("column \"{name}\": {e}"))?;
             let width = s.size / values;
             out.push(ColumnLayout {
                 name: name.into(),
@@ -1039,10 +1041,9 @@ pub fn open_in(
 
 /// The array of the `.npy` file at `path`.
 pub fn open_file(path: &Path) -> Result<Array> {
-    let bytes = Bytes::map(path).map_err(|e| eyre!("{}: {e}", path.display()))?;
+    let bytes = Bytes::map(path).map_err(|e| in_file(path, e.into()))?;
     let len = bytes.len();
-    open_in(Arc::new(bytes), 0, len, &stem(path))
-        .map_err(|e| eyre!("{} is not read: {e}", path.display()))
+    open_in(Arc::new(bytes), 0, len, &stem(path)).map_err(|e| FileError::new(path, e).into())
 }
 
 fn stem(path: &Path) -> String {
@@ -1115,9 +1116,9 @@ pub struct Member {
 }
 
 fn archive_of(path: &Path) -> Result<::zip::ZipArchive<std::fs::File>> {
-    let file = std::fs::File::open(path).map_err(|e| eyre!("{}: {e}", path.display()))?;
+    let file = std::fs::File::open(path).map_err(|e| in_file(path, e.into()))?;
     ::zip::ZipArchive::new(file)
-        .map_err(|e| eyre!("{} is not a NumPy archive: {e}", path.display()))
+        .map_err(|e| FileError::new(path, format!("not a NumPy archive: {e}")).into())
 }
 
 /// The arrays of the archive at `path`, in the archive's order.
@@ -1250,10 +1251,13 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
         && looks_like(&head);
     if is_npy {
         if let Some(wanted) = wanted {
-            return Err(eyre!(
-                "{} is one array; --table {wanted:?} picks an array of an .npz archive.",
-                path.display()
-            ));
+            return Err(FileError::new(
+                path,
+                format!(
+                    "the file is one array; --table \"{wanted}\" picks an array of an .npz archive."
+                ),
+            )
+            .into());
         }
         let array = open_file(path)?;
         return Ok(Open::Array {
@@ -1262,10 +1266,11 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
         });
     }
     if !is_archive_name(path) {
-        return Err(eyre!(
-            "{} is not a NumPy file: an .npy file starts with \\x93NUMPY, and an .npz is a zip of them.",
-            path.display()
-        ));
+        return Err(FileError::new(
+            path,
+            "not a NumPy file: an .npy file starts with \\x93NUMPY, and an .npz is a zip of them.",
+        )
+        .into());
     }
     let members = members(path)?;
     let tables: Vec<Table> = members
@@ -1293,11 +1298,11 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
             member: member.name.clone(),
         });
     };
-    let bytes = Bytes::map(path).map_err(|e| eyre!("{}: {e}", path.display()))?;
-    let at = usize::try_from(at).map_err(|_| eyre!("{} is too large", path.display()))?;
+    let bytes = Bytes::map(path).map_err(|e| in_file(path, e.into()))?;
+    let at = usize::try_from(at).map_err(|_| FileError::new(path, "the file is too large"))?;
     let len = usize::try_from(member.size).unwrap_or(usize::MAX);
     let array = open_in(Arc::new(bytes), at, len, &member.name)
-        .map_err(|e| eyre!("{} in {} is not read: {e}", member.name, path.display()))?;
+        .map_err(|e| FileError::new(path, format!("array \"{}\" is not read: {e}", member.name)))?;
     let lf = array.records.lazy();
     let mut opened = opened(array, Some((path, members.len())), false);
     opened.other_tables = crate::members::others(&tables, &member.name);
@@ -1346,11 +1351,11 @@ pub(crate) fn convert(
     let member = all
         .iter()
         .find(|m| m.name == name)
-        .ok_or_else(|| eyre!("No array {name:?} in {}.", path.display()))?;
+        .ok_or_else(|| FileError::new(path, format!("no array \"{name}\"")))?;
     let mut archive = archive_of(path)?;
     let entry = archive
         .by_index(member.index)
-        .map_err(|e| eyre!("{name} in {}: {e}", path.display()))?;
+        .map_err(|e| FileError::new(path, format!("array \"{name}\": {e}")))?;
     let compressed = entry.compressed_size();
     let Some((mut file, claim)) = writer.create(|| {
         crate::download::TempDownload::create(options.temp_dir.as_deref(), Some("npy"))
@@ -1371,7 +1376,7 @@ pub(crate) fn convert(
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(eyre!("{name} in {}: {e}", path.display())),
+            Err(e) => return Err(FileError::new(path, format!("array \"{name}\": {e}")).into()),
         };
         file.write_all(&chunk[..n])?;
         written += n as u64;
@@ -1385,7 +1390,7 @@ pub(crate) fn convert(
     let held = crate::download::TempDownload::held(file, Some(claim));
     let bytes = Bytes::map(held.path())?;
     let array = open_in(Arc::new(bytes), 0, written as usize, name)
-        .map_err(|e| eyre!("{name} in {} is not read: {e}", path.display()))?;
+        .map_err(|e| FileError::new(path, format!("array \"{name}\" is not read: {e}")))?;
     let tables: Vec<Table> = all
         .iter()
         .map(|m| Table {
@@ -1427,6 +1432,40 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every way an array is refused names the file, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        use crate::readers::bad_input::{assert_shape, each_names_its_file, opening};
+        let mut v9 = npy("'<f8'", false, "(1,)", &[0; 8]);
+        v9[6] = 9;
+        each_names_its_file(
+            crate::FileFormat::Numpy,
+            &[
+                ("text.npy", b"hello there", "Not a NumPy file"),
+                ("text.npz", b"hello there", "Not a NumPy archive"),
+                ("v9.npy", &v9, "version 9"),
+                ("type.npy", &npy("'<q9'", false, "(1,)", &[0; 8]), "<q9"),
+            ],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let options = crate::OpenOptions {
+            table: Some("x".into()),
+            ..Default::default()
+        };
+        let one = npy("'<f8'", false, "(1,)", &[0; 8]);
+        let message = opening(
+            dir.path(),
+            "a.npy",
+            &one,
+            crate::FileFormat::Numpy,
+            &options,
+        )
+        .expect("--table refused");
+        eprintln!("{message}");
+        assert_shape(&message, &dir.path().join("a.npy"));
+        assert!(message.contains("--table \"x\""), "{message}");
+    }
 
     fn npy(descr: &str, fortran: bool, shape: &str, data: &[u8]) -> Vec<u8> {
         let mut header = format!(

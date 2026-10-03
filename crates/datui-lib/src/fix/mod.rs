@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::error_display::FileError;
 use color_eyre::Result;
-use color_eyre::eyre::eyre;
 use polars::prelude::*;
 
 use crate::OpenOptions;
@@ -998,12 +998,19 @@ pub fn layers(registry: &crate::formats::Registry, fix_dict: Option<&Path>) -> R
         match dict::Dictionary::load(path) {
             Ok(Some(d)) => custom.push(Arc::new(d)),
             Ok(None) => {
-                return Err(eyre!(
-                    "{} is not a FIX dictionary: a QuickFIX XML file, or TOML with kind = \"fix\".",
-                    path.display()
-                ));
+                return Err(FileError::new(
+                    path,
+                    "not a FIX dictionary. --fix-dict takes a QuickFIX XML file, or TOML with kind = \"fix\".",
+                )
+                .into());
             }
-            Err(e) => return Err(eyre!("{e}")),
+            Err(e) => {
+                let at = match e.line {
+                    0 => String::new(),
+                    line => format!("line {line}, column {}: ", e.column),
+                };
+                return Err(FileError::new(path, format!("{at}{}", e.message)).into());
+            }
         }
     }
     Ok(Layers::new(custom))
@@ -1029,10 +1036,7 @@ pub(crate) fn convert(
     })?;
     let last = reader.finish()?;
     if reader.stats().messages == 0 {
-        return Err(eyre!(
-            "No FIX messages in {}: no line holds 8=FIX.",
-            display.display()
-        ));
+        return Err(FileError::new(display, "no FIX messages: no line holds 8=FIX.").into());
     }
     segments.write(&last)?;
     let (lf, files) = segments.finish()?;
@@ -1051,6 +1055,40 @@ pub(crate) fn convert(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A log with no messages names itself; a dictionary that is not one names the
+    /// dictionary and the flag that took it.
+    #[test]
+    fn errors_name_the_file() {
+        use crate::readers::bad_input::{assert_shape, each_names_its_file, opening};
+        each_names_its_file(
+            crate::FileFormat::Fix,
+            &[("words.fix", b"hello there\n", "No FIX messages")],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text, says) in [
+            ("plain.toml", "a = 1\n", "--fix-dict takes"),
+            ("broken.xml", "<fix><fields><field", "Line "),
+        ] {
+            let dict = dir.path().join(name);
+            std::fs::write(&dict, text).unwrap();
+            let options = OpenOptions {
+                fix_dict: Some(dict.clone()),
+                ..Default::default()
+            };
+            let message = opening(
+                dir.path(),
+                "a.fix",
+                b"8=FIX.4.4\x019=5\x0135=0\x0110=000\x01\n",
+                crate::FileFormat::Fix,
+                &options,
+            )
+            .expect("the dictionary is refused");
+            eprintln!("{message}");
+            assert_shape(&message, &dict);
+            assert!(message.contains(says), "{message}");
+        }
+    }
 
     /// A message of `body` (fields after 9, before 10) with a correct BodyLength and
     /// CheckSum, joined by `delim`.

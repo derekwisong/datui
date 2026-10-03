@@ -5,7 +5,84 @@
 
 use polars::prelude::PolarsError;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// An error reading a file, said as every reader error is:
+/// `"<path>": <what went wrong>. <what to do>.` ([`file_message`]).
+#[derive(Debug)]
+pub struct FileError {
+    path: PathBuf,
+    what: String,
+    /// What it was told, so a cause (a missing file) is still found under it.
+    source: Option<color_eyre::eyre::Report>,
+}
+
+impl FileError {
+    pub fn new(path: &Path, what: impl Into<String>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            what: what.into(),
+            source: None,
+        }
+    }
+}
+
+impl std::fmt::Display for FileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&file_message(&self.path, &self.what))
+    }
+}
+
+impl std::error::Error for FileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|e| &**e as &(dyn std::error::Error + 'static))
+    }
+}
+
+/// `what` went wrong reading `path`, in the one shape reader errors take:
+/// `"<path>": <what went wrong>. <what to do>.` Sentence case, its first line ended
+/// with a full stop, the file named once.
+pub fn file_message(path: &Path, what: &str) -> String {
+    let named = path.display().to_string();
+    let quoted = format!("\"{named}\": ");
+    let what = what.trim();
+    // A message that already names the file is not named twice.
+    let what = what
+        .strip_prefix(quoted.as_str())
+        .or_else(|| what.strip_prefix(&format!("{named}: ")))
+        .unwrap_or(what);
+    let (first, rest) = what.split_once('\n').unwrap_or((what, ""));
+    let first = first.trim_end();
+    let mut said = String::with_capacity(quoted.len() + what.len() + 1);
+    said.push_str(&quoted);
+    let mut chars = first.chars();
+    if let Some(c) = chars.next() {
+        said.extend(c.to_uppercase());
+        said.push_str(chars.as_str());
+    }
+    if !first.ends_with(['.', '?', '!']) {
+        said.push('.');
+    }
+    if !rest.is_empty() {
+        said.push('\n');
+        said.push_str(rest);
+    }
+    said
+}
+
+/// `err`, from reading `path`, named by it ([`FileError`]) unless it already is.
+pub fn in_file(path: &Path, err: color_eyre::eyre::Report) -> color_eyre::eyre::Report {
+    if err.downcast_ref::<FileError>().is_some() {
+        return err;
+    }
+    let what = report_message(cfg!(windows), &err, None);
+    color_eyre::eyre::Report::new(FileError {
+        source: Some(err),
+        ..FileError::new(path, what)
+    })
+}
 
 /// Format a PolarsError as a user-facing message by matching on its variant.
 pub fn user_message_from_polars(err: &PolarsError) -> String {
@@ -23,7 +100,52 @@ pub fn user_message_from_polars(err: &PolarsError) -> String {
     if let Some(none) = nothing_matched(&said) {
         return none;
     }
-    without_the_query_plan(&said)
+    let said = without_the_query_plan(&said);
+    let (first, rest) = said.split_once('\n').unwrap_or((&said, ""));
+    match rust_names_said_plainly(first) {
+        Some(plain) if rest.is_empty() => plain,
+        Some(plain) => format!("{plain}\n{rest}"),
+        None => said,
+    }
+}
+
+/// A file reader's words that are a Rust name (`Out-of-spec: InvalidFooter`,
+/// `OutOfSpec`, `InvalidUtf8 at character 0`), said in English.
+fn rust_names_said_plainly(msg: &str) -> Option<String> {
+    // `InvalidFooter` as `invalid footer`.
+    let words = |name: &str| {
+        let mut out = String::new();
+        for (i, c) in name.chars().enumerate() {
+            if c.is_uppercase() && i > 0 {
+                out.push(' ');
+            }
+            out.extend(c.to_lowercase());
+        }
+        out
+    };
+    let msg = msg.trim();
+    let is_name = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric());
+    let damaged = |what: Option<String>| {
+        let what = what.map(|w| format!(" ({w})")).unwrap_or_default();
+        format!(
+            "The file is not laid out as its format says{what}: it is damaged, or another \
+             format. --format names the format to read it as."
+        )
+    };
+    if msg == "OutOfSpec" {
+        return Some(damaged(None));
+    }
+    const SPEC: &str = "out-of-spec: ";
+    if let Some(name) = msg
+        .get(..SPEC.len())
+        .filter(|p| p.eq_ignore_ascii_case(SPEC))
+        .map(|_| &msg[SPEC.len()..])
+        && is_name(name)
+    {
+        return Some(damaged(Some(words(name))));
+    }
+    let at = msg.strip_prefix("InvalidUtf8")?;
+    Some(format!("The file is not UTF-8 text{at}."))
 }
 
 /// A scan whose path expanded to no files, said plainly. Polars prints its expansion
@@ -307,7 +429,7 @@ fn report_held(windows: bool, report: &color_eyre::eyre::Report) -> bool {
 /// What a file another program holds says, named by `path` when it is known.
 fn held_message(path: Option<&Path>) -> String {
     match path {
-        Some(path) => format!("{} {HELD}.", path.display()),
+        Some(path) => file_message(path, &format!("the file {HELD}")),
         None => format!("The file {HELD}."),
     }
 }
@@ -372,6 +494,7 @@ pub enum ErrorKindForPython {
 /// to raise FileNotFoundError, PermissionDenied, or RuntimeError without duplicating chain-walk logic.
 pub fn error_for_python(report: &color_eyre::eyre::Report) -> (ErrorKindForPython, String) {
     use std::io::ErrorKind;
+    let named = report.downcast_ref::<FileError>().map(ToString::to_string);
     for cause in report.chain() {
         if let Some(io_err) = cause.downcast_ref::<io::Error>() {
             let kind = match io_err.kind() {
@@ -379,9 +502,12 @@ pub fn error_for_python(report: &color_eyre::eyre::Report) -> (ErrorKindForPytho
                 ErrorKind::PermissionDenied => ErrorKindForPython::PermissionDenied,
                 _ => ErrorKindForPython::Other,
             };
-            let msg = io_err.to_string();
+            let msg = named.unwrap_or_else(|| io_err.to_string());
             return (kind, msg);
         }
+    }
+    if let Some(named) = named {
+        return (ErrorKindForPython::Other, named);
     }
     let display = report.to_string();
     let msg = display
@@ -437,37 +563,33 @@ pub fn user_message_from_report(report: &color_eyre::eyre::Report, path: Option<
 }
 
 fn report_message(windows: bool, report: &color_eyre::eyre::Report, path: Option<&Path>) -> String {
+    // A reader's error names the file it was reading, which may be one of several.
+    if let Some(named) = report.downcast_ref::<FileError>() {
+        return named.to_string();
+    }
     if report_held(windows, report) {
         return held_message(path);
     }
+    let named = |msg: String| match path {
+        Some(p) => file_message(p, &msg),
+        None => msg,
+    };
     for cause in report.chain() {
+        if let Some(named_file) = cause.downcast_ref::<FileError>() {
+            return named_file.to_string();
+        }
         if let Some(pe) = cause.downcast_ref::<PolarsError>() {
-            let msg = user_message_from_polars(pe);
-            return if let Some(p) = path {
-                format!("Failed to load {}: {}", p.display(), msg)
-            } else {
-                msg
-            };
+            return named(user_message_from_polars(pe));
         }
         if let Some(io_err) = cause.downcast_ref::<io::Error>() {
-            let msg = user_message_from_io(io_err, None);
-            return if let Some(p) = path {
-                format!("Failed to load {}: {}", p.display(), msg)
-            } else {
-                msg
-            };
+            return named(user_message_from_io(io_err, None));
         }
     }
 
     // Fallback: use first line of display to avoid long tracebacks
     let display = report.to_string();
-    let first_line = display.lines().next().unwrap_or("An error occurred");
-    let trimmed = first_line.trim();
-    if let Some(p) = path {
-        format!("Failed to load {}: {}", p.display(), trimmed)
-    } else {
-        trimmed.to_string()
-    }
+    let first_line = display.lines().next().unwrap_or("An error occurred").trim();
+    named(rust_names_said_plainly(first_line).unwrap_or_else(|| first_line.to_string()))
 }
 
 /// Polars' own words, with its query plan taken off the end.
@@ -548,7 +670,7 @@ fn files_columns_differ(msg: &str) -> Option<String> {
         let (got, expected) = rest.split_once(", expected ")?;
         let expected = expected.lines().next().unwrap_or(expected).trim();
         format!(
-            "one has a column named `{}` where another has `{expected}`",
+            "one has a column named \"{}\" where another has \"{expected}\"",
             got.trim()
         )
     } else if msg.contains("schema lengths differ") {
@@ -598,7 +720,7 @@ fn short_csv_parse_error_message(raw: &str) -> String {
     let col = extract_csv_parse_column(raw);
     let first = match &col {
         Some(c) => format!(
-            "CSV parse error in column '{}': a value didn't match the inferred type.",
+            "CSV parse error in column \"{}\": a value didn't match the inferred type.",
             c
         ),
         None => "CSV parse error: a value didn't match the inferred column type.".to_string(),
@@ -615,6 +737,59 @@ fn short_csv_parse_error_message(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reader's error names its file in quotes, once, in sentence case, ended.
+    #[test]
+    fn a_file_error_names_the_file_once() {
+        let path = Path::new("/d/a.wav");
+        for what in [
+            "not a WAV file",
+            "Not a WAV file.",
+            "/d/a.wav: not a WAV file",
+            "\"/d/a.wav\": Not a WAV file.",
+        ] {
+            assert_eq!(file_message(path, what), "\"/d/a.wav\": Not a WAV file.");
+        }
+        assert_eq!(
+            file_message(path, "bad\nTry: --format csv"),
+            "\"/d/a.wav\": Bad.\nTry: --format csv"
+        );
+        // Named once however often it passes through, and its cause is still found.
+        let err = in_file(path, color_eyre::eyre::eyre!("too short"));
+        let err = in_file(Path::new("/d"), err);
+        assert_eq!(err.to_string(), "\"/d/a.wav\": Too short.");
+        assert_eq!(
+            user_message_from_report(&err, Some(Path::new("/elsewhere"))),
+            "\"/d/a.wav\": Too short."
+        );
+        let missing = in_file(path, io::Error::new(io::ErrorKind::NotFound, "gone").into());
+        assert!(matches!(
+            error_for_python(&missing),
+            (ErrorKindForPython::FileNotFound, ref m) if m.starts_with("\"/d/a.wav\": ")
+        ));
+        assert_eq!(
+            user_message_from_report(&color_eyre::eyre::eyre!("bad header"), Some(path)),
+            "\"/d/a.wav\": Bad header."
+        );
+    }
+
+    /// A reader's Rust names are said in English.
+    #[test]
+    fn rust_names_are_said_plainly() {
+        let said = |m: &str| rust_names_said_plainly(m);
+        assert!(
+            said("out-of-spec: InvalidFooter")
+                .unwrap()
+                .contains("(invalid footer)")
+        );
+        assert!(said("OutOfSpec").unwrap().contains("--format"));
+        assert_eq!(
+            said("InvalidUtf8 at character 0").unwrap(),
+            "The file is not UTF-8 text at character 0."
+        );
+        assert_eq!(said("out-of-spec: the footer is short"), None);
+        assert_eq!(said("bad header"), None);
+    }
 
     /// An expansion that found nothing says so instead of printing Polars' input.
     #[test]
@@ -641,13 +816,13 @@ mod tests {
         let file = Path::new("/home/u/tmp/.tmp9tY5X2.parquet");
         let url = Path::new("http://host/broken.parquet");
         let said = named_by_source(
-            "Failed to load /home/u/tmp/.tmp9tY5X2.parquet: bad\nIt stopped at /home/u/tmp/.tmp9tY5X2.parquet.",
+            "\"/home/u/tmp/.tmp9tY5X2.parquet\": Bad.\nIt stopped at /home/u/tmp/.tmp9tY5X2.parquet.",
             file,
             url,
         );
         assert_eq!(
             said,
-            "Failed to load http://host/broken.parquet: bad\nIt stopped at http://host/broken.parquet."
+            "\"http://host/broken.parquet\": Bad.\nIt stopped at http://host/broken.parquet."
         );
         assert_eq!(named_by_source("no path here", file, url), "no path here");
         assert_eq!(named_by_source("x", Path::new(""), url), "x");
@@ -671,7 +846,7 @@ mod tests {
             "/mnt/home/u/tmp/.tmpAb12Cd",
             "x/home/u/tmp/.tmpAb12Cd",
         ] {
-            let message = format!("Failed to load {other}: bad");
+            let message = format!("\"{other}\": Bad.");
             assert_eq!(named_by_source(&message, copy, gz), message, "{other}");
         }
         assert_eq!(
@@ -693,7 +868,7 @@ mod tests {
         ));
         assert!(said.contains("cannot be read as one table"), "{said}");
         assert!(
-            said.contains("a column named `39` where another has `25`"),
+            said.contains("a column named \"39\" where another has \"25\""),
             "{said}"
         );
         assert!(said.contains("--no-header"), "{said}");
@@ -785,8 +960,8 @@ mod tests {
     fn a_file_another_program_holds_says_so() {
         let path = Path::new(r"C:\data\book.xlsx");
         let held = format!(
-            "{} is open in another program that does not allow reading it; close it there \
-             and reopen.",
+            "\"{}\": The file is open in another program that does not allow reading it; \
+             close it there and reopen.",
             path.display()
         );
         let raw = || io::Error::from_raw_os_error(32);
@@ -888,7 +1063,7 @@ mod tests {
             msg
         );
         assert!(
-            msg.contains("column 'column'"),
+            msg.contains("column \"column\""),
             "expected offending column in message: {}",
             msg
         );

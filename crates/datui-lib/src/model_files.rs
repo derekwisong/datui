@@ -18,6 +18,7 @@ use color_eyre::eyre::eyre;
 use polars::prelude::*;
 
 use crate::FileFormat;
+use crate::error_display::FileError;
 
 /// What datui does with a SafeTensors file: see [`crate::readers`].
 pub(crate) const SAFETENSORS: crate::readers::Reader = crate::readers::Reader {
@@ -168,7 +169,7 @@ impl<R: Read> Bounded<R> {
     fn need(&self, n: u64, what: &str) -> Result<()> {
         if n > self.left() {
             return Err(eyre!(
-                "GGUF: {what} runs past the end of the header ({n} bytes, {} left)",
+                "{what} runs past the end of the GGUF header ({n} bytes, {} left)",
                 self.left()
             ));
         }
@@ -180,7 +181,7 @@ impl<R: Read> Bounded<R> {
         let mut buf = [0u8; N];
         self.inner
             .read_exact(&mut buf)
-            .map_err(|e| eyre!("GGUF: reading {what}: {e}"))?;
+            .map_err(|e| eyre!("cannot read {what} in the GGUF header: {e}"))?;
         self.pos += N as u64;
         Ok(buf)
     }
@@ -221,7 +222,7 @@ impl<R: Read> Bounded<R> {
         let len = self.u64(what)?;
         if len > MAX_GGUF_STRING {
             return Err(eyre!(
-                "GGUF: {what} is {len} bytes, longer than datui reads"
+                "{what} is {len} bytes, longer than datui reads in a GGUF header"
             ));
         }
         self.need(len, what)?;
@@ -229,9 +230,9 @@ impl<R: Read> Bounded<R> {
         (&mut self.inner)
             .take(len)
             .read_to_end(&mut buf)
-            .map_err(|e| eyre!("GGUF: reading {what}: {e}"))?;
+            .map_err(|e| eyre!("cannot read {what} in the GGUF header: {e}"))?;
         if buf.len() as u64 != len {
-            return Err(eyre!("GGUF: {what} is cut short"));
+            return Err(eyre!("{what} in the GGUF header is cut short"));
         }
         self.pos += len;
         Ok(String::from_utf8_lossy(&buf).into_owned())
@@ -242,9 +243,9 @@ impl<R: Read> Bounded<R> {
     fn skip(&mut self, n: u64, what: &str) -> Result<()> {
         self.need(n, what)?;
         let skipped = std::io::copy(&mut (&mut self.inner).take(n), &mut std::io::sink())
-            .map_err(|e| eyre!("GGUF: reading {what}: {e}"))?;
+            .map_err(|e| eyre!("cannot read {what} in the GGUF header: {e}"))?;
         if skipped != n {
-            return Err(eyre!("GGUF: {what} is cut short"));
+            return Err(eyre!("{what} in the GGUF header is cut short"));
         }
         self.pos += n;
         Ok(())
@@ -272,12 +273,12 @@ fn safetensors_header_len(prefix: [u8; 8], len: u64) -> Result<u64> {
     let header_len = u64::from_le_bytes(prefix);
     if header_len > MAX_SAFETENSORS_HEADER {
         return Err(eyre!(
-            "SafeTensors: the header is {header_len} bytes, more than the {MAX_SAFETENSORS_HEADER} allowed"
+            "the SafeTensors header is {header_len} bytes, more than the {MAX_SAFETENSORS_HEADER} allowed"
         ));
     }
     if header_len > len.saturating_sub(8) {
         return Err(eyre!(
-            "SafeTensors: the header claims {header_len} bytes and the file has {}",
+            "the SafeTensors header claims {header_len} bytes and the file has {}",
             len.saturating_sub(8)
         ));
     }
@@ -290,15 +291,15 @@ pub fn read_safetensors<R: Read>(reader: R, len: u64) -> Result<Header> {
     let mut prefix = [0u8; 8];
     reader
         .read_exact(&mut prefix)
-        .map_err(|_| eyre!("SafeTensors: the file is shorter than its header length"))?;
+        .map_err(|_| eyre!("the file is shorter than its SafeTensors header length"))?;
     let header_len = safetensors_header_len(prefix, len)?;
     let mut json = Vec::new();
     reader
         .take(header_len)
         .read_to_end(&mut json)
-        .map_err(|e| eyre!("SafeTensors: reading the header: {e}"))?;
+        .map_err(|e| eyre!("cannot read the SafeTensors header: {e}"))?;
     if json.len() as u64 != header_len {
-        return Err(eyre!("SafeTensors: the header is cut short"));
+        return Err(eyre!("the SafeTensors header is cut short"));
     }
     parse_safetensors_json(&json, len.saturating_sub(8).saturating_sub(header_len))
 }
@@ -314,12 +315,12 @@ fn parse_safetensors_json(json: &[u8], data_len: u64) -> Result<Header> {
     let mut de = serde_json::Deserializer::from_slice(json);
     let parsed = serde::Deserializer::deserialize_map(&mut de, StHeaderVisitor)
         .and_then(|header| de.end().map(|()| header))
-        .map_err(|e| eyre!("SafeTensors: the header is not valid: {e}"))?;
+        .map_err(|e| eyre!("the SafeTensors header is not valid: {e}"))?;
     let (mut tensors, metadata) = parsed;
     for t in &tensors {
         if t.offset_end.is_some_and(|end| end > data_len) {
             return Err(eyre!(
-                "SafeTensors: tensor {:?} runs past the end of the file ({data_len} bytes of data)",
+                "tensor \"{}\" runs past the end of the file ({data_len} bytes of data)",
                 t.name
             ));
         }
@@ -482,14 +483,14 @@ impl<'de> serde::de::Visitor<'de> for StHeaderVisitor {
             }
             let entry: StEntry = map
                 .next_value()
-                .map_err(|e| A::Error::custom(format!("tensor {name:?}: {e}")))?;
+                .map_err(|e| A::Error::custom(format!("tensor \"{name}\": {e}")))?;
             if !seen.insert(name.clone()) {
-                return Err(A::Error::custom(format!("tensor {name:?} appears twice")));
+                return Err(A::Error::custom(format!("tensor \"{name}\" appears twice")));
             }
             let (start, end) = entry.data_offsets;
             if end < start {
                 return Err(A::Error::custom(format!(
-                    "tensor {name:?} ends before it starts"
+                    "tensor \"{name}\" ends before it starts"
                 )));
             }
             let shape = entry.shape.0;
@@ -603,7 +604,7 @@ fn gguf_scalar<R: Read>(r: &mut Bounded<R>, ty: u32) -> Result<String> {
         10 => r.u64(what)?.to_string(),
         11 => (r.u64(what)? as i64).to_string(),
         12 => f64::from_bits(r.u64(what)?).to_string(),
-        other => return Err(eyre!("GGUF: unknown metadata type {other}")),
+        other => return Err(eyre!("unknown GGUF metadata type {other}")),
     })
 }
 
@@ -613,7 +614,7 @@ fn gguf_value<R: Read>(r: &mut Bounded<R>, ty: u32, depth: u32) -> Result<MetaVa
         GGUF_STRING => Ok(MetaValue::Text(r.string("a metadata string")?)),
         GGUF_ARRAY => {
             if depth >= MAX_ARRAY_DEPTH {
-                return Err(eyre!("GGUF: arrays nest deeper than datui reads"));
+                return Err(eyre!("GGUF arrays nest deeper than datui reads"));
             }
             let item_ty = r.u32("an array's type")?;
             let len = r.u64("an array's length")?;
@@ -622,11 +623,11 @@ fn gguf_value<R: Read>(r: &mut Bounded<R>, ty: u32, depth: u32) -> Result<MetaVa
             let least = match item_ty {
                 GGUF_STRING => 8,
                 GGUF_ARRAY => 12,
-                t => gguf_fixed_size(t).ok_or_else(|| eyre!("GGUF: unknown array type {t}"))?,
+                t => gguf_fixed_size(t).ok_or_else(|| eyre!("unknown GGUF array type {t}"))?,
             };
             r.need(
                 len.checked_mul(least)
-                    .ok_or_else(|| eyre!("GGUF: an array's length overflows"))?,
+                    .ok_or_else(|| eyre!("a GGUF array's length overflows"))?,
                 "an array",
             )?;
             let of = gguf_items_noun(item_ty);
@@ -675,7 +676,7 @@ fn skip_items<R: Read>(r: &mut Bounded<R>, ty: u32, len: u64, depth: u32) -> Res
             }
         }
         t => {
-            let size = gguf_fixed_size(t).ok_or_else(|| eyre!("GGUF: unknown array type {t}"))?;
+            let size = gguf_fixed_size(t).ok_or_else(|| eyre!("unknown GGUF array type {t}"))?;
             r.skip(len.saturating_mul(size), "an array")?;
         }
     }
@@ -693,9 +694,9 @@ pub fn read_gguf<R: Read>(reader: R, len: u64) -> Result<Header> {
     };
     let magic = r
         .fill::<4>("the magic number")
-        .map_err(|_| eyre!("GGUF: the file is too short to be GGUF"))?;
+        .map_err(|_| eyre!("the file is too short to be GGUF"))?;
     if &magic != b"GGUF" {
-        return Err(eyre!("GGUF: the file does not start with GGUF"));
+        return Err(eyre!("not a GGUF file: it does not start with GGUF"));
     }
     let raw = r.fill::<4>("the version")?;
     let mut version = u32::from_le_bytes(raw);
@@ -706,8 +707,8 @@ pub fn read_gguf<R: Read>(reader: R, len: u64) -> Result<Header> {
     }
     match version {
         2 | 3 => {}
-        1 => return Err(eyre!("GGUF: version 1 files are not supported")),
-        v => return Err(eyre!("GGUF: version {v} is not one datui reads (2 or 3)")),
+        1 => return Err(eyre!("GGUF version 1 files are not supported")),
+        v => return Err(eyre!("GGUF version {v} is not one datui reads (2 or 3)")),
     }
     let tensor_count = r.u64("the tensor count")?;
     let kv_count = r.u64("the metadata count")?;
@@ -715,19 +716,19 @@ pub fn read_gguf<R: Read>(reader: R, len: u64) -> Result<Header> {
     // either count is bounded by what is left before anything is allocated for it.
     if tensor_count > MAX_GGUF_COUNT || tensor_count.saturating_mul(24) > r.left() {
         return Err(eyre!(
-            "GGUF: {tensor_count} tensors cannot fit in the header"
+            "{tensor_count} tensors cannot fit in the GGUF header"
         ));
     }
     if kv_count > MAX_GGUF_COUNT || kv_count.saturating_mul(12) > r.left() {
         return Err(eyre!(
-            "GGUF: {kv_count} metadata entries cannot fit in the header"
+            "{kv_count} metadata entries cannot fit in the GGUF header"
         ));
     }
     let mut metadata = Vec::with_capacity(kv_count as usize);
     for _ in 0..kv_count {
         let key = r.string("a metadata key")?;
         let ty = r.u32("a metadata type")?;
-        let value = gguf_value(&mut r, ty, 0).map_err(|e| eyre!("{e} (in {key:?})"))?;
+        let value = gguf_value(&mut r, ty, 0).map_err(|e| eyre!("{e} (in \"{key}\")"))?;
         metadata.push((key, value));
     }
     let mut tensors = Vec::with_capacity(tensor_count as usize);
@@ -736,7 +737,7 @@ pub fn read_gguf<R: Read>(reader: R, len: u64) -> Result<Header> {
         let n_dims = r.u32("a tensor's dimension count")? as usize;
         if n_dims > MAX_DIMS {
             return Err(eyre!(
-                "GGUF: tensor {name:?} has {n_dims} dimensions, more than datui reads"
+                "tensor \"{name}\" has {n_dims} dimensions, more than datui reads"
             ));
         }
         let mut shape = Vec::with_capacity(n_dims);
@@ -783,7 +784,7 @@ pub fn read_gguf<R: Read>(reader: R, len: u64) -> Result<Header> {
         let end = t.bytes.and_then(|b| t.offset.checked_add(b));
         if t.bytes.is_some() && end.is_none_or(|end| end > data_len) {
             return Err(eyre!(
-                "GGUF: tensor {:?} runs past the end of the file ({data_len} bytes of data)",
+                "tensor \"{}\" runs past the end of the file ({data_len} bytes of data)",
                 t.name
             ));
         }
@@ -835,16 +836,20 @@ pub fn is_safetensors_index(path: &Path) -> bool {
 /// The shards an index names, beside it and in name order, and the index's own
 /// metadata.
 fn read_index(path: &Path) -> Result<(Vec<PathBuf>, Metadata)> {
-    let file = std::fs::File::open(path).map_err(|e| eyre!("{}: {e}", path.display()))?;
-    let len = file.metadata()?.len();
+    let named = |e: std::io::Error| crate::error_display::in_file(path, e.into());
+    let file = std::fs::File::open(path).map_err(named)?;
+    let len = file.metadata().map_err(named)?.len();
     if len > MAX_INDEX_JSON {
-        return Err(eyre!(
-            "{}: the index is {len} bytes, more than datui reads",
-            path.display()
-        ));
+        return Err(FileError::new(
+            path,
+            format!("the index is {len} bytes, more than datui reads"),
+        )
+        .into());
     }
     let mut text = Vec::new();
-    file.take(MAX_INDEX_JSON).read_to_end(&mut text)?;
+    file.take(MAX_INDEX_JSON)
+        .read_to_end(&mut text)
+        .map_err(named)?;
     let (names, metadata) = parse_index(&text, &path.display().to_string())?;
     let dir = path.parent().unwrap_or(Path::new(""));
     Ok((names.iter().map(|name| dir.join(name)).collect(), metadata))
@@ -853,19 +858,21 @@ fn read_index(path: &Path) -> Result<(Vec<PathBuf>, Metadata)> {
 /// An index's shard names, each once and in name order, and its metadata. `named` is
 /// what errors call the index.
 fn parse_index(text: &[u8], named: &str) -> Result<(Vec<String>, Metadata)> {
-    let index: StIndex =
-        serde_json::from_slice(text).map_err(|e| eyre!("{named}: not a SafeTensors index: {e}"))?;
+    let refused = |what: String| FileError::new(Path::new(named), what);
+    let index: StIndex = serde_json::from_slice(text)
+        .map_err(|e| refused(format!("not a SafeTensors index: {e}")))?;
     let names: std::collections::BTreeSet<String> = index.weight_map.into_values().collect();
     if names.len() > MAX_SHARDS {
-        return Err(eyre!("{named}: the index names too many shards"));
+        return Err(refused("the index names too many shards".into()).into());
     }
     for name in &names {
         // A shard is a file beside its index, never a path out of the directory.
         let path = Path::new(name);
         if path.components().count() != 1 || path.file_name().is_none() || name.contains('\\') {
-            return Err(eyre!(
-                "{named}: the index names {name:?}, which is not a file beside it"
-            ));
+            return Err(refused(format!(
+                "the index names \"{name}\", which is not a file beside it"
+            ))
+            .into());
         }
     }
     let metadata = index.metadata.map(|StMetadata(m)| m).unwrap_or_default();
@@ -1021,7 +1028,7 @@ pub fn read_header_ranged_from(
     let prefix: [u8; 8] = head
         .get(..8)
         .and_then(|prefix| prefix.try_into().ok())
-        .ok_or_else(|| eyre!("SafeTensors: the file is shorter than its header length"))?;
+        .ok_or_else(|| eyre!("the file is shorter than its SafeTensors header length"))?;
     let header_len = safetensors_header_len(prefix, len)?;
     let end = 8 + header_len;
     // The first read holds the whole JSON, or the front of it: the rest is asked for
@@ -1045,8 +1052,9 @@ fn read_index_ranged(
 ) -> std::result::Result<(Vec<String>, Metadata), RangeError> {
     let (mut text, len) = fetch(src, 0, FIRST_INDEX_RANGE, None)?;
     if len > MAX_INDEX_JSON {
-        return Err(RangeError::Failed(format!(
-            "{named}: the index is {len} bytes, more than datui reads"
+        return Err(RangeError::Failed(crate::error_display::file_message(
+            Path::new(named),
+            &format!("the index is {len} bytes, more than datui reads"),
         )));
     }
     if len > text.len() as u64 {
@@ -1217,7 +1225,7 @@ pub fn read_model(paths: &[PathBuf], format: FileFormat) -> Result<(LazyFrame, M
         // The open names the path it was given; of several files, say which one.
         let header = read_file(file, format).map_err(|e| match files.len() {
             1 => e,
-            _ => eyre!("{}: {e}", file.display()),
+            _ => crate::error_display::in_file(file, e),
         })?;
         headers.push(header);
     }
@@ -1432,6 +1440,45 @@ pub(crate) mod tests {
         out.extend_from_slice(json.as_bytes());
         out.extend(std::iter::repeat_n(0u8, data));
         out
+    }
+
+    /// Every way a model file is refused names the file, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        let past = r#"{"t":{"dtype":"F32","shape":[4],"data_offsets":[0,16]}}"#;
+        crate::readers::bad_input::each_names_its_file(
+            FileFormat::Safetensors,
+            &[
+                (
+                    "claims.safetensors",
+                    &[0xff, 0, 0, 0, 0, 0, 0, 0, b'{'],
+                    "claims",
+                ),
+                (
+                    "json.safetensors",
+                    &safetensors_bytes("{nope", 0),
+                    "not valid",
+                ),
+                (
+                    "past.safetensors",
+                    &safetensors_bytes(past, 8),
+                    "Tensor \"t\"",
+                ),
+                (
+                    "model.safetensors.index.json",
+                    br#"{"weight_map":{"a":"../b.safetensors"}}"#,
+                    "not a file beside it",
+                ),
+            ],
+        );
+        crate::readers::bad_input::each_names_its_file(
+            FileFormat::Gguf,
+            &[
+                ("short.gguf", b"GG", "too short"),
+                ("magic.gguf", b"GGML\x03\0\0\0", "does not start with GGUF"),
+                ("v1.gguf", b"GGUF\x01\0\0\0", "version 1"),
+            ],
+        );
     }
 
     /// Writes GGUF version 3, little-endian, as llama.cpp does.

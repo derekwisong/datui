@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+
+use crate::error_display::{FileError, in_file};
 use polars::prelude::*;
 
 use crate::fixed_records::{Bytes, ColumnLayout, Logical, Physical};
@@ -500,9 +502,9 @@ pub fn notes(index: &Index) -> Vec<String> {
 
 /// The index of the DataFlash log at `path`, made by one pass or kept from one.
 pub fn indexed(path: &Path) -> Result<(Arc<Bytes>, Arc<Index>)> {
-    let bytes = Arc::new(Bytes::map(path).map_err(|e| eyre!("{}: {e}", path.display()))?);
+    let bytes = Arc::new(Bytes::map(path).map_err(|e| in_file(path, e.into()))?);
     let index = crate::indexed::cached(path, || index(bytes.as_slice()))
-        .map_err(|e| eyre!("{} is not read: {e}", path.display()))?;
+        .map_err(|e| FileError::new(path, e))?;
     Ok((bytes, index))
 }
 
@@ -542,7 +544,7 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
     let (columns, units) = columns(&index, t);
     let records = Arc::new(
         IndexedRecords::new(bytes, t.offsets.clone(), columns)
-            .map_err(|e| eyre!("{picked}: {e}"))?,
+            .map_err(|e| FileError::new(path, format!("table \"{picked}\": {e}")))?,
     );
     let opened = crate::members::Opened {
         window: Some((records.clone(), records.rows())),
@@ -581,6 +583,19 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A file that is not a DataFlash log names itself, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        crate::readers::bad_input::each_names_its_file(
+            crate::FileFormat::Dataflash,
+            &[(
+                "text.bin",
+                b"hello there, this is text",
+                "Not a DataFlash log",
+            )],
+        );
+    }
 
     fn fmt(id: u8, name: &str, format: &str, labels: &str) -> Vec<u8> {
         let length = if id == FMT {

@@ -355,7 +355,7 @@ fn a_format_name_not_on_the_path_says_so() {
     };
     let message = pump_open_until_error(&mut app, &rx, vec![data], options).unwrap();
     assert!(
-        message.contains("no format named acme.missing"),
+        message.contains("No format named acme.missing"),
         "{message}"
     );
 }

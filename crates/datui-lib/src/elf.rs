@@ -14,7 +14,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use color_eyre::Result;
-use color_eyre::eyre::eyre;
+
+use crate::error_display::{FileError, in_file};
 use object::{Object, ObjectSection, ObjectSymbol, SectionFlags, SymbolFlags, SymbolSection};
 use polars::prelude::*;
 
@@ -344,9 +345,8 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
             }
         }
     };
-    let bytes =
-        crate::fixed_records::Bytes::map(path).map_err(|e| eyre!("{}: {e}", path.display()))?;
-    let elf = read(bytes.as_slice()).map_err(|e| eyre!("{}: {e}", path.display()))?;
+    let bytes = crate::fixed_records::Bytes::map(path).map_err(|e| in_file(path, e.into()))?;
+    let elf = read(bytes.as_slice()).map_err(|e| FileError::new(path, e))?;
     let mut notes = Vec::new();
     if elf.left_out > 0 {
         notes.push(crate::text_formats::note(
@@ -385,6 +385,22 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A file that is not ELF names itself, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        crate::readers::bad_input::each_names_its_file(
+            crate::FileFormat::Elf,
+            &[
+                ("text.elf", b"hello there", "Not an ELF file"),
+                (
+                    "cut.elf",
+                    b"\x7fELF\x02\x01\x01\0",
+                    "Not a readable ELF file",
+                ),
+            ],
+        );
+    }
 
     /// name, type, flags, addr, offset, size, link, info, align, entsize.
     type SectionHeader = (u32, u32, u64, u64, u64, u64, u32, u32, u64, u64);

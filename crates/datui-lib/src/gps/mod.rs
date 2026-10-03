@@ -167,7 +167,8 @@ fn convert_many(
     let mut written = Vec::new();
     let mut stats: Option<Stats> = None;
     for file in files {
-        let one = convert_one(file, file, format, options, writer, read)?;
+        let one = convert_one(file, file, format, options, writer, read)
+            .map_err(|e| crate::error_display::in_file(file, e))?;
         let name = file
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -268,7 +269,7 @@ fn nmea_table(options: &OpenOptions) -> Result<nmea::Table> {
         None => Ok(nmea::Table::Fixes),
         Some(name) => nmea::Table::from_name(name).ok_or_else(|| {
             eyre!(
-                "No table {name:?} in an NMEA log. The tables are: {}.",
+                "no table \"{name}\". --table names one of an NMEA log's tables: {}.",
                 nmea::Table::ALL.map(nmea::Table::name).join(", ")
             )
         }),
@@ -347,10 +348,11 @@ fn convert_one(
             }
             let last = log.finish()?;
             if log.stats().sentences == 0 {
-                return Err(eyre!(
-                    "No NMEA sentences in {}: no line starts with $ and a sentence address.",
-                    display.display()
-                ));
+                return Err(crate::error_display::FileError::new(
+                    display,
+                    "no NMEA sentences: no line starts with $ and a sentence address.",
+                )
+                .into());
             }
             segments.write(&last)?;
             let (lf, files) = segments.finish()?;
@@ -519,6 +521,43 @@ fn gpx_notes(stats: &gpx::Stats, of: Option<usize>, truncated: usize) -> Vec<Not
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every way a GPS log is refused names the file, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        use crate::readers::bad_input::{assert_shape, each_names_its_file, opening};
+        each_names_its_file(
+            FileFormat::Gpx,
+            &[
+                (
+                    "kml.gpx",
+                    b"<?xml version=\"1.0\"?><kml></kml>",
+                    "first element is <kml>",
+                ),
+                ("empty.gpx", b"<?xml version=\"1.0\"?>", "no <gpx> element"),
+            ],
+        );
+        each_names_its_file(
+            FileFormat::Nmea,
+            &[("words.nmea", b"hello\nthere\n", "No NMEA sentences")],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let options = OpenOptions {
+            table: Some("nope".into()),
+            ..Default::default()
+        };
+        let message = opening(
+            dir.path(),
+            "a.nmea",
+            b"$GPGGA,1,2\n",
+            FileFormat::Nmea,
+            &options,
+        )
+        .expect("no such table");
+        eprintln!("{message}");
+        assert_shape(&message, &dir.path().join("a.nmea"));
+        assert!(message.contains("--table names one of"), "{message}");
+    }
 
     fn options(dir: &Path) -> OpenOptions {
         OpenOptions {

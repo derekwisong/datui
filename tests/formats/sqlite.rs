@@ -296,7 +296,7 @@ fn a_db_file_that_is_not_sqlite_says_so() {
     std::fs::write(&fake, b"\xd0\xcf\x11\xe0 not sqlite at all").unwrap();
     let (app, _rx) = open_with(fake, options);
     let message = app.error_message().expect("refused");
-    assert!(message.contains("not a SQLite database"), "{message}");
+    assert!(message.contains("Not a SQLite database"), "{message}");
 }
 
 /// A table is read in place: nothing is written to the temp directory while it is open,

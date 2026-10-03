@@ -341,10 +341,10 @@ fn a_corrupt_header_is_an_error_not_a_crash() {
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(tx, common::test_runtime());
         let message =
-            super::pump_open_until_error(&mut app, &rx, vec![path], OpenOptions::default())
+            super::pump_open_until_error(&mut app, &rx, vec![path.clone()], OpenOptions::default())
                 .unwrap_or_else(|| panic!("{name} opens with an error"));
         assert!(
-            message.contains("SafeTensors") || message.contains("GGUF"),
+            message.starts_with(&format!("\"{}\": ", path.display())),
             "{name}: {message}"
         );
     }

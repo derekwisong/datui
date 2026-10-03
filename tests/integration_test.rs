@@ -13242,6 +13242,7 @@ fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
             unreachable: Default::default(),
             listing_so_far: Default::default(),
             cut_short: Default::default(),
+            narrowed: None,
             probe_errors: Default::default(),
             network_check: app.home.network_check,
             cloud: Vec::new(),

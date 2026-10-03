@@ -1266,6 +1266,8 @@ pub struct HomeState {
     pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network directories whose listing stopped at [`discover::MAX_ENTRIES_PER_DIR`].
     pub cut_short: std::collections::HashSet<PathBuf>,
+    /// The names a filter asked the server for, in a cloud directory cut short.
+    pub narrowed: Option<Narrowed>,
     /// Why a cloud listing was refused, when the service said.
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
     /// What cloud directories turned out to hold when peeked into: `hive` or `multi`.
@@ -1488,6 +1490,7 @@ impl Default for HomeState {
             unreachable: std::collections::HashSet::new(),
             listing_so_far: std::collections::HashMap::new(),
             cut_short: std::collections::HashSet::new(),
+            narrowed: None,
             probe_errors: std::collections::HashMap::new(),
             cloud_kinds: std::collections::HashMap::new(),
             peek_failed: std::collections::HashSet::new(),
@@ -1523,6 +1526,8 @@ pub struct ListingRequest {
     pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// See [`HomeState::cut_short`].
     pub cut_short: std::collections::HashSet<PathBuf>,
+    /// See [`HomeState::narrowed`].
+    pub narrowed: Option<Narrowed>,
     /// Why a cloud listing was refused.
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
     pub network_check: fn(&Path) -> bool,
@@ -1659,6 +1664,18 @@ fn probed_entry(
 /// is the only place the home screen touches the filesystem, and it must never be
 /// called from the thread that draws — a directory on a wedged mount, a FIFO, a
 /// failing disk all block here, and none of them can be enumerated in advance.
+/// What a cloud directory cut short at the cap holds under one name prefix, asked of
+/// the server because a filter was typed there.
+#[derive(Debug, Clone)]
+pub struct Narrowed {
+    pub dir: PathBuf,
+    /// The start of every name asked for (`STATION=USW`).
+    pub prefix: String,
+    pub rows: Vec<Entry>,
+    /// These stopped at the cap too.
+    pub truncated: bool,
+}
+
 pub fn build_listing(request: &ListingRequest) -> Listing {
     let ListingRequest {
         config_dirs,
@@ -1670,6 +1687,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         unreachable,
         listing_so_far,
         cut_short,
+        narrowed,
         probe_errors,
         network_check,
         cloud,
@@ -1733,7 +1751,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         let so_far = remote && !probed.contains_key(&dir) && listing_so_far.contains_key(&dir);
         // A SQLite database is a place too, whose rows are its tables.
         let database = !remote && dir.is_file();
-        let (rows, truncated) = if remote {
+        let (mut rows, truncated) = if remote {
             let rows = probed
                 .get(&dir)
                 .or_else(|| listing_so_far.get(&dir))
@@ -1755,6 +1773,22 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             rows.extend(scan.entries);
             (rows, scan.truncated)
         };
+        // A level cut short holds the names a filter asked the server for, beside the
+        // first of the rest.
+        let narrowed = narrowed
+            .as_ref()
+            .filter(|n| remote && truncated && n.dir == dir);
+        if let Some(narrowed) = narrowed {
+            let listed: std::collections::HashSet<PathBuf> =
+                rows.iter().map(|row| row.path.clone()).collect();
+            rows.extend(
+                narrowed
+                    .rows
+                    .iter()
+                    .filter(|row| !listed.contains(&row.path))
+                    .cloned(),
+            );
+        }
         // A directory cut off at the cap otherwise looks exactly like one that happens
         // to hold that many things.
         let subtitle = if so_far {
@@ -1763,10 +1797,19 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 crate::numfmt::group_chrome(rows.len())
             ))
         } else if truncated {
-            Some(format!(
+            let first = format!(
                 "first {}",
                 crate::numfmt::group_chrome(discover::MAX_ENTRIES_PER_DIR)
-            ))
+            );
+            Some(match narrowed {
+                Some(n) => format!(
+                    "{first} + {}{} {}*",
+                    crate::numfmt::group_chrome(n.rows.len()),
+                    if n.truncated { "+" } else { "" },
+                    n.prefix
+                ),
+                None => first,
+            })
         } else {
             None
         };
@@ -2600,6 +2643,7 @@ impl HomeState {
             unreachable: self.unreachable.clone(),
             listing_so_far: self.listing_so_far.clone(),
             cut_short: self.cut_short.clone(),
+            narrowed: self.narrowed.clone(),
             probe_errors: self.probe_errors.clone(),
             network_check: self.network_check,
             cloud: self.cloud.clone(),

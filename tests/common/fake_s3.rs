@@ -1,7 +1,7 @@
 //! An in-process stand-in for an S3 bucket that counts what is asked of it.
 //!
 //! Enough of the S3 API for datui and Polars to list the bucket and a prefix and read
-//! objects in ranges: `ListBuckets`, `ListObjectsV2` (prefix and delimiter, one page),
+//! objects in ranges: `ListBuckets`, `ListObjectsV2` (prefix, delimiter, `max-keys`, pages),
 //! `HEAD`, and `GET` with or without a `Range`. Signatures are not checked. Every
 //! request is counted, and every body byte sent, so a test can say what a run cost on
 //! the wire. Nothing leaves the loopback interface.
@@ -26,6 +26,10 @@ pub struct Wire {
     /// Every GET is answered with the whole object, `Range` or not: a web server that
     /// does not serve byte ranges.
     whole: AtomicBool,
+    /// Milliseconds each list page waits before it answers.
+    list_delay_ms: AtomicU64,
+    /// The query of every list request, in the order they came.
+    list_queries: std::sync::Mutex<Vec<String>>,
 }
 
 /// One reading of [`Wire`].
@@ -56,6 +60,22 @@ impl WireCount {
 }
 
 impl Wire {
+    /// The list requests whose query names `prefix` and asks for no `max-keys`: the
+    /// pages of one level's listing, without the peeks into it.
+    #[allow(dead_code)]
+    pub fn level_pages(&self, prefix: &str) -> usize {
+        self.list_queries
+            .lock()
+            .expect("queries")
+            .iter()
+            .filter(|query| {
+                let pairs = || query.split('&').filter_map(|pair| pair.split_once('='));
+                pairs().any(|(key, value)| key == "prefix" && decode(value) == prefix)
+                    && !pairs().any(|(key, _)| key == "max-keys")
+            })
+            .count()
+    }
+
     #[allow(dead_code)]
     pub fn count(&self) -> WireCount {
         WireCount {
@@ -140,6 +160,12 @@ impl FakeS3 {
         self.wire.get_delay_ms.store(ms, Ordering::SeqCst);
     }
 
+    /// Every list page waits `ms` before it answers.
+    #[allow(dead_code)]
+    pub fn slow_lists(&self, ms: u64) {
+        self.wire.list_delay_ms.store(ms, Ordering::SeqCst);
+    }
+
     /// Answer every GET with the whole object, as a server without byte ranges does.
     #[allow(dead_code)]
     pub fn whole_files(&self) {
@@ -213,6 +239,14 @@ fn answer(stream: TcpStream, bucket: &str, objects: &RwLock<Objects>, wire: &Wir
             respond(&mut out, "200 OK", &[], body.as_bytes())
         } else if key.is_empty() && method == "GET" {
             wire.lists.fetch_add(1, Ordering::SeqCst);
+            wire.list_queries
+                .lock()
+                .expect("queries")
+                .push(query.to_string());
+            let delay = wire.list_delay_ms.load(Ordering::SeqCst);
+            if delay > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
             let body = list(bucket, query, &objects);
             respond(&mut out, "200 OK", &[], body.as_bytes())
         } else if let Some((bytes, tag)) = objects.get(&key) {
@@ -273,7 +307,9 @@ fn byte_range(range: Option<&str>, len: usize) -> (usize, usize) {
     }
 }
 
-/// A `ListObjectsV2` page: every key under the prefix, folded at the delimiter.
+/// A `ListObjectsV2` page: the keys under the prefix, folded at the delimiter, up to
+/// `max-keys` (1,000, S3's default) after the continuation token or `start-after`. A
+/// folded prefix counts as one key, as on S3.
 fn list(bucket: &str, query: &str, objects: &Objects) -> String {
     let param = |name: &str| {
         query
@@ -284,38 +320,77 @@ fn list(bucket: &str, query: &str, objects: &Objects) -> String {
     };
     let prefix = param("prefix").unwrap_or_default();
     let delimiter = param("delimiter").filter(|delimiter| !delimiter.is_empty());
-    let mut contents = String::new();
-    let mut prefixes = std::collections::BTreeSet::new();
-    let mut keys = 0;
-    for (key, (bytes, tag)) in objects.range(prefix.clone()..) {
+    let max_keys = param("max-keys")
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(1000)
+        .max(1);
+    // The token is the last key or prefix the page before ended on, in hex.
+    let after = param("continuation-token")
+        .map(|token| unhex(&token))
+        .or_else(|| param("start-after"));
+    let (mut contents, mut common) = (String::new(), String::new());
+    let mut last: Option<String> = None;
+    let mut keys = 0usize;
+    let mut truncated = false;
+    // Nothing at or before where the last page ended is listed again.
+    let from = after
+        .clone()
+        .filter(|after| *after > prefix)
+        .unwrap_or_else(|| prefix.clone());
+    for (key, (bytes, tag)) in objects.range(from..) {
         let Some(rest) = key.strip_prefix(&prefix) else {
             break;
         };
-        if let Some(delimiter) = &delimiter
-            && let Some(at) = rest.find(delimiter.as_str())
-        {
-            prefixes.insert(format!("{prefix}{}", &rest[..at + delimiter.len()]));
+        let folded = delimiter.as_ref().and_then(|delimiter| {
+            rest.find(delimiter.as_str())
+                .map(|at| format!("{prefix}{}", &rest[..at + delimiter.len()]))
+        });
+        let entry = folded.clone().unwrap_or_else(|| key.clone());
+        if after.as_ref().is_some_and(|after| entry <= *after) || last.as_ref() == Some(&entry) {
             continue;
         }
+        if keys == max_keys {
+            truncated = true;
+            break;
+        }
         keys += 1;
-        contents.push_str(&format!(
-            "<Contents><Key>{key}</Key><LastModified>2024-10-01T00:00:00.000Z</LastModified>\
-             <ETag>{tag}</ETag><Size>{}</Size><StorageClass>STANDARD</StorageClass></Contents>",
-            bytes.len()
-        ));
+        last = Some(entry.clone());
+        match folded {
+            Some(entry) => common.push_str(&format!(
+                "<CommonPrefixes><Prefix>{entry}</Prefix></CommonPrefixes>"
+            )),
+            None => contents.push_str(&format!(
+                "<Contents><Key>{key}</Key><LastModified>2024-10-01T00:00:00.000Z</LastModified>\
+                 <ETag>{tag}</ETag><Size>{}</Size><StorageClass>STANDARD</StorageClass></Contents>",
+                bytes.len()
+            )),
+        }
     }
-    let common: String = prefixes
-        .iter()
-        .map(|prefix| format!("<CommonPrefixes><Prefix>{prefix}</Prefix></CommonPrefixes>"))
-        .collect();
+    let next = match (truncated, &last) {
+        (true, Some(last)) => format!(
+            "<NextContinuationToken>{}</NextContinuationToken>",
+            hex(last)
+        ),
+        _ => String::new(),
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
          <ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
-         <Name>{bucket}</Name><Prefix>{prefix}</Prefix><KeyCount>{}</KeyCount>\
-         <MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>{contents}{common}\
-         </ListBucketResult>",
-        keys + prefixes.len()
+         <Name>{bucket}</Name><Prefix>{prefix}</Prefix><KeyCount>{keys}</KeyCount>\
+         <MaxKeys>{max_keys}</MaxKeys><IsTruncated>{truncated}</IsTruncated>{contents}{common}\
+         {next}</ListBucketResult>"
     )
+}
+
+fn hex(text: &str) -> String {
+    text.bytes().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(text: &str) -> String {
+    let bytes: Vec<u8> = (0..text.len() / 2)
+        .filter_map(|i| u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok())
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn respond(out: &mut TcpStream, status: &str, headers: &[(&str, String)], body: &[u8]) -> bool {

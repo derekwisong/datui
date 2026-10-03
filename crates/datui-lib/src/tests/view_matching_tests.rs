@@ -218,3 +218,61 @@ fn a_view_saved_on_one_table_fits_that_table_of_the_file_alone() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.get_sort_columns(), ["total".to_string()]);
 }
+
+/// A frame handed over from Python (`datui.view(frame)`) has no path: its views
+/// are listed, saved and applied by its columns, as data piped in is.
+#[test]
+fn a_frame_from_python_matches_views_by_its_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+    own_views(&mut app, dir.path());
+    let frame = |rows: i64| {
+        let df = polars::df!(
+            "city" => (0..rows).map(|i| format!("c{i}")).collect::<Vec<_>>(),
+            "temp" => (0..rows).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        AppEvent::OpenLazyFrame(
+            Box::new(polars::prelude::IntoLazy::lazy(df)),
+            OpenOptions::default(),
+        )
+    };
+
+    open_with(&mut app, &rx, &tx, frame(5));
+    assert!(app.path.is_none(), "a frame has no path");
+    press(&mut app, 'v');
+    assert!(app.template_modal.active, "v opens the views list");
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["temp".to_string()], vec![true]);
+    press(&mut app, 's');
+    assert!(app.template_modal.schema_match_enabled);
+    assert_eq!(app.template_modal.exact_path_input.value(), "");
+    app.template_modal.name_input.set_value("warmest");
+    app.save_view_form();
+    assert_eq!(
+        app.template_modal.rows[0].reason,
+        Some(template::MatchReason::SameColumns)
+    );
+    app.template_modal.close();
+
+    // The next frame with these columns: V applies the view and says why.
+    open_with(&mut app, &rx, &tx, frame(8));
+    assert!(app.active_template_id.is_none());
+    press(&mut app, 'V');
+    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
+    assert!(app.active_template_id.is_some(), "V applies the view");
+    assert_eq!(
+        app.flash_message(),
+        Some("View \"warmest\" applied: same columns")
+    );
+
+    // And auto-apply dresses a frame as it opens.
+    app.app_config.templates.auto_apply = true;
+    open_with(&mut app, &rx, &tx, frame(3));
+    assert!(app.active_template_id.is_some(), "applied on open");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_sort_columns(), ["temp".to_string()]);
+}

@@ -88,6 +88,9 @@ table: `shop.db/orders` and `shop.db --table orders` are the same file, and
 `shop.db/customers` is not. Schema matching still carries the view to any
 table with its columns.
 
+Data piped to standard input and frames passed from Python
+(`datui.view(frame)`) have no path, so their views match by schema alone.
+
 Schema matching is enabled by default. It records the columns as loaded,
 before the query, so a view whose query renames columns still matches the next
 file. Matching views rank above unrelated ones; exact schemas rank above

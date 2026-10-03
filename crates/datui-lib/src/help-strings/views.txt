@@ -38,7 +38,7 @@ Save and edit form:
   names). Schema match starts enabled — it is what carries the view to
   the next table with these columns. A view saved on one table of a
   database or archive shows it as Table, and its path rules fit only that
-  table.
+  table. Piped data and frames from Python match by schema alone.
 
   Editing changes a view's name, description and matching. Its saved
   settings follow the table only while the view is the one applied, so

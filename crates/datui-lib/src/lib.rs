@@ -2514,14 +2514,13 @@ impl App {
     }
 
     /// What views are matched against: the dataset's path and the table of its file it
-    /// is. What was piped in is `-`, which no path criterion fits, so it matches by its
-    /// columns alone.
+    /// is. What was piped in, or a frame handed over (`datui.view(frame)`), is `-`,
+    /// which no path criterion fits, so it matches by its columns alone.
     fn view_dataset(&self) -> Option<template::Dataset<'_>> {
         self.data_table_state.as_ref()?;
-        let path = if self.reads_stdin() {
-            Path::new(stdin::PATH)
-        } else {
-            self.path.as_deref()?
+        let path = match self.path.as_deref() {
+            Some(path) if !self.reads_stdin() => path,
+            _ => Path::new(stdin::PATH),
         };
         Some(template::Dataset {
             path,
@@ -12382,9 +12381,7 @@ impl App {
                 None
             }
             KeyCode::Char('v') => {
-                if self.data_table_state.is_some() && self.path.is_some() {
-                    self.open_template_list();
-                }
+                self.open_template_list();
                 None
             }
             KeyCode::Char('s') => {

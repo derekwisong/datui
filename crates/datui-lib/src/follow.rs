@@ -265,7 +265,9 @@ impl Fits {
             Fits::Integer => value.is_i64() || value.is_u64(),
             Fits::Number => value.is_number(),
             Fits::Boolean => value.is_boolean(),
-            Fits::Text => value.is_string(),
+            // Polars reads an array into a text column as its JSON text: journalctl's
+            // bytes for a message that is not UTF-8.
+            Fits::Text => value.is_string() || value.is_array(),
             Fits::Anything => true,
         }
     }
@@ -286,6 +288,8 @@ enum Layout {
     Lines,
     /// An Arrow IPC stream: its record batch messages.
     Stream,
+    /// Text read as lines: every line a row, blank ones too.
+    Text,
 }
 
 /// Rows a [`Tail`] marked that its follow's [`Marks`] does not have yet, as (row, byte
@@ -344,6 +348,7 @@ impl Tail {
                     .cloned()
                     .collect(),
             },
+            None if format.is_lines() => Layout::Text,
             None => Layout::Lines,
         };
         let columns = schema
@@ -537,6 +542,7 @@ impl Tail {
                 }
             }
             Layout::Stream => {}
+            Layout::Text => self.rows += 1,
             Layout::Lines => {
                 if record.iter().all(u8::is_ascii_whitespace) {
                     return;
@@ -649,6 +655,9 @@ pub fn bound(lf: &mut LazyFrame, path: &Path, rows: usize) {
 
 fn bound_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, rows: IdxSize) {
     use polars::lazy::dsl::DslPlan;
+    if crate::lines::bound(plan, rows) {
+        return;
+    }
     match plan {
         // A plan asked for its schema is wrapped as IR, which would run as converted:
         // bound the plan it came from, and leave the IR behind.
@@ -1942,8 +1951,9 @@ pub(crate) fn spool<R: Read + Send + 'static>(
     if head.is_empty() {
         return Err("Nothing came in on standard input.".to_string());
     }
-    let (format, compression) = crate::stdin::sniff(&head);
+    let (format, compression, guessed) = crate::stdin::sniff_for(&head, &options);
     let options = OpenOptions {
+        format_guessed: options.format.is_none() && guessed,
         format: options.format.or(Some(format)),
         compression: options.compression.or(compression),
         ..options

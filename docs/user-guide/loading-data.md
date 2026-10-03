@@ -11,6 +11,8 @@ datui --format csv https://example.com/export  # force the format when the name 
 cat data.csv | datui                           # data piped in
 datui - < events.parquet                       # `-` reads standard input
 datui -f app.log.ndjson                        # follow a file as it grows
+datui app.log                                  # text: a row per line
+SYSTEMD_PAGER=datui journalctl -u nginx        # datui as a pager
 ```
 
 ## Standard input
@@ -36,33 +38,39 @@ names it:
 |---|---|
 | Parquet, Arrow IPC or Avro magic number, or an Arrow IPC stream's schema message | that format |
 | `SQLite format 3` | SQLite; a database of several tables needs `--table` |
-| gzip, zstd, bzip2 or xz magic number | compressed CSV, or TSV or PSV with `--format` |
-| `[` | JSON |
+| gzip, zstd, bzip2 or xz magic number | decompressed, then read by what is inside, as below: a text format, CSV or TSV, or lines |
+| `{`, the first line an object with `__CURSOR` and `__REALTIME_TIMESTAMP` | [systemd journal](#systemd-journal) |
+| `[`, then JSON | JSON |
 | `{`, the first line a whole object | NDJSON |
-| `{`, the object open past the first line | JSON |
+| `{`, the object open past the first line, JSON so far | JSON |
 | an NMEA sentence (`$GPGGA,`) with a checksum that matches, or of a type receivers write | NMEA |
 | XML whose first element is `<gpx` | GPX |
 | a line with `8=FIX`, a delimiter and `9=` | FIX |
 | `$date`, `$version`, `$timescale`, `$comment`, `$scope` or `$var`, with an `$end` | VCD |
 | a `V2000` or `V3000` counts line, or `M  END` with a data item or `$$$$` | SDF |
-| a first line with tabs and no commas | TSV |
-| anything else | CSV |
+| several lines with one field count, two or more, split at tabs | TSV |
+| several lines with one field count, two or more, split at commas, quotes where CSV allows them | CSV |
+| anything else | [lines](#text-and-logs) |
 
-With `--format csv`, `tsv` or `psv` and no `--compression`, compression still
-comes from the first bytes.
+A comma or a tab alone is not a table: a log line with a comma in it stays a
+line. An unnamed CSV the first lines do not show as one opens with `--format
+csv`; the Info panel's notes say so. With `--format csv`, `tsv` or `psv` and no
+`--compression`, compression still comes from the first bytes.
 
 The CSV options below apply. The dataset is named `stdin`. It is not added to
 recent datasets, and [views](views.md) match it by its columns only.
 
 ## Following a growing file
 
-`--follow` (`-f`) shows rows as they are appended to a local CSV, TSV, PSV or
-NDJSON file, or record batches to an Arrow IPC stream, as `tail -f` does: a
-logger's output, a test rig's results, an app's event log. With `-`, it shows standard input as it arrives rather than
-waiting for it to end.
+`--follow` (`-f`) shows rows as they are appended to a local CSV, TSV, PSV,
+NDJSON or text file, or record batches to an Arrow IPC stream, as `tail -f` does:
+a logger's output, a test rig's results, an app's event log. With `-`, it shows
+standard input as it arrives rather than waiting for it to end. Text is a row per
+line, blank lines included.
 
 ```bash
 datui -f readings.csv
+datui -f /var/log/app.log
 cat /dev/ttyUSB0 | datui -f -
 while sleep 0.1; do echo "$(date +%s.%N),$RANDOM"; done | datui -f --no-header -
 ```
@@ -180,6 +188,7 @@ The format is taken from the extension, or from `--format` when there is none.
 |---|---|---|---|---|---|---|
 | Parquet | `.parquet` | lazy | no | downloaded | in place | in place |
 | CSV | `.csv` | lazy | converted once | downloaded | downloaded | in place |
+| [Text](#text-and-logs) | `.log`, `.txt` | lazy | converted once | downloaded | downloaded | no |
 | TSV, PSV | `.tsv`, `.psv` | lazy | converted once | downloaded | downloaded | no |
 | Arrow IPC file, Feather v2 | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy | no | downloaded | in place | in place |
 | [Arrow IPC stream](#arrow-ipc-streams) | `.arrow`, `.arrows`, `.ipc`, `.feather` | converted once | no | downloaded | downloaded | downloaded |
@@ -203,6 +212,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | [ULog](#flight-logs) | `.ulg` | lazy | no | downloaded | downloaded | no |
 | [DataFlash](#flight-logs) | any, by content, or `--format dataflash` | lazy | no | downloaded | downloaded | no |
 | [candump](#can-logs) | any, by content, or `--format candump` | lazy | no | downloaded | downloaded | no |
+| [systemd journal](#systemd-journal) | any, by content, or `--format journal` | in memory | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
 | Read | What it means |
@@ -212,7 +222,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | in memory | Read whole into memory before the table appears. Past `memory_warning_mb` in `[file_loading]` (1024 MB by default; 0 never asks), datui asks first: `big.json: JSON reads 2.10 GB into memory`. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB |
 
 - **Compressed** is a `.gz`, `.zst`, `.bz2` or `.xz` file; `no` means it does not
-  open. `--decompress-in-memory` reads compressed CSV, TSV and PSV in memory instead.
+  open. `--decompress-in-memory` reads compressed CSV, TSV, PSV and text in memory instead.
 - **HTTP(S)** is one file at an `http://` or `https://` URL. `downloaded` copies
   it to the temp directory first, then reads it as **Read** says. A model file's
   header is fetched by range; a server that sends no ranges gets the download
@@ -234,6 +244,65 @@ The format is taken from the extension, or from `--format` when there is none.
 The home screen marks a file row that is not read lazily where it is:
 `converts`, `in memory` or `downloads`. The details pane and the Info panel's
 Resources tab say how it is read.
+
+### Text and logs
+
+A `.log` or `.txt` file, and text no format claims (a pipe, a file with no
+extension), is read as lines:
+
+```bash
+datui app.log
+datui app.log.gz
+datui /var/log/nginx/                         # several files: a file column first
+journalctl -u nginx | datui
+SYSTEMD_PAGER=datui journalctl -u nginx
+```
+
+| Column | What |
+|---|---|
+| `file` | The file the line is from, when there are several |
+| `line_no` | Its number, from 1, as `less -N` numbers it |
+| `line` | The line as written, without its line ending |
+
+- Every line is a row, blank lines included. `\r\n` is a line ending.
+- Bytes that are not UTF-8 are shown as `�`; the Info panel says how many lines
+  hold them. Control characters are escaped on screen and kept in the value.
+- A `.log` whose bytes say a format (a candump log, a FIX log) is read as that format.
+- In a directory, text files beside other data are not part of the table: a
+  README beside Parquet files is passed over.
+- Find, the query and filters work on `line` as on any column:
+  `select where line like "*error*"`.
+- Lines are indexed in one pass and read where they are shown. A file of more
+  than 67,108,864 lines shows the first that many; the Info panel says how many
+  were left out.
+
+### systemd journal
+
+`journalctl -o json` output is read as the journal, from a pipe or a file:
+
+```bash
+journalctl -o json -u nginx --since today | datui
+journalctl -o json -b -p warning | datui
+journalctl -o json -f | datui -f -            # live
+jd() { journalctl -o json "$@" | datui; }     # jd -u nginx -b
+```
+
+| Column | What |
+|---|---|
+| `time` | `__REALTIME_TIMESTAMP` as a UTC datetime |
+| `level` | `PRIORITY` as `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info`, `debug`, ordered by severity: `select where level <= "err"` keeps errors and worse, and a sort puts `emerg` first |
+| `_SYSTEMD_UNIT` | The unit, or `SYSLOG_IDENTIFIER` when no entry has one |
+| `_PID`, `MESSAGE` | Then the rest of the fields as they came, and bookkeeping (`__CURSOR`, `__SEQNUM`, `_BOOT_ID`, ...) last |
+
+- Every field is a column, one first seen late in the journal included. Values
+  stay text as journalctl writes them; `PRIORITY` is kept beside `level`.
+- A `MESSAGE` journalctl wrote as bytes (not UTF-8, or with control
+  characters) is shown as text, lossily; the Info panel says how many.
+- The Info panel's Journal tab gives the time span, the entries, and the units,
+  boots and hosts, with the entries per unit.
+- The entries are read whole into memory. Narrow a large journal with
+  `--since`, `-u` or `-b` before it is piped.
+- Copy as Python reads a journal file with `pl.scan_ndjson` and derives the same columns.
 
 ### Arrow IPC streams
 

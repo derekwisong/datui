@@ -901,12 +901,17 @@ pub fn look_at_listing(
     // Parquet files is neither a marker nor data, and counting it as data made this
     // route answer `dir` where the local one said `multi` — the same directory, two
     // answers, which is what one vocabulary is for.
+    let format_of = |key: &str| crate::discover::data_format(std::path::Path::new(key));
+    // Text is data only where nothing else is, as on disk.
+    let other_data = present.iter().any(|key| {
+        format_of(key).is_some_and(|f| !f.is_lines()) || crate::discover::is_parquet_key(key)
+    });
     let files: Vec<&&String> = present
         .iter()
         .filter(|key| {
             // Or a part file with no extension inside a `.parquet` directory, which is
             // data by where it sits rather than by what it is called.
-            crate::discover::data_format(std::path::Path::new(key.as_str())).is_some()
+            format_of(key).is_some_and(|f| !(other_data && f.is_lines()))
                 || crate::discover::is_parquet_key(key)
         })
         .collect();

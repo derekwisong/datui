@@ -46,6 +46,8 @@ pub enum FileFormat {
     Ulog,
     Dataflash,
     Candump,
+    Text,
+    Journal,
 }
 
 /// What datui knows of a format without reading a file of it.
@@ -94,6 +96,8 @@ pub enum Lines {
     Delimited(u8),
     /// One JSON object.
     Json,
+    /// The line itself, blank or not.
+    Text,
 }
 
 /// How a compressed file of a format is read.
@@ -483,6 +487,29 @@ const CANDUMP: Descriptor = Descriptor {
     ..BASE
 };
 
+// Text read as it stands: a row per line. Indexed in one pass and read from a map of
+// the file where it is shown; what nothing else claims.
+const TEXT: Descriptor = Descriptor {
+    name: "text",
+    title: "text",
+    extensions: &["log", "txt"],
+    read: ReadMode::Lazy,
+    compressed: Compressed::Decompressed,
+    many_files: true,
+    lines: Some(Lines::Text),
+    ..BASE
+};
+
+// `journalctl -o json`: NDJSON known by its first record's keys, with time, level
+// and readable messages derived.
+const JOURNAL: Descriptor = Descriptor {
+    name: "journal",
+    title: "systemd journal",
+    many_files: true,
+    lines: Some(Lines::Json),
+    ..BASE
+};
+
 impl FileFormat {
     /// Every format, for the places that have to consider all of them, in the order
     /// `--format`'s help lists them.
@@ -492,7 +519,7 @@ impl FileFormat {
     /// format missing here would cost is bounded: `from_name` answers `None` for it,
     /// and every caller reads `None` as "not Parquet", which leaves counts off a
     /// directory rather than giving it another format's.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 27] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -518,11 +545,13 @@ impl FileFormat {
         Self::Ulog,
         Self::Dataflash,
         Self::Candump,
+        Self::Text,
+        Self::Journal,
     ];
 
     /// What text with nothing else to say is read as: a pipe, a followed file, a
-    /// compressed file whose format is not named.
-    pub const TEXT: Self = Self::Csv;
+    /// compressed file whose format is not named, when nothing in it says more.
+    pub const TEXT: Self = Self::Text;
 
     /// The format's descriptor.
     pub const fn descriptor(self) -> &'static Descriptor {
@@ -552,6 +581,8 @@ impl FileFormat {
             Self::Ulog => &ULOG,
             Self::Dataflash => &DATAFLASH,
             Self::Candump => &CANDUMP,
+            Self::Text => &TEXT,
+            Self::Journal => &JOURNAL,
         }
     }
 
@@ -698,6 +729,17 @@ impl FileFormat {
         self.descriptor().lines.is_some()
     }
 
+    /// Whether a file of this format is read a line a row, as it stands.
+    pub fn is_lines(self) -> bool {
+        self.descriptor().lines == Some(Lines::Text)
+    }
+
+    /// Whether a compressed file of this format is decompressed once, to a file or
+    /// into memory, before it is read: delimited text and lines.
+    pub fn decompressed_once(self) -> bool {
+        self.descriptor().compressed == Compressed::Decompressed
+    }
+
     /// What the open says while a file of this format is read into files of its own.
     /// A format with nothing of its own to say says it converts.
     pub fn conversion(self) -> Conversion {
@@ -713,11 +755,9 @@ impl FileFormat {
     /// is data — the home screen, the search, `~` path input, the CLI and the cloud
     /// listings — asks here, so no route can offer a file another route cannot open.
     ///
-    /// `.txt` is deliberately absent. It was listed as data and had no reader, so a
-    /// `README.txt` was offered on the home screen and refused when opened. Giving it
-    /// one is worse: a README beside two Parquet files would make the directory two
-    /// formats and stop it opening at all. A genuinely tabular `.txt` opens with
-    /// `--format csv`.
+    /// `.txt` and `.log` say text, read a line a row. A directory ranks text below
+    /// every other format, so a README beside Parquet files does not decide what the
+    /// directory is. A tabular `.txt` opens with `--format csv`.
     pub fn from_extension(ext: &str) -> Option<Self> {
         let ext = ext.to_ascii_lowercase();
         Self::ALL

@@ -4,7 +4,6 @@
 use color_eyre::Result;
 
 use super::{BASE, EVERYWHERE, Kind, Reader, ScanIn, Signature, Trusted, Unnamed};
-use crate::FileFormat;
 #[cfg(feature = "cloud")]
 use crate::error_display::FileError;
 use crate::export_modal::ExportFormat;
@@ -120,29 +119,6 @@ fn said(e: &polars::prelude::PolarsError) -> String {
     said.trim_end_matches('.').to_string()
 }
 
-/// What text no format's signature claims is taken for, from its first bytes:
-/// starting with `[` it is a JSON array; with `{`, one object per line, unless the
-/// first line leaves the object open, as a pretty-printed object does, which is read as
-/// JSON. A first line with tabs and no commas is TSV; anything else is CSV.
-pub(crate) fn guess_text(head: &[u8]) -> FileFormat {
-    let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
-    let text = &text[text
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(text.len())..];
-    // Up to the first newline; a line longer than the head is taken as it stands.
-    let line = text.split(|&b| b == b'\n').next().unwrap_or_default();
-    match text.first() {
-        Some(b'[') => FileFormat::Json,
-        Some(b'{') if !line.trim_ascii_end().ends_with(b"}") && line.len() < text.len() => {
-            FileFormat::Json
-        }
-        Some(b'{') => FileFormat::Jsonl,
-        _ if line.contains(&b'\t') && !line.contains(&b',') => FileFormat::Tsv,
-        _ => FileFormat::Csv,
-    }
-}
-
 /// The frame of a state a Polars reader built, with what the read did to its rows for
 /// Copy as Python.
 fn frame(state: DataTableState, input: ScanIn<'_>) -> Result<Scan> {
@@ -192,7 +168,13 @@ fn scan_json(input: ScanIn<'_>) -> Result<Scan> {
     json_frame(state, input)
 }
 
+/// NDJSON, read whole; followed, scanned, so the frame reads more of it as it grows.
 fn scan_json_lines(input: ScanIn<'_>) -> Result<Scan> {
+    if input.options.follow {
+        let path = input.paths[0].clone();
+        return crate::follow::scan_lines(&path, input.options, &mut input.report.read_python)
+            .map(Scan::from);
+    }
     let state = match input.paths {
         [one] => DataTableState::from_json_lines(one, input.options)?,
         many => DataTableState::from_json_lines_paths(many, input.options)?,

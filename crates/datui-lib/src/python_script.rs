@@ -1099,6 +1099,41 @@ fn named_with_table(names: &[String], record: &OpenRecord) -> String {
     }
 }
 
+/// Text read as lines: the file split at its newlines as datui splits it, numbered
+/// from 1.
+pub(crate) fn lines_arguments(call: &mut Call<'_>) -> Option<Source> {
+    let names = call.names.join(", ");
+    let path = match call.paths {
+        [one]
+            if !is_url(one)
+                && !one.is_dir()
+                && CompressionFormat::from_extension(one).is_none() =>
+        {
+            one
+        }
+        _ => {
+            return Some(Source::Placeholder {
+                what: format!("{names}: datui read it as lines; load it here."),
+            });
+        }
+    };
+    let read = format!(
+        "pl.LazyFrame({{\"line\": open({}, encoding=\"utf-8\", errors=\"replace\", newline=\"\").read().removesuffix(\"\\n\").split(\"\\n\")}})",
+        py_str(&path.to_string_lossy())
+    );
+    let mut after = vec![
+        ".with_columns(pl.col(\"line\").str.strip_suffix(\"\\r\"))".to_string(),
+        ".with_row_index(\"line_no\", offset=1)".to_string(),
+    ];
+    after.append(&mut call.after);
+    Some(Source::Read {
+        call: read,
+        after,
+        notes: std::mem::take(&mut call.notes),
+        imports: Vec::new(),
+    })
+}
+
 /// The reader for the open, with the options datui gave its own.
 pub fn source(record: &OpenRecord) -> Source {
     let Some(paths) = record.paths else {

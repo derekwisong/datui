@@ -497,6 +497,15 @@ pub fn column_schema_of(
                 .finish()
                 .ok()?
         }
+        // Every file of lines has the same two columns.
+        Some(crate::cli::Lines::Text) => {
+            return Some(
+                crate::lines::schema(false)
+                    .iter()
+                    .map(|(name, dtype)| (name.to_string(), dtype.clone()))
+                    .collect(),
+            );
+        }
         None => return None,
     };
     let schema = lf.clone().collect_schema().ok()?;

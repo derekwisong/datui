@@ -301,6 +301,8 @@ pub(crate) enum Phase {
     Scanning {
         downloaded: bool,
     },
+    /// The scan of text read as lines, which indexes them.
+    ReadingLines,
     /// The schema, and whatever the dataset needs before its first rows.
     ReadingSchema,
     /// Installed: its first rows are being read. The dataset is the one on screen, and
@@ -337,6 +339,7 @@ impl Phase {
             Phase::CountingFooter => (COUNTING_FOOTER, 10),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
+            Phase::ReadingLines => (READING_LINES, 10),
             Phase::ReadingSchema => ("Reading schema", 40),
             Phase::FirstRows => ("Loading buffer", 70),
         }
@@ -1229,6 +1232,15 @@ impl Loader {
             };
             return Step::AskRead(read);
         }
+        if reads_lines(&paths, &options) {
+            load.phase = Phase::ReadingLines;
+            return Step::Scan {
+                paths,
+                options,
+                display,
+                status: READING_LINES_STATUS,
+            };
+        }
         load.phase = Phase::Scanning { downloaded: false };
         Step::Scan {
             paths,
@@ -1278,6 +1290,9 @@ impl Loader {
         let status = if counts_footer(&paths, &options) {
             load.phase = Phase::CountingFooter;
             COUNTING_FOOTER_STATUS
+        } else if reads_lines(&paths, &options) {
+            load.phase = Phase::ReadingLines;
+            READING_LINES_STATUS
         } else {
             load.phase = Phase::Scanning { downloaded: true };
             "Scanning..."
@@ -1307,7 +1322,8 @@ impl Loader {
                 Phase::Scanning { .. }
                 | Phase::ScanningStrings
                 | Phase::CountingFooter
-                | Phase::ReadingRecords,
+                | Phase::ReadingRecords
+                | Phase::ReadingLines,
             ) => {
                 load.phase = Phase::ReadingSchema;
                 Step::ReadSchema {
@@ -1326,7 +1342,10 @@ impl Loader {
                     path,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingLines,
             ) if load.converted.is_empty() => {
                 let read = Arc::<AtomicU64>::default();
                 load.phase = Phase::Converting {
@@ -1408,7 +1427,10 @@ impl Loader {
                     path,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingLines,
             ) => {
                 load.phase = Phase::Decompressing;
                 Step::Decompress {
@@ -1439,7 +1461,7 @@ impl Loader {
                     choice,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::ReadingLines,
             ) => {
                 load.phase = Phase::DecompressingRecords;
                 Step::DecompressRecords {
@@ -1476,7 +1498,10 @@ impl Loader {
                     asked,
                     record_size,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingLines,
             ) => {
                 let from_home = load.from_home;
                 // A download is a temporary file the load owns; it has no bytes to show
@@ -1500,7 +1525,10 @@ impl Loader {
             }
             (
                 LoadAnswer::Tables { file, tables, path },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingLines,
             ) => {
                 let from_home = load.from_home;
                 let database = path.unwrap_or(file);
@@ -1756,7 +1784,24 @@ impl Drop for Loader {
     }
 }
 
-/// The delimited format (CSV, TSV or PSV) `path` is read as, if it is one: `--format`
+/// What the loading screen and the control bar say while text is read as lines.
+const READING_LINES: &str = "Reading as lines";
+const READING_LINES_STATUS: &str = "Reading as lines...";
+
+/// Whether `paths` are read as lines, as `--format` or their names say: a name that
+/// says text may still hold a format its bytes say (a candump `.log`), so this is
+/// what the open expects, for its loading line.
+fn reads_lines(paths: &[PathBuf], options: &OpenOptions) -> bool {
+    options
+        .format
+        .or_else(|| match paths {
+            [one] => FileFormat::from_path(one),
+            _ => None,
+        })
+        .is_some_and(FileFormat::is_lines)
+}
+
+/// The delimited format (CSV, TSV, PSV) or text `path` is read as, if it is one: `--format`
 /// when given, else the extension, looking through a compression suffix
 /// (`x.tsv.gz` is TSV).
 /// What reading `paths` would read whole into memory, by what their names and the
@@ -1772,11 +1817,16 @@ pub(crate) fn in_memory(paths: &[PathBuf], options: &OpenOptions) -> Option<InMe
         let compression = options
             .compression
             .or_else(|| CompressionFormat::from_extension(path));
+        // By name, or by the first bytes the open will judge it by: journal JSON
+        // piped to a file with no name, or in a `.json` one.
         let format = options.format.or_else(|| match compression {
             Some(_) => path
                 .file_stem()
                 .and_then(|stem| FileFormat::from_path(Path::new(stem))),
-            None => FileFormat::from_path(path),
+            None => match FileFormat::from_path(path) {
+                Some(named) => Some(crate::readers::refined(path, named).unwrap_or(named)),
+                None => crate::readers::sniff_open(path, None),
+            },
         });
         let Some(format) = format else {
             continue;
@@ -1838,7 +1888,7 @@ pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<Fil
             FileFormat::from_path(Path::new(path.file_stem()?))
         })
     })?;
-    format.separator().is_some().then_some(format)
+    format.decompressed_once().then_some(format)
 }
 
 /// Why a remote model is downloaded rather than read by its headers.
@@ -1977,6 +2027,7 @@ mod tests {
             "db",
             "vcd",
             "sdf",
+            "log",
             "npy",
             "elf",
             "ulg",
@@ -2022,6 +2073,13 @@ mod tests {
             RemoteRead::Downloaded
         );
         seen.push(FileFormat::Candump);
+        // And journal JSON, from a file or a pipe.
+        assert_eq!(FileFormat::Journal.http_file(), RemoteRead::Downloaded);
+        assert_eq!(
+            FileFormat::Journal.bucket_object(Stored::Plain),
+            RemoteRead::Downloaded
+        );
+        seen.push(FileFormat::Journal);
         for f in FileFormat::ALL {
             assert!(seen.contains(&f), "{} is checked", f.name());
         }
@@ -2462,6 +2520,27 @@ mod tests {
         let mut loader = Loader::default();
         let _ = open(&mut loader, &json, 0);
         assert!(loader.retire().is_some_and(|retired| retired.asking));
+    }
+
+    /// Journal JSON is read whole too, and asked about by what its bytes say, named or
+    /// not.
+    #[test]
+    fn a_large_journal_is_asked_about_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = "{\"__CURSOR\":\"s=1\",\"__REALTIME_TIMESTAMP\":\"1\",\"MESSAGE\":\"m\"}\n";
+        for name in ["journal", "journal.json"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, entry).unwrap();
+            let mut loader = Loader::default();
+            let step = loader.open(OpenRequest {
+                warn_in_memory_above: Some(4),
+                ..request(&path.to_string_lossy())
+            });
+            let Step::AskRead(read) = step else {
+                panic!("{name}: a journal past the size is asked about");
+            };
+            assert_eq!(read.format, FileFormat::Journal, "{name}");
+        }
     }
 
     /// A CSV whose footer rows are dropped counts the file in its scan, and says so;

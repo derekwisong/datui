@@ -30,8 +30,10 @@
 //! - SQLite, NumPy and ELF on the home screen: a `.db` file that is not SQLite cannot
 //!   open, a database's tables sort by name, a database table or NumPy array previews
 //!   its schema, and an ELF file opens its symbols, so its sections are not counted.
-//! - CSV: what text with nothing else to say is read as ([`FileFormat::TEXT`]), and
-//!   the reader a delimited spec reads through.
+//! - CSV: the reader a delimited spec reads through.
+//! - Text: what text with nothing else to say is read as ([`FileFormat::TEXT`],
+//!   [`crate::lines::guess`]); a name that says text is still asked its bytes, and a
+//!   followed file's lines are counted by the watcher.
 //! - Audio: a full quality run checks a recording's signal ([`crate::audio::recording`]).
 
 use std::path::{Path, PathBuf};
@@ -123,6 +125,9 @@ pub(crate) struct Reader {
     pub convert: Option<ConvertFn>,
     /// The bytes at the start of a file that say it is this format, if any do.
     pub signatures: &'static [Signature],
+    /// The formats a file of this one is named as: a file whose name says one of them
+    /// is still asked its first bytes for this (journal JSON in a `.json` file).
+    pub refines: &'static [FileFormat],
     /// The tables a file of it lists on the home screen, read cheaply: a database's
     /// schema, an archive's directory. Only for a format whose descriptor says it holds
     /// tables that are listed.
@@ -158,6 +163,7 @@ pub(crate) const BASE: Reader = Reader {
     bucket_scan: None,
     convert: None,
     signatures: &[],
+    refines: &[],
     tables: None,
     preview: None,
     python: None,
@@ -202,6 +208,8 @@ pub(crate) fn of(format: FileFormat) -> &'static Reader {
         FileFormat::Ulog => &crate::ulog::READER,
         FileFormat::Dataflash => &crate::dataflash::READER,
         FileFormat::Candump => &crate::candump::READER,
+        FileFormat::Text => &crate::lines::READER,
+        FileFormat::Journal => &crate::journal::READER,
     }
 }
 
@@ -250,7 +258,7 @@ pub(crate) struct Trusted {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Unnamed {
     Never,
-    /// Any: `.bin`, `.log`, `.txt`, or none.
+    /// Any: `.bin`, text (`.log`, `.txt`), or none.
     Any,
     /// Only a file with no extension at all, such as a part file.
     NoExtension,
@@ -314,6 +322,21 @@ pub(crate) fn sniff(
                     })
             })
         })
+}
+
+/// The format a file named as `named` is by its first bytes, when they say one that
+/// refines it ([`Reader::refines`]): journal JSON in a `.json` file.
+pub(crate) fn refined(path: &Path, named: FileFormat) -> Option<FileFormat> {
+    if !FileFormat::ALL
+        .into_iter()
+        .any(|f| of(f).refines.contains(&named))
+    {
+        return None;
+    }
+    let head = head_of(path)?;
+    sniff(&head, Some(path), Asked::Open { extension: true }, |f| {
+        of(f).refines.contains(&named)
+    })
 }
 
 /// [`sniff`] for the file at `path`, by its first [`HEAD`] bytes.

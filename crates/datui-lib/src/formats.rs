@@ -4971,7 +4971,9 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
             // delimited spec also one that says delimited text.
             let said = (!is_dir)
                 .then(|| crate::discover::data_format(path))
-                .flatten();
+                .flatten()
+                // Text by its name (`.log`, `.txt`) says no more than no name does.
+                .filter(|f| !f.is_lines());
             let parquet_key =
                 crate::discover::is_parquet_key(&crate::discover::directory_and_name(path));
             let records_may = said.is_none() && !parquet_key && !asked.text_only;

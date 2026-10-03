@@ -116,8 +116,28 @@ pub fn refuse(paths: &[PathBuf], piped: bool) -> Option<&'static str> {
 
 /// The format and compression the first bytes of a file say it is: compression by its
 /// magic numbers, then whatever a format's signature says ([`crate::readers::sniff`]),
-/// and text no format claims as JSON or delimited text by its first line.
+/// and text no format claims as JSON, CSV or TSV on evidence, lines otherwise
+/// ([`crate::lines::guess`]). `head` is all there is when it is shorter than [`HEAD`].
 pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
+    let (format, compression, _) = sniffed(head);
+    (format, compression)
+}
+
+/// [`sniff`] as `options` ask: a guess of lines is CSV with `--delimiter`. Also says
+/// whether the format was guessed rather than said by a signature.
+pub(crate) fn sniff_for(
+    head: &[u8],
+    options: &OpenOptions,
+) -> (FileFormat, Option<CompressionFormat>, bool) {
+    let (format, compression, guessed) = sniffed(head);
+    match guessed {
+        true => (crate::lines::as_asked(format, options), compression, true),
+        false => (format, compression, false),
+    }
+}
+
+/// [`sniff`], and whether the format was guessed rather than said by a signature.
+fn sniffed(head: &[u8]) -> (FileFormat, Option<CompressionFormat>, bool) {
     const COMPRESSED: [(&[u8], CompressionFormat); 4] = [
         (b"\x1f\x8b", CompressionFormat::Gzip),
         (b"\x28\xb5\x2f\xfd", CompressionFormat::Zstd),
@@ -125,13 +145,35 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
         (b"\xfd7zXZ\x00", CompressionFormat::Xz),
     ];
     if let Some((_, compression)) = COMPRESSED.iter().find(|(magic, _)| head.starts_with(magic)) {
-        // What is inside is not looked at: CSV, unless `--format` names TSV or PSV.
-        return (FileFormat::TEXT, Some(*compression));
+        // What is inside is looked at once it is on disk ([`inside`]).
+        return (FileFormat::TEXT, Some(*compression), false);
     }
     if let Some(format) = crate::readers::sniff(head, None, crate::readers::Asked::Pipe, |_| true) {
-        return (format, None);
+        return (format, None, false);
     }
-    (crate::readers::polars::guess_text(head), None)
+    let format = crate::lines::guess(head, head.len() < HEAD).unwrap_or(FileFormat::TEXT);
+    (format, None, true)
+}
+
+/// What compressed data piped in holds, by its first bytes once decompressed: a
+/// format read through its compression by its signature, else delimited text on
+/// evidence, else lines.
+fn inside(file: &Path, compression: CompressionFormat) -> (FileFormat, bool) {
+    let Some(head) = crate::formats::head_of(file, Some(compression), HEAD as u64) else {
+        return (FileFormat::TEXT, false);
+    };
+    if let Some(format) = crate::readers::sniff(
+        &head,
+        None,
+        crate::readers::Asked::Pipe,
+        FileFormat::reads_into,
+    ) {
+        return (format, false);
+    }
+    let format = crate::lines::guess(&head, head.len() < HEAD)
+        .filter(|f| f.decompressed_once())
+        .unwrap_or(FileFormat::TEXT);
+    (format, true)
 }
 
 /// Bytes [`sniff`] looks at.
@@ -166,7 +208,15 @@ pub(crate) fn spool<R: Read>(
     if head.is_empty() {
         return Err("Nothing came in on standard input.".to_string());
     }
-    let (format, compression) = sniff(&head);
+    let (mut format, compression, mut guessed) = sniffed(&head);
+    if options.format.is_none()
+        && let Some(compression) = options.compression.or(compression)
+    {
+        (format, guessed) = inside(file.path(), compression);
+    }
+    if guessed {
+        format = crate::lines::as_asked(format, &options);
+    }
     let options = match (options.format, options.compression) {
         // A delimited format named and compression not: the bytes say whether it is
         // compressed, as a file's extension would.
@@ -175,13 +225,17 @@ pub(crate) fn spool<R: Read>(
             ..options
         },
         // Named by the user: theirs, compression and all.
-        (Some(_), _) | (None, Some(_)) => OpenOptions {
-            format: options.format.or(Some(FileFormat::TEXT)),
+        (Some(_), _) => options,
+        // Compression named, and what it holds read through it.
+        (None, Some(_)) => OpenOptions {
+            format: Some(format),
+            format_guessed: guessed,
             ..options
         },
         (None, None) => OpenOptions {
             format: Some(format),
             compression,
+            format_guessed: guessed,
             ..options
         },
     };
@@ -210,7 +264,7 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 35] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 37] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
             (b"\x93NUMPY\x01\x00", FileFormat::Numpy, None),
             (b"\x7fELF\x02\x01\x01", FileFormat::Elf, None),
@@ -248,30 +302,37 @@ mod tests {
             (b"Obj\x01\x04", FileFormat::Avro, None),
             (
                 b"\x1f\x8b\x08\x00",
-                FileFormat::Csv,
+                FileFormat::Text,
                 Some(CompressionFormat::Gzip),
             ),
             (
                 b"\x28\xb5\x2f\xfd\x04",
-                FileFormat::Csv,
+                FileFormat::Text,
                 Some(CompressionFormat::Zstd),
             ),
-            (b"BZh91AY", FileFormat::Csv, Some(CompressionFormat::Bzip2)),
+            (b"BZh91AY", FileFormat::Text, Some(CompressionFormat::Bzip2)),
             (
                 b"\xfd7zXZ\x00\x00",
-                FileFormat::Csv,
+                FileFormat::Text,
                 Some(CompressionFormat::Xz),
             ),
             (b"  \n[{\"a\": 1}]", FileFormat::Json, None),
             (b"\xef\xbb\xbf{\"a\": 1}\n", FileFormat::Jsonl, None),
             (b"a,b\n1,2\n", FileFormat::Csv, None),
-            (b"1\n2\n3\n", FileFormat::Csv, None),
+            // One field a line, a log, a header alone: lines.
+            (b"1\n2\n3\n", FileFormat::Text, None),
+            (
+                b"Oct  3 12:00:01 host sshd[1]: Accepted\n",
+                FileFormat::Text,
+                None,
+            ),
+            (b"id,name\n", FileFormat::Text, None),
             // A pretty-printed object, as `curl` gets from an API, is not one per line.
             (b"{\n  \"a\": 1\n}\n", FileFormat::Json, None),
             (b"{\"a\": 1}  \r\n{\"a\": 2}", FileFormat::Jsonl, None),
             (b"{\"a\": 1}", FileFormat::Jsonl, None),
             (b"id\tname\n1\tx\n", FileFormat::Tsv, None),
-            (b"id\tname,first\n", FileFormat::Csv, None),
+            (b"id\tname,first\n", FileFormat::Text, None),
             (b"id,name\n1,a\tb\n", FileFormat::Csv, None),
         ];
         for (head, format, compression) in cases {
@@ -338,7 +399,8 @@ mod tests {
             &AtomicU64::new(0),
         )
         .unwrap();
-        assert_eq!(options.format, Some(FileFormat::Csv));
+        // Not zstd after all: nothing inside says more than lines.
+        assert_eq!(options.format, Some(FileFormat::Text));
         assert_eq!(options.compression, Some(CompressionFormat::Zstd));
 
         // A delimited format named alone: its compression still comes from the bytes.
@@ -355,6 +417,26 @@ mod tests {
         .unwrap();
         assert_eq!(options.format, Some(FileFormat::Tsv));
         assert_eq!(options.compression, Some(CompressionFormat::Gzip));
+
+        // Compressed and unnamed: what is inside says CSV on evidence, lines otherwise.
+        for (body, format) in [
+            (&b"id,name\n1,a\n2,b\n"[..], FileFormat::Csv),
+            (b"started\n\nstopped, after 2s\n", FileFormat::Text),
+        ] {
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), Default::default());
+            gz.write_all(body).unwrap();
+            let gz = gz.finish().unwrap();
+            let (_, options) = spool(
+                move || Ok((std::io::Cursor::new(gz), None)),
+                options_in(dir.path()),
+                &Writer::default(),
+                &AtomicU64::new(0),
+            )
+            .unwrap();
+            assert_eq!(options.format, Some(format));
+            assert_eq!(options.compression, Some(CompressionFormat::Gzip));
+            assert!(options.format_guessed);
+        }
 
         let empty = spool(
             || Ok((std::io::empty(), None)),

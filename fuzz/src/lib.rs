@@ -24,4 +24,5 @@ pub mod numpy_header;
 pub mod parse_query;
 pub mod sdf_parse;
 pub mod sql_group_plan;
+pub mod text_lines;
 pub mod vcd_parse;

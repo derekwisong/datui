@@ -57,8 +57,8 @@ recent datasets, and [views](views.md) match it by its columns only.
 ## Following a growing file
 
 `--follow` (`-f`) shows rows as they are appended to a local CSV, TSV, PSV or
-NDJSON file, as `tail -f` does: a logger's output, a test rig's results, an
-app's event log. With `-`, it shows standard input as it arrives rather than
+NDJSON file, or record batches to an Arrow IPC stream, as `tail -f` does: a
+logger's output, a test rig's results, an app's event log. With `-`, it shows standard input as it arrives rather than
 waiting for it to end.
 
 ```bash
@@ -87,19 +87,26 @@ The control bar says `following` and how long ago rows last arrived, or
   that does not fit (a field too many, a word in a number column) is counted on
   the bar in the warning color and its values are read as null; it never stops
   the follow.
+- A refresh reads only the rows on screen, from a mark near them, so it costs
+  the same on a 10 MB file as on a 10 GB one. Under a filter, only the new rows
+  are counted.
 - A file that shrinks or is replaced (truncation, rotation) is read again from
   its start, and the bar says so. A deleted file stops the follow; its rows
   stay readable.
-- The file is checked every 250 ms; a burst of appends is one refresh. Set
+- On Linux, datui hears of an append as it lands and reads new rows at most
+  every 250 ms; elsewhere, and on a network file system, it checks the file's
+  size every 250 ms. A burst of appends is one refresh. Set
   `follow_interval_ms` under [`[file_loading]`](../reference/settings.md#file-loading)
   to change it.
 - Standard input keeps being written to its temporary file after the first
   rows show, until it ends or <kbd>Esc</kbd>, <kbd>Ctrl</kbd>+<kbd>O</kbd> or
   quitting stops it. The bar says when it ends.
 
-Parquet, Arrow IPC, Excel and other formats written with a footer cannot be
-read before they are finished, nor can a compressed file be read from the
-middle: `--follow` refuses them, and remote data, with a message.
+An Arrow IPC stream shows a record batch once its message is whole; one with
+dictionary-encoded columns cannot be followed. Parquet, Arrow IPC files, Excel
+and other formats written with a footer cannot be read before they are
+finished, nor can a compressed file be read from the middle: `--follow`
+refuses them, and remote data, with a message.
 
 ### Recording standard input
 
@@ -120,6 +127,17 @@ arecord -f S16_LE -r 48000 -c 2 -t wav - | datui -f --tee take1.wav -
 | <kbd>Esc</kbd> at the table | Stops following; the recording goes on |
 | SIGTERM, SIGHUP | The file is finished and closed, and datui exits |
 | WAV | A producer writing to a pipe cannot fill in the RIFF and `data` sizes; they are filled in when the stream ends, as RF64 over 4 GB when the producer reserved a `JUNK` chunk for it. `--tee-raw` leaves FILE exactly as it came |
+
+`--tee -` passes the stream on to standard output instead, as `tee` does, and
+draws on the terminal (`/dev/tty`, or the console on Windows): datui sits in
+the middle of a pipeline and shows what goes through it. The table reads a
+temporary copy in `--temp-dir`. Standard output has to go to a pipe or a file;
+the bar says `sent` once the stream ends, and a reader downstream that stops
+reading stops the copy, saying so.
+
+```bash
+some_logger | datui -f --tee - | gzip > run1.csv.gz
+```
 
 Without `-f`, the whole stream is recorded before the table opens. With
 `-f`, a format that cannot be followed (a WAV file) shows what had arrived

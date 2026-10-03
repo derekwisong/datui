@@ -116,11 +116,11 @@ pub struct Args {
     #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
-    /// Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops
+    /// Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file or Arrow IPC stream, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops
     #[arg(short = 'f', long = "follow", action, help_heading = "Reading")]
     pub follow: bool,
 
-    /// Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends
+    /// Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends. With -, pass it on to standard output, as tee does, and draw on the terminal
     #[arg(long = "tee", value_name = "FILE", help_heading = "Reading")]
     pub tee: Option<std::path::PathBuf>,
 

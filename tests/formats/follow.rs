@@ -143,6 +143,47 @@ fn a_query_runs_over_the_new_rows() {
     assert_eq!(rows(&app), 3, "only the errors, new ones among them");
 }
 
+/// A sidebar filter over a long followed file counts the rows that arrive on top of
+/// what it counted, and its last page holds the last matches.
+#[test]
+fn a_filter_counts_and_reads_the_new_rows() {
+    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("long.csv");
+    let lines = |range: std::ops::Range<i64>| -> String {
+        range.map(|i| format!("{i},{}\n", i % 7)).collect()
+    };
+    std::fs::write(&path, format!("t,n\n{}", lines(0..20_000))).unwrap();
+    let (mut app, rx) = app();
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
+    screen(&mut app);
+    app.event(&AppEvent::Filter(vec![FilterStatement {
+        column: "n".into(),
+        operator: FilterOperator::Eq,
+        value: "3".into(),
+        logical_op: LogicalOperator::And,
+    }]));
+    let matches = |n: i64| (0..n).filter(|i| i % 7 == 3).count();
+    until(&mut app, &rx, |app| {
+        let state = app.data_table_state.as_ref().unwrap();
+        state.is_num_rows_valid() && state.num_rows() == matches(20_000)
+    });
+    for end in [20_050, 30_000] {
+        let before = shown(&app) as i64;
+        append(&path, &lines(before..end));
+        until(&mut app, &rx, |app| {
+            let state = app.data_table_state.as_ref().unwrap();
+            shown(app) == end as usize && app.follow_settled() && state.is_num_rows_valid()
+        });
+        assert_eq!(rows(&app), matches(end));
+        app.event(&key(KeyCode::End));
+        drain_events(&mut app, &rx);
+        let page = visible(&app).column("t").unwrap().i64().unwrap().to_vec();
+        let expected: Vec<_> = (0..end).filter(|i| i % 7 == 3).map(Some).collect();
+        assert_eq!(page[..], expected[expected.len() - page.len()..]);
+    }
+}
+
 /// A line without its newline is not a row yet; once it has one, it is.
 #[test]
 fn a_partial_line_waits_for_its_newline() {
@@ -184,6 +225,32 @@ fn a_truncated_file_is_read_again_from_the_start() {
     );
     let t = visible(&app).column("t").unwrap().i64().unwrap().to_vec();
     assert_eq!(t, vec![Some(9)]);
+}
+
+/// A file put in place of the followed one, as big or bigger, is read from its start
+/// too: its size alone would pass for a file that grew.
+#[test]
+fn a_replaced_file_of_the_same_or_larger_size_is_read_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rotated.csv");
+    std::fs::write(&path, "t,n\n1,10\n2,20\n").unwrap();
+    let (mut app, rx) = app();
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
+    screen(&mut app);
+    assert_eq!(rows(&app), 2);
+    let next = dir.path().join("next.csv");
+    std::fs::write(&next, "t,n\n7,70\n8,80\n9,90\n").unwrap();
+    std::fs::rename(&next, &path).unwrap();
+    until(&mut app, &rx, |app| {
+        app.flash_message()
+            .is_some_and(|m| m.contains("from the start"))
+            && app.follow_settled()
+    });
+    assert_eq!(rows(&app), 3);
+    app.event(&key(KeyCode::Home));
+    drain_events(&mut app, &rx);
+    let t = visible(&app).column("t").unwrap().i64().unwrap().to_vec();
+    assert_eq!(t, vec![Some(7), Some(8), Some(9)]);
 }
 
 /// Standard input goes on arriving after the first rows show, until it ends.
@@ -275,6 +342,91 @@ fn blank_lines_in_ndjson_cost_no_rows() {
     append(&path, "\n{\"id\": 4}\n\n{\"id\": 5}\n");
     until(&mut app, &rx, |app| rows(app) == 5);
     assert_eq!(ids(&app), [1, 2, 3, 4, 5]);
+
+    // A page past the first holds the records it should: Polars' in-memory engine,
+    // sliced with an offset, counts the blank lines before it as rows.
+    let more: String = (6..=8_000)
+        .map(|i| format!("{{\"id\": {i}}}\n \n"))
+        .collect();
+    append(&path, &more);
+    until(&mut app, &rx, |app| {
+        shown(app) == 8_000 && app.follow_settled()
+    });
+    app.event(&key(KeyCode::End));
+    drain_events(&mut app, &rx);
+    let page = visible(&app).column("id").unwrap().i64().unwrap().to_vec();
+    assert_eq!(page.last().copied().flatten(), Some(8_000), "{page:?}");
+    let first = page[0].unwrap();
+    let expected: Vec<_> = (first..=8_000).map(Some).collect();
+    assert_eq!(page, expected);
+}
+
+/// An Arrow IPC stream grows a record batch at a time, from a file or standard input;
+/// a batch shows once its message is whole. An Arrow IPC file is refused.
+#[test]
+fn an_arrow_stream_is_followed_by_its_batches() {
+    let frame = |from: i64, n: i64| {
+        df!(
+            "id" => (from..from + n).collect::<Vec<_>>(),
+            "name" => (from..from + n).map(|i| format!("n{i}")).collect::<Vec<_>>(),
+        )
+        .unwrap()
+    };
+    let (schema, batches) = datui::follow::stream_messages(&frame(0, 40), 5);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("live.arrows");
+    std::fs::write(&path, [schema.clone(), batches[0].clone()].concat()).unwrap();
+    let (mut app, rx) = app();
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
+    screen(&mut app);
+    assert_eq!(rows(&app), 5);
+    let cut = batches[1].len() / 2;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(&batches[1][..cut]).unwrap();
+    until(&mut app, &rx, |app| app.follow_settled());
+    assert_eq!(rows(&app), 5, "half a batch waits");
+    file.write_all(&batches[1][cut..]).unwrap();
+    file.write_all(&batches[2..].concat()).unwrap();
+    until(&mut app, &rx, |app| {
+        shown(app) == 40 && app.follow_settled()
+    });
+    assert!(on_last_row(&app));
+    let ids = visible(&app).column("id").unwrap().i64().unwrap().to_vec();
+    assert_eq!(ids.last().copied().flatten(), Some(39), "{ids:?}");
+
+    // Piped in.
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer
+        .write_all(&[schema.clone(), batches[0].clone()].concat())
+        .unwrap();
+    let (mut app, rx) = self::app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(&mut app, &rx, vec![PathBuf::from("-")], following());
+    screen(&mut app);
+    assert!(app.data_table_state.is_some(), "{:?}", app.error_message());
+    producer.write_all(&batches[1..].concat()).unwrap();
+    until(&mut app, &rx, |app| {
+        shown(app) == 40 && app.follow_settled()
+    });
+    drop(producer);
+
+    // An IPC file has its footer written last.
+    let file = dir.path().join("done.arrow");
+    let mut df = frame(0, 3);
+    IpcWriter::new(File::create(&file).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (mut app, rx) = self::app();
+    let message = pump_open_until_error(&mut app, &rx, vec![file], following());
+    assert!(
+        message
+            .as_deref()
+            .is_some_and(|m| m.contains("stream can be followed")),
+        "{message:?}"
+    );
 }
 
 /// A file whose footer is written last cannot be read as it grows: refused, saying so.
@@ -441,6 +593,76 @@ fn a_recording_is_the_bytes_as_they_came() {
     assert_eq!(rows(&app), 3);
 }
 
+/// `--tee -` passes the stream on to standard output byte for byte while the table
+/// reads it, and closes it when the stream ends; a reader downstream that goes away
+/// stops the copy and says why. Without standard output to pass to, it is refused.
+#[test]
+fn tee_dash_passes_the_stream_on_to_standard_output() {
+    let passing = OpenOptions {
+        follow: true,
+        tee: Some(PathBuf::from("-")),
+        ..Default::default()
+    };
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    let (downstream, out) = std::io::pipe().unwrap();
+    let passed = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        let mut downstream = downstream;
+        std::io::Read::read_to_end(&mut downstream, &mut got).unwrap();
+        got
+    });
+    producer.write_all(b"t,n\n1,10\n").unwrap();
+    let (mut app, rx) = app();
+    app.read_stdin_from(reader);
+    app.pass_stdout_to(out);
+    pump_open_until_loaded(&mut app, &rx, vec![PathBuf::from("-")], passing.clone());
+    assert!(screen(&mut app).contains("rec "), "the bar says it records");
+    producer.write_all(b"2,20\n3,30\n").unwrap();
+    until(&mut app, &rx, |app| shown(app) == 3 && app.follow_settled());
+    drop(producer);
+    spool(&app).wait();
+    assert_eq!(
+        passed.join().unwrap(),
+        b"t,n\n1,10\n2,20\n3,30\n",
+        "closed at the end"
+    );
+    until(&mut app, &rx, |app| {
+        app.follow()
+            .is_some_and(|f| *f.standing() == Standing::Ended)
+    });
+    let bar = screen(&mut app);
+    assert!(bar.contains("sent") && !bar.contains("saved"), "{bar}");
+    // As the run loop's tick notices it.
+    app.tick_follow_clock();
+    assert_eq!(app.flash_message(), Some("Standard input ended"));
+
+    // Downstream stops reading.
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    let (downstream, out) = std::io::pipe().unwrap();
+    producer.write_all(b"t,n\n1,10\n").unwrap();
+    let (mut app, rx) = self::app();
+    app.read_stdin_from(reader);
+    app.pass_stdout_to(out);
+    pump_open_until_loaded(&mut app, &rx, vec![PathBuf::from("-")], passing.clone());
+    drop(downstream);
+    let _ = producer.write_all(b"2,20\n");
+    spool(&app).wait();
+    let ended = spool(&app).ended().flatten().unwrap_or_default();
+    assert!(ended.contains("standard output"), "{ended}");
+
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"t,n\n1,10\n").unwrap();
+    let (mut app, rx) = self::app();
+    app.read_stdin_from(reader);
+    let message = pump_open_until_error(&mut app, &rx, vec![PathBuf::from("-")], passing);
+    assert!(
+        message
+            .as_deref()
+            .is_some_and(|m| m.contains("standard output")),
+        "{message:?}"
+    );
+}
+
 /// The copy is a thread of its own: megabytes go through while the app handles
 /// nothing at all, so a slow draw never holds the producer up.
 #[test]
@@ -517,8 +739,8 @@ fn quitting_while_recording_asks_whether_to_keep_recording() {
         assert!(matches!(out, Some(AppEvent::Exit)), "either way it quits");
         let after = app.recording_after_exit();
         if keep {
-            let (path, handle) = after.expect("kept recording");
-            assert_eq!(path, file);
+            let (tee, handle) = after.expect("kept recording");
+            assert_eq!(tee.path, file);
             drop(app);
             producer.write_all(b"2\n3\n").unwrap();
             drop(producer);

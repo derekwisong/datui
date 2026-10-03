@@ -1504,7 +1504,7 @@ pub struct FileLoadingConfig {
     pub header_join: Option<String>,
     /// CSV: ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null (Frictionless `skipInitialSpace`). Default false.
     pub skip_initial_space: Option<bool>,
-    /// `--follow`: how often, in milliseconds, a followed file is checked for new rows. A burst of appends within one interval is one refresh. Default 250.
+    /// `--follow`: in milliseconds, how often a followed file is checked for new rows; on Linux, where a change is heard of as it happens, the least time between two reads. A burst of appends within one interval is one refresh. Default 250.
     pub follow_interval_ms: Option<u64>,
 }
 
@@ -1597,7 +1597,7 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     ),
     (
         "follow_interval_ms",
-        "--follow: how often, in milliseconds, a followed file is checked for new rows; a burst of appends within one interval is one refresh (default 250, 10 to 60000)",
+        "--follow: in milliseconds, how often a followed file is checked for new rows, or on Linux the least time between two reads; a burst of appends within one interval is one refresh (default 250, 10 to 60000)",
     ),
 ];
 

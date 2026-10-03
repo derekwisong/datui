@@ -735,8 +735,9 @@ pub enum QueryFocus {
 }
 
 /// What the bar says of a recording (`--tee`): `rec` with its size and rate while it
-/// goes on, `saved` with its size, length and file once it ended, or `stopped` and why,
-/// in the warning color, when it ended in an error. The second value is that last.
+/// goes on, `saved` with its size, length and file once it ended (`sent` and no file
+/// for `--tee -`), or `stopped` and why, in the warning color, when it ended in an
+/// error. The second value is that last.
 fn recording_label(spool: &crate::follow::Spool) -> (String, bool) {
     let dot = crate::glyphs::get().middot;
     let size = crate::discover::format_size(spool.bytes());
@@ -755,12 +756,13 @@ fn recording_label(spool: &crate::follow::Spool) -> (String, bool) {
             } else {
                 format!("{}:{:02}", secs / 60, secs % 60)
             };
-            let name = spool
-                .tee()
-                .and_then(|tee| tee.path.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (format!("saved {size} {dot} {length} {dot} {name}"), false)
+            match spool.tee().filter(|tee| !tee.to_stdout()) {
+                Some(tee) => (
+                    format!("saved {size} {dot} {length} {dot} {}", tee.name()),
+                    false,
+                ),
+                None => (format!("sent {size} {dot} {length}"), false),
+            }
         }
         Some(Some(reason)) => (format!("stopped: {reason}"), true),
     }
@@ -907,6 +909,8 @@ pub struct App {
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
     /// What `-` reads in place of standard input: a test's pipe.
     stdin_reader: Option<Box<dyn std::io::Read + Send>>,
+    /// Where `--tee -` passes the stream on: standard output as the process got it.
+    stdout_pass: Option<Box<dyn std::io::Write + Send>>,
     /// The follow mark as last drawn, so its clock redraws only when it changes.
     follow_drawn: Option<crate::widgets::controls::FollowMark>,
     /// Leaving was asked about while recording: what the user was doing.
@@ -3252,6 +3256,13 @@ impl App {
         self.stdin_reader = Some(Box::new(reader));
     }
 
+    /// Pass the stream on to `out` for `--tee -`: standard output as the process got
+    /// it, or a test's pipe.
+    #[doc(hidden)]
+    pub fn pass_stdout_to(&mut self, out: impl std::io::Write + Send + 'static) {
+        self.stdout_pass = Some(Box::new(out));
+    }
+
     /// The follow of the dataset on screen, while it is followed.
     pub fn follow(&self) -> Option<&crate::follow::Follow> {
         self.data_table_state.as_ref()?.follow()
@@ -3404,20 +3415,19 @@ impl App {
         let Some(tee) = self.recording().and_then(|spool| spool.tee()) else {
             return;
         };
-        let name = tee
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| tee.path.display().to_string());
-        self.pending_leave = Some(leaving);
-        self.confirmation_modal.show_choice(
-            format!(
-                "Standard input is still being recorded to {name}. Stop recording, or keep \
-                 recording until the stream ends?"
-            ),
-            "Stop recording",
-            "Keep recording",
+        let doing = if tee.to_stdout() {
+            "passed on"
+        } else {
+            "recorded"
+        };
+        let message = format!(
+            "Standard input is still being {doing} to {}. Stop recording, or keep \
+             recording until the stream ends?",
+            tee.name()
         );
+        self.pending_leave = Some(leaving);
+        self.confirmation_modal
+            .show_choice(message, "Stop recording", "Keep recording");
     }
 
     /// Leave as asked: the recording stopped and its file finished, or kept going
@@ -3447,11 +3457,13 @@ impl App {
 
     /// The recording to wait for once the terminal is handed back: kept going when
     /// the user quit, until its stream ends.
-    pub fn recording_after_exit(&mut self) -> Option<(PathBuf, Arc<crate::follow::SpoolHandle>)> {
+    pub fn recording_after_exit(
+        &mut self,
+    ) -> Option<(crate::follow::Tee, Arc<crate::follow::SpoolHandle>)> {
         let handle = self.recording_on.take()?;
         let spool = handle.spool();
-        let path = spool.tee()?.path.clone();
-        spool.live().then_some((path, handle))
+        let tee = spool.tee()?.clone();
+        spool.live().then_some((tee, handle))
     }
 
     /// Say once that the recording ended: saved, or stopped by an error, which the
@@ -3467,13 +3479,14 @@ impl App {
         if std::mem::replace(&mut self.recording_end_said, true) {
             return false;
         }
-        let path = spool
-            .tee()
-            .map(|tee| tee.path.display().to_string())
-            .unwrap_or_default();
+        let said = match spool.tee() {
+            Some(tee) if tee.to_stdout() => "Standard input ended".to_string(),
+            Some(tee) => format!("Saved {}", tee.path.display()),
+            None => String::new(),
+        };
         match ended {
             Some(reason) => self.error_modal.show(reason),
-            None => self.flash_note(format!("Saved {path}")),
+            None => self.flash_note(said),
         }
         true
     }
@@ -4584,7 +4597,7 @@ impl App {
                 }
                 // A recording of something that cannot be read as it grows.
                 None => self.flash_note(
-                    "Only text is followed: this shows what had arrived, and recording goes on"
+                    "Only text and Arrow streams are followed: this shows what had arrived, and recording goes on"
                         .to_string(),
                 ),
             }
@@ -5299,6 +5312,7 @@ impl App {
             original_file_format: None,
             original_file_delimiter: None,
             stdin_reader: None,
+            stdout_pass: None,
             follow_drawn: None,
             pending_leave: None,
             recording_on: None,
@@ -8206,8 +8220,19 @@ impl App {
                 .descriptor()
                 .lines
                 == Some(crate::cli::Lines::Json);
+        // An Arrow IPC stream followed is read by a scan of its own, not converted.
+        let followed_stream = options.follow
+            && crate::follow::followed_stream(
+                &paths[0],
+                Some(crate::follow::format_of(&paths[0], options.format)),
+                &options,
+            );
         let scan = if followed_lines {
             crate::follow::scan_lines(&paths[0], &options, &mut report.read_python).map(Scan::from)
+        } else if followed_stream {
+            crate::follow::stream::scan(&paths[0])
+                .map(Scan::from)
+                .map_err(|e| color_eyre::eyre::eyre!(e))
         } else {
             Self::build_lazyframe_from_paths_with(cloud, paths, &options, &mut report, formats)
         }
@@ -8223,7 +8248,10 @@ impl App {
         let (scan, tail) = match scan {
             Scan::Frame(lf) if options.follow => {
                 let format = crate::follow::format_of(&paths[0], format);
-                match crate::follow::refusal(Some(format), &options) {
+                let refused = (!followed_stream)
+                    .then(|| crate::follow::refusal(Some(format), &options))
+                    .flatten();
+                match refused {
                     Some(_) if recording => (Scan::Frame(lf), None),
                     Some(refusal) => return Err(refusal),
                     None => {
@@ -8540,6 +8568,7 @@ impl App {
                 // The read is a thread of its own, so a producer gone quiet does not hold
                 // up the stop: Ctrl+O and quitting remove the partial file at once.
                 let piped = self.stdin_reader.take();
+                let stdout = self.stdout_pass.take();
                 self.spawn_job(job, Some("Reading stdin..."), move |_| {
                     let open = move || -> crate::download::Opened<Box<dyn std::io::Read + Send>> {
                         Ok((piped.unwrap_or_else(|| Box::new(std::io::stdin())), None))
@@ -8547,7 +8576,7 @@ impl App {
                     // Followed, the copy goes on behind the first rows; recorded, it
                     // goes to the file the user named.
                     let (download, options) = if options.follow || options.tee.is_some() {
-                        match crate::follow::spool(open, options, &writer, &read)? {
+                        match crate::follow::spool(open, options, &writer, &read, stdout)? {
                             (crate::follow::Spooled::Temp(download), options) => {
                                 (download, options)
                             }
@@ -18106,6 +18135,14 @@ fn run_impl(
         .handle()
         .clone();
 
+    // `--tee -` passes the stream on to standard output, so the screen is drawn on the
+    // terminal itself; standard output as it was is kept for the copy.
+    let passed = match &input {
+        RunInput::Cli(args) if args.tee.as_deref().is_some_and(crate::stdin::is_stdin) => {
+            Some(crate::tee::pass_stdout_on().map_err(|e| color_eyre::eyre::eyre!(e))?)
+        }
+        _ => None,
+    };
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => QuietTerminal(Some(terminal)),
         Err(e) => {
@@ -18246,6 +18283,9 @@ fn run_impl(
     }
 
     let mut app = App::new_with_templates(tx.clone(), rt_handle, theme, config, templates);
+    if let Some(out) = passed {
+        app.pass_stdout_to(out);
+    }
     app.startup_template = opts.template.clone();
     if opts.debug {
         app.enable_debug();
@@ -18304,14 +18344,23 @@ fn run_impl(
     }
     // Quit with the recording kept going: it goes on until its stream ends, with the
     // terminal handed back. A signal now ends the process as it always would.
-    if let Some((path, handle)) = pump.app.recording_after_exit() {
+    if let Some((tee, handle)) = pump.app.recording_after_exit() {
+        let to = if tee.to_stdout() {
+            format!("passing standard input on to {}", tee.name())
+        } else {
+            format!("recording standard input to {}", tee.path.display())
+        };
         let _ = writeln!(
             std::io::stderr(),
-            "datui: recording standard input to {} until it ends (Ctrl+C stops it)",
-            path.display()
+            "datui: {to} until it ends (Ctrl+C stops it)"
         );
         handle.spool().wait();
-        let _ = writeln!(std::io::stderr(), "datui: saved {}", path.display());
+        let done = if tee.to_stdout() {
+            "datui: standard input ended".to_string()
+        } else {
+            format!("datui: saved {}", tee.path.display())
+        };
+        let _ = writeln!(std::io::stderr(), "{done}");
     }
     result
 }

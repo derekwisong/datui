@@ -11,8 +11,8 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | Option | Description |
 |--------|-------------|
 | `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table. `-` reads data piped to standard input, as does no PATH when something is piped in. With no PATH and nothing piped in, datui opens its home screen so you can pick a dataset |
-| `-f, --follow` | Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops |
-| `--tee <FILE>` | Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends |
+| `-f, --follow` | Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file or Arrow IPC stream, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops |
+| `--tee <FILE>` | Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends. With -, pass it on to standard output, as tee does, and draw on the terminal |
 | `--tee-raw` | With --tee: leave FILE exactly as the bytes came, a WAV header's sizes included |
 | `--skip-lines <N>` | Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows |
 | `--skip-rows <N>` | Skip this many CSV rows at the start of the file; the header is read after them. Quote-aware: a row with embedded newlines counts once. Compare --skip-lines |

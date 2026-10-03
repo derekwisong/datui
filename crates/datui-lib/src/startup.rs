@@ -57,7 +57,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
                         "--tee records standard input: pipe data in, as in: some_logger | datui --tee run1.csv -"
                     ));
                 }
-                if !opts.force && tee.exists() {
+                if !opts.force && !crate::stdin::is_stdin(tee) && tee.exists() {
                     return Err(color_eyre::eyre::eyre!(crate::tee::refusal(tee)));
                 }
             }

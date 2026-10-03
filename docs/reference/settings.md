@@ -26,7 +26,7 @@ skip_initial_space = false    # Ignore the spaces after a delimiter
 decompress_in_memory = false  # Compressed CSV/TSV/PSV: decompress to a temp file (false) or into memory (true)
 temp_dir = "/tmp"             # Where that temp file goes. Omit for the system default
 single_spine_schema = true    # Partitioned Parquet: every column any file has, from the footers
-follow_interval_ms = 250      # --follow: how often a followed file is checked; 10 to 60000
+follow_interval_ms = 250      # --follow: how often a followed file is read at most; 10 to 60000
 ```
 
 ## Binary formats

@@ -12,6 +12,9 @@
 //!
 //! Standard input followed (`datui -f -`) is spooled to a file by a [`Spool`] that goes
 //! on copying after the first rows show; the file is followed like any other.
+//!
+//! An Arrow IPC stream is followed the same way, its record batches counted in place
+//! of records and read by a scan of its own ([`stream`]).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -27,8 +30,15 @@ use crate::download::TempDownload;
 use crate::unfinished::Writer;
 use crate::{AppEvent, CompressionFormat, FileFormat, OpenOptions};
 
-/// How often the watcher checks the file, unless `[file_loading] follow_interval_ms`
-/// says otherwise. A burst of appends inside one interval is one refresh.
+#[cfg(target_os = "linux")]
+mod notify;
+pub(crate) mod stream;
+#[doc(hidden)]
+pub use stream::stream_messages;
+
+/// How often the watcher checks the file, or where it hears of changes (Linux) the least
+/// time between two reads, unless `[file_loading] follow_interval_ms` says otherwise. A
+/// burst of appends inside one interval is one refresh.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Bytes read from the file per step while counting records.
@@ -37,11 +47,29 @@ const CHUNK: usize = 1 << 20;
 /// A record longer than this is kept only in part: enough to classify it.
 const LONGEST_RECORD: usize = 16 << 20;
 
+/// A row's start is marked once this many rows, or this many bytes, have passed since
+/// the last mark: a window is read from the mark before it, so it costs at most this
+/// much beyond its own rows at any file size.
+pub(crate) const MARK_ROWS: u64 = 8192;
+const MARK_BYTES: u64 = 1 << 20;
+
+/// The most bytes a read from a mark takes in. A view that needs more (a filtered
+/// window far behind the last count, a count after a long pause) is read by Polars
+/// from the start of the file as before.
+const MOST_FROM_A_MARK: u64 = 64 << 20;
+
 /// Why `format` cannot be followed, or `None` when it can. Only text read line by
-/// line can: a file whose footer is written last (Parquet, Arrow IPC, Excel) cannot be
-/// read before it is finished, and a compressed one cannot be read from the middle.
+/// line, and an Arrow IPC stream (see [`followed_stream`]), can: a file whose footer is
+/// written last (Parquet, an Arrow IPC file, Excel) cannot be read before it is
+/// finished, and a compressed one cannot be read from the middle.
 pub fn refusal(format: Option<FileFormat>, options: &OpenOptions) -> Option<String> {
     let format = format.unwrap_or(FileFormat::TEXT);
+    if format == FileFormat::Arrow {
+        return Some(
+            "An Arrow IPC file is read once it is finished; an Arrow IPC stream can be followed."
+                .to_string(),
+        );
+    }
     if !format.follows() {
         let followed: Vec<&str> = FileFormat::ALL
             .into_iter()
@@ -53,7 +81,8 @@ pub fn refusal(format: Option<FileFormat>, options: &OpenOptions) -> Option<Stri
             _ => followed.join(""),
         };
         return Some(format!(
-            "Only {followed} can be followed as they grow; {} is read once it is finished.",
+            "Only {followed} and Arrow IPC streams can be followed as they grow; {} is read \
+             once it is finished.",
             format.title()
         ));
     }
@@ -81,7 +110,22 @@ pub fn followable_path(path: &Path, options: &OpenOptions) -> bool {
     let compression = options
         .compression
         .or_else(|| CompressionFormat::from_extension(path));
-    compression.is_none() && refusal(format, options).is_none()
+    compression.is_none()
+        && (refusal(format, options).is_none() || followed_stream(path, format, options))
+}
+
+/// Whether `path`, read as `format`, is an Arrow IPC stream `--follow` reads as it grows,
+/// by its contents.
+pub(crate) fn followed_stream(
+    path: &Path,
+    format: Option<FileFormat>,
+    options: &OpenOptions,
+) -> bool {
+    format == Some(FileFormat::Arrow)
+        && options.compression.is_none()
+        && options.spec_name.is_none()
+        && options.spec_file.is_none()
+        && crate::ipc_stream::is_stream_file(path)
 }
 
 /// Why `paths` cannot be followed as `options` ask, before anything is read: only one
@@ -114,6 +158,9 @@ pub fn refuse_paths(paths: &[PathBuf], options: &OpenOptions) -> Option<String> 
             .or_else(|| CompressionFormat::from_extension(path)),
         ..options.clone()
     };
+    if followed_stream(path, format, &options) {
+        return None;
+    }
     refusal(format, &options)
 }
 
@@ -237,6 +284,16 @@ enum Layout {
         nulls: Vec<String>,
     },
     Lines,
+    /// An Arrow IPC stream: its record batch messages.
+    Stream,
+}
+
+/// Rows a [`Tail`] marked that its follow's [`Marks`] does not have yet, as (row, byte
+/// where its record starts), and the last mark made.
+#[derive(Clone, Debug, Default)]
+struct NewMarks {
+    new: Vec<(u64, u64)>,
+    last: Option<(u64, u64)>,
 }
 
 /// The complete records of a growing delimited or NDJSON file: where they end, and
@@ -257,6 +314,10 @@ pub struct Tail {
     misfits: u64,
     /// Fields in the header, which every row should have.
     fields: Option<usize>,
+    /// Rows marked since the marks were last handed to the follow's [`Marks`].
+    marks: NewMarks,
+    /// How far apart marks are: rows, bytes. Small in tests.
+    mark_every: (u64, u64),
 }
 
 impl Tail {
@@ -264,6 +325,7 @@ impl Tail {
     /// before anything is counted.
     pub fn new(format: FileFormat, options: &OpenOptions, schema: &Schema) -> Tail {
         let layout = match format.separator() {
+            _ if format == FileFormat::Arrow => Layout::Stream,
             Some(separator) => Layout::Delimited {
                 separator: options.separator_or(separator),
                 skip: options.skip_lines.unwrap_or(0) as u64
@@ -297,6 +359,8 @@ impl Tail {
             rows: 0,
             misfits: 0,
             fields: None,
+            marks: NewMarks::default(),
+            mark_every: (MARK_ROWS, MARK_BYTES),
         }
     }
 
@@ -327,6 +391,25 @@ impl Tail {
         self.rows = 0;
         self.misfits = 0;
         self.fields = None;
+        self.marks = NewMarks::default();
+    }
+
+    /// Mark where row `row`, whose record starts at byte `start`, is: the first row, and
+    /// then once enough has passed since the last mark. The first is marked so that no
+    /// page is read through a Polars slice with an offset, which counts an NDJSON
+    /// file's blank lines as rows (#672). A blank record is never marked: read first
+    /// from a mark, it could be taken for no row at all.
+    fn mark(marks: &mut NewMarks, every: (u64, u64), row: u64, start: u64, blank: bool) {
+        let (rows, bytes) = every;
+        if blank
+            || marks.last.is_some_and(|(last_row, last_start)| {
+                row - last_row < rows && start - last_start < bytes
+            })
+        {
+            return;
+        }
+        marks.last = Some((row, start));
+        marks.new.push((row, start));
     }
 
     /// Count the records `file` completes between what was counted and `len`, checking
@@ -334,6 +417,9 @@ impl Tail {
     pub fn read_on(&mut self, file: &mut File, len: u64, check: bool) -> std::io::Result<()> {
         if len <= self.complete {
             return Ok(());
+        }
+        if matches!(self.layout, Layout::Stream) {
+            return self.read_messages(file, len);
         }
         file.seek(SeekFrom::Start(self.complete))?;
         let mut reader = file.take(len - self.complete);
@@ -383,9 +469,41 @@ impl Tail {
         Ok(())
     }
 
-    /// One complete record, without its newline.
+    /// Count the record batches of a stream whose messages `file` completes between what
+    /// was counted and `len`. Only their headers are read.
+    fn read_messages(&mut self, file: &mut File, len: u64) -> std::io::Result<()> {
+        file.seek(SeekFrom::Start(self.complete))?;
+        let mut reader = std::io::BufReader::with_capacity(CHUNK, file);
+        while let Some((message, size)) = stream::next_message(&mut reader, len - self.complete)? {
+            match message {
+                stream::Message::Batch { rows } => {
+                    Self::mark(
+                        &mut self.marks,
+                        self.mark_every,
+                        self.rows,
+                        self.complete,
+                        false,
+                    );
+                    self.rows += rows;
+                }
+                stream::Message::Dictionary => {
+                    return Err(std::io::Error::other(
+                        "a dictionary batch arrived, which a followed stream cannot read",
+                    ));
+                }
+                stream::Message::Schema | stream::Message::End | stream::Message::Other => {}
+            }
+            self.records += 1;
+            self.complete += size;
+        }
+        Ok(())
+    }
+
+    /// One complete record, without its newline. It starts where the records counted
+    /// before it end.
     fn end_record(&mut self, record: &[u8], oversized: bool, check: bool) {
         let record = record.strip_suffix(b"\r").unwrap_or(record);
+        let start = self.complete;
         let index = self.records;
         self.records += 1;
         match &self.layout {
@@ -406,15 +524,24 @@ impl Tail {
                     self.fields = Some(split_fields(record, *separator).len());
                     return;
                 }
+                Self::mark(
+                    &mut self.marks,
+                    self.mark_every,
+                    self.rows,
+                    start,
+                    record.is_empty(),
+                );
                 self.rows += 1;
                 if check && (oversized || !self.cells_fit(record, *separator, nulls)) {
                     self.misfits += 1;
                 }
             }
+            Layout::Stream => {}
             Layout::Lines => {
                 if record.iter().all(u8::is_ascii_whitespace) {
                     return;
                 }
+                Self::mark(&mut self.marks, self.mark_every, self.rows, start, false);
                 self.rows += 1;
                 if check && (oversized || !self.object_fits(record)) {
                     self.misfits += 1;
@@ -484,7 +611,6 @@ fn unquote(cell: &str) -> &str {
         .unwrap_or(trimmed)
 }
 
-/// Whether `plan` is a scan of `path` and nothing else.
 /// Whether two spellings of a path name one file. Polars keeps its own spelling of a
 /// scan's path, which on Windows need not match ours character for character.
 fn same_file(a: &str, b: &str) -> bool {
@@ -497,13 +623,15 @@ fn same_file(a: &str, b: &str) -> bool {
     )
 }
 
+/// Whether `plan` is a scan of `path` and nothing else.
 fn scans(plan: &polars::lazy::dsl::DslPlan, path: &str) -> bool {
     use polars::lazy::dsl::DslPlan;
     match plan {
         DslPlan::Scan {
             sources: ScanSources::Paths(paths),
             ..
-        } => paths.len() == 1 && same_file(paths[0].as_str(), path),
+        } if paths.len() == 1 => same_file(paths[0].as_str(), path),
+        DslPlan::Scan { .. } => stream::StreamScan::of(plan, path).is_some(),
         DslPlan::IR { dsl, .. } => scans(dsl, path),
         _ => false,
     }
@@ -569,12 +697,21 @@ fn read_through_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, file: &F
             return;
         }
         DslPlan::Scan { .. } if scans(plan, path) => {
+            let held = stream::StreamScan::of(plan, path).and_then(|scan| scan.held(file));
             if let DslPlan::Scan {
-                sources, cached_ir, ..
+                sources,
+                scan_type,
+                cached_ir,
+                ..
             } = plan
                 && let Ok(handle) = file.try_clone()
             {
-                *sources = ScanSources::Files(Arc::from([handle]));
+                match (held, &mut **scan_type) {
+                    (Some(held), polars::lazy::dsl::FileScanDsl::Anonymous { function, .. }) => {
+                        *function = Arc::new(held);
+                    }
+                    _ => *sources = ScanSources::Files(Arc::from([handle])),
+                }
                 // The conversion cached for the path would read the path.
                 *cached_ir = Default::default();
             }
@@ -585,6 +722,310 @@ fn read_through_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, file: &F
     crate::widgets::datatable::for_each_input(plan, &mut |input| {
         read_through_plan(input, path, file)
     });
+}
+
+/// Where rows of a followed file start, every so many rows ([`MARK_ROWS`],
+/// [`MARK_BYTES`]), and where its complete records end: a window deep in the file is
+/// read from the mark before it rather than from the file's start. The watcher makes
+/// the marks in the pass that counts the new records, so they cost no read of their own.
+#[derive(Default)]
+pub struct Marks {
+    inner: Mutex<MarksInner>,
+}
+
+#[derive(Default)]
+struct MarksInner {
+    /// (row, byte where its record starts), rows ascending.
+    at: Vec<(u64, u64)>,
+    complete: u64,
+}
+
+/// The bytes holding a run of rows: from the start of the record of `row`, the mark at or
+/// before the run, to `end`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Span {
+    row: u64,
+    start: u64,
+    end: u64,
+}
+
+impl Marks {
+    fn lock(&self) -> std::sync::MutexGuard<'_, MarksInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Take the marks `tail` made since the last call, and where its records end.
+    fn take_from(&self, tail: &mut Tail) {
+        let mut inner = self.lock();
+        inner.at.append(&mut tail.marks.new);
+        inner.complete = tail.complete;
+    }
+
+    /// The file is read again from its start: the marks so far are of another file.
+    fn clear(&self) {
+        let mut inner = self.lock();
+        inner.at.clear();
+        inner.complete = 0;
+    }
+
+    /// The bytes holding rows `[from, to)`: from the last mark at or before `from` to
+    /// the first at or after `to`, or to the end of the complete records. `None` before
+    /// the first mark (a blank first row) and when the bytes are more than
+    /// [`MOST_FROM_A_MARK`].
+    fn span(&self, from: u64, to: u64) -> Option<Span> {
+        let inner = self.lock();
+        let before = inner.at.partition_point(|&(row, _)| row <= from);
+        let (row, start) = *inner.at.get(before.checked_sub(1)?)?;
+        let after = inner.at.partition_point(|&(row, _)| row < to);
+        let end = inner.at.get(after).map_or(inner.complete, |&(_, at)| at);
+        (end >= start && end - start <= MOST_FROM_A_MARK).then_some(Span { row, start, end })
+    }
+}
+
+/// How a run of a followed file's bytes, starting at a record, becomes rows: as the
+/// file's scan reads them, with no header and nothing skipped.
+#[derive(Clone)]
+enum Parse {
+    Csv(Box<CsvReadOptions>),
+    Lines { ignore_errors: bool },
+    Stream(Arc<stream::StreamSchema>),
+}
+
+/// The scan under `plan`, seen through the wrapper a schema request leaves.
+fn scan_node(plan: &polars::lazy::dsl::DslPlan) -> &polars::lazy::dsl::DslPlan {
+    match plan {
+        polars::lazy::dsl::DslPlan::IR { dsl, .. } => scan_node(dsl),
+        plan => plan,
+    }
+}
+
+impl Parse {
+    /// How `scan` reads its rows, when a run of them can be read the same way: a CSV
+    /// or NDJSON scan of every column, with no row index or path column.
+    fn of(scan: &polars::lazy::dsl::DslPlan, schema: &SchemaRef) -> Option<Parse> {
+        use polars::lazy::dsl::{DslPlan, FileScanDsl};
+        if let Some(stream) = stream::StreamScan::in_plan(scan_node(scan)) {
+            return Some(Parse::Stream(stream.schema().clone()));
+        }
+        let DslPlan::Scan {
+            scan_type,
+            unified_scan_args,
+            ..
+        } = scan_node(scan)
+        else {
+            return None;
+        };
+        if unified_scan_args.row_index.is_some() || unified_scan_args.include_file_paths.is_some() {
+            return None;
+        }
+        match &**scan_type {
+            FileScanDsl::Csv { options } => {
+                if options.columns.is_some()
+                    || options.projection.is_some()
+                    || options.row_index.is_some()
+                {
+                    return None;
+                }
+                let mut options = (**options).clone();
+                options.path = None;
+                options.has_header = false;
+                options.skip_rows = 0;
+                options.skip_lines = 0;
+                options.skip_rows_after_header = 0;
+                options.n_rows = None;
+                // The names and types the scan settled on, by position.
+                options.schema = Some(schema.clone());
+                options.schema_overwrite = None;
+                options.dtype_overwrite = None;
+                options.column_names_overwrite = None;
+                options.raise_if_empty = false;
+                Some(Parse::Csv(Box::new(options)))
+            }
+            FileScanDsl::NDJson { options } => Some(Parse::Lines {
+                ignore_errors: options.ignore_errors,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Rows `[skip, skip + take)` of the records in `span` of a followed file, read when
+/// the frame is collected.
+struct Piece {
+    path: PathBuf,
+    span: Span,
+    skip: usize,
+    take: usize,
+    parse: Parse,
+    schema: SchemaRef,
+}
+
+/// The name a read from a mark carries in a plan.
+const PIECE_NAME: &str = "FOLLOWED";
+
+impl polars::prelude::AnonymousScan for Piece {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn schema(&self, _infer_schema_length: Option<usize>) -> PolarsResult<SchemaRef> {
+        Ok(self.schema.clone())
+    }
+
+    fn scan(&self, args: polars::prelude::AnonymousScanArgs) -> PolarsResult<DataFrame> {
+        let take = args.n_rows.map_or(self.take, |n| n.min(self.take));
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(self.span.start))?;
+        let mut bytes = Vec::with_capacity((self.span.end - self.span.start) as usize);
+        file.take(self.span.end - self.span.start)
+            .read_to_end(&mut bytes)?;
+        let df = match &self.parse {
+            Parse::Csv(options) => {
+                let mut options = (**options).clone();
+                options.n_rows = Some(self.skip + take);
+                options
+                    .into_reader_with_file_handle(std::io::Cursor::new(bytes))
+                    .finish()?
+            }
+            Parse::Lines { ignore_errors } => {
+                polars::io::ndjson::core::parse_ndjson(&bytes, None, &self.schema, *ignore_errors)?
+            }
+            Parse::Stream(schema) => stream::decode_run(bytes, schema, self.skip + take)?,
+        };
+        Ok(df.slice(self.skip as i64, take))
+    }
+}
+
+/// `lf` with the bounded scan of the followed file at `path` reading only its rows
+/// `[from, to)` (`to` at most the bound, the bound when `None`), from the mark before
+/// them: whatever the view does above the scan is done to those rows alone. `None` when
+/// the marks do not reach them or the plan has no bounded scan of the file.
+pub(crate) fn from_marks(
+    lf: &LazyFrame,
+    path: &Path,
+    marks: &Marks,
+    from: usize,
+    to: Option<usize>,
+) -> Option<LazyFrame> {
+    let path_text = path.to_string_lossy();
+    let mut plan = lf.logical_plan.clone();
+    let mut replaced = false;
+    let mut failed = false;
+    let piece = |scan: &polars::lazy::dsl::DslPlan, bound: usize| {
+        let to = to.map_or(bound, |to| to.min(bound));
+        let from = from.min(to);
+        let span = marks.span(from as u64, to as u64)?;
+        let schema = LazyFrame::from(scan.clone()).collect_schema().ok()?;
+        let parse = Parse::of(scan, &schema)?;
+        let piece = Piece {
+            path: path.to_path_buf(),
+            span,
+            skip: from - span.row as usize,
+            take: to - from,
+            parse,
+            schema: schema.clone(),
+        };
+        LazyFrame::anonymous_scan(
+            Arc::new(piece),
+            ScanArgsAnonymous {
+                schema: Some(schema),
+                name: PIECE_NAME,
+                ..Default::default()
+            },
+        )
+        .ok()
+        .map(|lf| lf.logical_plan)
+    };
+    replace_bound(
+        &mut plan,
+        &path_text,
+        &mut |scan, bound| match piece(scan, bound) {
+            Some(plan) => {
+                replaced = true;
+                Some(plan)
+            }
+            None => {
+                failed = true;
+                None
+            }
+        },
+    );
+    (replaced && !failed).then(|| {
+        let mut out = lf.clone();
+        out.logical_plan = plan;
+        out
+    })
+}
+
+/// Put `with(scan, bound)` where `plan` reads the file at `path` through its bound.
+fn replace_bound(
+    plan: &mut polars::lazy::dsl::DslPlan,
+    path: &str,
+    with: &mut dyn FnMut(&polars::lazy::dsl::DslPlan, usize) -> Option<polars::lazy::dsl::DslPlan>,
+) {
+    use polars::lazy::dsl::DslPlan;
+    match plan {
+        DslPlan::IR { dsl, .. } => {
+            let mut inner = Arc::unwrap_or_clone(dsl.clone());
+            replace_bound(&mut inner, path, with);
+            *plan = inner;
+            return;
+        }
+        DslPlan::Slice {
+            input,
+            offset: 0,
+            len,
+        } if scans(input, path) => {
+            if let Some(piece) = with(input, *len as usize) {
+                *plan = piece;
+            }
+            return;
+        }
+        _ => {}
+    }
+    crate::widgets::datatable::for_each_input(plan, &mut |input| replace_bound(input, path, with));
+}
+
+/// How many rows the frame `lf` reads of the followed file at `path`: its bound.
+pub(crate) fn bound_of(lf: &LazyFrame, path: &Path) -> Option<usize> {
+    use polars::lazy::dsl::DslPlan;
+    let path = path.to_string_lossy();
+    (&lf.logical_plan).into_iter().find_map(|node| match node {
+        DslPlan::Slice {
+            input,
+            offset: 0,
+            len,
+        } if scans(input, &path) => Some(*len as usize),
+        _ => None,
+    })
+}
+
+/// The windows of a followed file's view, each read from the mark before it. A view
+/// of the rows as they are reads its rows straight; one that only filters them reads
+/// on from `known`, a point where the rows of the view before it are known (view row,
+/// file row), and slices.
+pub(crate) struct Window {
+    pub(crate) lf: LazyFrame,
+    pub(crate) path: PathBuf,
+    pub(crate) marks: Arc<Marks>,
+    pub(crate) known: Option<Vec<(usize, usize)>>,
+}
+
+impl crate::pushdown::Windowed for Window {
+    fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
+        let read = match &self.known {
+            None => from_marks(&self.lf, &self.path, &self.marks, start, Some(start + len)),
+            Some(known) => {
+                let at = known.partition_point(|&(view, _)| view <= start);
+                known.get(at.wrapping_sub(1)).and_then(|&(view, row)| {
+                    from_marks(&self.lf, &self.path, &self.marks, row, None)
+                        .map(|lf| lf.slice((start - view) as i64, len as IdxSize))
+                })
+            }
+        };
+        // Short of marks, Polars reads from the start of the file.
+        Ok(read.unwrap_or_else(|| self.lf.clone().slice(start as i64, len as IdxSize)))
+    }
 }
 
 /// What the watcher found.
@@ -617,6 +1058,9 @@ struct Shared {
     stop: AtomicBool,
     poke: Mutex<bool>,
     woken: Condvar,
+    /// Wakes a watcher waiting on inotify rather than on `woken`.
+    #[cfg(target_os = "linux")]
+    bell: notify::Bell,
 }
 
 impl Shared {
@@ -637,6 +1081,44 @@ impl Shared {
     fn wake(&self) {
         *self.poke.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.woken.notify_all();
+        #[cfg(target_os = "linux")]
+        self.bell.ring();
+    }
+
+    /// Wait until the file changes, as `notify` hears, or until poked or stopped. A
+    /// change is looked at no sooner than `interval` after the last look, `last`, so a
+    /// burst of appends is one look. Whether to go on.
+    #[cfg(target_os = "linux")]
+    fn wait_for_change(
+        &self,
+        notify: &notify::Notify,
+        interval: Duration,
+        last: &mut Option<Instant>,
+    ) -> bool {
+        loop {
+            if self.stop.load(Ordering::Relaxed) {
+                return false;
+            }
+            if std::mem::take(&mut *self.poke.lock().unwrap_or_else(|e| e.into_inner())) {
+                break;
+            }
+            if notify.wait(&self.bell, None) == notify::Woke::Changed {
+                let left = last
+                    .map(|at| at + interval)
+                    .and_then(|due| due.checked_duration_since(Instant::now()));
+                // Returns early when poked.
+                if let Some(left) = left
+                    && !self.wait(left)
+                {
+                    return false;
+                }
+                break;
+            }
+        }
+        // What changed before this look is read by it.
+        notify.drain();
+        *last = Some(Instant::now());
+        !self.stop.load(Ordering::Relaxed)
     }
 }
 
@@ -703,6 +1185,8 @@ pub struct Follow {
     pub(crate) stale_view: bool,
     /// The handle a deleted file is read through from now on.
     held: Option<Arc<File>>,
+    /// Where its rows start, every so many.
+    marks: Arc<Marks>,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -712,7 +1196,7 @@ impl Follow {
     /// checking every `interval` and telling `events`. `spool` is standard input being
     /// copied to it.
     pub fn start(
-        tail: Tail,
+        mut tail: Tail,
         interval: Duration,
         events: Sender<AppEvent>,
         spool: Option<Arc<SpoolHandle>>,
@@ -721,7 +1205,13 @@ impl Follow {
         let path = tail.path.clone();
         let shared = Arc::new(Shared::default());
         let shown = tail.rows();
+        if let Some(handle) = &spool {
+            handle.spool.wake_on_end(shared.clone());
+        }
+        let marks = Arc::new(Marks::default());
+        marks.take_from(&mut tail);
         let watcher = Watcher {
+            marks: marks.clone(),
             id,
             path: path.clone(),
             tail,
@@ -749,7 +1239,13 @@ impl Follow {
             end_pending: false,
             stale_view: false,
             held: None,
+            marks,
         }
+    }
+
+    /// Where the file's rows start, every so many.
+    pub(crate) fn marks(&self) -> &Arc<Marks> {
+        &self.marks
     }
 
     pub fn id(&self) -> u64 {
@@ -891,18 +1387,59 @@ struct Watcher {
     events: Sender<AppEvent>,
     spool: Option<Arc<Spool>>,
     interval: Duration,
+    marks: Arc<Marks>,
 }
 
-/// Which file a path names, so a replaced file is told from a grown one.
+/// Which file this is, so a replaced file is told from a grown one: (device, inode) on
+/// Unix, (volume serial, file index) on Windows.
+type Identity = (u64, u64);
+
 #[cfg(unix)]
-fn identity(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+fn identity_of(file: &File) -> Option<Identity> {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().ok().map(|meta| (meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn identity_of(file: &File) -> Option<Identity> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    // SAFETY: the handle is `file`'s, open while this runs, and `info` is plain data
+    // the call fills in; zeroed is a valid value of it.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+    (ok != 0).then(|| {
+        (
+            u64::from(info.dwVolumeSerialNumber),
+            u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow),
+        )
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_of(_file: &File) -> Option<Identity> {
+    None
+}
+
+/// Which file `path` names now, `meta` its metadata. Unix reads it from the metadata;
+/// Windows has to open the file to ask.
+#[cfg(unix)]
+fn identity_at(_path: &Path, meta: &std::fs::Metadata) -> Option<Identity> {
     use std::os::unix::fs::MetadataExt;
     Some((meta.dev(), meta.ino()))
 }
 
 #[cfg(not(unix))]
-fn identity(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    None
+fn identity_at(path: &Path, _meta: &std::fs::Metadata) -> Option<Identity> {
+    File::open(path).ok().as_ref().and_then(identity_of)
+}
+
+/// Whether the file a path names is another one than the file followed. Unknown on
+/// either side is not a replacement: a shrink still tells a truncation.
+fn replaced(known: Option<Identity>, now: Option<Identity>) -> bool {
+    matches!((known, now), (Some(known), Some(now)) if known != now)
 }
 
 impl Watcher {
@@ -914,9 +1451,25 @@ impl Watcher {
                 return;
             }
         };
-        let mut known = file.metadata().ok().and_then(|m| identity(&m));
+        let mut known = identity_of(&file);
         let mut sent = (self.tail.rows(), 0usize);
-        while self.shared.wait(self.interval) {
+        #[cfg(target_os = "linux")]
+        let notify = notify::Notify::new(&self.path);
+        #[cfg(target_os = "linux")]
+        let mut last = None;
+        loop {
+            #[cfg(target_os = "linux")]
+            let go_on = match &notify {
+                Some(notify) => self
+                    .shared
+                    .wait_for_change(notify, self.interval, &mut last),
+                None => self.shared.wait(self.interval),
+            };
+            #[cfg(not(target_os = "linux"))]
+            let go_on = self.shared.wait(self.interval);
+            if !go_on {
+                return;
+            }
             // Read before the file, so nothing the spool wrote before it ended is missed.
             let spool_ended = self.spool.as_ref().and_then(|spool| spool.ended());
             let meta = match std::fs::metadata(&self.path) {
@@ -932,10 +1485,9 @@ impl Watcher {
                     return;
                 }
             };
-            let now = identity(&meta);
+            let now = identity_at(&self.path, &meta);
             let len = meta.len();
-            let replaced = now.is_some() && known.is_some() && now != known;
-            if replaced || len < self.tail.complete() {
+            if replaced(known, now) || len < self.tail.complete() {
                 match File::open(&self.path) {
                     Ok(reopened) => file = reopened,
                     Err(e) => {
@@ -943,12 +1495,18 @@ impl Watcher {
                         return;
                     }
                 }
-                known = now;
+                known = identity_of(&file);
+                #[cfg(target_os = "linux")]
+                if let Some(notify) = &notify {
+                    notify.rewatch(&self.path);
+                }
                 self.tail.restart();
+                self.marks.clear();
                 if let Err(e) = self.tail.read_on(&mut file, len, false) {
                     self.send(Change::Failed(format!("Could not read the file: {e}")));
                     return;
                 }
+                self.marks.take_from(&mut self.tail);
                 sent = (self.tail.rows(), self.tail.misfits());
                 self.send(Change::Restarted {
                     rows: sent.0,
@@ -960,6 +1518,8 @@ impl Watcher {
                 self.send(Change::Failed(format!("Could not read the file: {e}")));
                 return;
             }
+            // Before the rows are reported, so the view's reads of them find marks.
+            self.marks.take_from(&mut self.tail);
             let now_counted = (self.tail.rows(), self.tail.misfits());
             if now_counted != sent {
                 sent = now_counted;
@@ -990,7 +1550,8 @@ impl Watcher {
 
 /// Standard input being copied to a file while the file is read: the copy goes on
 /// after the first rows show, until the stream ends or the copy is stopped. The file is
-/// a temporary one, or the one `--tee` names, which the user keeps.
+/// a temporary one, or the one `--tee` names, which the user keeps; with `--tee -`, a
+/// temporary one, and the stream is passed on to standard output too.
 pub struct Spool {
     stop: AtomicBool,
     bytes: AtomicU64,
@@ -1001,6 +1562,8 @@ pub struct Spool {
     sink: Mutex<Option<File>>,
     /// The file `--tee` named, when it is the one written.
     tee: Option<Tee>,
+    /// Standard output, for `--tee -`. Taken when the copy finishes, which closes it.
+    pass: Mutex<Option<Box<dyn Write + Send>>>,
     started: Instant,
 }
 
@@ -1010,6 +1573,24 @@ pub struct Tee {
     pub path: PathBuf,
     /// `--tee-raw`: the bytes exactly as they came, a WAV header's sizes included.
     pub raw: bool,
+}
+
+impl Tee {
+    /// `--tee -`: the stream is passed on to standard output rather than kept in a file.
+    pub fn to_stdout(&self) -> bool {
+        crate::stdin::is_stdin(&self.path)
+    }
+
+    /// Where the stream goes, as a message names it.
+    pub fn name(&self) -> String {
+        if self.to_stdout() {
+            return "standard output".to_string();
+        }
+        self.path.file_name().map_or_else(
+            || self.path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -1024,13 +1605,16 @@ struct SpoolState {
     finished: Option<Instant>,
     /// Bytes copied by when, a few seconds of them, for the rate.
     samples: std::collections::VecDeque<(Instant, u64)>,
+    /// The watcher following the file, woken when the copy ends: a watcher waiting
+    /// for the file to change would not hear an end that writes nothing.
+    watcher: Option<Arc<Shared>>,
 }
 
 /// How far back the rate looks.
 const RATE_WINDOW: Duration = Duration::from_secs(2);
 
 impl Spool {
-    fn new(sink: File, tee: Option<Tee>) -> Spool {
+    fn new(sink: File, tee: Option<Tee>, pass: Option<Box<dyn Write + Send>>) -> Spool {
         Spool {
             stop: AtomicBool::new(false),
             bytes: AtomicU64::new(0),
@@ -1038,6 +1622,7 @@ impl Spool {
             changed: Condvar::new(),
             sink: Mutex::new(Some(sink)),
             tee,
+            pass: Mutex::new(pass),
             started: Instant::now(),
         }
     }
@@ -1115,10 +1700,18 @@ impl Spool {
                 "Could not write {}: {e}",
                 self.tee
                     .as_ref()
+                    .filter(|t| !t.to_stdout())
                     .map_or("what came in".to_string(), |t| t.path.display().to_string())
             )
         })?;
         drop(sink);
+        // Outside the file's lock: a reader downstream that stops reading holds up this
+        // write, and must not hold up a stop.
+        if let Some(out) = self.pass.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            out.write_all(bytes)
+                .and_then(|()| out.flush())
+                .map_err(|e| format!("Could not write standard output: {e}"))?;
+        }
         let total =
             self.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed) + bytes.len() as u64;
         let now = Instant::now();
@@ -1145,8 +1738,14 @@ impl Spool {
     /// that saved means safe to copy. Once; later calls change nothing.
     fn finish(&self, reason: Option<String>) {
         let file = self.sink.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // Closed, so the reader downstream sees the stream end. Held by a write a reader
+        // downstream is not taking, it is closed once that write returns: the copy then
+        // finds the file finished and finishes again.
+        if let Ok(mut pass) = self.pass.try_lock() {
+            pass.take();
+        }
         let mut reason = reason;
-        if let (Some(mut file), Some(tee)) = (file, self.tee.as_ref()) {
+        if let (Some(mut file), Some(tee)) = (file, self.tee.as_ref().filter(|t| !t.to_stdout())) {
             let finished = (if tee.raw {
                 Ok(())
             } else {
@@ -1164,8 +1763,23 @@ impl Spool {
             state.ended = Some(reason);
             state.finished = Some(Instant::now());
         }
+        let watcher = state.watcher.take();
         drop(state);
         self.changed.notify_all();
+        if let Some(watcher) = watcher {
+            watcher.wake();
+        }
+    }
+
+    /// Wake the watcher `shared` once the copy ends, or now if it has.
+    fn wake_on_end(&self, shared: Arc<Shared>) {
+        let mut state = self.lock();
+        if state.ended.is_some() {
+            drop(state);
+            shared.wake();
+        } else {
+            state.watcher = Some(shared);
+        }
     }
 }
 
@@ -1240,18 +1854,31 @@ pub(crate) fn spool<R: Read + Send + 'static>(
     options: OpenOptions,
     writer: &Writer,
     read: &AtomicU64,
+    stdout: Option<Box<dyn Write + Send>>,
 ) -> Result<(Spooled, OpenOptions), String> {
-    let (reader, _) = open().map_err(|e| format!("Could not read standard input: {e}"))?;
     let tee = options.tee.clone().map(|path| Tee {
         path,
         raw: options.tee_raw,
     });
+    // A pipe cannot be sought back to, to fill in a WAV header.
+    let tee = tee.map(|tee| Tee {
+        raw: tee.raw || tee.to_stdout(),
+        ..tee
+    });
+    let pass = match &tee {
+        Some(tee) if tee.to_stdout() => Some(stdout.ok_or_else(|| {
+            "--tee - passes the stream on to standard output, which only the datui command has."
+                .to_string()
+        })?),
+        _ => None,
+    };
+    let (reader, _) = open().map_err(|e| format!("Could not read standard input: {e}"))?;
     let (spooled, file) = match &tee {
-        Some(tee) => {
+        Some(tee) if !tee.to_stdout() => {
             let file = crate::tee::create(&tee.path, options.force)?;
             (Spooled::Kept(tee.path.clone()), file)
         }
-        None => {
+        _ => {
             let Some((named, claim)) = writer
                 .create(|| TempDownload::create(options.temp_dir.as_deref(), None))
                 .map_err(|e| crate::error_display::user_message_from_report(&e, None))?
@@ -1265,7 +1892,11 @@ pub(crate) fn spool<R: Read + Send + 'static>(
             (Spooled::Temp(TempDownload::held(named, Some(claim))), file)
         }
     };
-    let spool = Arc::new(Spool::new(file, tee));
+    let spooled_path = match &spooled {
+        Spooled::Temp(download) => download.path().to_path_buf(),
+        Spooled::Kept(path) => path.clone(),
+    };
+    let spool = Arc::new(Spool::new(file, tee, pass));
     let handle = Arc::new(SpoolHandle {
         spool: spool.clone(),
     });
@@ -1284,8 +1915,11 @@ pub(crate) fn spool<R: Read + Send + 'static>(
             spool.stop();
             return Err("Reading standard input was stopped.".to_string());
         }
+        // An Arrow stream has no lines to count: its schema message is enough.
         let enough = options.follow
-            && (state.lines >= WANTED_LINES || (state.drained && state.lines >= wanted));
+            && (state.lines >= WANTED_LINES
+                || (state.drained
+                    && (state.lines >= wanted || stream::begins_with_schema(&spooled_path))));
         if enough || state.ended.is_some() {
             break;
         }
@@ -1300,10 +1934,7 @@ pub(crate) fn spool<R: Read + Send + 'static>(
     }
     drop(state);
     read.store(spool.bytes(), Ordering::Relaxed);
-    let path = match &spooled {
-        Spooled::Temp(download) => download.path().to_path_buf(),
-        Spooled::Kept(path) => path.clone(),
-    };
+    let path = spooled_path;
     let mut head = Vec::new();
     File::open(&path)
         .and_then(|f| f.take(4096).read_to_end(&mut head))
@@ -1320,6 +1951,7 @@ pub(crate) fn spool<R: Read + Send + 'static>(
     // A recording goes on whatever it holds; only the view is not followed then.
     if options.follow
         && options.tee.is_none()
+        && !followed_stream(&path, options.format, &options)
         && let Some(refusal) = refusal(options.format, &options)
     {
         return Err(refusal);
@@ -1411,6 +2043,43 @@ mod tests {
         assert_eq!(lines.complete(), 17);
     }
 
+    /// On Linux the watcher hears an append through inotify: with an interval of an
+    /// hour, no size check would see it, and nothing pokes it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_append_is_heard_of_without_a_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.csv");
+        std::fs::write(&path, "t\n1\n").unwrap();
+        let scan = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .finish()
+            .unwrap();
+        let (_, tail) =
+            bound_to_complete(scan, &path, FileFormat::Csv, &OpenOptions::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let follow = Follow::start(tail, Duration::from_secs(3_600), tx, None);
+        let guard = Duration::from_secs(30);
+        // The watcher may not be waiting yet: append until it reports, each append a
+        // change it hears once it is.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let mut rows = 1;
+        let deadline = Instant::now() + guard;
+        let news = loop {
+            assert!(Instant::now() < deadline, "the watcher never heard");
+            file.write_all(format!("{}\n", rows + 1).as_bytes())
+                .unwrap();
+            rows += 1;
+            if let Ok(AppEvent::Followed(news)) = rx.recv_timeout(Duration::from_millis(50)) {
+                break news;
+            }
+        };
+        assert!(matches!(news.change, Change::Grew { rows: 2.., .. }));
+        drop(follow);
+    }
+
     /// The bytes that arrive later are read from where the count stopped, a partial
     /// line among them once it completes; a row that does not fit is counted.
     #[test]
@@ -1465,6 +2134,274 @@ mod tests {
         assert_eq!(df.height(), 3, "{df}");
         bound(&mut root, &path, 4);
         assert_eq!(root.collect().unwrap().height(), 4, "the partial row waits");
+    }
+
+    /// `text` written to a file and scanned as `scan` does, bounded to its complete
+    /// rows, with a mark every `every` rows.
+    fn marked(
+        text: &[u8],
+        format: FileFormat,
+        options: &OpenOptions,
+        every: u64,
+        scan: impl Fn(&Path) -> LazyFrame,
+    ) -> (tempfile::TempDir, PathBuf, LazyFrame, Arc<Marks>, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("marked");
+        std::fs::write(&path, text).unwrap();
+        let mut lf = scan(&path);
+        let schema = lf.collect_schema().unwrap();
+        let mut tail = Tail::new(format, options, &schema);
+        tail.mark_every = (every, u64::MAX);
+        tail.read_on(&mut File::open(&path).unwrap(), text.len() as u64, false)
+            .unwrap();
+        let marks = Arc::new(Marks::default());
+        marks.take_from(&mut tail);
+        bound(&mut lf, &path, tail.rows());
+        (dir, path, lf, marks, tail.rows())
+    }
+
+    fn csv_scan(path: &Path, options: &OpenOptions) -> LazyFrame {
+        let mut reader = LazyCsvReader::new(PlRefPath::try_from_path(path).unwrap())
+            .with_ignore_errors(true)
+            .with_truncate_ragged_lines(true)
+            .with_has_header(options.has_header != Some(false))
+            .with_comment_prefix(options.comment_char.as_deref().map(PlSmallStr::from_str));
+        if let Some(skip) = options.skip_lines {
+            reader = reader.with_skip_lines(skip);
+        }
+        reader.finish().unwrap()
+    }
+
+    /// Every window read from the marks holds the rows a read from the start of the
+    /// file gives: quoted newlines, blank lines, comments, skipped lines, carriage
+    /// returns and NDJSON, at every offset.
+    #[test]
+    fn a_window_from_a_mark_reads_what_a_read_from_the_start_does() {
+        let mut csv = b"skipped\nt,s,n\n".to_vec();
+        let mut crlf = b"t,s,n\r\n".to_vec();
+        let mut lines = Vec::new();
+        for i in 0..120 {
+            let row = match i % 9 {
+                0 => format!("{i},\"two\nlines\",{}\n", i * 2),
+                3 => "\n".to_string(),
+                5 => "# a comment\n".to_string(),
+                7 => format!("{i},x,oops\n"),
+                _ => format!("{i},s{i},{}\n", i * 2),
+            };
+            csv.extend(row.as_bytes());
+            crlf.extend(format!("{i},s{i},{}\r\n", i * 2).as_bytes());
+            lines.extend(format!("{{\"t\":{i},\"s\":\"s{i}\"}}\n").as_bytes());
+            if i % 4 == 1 {
+                lines.extend(b"\n  \n");
+            }
+        }
+        csv.extend(b"999,partial");
+        let commented = OpenOptions {
+            comment_char: Some("#".to_string()),
+            ..OpenOptions::default().with_skip_lines(1)
+        };
+        // An Arrow stream of batches of three rows, the last message cut short.
+        let (schema, batches) = stream_messages(&arrow_rows(0, 100), 3);
+        let mut arrows = schema;
+        batches.iter().for_each(|batch| arrows.extend(batch));
+        arrows.extend(&batches[0][..20]);
+        let cases: Vec<(&[u8], FileFormat, OpenOptions)> = vec![
+            (&csv, FileFormat::Csv, commented),
+            (&crlf, FileFormat::Csv, OpenOptions::default()),
+            (&lines, FileFormat::Jsonl, OpenOptions::default()),
+            (&arrows, FileFormat::Arrow, OpenOptions::default()),
+        ];
+        for (text, format, options) in cases {
+            let scan = |path: &Path| match format {
+                FileFormat::Jsonl => scan_lines(path, &options, &mut Vec::new()).unwrap(),
+                FileFormat::Arrow => stream::scan(path).unwrap(),
+                _ => csv_scan(path, &options),
+            };
+            let (_dir, path, lf, marks, rows) = marked(text, format, &options, 7, scan);
+            let window = Window {
+                lf: lf.clone(),
+                path: path.clone(),
+                marks: marks.clone(),
+                known: None,
+            };
+            let whole = lf.clone().collect().unwrap();
+            assert_eq!(whole.height(), rows);
+            for start in (0..rows + 3).step_by(5) {
+                for len in [1, 6, 40] {
+                    let read = crate::pushdown::Windowed::window(&window, start, len)
+                        .unwrap()
+                        .collect()
+                        .unwrap();
+                    let expected = whole.slice(start as i64, len);
+                    assert!(
+                        read.equals_missing(&expected),
+                        "{format:?} rows {start}+{len}:\n{read:?}\n{expected:?}"
+                    );
+                }
+                if start < rows {
+                    assert!(
+                        from_marks(&lf, &path, &marks, start, Some(start + 1)).is_some(),
+                        "{format:?} row {start} is read from a mark"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `n` rows from `from`: a number, its text, and a float.
+    fn arrow_rows(from: i64, n: i64) -> DataFrame {
+        df!(
+            "t" => (from..from + n).collect::<Vec<_>>(),
+            "s" => (from..from + n).map(|i| format!("s{i}")).collect::<Vec<_>>(),
+            "x" => (from..from + n).map(|i| i as f64 / 2.0).collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    /// An Arrow stream's batches are counted as their messages complete, a batch cut
+    /// short waiting for the rest; the stream's own scan reads them, filtered and
+    /// projected a batch at a time; and a stream with dictionaries is refused.
+    #[test]
+    fn an_arrow_stream_is_counted_and_read_by_its_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("live.arrows");
+        let (schema, batches) = stream_messages(&arrow_rows(0, 50), 4);
+        let mut head = schema.clone();
+        head.extend(&batches[0]);
+        head.extend(&batches[1][..batches[1].len() - 3]);
+        std::fs::write(&path, &head).unwrap();
+        let lf = stream::scan(&path).unwrap();
+        let (mut lf, mut tail) =
+            bound_to_complete(lf, &path, FileFormat::Arrow, &OpenOptions::default()).unwrap();
+        assert_eq!(tail.rows(), 4, "the second batch is not all there");
+        assert_eq!(lf.clone().collect().unwrap(), arrow_rows(0, 4));
+
+        let mut rest = batches[1][batches[1].len() - 3..].to_vec();
+        batches[2..].iter().for_each(|batch| rest.extend(batch));
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&rest).unwrap();
+        let size = file.metadata().unwrap().len();
+        tail.read_on(&mut File::open(&path).unwrap(), size, true)
+            .unwrap();
+        assert_eq!((tail.rows(), tail.misfits()), (50, 0));
+        bound(&mut lf, &path, tail.rows());
+        assert_eq!(lf.clone().collect().unwrap(), arrow_rows(0, 50));
+        let kept = lf
+            .clone()
+            .filter(col("t").gt_eq(lit(45)))
+            .select([col("s")])
+            .collect()
+            .unwrap();
+        assert_eq!(kept, arrow_rows(45, 5).select(["s"]).unwrap());
+        let count = lf.select([len()]).collect().unwrap();
+        assert_eq!(count.column("len").unwrap().u32().unwrap().get(0), Some(50));
+
+        // Written before Arrow 0.15, with no continuation markers, and ended.
+        let legacy = dir.path().join("legacy.arrows");
+        std::fs::write(
+            &legacy,
+            crate::ipc_stream::tests::stream(&arrow_rows(0, 10), None, true),
+        )
+        .unwrap();
+        let (lf, tail) = bound_to_complete(
+            stream::scan(&legacy).unwrap(),
+            &legacy,
+            FileFormat::Arrow,
+            &OpenOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(tail.rows(), 10);
+        assert_eq!(lf.collect().unwrap(), arrow_rows(0, 10));
+
+        // Dictionary-encoded columns.
+        let cats = df!("c" => ["a", "b", "a"])
+            .unwrap()
+            .lazy()
+            .with_column(col("c").cast(DataType::from_categories(Categories::global())))
+            .collect()
+            .unwrap();
+        let (schema, batches) = stream_messages(&cats, 3);
+        let dictionary = dir.path().join("dict.arrows");
+        std::fs::write(&dictionary, [schema, batches.concat()].concat()).unwrap();
+        assert!(
+            stream::scan(&dictionary).is_err_and(|e| e.contains("dictionary")),
+            "refused"
+        );
+    }
+
+    /// A filtered view reads on from a point where its rows are known, and counts the
+    /// rows after it alone.
+    #[test]
+    fn a_filtered_view_reads_and_counts_on_from_what_is_known() {
+        let mut text = b"t,n\n".to_vec();
+        for i in 0..300 {
+            text.extend(format!("{i},{}\n", i % 5).as_bytes());
+        }
+        let options = OpenOptions::default();
+        let (_dir, path, lf, marks, rows) = marked(&text, FileFormat::Csv, &options, 16, |p| {
+            csv_scan(p, &options)
+        });
+        let view = lf.filter(col("n").eq(lit(3)));
+        let whole = view.clone().collect().unwrap();
+        // The view's rows among the first 200 of the file.
+        let known = (whole.column("t").unwrap().i64().unwrap().to_vec())
+            .into_iter()
+            .filter(|t| t.unwrap() < 200)
+            .count();
+        let rest = from_marks(&view, &path, &marks, 200, None).unwrap();
+        let after = rest.collect().unwrap().height();
+        assert_eq!(known + after, whole.height());
+        assert_eq!(rows, 300);
+        let window = Window {
+            lf: view.clone(),
+            path,
+            marks,
+            known: Some(vec![(0, 0), (known, 200)]),
+        };
+        for start in [0, 10, known - 1, known, known + 5, whole.height() - 3] {
+            let read = crate::pushdown::Windowed::window(&window, start, 4)
+                .unwrap()
+                .collect()
+                .unwrap();
+            assert!(
+                read.equals_missing(&whole.slice(start as i64, 4)),
+                "{start}"
+            );
+        }
+    }
+
+    /// A file put in place of the followed one, as big or bigger, is another file;
+    /// the file grown in place is the same one. Windows reads this from the volume and
+    /// file index, Unix from the device and inode.
+    #[test]
+    fn a_replaced_file_is_told_from_a_grown_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.csv");
+        std::fs::write(&path, "t\n1\n").unwrap();
+        let held = File::open(&path).unwrap();
+        let known = identity_of(&held);
+        assert!(cfg!(not(any(unix, windows))) || known.is_some());
+        let now = |path: &Path| identity_at(path, &std::fs::metadata(path).unwrap());
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"2\n")
+            .unwrap();
+        assert!(!replaced(known, now(&path)), "grown in place");
+        let other = dir.path().join("next.csv");
+        std::fs::write(&other, "t\n1\n2\n3\n").unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        assert_eq!(
+            replaced(known, now(&path)),
+            known.is_some(),
+            "renamed over it"
+        );
+        assert!(!replaced(None, now(&path)), "unknown is no replacement");
+        drop(held);
     }
 
     /// A deleted file is read through the handle held on it.

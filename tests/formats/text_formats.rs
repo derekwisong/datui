@@ -3,7 +3,7 @@
 //!
 //! Fixtures are small files written here, under `fixture_dir()`.
 
-use crate::common::{self, next_event, pump_open_until_loaded};
+use crate::common::{self, pump_open_until_loaded};
 use datui::widgets::info::InfoTab;
 use datui::{App, AppEvent, OpenOptions};
 use polars::prelude::*;
@@ -542,6 +542,7 @@ fn a_gzipped_sdf_file_streams() {
 #[cfg(feature = "http")]
 #[test]
 fn an_sdf_file_opens_from_a_url() {
+    use crate::common::next_event;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::io::Read;
     let mut body = Vec::new();

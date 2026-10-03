@@ -63,8 +63,11 @@ pub fn run(input: &[u8]) {
         return;
     };
     let records = opened.records;
-    // Every record takes at least a byte, past the header.
-    assert!(records.rows() <= data.len());
+    // Every record takes at least a byte, past the header; a compressed block can
+    // hold more records than the file has bytes.
+    if spec.blocks.is_none() {
+        assert!(records.rows() <= data.len());
+    }
     let head = records
         .collect(MAX_ROWS)
         .expect("the rows the reader counted decode");

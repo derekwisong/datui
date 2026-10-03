@@ -241,7 +241,11 @@ fn a_failed_download_leaves_no_file() {
     );
     settle(&mut app, &rx);
     let message = app.error_message().expect("the open failed");
-    assert!(message.contains("Could not read from S3"), "{message}");
+    assert_eq!(
+        message,
+        format!("\"{URL}\": No object there. Check the URL."),
+        "named by its URL, in the one shape"
+    );
     assert!(files_in(dir.path()).is_empty());
 }
 
@@ -653,7 +657,10 @@ fn ipc_files_in_a_bucket_are_read_in_place() {
     let dir = tempfile::tempdir().unwrap();
     open_prefix(&mut app, &rx, "s3://lake/t/", dir.path(), Some("train"));
     let message = app.error_message().expect("no splits to pick from");
-    assert!(message.contains("holds one table"), "{message}");
+    assert!(
+        message.starts_with("\"s3://lake/t/\": It holds one table, not splits. --table train"),
+        "{message}"
+    );
 
     let stream = std::fs::read("tests/sample-data/people_stream.arrow").unwrap();
     let s3 = FakeS3::serve("lake", BTreeMap::from([("s/s.arrow".to_string(), stream)]));

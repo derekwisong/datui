@@ -106,7 +106,16 @@ pub fn is_dbc_toml(text: &str) -> bool {
 pub fn load(path: &Path) -> Result<Option<Dbc>, SpecError> {
     let read = |path: &Path| -> Result<String, SpecError> {
         let size = std::fs::metadata(path)
-            .map_err(|e| error(Some(path), 0, format!("could not read it: {e}")))?
+            .map_err(|e| {
+                error(
+                    Some(path),
+                    0,
+                    format!(
+                        "could not read it. {}",
+                        crate::error_display::user_message_from_io(&e, None)
+                    ),
+                )
+            })?
             .len();
         if size > MAX_FILE {
             return Err(error(
@@ -119,8 +128,16 @@ pub fn load(path: &Path) -> Result<Option<Dbc>, SpecError> {
                 ),
             ));
         }
-        let bytes = std::fs::read(path)
-            .map_err(|e| error(Some(path), 0, format!("could not read it: {e}")))?;
+        let bytes = std::fs::read(path).map_err(|e| {
+            error(
+                Some(path),
+                0,
+                format!(
+                    "could not read it. {}",
+                    crate::error_display::user_message_from_io(&e, None)
+                ),
+            )
+        })?;
         // DBC files are often Windows-1252: read what is not UTF-8 as Latin-1.
         Ok(match String::from_utf8(bytes) {
             Ok(text) => text,

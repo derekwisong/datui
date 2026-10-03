@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub struct FileError {
     path: PathBuf,
+    /// Line and column, one-based, when the problem is at one place in the file's text.
+    at: Option<(usize, usize)>,
     what: String,
     /// What it was told, so a cause (a missing file) is still found under it.
     source: Option<color_eyre::eyre::Report>,
@@ -21,15 +23,25 @@ impl FileError {
     pub fn new(path: &Path, what: impl Into<String>) -> Self {
         Self {
             path: path.to_path_buf(),
+            at: None,
             what: what.into(),
             source: None,
+        }
+    }
+
+    /// The problem at `line`:`column` (one-based; line 0 is nowhere in particular),
+    /// said as a compiler does: `"spec.toml":3:7: …`.
+    pub fn at(path: &Path, line: usize, column: usize, what: impl Into<String>) -> Self {
+        Self {
+            at: (line > 0).then_some((line, column)),
+            ..Self::new(path, what)
         }
     }
 }
 
 impl std::fmt::Display for FileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&file_message(&self.path, &self.what))
+        f.write_str(&located_message(Some(&self.path), self.at, &self.what))
     }
 }
 
@@ -45,18 +57,57 @@ impl std::error::Error for FileError {
 /// `"<path>": <what went wrong>. <what to do>.` Sentence case, its first line ended
 /// with a full stop, the file named once.
 pub fn file_message(path: &Path, what: &str) -> String {
-    let named = path.display().to_string();
-    let quoted = format!("\"{named}\": ");
+    located_message(Some(path), None, what)
+}
+
+/// Whether `what` starts by naming a file, as [`file_message`] does: `"<path>": ` or
+/// `"<path>":3:7: `. A shard's error said under its dataset, or a spec's under the
+/// file it was to read, keeps the file it names.
+fn names_a_file(what: &str) -> bool {
+    let Some(quoted) = what.strip_prefix('"') else {
+        return false;
+    };
+    let Some((_, after)) = quoted.split_once("\":") else {
+        return false;
+    };
+    after.starts_with(' ') || after.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// [`file_message`], with the line and column the problem is at, when it is at one
+/// place: `"spec.toml":3:7: <what went wrong>.` Without a path, the location and the
+/// sentence alone.
+pub fn located_message(path: Option<&Path>, at: Option<(usize, usize)>, what: &str) -> String {
+    let mut said = String::with_capacity(what.len() + 16);
+    let mut what = what.trim();
+    if let Some(path) = path {
+        if names_a_file(what) {
+            return what.to_string();
+        }
+        let named = path.display().to_string();
+        // A message that already names the file, as a path does, is not named twice.
+        what = what.strip_prefix(&format!("{named}: ")).unwrap_or(what);
+        said.push('"');
+        said.push_str(&named);
+        said.push('"');
+        said.push(':');
+        if at.is_none() {
+            said.push(' ');
+        }
+    }
+    if let Some((line, column)) = at {
+        said.push_str(&format!("{line}:{column}: "));
+    }
+    said.push_str(&sentence(what));
+    said
+}
+
+/// `what` as a sentence: its first letter capitalized and its first line ended with a
+/// full stop. The lines after it are kept as they are.
+pub fn sentence(what: &str) -> String {
     let what = what.trim();
-    // A message that already names the file is not named twice.
-    let what = what
-        .strip_prefix(quoted.as_str())
-        .or_else(|| what.strip_prefix(&format!("{named}: ")))
-        .unwrap_or(what);
     let (first, rest) = what.split_once('\n').unwrap_or((what, ""));
     let first = first.trim_end();
-    let mut said = String::with_capacity(quoted.len() + what.len() + 1);
-    said.push_str(&quoted);
+    let mut said = String::with_capacity(what.len() + 1);
     let mut chars = first.chars();
     if let Some(c) = chars.next() {
         said.extend(c.to_uppercase());
@@ -70,6 +121,41 @@ pub fn file_message(path: &Path, what: &str) -> String {
         said.push_str(rest);
     }
     said
+}
+
+/// What an object store said about a file in it: a missing object, refused access, or
+/// the store's own words, each with what to check.
+#[cfg(feature = "cloud")]
+pub fn store_message(err: &object_store::Error) -> String {
+    use object_store::Error as E;
+    match err {
+        E::NotFound { .. } => "No object there. Check the URL.".to_string(),
+        E::PermissionDenied { .. } => "Access denied. Check the credentials.".to_string(),
+        E::Unauthenticated { .. } => {
+            "The store did not accept the credentials. Check them.".to_string()
+        }
+        e => format!(
+            "Could not read it: {}. Check the credentials and the URL.",
+            e.to_string().trim_end_matches('.')
+        ),
+    }
+}
+
+/// What an HTTP request for a file came to, when it failed: the server's answer, or
+/// why there was none.
+#[cfg(any(feature = "http", feature = "cloud"))]
+pub fn http_message(err: &ureq::Error) -> String {
+    match err {
+        ureq::Error::StatusCode(404) => "No file there (404). Check the URL.".to_string(),
+        ureq::Error::StatusCode(code @ (401 | 403)) => {
+            format!("The server refused it ({code}). Check the URL and its access.")
+        }
+        ureq::Error::StatusCode(code) => format!("The server answered {code}."),
+        e => format!(
+            "Could not read it: {}.",
+            e.to_string().trim_end_matches('.')
+        ),
+    }
 }
 
 /// `err`, from reading `path`, named by it ([`FileError`]) unless it already is.

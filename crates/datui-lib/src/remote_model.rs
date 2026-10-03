@@ -16,6 +16,7 @@ use std::path::Path;
 use polars::prelude::LazyFrame;
 
 use crate::FileFormat;
+use crate::error_display::file_message;
 use crate::model_files::{self, ModelSummary, RangeError, RangeSource, Remote};
 use crate::source::{self, InputSource};
 
@@ -29,6 +30,19 @@ pub(crate) struct Read {
 /// The model at `url`: one file, an index, or (in an object store) a prefix holding
 /// model files. `stop` is asked before each request; the open's own stop flag.
 pub(crate) fn read(
+    url: &Path,
+    format: FileFormat,
+    cloud: &crate::config::CloudConfig,
+    runtime: &tokio::runtime::Handle,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<Read, RangeError> {
+    read_from(url, format, cloud, runtime, stop).map_err(|e| match e {
+        RangeError::Failed(what) => RangeError::Failed(file_message(url, &what)),
+        e => e,
+    })
+}
+
+fn read_from(
     url: &Path,
     format: FileFormat,
     cloud: &crate::config::CloudConfig,
@@ -63,10 +77,9 @@ pub(crate) fn read(
         InputSource::S3(_) | InputSource::Gcs(_) | InputSource::Azure(_) => {
             read_cloud(url, format, cloud, runtime, stop)
         }
-        _ => Err(RangeError::Failed(format!(
-            "{} is not a URL datui reads headers from in this build",
-            url.display()
-        ))),
+        _ => Err(RangeError::Failed(
+            "not a URL datui reads model headers from in this build".to_string(),
+        )),
     }
 }
 
@@ -84,7 +97,7 @@ pub(crate) fn fetch_small(
     let _ = (cloud, runtime);
     let named = url.display().to_string();
     if stop() {
-        return Err("stopped".to_string());
+        return Err(file_message(url, "stopped"));
     }
     match source::input_source(url) {
         #[cfg(feature = "http")]
@@ -101,28 +114,33 @@ pub(crate) fn fetch_small(
                 Err(RangeError::NoRanges) => {}
             }
             // A server without ranges: the body as it comes, no further than the cap.
-            let failed = |e: &dyn std::fmt::Display| format!("Could not read {named}: {e}");
+            let named = Path::new(&named);
             let response = agent
                 .get(&url)
                 .header("Accept-Encoding", "identity")
                 .call()
-                .map_err(|e| failed(&e))?;
+                .map_err(|e| file_message(named, &crate::error_display::http_message(&e)))?;
             let mut body = Vec::new();
             response
                 .into_body()
                 .into_reader()
                 .take(cap + 1)
                 .read_to_end(&mut body)
-                .map_err(|e| failed(&e))?;
+                .map_err(|e| file_message(named, &download_stopped(&e)))?;
             Ok((body.len() as u64 <= cap).then_some(body))
         }
         // `az://container/key` names no account and is expanded by the store's setup.
         #[cfg(feature = "cloud")]
         src if source::is_remote_url(url) && !matches!(src, InputSource::Http(_)) => {
-            let (full, _, store) = crate::App::cloud_store_for(url, cloud, runtime)
-                .map_err(|e| format!("Could not read {named}: {e}"))?;
-            let (_, key) = crate::App::cloud_bucket_and_key(&full)
-                .map_err(|e| format!("Could not read {named}: {e}"))?;
+            let said = |e: color_eyre::Report| {
+                file_message(
+                    url,
+                    &crate::error_display::user_message_from_report(&e, None),
+                )
+            };
+            let (full, _, store) =
+                crate::App::cloud_store_for(url, cloud, runtime).map_err(said)?;
+            let (_, key) = crate::App::cloud_bucket_and_key(&full).map_err(said)?;
             let mut object = Object {
                 store,
                 path: crate::cloud_browse::object_path(&key),
@@ -135,7 +153,7 @@ pub(crate) fn fetch_small(
                 Err(RangeError::NoRanges) => Ok(None),
             }
         }
-        _ => Err(format!("{named} is not a URL datui reads in this build")),
+        _ => Err(file_message(url, "not a URL datui reads in this build")),
     }
 }
 
@@ -214,8 +232,7 @@ impl RangeSource for Http {
         use std::io::Read;
         use ureq::ResponseExt;
         let named = self.named.clone();
-        let failed =
-            |e: &dyn std::fmt::Display| RangeError::Failed(format!("Could not read {named}: {e}"));
+        let failed = |what: &str| RangeError::Failed(file_message(Path::new(&named), what));
         // Identity, so a length is the file's and not a compressed body's.
         let response = self
             .agent
@@ -223,7 +240,7 @@ impl RangeSource for Http {
             .header("Range", format!("bytes={start}-{}", end.saturating_sub(1)))
             .header("Accept-Encoding", "identity")
             .call()
-            .map_err(|e| failed(&e))?;
+            .map_err(|e| failed(&crate::error_display::http_message(&e)))?;
         let landed = response.get_uri().to_string();
         let header = |name: &str| {
             response
@@ -249,7 +266,11 @@ impl RangeSource for Http {
                     });
                 match parsed {
                     Some((from, len)) if from == start => len,
-                    Some(_) => return Err(failed(&format!("the server sent {range:?}"))),
+                    Some(_) => {
+                        return Err(failed(&format!(
+                            "the server sent the range \"{range}\", not the one asked for"
+                        )));
+                    }
                     None => return Err(RangeError::NoRanges),
                 }
             }
@@ -268,7 +289,7 @@ impl RangeSource for Http {
             .into_reader()
             .take(end.saturating_sub(start) + 1)
             .read_to_end(&mut body)
-            .map_err(|e| failed(&e))?;
+            .map_err(|e| failed(&download_stopped(&e)))?;
         // A redirect (Hugging Face sends each file to its CDN) is followed once: the
         // ranges after the first go straight to where it led.
         self.url = landed;
@@ -304,7 +325,12 @@ impl RangeSource for Object {
             Ok::<_, object_store::Error>((bytes.to_vec(), len))
         })
         .ok_or_else(|| RangeError::Failed("cancelled".to_string()))?
-        .map_err(|e| RangeError::Failed(format!("Could not read {}: {e}", self.url)))
+        .map_err(|e| {
+            RangeError::Failed(file_message(
+                Path::new(&self.url),
+                &crate::error_display::store_message(&e),
+            ))
+        })
     }
 }
 
@@ -399,7 +425,12 @@ fn list_prefix(
         Ok::<_, object_store::Error>((listed, false))
     })
     .ok_or_else(|| RangeError::Failed("cancelled".to_string()))?
-    .map_err(|e| RangeError::Failed(format!("Could not list {prefix_url}: {e}")))?;
+    .map_err(|e| {
+        RangeError::Failed(file_message(
+            Path::new(prefix_url),
+            &crate::error_display::store_message(&e),
+        ))
+    })?;
     let base = format!("{}/", prefix_url.trim_end_matches('/'));
     let mut urls: Vec<String> = listed
         .into_iter()
@@ -417,12 +448,21 @@ fn list_prefix(
             ),
             false => String::new(),
         };
-        return Err(RangeError::Failed(format!(
-            "{prefix_url} holds no {} files{among}",
-            format.name()
+        return Err(RangeError::Failed(file_message(
+            Path::new(prefix_url),
+            &format!("no {} files{among}", format.name()),
         )));
     }
     Ok((urls, more))
+}
+
+/// A body that stopped partway, said plainly.
+#[cfg(feature = "http")]
+fn download_stopped(e: &std::io::Error) -> String {
+    format!(
+        "the download stopped. {}",
+        crate::error_display::user_message_from_io(e, None)
+    )
 }
 
 #[cfg(all(test, feature = "http"))]
@@ -601,6 +641,80 @@ mod tests {
         }
     }
 
+    /// Every way a remote model, or a format spec fetched for an open, is refused
+    /// names the file in the one shape: the URL asked for, or the shard that failed.
+    #[test]
+    fn errors_name_the_file() {
+        let shard = |json: &str| crate::model_files::tests::safetensors_bytes(json, 0);
+        let index = br#"{"weight_map":{"a":"bad.safetensors"}}"#.to_vec();
+        let (base, _) = scripted(move |request| {
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            match path {
+                "/missing.gguf" => {
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_vec()
+                }
+                "/denied.gguf" => {
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_vec()
+                }
+                "/elsewhere.gguf" => b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-11/64\r\nContent-Length: 8\r\nConnection: close\r\n\r\n01234567".to_vec(),
+                "/m/model.safetensors.index.json" => partial(request, &index),
+                "/m/bad.safetensors" => partial(request, &shard("{nope")),
+                _ => partial(request, b"GGML\x03\0\0\0"),
+            }
+        });
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let reading = |name: &str, format| {
+            let url = format!("{base}/{name}");
+            match read(
+                Path::new(&url),
+                format,
+                &Default::default(),
+                runtime.handle(),
+                &|| false,
+            ) {
+                Err(RangeError::Failed(message)) => message,
+                Err(e) => panic!("{name}: {e:?}"),
+                Ok(_) => panic!("{name} opens"),
+            }
+        };
+        let gguf = FileFormat::Gguf;
+        for (name, format, file, says) in [
+            ("missing.gguf", gguf, "missing.gguf", "No file there (404)"),
+            ("denied.gguf", gguf, "denied.gguf", "refused it (403)"),
+            (
+                "elsewhere.gguf",
+                gguf,
+                "elsewhere.gguf",
+                "not the one asked for",
+            ),
+            ("magic.gguf", gguf, "magic.gguf", "does not start with GGUF"),
+            (
+                "m/model.safetensors.index.json",
+                FileFormat::Safetensors,
+                "m/bad.safetensors",
+                "not valid",
+            ),
+        ] {
+            let message = reading(name, format);
+            eprintln!("{message}");
+            let path = format!("{base}/{file}");
+            crate::readers::bad_input::assert_shape(&message, Path::new(&path));
+            assert!(message.contains(says), "{name}: {message}");
+        }
+        let url = format!("{base}/missing.gguf");
+        let fetched = fetch_small(
+            Path::new(&url),
+            1024,
+            &Default::default(),
+            runtime.handle(),
+            &|| false,
+        );
+        let message = fetched.expect_err("a 404 is refused");
+        crate::readers::bad_input::assert_shape(&message, Path::new(&url));
+    }
+
     /// A sharded checkpoint over HTTP: the index, then each shard in one request of
     /// its first 64 KiB, several under way at once, the table in the index's order.
     #[test]
@@ -716,7 +830,7 @@ mod listing {
         assert!(urls.len() <= 2, "{urls:?}");
         let err = list_prefix("s3://b/m/", &store, &handle, FileFormat::Gguf, 2).unwrap_err();
         assert!(
-            matches!(err, RangeError::Failed(ref m) if m.ends_with(&format!("no {} files among the first 2 objects", FileFormat::Gguf.name()))),
+            matches!(err, RangeError::Failed(ref m) if m.ends_with(&format!("{} files among the first 2 objects.", FileFormat::Gguf.name()))),
             "{err:?}"
         );
     }

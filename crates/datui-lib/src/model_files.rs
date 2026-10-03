@@ -1097,9 +1097,17 @@ pub fn read_remote_model(
     remote: &Remote,
 ) -> std::result::Result<(LazyFrame, ModelSummary), RangeError> {
     let no_ranges = |url: &str| {
-        RangeError::Failed(format!(
-            "{url}: the server does not serve byte ranges, which reading a sharded model's headers needs"
+        RangeError::Failed(crate::error_display::file_message(
+            Path::new(url),
+            "the server does not serve byte ranges, which reading a sharded model's headers needs",
         ))
+    };
+    // Each failure names the file it came from: a shard, or the index naming them.
+    let named = |url: &str, e: RangeError| match e {
+        RangeError::Failed(what) => {
+            RangeError::Failed(crate::error_display::file_message(Path::new(url), &what))
+        }
+        e => e,
     };
     let mut files: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -1107,11 +1115,11 @@ pub fn read_remote_model(
     for url in urls {
         if format == FileFormat::Safetensors && is_safetensors_index(Path::new(url_file_name(url)))
         {
-            let mut src = (remote.open)(url)?;
-            let (names, index_meta) =
-                read_index_ranged(src.as_mut(), url).map_err(|e| match e {
+            let (names, index_meta) = (remote.open)(url)
+                .and_then(|mut src| read_index_ranged(src.as_mut(), url))
+                .map_err(|e| match e {
                     RangeError::NoRanges => no_ranges(url),
-                    e => e,
+                    e => named(url, e),
                 })?;
             merge_metadata(&mut metadata, index_meta);
             for name in names {
@@ -1125,17 +1133,14 @@ pub fn read_remote_model(
         }
     }
     if files.is_empty() {
-        return Err(RangeError::Failed("No model files to read".to_string()));
+        return Err(RangeError::Failed("no model files to read".to_string()));
     }
     // Named on its own, a file the server sends whole is downloaded instead.
     let alone = files.len() == 1 && urls.len() == 1 && files[0] == urls[0];
     let headers = read_headers(&files, format, remote).map_err(|(file, e)| match e {
         RangeError::NoRanges if alone => RangeError::NoRanges,
         RangeError::NoRanges => no_ranges(file),
-        RangeError::Failed(message) if files.len() > 1 => {
-            RangeError::Failed(format!("{}: {message}", url_file_name(file)))
-        }
-        e => e,
+        e => named(file, e),
     })?;
     let names: Vec<String> = files.iter().map(|f| url_file_name(f).to_string()).collect();
     Ok(build(&headers, &names, metadata)?)
@@ -2090,7 +2095,7 @@ pub(crate) mod tests {
             },
         );
         assert!(
-            matches!(read, Err(RangeError::Failed(ref m)) if m.contains("cancelled")),
+            matches!(read, Err(RangeError::Failed(ref m)) if m.to_lowercase().contains("cancelled")),
             "{:?}",
             read.err()
         );
@@ -2310,7 +2315,7 @@ pub(crate) mod tests {
             .err()
             .expect("an error");
         assert!(
-            matches!(err, RangeError::Failed(ref m) if m.starts_with(&names[5])),
+            matches!(err, RangeError::Failed(ref m) if m.starts_with(&format!("\"h/{}\": ", names[5]))),
             "{err:?}"
         );
     }

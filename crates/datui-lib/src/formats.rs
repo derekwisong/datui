@@ -47,17 +47,16 @@ pub struct SpecError {
     pub message: String,
 }
 
+/// Said as every reader error is, with the place in the text a compiler gives:
+/// `"spec.toml":3:7: <what went wrong>.`
 impl std::fmt::Display for SpecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(path) = &self.path {
-            write!(f, "{}:", path.display())?;
-        }
-        if self.line > 0 {
-            write!(f, "{}:{}: ", self.line, self.column)?;
-        } else if self.path.is_some() {
-            f.write_str(" ")?;
-        }
-        f.write_str(&self.message)
+        let at = (self.line > 0).then_some((self.line, self.column));
+        f.write_str(&crate::error_display::located_message(
+            self.path.as_deref(),
+            at,
+            &self.message,
+        ))
     }
 }
 
@@ -3337,7 +3336,10 @@ impl Spec {
                 path: Some(path.to_path_buf()),
                 line: 0,
                 column: 0,
-                message: format!("could not read the spec: {e}"),
+                message: format!(
+                    "could not read it. {}",
+                    crate::error_display::user_message_from_io(&e, None)
+                ),
             })?;
         Self::from_bytes(&bytes, path)
     }
@@ -3352,10 +3354,10 @@ impl Spec {
             message,
         };
         if bytes.len() as u64 > MAX_SPEC_BYTES {
-            return Err(refused(format!("a spec is at most {MAX_SPEC_SAID}")));
+            return Err(refused(format!("a format spec is at most {MAX_SPEC_SAID}")));
         }
-        let text =
-            std::str::from_utf8(bytes).map_err(|_| refused("a spec is UTF-8 text".to_string()))?;
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| refused("not UTF-8 text, which a format spec is".to_string()))?;
         Self::parse(text, Some(from))
     }
 
@@ -5757,7 +5759,8 @@ fields = [
         let e = Spec::parse(text, Some(Path::new("a.toml"))).unwrap_err();
         assert_eq!((e.line, e.column), (3, 32), "{e}");
         assert!(
-            e.to_string().starts_with("a.toml:3:32: type: expected u1"),
+            e.to_string()
+                .starts_with("\"a.toml\":3:32: Type: expected u1"),
             "{e}"
         );
         let e = Spec::parse(
@@ -6095,7 +6098,7 @@ fields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]"#;
         let listing = registry.listing(&path);
         assert!(listing.contains("overrides"), "{listing}");
         assert!(
-            listing.contains("bad.toml:1:8: name: expected a string"),
+            listing.contains("bad.toml\":1:8: Name: expected a string."),
             "{listing}"
         );
     }
@@ -6212,7 +6215,10 @@ fields = [{{ name = "x", type = "u1" }}]"#
             &crate::OpenOptions::default(),
         )
         .unwrap_err();
-        assert!(e.contains("l2.toml:3:10: fields: expected an array"), "{e}");
+        assert!(
+            e.contains("l2.toml\":3:10: Fields: expected an array"),
+            "{e}"
+        );
         assert!(
             check(
                 "acme.nothing",
@@ -6335,7 +6341,11 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
                 1,
             );
             let e = Spec::parse(&text, None).unwrap_err().to_string();
-            assert!(e.contains(said), "{rest}: {e}");
+            // Said as a sentence: its first word capitalized.
+            assert!(
+                e.to_lowercase().contains(&said.to_lowercase()),
+                "{rest}: {e}"
+            );
         }
         // A metadata line below the header lines is fine when it is a comment line.
         let text = format!("{head}header_rows = 2\ncomment = \"#\"\nmetadata_line = 5");
@@ -6495,7 +6505,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         let names: Vec<&str> = registry.fix.iter().map(|f| f.dict.name.as_str()).collect();
         assert_eq!(names, ["FIX44-custom", "acme.fix.broker-x"]);
         assert_eq!(registry.errors.len(), 1, "{:?}", registry.errors);
-        assert!(registry.errors[0].to_string().contains("tags.nine"));
+        assert!(registry.errors[0].to_string().contains("Tags.nine"));
         let listing = registry.listing(&path);
         assert!(listing.contains("Dictionaries (FIX):"), "{listing}");
         assert!(
@@ -6531,6 +6541,6 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             &crate::OpenOptions::default(),
         )
         .unwrap_err();
-        assert!(e.contains("tags.nine"), "{e}");
+        assert!(e.contains("broken.toml\":3:1: Tags.nine"), "{e}");
     }
 }

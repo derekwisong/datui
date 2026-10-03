@@ -909,8 +909,7 @@ fn test_open_s3_url_returns_crash_or_loads() {
     // With cloud feature and valid credentials/bucket, the scan can succeed.
     let _ = app.event(&ended);
     if let Some(message) = app.error_message() {
-        // "Could not read from S3" without credentials; with them, the store's own
-        // error naming the s3:// URL.
+        // Either way, the error names the s3:// URL.
         assert!(
             message.to_lowercase().contains("s3"),
             "error should mention S3: {message}"

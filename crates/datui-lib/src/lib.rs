@@ -13351,6 +13351,10 @@ impl App {
     /// What the control bar says about the follow of the dataset on screen.
     fn follow_mark(&self) -> Option<crate::widgets::controls::FollowMark> {
         use crate::follow::Standing;
+        // The hex view shows a file's bytes, not the table the follow moves.
+        if self.input_mode == InputMode::Hex {
+            return None;
+        }
         let state = self.data_table_state.as_ref()?;
         let rows = |n: usize, what: &str| format!("{} {what}", crate::numfmt::group_chrome(n));
         let (rec, rec_stopped) = match self.recording().map(|spool| recording_label(spool)) {

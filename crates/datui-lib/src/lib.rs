@@ -7858,6 +7858,7 @@ impl App {
         }
         let asked = crate::formats::Asked {
             spec_file: options.spec_file.clone(),
+            spec: options.spec_fetched.clone(),
             spec_name: options.spec_name.clone(),
             compression: options.compression,
             ..Default::default()
@@ -8562,6 +8563,48 @@ impl App {
                     };
                     Ok(Answer::Load(Box::new(LoadAnswer::Spooled {
                         download,
+                        options,
+                    })))
+                });
+            }
+            Step::FetchSpec {
+                url,
+                options,
+                writer,
+            } => {
+                #[cfg(any(feature = "http", feature = "cloud"))]
+                let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
+                self.spawn_job(job, Some("Reading spec..."), move |_| {
+                    #[cfg(any(feature = "http", feature = "cloud"))]
+                    let fetched = crate::remote_model::fetch_small(
+                        &url,
+                        crate::formats::MAX_SPEC_BYTES,
+                        &cloud,
+                        &runtime,
+                        &|| writer.stopped(),
+                    );
+                    #[cfg(not(any(feature = "http", feature = "cloud")))]
+                    let fetched: std::result::Result<Option<Vec<u8>>, String> = {
+                        let _ = &writer;
+                        Err(format!(
+                            "{} is a URL, and this build reads no URLs",
+                            url.display()
+                        ))
+                    };
+                    // The URL in the message may carry a password or a signature.
+                    let bytes = fetched
+                        .map_err(|message| crate::logging::redact(&message, &[]))?
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: a spec is at most {}",
+                                crate::logging::redact(&url.display().to_string(), &[]),
+                                crate::formats::MAX_SPEC_SAID
+                            )
+                        })?;
+                    let spec = crate::formats::Spec::from_bytes(&bytes, &url)
+                        .map_err(|e| crate::logging::redact(&e.to_string(), &[]))?;
+                    Ok(Answer::Load(Box::new(LoadAnswer::SpecFetched {
+                        spec: Arc::new(spec),
                         options,
                     })))
                 });
@@ -10793,7 +10836,7 @@ impl App {
                 spec_file: options.spec_file.clone(),
                 spec_name: options.spec_name.clone(),
                 variant: options.spec_variant.clone(),
-                spec: None,
+                spec: options.spec_fetched.clone(),
                 builtin: options.format.is_some(),
                 compression: options.compression,
                 text_only: paths.len() > 1,
@@ -16055,6 +16098,7 @@ impl App {
                 let options = OpenOptions {
                     spec_name: Some(name),
                     spec_file: None,
+                    spec_fetched: None,
                     spec_variant: None,
                     format_read: None,
                     sqlite: None,

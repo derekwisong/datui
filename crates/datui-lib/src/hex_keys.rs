@@ -454,6 +454,7 @@ impl App {
         let options = crate::OpenOptions {
             hex: false,
             spec_file: None,
+            spec_fetched: None,
             format_read: None,
             format: None,
             ..options

@@ -4,6 +4,7 @@
 datui day.l2                           # a spec on the search path matches it
 datui --format acme.l2feed capture.bin # read it as that spec
 datui --spec l2feed.toml capture.bin   # read it with this spec file
+datui --spec s3://team/l2feed.toml day.bin  # or a spec at a URL
 datui formats                          # list the specs datui finds
 datui formats check acme.l2feed day.l2 # check a spec and print a file's first rows
 ```
@@ -292,7 +293,7 @@ a repository of specs can run it in CI.
 
 | First that applies | |
 |---|---|
-| `--spec FILE` | That spec, whatever the file is called |
+| `--spec FILE` | That spec, whatever the file is called. `FILE` may be an `http(s)://`, `s3://`, `gs://` or `az://` URL, fetched once as the open starts |
 | `--format NAME` | The spec of that name |
 | A name datui already reads (`.csv`, `.parquet`) | Read as it is, as before, unless a [delimited spec](#delimited-text) matches a `.csv`, `.tsv` or `.psv` |
 | A `glob` matches | That spec |
@@ -304,6 +305,8 @@ so one spec per version can share a glob and a magic:
 ```toml
 match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 ```
+
+A spec file is at most 1 MiB.
 
 When two specs match the same way, the first on the search path reads the file.
 The bar shows `2 formats match`, and the Notes tab names the others. A file no

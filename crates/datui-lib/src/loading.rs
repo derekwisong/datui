@@ -242,6 +242,8 @@ pub(crate) enum Phase {
     },
     /// Whether the paths named on the command line are there, and which is a directory.
     LookingAtPaths,
+    /// The spec a `--spec` URL names, fetched before anything is read with it.
+    ReadingSpec,
     /// What a directory named on the command line holds, before it is opened.
     LookingAtDirectory,
     /// A remote model's headers, read by range rather than downloaded.
@@ -299,6 +301,7 @@ impl Phase {
         match self {
             Phase::Starting { label, percent } => (label, *percent),
             Phase::LookingAtPaths => ("Scanning input", 10),
+            Phase::ReadingSpec => ("Reading spec", 5),
             Phase::LookingAtDirectory => (crate::App::LOOKING_AT_A_DIRECTORY, 5),
             #[cfg(any(feature = "http", feature = "cloud"))]
             Phase::ReadingHeaders => ("Reading headers", 20),
@@ -451,6 +454,12 @@ pub(crate) enum Step {
     #[cfg(any(feature = "http", feature = "cloud"))]
     Download {
         pending: PendingDownload,
+        writer: Writer,
+    },
+    /// Fetch the spec at `url`, asking `writer`'s stop flag before the request.
+    FetchSpec {
+        url: PathBuf,
+        options: OpenOptions,
         writer: Writer,
     },
     /// Read standard input to a file through `writer`, counting its bytes in `read`.
@@ -640,6 +649,11 @@ pub(crate) enum LoadAnswer {
     Compressed {
         file: PathBuf,
         path: Option<PathBuf>,
+        options: OpenOptions,
+    },
+    /// The spec a `--spec` URL names, and the open's options to carry it in.
+    SpecFetched {
+        spec: Arc<crate::formats::Spec>,
         options: OpenOptions,
     },
     /// The scan found a compressed file, `file`, that `choice`'s spec reads once it is
@@ -1052,6 +1066,21 @@ impl Loader {
             self.load = None;
             return Step::Crash(message);
         }
+        // A remote spec is fetched once, before any phase reads with it; the open
+        // then starts again from here with it in hand.
+        if let Some(url) = options
+            .spec_file
+            .clone()
+            .filter(|file| options.spec_fetched.is_none() && source::is_remote_url(file))
+        {
+            let load = self.load.as_mut().expect("an open has a load");
+            load.phase = Phase::ReadingSpec;
+            return Step::FetchSpec {
+                url,
+                options,
+                writer: load.writer.clone(),
+            };
+        }
         if stdin::is_stdin(&first) {
             // Read once: opened again (`H`), the copy on hand is read.
             if let Some(kept) = self.kept.clone().filter(|kept| {
@@ -1310,6 +1339,19 @@ impl Loader {
                     writer: load.writer.clone(),
                     download: load.download.as_ref().map(|fetched| fetched.file.clone()),
                 }
+            }
+            (LoadAnswer::SpecFetched { spec, options }, Phase::ReadingSpec) => {
+                let paths = load.paths.clone().unwrap_or_default();
+                if paths.is_empty() {
+                    return Step::Nothing;
+                }
+                self.first_step(
+                    paths,
+                    OpenOptions {
+                        spec_fetched: Some(spec),
+                        ..options
+                    },
+                )
             }
             (
                 LoadAnswer::CompressedRecords {
@@ -2300,6 +2342,46 @@ mod tests {
             answer(&mut loader, id, schema_read("dir")),
             Step::Install(_)
         ));
+    }
+
+    /// `--spec` naming a URL: the spec is fetched first, in a phase of its own, then the
+    /// open goes on as it would have, carrying the spec; a second answer does nothing.
+    #[test]
+    fn a_remote_spec_is_fetched_before_the_open_goes_on() {
+        let spec = Arc::new(
+            crate::formats::Spec::parse(
+                "name = \"t.rec\"\n[records]\nfields = [{ name = \"v\", type = \"u1\" }]\n",
+                None,
+            )
+            .unwrap(),
+        );
+        let options = OpenOptions {
+            spec_file: Some(PathBuf::from("https://example.com/t.toml")),
+            ..OpenOptions::default()
+        };
+        let mut loader = Loader::default();
+        let Step::FetchSpec { url, options, .. } = loader.open(OpenRequest {
+            options,
+            ..request("day.rec")
+        }) else {
+            panic!("the spec is fetched first");
+        };
+        assert_eq!(url, Path::new("https://example.com/t.toml"));
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Reading spec", 5)
+        );
+        let id = loader.id().unwrap();
+        let fetched = || LoadAnswer::SpecFetched {
+            spec: spec.clone(),
+            options: options.clone(),
+        };
+        let Step::Scan { paths, options, .. } = answer(&mut loader, id, fetched()) else {
+            panic!("the open goes on to its scan");
+        };
+        assert_eq!(paths, [PathBuf::from("day.rec")]);
+        assert!(options.spec_fetched.is_some_and(|s| s.name == "t.rec"));
+        assert!(matches!(answer(&mut loader, id, fetched()), Step::Nothing));
     }
 
     /// A compressed file a spec reads is decompressed in a phase of its own, which a

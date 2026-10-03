@@ -145,7 +145,10 @@ pub struct OpenOptions {
     /// by the load, after a conversion or a bucket's listing, never by a request.
     pub arrow_parts: Option<Arc<Vec<crate::ipc_stream::Part>>>,
     /// `--spec FILE`: read the path through this format spec, whatever else matches it.
+    /// A URL is fetched when the open starts, into `spec_fetched`.
     pub spec_file: Option<PathBuf>,
+    /// The spec a remote `spec_file` names, fetched by the open (`Phase::ReadingSpec`).
+    pub spec_fetched: Option<Arc<crate::formats::Spec>>,
     /// `--fix-dict FILE`: a FIX dictionary over the built-in one and the search path's.
     pub fix_dict: Option<PathBuf>,
     /// `--dbc FILE`: a DBC file over the search path's, for a candump log.
@@ -265,6 +268,7 @@ impl OpenOptions {
             typed_dialect: TypedDialect::default(),
             debug: false,
             spec_file: None,
+            spec_fetched: None,
             fix_dict: None,
             dbc: None,
             spec_name: None,

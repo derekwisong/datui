@@ -8,6 +8,8 @@
 //!
 //! An HTTP server that sends the whole file where a range was asked for answers
 //! [`RangeError::NoRanges`], and the open downloads the file instead.
+//!
+//! [`fetch_small`] reads a small remote file whole the same ways: a `--spec` URL.
 
 use std::path::Path;
 
@@ -65,6 +67,75 @@ pub(crate) fn read(
             "{} is not a URL datui reads headers from in this build",
             url.display()
         ))),
+    }
+}
+
+/// The remote file at `url`, whole, or `None` when it is over `cap` bytes: over
+/// HTTP(S) a GET read no further than a byte past `cap`, from a store a ranged GET of
+/// as much.
+pub(crate) fn fetch_small(
+    url: &Path,
+    cap: u64,
+    cloud: &crate::config::CloudConfig,
+    runtime: &tokio::runtime::Handle,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<Option<Vec<u8>>, String> {
+    #[cfg(not(feature = "cloud"))]
+    let _ = (cloud, runtime);
+    let named = url.display().to_string();
+    if stop() {
+        return Err("stopped".to_string());
+    }
+    match source::input_source(url) {
+        #[cfg(feature = "http")]
+        InputSource::Http(url) => {
+            use std::io::Read;
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .timeout_global(Some(std::time::Duration::from_secs(60)))
+                .build()
+                .into();
+            // A range, so a server sends no more than is read.
+            match Http::new(agent.clone(), &url).get(0, cap + 1) {
+                Ok((body, len)) => return Ok((len <= cap).then_some(body)),
+                Err(RangeError::Failed(message)) => return Err(message),
+                Err(RangeError::NoRanges) => {}
+            }
+            // A server without ranges: the body as it comes, no further than the cap.
+            let failed = |e: &dyn std::fmt::Display| format!("Could not read {named}: {e}");
+            let response = agent
+                .get(&url)
+                .header("Accept-Encoding", "identity")
+                .call()
+                .map_err(|e| failed(&e))?;
+            let mut body = Vec::new();
+            response
+                .into_body()
+                .into_reader()
+                .take(cap + 1)
+                .read_to_end(&mut body)
+                .map_err(|e| failed(&e))?;
+            Ok((body.len() as u64 <= cap).then_some(body))
+        }
+        // `az://container/key` names no account and is expanded by the store's setup.
+        #[cfg(feature = "cloud")]
+        src if source::is_remote_url(url) && !matches!(src, InputSource::Http(_)) => {
+            let (full, _, store) = crate::App::cloud_store_for(url, cloud, runtime)
+                .map_err(|e| format!("Could not read {named}: {e}"))?;
+            let (_, key) = crate::App::cloud_bucket_and_key(&full)
+                .map_err(|e| format!("Could not read {named}: {e}"))?;
+            let mut object = Object {
+                store,
+                path: crate::cloud_browse::object_path(&key),
+                runtime: runtime.clone(),
+                url: named.clone(),
+            };
+            match object.get(0, cap + 1) {
+                Ok((bytes, len)) => Ok((len <= cap).then_some(bytes)),
+                Err(RangeError::Failed(message)) => Err(message),
+                Err(RangeError::NoRanges) => Ok(None),
+            }
+        }
+        _ => Err(format!("{named} is not a URL datui reads in this build")),
     }
 }
 

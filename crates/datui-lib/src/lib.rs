@@ -14143,6 +14143,8 @@ impl App {
                 self.events.clone(),
                 options.spool.clone(),
             ));
+            // Counted already, as the scan reads them: no count of its own.
+            state.follow_to(tail.rows(), false);
         }
         // A count still waiting for the last dataset's rows to paint is not owed now.
         self.retire_a_count_the_rows_answered();

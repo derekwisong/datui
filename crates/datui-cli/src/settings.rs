@@ -814,7 +814,10 @@ mod tests {
     fn the_settings_reference_is_current() {
         let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/reference/settings.md");
-        let committed = std::fs::read_to_string(&page).expect("the settings reference");
+        // A Windows checkout may turn line endings into CRLF.
+        let committed = std::fs::read_to_string(&page)
+            .expect("the settings reference")
+            .replace("\r\n", "\n");
         assert!(
             committed == render_settings_markdown(),
             "docs/reference/settings.md is stale: run .venv/bin/python scripts/docs/generate_command_line_options.py --settings -o docs/reference/settings.md"

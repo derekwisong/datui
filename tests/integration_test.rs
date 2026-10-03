@@ -10819,7 +10819,7 @@ fn test_sidebar_filter_applies_on_top_of_query() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("query_then_filter.csv");
 
-    app.event(&AppEvent::Search("select where a < 50".to_string()));
+    app.event(&AppEvent::QQuery("select where a < 50".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 50);
 
@@ -10865,19 +10865,19 @@ fn test_sidebar_filter_applies_on_top_of_query() {
 fn test_q_style_distinct_like_mod_and_xbar() {
     let (mut app, rx, tx) = open_query_filter_fixture("query_q_style_additions.csv");
 
-    app.event(&AppEvent::Search("select distinct c".to_string()));
+    app.event(&AppEvent::QQuery("select distinct c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.as_ref().unwrap().error().is_none());
     assert_eq!(current_rows(&app), 3);
 
     // alpha_0 .. alpha_8, then 0 = (a mod 4) keeps 0, 4 and 8.
-    app.event(&AppEvent::Search(
+    app.event(&AppEvent::QQuery(
         "select where name like \"alpha_?\", 0 = a mod 4".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 3);
 
-    app.event(&AppEvent::Search(
+    app.event(&AppEvent::QQuery(
         "select n: count a by b: 10 xbar a".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -10897,7 +10897,7 @@ fn test_sidebar_filter_and_sort_keep_fuzzy_query() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("fuzzy_then_filter.csv");
 
-    app.event(&AppEvent::FuzzySearch("alpha".to_string()));
+    app.event(&AppEvent::TextQuery("alpha".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 50);
 
@@ -10941,7 +10941,7 @@ fn test_sidebar_filter_keeps_sql_query() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("sql_then_filter.csv");
 
-    app.event(&AppEvent::SqlSearch(
+    app.event(&AppEvent::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -10978,7 +10978,7 @@ fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 34);
 
-    app.event(&AppEvent::SqlSearch(
+    app.event(&AppEvent::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11226,7 +11226,7 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
             .contains("k1")
     );
 
-    app.event(&AppEvent::SqlSearch(
+    app.event(&AppEvent::SqlQuery(
         "SELECT id, k2 FROM df WHERE k1 > 4".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11245,7 +11245,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_down_filter.csv");
 
-    app.event(&AppEvent::Search("select by c".to_string()));
+    app.event(&AppEvent::QQuery("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 3, "one row per group");
 
@@ -11297,7 +11297,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
 fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
     let (mut app, rx, tx) = open_query_filter_fixture("alias_then_fuzzy.csv");
 
-    app.event(&AppEvent::Search("select a, label: name".to_string()));
+    app.event(&AppEvent::QQuery("select a, label: name".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(
         app.data_table_state
@@ -11310,7 +11310,7 @@ fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
         vec!["a", "label"]
     );
 
-    app.event(&AppEvent::FuzzySearch("alpha".to_string()));
+    app.event(&AppEvent::TextQuery("alpha".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -11355,7 +11355,7 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
             .contains("k1")
     );
 
-    app.event(&AppEvent::Search("select id, key".to_string()));
+    app.event(&AppEvent::QQuery("select id, key".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 20);
     assert!(
@@ -11366,7 +11366,7 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
             .is_none()
     );
 
-    app.event(&AppEvent::SqlSearch("SELECT * FROM df".to_string()));
+    app.event(&AppEvent::SqlQuery("SELECT * FROM df".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -11383,7 +11383,7 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sidebar.csv");
 
-    app.event(&AppEvent::Search("select by c".to_string()));
+    app.event(&AppEvent::QQuery("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let statement = filter_stmt("c", FilterOperator::Gt, "0");
     app.event(&AppEvent::Filter(vec![statement.clone()]));
@@ -11465,7 +11465,7 @@ fn test_view_getters_describe_the_grouped_view_while_drilled() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_view_getters.csv");
 
-    app.event(&AppEvent::Search("select by c".to_string()));
+    app.event(&AppEvent::QQuery("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     app.event(&AppEvent::Filter(vec![filter_stmt(
         "c",
@@ -11529,7 +11529,7 @@ fn test_esc_from_a_drill_down_shows_the_grouped_rows() {
     let area = Rect::new(0, 0, 100, 30);
     painted(&mut app, &rx, &tx, area);
 
-    app.event(&AppEvent::Search("select a by c".to_string()));
+    app.event(&AppEvent::QQuery("select a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "c"), ["0", "1", "2"]);
@@ -11570,7 +11570,7 @@ fn test_esc_from_a_drill_down_shows_the_grouped_rows() {
 fn test_drill_into_a_small_group_shows_its_rows() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_small_group.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(&AppEvent::Search("select name by a".to_string()));
+    app.event(&AppEvent::QQuery("select name by a".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert_eq!(on_screen(&app, "a").len(), 27, "a screen of the 100 groups");
@@ -11590,7 +11590,7 @@ fn test_enter_drills_from_an_aggregated_result() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_aggregate.csv");
     let area = Rect::new(0, 0, 100, 30);
 
-    app.event(&AppEvent::Search(
+    app.event(&AppEvent::QQuery(
         "select n: count a, total: sum a by c where a < 30".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11634,7 +11634,7 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
     let csv = "k,v\nx,1\n,2\ny,3\n,4\nx,5\n,6\n";
     let (mut app, rx, tx) = open_csv_with("drill_null_key.csv", csv, OpenOptions::default());
 
-    app.event(&AppEvent::Search("select n: count v by key: k".to_string()));
+    app.event(&AppEvent::QQuery("select n: count v by key: k".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     // Nulls sort last.
     let state = app.data_table_state.as_mut().unwrap();
@@ -11645,7 +11645,7 @@ fn test_drill_from_an_aggregate_by_a_computed_key_and_a_null_key() {
     assert_eq!(df.column("v").unwrap().i64().unwrap().sum(), Some(12));
     state.drill_up().unwrap();
 
-    app.event(&AppEvent::Search(
+    app.event(&AppEvent::QQuery(
         "select n: count v by big: v > 3".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11705,7 +11705,7 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
     ));
 
     for key in ["f", "d", "t", "s", "f, s", "day: d, late: t > 5"] {
-        app.event(&AppEvent::Search(format!("select n: count v by {key}")));
+        app.event(&AppEvent::QQuery(format!("select n: count v by {key}")));
         pump_until_idle(&mut app, &rx, &tx);
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.error().is_none(), "{key}: {:?}", state.error());
@@ -11736,7 +11736,7 @@ fn test_drill_from_an_aggregate_by_typed_keys() {
 fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_from_buffer.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(&AppEvent::Search(
+    app.event(&AppEvent::QQuery(
         "select n: count a, total: sum a by c".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11783,7 +11783,7 @@ fn test_enter_on_an_aggregate_drills_from_the_buffer_or_reads_the_row() {
 fn test_drill_from_a_sorted_aggregate_takes_the_row_on_screen() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sorted_aggregate.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(&AppEvent::Search("select n: count a by c".to_string()));
+    app.event(&AppEvent::QQuery("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     app.event(&AppEvent::Sort(vec!["c".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11807,7 +11807,7 @@ fn test_drill_from_a_sorted_aggregate_takes_the_row_on_screen() {
 fn test_esc_restores_the_grouped_columns_changed_inside_the_drill() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_columns_restored.csv");
     let area = Rect::new(0, 0, 100, 30);
-    app.event(&AppEvent::Search(
+    app.event(&AppEvent::QQuery(
         "select n: count a, total: sum a by c".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -11833,7 +11833,7 @@ fn test_esc_restores_the_grouped_columns_changed_inside_the_drill() {
 fn test_drill_from_lists_keeps_a_null_key_and_names_only_keys() {
     let csv = "k,v\nx,1\n,2\ny,3\n,4\n";
     let (mut app, rx, tx) = open_csv_with("drill_list_null_key.csv", csv, OpenOptions::default());
-    app.event(&AppEvent::Search("select v, n: count v by k".to_string()));
+    app.event(&AppEvent::QQuery("select v, n: count v by k".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_mut().unwrap();
     assert!(state.is_grouped());
@@ -11875,7 +11875,7 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     assert_eq!(app.input_mode, InputMode::Normal);
     assert!(!app.inspector_modal.active);
 
-    app.event(&AppEvent::Search("select n: count a by c".to_string()));
+    app.event(&AppEvent::QQuery("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let grouped = painted(&mut app, &rx, &tx, area);
     assert!(
@@ -11944,7 +11944,7 @@ fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
     assert_eq!(state.lf().clone().collect_schema().unwrap(), schema);
     assert_eq!(current_rows(&app), 3);
 
-    app.event(&AppEvent::Search("select k by x".to_string()));
+    app.event(&AppEvent::QQuery("select k by x".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
     assert!(app.data_table_state.as_ref().unwrap().is_grouped());
@@ -12195,7 +12195,7 @@ fn open_salary_fixture(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Send
 /// Run `sql` as the SQL prompt would and wait for its rows.
 #[cfg(feature = "sql")]
 fn run_sql(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>, sql: &str) {
-    app.event(&AppEvent::SqlSearch(sql.to_string()));
+    app.event(&AppEvent::SqlQuery(sql.to_string()));
     pump_until_idle(app, rx, tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{sql}: {:?}", state.error());
@@ -12512,7 +12512,7 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
     let (mut app, rx, tx) = open_salary_fixture("sql_drill_rollback");
     let failing = "SELECT CAST(dept AS INT) AS dept, COUNT(*) AS n FROM df GROUP BY 1";
     // Over the rows as loaded, the failed statement leaves nothing to drill into.
-    app.event(&AppEvent::SqlSearch(failing.to_string()));
+    app.event(&AppEvent::SqlQuery(failing.to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.modal_showing(), "the failure is said");
     assert!(!app.data_table_state.as_ref().unwrap().can_drill_down());
@@ -12522,7 +12522,7 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
 
     let grouped = "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept";
     run_sql(&mut app, &rx, &tx, grouped);
-    app.event(&AppEvent::SqlSearch(failing.to_string()));
+    app.event(&AppEvent::SqlQuery(failing.to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.modal_showing(), "the failure is said");
     let state = app.data_table_state.as_mut().unwrap();
@@ -12542,7 +12542,7 @@ fn test_a_failed_group_by_leaves_the_grouped_view_drilling_by_its_keys() {
 fn test_sql_inside_a_drill_down_stays_in_the_group() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sql.csv");
 
-    app.event(&AppEvent::Search("select by c".to_string()));
+    app.event(&AppEvent::QQuery("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     app.data_table_state
         .as_mut()
@@ -12552,7 +12552,7 @@ fn test_sql_inside_a_drill_down_stays_in_the_group() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 34);
 
-    app.event(&AppEvent::SqlSearch(
+    app.event(&AppEvent::SqlQuery(
         "SELECT * FROM df WHERE a < 30".to_string(),
     ));
     pump_until_idle(&mut app, &rx, &tx);
@@ -17632,7 +17632,7 @@ fn a_change_of_view_relearns_widths() {
 
     // Same name, same type, other values. The frame drawn while the query reads
     // still holds the old values; they teach the new view nothing.
-    app.event(&AppEvent::Search(
+    app.event(&AppEvent::QQuery(
         "select id, status: description".to_string(),
     ));
     draw(&mut app);
@@ -18303,7 +18303,7 @@ fn test_total_rows_offered_only_under_a_subset() {
     assert_eq!(state.total_rows_when_subset(), None);
 
     // A query is.
-    app.event(&AppEvent::Search("select where a < 50".to_string()));
+    app.event(&AppEvent::QQuery("select where a < 50".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.total_rows_when_subset(), Some(100));
@@ -18358,7 +18358,7 @@ fn i_opens_on_notes_while_they_are_unread() {
 
 fn q_style_config() -> datui::AppConfig {
     let mut config = datui::AppConfig::default();
-    config.query.default_mode = QueryMode::QStyle;
+    config.query.default_mode = QueryMode::Q;
     config
 }
 
@@ -18390,7 +18390,7 @@ fn the_query_prompt_opens_on_sql() {
     #[cfg(feature = "sql")]
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
     #[cfg(not(feature = "sql"))]
-    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Search));
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Text));
 }
 
 /// `[query] default_mode` chooses where `/` opens, read from the config file.
@@ -18399,7 +18399,7 @@ fn the_preferred_query_mode_is_where_the_prompt_opens() {
     let config: datui::AppConfig = toml::from_str("[query]\ndefault_mode = \"q-style\"\n").unwrap();
     let (mut app, _rx, _tx) = open_query_filter_fixture_with("prompt_preferred.csv", config);
     press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(app.query_prompt_mode(), Some(QueryMode::QStyle));
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
 
     // Typed there, a q-style query runs as one.
     for c in "select a where a > 10".chars() {
@@ -18419,30 +18419,25 @@ fn reopening_the_prompt_selects_the_active_query_mode() {
 
     run_and_settle(
         &mut app,
-        AppEvent::Search("select a where a > 10".to_string()),
+        AppEvent::QQuery("select a where a > 10".to_string()),
         &rx,
         &tx,
     );
     press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(app.query_prompt_mode(), Some(QueryMode::QStyle));
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(app.query_prompt_mode(), None);
 
-    run_and_settle(
-        &mut app,
-        AppEvent::FuzzySearch("alpha".to_string()),
-        &rx,
-        &tx,
-    );
+    run_and_settle(&mut app, AppEvent::TextQuery("alpha".to_string()), &rx, &tx);
     press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Search));
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Text));
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
 
     #[cfg(feature = "sql")]
     {
         run_and_settle(
             &mut app,
-            AppEvent::SqlSearch("SELECT a FROM df WHERE a > 90".to_string()),
+            AppEvent::SqlQuery("SELECT a FROM df WHERE a > 90".to_string()),
             &rx,
             &tx,
         );
@@ -18452,7 +18447,7 @@ fn reopening_the_prompt_selects_the_active_query_mode() {
     }
 
     // Clearing the query returns `/` to the default.
-    run_and_settle(&mut app, AppEvent::Search(String::new()), &rx, &tx);
+    run_and_settle(&mut app, AppEvent::QQuery(String::new()), &rx, &tx);
     press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
     assert_eq!(
         app.query_prompt_mode(),
@@ -18473,7 +18468,7 @@ fn ctrl_t_switches_the_query_mode() {
         assert_eq!(app.query_prompt_mode(), Some(mode));
     }
 
-    while app.query_prompt_mode() != Some(QueryMode::Search) {
+    while app.query_prompt_mode() != Some(QueryMode::Text) {
         press_key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
     }
     for c in "alpha".chars() {
@@ -18549,7 +18544,7 @@ fn tab_completes_column_names_in_sql() {
     press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
     press_key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
     press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
-    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Search));
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Text));
 }
 
 /// Alt+Enter breaks the line; Enter runs the statement, line breaks and all.
@@ -18731,7 +18726,7 @@ fn a_query_sent_without_the_prompt_that_fails_leaves_the_view() {
     let (mut app, rx, tx) = open_query_filter_fixture("query_fails_no_prompt.csv");
     run_and_settle(
         &mut app,
-        AppEvent::SqlSearch("SELECT CAST(name AS INT) AS n FROM df".to_string()),
+        AppEvent::SqlQuery("SELECT CAST(name AS INT) AS n FROM df".to_string()),
         &rx,
         &tx,
     );
@@ -19276,7 +19271,7 @@ fn view_and_steps_on_the_next_file(
 fn test_a_view_replays_the_query_before_the_pivot() {
     use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let steps = [
-        AppEvent::SqlSearch("SELECT id, key, val FROM df WHERE id >= 4".to_string()),
+        AppEvent::SqlQuery("SELECT id, key, val FROM df WHERE id >= 4".to_string()),
         AppEvent::Filter(vec![filter_stmt(
             "id",
             datui::filter_modal::FilterOperator::Lt,
@@ -19317,7 +19312,7 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
             aggregation: PivotAggregation::First,
             sort_columns: None,
         }),
-        AppEvent::SqlSearch("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
+        AppEvent::SqlQuery("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
     ];
     let (view, applied, expected) = view_and_steps_on_the_next_file("view_pivot_sql", &steps);
 
@@ -19335,7 +19330,7 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
 fn test_a_view_replays_the_query_before_the_melt() {
     use datui::pivot_melt_modal::MeltSpec;
     let steps = [
-        AppEvent::SqlSearch("SELECT id, val, val * 2 AS doubled FROM df WHERE id < 3".to_string()),
+        AppEvent::SqlQuery("SELECT id, val, val * 2 AS doubled FROM df WHERE id < 3".to_string()),
         AppEvent::Melt(MeltSpec {
             index: vec!["id".to_string()],
             value_columns: vec!["val".to_string(), "doubled".to_string()],
@@ -19361,7 +19356,7 @@ fn test_a_view_replays_the_query_before_the_melt() {
 fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
     use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
     let steps = [
-        AppEvent::SqlSearch("SELECT * FROM df WHERE id >= 4".to_string()),
+        AppEvent::SqlQuery("SELECT * FROM df WHERE id >= 4".to_string()),
         AppEvent::Pivot(PivotSpec {
             index: vec!["id".to_string()],
             pivot_column: "key".to_string(),
@@ -19927,7 +19922,7 @@ fn test_inspector_lists_a_short_row_whole_and_offers_only_keys_that_act() {
 #[test]
 fn test_inspector_title_names_the_group_inside_a_drill() {
     let (mut app, rx, tx) = open_query_filter_fixture("inspect_drill_title.csv");
-    app.event(&AppEvent::Search("select n: count a by c".to_string()));
+    app.event(&AppEvent::QQuery("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, Rect::new(0, 0, 80, 24));
     press_and_send(&mut app, &tx, KeyCode::Enter);
@@ -21232,7 +21227,7 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     let (mut app, rx, tx) = open_wide_table("wide_nav_query.parquet", 40, size);
     press_and_draw(&mut app, KeyCode::Char('}'), size);
     assert_eq!(columns_shown(&app).unwrap().last, 40);
-    app.event(&AppEvent::Search("select id_000, price_001".to_string()));
+    app.event(&AppEvent::QQuery("select id_000, price_001".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     draw_sized(&mut app, size);
     let state = app.data_table_state.as_ref().unwrap();
@@ -21240,7 +21235,7 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
     assert_eq!(state.termcol_index, 0, "the new schema starts at the left");
     assert_eq!(range_shown(&app), Some((1, 2)), "both on screen");
 
-    app.event(&AppEvent::Search("select id_000".to_string()));
+    app.event(&AppEvent::QQuery("select id_000".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     for key in ['[', ']', '{', '}', 'l', 'h'] {
         let screen = press_and_draw(&mut app, KeyCode::Char(key), size);
@@ -21346,7 +21341,7 @@ fn run_query(
     tx: &mpsc::Sender<AppEvent>,
     query: &str,
 ) {
-    app.event(&AppEvent::Search(query.to_string()));
+    app.event(&AppEvent::QQuery(query.to_string()));
     pump_until_idle(app, rx, tx);
     assert_eq!(app.error_message(), None, "{query}");
     let state = app.data_table_state.as_ref().unwrap();
@@ -21840,7 +21835,7 @@ fn test_value_counts_drill_breadcrumb_marks_a_tab() {
 #[test]
 fn test_value_counts_count_the_queried_view() {
     let (mut app, rx, tx) = open_query_filter_fixture("value_counts_query.csv");
-    app.event(&AppEvent::Search("select where a < 10".to_string()));
+    app.event(&AppEvent::QQuery("select where a < 10".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     press_and_send(&mut app, &tx, KeyCode::Right);
     counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));

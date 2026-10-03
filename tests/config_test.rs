@@ -332,8 +332,8 @@ fn test_query_default_mode() {
 
     for (text, mode) in [
         ("sql", QueryMode::Sql),
-        ("search", QueryMode::Search),
-        ("q-style", QueryMode::QStyle),
+        ("search", QueryMode::Text),
+        ("q-style", QueryMode::Q),
     ] {
         let config: AppConfig =
             toml::from_str(&format!("[query]\ndefault_mode = \"{text}\"\n")).unwrap();
@@ -345,10 +345,7 @@ fn test_query_default_mode() {
     // that names the default puts it back.
     let picked = "[query]\ndefault_mode = \"q-style\"\n";
     let silent = "[query]\nhistory_limit = 10\n";
-    assert_eq!(
-        layered(&[picked, silent]).query.default_mode,
-        QueryMode::QStyle
-    );
+    assert_eq!(layered(&[picked, silent]).query.default_mode, QueryMode::Q);
     assert_eq!(
         layered(&[picked, "[query]\ndefault_mode = \"sql\"\n"])
             .query
@@ -487,7 +484,7 @@ cross_filesystems = true
     );
     assert!(!kept.performance.streaming);
     assert_eq!(kept.analysis.quality_local_copy, ByteSize::mib(512));
-    assert_eq!(kept.query.default_mode, QueryMode::Search);
+    assert_eq!(kept.query.default_mode, QueryMode::Text);
     assert!(!kept.query.history);
     assert!(kept.views.auto_apply);
     assert_eq!(kept.clipboard.backend, "osc52");

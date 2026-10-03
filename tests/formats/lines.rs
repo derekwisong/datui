@@ -190,7 +190,7 @@ fn a_query_filters_lines() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "app.log", LOG);
     let (mut app, rx) = open(vec![path], OpenOptions::default());
-    let mut next = Some(AppEvent::Search(
+    let mut next = Some(AppEvent::QQuery(
         "select where line_no > 2, line <> \"\"".to_string(),
     ));
     while let Some(event) = next {

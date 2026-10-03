@@ -1820,9 +1820,9 @@ pub enum QueryMode {
     #[default]
     Sql,
     /// Rows whose text columns contain every word (the fuzzy search).
-    Search,
+    Text,
     /// Datui's q-inspired language.
-    QStyle,
+    Q,
 }
 
 impl QueryMode {
@@ -1831,11 +1831,11 @@ impl QueryMode {
     pub fn available() -> &'static [QueryMode] {
         #[cfg(feature = "sql")]
         {
-            &[QueryMode::Sql, QueryMode::Search, QueryMode::QStyle]
+            &[QueryMode::Sql, QueryMode::Text, QueryMode::Q]
         }
         #[cfg(not(feature = "sql"))]
         {
-            &[QueryMode::Search, QueryMode::QStyle]
+            &[QueryMode::Text, QueryMode::Q]
         }
     }
 
@@ -1844,15 +1844,15 @@ impl QueryMode {
         if Self::available().contains(&self) {
             self
         } else {
-            QueryMode::Search
+            QueryMode::Text
         }
     }
 
     pub fn title(self) -> &'static str {
         match self {
             QueryMode::Sql => "SQL",
-            QueryMode::Search => "Search",
-            QueryMode::QStyle => "q-style",
+            QueryMode::Text => "Search",
+            QueryMode::Q => "q-style",
         }
     }
 

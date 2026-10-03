@@ -590,7 +590,7 @@ fn a_query_whose_rows_worker_dies_rolls_back() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let shown = sorted_and_filtered(&mut app, &rx, &tx);
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
-    app.event(&AppEvent::Search("select id where val > 5".to_string()));
+    app.event(&AppEvent::QQuery("select id where val > 5".to_string()));
     assert!(app.query_running.is_some(), "the query planned");
     pump_with_dying_rows(&mut app, &rx, &tx);
 
@@ -1104,7 +1104,7 @@ fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
     let counting = state.len_generation();
     app.len_count_inflight = Some(counting);
 
-    app.event(&AppEvent::SqlSearch(
+    app.event(&AppEvent::SqlQuery(
         "SELECT CAST(name AS INT) AS n FROM df".to_string(),
     ));
     assert!(app.query_running.is_some());
@@ -1304,7 +1304,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
     for (step, fails, steps) in cases {
         let (mut app, rx, tx, _dir) = long_csv_app();
         // The view it is applied over: a query, a sort and a filter, a selection.
-        app.event(&AppEvent::Search(
+        app.event(&AppEvent::QQuery(
             "select id, key, val where val >= 0".to_string(),
         ));
         super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));

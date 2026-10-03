@@ -55,7 +55,7 @@ impl Harness {
     /// Loaded, with `/` preferring the q-style mode.
     fn q_style() -> Self {
         let mut h = Self::with_data();
-        h.app.app_config.query.default_mode = crate::QueryMode::QStyle;
+        h.app.app_config.query.default_mode = crate::QueryMode::Q;
         h
     }
 
@@ -495,7 +495,7 @@ fn each_query_tab_keeps_its_own_value() {
     h.press(KeyCode::Tab);
     assert_eq!(h.app.query_focus, crate::QueryFocus::TabBar);
     h.press(KeyCode::Left);
-    assert_eq!(h.app.query_mode, crate::QueryMode::Search);
+    assert_eq!(h.app.query_mode, crate::QueryMode::Text);
 
     h.press(KeyCode::Tab);
     assert_eq!(h.app.query_focus, crate::QueryFocus::Input);
@@ -509,7 +509,7 @@ fn each_query_tab_keeps_its_own_value() {
     h.press(KeyCode::Tab);
     h.press(KeyCode::Right);
     h.press(KeyCode::Tab);
-    assert_eq!(h.app.query_mode, crate::QueryMode::QStyle);
+    assert_eq!(h.app.query_mode, crate::QueryMode::Q);
     assert_eq!(h.app.query_input.value(), "select name");
     assert_eq!(h.app.fuzzy_input.value(), "ada");
 }
@@ -535,8 +535,8 @@ fn ctrl_t_cycles_the_mode_without_leaving_the_input() {
     h.type_str("d");
     let typed = match first {
         crate::QueryMode::Sql => &h.app.sql_input,
-        crate::QueryMode::Search => &h.app.fuzzy_input,
-        crate::QueryMode::QStyle => &h.app.query_input,
+        crate::QueryMode::Text => &h.app.fuzzy_input,
+        crate::QueryMode::Q => &h.app.query_input,
     };
     assert_eq!(typed.value(), "abcd");
 }
@@ -575,7 +575,7 @@ fn a_search_that_ran_says_how_many_rows_matched() {
         csv.push_str(&format!("\nalan{i},{i}"));
     }
     let mut h = Harness::with_csv(&csv);
-    h.app.app_config.query.default_mode = crate::QueryMode::Search;
+    h.app.app_config.query.default_mode = crate::QueryMode::Text;
     h.press(KeyCode::Char('/'));
     h.type_str("al");
     // The rows on screen with their count still out: more rows match than the first
@@ -594,7 +594,7 @@ fn a_search_that_ran_says_how_many_rows_matched() {
         ))),
         |_| true,
     );
-    assert_eq!(h.app.query_mode, crate::QueryMode::Search);
+    assert_eq!(h.app.query_mode, crate::QueryMode::Text);
     // Until the count settles there is nothing to claim.
     assert!(!screen(&mut h.app).contains(" match"));
     for event in count {
@@ -615,7 +615,7 @@ fn a_search_that_ran_says_how_many_rows_matched() {
 #[test]
 fn a_search_that_fits_on_a_page_is_counted_by_its_rows() {
     let mut h = Harness::with_data();
-    h.app.app_config.query.default_mode = crate::QueryMode::Search;
+    h.app.app_config.query.default_mode = crate::QueryMode::Text;
     h.press(KeyCode::Char('/'));
     h.type_str("al");
     let counts = h.run_holding(

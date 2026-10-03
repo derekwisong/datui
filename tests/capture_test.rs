@@ -46,7 +46,7 @@ fn capture_returns_the_whole_table_without_internal_columns() {
 #[test]
 fn capture_reflects_the_applied_query() {
     let (mut app, rx) = open_fixture("people.parquet");
-    app.event(&AppEvent::Search("select where age < 30".to_string()));
+    app.event(&AppEvent::QQuery("select where age < 30".to_string()));
     drain_events(&mut app, &rx);
 
     let expected = app

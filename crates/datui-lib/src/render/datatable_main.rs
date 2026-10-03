@@ -26,7 +26,7 @@ pub fn render(
     );
     let input_strip_visible = main_view_content == MainViewContent::Datatable
         && app.input_mode == crate::InputMode::Editing;
-    let prompt = app.input_type == Some(crate::InputType::Search);
+    let prompt = app.input_type == Some(crate::InputType::Query);
     let finding = app.input_type == Some(crate::InputType::Find);
     let error = if prompt {
         app.query_prompt_error()

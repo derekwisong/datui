@@ -121,7 +121,7 @@ fn a_journal_has_time_level_and_readable_messages_first() {
 #[test]
 fn level_filters_and_sorts_by_severity() {
     let (mut app, rx) = open(vec![PathBuf::from(FIXTURE)], OpenOptions::default());
-    let mut next = Some(AppEvent::Search(
+    let mut next = Some(AppEvent::QQuery(
         "select level, MESSAGE where level <= \"err\"".to_string(),
     ));
     while let Some(event) = next {

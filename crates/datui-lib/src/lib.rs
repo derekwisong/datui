@@ -430,9 +430,9 @@ pub enum AppEvent {
     Followed(crate::follow::News),
     Exit,
     Crash(String),
-    Search(String),
-    SqlSearch(String),
-    FuzzySearch(String),
+    QQuery(String),
+    SqlQuery(String),
+    TextQuery(String),
     Filter(Vec<FilterStatement>),
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
@@ -721,7 +721,7 @@ pub enum InputMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputType {
-    Search,
+    Query,
     GoToLine,
     Find,
 }
@@ -12643,7 +12643,7 @@ impl App {
             }
             KeyCode::Char('/') => {
                 self.input_mode = InputMode::Editing;
-                self.input_type = Some(InputType::Search);
+                self.input_type = Some(InputType::Query);
                 self.query_mode = self.opening_query_mode();
                 self.query_focus = QueryFocus::Input;
                 self.query_run_error = None;
@@ -14112,16 +14112,16 @@ impl App {
                 self.job_progress(*ticket, progress);
                 None
             }
-            AppEvent::Search(query) => {
-                self.run_query(QueryMode::QStyle, query, "Applying query...");
+            AppEvent::QQuery(query) => {
+                self.run_query(QueryMode::Q, query, "Applying query...");
                 None
             }
-            AppEvent::SqlSearch(sql) => {
+            AppEvent::SqlQuery(sql) => {
                 self.run_query(QueryMode::Sql, sql, "Applying SQL query...");
                 None
             }
-            AppEvent::FuzzySearch(query) => {
-                self.run_query(QueryMode::Search, query, "Searching...");
+            AppEvent::TextQuery(query) => {
+                self.run_query(QueryMode::Text, query, "Searching...");
                 None
             }
             AppEvent::Filter(statements) => {
@@ -17792,7 +17792,7 @@ impl App {
 
     /// The query prompt's mode while it is open.
     pub fn query_prompt_mode(&self) -> Option<QueryMode> {
-        (self.input_mode == InputMode::Editing && self.input_type == Some(InputType::Search))
+        (self.input_mode == InputMode::Editing && self.input_type == Some(InputType::Query))
             .then_some(self.query_mode)
     }
 
@@ -17803,9 +17803,9 @@ impl App {
             if !state.get_active_sql_query().trim().is_empty() {
                 Some(QueryMode::Sql)
             } else if !state.get_active_fuzzy_query().trim().is_empty() {
-                Some(QueryMode::Search)
+                Some(QueryMode::Text)
             } else if !state.get_active_query().trim().is_empty() {
-                Some(QueryMode::QStyle)
+                Some(QueryMode::Q)
             } else {
                 None
             }
@@ -17871,8 +17871,8 @@ impl App {
     pub fn query_prompt_text(&self) -> Option<&str> {
         Some(match self.query_prompt_mode()? {
             QueryMode::Sql => self.sql_input.value(),
-            QueryMode::Search => self.fuzzy_input.value(),
-            QueryMode::QStyle => self.query_input.value(),
+            QueryMode::Text => self.fuzzy_input.value(),
+            QueryMode::Q => self.query_input.value(),
         })
     }
 
@@ -17910,8 +17910,8 @@ impl App {
         // A query that cannot be planned changes nothing and leaves its error showing.
         state.deferred(|s| match mode {
             QueryMode::Sql => s.sql_query(text.to_string()),
-            QueryMode::QStyle => s.query(text.to_string()),
-            QueryMode::Search => s.fuzzy_search(text.to_string()),
+            QueryMode::Q => s.query(text.to_string()),
+            QueryMode::Text => s.fuzzy_search(text.to_string()),
         });
         if state.error().is_some() {
             return;
@@ -17962,9 +17962,8 @@ impl App {
         let mode = self.query_mode;
         self.sql_input.set_focused(input && mode == QueryMode::Sql);
         self.fuzzy_input
-            .set_focused(input && mode == QueryMode::Search);
-        self.query_input
-            .set_focused(input && mode == QueryMode::QStyle);
+            .set_focused(input && mode == QueryMode::Text);
+        self.query_input.set_focused(input && mode == QueryMode::Q);
     }
 
     /// Esc from anywhere in the prompt: nothing runs and nothing typed survives.
@@ -18004,7 +18003,7 @@ impl App {
         let (title, content) = match self.input_mode {
             InputMode::Normal => ("Table Help", help_strings::main_view()),
             InputMode::Editing => match self.input_type {
-                Some(InputType::Search) => ("Query Help", help_strings::query()),
+                Some(InputType::Query) => ("Query Help", help_strings::query()),
                 Some(InputType::Find) => ("Find Help", help_strings::find()),
                 _ => ("Go to Line", help_strings::go_to_line()),
             },

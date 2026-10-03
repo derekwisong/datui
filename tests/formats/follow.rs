@@ -129,7 +129,7 @@ fn a_query_runs_over_the_new_rows() {
     let (mut app, rx) = app();
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
     screen(&mut app);
-    let mut next = Some(AppEvent::Search(
+    let mut next = Some(AppEvent::QQuery(
         "select where level = \"error\"".to_string(),
     ));
     while let Some(event) = next {

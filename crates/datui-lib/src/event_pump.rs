@@ -883,7 +883,7 @@ mod tests {
 
         let mut pump = pump();
         // The queries typed here are q-style.
-        pump.app.app_config.query.default_mode = crate::QueryMode::QStyle;
+        pump.app.app_config.query.default_mode = crate::QueryMode::Q;
         pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
             .unwrap();
         settle(&mut pump);
@@ -1525,7 +1525,7 @@ mod tests {
     #[test]
     fn a_drill_whose_read_dies_flashes_one_line_and_the_next_one_drills() {
         let (mut p, _dir) = loaded_pump();
-        p.send(AppEvent::Search("select n: count age by name".to_string()))
+        p.send(AppEvent::QQuery("select n: count age by name".to_string()))
             .unwrap();
         settle(&mut p);
         // With the key hidden the buffer cannot say which group a row is, so Enter
@@ -1850,12 +1850,12 @@ mod tests {
         p.app.busy = false;
         settle(&mut p);
 
-        let mode = crate::QueryMode::QStyle.next();
+        let mode = crate::QueryMode::Q.next();
         assert_eq!(p.app.query_prompt_mode(), Some(mode));
         let typed = match mode {
             crate::QueryMode::Sql => &p.app.sql_input,
-            crate::QueryMode::Search => &p.app.fuzzy_input,
-            crate::QueryMode::QStyle => &p.app.query_input,
+            crate::QueryMode::Text => &p.app.fuzzy_input,
+            crate::QueryMode::Q => &p.app.query_input,
         };
         assert_eq!(typed.value(), "ada");
         assert_eq!(p.app.query_input.value(), "");
@@ -2259,7 +2259,7 @@ mod tests {
         p.terminal_key(plain(KeyCode::Esc)).unwrap();
         assert_eq!(p.app.input_mode, InputMode::Normal);
 
-        p.send(AppEvent::Search("select n: count age by name".to_string()))
+        p.send(AppEvent::QQuery("select n: count age by name".to_string()))
             .unwrap();
         settle(&mut p);
         rendered(&mut p.app);

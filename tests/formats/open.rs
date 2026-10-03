@@ -3,6 +3,7 @@
 
 use super::*;
 use datui::formats::{Registry, Spec};
+use std::sync::Arc;
 
 const L2: &str = r#"
 name = "acme.l2feed"
@@ -325,19 +326,21 @@ fn time_a_large_file() {
         .records
         .clone();
     let started = std::time::Instant::now();
-    let window = records.window(rows - 50, 50).unwrap();
+    let window = records.window(rows - 50, 50).unwrap().collect().unwrap();
     let windowed = started.elapsed();
     let started = std::time::Instant::now();
-    let sliced = records
-        .lazy()
+    let sliced = Arc::clone(&records)
+        .into_lazy()
+        .unwrap()
         .slice((rows - 50) as i64, 50)
         .collect()
         .unwrap();
     let full = started.elapsed();
     assert!(window.equals_missing(&sliced));
     let started = std::time::Instant::now();
-    let price = records
-        .lazy()
+    let price = Arc::clone(&records)
+        .into_lazy()
+        .unwrap()
         .select([col("price").cast(DataType::Float64).sum()])
         .collect()
         .unwrap();
@@ -349,7 +352,7 @@ fn time_a_large_file() {
     );
     // Queries as the app runs them, streaming asked for: time and the most anonymous
     // memory held while each ran (the map's pages are the file's, not counted).
-    let lf = records.lazy();
+    let lf = Arc::clone(&records).into_lazy().unwrap();
     let queries: [(&str, LazyFrame); 5] = [
         (
             "filter and count",

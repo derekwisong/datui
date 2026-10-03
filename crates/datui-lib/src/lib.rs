@@ -83,6 +83,7 @@ mod first_rows_trace;
 pub mod fix;
 pub mod fixed_records;
 pub mod formats;
+pub mod framed_records;
 pub mod fuzzy;
 #[cfg(feature = "cloud")]
 pub mod gcloud;
@@ -8574,6 +8575,8 @@ pub struct OpenOptions {
     pub fix_dict: Option<PathBuf>,
     /// The format spec named by `--format NAME`, or picked with `b`.
     pub spec_name: Option<String>,
+    /// `--variant NAME`: one variant of the spec's records, read alone.
+    pub spec_variant: Option<String>,
     /// The spec a compressed file was matched to, read once the file is decompressed.
     pub spec_choice: Option<crate::formats::Choice>,
     /// What a read through a format spec found, carried from the scan to the dataset.
@@ -8652,6 +8655,7 @@ impl OpenOptions {
             spec_file: None,
             fix_dict: None,
             spec_name: None,
+            spec_variant: None,
             spec_choice: None,
             format_read: None,
             normalize: false,
@@ -8773,6 +8777,7 @@ impl OpenOptions {
             .and_then(|f| f.spec().map(str::to_string));
         opts.spec_file = args.spec.clone();
         opts.fix_dict = args.fix_dict.clone();
+        opts.spec_variant = args.variant.clone();
 
         // Display options: CLI args override config
         opts.pages_lookahead = args
@@ -19591,6 +19596,7 @@ impl App {
             let asked = crate::formats::Asked {
                 spec_file: options.spec_file.clone(),
                 spec_name: options.spec_name.clone(),
+                variant: options.spec_variant.clone(),
                 spec: None,
                 builtin: options.format.is_some(),
                 compression: options.compression,
@@ -19604,7 +19610,7 @@ impl App {
                     return Self::read_with_delimited_spec(paths, options, report, formats, choice);
                 }
                 crate::formats::Route::Read(read) => {
-                    let lf = read.records.lazy();
+                    let lf = Arc::clone(&read.records).into_lazy()?;
                     report.format_read = Some(Arc::new(*read));
                     return Ok(lf.into());
                 }
@@ -27419,6 +27425,7 @@ impl App {
                 let options = OpenOptions {
                     spec_name: Some(name),
                     spec_file: None,
+                    spec_variant: None,
                     spec_choice: None,
                     format_read: None,
                     sqlite: None,

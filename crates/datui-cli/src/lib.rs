@@ -559,6 +559,9 @@ pub struct Args {
     /// Read a FIX log with this dictionary too, over the built-in one and those on the format search path: a QuickFIX XML data dictionary, or TOML with kind = "fix"
     #[arg(long = "fix-dict", value_name = "FILE", help_heading = "Reading")]
     pub fix_dict: Option<std::path::PathBuf>,
+    /// Read one variant of a binary format spec's records alone, as its own table: only its records, and only its columns
+    #[arg(long = "variant", value_name = "NAME", help_heading = "Reading")]
+    pub variant: Option<String>,
 
     /// Enable debug mode to show operational information
     #[arg(long = "debug", action)]

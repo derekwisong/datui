@@ -195,6 +195,7 @@ mod tests {
             cloud_discover: None,
             spec: None,
             fix_dict: None,
+            variant: None,
             command: None,
             polars_streaming: None,
             workaround_pivot_date_index: None,

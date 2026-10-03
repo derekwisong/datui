@@ -84,12 +84,18 @@ pub enum Physical {
     Unsigned(u8),
     /// A two's-complement integer of 1 to 8 bytes.
     Signed(u8),
-    /// An IEEE float of 4 or 8 bytes.
+    /// An IEEE float of 2 (half), 4 or 8 bytes.
     Float(u8),
+    /// A bfloat16: the top half of an `f4`.
+    BFloat16,
     /// One byte, nonzero for true.
     Bool,
     /// Text, its padding (NUL and spaces) trimmed from the right.
     Text,
+    /// Text in ISO 8859-1, one byte a character, trimmed as `Text` is.
+    Latin1,
+    /// Text in UTF-16, two bytes a unit, trimmed as `Text` is.
+    Utf16 { big_endian: bool },
     /// Raw bytes.
     Raw,
 }
@@ -100,7 +106,8 @@ impl Physical {
         match self {
             Self::Unsigned(n) | Self::Signed(n) | Self::Float(n) => Some(n as usize),
             Self::Bool => Some(1),
-            Self::Text | Self::Raw => None,
+            Self::BFloat16 => Some(2),
+            Self::Text | Self::Latin1 | Self::Utf16 { .. } | Self::Raw => None,
         }
     }
 
@@ -118,10 +125,10 @@ impl Physical {
             Self::Signed(2) => DataType::Int16,
             Self::Signed(3 | 4) => DataType::Int32,
             Self::Signed(_) => DataType::Int64,
-            Self::Float(4) => DataType::Float32,
+            Self::Float(2 | 4) | Self::BFloat16 => DataType::Float32,
             Self::Float(_) => DataType::Float64,
             Self::Bool => DataType::Boolean,
-            Self::Text => DataType::String,
+            Self::Text | Self::Latin1 | Self::Utf16 { .. } => DataType::String,
             Self::Raw => DataType::Binary,
         }
     }
@@ -170,6 +177,8 @@ pub enum Logical {
     Linear { factor: f64, offset: f64 },
     /// A code and its label; a code with no label reads as its number.
     Enum(Arc<BTreeMap<i64, String>>),
+    /// An index into a list of symbols, as a categorical; one past the list is null.
+    Lookup(Arc<Vec<String>>),
 }
 
 /// One column: where its values are and how to read them.
@@ -222,6 +231,7 @@ impl ColumnLayout {
             Logical::Decimal { scale } => DataType::Decimal(38, *scale),
             Logical::Linear { .. } => DataType::Float64,
             Logical::Enum(_) => DataType::String,
+            Logical::Lookup(_) => DataType::from_categories(Categories::global()),
             Logical::Plain => self.physical.plain_dtype(),
         }
     }
@@ -278,8 +288,8 @@ impl ColumnLayout {
         }
         if let Physical::Float(n) = self.physical {
             polars_ensure!(
-                n == 4 || n == 8,
-                ComputeError: "column {}: a float is 4 or 8 bytes", self.name
+                n == 2 || n == 4 || n == 8,
+                ComputeError: "column {}: a float is 2, 4 or 8 bytes", self.name
             );
         }
         Ok(())
@@ -442,14 +452,16 @@ fn decode_values<'a>(
                 .collect();
             integers(column, ints)
         }
-        Physical::Float(width) => {
+        Physical::Float(_) | Physical::BFloat16 => {
+            let physical = column.physical;
             let floats: Vec<Option<f64>> = (0..n)
                 .map(|i| {
                     let raw = read_unsigned(at(i), big);
-                    let v = if width == 4 {
-                        f64::from(f32::from_bits(raw as u32))
-                    } else {
-                        f64::from_bits(raw)
+                    let v = match physical {
+                        Physical::Float(2) => f64::from(half::f16::from_bits(raw as u16)),
+                        Physical::BFloat16 => f64::from(half::bf16::from_bits(raw as u16)),
+                        Physical::Float(4) => f64::from(f32::from_bits(raw as u32)),
+                        _ => f64::from_bits(raw),
                     };
                     let null = match column.null {
                         Some(Null::NaN) => v.is_nan(),
@@ -459,10 +471,19 @@ fn decode_values<'a>(
                     (!null).then_some(v)
                 })
                 .collect();
+            let width = physical.width().unwrap_or(8) as u8;
             floats_of(column, width, floats)
         }
         Physical::Text => {
             let values: StringChunked = (0..n).map(|i| Some(text(at(i)))).collect();
+            Ok(values.into_series())
+        }
+        Physical::Latin1 => {
+            let values: StringChunked = (0..n).map(|i| Some(latin1(at(i)))).collect();
+            Ok(values.into_series())
+        }
+        Physical::Utf16 { big_endian } => {
+            let values: StringChunked = (0..n).map(|i| Some(utf16(at(i), big_endian))).collect();
             Ok(values.into_series())
         }
         Physical::Raw => {
@@ -545,6 +566,15 @@ fn integers(column: &ColumnLayout, ints: Vec<Option<i128>>) -> PolarsResult<Seri
             .map(|v| v.map(|v| v as f64 * factor + offset))
             .collect::<Float64Chunked>()
             .into_series(),
+        Logical::Lookup(symbols) => ints
+            .into_iter()
+            .map(|v| {
+                let i = usize::try_from(v?).ok()?;
+                symbols.get(i).map(String::as_str)
+            })
+            .collect::<StringChunked>()
+            .into_series()
+            .cast(&DataType::from_categories(Categories::global()))?,
         Logical::Enum(labels) => ints
             .into_iter()
             .map(|v| {
@@ -572,7 +602,7 @@ fn floats_of(column: &ColumnLayout, width: u8, floats: Vec<Option<f64>>) -> Pola
             ns_per_unit,
             epoch_ns,
         } => float_timestamps(floats.into_iter(), *ns_per_unit, *epoch_ns),
-        _ if width == 4 => floats
+        _ if width <= 4 => floats
             .into_iter()
             .map(|v| v.map(|v| v as f32))
             .collect::<Float32Chunked>()
@@ -616,6 +646,36 @@ pub fn text(bytes: &[u8]) -> String {
         .rposition(|&b| b != 0 && b != b' ')
         .map_or(0, |i| i + 1);
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+/// Text from a fixed-width ISO 8859-1 field, padding trimmed as [`text`] trims it.
+pub fn latin1(bytes: &[u8]) -> String {
+    let end = bytes
+        .iter()
+        .rposition(|&b| b != 0 && b != b' ')
+        .map_or(0, |i| i + 1);
+    bytes[..end].iter().map(|&b| char::from(b)).collect()
+}
+
+/// Text from a fixed-width UTF-16 field, NUL and space units trimmed from the right.
+/// An odd last byte and unpaired surrogates read as the replacement character.
+pub fn utf16(bytes: &[u8], big_endian: bool) -> String {
+    let mut units: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| {
+            if big_endian {
+                u16::from_be_bytes(pair)
+            } else {
+                u16::from_le_bytes(pair)
+            }
+        })
+        .collect();
+    while units.last().is_some_and(|&u| u == 0 || u == 0x20) {
+        units.pop();
+    }
+    String::from_utf16_lossy(&units)
 }
 
 /// Bytes as space-separated hex pairs.

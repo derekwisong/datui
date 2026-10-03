@@ -775,8 +775,8 @@ scan data values to find the columns.
 | An unreadable footer | Skips that file |
 
 The [Info panel](dataset-info.md) reports the metadata scope. Above 20,000
-files, datui samples evenly across the file list. A cloud dataset may also
-start with a partial schema while the remaining footers load.
+files, datui samples evenly across the file list. A dataset of more than 64
+files may also start with a partial schema while the remaining footers load.
 
 When all file row counts are known, empty cells distinguish three cases:
 
@@ -809,18 +809,19 @@ rows from files where `n` has an incompatible type. Queries in the
 file-level rule. Missing-column (`·`) rows remain during sorting; filters
 handle missing values as nulls.
 
-### How large remote datasets open
+### How large datasets open
 
-Cloud directories with more than 64 files open using the first and last files
-by name, then read the remaining footers in the background. New columns join
-the end of the table as they are found. Until then:
+Directories with more than 64 Parquet files, local or in the cloud, open using
+the first and last files by name, then read the remaining footers in the
+background. New columns join the end of the table, and the total row count
+arrives, when they land. Until then:
 
 - The total row count is unavailable and empty cells display as `∅`.
 - Notes state the partial metadata scope.
 - A query, pivot or drill-down defers the new columns until you return to the original data.
 
-Local directories read metadata before opening. Above 20,000 files, both
-routes use a sample. The control bar reports footer-reading progress.
+Above 20,000 files the background pass reads a sample. The control bar
+reports footer-reading progress.
 
 The Notes tab also flags storage layouts that may explain a slow open:
 
@@ -835,9 +836,10 @@ single-file schema inference. That route also omits the partition-key check.
 
 ### Opening it again
 
-Remote schema metadata is cached by URL. Datui still lists the files to check
-for changes to names, sizes, timestamps or etags. A changed listing triggers
-fresh metadata reads.
+Schema metadata of a remote dataset, or of a local directory of more than 64
+files, is cached by URL or path. Datui still lists the files to check for
+changes to names, sizes, timestamps or etags. An unchanged listing opens with
+no footer reads; a changed one triggers fresh metadata reads.
 
 `--clear-cache` clears this metadata along with other cached state, including
 query history. See [cache contents](home-screen.md#what-datui-remembers).

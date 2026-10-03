@@ -41,10 +41,10 @@ aggregate the period first to chart every step of it.
   place, a page at a time, with the sidebar's sort and filters run in SQLite; an
   index on the column makes them fast. See
   [formats](../user-guide/loading-data.md#formats).
-- A local Parquet directory normally reads file footers to combine schemas.
-  Beyond 20,000 files the schema uses sampled footers. Large cloud directories
-  can open before the background footer pass finishes. See
-  [multi-file loading](../user-guide/loading-data.md#how-large-remote-datasets-open).
+- A Parquet directory reads file footers to combine schemas and count rows.
+  Beyond 64 files it opens before the background footer pass finishes, and
+  beyond 20,000 the pass uses sampled footers. See
+  [multi-file loading](../user-guide/loading-data.md#how-large-datasets-open).
 - Parquet in object storage uses range reads. Supported remote CSV and JSONL
   directories scan in place; HTTP and other download routes fetch the file
   first. See [remote data](../user-guide/remote-data.md).

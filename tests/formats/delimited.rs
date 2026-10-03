@@ -379,3 +379,49 @@ fn format_name_reads_a_file_its_magic_does_not_match() {
         "{notes:?}"
     );
 }
+
+const SEMICOLON_SPEC: &str = r##"
+name = "acme.semicolons"
+kind = "delimited"
+match = { magic = "#semi" }
+
+delimiter = ";"
+comment_char = "#"
+"##;
+
+/// A flag typed on the command line wins over the spec's option; one only in the
+/// options (config) loses to it (#651).
+#[test]
+fn a_typed_delimiter_wins_over_the_spec() {
+    let path = common::fixture_dir().join("delimited_spec_typed.csv");
+    std::fs::write(&path, "#semi\na,b;c\n1,2;3\n").unwrap();
+    let opened = |options: OpenOptions| {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        app.set_formats(Registry::of(vec![
+            Spec::parse(SEMICOLON_SPEC, None).unwrap(),
+        ]));
+        pump_open_until_loaded(&mut app, &rx, vec![path.clone()], options);
+        assert!(app.error_message().is_none(), "{:?}", app.error_message());
+        collected(&app)
+            .get_column_names()
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(opened(OpenOptions::default()), ["a,b", "c"], "the spec's ;");
+    let configured = OpenOptions {
+        delimiter: Some(b','),
+        ..OpenOptions::default()
+    };
+    assert_eq!(opened(configured), ["a,b", "c"], "untyped, the spec wins");
+    let typed = OpenOptions {
+        delimiter: Some(b','),
+        typed_dialect: datui::TypedDialect {
+            delimiter: true,
+            ..Default::default()
+        },
+        ..OpenOptions::default()
+    };
+    assert_eq!(opened(typed), ["a", "b;c"], "typed, the flag wins");
+}

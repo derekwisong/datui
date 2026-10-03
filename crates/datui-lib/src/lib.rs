@@ -8436,6 +8436,29 @@ pub enum ParseStringsTarget {
     Columns(Vec<String>),
 }
 
+/// Which CSV dialect options were typed on the command line. A delimited spec's
+/// options replace config values but not these (#651).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TypedDialect {
+    pub delimiter: bool,
+    pub comment_char: bool,
+    pub skip_initial_space: bool,
+    pub header_rows: bool,
+    pub skip_lines: bool,
+}
+
+impl TypedDialect {
+    pub fn from_args(args: &cli::Args) -> Self {
+        Self {
+            delimiter: args.delimiter.is_some(),
+            comment_char: args.comment_char.is_some(),
+            skip_initial_space: args.skip_initial_space.is_some(),
+            header_rows: !args.header_rows.is_empty(),
+            skip_lines: args.skip_lines.is_some(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenOptions {
     pub delimiter: Option<u8>,
@@ -8530,6 +8553,8 @@ pub struct OpenOptions {
     pub header_join: String,
     /// Ignore the spaces after a CSV delimiter (`skipInitialSpace`).
     pub skip_initial_space: bool,
+    /// Which dialect options were typed on the command line, so a spec leaves them.
+    pub typed_dialect: TypedDialect,
     /// When true, show the debug overlay (session info, performance, query, etc.).
     pub debug: bool,
     /// What a SafeTensors or GGUF header said besides its tensors: its metadata and
@@ -8623,6 +8648,7 @@ impl OpenOptions {
             header_rows: Vec::new(),
             header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
             skip_initial_space: false,
+            typed_dialect: TypedDialect::default(),
             debug: false,
             spec_file: None,
             fix_dict: None,
@@ -8815,6 +8841,7 @@ impl OpenOptions {
             .skip_initial_space
             .or(config.file_loading.skip_initial_space)
             .unwrap_or(false);
+        opts.typed_dialect = TypedDialect::from_args(args);
 
         opts.parse_strings_sample_rows = config
             .file_loading

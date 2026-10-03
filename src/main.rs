@@ -15,7 +15,7 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
                 std::process::exit(1);
             }
         };
-        let (text, code) = datui::formats::command(action.as_ref(), &config);
+        let (text, code) = datui::formats::command(action.as_ref(), args, &config);
         if code == 0 {
             print!("{text}");
         } else {

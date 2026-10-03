@@ -470,6 +470,32 @@ fn decode_values<'a>(
             Physical::Signed(8) => Some(Series::new(name.clone(), native!(i64))),
             Physical::Float(4) => Some(Series::new(name.clone(), native!(f32))),
             Physical::Float(8) => Some(Series::new(name.clone(), native!(f64))),
+            // Odd widths straight into the type they widen to: through `i128` and a
+            // cast they took four times as long as a native width (#662).
+            Physical::Unsigned(3) => Some(Series::new(
+                name.clone(),
+                (0..n)
+                    .map(|i| read_unsigned(at(i), big) as u32)
+                    .collect::<Vec<u32>>(),
+            )),
+            Physical::Unsigned(5..=7) => Some(Series::new(
+                name.clone(),
+                (0..n)
+                    .map(|i| read_unsigned(at(i), big))
+                    .collect::<Vec<u64>>(),
+            )),
+            Physical::Signed(3) => Some(Series::new(
+                name.clone(),
+                (0..n)
+                    .map(|i| read_signed(at(i), big) as i32)
+                    .collect::<Vec<i32>>(),
+            )),
+            Physical::Signed(5..=7) => Some(Series::new(
+                name.clone(),
+                (0..n)
+                    .map(|i| read_signed(at(i), big))
+                    .collect::<Vec<i64>>(),
+            )),
             _ => None,
         };
         if let Some(series) = fast {
@@ -915,6 +941,41 @@ mod tests {
         )
     }
 
+    /// How long each integer width takes to decode, odd widths beside native ones:
+    /// `cargo test --release -p datui-lib --lib fixed_records::tests::time_integer_widths
+    /// -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a timing, not a check"]
+    fn time_integer_widths() {
+        const ROWS: usize = 10_000_000;
+        const STRIDE: usize = 16;
+        let bytes: Vec<u8> = (0..ROWS * STRIDE).map(|i| (i * 31 % 251) as u8).collect();
+        for physical in [
+            Physical::Unsigned(2),
+            Physical::Unsigned(3),
+            Physical::Unsigned(4),
+            Physical::Signed(3),
+            Physical::Unsigned(5),
+            Physical::Signed(6),
+            Physical::Unsigned(8),
+        ] {
+            for big_endian in [false, true] {
+                let layout = ColumnLayout {
+                    big_endian,
+                    ..column("v", 1, STRIDE, physical)
+                };
+                let started = std::time::Instant::now();
+                let decoded = decode(&bytes, &layout, ROWS).unwrap();
+                println!(
+                    "{physical:?} {}: {:?} ({})",
+                    if big_endian { "be" } else { "le" },
+                    started.elapsed(),
+                    decoded.dtype()
+                );
+            }
+        }
+    }
+
     #[test]
     fn strided_columns_decode_in_both_byte_orders() {
         // Two records of (u16, i32): 1, -2 then 3, -4, little endian.
@@ -962,6 +1023,20 @@ mod tests {
         s3.null = Some(Null::Min);
         let df = records(bytes, vec![s3], usize::MAX).collect(9).unwrap();
         assert_eq!(df.column("s").unwrap().null_count(), 1);
+        // Five-byte unsigned big-endian and six-byte signed, each its own fast path.
+        let u5 = ColumnLayout {
+            big_endian: true,
+            ..column("u5", 0, 11, Physical::Unsigned(5))
+        };
+        let s6 = column("s6", 5, 11, Physical::Signed(6));
+        let mut bytes = vec![0x01, 0, 0, 0, 0x02];
+        bytes.extend((-3i64).to_le_bytes()[..6].iter());
+        let df = records(bytes, vec![u5, s6], 1).collect(1).unwrap();
+        assert_eq!(
+            df.column("u5").unwrap().u64().unwrap().get(0),
+            Some(0x01_0000_0002)
+        );
+        assert_eq!(df.column("s6").unwrap().i64().unwrap().get(0), Some(-3));
         let mut u2 = column("u", 0, 2, Physical::Unsigned(2));
         u2.null = Some(Null::Max);
         let df = records(vec![0xff, 0xff, 1, 0], vec![u2], usize::MAX)

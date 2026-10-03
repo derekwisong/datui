@@ -27,7 +27,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--null-value <VAL>` | Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount= |
 | `--compression <COMPRESSION>` | Compression format, when the extension does not say (default: auto-detected from the extension) |
 | `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, or the name of a binary format spec such as acme.l2feed |
-| `--spec <FILE>` | Read the file (or directory of column files) through this binary format spec, whatever else matches it |
+| `--spec <FILE>` | Read the file (or directory of column files) through this binary format spec, whatever else matches it. FILE may be an http(s), s3, gs or az URL; a spec is at most 1 MiB |
 | `--dbc <FILE>` | Decode a candump log's frames with this DBC file too, over those on the format search path: a .dbc file, or TOML with kind = "dbc" |
 | `--fix-dict <FILE>` | Read a FIX log with this dictionary too, over the built-in one and those on the format search path: a QuickFIX XML data dictionary, or TOML with kind = "fix" |
 | `--variant <NAME>` | Read one variant of a binary format spec's records alone, as its own table: only its records, and only its columns |

@@ -145,7 +145,10 @@ pub struct OpenOptions {
     /// by the load, after a conversion or a bucket's listing, never by a request.
     pub arrow_parts: Option<Arc<Vec<crate::ipc_stream::Part>>>,
     /// `--spec FILE`: read the path through this format spec, whatever else matches it.
+    /// A URL is fetched when the open starts, into `spec_fetched`.
     pub spec_file: Option<PathBuf>,
+    /// The spec a remote `spec_file` names, fetched by the open (`Phase::ReadingSpec`).
+    pub spec_fetched: Option<Arc<crate::formats::Spec>>,
     /// `--fix-dict FILE`: a FIX dictionary over the built-in one and the search path's.
     pub fix_dict: Option<PathBuf>,
     /// `--dbc FILE`: a DBC file over the search path's, for a candump log.
@@ -154,8 +157,6 @@ pub struct OpenOptions {
     pub spec_name: Option<String>,
     /// `--variant NAME`: one variant of the spec's records, read alone.
     pub spec_variant: Option<String>,
-    /// The spec a compressed file was matched to, read once the file is decompressed.
-    pub spec_choice: Option<crate::formats::Choice>,
     /// What a read through a format spec found, carried from the scan to the dataset.
     pub format_read: Option<Arc<crate::formats::Read>>,
     /// What the open did to the rows its reader gave — CSV column names trimmed, text
@@ -267,11 +268,11 @@ impl OpenOptions {
             typed_dialect: TypedDialect::default(),
             debug: false,
             spec_file: None,
+            spec_fetched: None,
             fix_dict: None,
             dbc: None,
             spec_name: None,
             spec_variant: None,
-            spec_choice: None,
             format_read: None,
             normalize: false,
             sqlite: None,

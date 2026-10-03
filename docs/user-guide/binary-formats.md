@@ -4,6 +4,7 @@
 datui day.l2                           # a spec on the search path matches it
 datui --format acme.l2feed capture.bin # read it as that spec
 datui --spec l2feed.toml capture.bin   # read it with this spec file
+datui --spec s3://team/l2feed.toml day.bin  # or a spec at a URL
 datui formats                          # list the specs datui finds
 datui formats check acme.l2feed day.l2 # check a spec and print a file's first rows
 ```
@@ -292,7 +293,7 @@ a repository of specs can run it in CI.
 
 | First that applies | |
 |---|---|
-| `--spec FILE` | That spec, whatever the file is called |
+| `--spec FILE` | That spec, whatever the file is called. `FILE` may be an `http(s)://`, `s3://`, `gs://` or `az://` URL, fetched once as the open starts |
 | `--format NAME` | The spec of that name |
 | A name datui already reads (`.csv`, `.parquet`) | Read as it is, as before, unless a [delimited spec](#delimited-text) matches a `.csv`, `.tsv` or `.psv` |
 | A `glob` matches | That spec |
@@ -304,6 +305,8 @@ so one spec per version can share a glob and a magic:
 ```toml
 match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 ```
+
+A spec file is at most 1 MiB.
 
 When two specs match the same way, the first on the search path reads the file.
 The bar shows `2 formats match`, and the Notes tab names the others. A file no
@@ -462,8 +465,9 @@ fields = [{ name = "px", type = "f8", offset = "header.px_off" }]
 ## Compressed files
 
 `day.l2.zst`, `.gz`, `.bz2` and `.xz` are decompressed to a temporary file before
-they are read. The glob matches the name without the compression suffix, and
-magic is read from the decompressed bytes.
+they are read: the loading screen says `Decompressing`, then `Reading records`,
+and Esc stops either. The glob matches the name without the compression suffix,
+and magic is read from the decompressed bytes.
 
 ## Large files
 
@@ -471,7 +475,9 @@ Read: [lazy, or converted once when compressed](loading-data.md#how-each-format-
 
 A file is memory-mapped, and only the columns and rows on screen are decoded.
 Records that are not all one size, and blocks, are indexed by one pass when the
-file opens.
+file opens. That pass keeps where each record starts (5 bytes a record, up to
+64M records), so a query reads every column from there rather than walking the
+records again, and a file opened again with the same spec is not walked again.
 Scrolling to the last row of a gigabyte file reads only the rows shown. A sort,
 filter, query, chart or analysis reads every row of the columns it uses, a batch
 at a time on the streaming engine (`[performance] polars_streaming`, on by

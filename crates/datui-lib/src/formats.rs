@@ -586,6 +586,12 @@ pub enum Expected {
     Text(String),
 }
 
+/// The most a spec file may hold, local or remote: far more than any spec needs, and
+/// a bound on what `--spec` reads before it knows what it read.
+pub const MAX_SPEC_BYTES: u64 = 1 << 20;
+/// [`MAX_SPEC_BYTES`], as the user is told it.
+pub const MAX_SPEC_SAID: &str = "1 MiB";
+
 /// One format, as its spec describes it.
 #[derive(Debug, Clone)]
 pub struct Spec {
@@ -3343,15 +3349,36 @@ impl Spec {
         self.delimited.is_some()
     }
 
-    /// Read the spec in `path`.
+    /// Read the spec in `path`, which may be no more than [`MAX_SPEC_BYTES`].
     pub fn load(path: &Path) -> Result<Self, SpecError> {
-        let text = std::fs::read_to_string(path).map_err(|e| SpecError {
-            path: Some(path.to_path_buf()),
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .and_then(|f| f.take(MAX_SPEC_BYTES + 1).read_to_end(&mut bytes))
+            .map_err(|e| SpecError {
+                path: Some(path.to_path_buf()),
+                line: 0,
+                column: 0,
+                message: format!("could not read the spec: {e}"),
+            })?;
+        Self::from_bytes(&bytes, path)
+    }
+
+    /// The spec in `bytes`, read from `from` (a file or a URL), refused past
+    /// [`MAX_SPEC_BYTES`].
+    pub fn from_bytes(bytes: &[u8], from: &Path) -> Result<Self, SpecError> {
+        let refused = |message: String| SpecError {
+            path: Some(from.to_path_buf()),
             line: 0,
             column: 0,
-            message: format!("could not read the spec: {e}"),
-        })?;
-        Self::parse(&text, Some(path))
+            message,
+        };
+        if bytes.len() as u64 > MAX_SPEC_BYTES {
+            return Err(refused(format!("a spec is at most {MAX_SPEC_SAID}")));
+        }
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| refused("a spec is UTF-8 text".to_string()))?;
+        Self::parse(text, Some(from))
     }
 
     /// Whether `path`'s name matches one of the spec's globs. A glob with a `/` is
@@ -4112,13 +4139,15 @@ impl Spec {
     }
 
     /// Read `bytes`, one file, named `named` in what it says; a symbol list a field
-    /// names is looked for in `dir`.
+    /// names is looked for beside `path`, the file the bytes are, which also keeps the
+    /// walk of its records for the next open of it.
     pub fn open_rows_in(
         &self,
         bytes: Arc<Bytes>,
         named: &str,
-        dir: Option<&Path>,
+        path: Option<&Path>,
     ) -> Result<Opened, String> {
+        let dir = path.and_then(Path::parent);
         if self.reads_directory() {
             return Err(format!(
                 "{} reads a directory ({}); open the directory",
@@ -4164,6 +4193,7 @@ impl Spec {
                 &header,
                 header.size as usize..len as usize,
                 named,
+                path,
             )?;
             notes.extend(more);
             return Ok(Opened {
@@ -4399,7 +4429,7 @@ impl Spec {
             ));
         }
         let bytes = Bytes::map(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        self.open_rows_in(Arc::new(bytes), named, path.parent())
+        self.open_rows_in(Arc::new(bytes), named, Some(path))
     }
 }
 
@@ -4846,7 +4876,7 @@ pub struct Asked {
     pub spec_file: Option<PathBuf>,
     /// `--format NAME`, or the spec picked in the view.
     pub spec_name: Option<String>,
-    /// A spec already chosen, for a file decompressed before it is read.
+    /// The spec `spec_file` names, read already: fetched, when it is remote.
     pub spec: Option<Arc<Spec>>,
     /// `--variant NAME`: one variant of the spec's records, read alone.
     pub variant: Option<String>,
@@ -4892,10 +4922,16 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
     let explicit = if let Some(spec) = &asked.spec {
         Some(Choice {
             spec: spec.clone(),
-            by: Chosen::Named,
+            by: Chosen::SpecFile,
             also: Vec::new(),
         })
     } else if let Some(file) = &asked.spec_file {
+        if crate::source::is_remote_url(file) {
+            return Err(format!(
+                "{}: a remote spec is fetched by the open, and was not",
+                file.display()
+            ));
+        }
         let spec = Spec::load(file).map_err(|e| e.to_string())?;
         Some(Choice {
             spec: Arc::new(spec),

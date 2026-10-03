@@ -202,7 +202,7 @@ pub struct Args {
     #[arg(long = "format", value_name = "FORMAT", value_parser = parse_format, help = format_help(), help_heading = "Reading")]
     pub format: Option<FormatChoice>,
 
-    /// Read the file (or directory of column files) through this binary format spec, whatever else matches it
+    /// Read the file (or directory of column files) through this binary format spec, whatever else matches it. FILE may be an http(s), s3, gs or az URL; a spec is at most 1 MiB
     #[arg(long = "spec", value_name = "FILE", help_heading = "Reading")]
     pub spec: Option<std::path::PathBuf>,
 

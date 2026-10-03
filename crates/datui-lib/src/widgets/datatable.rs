@@ -4625,40 +4625,17 @@ impl DataTableState {
         Self::from_delimited(path, b',', options)
     }
 
-    /// A compressed file a format spec reads: decompressed to a temporary file the
-    /// state holds, then read through the spec chosen for it (`options.spec_choice`).
-    pub(crate) fn from_compressed_spec(
+    /// `path` decompressed to a temporary copy in `temp_dir`, written through `writer`:
+    /// a stopped open stops the copy, and quitting removes it.
+    pub(crate) fn decompress_to_copy(
         path: &Path,
-        named: &str,
-        options: &OpenOptions,
+        compression: CompressionFormat,
+        temp_dir: &Path,
         writer: &Writer,
-    ) -> Result<(Self, Arc<crate::formats::Read>)> {
-        let choice = options
-            .spec_choice
-            .clone()
-            .ok_or_else(|| color_eyre::eyre::eyre!("no format spec was chosen"))?;
-        let compression = options
-            .compression
-            .or_else(|| CompressionFormat::from_extension(path))
-            .ok_or_else(|| color_eyre::eyre::eyre!("{named} is not compressed"))?;
-        let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-        let temp = Self::decompress_compressed_csv_to_temp(path, compression, &temp_dir, writer)?;
-        let read = crate::formats::read(temp.path(), named, choice)
-            .map_err(|e| color_eyre::eyre::eyre!(e))?;
-        let read = Arc::new(read);
-        let mut state = Self::new(
-            Arc::clone(&read.records).into_lazy()?,
-            options.pages_lookahead,
-            options.pages_lookback,
-            options.max_buffered_rows,
-            options.max_buffered_mb,
-            options.polars_streaming,
-        )?;
-        state.row_numbers = options.row_numbers;
-        state.row_start_index = options.row_start_index;
-        // The records map the copy; it goes when the state does.
-        state.decompress_temp_file = Some(Arc::new(temp));
-        Ok((state, read))
+    ) -> Result<crate::download::TempDownload> {
+        let Decompressed { file, _claim } =
+            Self::decompress_compressed_csv_to_temp(path, compression, temp_dir, writer)?;
+        Ok(crate::download::TempDownload::held(file, Some(_claim)))
     }
 
     /// As [`Self::from_delimited`], for an open: a compressed file is decompressed

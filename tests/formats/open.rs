@@ -109,6 +109,148 @@ fn a_spec_file_opens_a_binary_file_and_scrolls_to_its_last_row() {
     assert!(!last.contains(" S0 "), "{last}");
 }
 
+/// A spec too large to be one is refused before it is parsed, local or remote.
+#[test]
+fn a_spec_over_a_mebibyte_is_refused() {
+    let dir = common::fixture_dir();
+    let spec_path = dir.join("spec_too_large.toml");
+    let mut text = L2.to_string();
+    text.push_str(&format!("# {}\n", "x".repeat(1 << 20)));
+    std::fs::write(&spec_path, text).unwrap();
+    let data = dir.join("spec_too_large.dat");
+    std::fs::write(&data, l2_bytes(3)).unwrap();
+    let (mut app, rx, _tx) = app_with(Vec::new());
+    let options = OpenOptions {
+        spec_file: Some(spec_path),
+        ..OpenOptions::default()
+    };
+    let message = pump_open_until_error(&mut app, &rx, vec![data], options).unwrap();
+    assert!(message.contains("at most 1 MiB"), "{message}");
+}
+
+/// `--spec` naming a URL: the spec is fetched from S3 or an HTTP server (the
+/// in-process stand-in, `common/fake_s3.rs`) once, as the open starts, and the local
+/// file is read with it as with a spec on disk. One over 1 MiB is not read past it.
+#[cfg(all(feature = "cloud", feature = "http"))]
+mod remote_spec {
+    use super::{L2, common, l2_bytes, notes, pump_open_until_error};
+    use crate::common::pump_open_until_loaded;
+    use crate::fake_s3::FakeS3;
+    use datui::{App, AppConfig, AppEvent, OpenOptions};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+
+    fn app(s3: &FakeS3) -> (App, mpsc::Receiver<AppEvent>) {
+        let config = AppConfig {
+            cloud: s3.cloud_config(),
+            ..AppConfig::default()
+        };
+        let theme = datui::Theme::from_config(&config.theme).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let app = App::new_with_config(tx, common::test_runtime(), theme, config);
+        (app, rx)
+    }
+
+    fn serve(spec: &str) -> FakeS3 {
+        FakeS3::serve(
+            "specs",
+            BTreeMap::from([("acme/l2feed.toml".to_string(), spec.as_bytes().to_vec())]),
+        )
+    }
+
+    fn open_with(s3: &FakeS3, url: String, name: &str) -> App {
+        let data = common::fixture_dir().join(name);
+        std::fs::write(&data, l2_bytes(40)).unwrap();
+        let (mut app, rx) = app(s3);
+        let options = OpenOptions {
+            spec_file: Some(PathBuf::from(url)),
+            ..OpenOptions::default()
+        };
+        pump_open_until_loaded(&mut app, &rx, vec![data], options);
+        app
+    }
+
+    fn read_with_the_spec(app: &App) {
+        assert!(app.error_message().is_none(), "{:?}", app.error_message());
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.num_rows(), 40);
+        assert_eq!(state.format_read().unwrap().spec.name, "acme.l2feed");
+        assert!(
+            notes(app)
+                .iter()
+                .any(|n| n == "read as acme.l2feed, chosen by --spec"),
+            "{:?}",
+            notes(app)
+        );
+    }
+
+    #[test]
+    fn a_spec_in_s3_reads_a_local_file() {
+        let s3 = serve(L2);
+        let app = open_with(
+            &s3,
+            "s3://specs/acme/l2feed.toml".into(),
+            "remote_spec_s3.dat",
+        );
+        read_with_the_spec(&app);
+        assert_eq!(s3.wire.count().gets, 1, "fetched once");
+    }
+
+    #[test]
+    fn a_spec_over_http_reads_a_local_file() {
+        let s3 = serve(L2);
+        let url = format!("{}/specs/acme/l2feed.toml", s3.endpoint);
+        let app = open_with(&s3, url.clone(), "remote_spec_http.dat");
+        read_with_the_spec(&app);
+        assert_eq!(s3.wire.count().gets, 1, "fetched once");
+        // A server that sends whole files where a range is asked for.
+        s3.whole_files();
+        let app = open_with(&s3, url, "remote_spec_http_whole.dat");
+        read_with_the_spec(&app);
+    }
+
+    #[test]
+    fn a_remote_spec_over_a_mebibyte_is_not_read_past_it() {
+        let mut big = L2.to_string();
+        big.push_str(&format!("# {}\n", "x".repeat(2 << 20)));
+        let s3 = serve(&big);
+        for url in [
+            "s3://specs/acme/l2feed.toml".to_string(),
+            format!("{}/specs/acme/l2feed.toml", s3.endpoint),
+        ] {
+            let data = common::fixture_dir().join("remote_spec_big.dat");
+            std::fs::write(&data, l2_bytes(3)).unwrap();
+            let (mut app, rx) = app(&s3);
+            let options = OpenOptions {
+                spec_file: Some(PathBuf::from(&url)),
+                ..OpenOptions::default()
+            };
+            let message = pump_open_until_error(&mut app, &rx, vec![data], options).unwrap();
+            assert!(message.contains("at most 1 MiB"), "{url}: {message}");
+        }
+        assert!(
+            s3.wire.count().bytes < 3 << 20,
+            "{:?}: no more than the cap and a little past it each time",
+            s3.wire.count()
+        );
+    }
+
+    #[test]
+    fn a_missing_remote_spec_fails_the_open() {
+        let s3 = serve(L2);
+        let data = common::fixture_dir().join("remote_spec_missing.dat");
+        std::fs::write(&data, l2_bytes(3)).unwrap();
+        let (mut app, rx) = app(&s3);
+        let options = OpenOptions {
+            spec_file: Some(PathBuf::from("s3://specs/acme/nope.toml")),
+            ..OpenOptions::default()
+        };
+        let message = pump_open_until_error(&mut app, &rx, vec![data], options).unwrap();
+        assert!(message.contains("nope.toml"), "{message}");
+    }
+}
+
 #[test]
 fn a_glob_match_reads_the_file_and_a_tie_is_said_and_picked_from() {
     let dir = common::fixture_dir();
@@ -485,6 +627,101 @@ fn itch_bytes(pairs: u64, tail: &[u8]) -> Vec<u8> {
     }
     out.extend(tail);
     out
+}
+
+/// Times queries over a large file of [`ITCH`] messages, which are walked rather than
+/// read at a stride: `DATUI_BENCH_ITCH=~/tmp/big.itch cargo test --release --test
+/// integration_test formats_open::time_a_large_framed_file -- --ignored --nocapture`
+#[test]
+#[ignore = "needs a large generated file"]
+fn time_a_large_framed_file() {
+    let Some(path) = std::env::var_os("DATUI_BENCH_ITCH").map(PathBuf::from) else {
+        return;
+    };
+    let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);
+    let started = std::time::Instant::now();
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    let opened = started.elapsed();
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let records = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .format_read()
+        .unwrap()
+        .records
+        .clone();
+    let lf = Arc::clone(&records).into_lazy().unwrap();
+    let names: Vec<String> = lf
+        .clone()
+        .collect_schema()
+        .unwrap()
+        .iter_names()
+        .map(|n| n.to_string())
+        .collect();
+    println!("open to first page {opened:?}; columns {names:?}");
+    let each = |names: &[String]| -> Vec<Expr> {
+        names.iter().map(|n| col(n.as_str()).null_count()).collect()
+    };
+    // The best of three runs, so a busy machine says less.
+    let best = |query: &LazyFrame| -> (std::time::Duration, u64) {
+        (0..3)
+            .map(|_| {
+                with_peak_anon(|| {
+                    datui::statistics::collect_lazy(query.clone(), true).unwrap();
+                })
+            })
+            .min()
+            .unwrap()
+    };
+    let mut one_by_one = std::time::Duration::ZERO;
+    for name in &names {
+        let (took, _) = best(&lf.clone().select(each(std::slice::from_ref(name))));
+        println!("null count of {name}: {took:?}");
+        one_by_one += took;
+    }
+    println!("columns one at a time: {one_by_one:?}");
+    let queries = |lf: &LazyFrame| -> [(&str, LazyFrame); 3] {
+        [
+            (
+                "null count of every column",
+                lf.clone().select(each(&names)),
+            ),
+            (
+                "filter on price, every column of the rows kept",
+                lf.clone()
+                    .filter(col("price").cast(DataType::Float64).gt(lit(100.0)))
+                    .select(each(&names)),
+            ),
+            (
+                "sort by ref, top 10",
+                lf.clone()
+                    .sort(
+                        ["ref"],
+                        SortMultipleOptions::default().with_order_descending(true),
+                    )
+                    .limit(10),
+            ),
+        ]
+    };
+    for (name, query) in queries(&lf) {
+        let (took, peak) = best(&query);
+        println!("{name}: {took:?}, peak anonymous memory {} MiB", peak >> 20);
+    }
+    // The same queries over the table decoded whole into memory first.
+    let mut whole = None;
+    let (took, peak) = with_peak_anon(|| {
+        whole = Some(datui::statistics::collect_lazy(lf.clone(), true).unwrap());
+    });
+    println!(
+        "decoded whole: {took:?}, peak anonymous memory {} MiB",
+        peak >> 20
+    );
+    let in_memory = whole.unwrap().lazy();
+    for (name, query) in queries(&in_memory) {
+        let (took, _) = best(&query);
+        println!("in memory, {name}: {took:?}");
+    }
 }
 
 #[test]

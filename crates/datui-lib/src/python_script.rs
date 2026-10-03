@@ -476,6 +476,10 @@ pub struct OpenRecord<'a> {
     /// The paths asked for; `None` for a frame handed over.
     pub paths: Option<&'a [PathBuf]>,
     pub options: &'a OpenOptions,
+    /// The format the open read, after sniffing and spec matching: what the scan
+    /// chose, which the name may not say (a `.bin` DataFlash log, a part file with no
+    /// extension). Before `--format` and the extension.
+    pub format: Option<FileFormat>,
     /// The data as loaded.
     pub schema: &'a Schema,
     /// Each object a remote dataset reads, for the format of a prefix.
@@ -516,10 +520,10 @@ fn without_secrets(url: &str) -> (String, bool) {
     (kept, cut)
 }
 
-/// The format a file is read as: `--format`, else its extension, looking through a
-/// compression extension (`.csv.gz` is CSV).
-fn file_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
-    options.format.or_else(|| {
+/// The format a file is read as: what the open read, else `--format`, else its
+/// extension, looking through a compression extension (`.csv.gz` is CSV).
+fn file_format(path: &Path, record: &OpenRecord) -> Option<FileFormat> {
+    record.format.or(record.options.format).or_else(|| {
         FileFormat::from_path(path).or_else(|| {
             CompressionFormat::from_extension(path)
                 .and_then(|_| path.file_stem())
@@ -561,7 +565,7 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
     let text = path.to_string_lossy().to_string();
     if is_url(path) {
         let (text, _) = without_secrets(&text);
-        if let Some(format) = file_format(Path::new(&text), record.options) {
+        if let Some(format) = file_format(Path::new(&text), record) {
             let pattern = crate::source::has_glob_chars(Path::new(&text));
             return Some(Target {
                 text,
@@ -573,8 +577,8 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
         }
         // A prefix: scanned whole, in the format of what it holds.
         let format = record
-            .options
             .format
+            .or(record.options.format)
             .or_else(|| commonest_format(record.remote_objects.iter().map(String::as_str)))?;
         let base = text.trim_end_matches('/');
         let ext = format_extension(format)?;
@@ -602,8 +606,8 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
         }
         let has_dirs = entries.iter().any(|e| e.path().is_dir());
         let format = record
-            .options
             .format
+            .or(record.options.format)
             .or_else(|| commonest_format(names.iter().map(String::as_str)));
         // The directory is there, so its name is no pattern, `[` and all (#625).
         let base = crate::source::escape_glob(text.trim_end_matches(['/', '\\']));
@@ -628,7 +632,7 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
             literal: false,
         });
     }
-    let format = file_format(path, record.options)?;
+    let format = file_format(path, record)?;
     let pattern = crate::source::expands_as_glob(path);
     Some(Target {
         // Polars' scans read every name as a pattern: an existing `d[1].csv` is that
@@ -983,8 +987,9 @@ pub fn source(record: &OpenRecord) -> Source {
     let Some(python) = python else {
         return Source::Placeholder {
             what: format!(
-                "{}: Polars has no reader for this format; load it here.",
-                names.join(", ")
+                "{}: Polars has no reader for {} files; load it here.",
+                names.join(", "),
+                format.title()
             ),
         };
     };
@@ -1406,6 +1411,7 @@ mod tests {
             remote_objects: Vec::new(),
             s3_endpoint: None,
             s3_region: None,
+            format: None,
             read_as_text: Vec::new(),
             spec: None,
         };
@@ -1436,6 +1442,7 @@ mod tests {
                 remote_objects: Vec::new(),
                 s3_endpoint: None,
                 s3_region: None,
+                format: None,
                 read_as_text: Vec::new(),
                 spec: spec.map(str::to_string),
             };
@@ -1486,6 +1493,7 @@ mod tests {
             remote_objects: Vec::new(),
             s3_endpoint: Some("http://key:secret@localhost:9000".into()),
             s3_region: None,
+            format: None,
             read_as_text: Vec::new(),
             spec: None,
         };
@@ -1514,6 +1522,7 @@ mod tests {
             remote_objects: vec!["s3://b/p/year=2024/a.parquet".into()],
             s3_endpoint: Some("http://localhost:9000".into()),
             s3_region: None,
+            format: None,
             read_as_text: Vec::new(),
             spec: None,
         };

@@ -4610,7 +4610,11 @@ impl App {
         self.retire_a_count_the_rows_answered();
         self.path = path.clone();
         if let Some(ref p) = path {
-            self.original_file_format = Self::export_format_for(p, options);
+            let read_as = self
+                .data_table_state
+                .as_ref()
+                .and_then(DataTableState::read_as);
+            self.original_file_format = Self::export_format_for(p, read_as.or(options.format));
             // A comma unless the user named a separator. A `.tsv` exports as CSV, to a
             // `.csv` by default, and a tab there would reopen as one column.
             self.original_file_delimiter = Some(options.separator_or(b','));
@@ -7847,12 +7851,12 @@ impl App {
 
     /// The export format to offer by default for a dataset opened from `path`.
     ///
-    /// An explicit `--format` wins, then the extension. A compressed CSV keeps its CSV
-    /// identity: `sales.csv.gz` has extension `gz`, and the `.csv` that matters is in
-    /// the stem, so reading the extension alone offered no default at all.
-    fn export_format_for(path: &Path, options: &OpenOptions) -> Option<ExportFormat> {
-        options
-            .format
+    /// The format the open read wins (`format`: what it sniffed, or `--format`), then
+    /// the extension. A compressed CSV keeps its CSV identity: `sales.csv.gz` has
+    /// extension `gz`, and the `.csv` that matters is in the stem, so reading the
+    /// extension alone offered no default at all.
+    fn export_format_for(path: &Path, format: Option<FileFormat>) -> Option<ExportFormat> {
+        format
             .or_else(|| FileFormat::from_path(path))
             .and_then(crate::readers::export_default)
             .or_else(|| {
@@ -8432,6 +8436,7 @@ impl App {
                     .with_open(OpenFacts {
                         detail: opened.detail.clone(),
                         open_notes: notes,
+                        read_as: Some(format),
                         ..Default::default()
                     });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
@@ -8728,6 +8733,7 @@ impl App {
                                 .map(|read| read.notes())
                                 .unwrap_or_default(),
                             delimited: options.delimited.clone(),
+                            read_as: options.format,
                             // The loader sends a compressed file here without a scan.
                             read_mode: options.format.and_then(|f| {
                                 f.read_mode(crate::Stored::Compressed {
@@ -10070,6 +10076,7 @@ impl App {
             facts.delimited = Some(read.clone());
         }
         facts.read_mode = options.read_mode;
+        facts.read_as = options.format;
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         // Arrow in a store reads its IPC files in place, and its streams from their
@@ -15697,6 +15704,7 @@ impl App {
         let record = python_script::OpenRecord {
             paths,
             options: &options,
+            format: state.read_as().or(options.format),
             schema: state.source_schema(),
             remote_objects: state
                 .remote_objects()

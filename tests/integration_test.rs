@@ -23019,6 +23019,45 @@ fn test_copy_as_python_reads_streams_beside_ipc_files() {
     assert_eq!(rows, view_csv(&app), "{script}");
 }
 
+/// A file known by its bytes rather than its name, an extensionless Parquet file:
+/// Copy as Python reads it as Parquet and the export defaults to Parquet, from the
+/// format the open read rather than the name.
+#[test]
+fn test_a_sniffed_file_copies_and_exports_as_the_format_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blob");
+    let mut df = df!("k" => ["a", "b", "a"], "v" => [1i64, 2, 3]).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.read_as(), Some(datui::FileFormat::Parquet));
+    let script = app.python_script(state);
+    assert!(
+        script.contains(&format!(
+            "pl.scan_parquet({:?})",
+            path.display().to_string()
+        )),
+        "{script}"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::NONE,
+    )));
+    assert!(app.export_modal.active);
+    assert_eq!(
+        app.export_modal.selected_format,
+        datui::export_modal::ExportFormat::Parquet
+    );
+    if let Some((rows, script)) = run_python_script(&app) {
+        assert_eq!(rows, view_csv(&app), "{script}");
+    }
+}
+
 /// The query language's `/` and `%` floor-divide two whole numbers, as Polars' `/`
 /// on two expressions does: the script writes `//` there and `/` where a float
 /// takes part, so its rows are datui's, negatives and a zero divisor included.

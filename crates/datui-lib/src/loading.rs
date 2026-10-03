@@ -1817,11 +1817,16 @@ pub(crate) fn in_memory(paths: &[PathBuf], options: &OpenOptions) -> Option<InMe
         let compression = options
             .compression
             .or_else(|| CompressionFormat::from_extension(path));
+        // By name, or by the first bytes the open will judge it by: journal JSON
+        // piped to a file with no name, or in a `.json` one.
         let format = options.format.or_else(|| match compression {
             Some(_) => path
                 .file_stem()
                 .and_then(|stem| FileFormat::from_path(Path::new(stem))),
-            None => FileFormat::from_path(path),
+            None => match FileFormat::from_path(path) {
+                Some(named) => Some(crate::readers::refined(path, named).unwrap_or(named)),
+                None => crate::readers::sniff_open(path, None),
+            },
         });
         let Some(format) = format else {
             continue;
@@ -2068,6 +2073,13 @@ mod tests {
             RemoteRead::Downloaded
         );
         seen.push(FileFormat::Candump);
+        // And journal JSON, from a file or a pipe.
+        assert_eq!(FileFormat::Journal.http_file(), RemoteRead::Downloaded);
+        assert_eq!(
+            FileFormat::Journal.bucket_object(Stored::Plain),
+            RemoteRead::Downloaded
+        );
+        seen.push(FileFormat::Journal);
         for f in FileFormat::ALL {
             assert!(seen.contains(&f), "{} is checked", f.name());
         }
@@ -2508,6 +2520,27 @@ mod tests {
         let mut loader = Loader::default();
         let _ = open(&mut loader, &json, 0);
         assert!(loader.retire().is_some_and(|retired| retired.asking));
+    }
+
+    /// Journal JSON is read whole too, and asked about by what its bytes say, named or
+    /// not.
+    #[test]
+    fn a_large_journal_is_asked_about_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = "{\"__CURSOR\":\"s=1\",\"__REALTIME_TIMESTAMP\":\"1\",\"MESSAGE\":\"m\"}\n";
+        for name in ["journal", "journal.json"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, entry).unwrap();
+            let mut loader = Loader::default();
+            let step = loader.open(OpenRequest {
+                warn_in_memory_above: Some(4),
+                ..request(&path.to_string_lossy())
+            });
+            let Step::AskRead(read) = step else {
+                panic!("{name}: a journal past the size is asked about");
+            };
+            assert_eq!(read.format, FileFormat::Journal, "{name}");
+        }
     }
 
     /// A CSV whose footer rows are dropped counts the file in its scan, and says so;

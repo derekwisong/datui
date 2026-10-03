@@ -116,6 +116,7 @@ pub mod inspector_reader;
 pub mod intent_modal;
 pub mod ipc_stream;
 mod jobs;
+pub mod journal;
 pub mod lines;
 mod loading;
 pub mod local_copy;
@@ -8276,22 +8277,15 @@ impl App {
         let named = |e: color_eyre::Report| {
             crate::error_display::user_message_from_report(&e, path.as_deref())
         };
-        // NDJSON followed is scanned rather than read whole.
-        let followed_lines = options.follow
-            && crate::follow::format_of(&paths[0], options.format)
-                .descriptor()
-                .lines
-                == Some(crate::cli::Lines::Json);
-        // An Arrow IPC stream followed is read by a scan of its own, not converted.
+        // An Arrow IPC stream followed is read by a scan of its own, not converted;
+        // NDJSON followed is scanned rather than read whole, by its reader.
         let followed_stream = options.follow
             && crate::follow::followed_stream(
                 &paths[0],
                 Some(crate::follow::format_of(&paths[0], options.format)),
                 &options,
             );
-        let scan = if followed_lines {
-            crate::follow::scan_lines(&paths[0], &options, &mut report.read_python).map(Scan::from)
-        } else if followed_stream {
+        let scan = if followed_stream {
             crate::follow::stream::scan(&paths[0])
                 .map(Scan::from)
                 .map_err(|e| color_eyre::eyre::eyre!(e))
@@ -11173,7 +11167,16 @@ impl App {
         });
         let mut effective_format = options
             .format
-            .or_else(|| named.filter(|f| !f.is_lines()))
+            // A name that says a format another refines is asked its bytes for it:
+            // journal JSON in a `.json` file.
+            .or_else(|| {
+                named.filter(|f| !f.is_lines()).map(|f| {
+                    (!compressed)
+                        .then(|| crate::readers::refined(path, f))
+                        .flatten()
+                        .unwrap_or(f)
+                })
+            })
             .or_else(|| {
                 (path.extension().is_none()
                     && crate::discover::is_parquet_key(&path.to_string_lossy()))

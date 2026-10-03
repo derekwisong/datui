@@ -210,7 +210,7 @@ beside its name. It gives way before the name is shortened.
 | Label | Opening the file |
 |---|---|
 | `converts` | Reads it once into a temporary file: an Arrow stream, NMEA, GPX, VCD, FIX, SDF, compressed text |
-| `in memory` | Reads it whole into memory: JSON, NDJSON, Avro, ORC, Excel, MIDI, ELF; SafeTensors and GGUF read only their header |
+| `in memory` | Reads it whole into memory: JSON, NDJSON, systemd journal, Avro, ORC, Excel, MIDI, ELF; SafeTensors and GGUF read only their header |
 | `downloads` | Downloads it whole first: a remote file other than a Parquet or Arrow object in a bucket, or a model file |
 
 See [how each format is read](loading-data.md#how-each-format-is-read).

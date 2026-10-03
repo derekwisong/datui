@@ -47,6 +47,7 @@ pub enum FileFormat {
     Dataflash,
     Candump,
     Text,
+    Journal,
 }
 
 /// What datui knows of a format without reading a file of it.
@@ -499,6 +500,16 @@ const TEXT: Descriptor = Descriptor {
     ..BASE
 };
 
+// `journalctl -o json`: NDJSON known by its first record's keys, with time, level
+// and readable messages derived.
+const JOURNAL: Descriptor = Descriptor {
+    name: "journal",
+    title: "systemd journal",
+    many_files: true,
+    lines: Some(Lines::Json),
+    ..BASE
+};
+
 impl FileFormat {
     /// Every format, for the places that have to consider all of them, in the order
     /// `--format`'s help lists them.
@@ -508,7 +519,7 @@ impl FileFormat {
     /// format missing here would cost is bounded: `from_name` answers `None` for it,
     /// and every caller reads `None` as "not Parquet", which leaves counts off a
     /// directory rather than giving it another format's.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -535,6 +546,7 @@ impl FileFormat {
         Self::Dataflash,
         Self::Candump,
         Self::Text,
+        Self::Journal,
     ];
 
     /// What text with nothing else to say is read as: a pipe, a followed file, a
@@ -570,6 +582,7 @@ impl FileFormat {
             Self::Dataflash => &DATAFLASH,
             Self::Candump => &CANDUMP,
             Self::Text => &TEXT,
+            Self::Journal => &JOURNAL,
         }
     }
 

@@ -36,6 +36,8 @@ mod formats_open;
 mod gps;
 #[path = "formats/hex.rs"]
 mod hex;
+#[path = "formats/journal.rs"]
+mod journal;
 #[path = "formats/midi.rs"]
 mod midi;
 #[path = "formats/model_files.rs"]

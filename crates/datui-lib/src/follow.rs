@@ -265,7 +265,9 @@ impl Fits {
             Fits::Integer => value.is_i64() || value.is_u64(),
             Fits::Number => value.is_number(),
             Fits::Boolean => value.is_boolean(),
-            Fits::Text => value.is_string(),
+            // Polars reads an array into a text column as its JSON text: journalctl's
+            // bytes for a message that is not UTF-8.
+            Fits::Text => value.is_string() || value.is_array(),
             Fits::Anything => true,
         }
     }

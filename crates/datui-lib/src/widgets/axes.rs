@@ -231,24 +231,43 @@ fn with_ticks(sets: Vec<TickSet>) -> Vec<TickSet> {
     sets.into_iter().filter(|s| s.ticks.len() >= 2).collect()
 }
 
-/// Of the options, each a set and the fewest cells between its ticks, finest first:
-/// the one nearest `spacing` apart and every coarser one, those at least `least`
-/// apart.
-fn preferred<T>(options: Vec<(T, f64)>, spacing: f64, least: f64) -> Vec<T> {
+/// One way to tick an axis, as [`preferred`] weighs it: the fewest cells between two
+/// of its ticks, and how many ticks it has.
+struct Candidate<T> {
+    set: T,
+    gap: f64,
+    ticks: usize,
+}
+
+/// Of the options, finest first: the one nearest `spacing` apart and every coarser
+/// one, those at least `least` apart. Two ticks say little, so when the nearest has
+/// only two and a finer one is still `least` apart, the finer one comes first: a
+/// narrow 0 to 7 reads `0 2 4 6`, not `0 5`. Its labels may still not fit, and then
+/// the two do.
+fn preferred<T>(options: Vec<Candidate<T>>, spacing: f64, least: f64) -> Vec<T> {
     let closeness = |gap: f64| (gap / spacing).ln().abs();
     let best = options
         .iter()
         .enumerate()
-        .filter(|(_, (_, gap))| *gap >= least)
-        .min_by(|a, b| closeness(a.1.1).total_cmp(&closeness(b.1.1)))
+        .filter(|(_, o)| o.gap >= least)
+        .min_by(|a, b| closeness(a.1.gap).total_cmp(&closeness(b.1.gap)))
         .map(|(i, _)| i);
+    let best = best.map(|best| {
+        if options[best].ticks > 2 {
+            return best;
+        }
+        (0..best)
+            .rev()
+            .find(|&i| options[i].gap >= least)
+            .unwrap_or(best)
+    });
     match best {
-        Some(best) => options.into_iter().skip(best).map(|(set, _)| set).collect(),
+        Some(best) => options.into_iter().skip(best).map(|o| o.set).collect(),
         // Nothing is far enough apart: the coarsest, which may still have room.
         None => options
             .into_iter()
             .last()
-            .map(|(set, _)| set)
+            .map(|o| o.set)
             .into_iter()
             .collect(),
     }
@@ -279,7 +298,7 @@ fn number_sets(
         }];
     }
     let finest = (hi - lo) * least.min(minor_gap) / length;
-    let options: Vec<((f64, [f64; 2]), f64)> = ticks::nice_steps(lo, hi, finest, numbers.whole)
+    let options: Vec<Candidate<(f64, [f64; 2])>> = ticks::nice_steps(lo, hi, finest, numbers.whole)
         .into_iter()
         .map(|step| {
             let range = if widen {
@@ -287,10 +306,13 @@ fn number_sets(
             } else {
                 bounds
             };
-            let gap = step / (range[1] - range[0]) * length;
-            ((step, range), gap)
+            Candidate {
+                set: (step, range),
+                gap: step / (range[1] - range[0]) * length,
+                ticks: ticks::multiples(range[0], range[1], step).len(),
+            }
         })
-        .filter(|((step, range), _)| ticks::multiples(range[0], range[1], *step).len() >= 2)
+        .filter(|o| o.ticks >= 2)
         .collect();
     let sets = preferred(options, spacing, least)
         .into_iter()
@@ -364,7 +386,11 @@ fn calendar_sets(
     let options = all
         .iter()
         .enumerate()
-        .map(|(i, (.., gap))| (i, *gap))
+        .map(|(i, (_, _, values, gap))| Candidate {
+            set: i,
+            gap: *gap,
+            ticks: values.len(),
+        })
         .collect();
     preferred(options, spacing, least)
         .into_iter()
@@ -1030,7 +1056,9 @@ mod tests {
             labels_on(&axis, 200),
             ["0", "1", "2", "3", "4", "5", "6", "7"]
         );
-        assert_eq!(labels_on(&axis, 30), ["0", "5"]);
+        // Narrow: more labels when they fit, not the two of the nearest step.
+        assert_eq!(labels_on(&axis, 30), ["0", "2", "4", "6"]);
+        assert_eq!(labels_on(&axis, 20), ["0", "5"]);
         let axis = AxisSpec::y_numbers([3.0, 10.0], &whole, "");
         let track = Track {
             start: 0,
@@ -1259,6 +1287,30 @@ mod tests {
         let frame = axes.render(chart, area, &mut buf, g);
         let corner = (frame.graph.left(), frame.graph.top());
         assert_eq!(buf[corner].symbol(), "┌", "{:#?}", text(&buf));
+    }
+
+    /// On a narrow plot of 0 to 7 the x row reads `0 2 4 6`: more labels when they
+    /// fit, rather than the two of the step nearest the spacing.
+    #[test]
+    fn a_narrow_axis_takes_more_labels_when_they_fit() {
+        let g = crate::glyphs::unicode();
+        let whole = AxisNumbers {
+            whole: true,
+            ..AxisNumbers::default()
+        };
+        let axes = PlotAxes::new(
+            AxisSpec::numbers([0.0, 7.0], &whole, ""),
+            AxisSpec::y_numbers([0.0, 1000.0], &AxisNumbers::default(), ""),
+            Style::default(),
+            Marker::Braille,
+        );
+        let (buf, frame) = render_with(&axes, Rect::new(0, 0, 34, 12), g);
+        let row = frame.labels.expect("a label row").y;
+        let labels: Vec<String> = text(&buf)[row as usize]
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(labels, ["0", "2", "4", "6"], "{:#?}", text(&buf));
     }
 
     /// A title longer than its row is cut with the set's ellipsis.

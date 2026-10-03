@@ -1960,7 +1960,8 @@ mod tests {
         let text = plot_text_with(&ctx, &open_modal(), data, g, area);
         // Up to the nice value past the tallest bar, in thousands-grouped whole steps.
         assert_eq!(y_labels(&text), ["5,000", "2,500", "0"], "{text}");
-        assert_eq!(axis_row(&text), "0 5", "{text}");
+        // Four labels fit, so not the two of the step nearest the spacing.
+        assert_eq!(axis_row(&text), "0 2 4 6", "{text}");
 
         // The same for an XY chart of integer columns.
         let series = vec![vec![(0.0, 3.0), (5.0, 10.0)]];

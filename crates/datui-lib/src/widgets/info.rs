@@ -221,7 +221,10 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
                 line.push_str(token);
                 line_width += w;
             } else {
-                lines.push(std::mem::take(&mut line));
+                // Indentation wider than the room starts no line of its own.
+                if !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                }
                 line_width = 0;
                 broken = true;
             }
@@ -243,7 +246,10 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
             line_width += cw;
         }
     }
-    lines.push(line);
+    // Spaces dropped at a break leave no blank line after the text.
+    if !(broken && line.is_empty()) || lines.is_empty() {
+        lines.push(line);
+    }
     lines
 }
 
@@ -2861,8 +2867,6 @@ mod tests {
         assert_eq!(clock(3723.0005), "1:02:03.001");
     }
 
-    /// Each value is drawn whole: its own newlines kept, wrapped under the key, a short
-    /// array listed and a long one counted.
     /// A value breaks between words; indentation stays, the spaces at a break go, and
     /// only a word wider than the room is split.
     #[test]
@@ -2882,8 +2886,13 @@ mod tests {
         // Measured in columns: three double-width characters are six.
         assert_eq!(wrap_words("日本語 text", 7), ["日本語", "text"]);
         assert_eq!(wrap_words("", 5), [""]);
+        // Spaces at a break or past the room leave no blank line.
+        assert_eq!(wrap_words("abc   ", 4), ["abc"]);
+        assert_eq!(wrap_words("          x", 5), ["x"]);
     }
 
+    /// Each value is drawn whole: its own newlines kept, wrapped under the key, a short
+    /// array listed and a long one counted.
     #[test]
     fn metadata_values_wrap_whole_under_their_key() {
         use crate::model_files::MetaValue;

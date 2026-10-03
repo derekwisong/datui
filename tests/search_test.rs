@@ -164,15 +164,15 @@ fn test_the_result_limit_is_reported_not_silently_applied() {
         touch(&tmp.path().join(format!("f{i:03}.parquet")));
     }
 
-    let config = SearchConfig {
-        max_results: 10,
-        ..Default::default()
-    };
-    let (found, outcome) = walk_all(tmp.path(), &config);
+    let mut found = Vec::new();
+    let outcome = search::walk_up_to(tmp.path(), &SearchConfig::default(), 10, |batch, _| {
+        found.extend(batch);
+        true
+    });
     assert_eq!(found.len(), 10);
     assert!(outcome.hit_result_limit);
     assert!(!outcome.complete());
-    assert_eq!(outcome.note(), Some("partial · too many"));
+    assert_eq!(outcome.note(), Some("partial · too many files"));
 }
 
 #[test]
@@ -296,4 +296,134 @@ fn test_a_network_directory_is_never_walked_recursively() {
     }
     let root = search::search_root(Some(&tmp.path().to_path_buf()), never_network);
     assert_eq!(root.as_deref(), Some(tmp.path()));
+}
+
+/// Files `name` by `label` below `root`, without touching the disk: the scorer and the
+/// listing read names, not files.
+fn found(root: &Path, labels: &[String]) -> Vec<Entry> {
+    labels
+        .iter()
+        .map(|label| Entry::for_test(&root.join(label), label))
+        .collect()
+}
+
+fn many_and_a_needle(root: &Path, many: usize) -> Vec<Entry> {
+    let mut labels: Vec<String> = (0..many)
+        .map(|i| format!("d{:02}/f{i:05}.csv", i % 40))
+        .collect();
+    labels.push("deep/a/b/c/d/e/needle_metrics.parquet".to_string());
+    found(root, &labels)
+}
+
+/// The listing cap counts matches, not files walked: past it, a match is still found
+/// (#547 D1), and the heading says how many matched in all.
+#[test]
+fn test_the_cap_counts_matches_not_files() {
+    let root = Path::new("/data");
+    let mut home = datui::home::HomeState {
+        filter: "needle".into(),
+        search_limit: 10,
+        ..Default::default()
+    };
+    home.search.root = Some(root.to_path_buf());
+    home.search.set_results(many_and_a_needle(root, 500));
+    home.search_finished(root, 600, None);
+    let found_rows = |home: &datui::home::HomeState| {
+        home.sections
+            .iter()
+            .find(|s| s.title == datui::home::HomeState::SEARCH_SECTION)
+            .map(|s| s.rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        found_rows(&home),
+        vec!["deep/a/b/c/d/e/needle_metrics.parquet"]
+    );
+
+    home.filter = "f00".into();
+    home.sync_search_section();
+    assert_eq!(found_rows(&home).len(), 10, "ten listed");
+    let section = home
+        .sections
+        .iter()
+        .find(|s| s.title == datui::home::HomeState::SEARCH_SECTION)
+        .unwrap();
+    let subtitle = section.subtitle.clone().unwrap_or_default();
+    assert!(subtitle.contains("10 of 500 matches"), "{subtitle:?}");
+}
+
+/// A longer query narrows the last one's matches and agrees with scoring from scratch;
+/// files found since are looked at too.
+#[test]
+fn test_a_growing_query_narrows_the_last_matches() {
+    let root = Path::new("/data");
+    let files = many_and_a_needle(root, 300);
+    let (first, later) = files.split_at(200);
+    let index: Vec<std::sync::Arc<[Entry]>> = vec![first.to_vec().into(), later.to_vec().into()];
+    let early: Vec<std::sync::Arc<[Entry]>> = vec![first.to_vec().into()];
+
+    let ne = search::score(&early, "f0", None, 5);
+    assert!(ne.narrows_to("f00"));
+    assert!(!ne.narrows_to("x"));
+    let narrowed = search::score(&index, "f00", Some(&ne), 5);
+    let whole = search::score(&index, "f00", None, 5);
+    assert_eq!(narrowed.ids, whole.ids);
+    assert_eq!(narrowed.top.len(), 5);
+    let names = |m: &search::Matches| m.top.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&narrowed), names(&whole));
+    assert_eq!(narrowed.upto, 301);
+}
+
+/// Matches carried forward over a walk's later batches agree with scoring them all.
+#[test]
+fn test_matches_carry_forward_over_new_files() {
+    let root = Path::new("/data");
+    let files = many_and_a_needle(root, 300);
+    let mut carried = search::score(&[files[..120].to_vec().into()], "f01", None, 7);
+    assert!(carried.extend(&files[120..], 120, 7) || !carried.top.is_empty());
+    let whole = search::score(&[files.clone().into()], "f01", None, 7);
+    assert_eq!(carried.ids, whole.ids);
+    let names = |m: &search::Matches| m.top.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&carried), names(&whole));
+    assert_eq!(carried.scores, whole.scores);
+}
+
+/// A walk that stopped short and matched nothing says so, rather than leaving the
+/// screen to say `No match.` (#547 D1).
+#[test]
+fn test_an_empty_partial_search_says_so() {
+    let root = Path::new("/data");
+    let mut home = datui::home::HomeState {
+        filter: "needle".into(),
+        ..Default::default()
+    };
+    home.search.root = Some(root.to_path_buf());
+    home.search.running = true;
+    home.search_batch(root, found(root, &["a.csv".to_string()]), 10);
+    home.search_finished(root, 20_000, Some("partial · out of time".into()));
+    let section = home
+        .sections
+        .iter()
+        .find(|s| s.title == datui::home::HomeState::SEARCH_SECTION)
+        .expect("the heading stays to say why it is empty");
+    assert!(section.rows.is_empty());
+    let subtitle = section.subtitle.clone().unwrap_or_default();
+    assert!(subtitle.contains("no match in 1 file "), "{subtitle:?}");
+    assert!(subtitle.contains("partial · out of time"), "{subtitle:?}");
+    assert!(
+        home.visible()
+            .iter()
+            .any(|r| matches!(r, datui::home::Row::Header { .. })),
+        "drawn, not dropped as an empty section"
+    );
+
+    // A complete walk with no match needs no heading: `No match.` is the whole truth.
+    home.search.limited = None;
+    home.sync_search_section();
+    assert!(
+        !home
+            .sections
+            .iter()
+            .any(|s| s.title == datui::home::HomeState::SEARCH_SECTION)
+    );
 }

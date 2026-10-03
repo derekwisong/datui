@@ -2110,7 +2110,8 @@ pub struct DataConfig {
 /// Recursive search under the working directory, driven by the home screen's filter.
 ///
 /// The walk happens once, in the background, the first time you type; every keystroke
-/// after that filters the result in memory. The limits here bound that one walk.
+/// after that scores what it found, off the UI thread. The limits here bound that one
+/// walk and what is listed from it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchConfig {
@@ -2119,8 +2120,9 @@ pub struct SearchConfig {
     /// How deep to descend. Data is rarely twelve directories down, and the cost of
     /// looking is paid on every branch.
     pub max_depth: usize,
-    /// Stop after this many datasets. The list is a way to find something, not an
-    /// inventory.
+    /// List at most this many matches, best first; the heading counts the rest. The
+    /// walk itself keeps every data file it finds, so a match is never lost behind
+    /// files that do not match. The list is a way to find something, not an inventory.
     pub max_results: usize,
     /// Give up walking after this long and keep what was found. A cold or enormous
     /// tree must degrade to partial results, never to a wait.
@@ -2173,7 +2175,7 @@ impl Default for SearchConfig {
         Self {
             enabled: true,
             max_depth: 8,
-            max_results: 20_000,
+            max_results: 1_000,
             time_budget_ms: 1_500,
             cross_filesystems: false,
             follow_gitignore: false,

@@ -1203,6 +1203,12 @@ pub struct HomeState {
     pub sections: Vec<Section>,
     /// Fuzzy filter over every row in every section.
     pub filter: String,
+    /// The most search matches listed under `Found`: `[data.search] max_results`.
+    pub search_limit: usize,
+    /// The filter `Found`'s rows were scored for, and the score of each of its first
+    /// rows, in order. Listing a thousand matches scored each of them again on every
+    /// pass over the rows, several per frame.
+    pub found_scores: Option<(String, Vec<i32>)>,
     /// Leave out files datui has no reader for. `Ctrl+A` flips it; they are hidden by
     /// default.
     pub hide_unreadable: bool,
@@ -1353,8 +1359,20 @@ pub struct Mark {
 pub struct SearchState {
     /// Where the walk started. `None` means no search has been asked for yet.
     pub root: Option<PathBuf>,
-    /// Every dataset found so far, unfiltered. The filter runs over this in memory.
-    pub results: Vec<Entry>,
+    /// Which walk this is, so a scoring of an earlier walk's files is never taken for
+    /// this one's.
+    pub epoch: u64,
+    /// Every data file found so far, unfiltered, in the batches they arrived in. Shared
+    /// with the worker that scores the filter against them, so handing it over copies
+    /// nothing.
+    pub results: Vec<std::sync::Arc<[Entry]>>,
+    /// How many files `results` holds.
+    pub indexed: usize,
+    /// What the filter matched, as last scored: possibly for an older filter, or for
+    /// fewer files than are in now, while a scoring is out.
+    pub matches: Option<crate::search::Matches>,
+    /// A scoring is out on a worker.
+    pub scoring: bool,
     /// Directory entries examined, for the progress note.
     pub scanned: usize,
     /// A walk is out. Results may still be arriving.
@@ -1365,10 +1383,53 @@ pub struct SearchState {
     pub limited: Option<String>,
 }
 
+/// Below this many files to look at, the filter is scored where it is typed: it takes
+/// a millisecond or two, and the list answers in the same frame as the key.
+const SCORE_INLINE_MAX: usize = 2_000;
+
+/// What a worker needs to score the filter against a walk's files.
+#[derive(Debug, Clone)]
+pub struct ScoreJob {
+    pub epoch: u64,
+    pub results: Vec<std::sync::Arc<[Entry]>>,
+    pub query: String,
+    pub base: Option<crate::search::Matches>,
+    pub limit: usize,
+}
+
 impl SearchState {
     /// Forget everything, because the place being searched has changed.
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Set the files found, all at once: what a walk would have handed over in batches.
+    pub fn set_results(&mut self, results: Vec<Entry>) {
+        self.indexed = results.len();
+        self.results = vec![results.into()];
+        self.matches = None;
+    }
+
+    /// Every file found, in the order found.
+    pub fn files(&self) -> impl Iterator<Item = &Entry> {
+        self.results.iter().flat_map(|batch| batch.iter())
+    }
+
+    /// Whether the matches in hand are for `query` over every file found.
+    fn scored_for(&self, query: &str) -> bool {
+        self.matches
+            .as_ref()
+            .is_some_and(|m| m.query == query && m.upto == self.indexed)
+    }
+
+    /// The matches to narrow from for `query`, and how many files scoring it will look at.
+    fn base_for(&self, query: &str) -> (Option<&crate::search::Matches>, usize) {
+        match self.matches.as_ref() {
+            Some(m) if m.narrows_to(query) && m.upto <= self.indexed => {
+                (Some(m), m.ids.len() + self.indexed - m.upto)
+            }
+            _ => (None, self.indexed),
+        }
     }
 }
 
@@ -1380,6 +1441,8 @@ impl Default for HomeState {
             collections: Vec::new(),
             missing: Default::default(),
             filter: String::new(),
+            search_limit: crate::config::SearchConfig::default().max_results,
+            found_scores: None,
             hide_unreadable: true,
             formats: Default::default(),
             lake_here: None,
@@ -2544,7 +2607,12 @@ impl HomeState {
             place: self.browsing.clone(),
             key: self.selected_key(),
             filter: self.filter.clone(),
-            search: (!self.search.running).then(|| self.search.clone()),
+            // A scoring out now answers while the user is elsewhere and is dropped, so
+            // the copy kept asks again when it comes back.
+            search: (!self.search.running).then(|| SearchState {
+                scoring: false,
+                ..self.search.clone()
+            }),
             line: self.selected.saturating_sub(self.scroll),
         };
         // A place already on the trail is being entered again from elsewhere; its
@@ -3098,6 +3166,7 @@ impl HomeState {
     /// matches is not a home screen.
     pub fn sync_search_section(&mut self) {
         self.sections.retain(|s| s.title != Self::SEARCH_SECTION);
+        self.found_scores = None;
 
         if self.filter.is_empty() {
             return;
@@ -3125,8 +3194,9 @@ impl HomeState {
         } else {
             Vec::new()
         };
-        let local =
-            self.search.root.is_some() && (!self.search.results.is_empty() || self.search.running);
+        self.score_search_inline();
+        let local = self.search.root.is_some()
+            && (self.search.indexed > 0 || self.search.running || self.search.limited.is_some());
         if !local {
             if !cloud_rows.is_empty() {
                 let subtitle = format!("cloud · {} names", cloud_rows.len());
@@ -3158,29 +3228,45 @@ impl HomeState {
             .flat_map(|s| s.rows.iter().map(|r| &r.path))
             .collect();
 
-        let mut rows: Vec<Entry> = self
-            .search
-            .results
-            .iter()
-            .filter(|e| !listed.contains(&e.path))
-            .cloned()
-            .collect();
+        // The best matches as last scored. Those for an older filter, while a scoring is
+        // out, are scored again here, once, so nothing that no longer matches shows
+        // meanwhile and the passes over the rows need not score them each time.
+        let matches = self.search.matches.as_ref();
+        let kept: Vec<(&Entry, i32)> = matches
+            .map(|m| {
+                let fresh = m.query == self.filter;
+                m.top
+                    .iter()
+                    .zip(m.scores.iter().copied())
+                    .filter(|(e, _)| !listed.contains(&e.path))
+                    .filter_map(|(e, score)| {
+                        if fresh {
+                            Some((e, score))
+                        } else {
+                            match_score(&self.filter, e).map(|s| (e, s))
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let found_scores = Some((
+            self.filter.clone(),
+            kept.iter().map(|&(_, s)| s).collect::<Vec<i32>>(),
+        ));
+        let mut rows: Vec<Entry> = kept.into_iter().map(|(e, _)| e.clone()).collect();
         rows.extend(cloud_rows);
 
-        if rows.is_empty() && !self.search.running {
+        // An empty result is said when it is not the whole answer: a walk that stopped
+        // short may have missed the file, and "no match" there is something people act on.
+        let partial = self.search.limited.is_some();
+        let scored = self.search.scored_for(&self.filter);
+        if rows.is_empty() && !self.search.running && !partial && scored {
             return;
         }
 
-        let root = self.search.root.clone().unwrap_or_default();
-        let mut subtitle = display_path(&root);
-        if self.search.running {
-            subtitle = format!("{subtitle} · searching {}", self.search.scanned);
-        } else if let Some(limit) = &self.search.limited {
-            subtitle = format!("{subtitle} · {limit} · {} searched", self.search.scanned);
-        } else {
-            subtitle = format!("{subtitle} · {} searched", self.search.scanned);
-        }
+        let subtitle = self.found_subtitle(rows.is_empty());
 
+        self.found_scores = found_scores;
         self.sections.push(Section {
             title: Self::SEARCH_SECTION.to_string(),
             subtitle: Some(subtitle),
@@ -3196,6 +3282,52 @@ impl HomeState {
             place_labels: Default::default(),
             root: None,
         });
+    }
+
+    /// What `Found`'s rule says: where the search looked, how many matched, and how far
+    /// the walk got.
+    fn found_subtitle(&self, empty: bool) -> String {
+        let root = self.search.root.clone().unwrap_or_default();
+        let dot = crate::glyphs::get().middot;
+        let files = crate::numfmt::group_chrome(self.search.indexed);
+        let files = if self.search.indexed == 1 {
+            format!("{files} file")
+        } else {
+            format!("{files} files")
+        };
+        let mut subtitle = display_path(&root);
+        // How many matched, when more matched than are listed.
+        if let Some(m) = self
+            .search
+            .matches
+            .as_ref()
+            .filter(|m| m.query == self.filter && m.ids.len() > m.top.len())
+        {
+            subtitle = format!(
+                "{subtitle} {dot} {} of {} matches",
+                crate::numfmt::group_chrome(m.top.len()),
+                crate::numfmt::group_chrome(m.ids.len())
+            );
+        }
+        if self.search.running {
+            format!(
+                "{subtitle} {dot} searching {}",
+                crate::numfmt::group_chrome(self.search.scanned)
+            )
+        } else if !self.search.scored_for(&self.filter) {
+            format!("{subtitle} {dot} matching {files}")
+        } else if empty {
+            match &self.search.limited {
+                Some(limit) => format!("{subtitle} {dot} no match in {files} {dot} {limit}"),
+                None => format!("{subtitle} {dot} no match in {files}"),
+            }
+        } else {
+            let searched = crate::numfmt::group_chrome(self.search.scanned);
+            match &self.search.limited {
+                Some(limit) => format!("{subtitle} {dot} {limit} {dot} {searched} searched"),
+                None => format!("{subtitle} {dot} {searched} searched"),
+            }
+        }
     }
 
     /// Fold a batch of search results in, keeping the list free of duplicates.
@@ -3214,8 +3346,93 @@ impl HomeState {
             apply_known_facts(row, &self.known, false);
         }
         self.search.scanned = scanned;
-        self.search.results.append(&mut found);
+        let start = self.search.indexed;
+        let batch: std::sync::Arc<[Entry]> = found.into();
+        if !batch.is_empty() {
+            self.search.indexed += batch.len();
+            self.search.results.push(batch.clone());
+        }
+        // Matches for the filter typed are carried forward over the new files alone. A
+        // whole scoring per batch, over hundreds of batches, is what kept typed keys
+        // waiting while a large walk ran.
+        let limit = self.search_limit;
+        let changed = match self.search.matches.as_mut() {
+            Some(m) if m.query == self.filter && m.upto == start => m.extend(&batch, start, limit),
+            _ => {
+                let before = self.search.matches.as_ref().map(|m| m.upto);
+                self.score_search_inline();
+                self.search.matches.as_ref().map(|m| m.upto) != before
+            }
+        };
+        // `Found` is rebuilt only when what it lists changed; otherwise only the progress
+        // on its rule moves.
+        let found_listed = self
+            .sections
+            .iter()
+            .position(|s| s.title == Self::SEARCH_SECTION);
+        match found_listed {
+            Some(at) if !changed => {
+                let empty = self.sections[at].rows.is_empty();
+                self.sections[at].subtitle = Some(self.found_subtitle(empty));
+            }
+            _ => self.sync_search_section(),
+        }
+        self.settle_return();
+    }
+
+    /// Score the filter against the files found, here and now, when that is cheap.
+    fn score_search_inline(&mut self) {
+        if self.filter.is_empty() || self.search.scored_for(&self.filter) {
+            return;
+        }
+        let (base, looks_at) = self.search.base_for(&self.filter);
+        if looks_at > SCORE_INLINE_MAX {
+            return;
+        }
+        let scored =
+            crate::search::score(&self.search.results, &self.filter, base, self.search_limit);
+        self.search.matches = Some(scored);
+    }
+
+    /// The scoring a worker should do next, if one is owed: the filter has changed, or
+    /// files arrived since the last. One at a time; the next is asked for when it answers.
+    pub fn score_job(&mut self) -> Option<ScoreJob> {
+        if self.filter.is_empty() || self.search.scoring || self.search.scored_for(&self.filter) {
+            return None;
+        }
+        let base = self.search.base_for(&self.filter).0.cloned();
+        self.search.scoring = true;
+        Some(ScoreJob {
+            epoch: self.search.epoch,
+            results: self.search.results.clone(),
+            query: self.filter.clone(),
+            base,
+            limit: self.search_limit,
+        })
+    }
+
+    /// A worker's scoring is in.
+    pub fn search_scored(&mut self, epoch: u64, scored: crate::search::Matches) {
+        if epoch != self.search.epoch {
+            return;
+        }
+        self.search.scoring = false;
+        // Batches may have carried the same filter's matches further meanwhile.
+        if self
+            .search
+            .matches
+            .as_ref()
+            .is_some_and(|m| m.query == scored.query && m.upto >= scored.upto)
+        {
+            return;
+        }
+        self.search.matches = Some(scored);
         self.sync_search_section();
+        // Typing put the cursor on the first row there was; if that was nothing, the
+        // first match is where it belongs now.
+        if !matches!(self.selected_row(), Some(Row::Entry { .. })) {
+            self.select_first_entry();
+        }
         self.settle_return();
     }
 
@@ -3248,11 +3465,21 @@ impl HomeState {
     fn rows(&self, capped: bool) -> Vec<Row<'_>> {
         let mut out: Vec<Row<'_>> = Vec::new();
         for (si, section) in self.sections.iter().enumerate() {
+            let scored = self
+                .found_scores
+                .as_ref()
+                .filter(|(query, _)| section.title == Self::SEARCH_SECTION && *query == self.filter)
+                .map(|(_, scores)| scores.as_slice())
+                .unwrap_or_default();
             let mut matched: Vec<(&Entry, i32)> = section
                 .rows
                 .iter()
-                .filter(|row| !(self.hide_unreadable && row.hidden_by_default()))
-                .filter_map(|row| match_score(&self.filter, row).map(|s| (row, s)))
+                .enumerate()
+                .filter(|(_, row)| !(self.hide_unreadable && row.hidden_by_default()))
+                .filter_map(|(i, row)| match scored.get(i) {
+                    Some(&score) => Some((row, score)),
+                    None => match_score(&self.filter, row).map(|s| (row, s)),
+                })
                 .collect();
 
             // A section with nothing to show is dropped, unless it is standing in for
@@ -3278,9 +3505,13 @@ impl HomeState {
                 } else {
                     0
                 };
+            // `Found` is only put in empty when it has something to say: a walk that
+            // stopped short and matched nothing.
+            let says_why = section.title == Self::SEARCH_SECTION;
             if matched.is_empty()
                 && !has_door
                 && hidden == 0
+                && !says_why
                 && !(keep_empty && self.filter.is_empty())
             {
                 continue;

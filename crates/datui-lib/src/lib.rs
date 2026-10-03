@@ -9045,6 +9045,12 @@ pub enum AppEvent {
         found: Vec<crate::discover::Entry>,
         scanned: usize,
     },
+    /// The filter scored against the search's files, for the walk `epoch` names.
+    HomeSearchScored {
+        epoch: u64,
+        /// `None` from a worker that died.
+        matches: Option<Box<crate::search::Matches>>,
+    },
     /// The background search has stopped, with `limited` saying why if it stopped
     /// short of walking everything.
     HomeSearchDone {
@@ -15701,6 +15707,8 @@ impl App {
         self.home.search.reset();
         self.home.search.root = Some(root.clone());
         self.home.search.running = true;
+        self.home.search.epoch = next_search_epoch();
+        self.home.search_limit = config.max_results;
         self.home_search_inflight = true;
 
         let generation = self.home_generation;
@@ -15739,6 +15747,37 @@ impl App {
                     root,
                     scanned: outcome.scanned,
                     limited: outcome.note().map(str::to_string),
+                });
+            })
+        });
+    }
+
+    /// Score the filter against the search's files on a worker, when a scoring is owed.
+    ///
+    /// Asked after every event. Over a tree of tens of thousands of files the scoring
+    /// is what held each keystroke's echo back, so it runs where a stall cannot hold
+    /// the screen, one at a time; each answer asks for the next if the filter moved on.
+    fn home_score_search(&mut self) {
+        if self.input_mode != InputMode::Home {
+            return;
+        }
+        let Some(job) = self.home.score_job() else {
+            return;
+        };
+        let epoch = job.epoch;
+        let tx = self.events.clone();
+        // A worker that dies answers with nothing.
+        let owed = self.owed_answer(AppEvent::HomeSearchScored {
+            epoch,
+            matches: None,
+        });
+        self.runtime.spawn_blocking(move || {
+            owed.run(move || {
+                let matches =
+                    crate::search::score(&job.results, &job.query, job.base.as_ref(), job.limit);
+                let _ = tx.send(AppEvent::HomeSearchScored {
+                    epoch,
+                    matches: Some(Box::new(matches)),
                 });
             })
         });
@@ -18382,6 +18421,13 @@ impl LocalHive {
 /// reasons (see `App::remember_dataset_shape`). No fingerprint, no keeping: a dataset
 /// within one wave is not worth it, and one whose files moved under the listing has
 /// none.
+/// A number for each walk the home search starts, so scorings of one are never taken
+/// for another's, even when the two walked the same place.
+fn next_search_epoch() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn remember_local_shape(
     cache: Option<&crate::cache::CacheManager>,
     key: &str,
@@ -24575,6 +24621,7 @@ impl App {
             self.let_waiting_errands_in();
         }
         self.ensure_chart_data();
+        self.home_score_search();
         Ok(out)
     }
 
@@ -24896,6 +24943,14 @@ impl App {
                 // late batches are expected rather than exceptional.
                 if *generation == self.home_generation {
                     self.home.search_batch(root, found.clone(), *scanned);
+                }
+                None
+            }
+            AppEvent::HomeSearchScored { epoch, matches } => {
+                // A scoring that died is not asked again: the next would die the same
+                // way, and the matches already listed stand.
+                if let Some(matches) = matches {
+                    self.home.search_scored(*epoch, (**matches).clone());
                 }
                 None
             }

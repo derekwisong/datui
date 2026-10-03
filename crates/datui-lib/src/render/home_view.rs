@@ -493,7 +493,21 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         .map(|s| s.name.clone())
         .collect();
     let mut lines: Vec<Line> = Vec::new();
+    // Only the rows on screen are drawn: a search can list a thousand, and building a
+    // line for each on every frame was most of what a keystroke cost.
+    let last_line = first_line + height;
     for (idx, row) in visible.iter().enumerate() {
+        let at = row_lines.get(idx).copied().unwrap_or(usize::MAX);
+        if at >= last_line {
+            break;
+        }
+        let spacer = spaced && idx > 0 && matches!(row, crate::home::Row::Header { .. });
+        if spacer && at > first_line {
+            lines.push(Line::from(""));
+        }
+        if at < first_line {
+            continue;
+        }
         let selected = idx == app.home.selected;
         match row {
             crate::home::Row::Header {
@@ -501,9 +515,6 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 matches,
                 collapsed,
             } => {
-                if spaced && idx > 0 {
-                    lines.push(Line::from(""));
-                }
                 lines.push(section_header(
                     &app.home.sections[*section],
                     *matches,
@@ -602,7 +613,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         }
     }
 
-    let mut body: Vec<Line> = lines.into_iter().skip(first_line).collect();
+    let mut body: Vec<Line> = lines;
     body.extend(guidance);
     Paragraph::new(body).render(area, buf);
 }

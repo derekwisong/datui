@@ -3408,10 +3408,11 @@ fn test_search_results_only_appear_once_there_is_a_filter() {
     let mut home = HomeState::default();
     home.rebuild(&[], &[]);
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(
-        &deep,
-        "a/b/buried.parquet",
-    )];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(
+            &deep,
+            "a/b/buried.parquet",
+        )]);
     home.search.done = true;
 
     home.sync_search_section();
@@ -3450,7 +3451,11 @@ fn test_search_results_survive_a_rebuild() {
         ..Default::default()
     };
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(&deep, "a/found.parquet")];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(
+            &deep,
+            "a/found.parquet",
+        )]);
     home.search.done = true;
     home.sync_search_section();
 
@@ -3477,7 +3482,11 @@ fn test_a_dataset_already_on_screen_is_not_listed_twice() {
     };
     home.rebuild(&[], &[]);
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(&here, "visible.parquet")];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(
+            &here,
+            "visible.parquet",
+        )]);
     home.search.done = true;
     home.sync_search_section();
 
@@ -3507,7 +3516,7 @@ fn test_a_late_batch_from_an_abandoned_walk_is_dropped() {
         1,
     );
     assert!(
-        home.search.results.is_empty(),
+        home.search.indexed == 0,
         "a batch from a different root describes a place the user has left"
     );
 }
@@ -3524,7 +3533,11 @@ fn test_a_partial_search_says_so_rather_than_looking_finished() {
         ..Default::default()
     };
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(&found, "one.parquet")];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(
+            &found,
+            "one.parquet",
+        )]);
     home.search_finished(tmp.path(), 4321, Some("partial · out of time".into()));
 
     let section = home
@@ -3538,7 +3551,7 @@ fn test_a_partial_search_says_so_rather_than_looking_finished() {
         "the reason it stopped must be on screen, got {subtitle:?}"
     );
     assert!(
-        subtitle.contains("4321"),
+        subtitle.contains("4,321"),
         "how much was searched is the other half of the answer, got {subtitle:?}"
     );
 }
@@ -3553,7 +3566,8 @@ fn test_clearing_the_filter_takes_the_search_section_away() {
         ..Default::default()
     };
     home.search.root = Some(tmp.path().to_path_buf());
-    home.search.results = vec![datui::discover::Entry::for_test(&deep, "a/x.parquet")];
+    home.search
+        .set_results(vec![datui::discover::Entry::for_test(&deep, "a/x.parquet")]);
     home.search.done = true;
     home.sync_search_section();
     assert!(
@@ -5338,7 +5352,7 @@ fn a_found_dataset_matches_by_its_remembered_columns() {
     home.search_batch(tmp.path(), walked, 1);
 
     assert_eq!(
-        home.search.results[0].columns,
+        home.search.files().next().unwrap().columns,
         vec!["revenue".to_string(), "region".to_string()],
         "the walk's entry took the remembered columns"
     );
@@ -5475,7 +5489,7 @@ fn test_coming_back_waits_for_a_row_still_to_arrive() {
     home.browsing = Some(tmp.path().to_path_buf());
     home.come_back(Some(sub.clone()));
     assert_eq!(home.filter, "deep");
-    assert!(home.search.results.is_empty());
+    assert_eq!(home.search.indexed, 0);
     home.search.root = Some(tmp.path().to_path_buf());
     home.search.running = true;
     home.rebuild(&[], &[]);
@@ -5812,6 +5826,52 @@ mod coming_back {
         assert!(app.home.filter.is_empty());
         go_back(&mut app, &rx, None);
         assert_eq!(on(&app), Some(d07));
+    }
+
+    /// Past the files the screen scores as it types, the scoring runs on a worker and
+    /// still finds the one match among thousands (#547 D1, D2).
+    #[test]
+    fn typing_in_a_large_tree_finds_the_one_match() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let d07 = tmp.path().join("d07");
+        for i in 0..2_500 {
+            touch(
+                &d07.join(format!("bulk{:02}", i % 25)),
+                &format!("f{i:04}.csv"),
+            );
+        }
+        let needle = touch(&d07, "deep/a/b/c/needle_metrics.parquet");
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+
+        select(&mut app, &d07);
+        go_into(&mut app, &rx, KeyCode::Enter, &d07);
+        for c in "needle".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        settle(&mut app, &rx, |app| {
+            app.home.search.done && !app.home.search.scoring && entries(app).contains(&needle)
+        });
+        assert!(app.home.search.indexed > 2_500, "every file was kept");
+        assert_eq!(app.home.filter, "needle");
+
+        // A new query over every file kept is scored on a worker, and lists the cap.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('f'));
+        assert!(
+            app.home.search.scoring,
+            "too many files to score as the key lands"
+        );
+        settle(&mut app, &rx, |app| !app.home.search.scoring);
+        let found = app
+            .home
+            .sections
+            .iter()
+            .find(|s| s.title == datui::home::HomeState::SEARCH_SECTION)
+            .expect("found");
+        assert_eq!(found.rows.len(), 1_000);
+        let subtitle = found.subtitle.clone().unwrap_or_default();
+        assert!(subtitle.contains("1,000 of 2,500 matches"), "{subtitle:?}");
     }
 
     /// A table opened from inside a directory, and back: home is where it was left,

@@ -150,7 +150,7 @@ hide_sources = []                           # Collections not to show, by name
 [data.search]                               # The recursive search typing starts
 enabled           = true
 max_depth         = 8
-max_results       = 20000
+max_results       = 1000                    # Matches listed under Found; the rest are counted
 time_budget_ms    = 1500
 cross_filesystems = false
 follow_gitignore  = false

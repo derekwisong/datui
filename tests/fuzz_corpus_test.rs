@@ -19,6 +19,8 @@ mod elf_symbols;
 mod fix_dict;
 #[path = "../fuzz/src/fix_parse.rs"]
 mod fix_parse;
+#[path = "../fuzz/src/flight_log.rs"]
+mod flight_log;
 #[path = "../fuzz/src/format_spec.rs"]
 mod format_spec;
 #[path = "../fuzz/src/fuzzy_match.rs"]
@@ -146,6 +148,7 @@ fn every_corpus_input_passes_its_target() {
     replay("sdf_parse", &mut failures, sdf_parse::run);
     replay("numpy_header", &mut failures, numpy_header::run);
     replay("elf_symbols", &mut failures, elf_symbols::run);
+    replay("flight_log", &mut failures, flight_log::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
     });
@@ -181,6 +184,7 @@ fn every_corpus_has_a_replay() {
         "elf_symbols",
         "fix_dict",
         "fix_parse",
+        "flight_log",
         "format_spec",
         "fuzzy_match",
         "glob_match",

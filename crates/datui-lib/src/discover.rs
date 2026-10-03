@@ -635,6 +635,12 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     if crate::audio::looks_like_audio(head) {
         return Some(crate::FileFormat::Audio);
     }
+    if crate::ulog::looks_like(head) {
+        return Some(crate::FileFormat::Ulog);
+    }
+    if crate::dataflash::looks_like(head) {
+        return Some(crate::FileFormat::Dataflash);
+    }
     // An Arrow IPC stream has no magic, only its schema message, read whole to be sure.
     if crate::ipc_stream::is_stream_file(path) {
         return Some(crate::FileFormat::Arrow);
@@ -703,6 +709,14 @@ const MAX_SNIFFS_PER_DIR: usize = 256;
 /// Whether a file's name has no extension at all: `part-00000`, `LICENSE`.
 pub fn has_no_extension(path: &Path) -> bool {
     path.extension().is_none()
+}
+
+/// Whether a listing looks inside a file to say what it is: one with no extension, or
+/// one whose extension says nothing (`.bin`, which ArduPilot's logs and model
+/// checkpoints share with everything else).
+pub fn worth_sniffing(path: &Path) -> bool {
+    path.extension()
+        .is_none_or(|e| e.eq_ignore_ascii_case("bin"))
 }
 
 /// Whether a local file is Parquet by its contents: `PAR1` at both ends.
@@ -1284,7 +1298,7 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                     .then_some(crate::FileFormat::Parquet)
             })
             .or_else(|| {
-                (is_file && sniffs_left > 0 && has_no_extension(&entry_path)).then(|| {
+                (is_file && sniffs_left > 0 && worth_sniffing(&entry_path)).then(|| {
                     sniffs_left -= 1;
                     sniff_format(&entry_path)
                 })?
@@ -1506,7 +1520,7 @@ pub fn scan_dir_progressive(dir: &Path, mut progress: impl FnMut(&[Entry])) -> S
             EntryKind::Unknown
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
-        } else if meta.is_file() && sniffs_left > 0 && has_no_extension(&path) {
+        } else if meta.is_file() && sniffs_left > 0 && worth_sniffing(&path) {
             sniffs_left -= 1;
             if sniff_format(&path).is_some() {
                 EntryKind::File

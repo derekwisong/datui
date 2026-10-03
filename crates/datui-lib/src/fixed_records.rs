@@ -373,7 +373,12 @@ pub fn decode_rows(bytes: &[u8], column: &ColumnLayout, index: &IdxCa) -> Polars
 /// For records that are not evenly spaced, such as the messages of a log, found by an
 /// index. A cell past the end of `bytes` is an error.
 pub fn decode_at(bytes: &[u8], column: &ColumnLayout, records: &[usize]) -> PolarsResult<Column> {
-    column.validate()?;
+    // The stride is not used here, so a layout may leave it 0.
+    ColumnLayout {
+        stride: column.stride.max(1),
+        ..column.clone()
+    }
+    .validate()?;
     let cell = column.cell_width().unwrap_or(usize::MAX);
     for &record in records {
         let end = record

@@ -278,6 +278,7 @@ pub fn ensure_sample_data() {
             "sqlite/shop.db",
             "numpy/packed.npz",
             "elf/tiny.elf",
+            "flight/00000042.BIN",
             "hf_cache/people-test.arrow",
             "arrow_mixed/b.arrow",
             "hf_dict/dataset_dict.json",

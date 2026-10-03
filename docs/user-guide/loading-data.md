@@ -182,6 +182,8 @@ The format is taken from the extension, or from `--format` when there is none.
 | [SQLite](#sqlite-databases) | `.db`, `.sqlite`, `.sqlite3`, `.db3` | lazy | no | downloaded | downloaded | no |
 | [NumPy](#numpy-arrays) | `.npy`, `.npz` | lazy | no | downloaded | downloaded | no |
 | [ELF](#elf-symbol-tables) | `.elf`, `.axf` | in memory | no | downloaded | downloaded | no |
+| [ULog](#flight-logs) | `.ulg` | lazy | no | downloaded | downloaded | no |
+| [DataFlash](#flight-logs) | any, by content, or `--format dataflash` | lazy | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
 | Read | What it means |
@@ -646,6 +648,48 @@ them: `W` write, `A` alloc, `X` execute, ...), `kind` and `region`.
 
 Press <kbd>i</kbd> for the ELF tab: class, machine, type, entry point, the bytes
 in flash and in RAM, and each section's address, size and flags.
+
+### Flight logs
+
+Read: [lazy](#how-each-format-is-read): one pass indexes the log, then each
+table is decoded from a map of the file where it is shown.
+
+```bash
+datui flight.ulg                         # the list of its tables
+datui flight.ulg --table vehicle_status  # one topic
+datui 00000042.BIN/GPS                   # one DataFlash message type
+```
+
+Both formats describe their own messages; no spec is needed. A log of several
+tables opens the home screen inside it, a row per table, like a directory.
+<kbd>Enter</kbd> opens one; <kbd>q</kbd> comes back to the list without reading
+the log again. A log downloaded or piped in is refused with the names of its
+tables; `--table` picks one.
+
+| PX4 ULog (`.ulg`) | |
+|---|---|
+| A table per topic | Named for the topic; `sensor_accel.0`, `sensor_accel.1` when it has several instances. `timestamp` is a duration since boot; nested types are `outer.inner`, `outer[0].inner` for an array of them; a number array is an Array column, a `char` array text. `_padding` fields are left out |
+| `logged_messages` | `timestamp`, `level` (`error`, `warning`, `info`, ...), `tag`, `message` |
+| `parameters` | `name`, `type`, `value`, and the `timestamp` of a change made in flight (null for the value the log started with) |
+| Info tab | The version, dropouts, info messages (`sys_name`, `ver_hw`, ...) and each parameter's starting value |
+
+| ArduPilot DataFlash (`.bin`) | |
+|---|---|
+| A table per message type | Named for the type (`GPS`, `ATT`, `PARM`, ...), a column per label, typed by its format character |
+| `TimeUS`, `TimeMS` | A duration since boot |
+| `c`, `C`, `e`, `E` | Hundredths, as a float |
+| `L` | Degrees (latitude, longitude), as a float |
+| `a` | An Array of 32 `i16` |
+| Units | From `FMTU` and `UNIT`, on the Info panel's Schema tab; an integer field `FMTU` gives a multiplier (`MULT`) is scaled by it |
+| Info tab | Message types and their record counts, formats and lengths |
+
+- A ULog file is known by its first bytes. A DataFlash log is known by its first
+  record, an `FMT` that defines `FMT`, whatever it is called.
+- A damaged stretch is passed over to the next ULog sync marker or DataFlash
+  record header; a log cut off mid-message keeps what it holds. The Notes tab
+  says how many bytes were passed over.
+- ULog appended data (written after a crash) is read with the rest.
+- At most 67,108,864 messages are indexed in one log.
 
 ### VCD value change dumps
 

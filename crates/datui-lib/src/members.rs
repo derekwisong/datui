@@ -33,6 +33,12 @@ pub fn holder_of(path: &Path, head: &[u8]) -> Option<FileFormat> {
     if crate::elf::looks_like(head) {
         return Some(FileFormat::Elf);
     }
+    if crate::ulog::looks_like(head) {
+        return Some(FileFormat::Ulog);
+    }
+    if crate::dataflash::looks_like(head) {
+        return Some(FileFormat::Dataflash);
+    }
     None
 }
 
@@ -94,6 +100,14 @@ pub fn tables(file: &Path, format: FileFormat) -> color_eyre::Result<Vec<Table>>
         FileFormat::Sqlite => crate::sqlite::tables(file),
         FileFormat::Numpy => crate::numpy::tables(file),
         FileFormat::Elf => Ok(crate::elf::tables()),
+        // A log's tables are what its indexing pass found: listed once it has been
+        // opened, and not read here, where the home screen waits.
+        FileFormat::Ulog => crate::indexed::peek::<crate::ulog::Index>(file)
+            .map(|index| crate::ulog::tables(&index))
+            .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables.")),
+        FileFormat::Dataflash => crate::indexed::peek::<crate::dataflash::Index>(file)
+            .map(|index| crate::dataflash::tables(&index))
+            .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables.")),
         other => Err(color_eyre::eyre::eyre!(
             "A {} file holds one table.",
             other.name()

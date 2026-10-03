@@ -19,6 +19,7 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - SQLite databases: one of several tables and one of a single table, with sqlite3
 - NumPy arrays and archives: each dtype, structured, 2-D in both orders, .npz
 - A tiny ELF executable, written by hand with struct
+- Flight logs: a PX4 ULog and an ArduPilot DataFlash log, written by hand with struct
 
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
@@ -1484,6 +1485,118 @@ def generate_elf():
     print(f"Generated: {out}")
 
 
+def _ulog_message(kind, payload):
+    return struct.pack("<HB", len(payload), ord(kind)) + payload
+
+
+def _ulog_key(key, value):
+    key = key.encode()
+    return bytes([len(key)]) + key + value
+
+
+def generate_ulog(path):
+    """A small PX4 ULog: a nested format, a topic with two instances and one with one,
+    info, parameters (one changed in flight), logged text, a dropout, a damaged stretch
+    before a sync marker, and data cut off at the end."""
+    sync = bytes([0x2F, 0x73, 0x13, 0x20, 0x25, 0x0C, 0xBB, 0x12])
+    log = b"ULog\x01\x12\x35" + bytes([1]) + struct.pack("<Q", 1_000)
+    log += _ulog_message("B", bytes(40))
+    log += _ulog_message("F", b"vec3:float x;float y;float z;")
+    log += _ulog_message(
+        "F",
+        b"sensor_accel:uint64_t timestamp;uint32_t device_id;vec3 accel;float temperature;"
+        b"int16_t[3] raw;uint8_t[2] _padding0;",
+    )
+    log += _ulog_message(
+        "F", b"vehicle_status:uint64_t timestamp;uint8_t arming_state;bool failsafe;char[8] mode;"
+    )
+    log += _ulog_message("I", _ulog_key("char[3] sys_name", b"PX4"))
+    log += _ulog_message("I", _ulog_key("char[7] ver_hw", b"SITL_V1"))
+    log += _ulog_message("P", _ulog_key("float MPC_XY_VEL_MAX", struct.pack("<f", 12.0)))
+    log += _ulog_message("P", _ulog_key("int32_t COM_ARM_WO_GPS", struct.pack("<i", 1)))
+    for multi, msg_id, name in [(0, 1, b"sensor_accel"), (1, 2, b"sensor_accel"), (0, 3, b"vehicle_status")]:
+        log += _ulog_message("A", struct.pack("<BH", multi, msg_id) + name)
+
+    def accel(msg_id, t, i, padded):
+        body = struct.pack("<HQI", msg_id, t, 100 + msg_id)
+        body += struct.pack("<ffff", i * 0.5, -i * 0.25, 9.81, 30.0 + msg_id)
+        body += struct.pack("<hhh", i, -i, 1000)
+        if padded:
+            body += bytes(2)
+        return _ulog_message("D", body)
+
+    for i in range(100):
+        t = 10_000 + i * 1_000
+        log += accel(1, t, i, i % 2 == 0)
+        if i % 2 == 0:
+            log += accel(2, t + 500, i, False)
+        if i % 10 == 0:
+            mode = (b"MANUAL" if i < 50 else b"MISSION").ljust(8, b"\0")
+            log += _ulog_message("D", struct.pack("<HQB?", 3, t, 2 if i >= 20 else 1, i == 70) + mode)
+        if i == 20:
+            log += _ulog_message("L", b"6" + struct.pack("<Q", t) + b"Armed by RC")
+        if i == 40:
+            log += _ulog_message("C", b"4" + struct.pack("<HQ", 7, t) + b"Low battery")
+            log += _ulog_message("P", _ulog_key("float MPC_XY_VEL_MAX", struct.pack("<f", 8.0)))
+        if i == 60:
+            log += _ulog_message("O", struct.pack("<H", 25))
+        if i == 80:
+            log += bytes([0xEE] * 9) + _ulog_message("S", sync)
+    cut = accel(1, 999_999, 1, False)
+    log += cut[:-6]
+    path.write_bytes(log)
+
+
+def _df_fmt(type_id, name, fmt, labels):
+    sizes = {"Q": 8, "q": 8, "B": 1, "b": 1, "h": 2, "H": 2, "i": 4, "I": 4, "f": 4,
+             "d": 8, "n": 4, "N": 16, "Z": 64, "c": 2, "C": 2, "e": 4, "E": 4, "L": 4, "M": 1}
+    length = 89 if type_id == 0x80 else 3 + sum(sizes[c] for c in fmt)
+    return (bytes([0xA3, 0x95, 0x80, type_id, length]) + name.encode().ljust(4, b"\0")
+            + fmt.encode().ljust(16, b"\0") + labels.encode().ljust(64, b"\0"))
+
+
+def generate_dataflash(path):
+    """A small ArduPilot DataFlash log: FMT, UNIT, MULT and FMTU, attitude and GPS
+    records interleaved, parameters and messages, a stray byte, and a record cut off at
+    the end."""
+    log = _df_fmt(0x80, "FMT", "BBnNZ", "Type,Length,Name,Format,Columns")
+    log += _df_fmt(129, "UNIT", "QbZ", "TimeUS,Id,Label")
+    log += _df_fmt(130, "MULT", "Qbd", "TimeUS,Id,Mult")
+    log += _df_fmt(131, "FMTU", "QBNN", "TimeUS,FmtType,UnitIds,MultIds")
+    log += _df_fmt(132, "PARM", "QNf", "TimeUS,Name,Value")
+    log += _df_fmt(133, "MSG", "QZ", "TimeUS,Message")
+    log += _df_fmt(140, "ATT", "QccC", "TimeUS,Roll,Pitch,Yaw")
+    log += _df_fmt(141, "GPS", "QBLLeI", "TimeUS,Status,Lat,Lng,Alt,Ms")
+    head = lambda t: bytes([0xA3, 0x95, t])
+    for uid, label in [(b"s", "s"), (b"d", "deg"), (b"D", "deglatitude"), (b"U", "deglongitude"), (b"m", "m")]:
+        log += head(129) + struct.pack("<Q", 0) + uid + label.encode().ljust(64, b"\0")
+    for mid, mult in [(b"-", 0.0), (b"0", 1.0), (b"B", 0.01), (b"C", 0.001)]:
+        log += head(130) + struct.pack("<Q", 0) + mid + struct.pack("<d", mult)
+    fmtu = lambda t, units, mults: head(131) + struct.pack("<QB", 0, t) + units.encode().ljust(16, b"\0") + mults.encode().ljust(16, b"\0")
+    log += fmtu(140, "sddd", "F000")
+    log += fmtu(141, "s-DUm-", "F-GGB-")
+    log += head(132) + struct.pack("<Q", 0) + b"ARMING_CHECK".ljust(16, b"\0") + struct.pack("<f", 1.0)
+    for i in range(200):
+        t = 1_000_000 + i * 20_000
+        log += head(140) + struct.pack("<QhhH", t, 150 + i, -250, (i * 100) % 36000)
+        if i % 4 == 0:
+            log += head(141) + struct.pack("<QBiiiI", t + 5, 3, 473977418 + i, 85455939 - i, 48850 + i, 1000 * i)
+        if i == 50:
+            log += head(133) + struct.pack("<Q", t) + b"Mission: 1 WP".ljust(64, b"\0")
+        if i == 120:
+            log += b"\x00"
+    log += head(140) + struct.pack("<Q", 9_999_999)
+    path.write_bytes(log)
+
+
+def generate_flight_logs():
+    out = OUTPUT_DIR / "flight"
+    out.mkdir(exist_ok=True)
+    generate_ulog(out / "flight.ulg")
+    generate_dataflash(out / "00000042.BIN")
+    print(f"Generated: {out}")
+
+
 def _vlq(n):
     """A MIDI variable-length quantity: seven bits a byte, high bit on all but the last."""
     out = [n & 0x7F]
@@ -1726,6 +1839,9 @@ def main():
 
     print("\n20. Generating an ELF file...")
     generate_elf()
+
+    print("\n21. Generating flight logs...")
+    generate_flight_logs()
 
     print("\nSample data generation complete!")
 

@@ -174,6 +174,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "flight_log"
+path = "fuzz_targets/flight_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "hex_input"
 path = "fuzz_targets/hex_input.rs"
 test = false

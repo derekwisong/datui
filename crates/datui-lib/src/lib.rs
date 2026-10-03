@@ -67,6 +67,7 @@ pub mod config;
 pub mod copy_modal;
 pub mod csv_dialect;
 pub mod data_quality;
+pub mod dataflash;
 pub mod delimited_spec;
 pub mod discover;
 pub mod distribution_fit;
@@ -96,6 +97,7 @@ mod hex_keys;
 pub mod hex_view;
 pub mod hf_splits;
 pub mod home;
+pub mod indexed;
 pub mod inspector_bytes;
 pub mod inspector_drill;
 pub mod inspector_modal;
@@ -157,6 +159,7 @@ pub mod tee;
 pub mod template;
 pub mod terminal_input;
 pub mod text_formats;
+pub mod ulog;
 mod unfinished;
 pub mod value_counts;
 pub mod value_counts_modal;
@@ -225,7 +228,9 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         | FileFormat::Fix
         | FileFormat::Sdf
         | FileFormat::Numpy
-        | FileFormat::Elf => None,
+        | FileFormat::Elf
+        | FileFormat::Ulog
+        | FileFormat::Dataflash => None,
     }
 }
 
@@ -16845,9 +16850,14 @@ impl App {
         // A format spec may read it: by its glob, or by magic the open looks for.
         let a_spec_may_read = !self.formats.by_glob(&path, false).is_empty()
             || self.formats.specs.iter().any(|f| !f.spec.magic.is_empty());
+        // A table inside a file of tables (`flight.ulg/sensor_accel.1`) has the file's
+        // name in front, and a log found by its first bytes (`00000042.BIN`) a name
+        // that says nothing.
         if kind == discover::EntryKind::File
             && discover::unreadable_by_name(&path)
             && !a_spec_may_read
+            && crate::members::split(&path).is_none()
+            && crate::members::holder(&path).is_none()
         {
             self.home.status = Some(discover::NO_READER.to_string());
             return None;
@@ -19865,7 +19875,7 @@ impl App {
     fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
         let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
         color_eyre::eyre::eyre!(
-            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's, an ELF file's or an NMEA log's, or a Hugging Face dataset's split."
+            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's, an ELF file's, a flight log's or an NMEA log's, or a Hugging Face dataset's split."
         )
     }
 
@@ -20270,6 +20280,42 @@ impl App {
                 format: FileFormat::Sqlite,
             }),
         }
+    }
+
+    /// What opening a ULog or DataFlash log reads: the table `--table` names, or its
+    /// only one, decoded from the file where it is shown; or none yet when it has
+    /// several. The pass that indexes the log is kept, so a table chosen from the list
+    /// reads nothing again.
+    fn scan_flight_log(
+        file: &Path,
+        format: FileFormat,
+        options: &OpenOptions,
+        report: &mut ReadReport,
+    ) -> Result<Scan> {
+        report.format = Some(format);
+        let wanted = options.table.as_deref();
+        let opened = if format == FileFormat::Ulog {
+            match crate::ulog::open(file, wanted)? {
+                crate::ulog::Open::Table { lf, opened } => Ok((lf, opened)),
+                crate::ulog::Open::Several(tables) => Err(tables),
+            }
+        } else {
+            match crate::dataflash::open(file, wanted)? {
+                crate::dataflash::Open::Table { lf, opened } => Ok((lf, opened)),
+                crate::dataflash::Open::Several(tables) => Err(tables),
+            }
+        };
+        Ok(match opened {
+            Ok((lf, opened)) => {
+                report.opened = Some(Arc::new(*opened));
+                (*lf).into()
+            }
+            Err(tables) => Scan::Tables {
+                file: file.to_path_buf(),
+                tables,
+                format,
+            },
+        })
     }
 
     /// What opening the NumPy file `file` reads: an `.npy` file's array, or the array
@@ -20743,6 +20789,8 @@ impl App {
                 | Some(FileFormat::Sdf)
                 | Some(FileFormat::Numpy)
                 | Some(FileFormat::Elf)
+                | Some(FileFormat::Ulog)
+                | Some(FileFormat::Dataflash)
                 | None => {
                     // The home screen asks `reads_many_files` before it offers a
                     // directory as one dataset, so a format that is refused here and
@@ -20763,7 +20811,7 @@ impl App {
                         .into());
                     }
                     return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs, SDF files, NumPy arrays and ELF files one at a time)"
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs, SDF files, NumPy arrays, ELF files and flight logs one at a time)"
                     ));
                 }
             }
@@ -20864,6 +20912,9 @@ impl App {
                 }
                 Some(FileFormat::Sqlite) => return Self::scan_sqlite(path, options, report),
                 Some(FileFormat::Numpy) => return Self::scan_numpy(path, options, report),
+                Some(format @ (FileFormat::Ulog | FileFormat::Dataflash)) => {
+                    return Self::scan_flight_log(path, format, options, report);
+                }
                 Some(FileFormat::Elf) => {
                     let (lf, opened) = crate::elf::open(path, options.table.as_deref())?;
                     report.opened = Some(Arc::new(opened));

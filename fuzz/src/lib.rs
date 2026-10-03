@@ -9,6 +9,7 @@ pub mod config_parse;
 pub mod elf_symbols;
 pub mod fix_dict;
 pub mod fix_parse;
+pub mod flight_log;
 pub mod format_spec;
 pub mod fuzzy_match;
 pub mod glob_match;

@@ -986,7 +986,9 @@ pub fn source(record: &OpenRecord) -> Source {
         | FileFormat::Fix
         | FileFormat::Sdf
         | FileFormat::Numpy
-        | FileFormat::Elf => {
+        | FileFormat::Elf
+        | FileFormat::Ulog
+        | FileFormat::Dataflash => {
             return Source::Placeholder {
                 what: format!(
                     "{}: Polars has no reader for this format; load it here.",

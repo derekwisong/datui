@@ -20,6 +20,8 @@ mod elf;
 #[cfg(feature = "cloud")]
 #[path = "common/fake_s3.rs"]
 mod fake_s3;
+#[path = "formats/flight_logs.rs"]
+mod flight_logs;
 #[path = "formats/delimited.rs"]
 mod formats_delimited;
 #[path = "formats/follow.rs"]

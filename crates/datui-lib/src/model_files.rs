@@ -19,6 +19,28 @@ use polars::prelude::*;
 
 use crate::FileFormat;
 
+/// What datui does with a SafeTensors file: see [`crate::readers`].
+pub(crate) const SAFETENSORS: crate::readers::Reader = crate::readers::Reader {
+    scan,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like_safetensors(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::EVERYWHERE,
+    }],
+    ..crate::readers::BASE
+};
+
+/// What datui does with a GGUF file: see [`crate::readers`].
+pub(crate) const GGUF: crate::readers::Reader = crate::readers::Reader {
+    scan,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like_gguf(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::EVERYWHERE,
+    }],
+    ..crate::readers::BASE
+};
+
 /// The largest SafeTensors header read: the limit the reference implementation sets.
 pub const MAX_SAFETENSORS_HEADER: u64 = 100_000_000;
 /// The largest `model.safetensors.index.json` read. Real ones are a few hundred KB.
@@ -1309,6 +1331,95 @@ pub fn build(
         metadata,
     };
     Ok((df.lazy(), summary))
+}
+
+/// Each type's share of the parameters, most first: `Q4_K 87% · Q6_K 12% · F32 <1%`.
+/// By tensors when no tensor has a parameter count.
+fn type_mix(types: &[TypeShare], sep: &str) -> String {
+    let by_params = types.iter().any(|t| t.params > 0);
+    let total: u64 = if by_params {
+        types.iter().map(|t| t.params).fold(0, u64::saturating_add)
+    } else {
+        types.iter().map(|t| t.tensors as u64).sum()
+    };
+    types
+        .iter()
+        .map(|t| {
+            let part = if by_params {
+                t.params
+            } else {
+                t.tensors as u64
+            };
+            let pct = if total == 0 {
+                0.0
+            } else {
+                part as f64 * 100.0 / total as f64
+            };
+            if pct > 0.0 && pct < 1.0 {
+                format!("{} <1%", t.name)
+            } else {
+                format!("{} {:.0}%", t.name, pct)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// The Model tab: the model's totals, then its metadata as key and value, every value
+/// whole.
+pub fn detail(model: &ModelSummary) -> crate::text_formats::Detail {
+    use crate::widgets::info::{count_of, format_bytes, group_u64, short_count};
+    let sep = format!(" {} ", crate::glyphs::get().middot);
+    let mut head = model.kind.label();
+    head.push_str(&sep);
+    head.push_str(&count_of(model.tensors as u64, "tensor", "tensors"));
+    if model.files > 1 {
+        head.push_str(&sep);
+        head.push_str(&count_of(model.files as u64, "file", "files"));
+    }
+    let mut lines = vec![
+        head,
+        format!(
+            "Parameters: {}{}{sep}Size: {}",
+            group_u64(model.params),
+            // The short form only where it is shorter.
+            if model.params >= 1000 {
+                format!(" ({})", short_count(model.params))
+            } else {
+                String::new()
+            },
+            format_bytes(model.bytes)
+        ),
+    ];
+    if !model.types.is_empty() {
+        lines.push(format!("Types: {}", type_mix(&model.types, &sep)));
+    }
+    crate::text_formats::Detail {
+        tab: "Model",
+        lines,
+        list_title: "Metadata",
+        list: model.metadata.clone(),
+        // A model's schema is the same seven columns every time; what is particular
+        // to it is here.
+        first: true,
+        own_columns: true,
+        ..Default::default()
+    }
+}
+
+/// What a model's header says besides its tensors, as the dataset takes it.
+pub(crate) fn opened(summary: &ModelSummary) -> crate::members::Opened {
+    crate::members::Opened {
+        detail: Some(std::sync::Arc::new(detail(summary))),
+        ..Default::default()
+    }
+}
+
+/// The scan of model files: their tensors, with the header's totals and metadata.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let (lf, summary) = read_model(input.paths, input.format)?;
+    input.report.opened = Some(std::sync::Arc::new(opened(&summary)));
+    Ok(lf.into())
 }
 
 #[cfg(test)]

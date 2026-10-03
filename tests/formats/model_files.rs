@@ -6,7 +6,8 @@
 
 use crate::common::{self, drain_events, pump_open_until_loaded};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::model_files::{MetaValue, ModelKind};
+use datui::model_files::MetaValue;
+use datui::text_formats::Detail;
 use datui::{App, AppEvent, InputMode, OpenOptions};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
@@ -14,6 +15,33 @@ use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 use std::path::PathBuf;
 use std::sync::mpsc;
+
+/// The Model tab of the dataset on screen: what the model's header said.
+fn model_tab(app: &App) -> Detail {
+    let detail = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .format_detail()
+        .cloned()
+        .expect("a Model tab");
+    assert_eq!(detail.tab, "Model");
+    detail
+}
+
+/// Whether a line of `detail` says `text`.
+fn says(detail: &Detail, text: &str) -> bool {
+    detail.lines.iter().any(|line| line.contains(text))
+}
+
+/// The metadata value `key` of `detail`'s list.
+fn meta(detail: &Detail, key: &str) -> Option<MetaValue> {
+    detail
+        .list
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
 
 fn models() -> PathBuf {
     common::ensure_sample_data();
@@ -116,15 +144,15 @@ fn a_safetensors_file_opens_as_its_tensors() {
         &DataType::List(Box::new(DataType::UInt64))
     );
 
-    let model = app.data_table_state.as_ref().unwrap().model().unwrap();
-    assert_eq!(model.kind, ModelKind::SafeTensors);
-    assert_eq!((model.tensors, model.params, model.bytes), (4, 201, 680));
-    assert!(
-        model
-            .metadata
-            .contains(&("format".to_string(), MetaValue::Text("pt".to_string()))),
-        "__metadata__ goes to the summary: {:?}",
-        model.metadata
+    let model = model_tab(&app);
+    assert!(model.lines[0].starts_with("SafeTensors"), "{model:?}");
+    for said in ["4 tensors", "Parameters: 201", "Size: 680 B"] {
+        assert!(says(&model, said), "{said}: {model:?}");
+    }
+    assert_eq!(
+        meta(&model, "format"),
+        Some(MetaValue::Text("pt".to_string())),
+        "__metadata__ goes to the tab"
     );
 }
 
@@ -146,17 +174,13 @@ fn a_gguf_file_opens_with_its_metadata_on_the_model_tab() {
         .collect();
     assert_eq!(bytes, [100 * 144, 256 * 256 / 32 * 34, 256 * 4]);
 
-    let model = app.data_table_state.as_ref().unwrap().model().unwrap();
-    assert_eq!(model.kind, ModelKind::Gguf { version: 3 });
-    assert_eq!(model.types[0].name, "Q8_0", "most parameters first");
-    let value = |key: &str| {
-        model
-            .metadata
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_else(|| panic!("no {key}"))
-    };
+    let model = model_tab(&app);
+    assert!(model.lines[0].starts_with("GGUF v3"), "{model:?}");
+    assert!(
+        says(&model, "Types: Q8_0"),
+        "most parameters first: {model:?}"
+    );
+    let value = |key: &str| meta(&model, key).unwrap_or_else(|| panic!("no {key}"));
     assert_eq!(
         value("tokenizer.ggml.tokens"),
         MetaValue::List {
@@ -248,8 +272,11 @@ fn a_sharded_checkpoint_opens_as_one_table_from_its_index_or_its_directory() {
             path.display()
         );
         let state = app.data_table_state.as_ref().unwrap();
-        let model = state.model().unwrap();
-        assert_eq!((model.files, model.tensors), (2, 3));
+        let model = model_tab(&app);
+        assert!(
+            says(&model, "3 tensors") && says(&model, "2 files"),
+            "{model:?}"
+        );
         assert!(
             !state.has_notes(),
             "the config beside the shards is not data left out: {:?}",
@@ -258,12 +285,8 @@ fn a_sharded_checkpoint_opens_as_one_table_from_its_index_or_its_directory() {
     }
     // The index's own metadata comes along.
     let (app, _rx) = open(vec![sharded.join("model.safetensors.index.json")]);
-    let model = app.data_table_state.as_ref().unwrap().model().unwrap();
-    assert!(
-        model.metadata.iter().any(|(k, _)| k == "total_size"),
-        "{:?}",
-        model.metadata
-    );
+    let model = model_tab(&app);
+    assert!(meta(&model, "total_size").is_some(), "{:?}", model.list);
 }
 
 #[test]
@@ -331,7 +354,7 @@ fn a_corrupt_header_is_an_error_not_a_crash() {
 /// in-process stand-in (`common/fake_s3.rs`), which counts every byte it sends.
 #[cfg(feature = "cloud")]
 mod remote {
-    use super::{frame, models, strings};
+    use super::{frame, meta, model_tab, models, says, strings};
     use crate::common::{next_event, pump_open_until_loaded};
     use crate::fake_s3::FakeS3;
     use datui::model_files::FIRST_SAFETENSORS_RANGE;
@@ -400,8 +423,7 @@ mod remote {
         assert_eq!(wire.gets, 1, "{wire:?}");
         assert_eq!(wire.bytes, FIRST_SAFETENSORS_RANGE, "{wire:?}");
         assert_eq!(frame(&app).height(), 4);
-        let state = app.data_table_state.as_ref().unwrap();
-        assert_eq!(state.model().unwrap().tensors, 4);
+        assert!(says(&model_tab(&app), "4 tensors"));
         assert!(!app.awaiting_download_confirmation(), "nothing to download");
     }
 
@@ -422,8 +444,7 @@ mod remote {
             bytes.len()
         );
         assert_eq!(frame(&app).height(), 3);
-        let state = app.data_table_state.as_ref().unwrap();
-        assert!(state.model().unwrap().kind.label().starts_with("GGUF"));
+        assert!(model_tab(&app).lines[0].starts_with("GGUF"));
         assert_eq!(
             app.open_path(),
             Some(std::path::Path::new(&url)),
@@ -457,9 +478,12 @@ mod remote {
                 "model-00002-of-00002.safetensors"
             ]
         );
-        let model = app.data_table_state.as_ref().unwrap().model().unwrap();
-        assert_eq!((model.files, model.tensors), (2, 3));
-        assert!(model.metadata.iter().any(|(k, _)| k == "total_size"));
+        let model = model_tab(app);
+        assert!(
+            says(&model, "3 tensors") && says(&model, "2 files"),
+            "{model:?}"
+        );
+        assert!(meta(&model, "total_size").is_some());
     }
 
     /// A remote index names its shards beside its own URL: they are read there, by the
@@ -564,15 +588,7 @@ mod remote {
         }
         assert_eq!(app.error_message(), None);
         assert_eq!(frame(&app).height(), 4);
-        assert_eq!(
-            app.data_table_state
-                .as_ref()
-                .unwrap()
-                .model()
-                .unwrap()
-                .tensors,
-            4
-        );
+        assert!(says(&model_tab(&app), "4 tensors"));
     }
 
     /// A hostile header over the network is refused by the lengths it states, before

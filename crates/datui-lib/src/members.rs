@@ -11,53 +11,10 @@ use std::path::{Path, PathBuf};
 use crate::FileFormat;
 pub use crate::sqlite::{Pick, Table};
 
-/// Bytes looked at to tell a file by its first bytes.
-const HEAD: usize = 512;
-
 /// The format of a file that can hold several tables, by its first bytes (and, for a
 /// NumPy archive, its name: a zip file is many things).
 pub fn holder(path: &Path) -> Option<FileFormat> {
-    let mut head = [0u8; HEAD];
-    let head = read_head(path, &mut head)?;
-    holder_of(path, head)
-}
-
-/// [`holder`], for a file whose first bytes are in hand.
-pub fn holder_of(path: &Path, head: &[u8]) -> Option<FileFormat> {
-    if crate::sqlite::looks_like(head) {
-        return Some(FileFormat::Sqlite);
-    }
-    if crate::numpy::is_archive(path, head) {
-        return Some(FileFormat::Numpy);
-    }
-    if crate::elf::looks_like(head) {
-        return Some(FileFormat::Elf);
-    }
-    if crate::ulog::looks_like(head) {
-        return Some(FileFormat::Ulog);
-    }
-    if crate::dataflash::looks_like(head) {
-        return Some(FileFormat::Dataflash);
-    }
-    if crate::candump::looks_like(head) {
-        return Some(FileFormat::Candump);
-    }
-    None
-}
-
-fn read_head<'a>(path: &Path, buf: &'a mut [u8]) -> Option<&'a [u8]> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut filled = 0;
-    while filled < buf.len() {
-        match file.read(&mut buf[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return None,
-        }
-    }
-    Some(&buf[..filled])
+    crate::readers::sniff_file(path, crate::readers::Asked::Tables)
 }
 
 /// The path of the table `name` inside `file`, as the home screen lists it and recents
@@ -152,33 +109,22 @@ fn split_inside(path: &Path, holds: impl Fn(&Path) -> bool) -> Option<(PathBuf, 
 /// The tables of `file`, a file of `format`, as the home screen lists them. Cheap: a
 /// database's schema, an archive's directory and its arrays' headers.
 pub fn tables(file: &Path, format: FileFormat) -> color_eyre::Result<Vec<Table>> {
-    match format {
-        FileFormat::Sqlite => crate::sqlite::tables(file),
-        FileFormat::Numpy => crate::numpy::tables(file),
-        FileFormat::Elf => Ok(crate::elf::tables()),
-        // A log's tables are what its indexing pass found: listed once it has been
-        // opened, and not read here, where the home screen waits.
-        FileFormat::Ulog => crate::indexed::peek::<crate::ulog::Index>(file)
-            .map(|index| crate::ulog::tables(&index))
-            .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables.")),
-        FileFormat::Dataflash => crate::indexed::peek::<crate::dataflash::Index>(file)
-            .map(|index| crate::dataflash::tables(&index))
-            .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables.")),
-        FileFormat::Candump => crate::candump::listed(file)
-            .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables.")),
-        other => Err(color_eyre::eyre::eyre!(
+    match crate::readers::of(format).tables {
+        Some(tables) => tables(file),
+        None => Err(color_eyre::eyre::eyre!(
             "A {} file holds one table.",
-            other.name()
+            format.name()
         )),
     }
 }
 
 /// What a file of tables calls one of them, singular and plural.
 pub fn noun(format: FileFormat) -> (&'static str, &'static str) {
-    match format {
-        FileFormat::Numpy => ("array", "arrays"),
-        _ => ("table", "tables"),
-    }
+    format
+        .descriptor()
+        .tables
+        .as_ref()
+        .map_or(("table", "tables"), |t| t.noun)
 }
 
 /// The table `wanted` names among `tables`, or the file's one table of its own when

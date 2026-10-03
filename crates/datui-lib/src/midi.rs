@@ -18,6 +18,19 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::prelude::*;
 
+use crate::widgets::info::{clock, count_of, group_u64};
+
+/// What datui does with a MIDI file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like_midi(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::EVERYWHERE,
+    }],
+    ..crate::readers::BASE
+};
+
 /// The largest file read. MIDI files are kilobytes; a song with a dense controller
 /// stream is a few megabytes.
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -1045,6 +1058,148 @@ pub fn notes(summary: &MidiSummary) -> Vec<crate::notes::Note> {
         });
     }
     out
+}
+
+/// The MIDI tab's lines above its list: format and timing, length and counts, tempo,
+/// meter and key, copyright.
+fn facts(midi: &MidiSummary, sep: &str) -> Vec<String> {
+    let mut head = match midi.format {
+        Some(format) => format!("MIDI format {format}"),
+        None => "MIDI".to_string(),
+    };
+    if midi.files > 1 {
+        head.push_str(sep);
+        head.push_str(&count_of(midi.files as u64, "file", "files"));
+    }
+    if let Some(division) = midi.division {
+        head.push_str(sep);
+        head.push_str(&division.label());
+    }
+    head.push_str(sep);
+    head.push_str(&count_of(midi.track_count as u64, "track", "tracks"));
+    let mut counts = format!(
+        "Length: {}{sep}{}{sep}{}",
+        clock(midi.length_seconds),
+        count_of(midi.events as u64, "event", "events"),
+        count_of(midi.notes as u64, "note", "notes"),
+    );
+    if midi.unended > 0 {
+        let n = midi.unended;
+        let verb = if n == 1 { "ends" } else { "end" };
+        counts.push_str(&format!(" ({} never {verb})", group_u64(n as u64)));
+    }
+    let mut lines = vec![head, counts];
+    let mut music = Vec::new();
+    // In microseconds a quarter, so the fewest is the fastest.
+    if let Some((first, fastest, slowest)) = midi.tempo {
+        let bpm = bpm;
+        let n = midi.tempo_changes;
+        let changes = format!(
+            "{} {}",
+            group_u64(n as u64),
+            if n == 1 { "change" } else { "changes" }
+        );
+        music.push(match (midi.files > 1, slowest == fastest) {
+            (_, true) => format!("Tempo: {} bpm", bpm(first)),
+            // Of many songs, the first one's tempo says nothing of the rest.
+            (true, false) => format!("Tempo: {}-{} bpm", bpm(slowest), bpm(fastest)),
+            (false, false) => format!(
+                "Tempo: {} bpm ({}-{}, {changes})",
+                bpm(first),
+                bpm(slowest),
+                bpm(fastest)
+            ),
+        });
+    }
+    // The first of each, which for a directory of songs would be one song's.
+    if midi.files == 1 {
+        if let Some(time) = &midi.time_signature {
+            music.push(format!("Time: {time}"));
+        }
+        if let Some(key) = &midi.key {
+            music.push(format!("Key: {key}"));
+        }
+    }
+    if !music.is_empty() {
+        lines.push(music.join(sep));
+    }
+    if let Some(copyright) = midi.copyright.as_ref().filter(|_| midi.files == 1) {
+        lines.push(format!("Copyright: {copyright}"));
+    }
+    lines
+}
+
+/// Each track as a key and a value: `2 Piano` and `2,000 events · 600 notes · channel 1`.
+fn track_rows(midi: &MidiSummary, sep: &str) -> Vec<(String, crate::model_files::MetaValue)> {
+    midi.tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let key = match &t.name {
+                Some(name) if !name.trim().is_empty() => format!("{} {}", i + 1, name.trim()),
+                _ => (i + 1).to_string(),
+            };
+            let mut parts = vec![count_of(t.events as u64, "event", "events")];
+            if t.notes > 0 {
+                parts.push(count_of(t.notes as u64, "note", "notes"));
+            }
+            if !t.channels.is_empty() {
+                let channels: Vec<String> = t.channels.iter().map(u8::to_string).collect();
+                let label = if channels.len() == 1 {
+                    "channel"
+                } else {
+                    "channels"
+                };
+                parts.push(format!("{label} {}", channels.join(", ")));
+            }
+            if let Some(instrument) = t.instrument.as_deref().filter(|i| !i.trim().is_empty()) {
+                parts.push(instrument.trim().to_string());
+            }
+            (key, crate::model_files::MetaValue::Text(parts.join(sep)))
+        })
+        .collect()
+}
+
+/// The MIDI tab: the header, timing and tempo, then the tracks; for a directory of
+/// songs, the totals, then the files that could not be read.
+pub fn detail(midi: &MidiSummary) -> crate::text_formats::Detail {
+    let sep = format!(" {} ", crate::glyphs::get().middot);
+    let (list_title, list) = if midi.files > 1 {
+        let rows = midi
+            .unreadable
+            .iter()
+            .map(|(file, why)| {
+                (
+                    file.clone(),
+                    crate::model_files::MetaValue::Text(why.clone()),
+                )
+            })
+            .collect();
+        ("Unreadable", rows)
+    } else {
+        ("Tracks", track_rows(midi, &sep))
+    };
+    crate::text_formats::Detail {
+        tab: "MIDI",
+        lines: facts(midi, &sep),
+        list_title,
+        list,
+        // The columns are the same for every file; what is particular to it is here.
+        first: true,
+        own_columns: true,
+        ..Default::default()
+    }
+}
+
+/// The scan of MIDI files: their events, with the header, tracks and tempo.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let (lf, summary) = read_midi(input.paths)?;
+    input.report.opened = Some(Arc::new(crate::members::Opened {
+        detail: Some(Arc::new(detail(&summary))),
+        notes: notes(&summary),
+        ..Default::default()
+    }));
+    Ok(lf.into())
 }
 
 #[cfg(test)]

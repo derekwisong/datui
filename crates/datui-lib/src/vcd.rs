@@ -21,6 +21,25 @@ use crate::segments::{Converted, Segments};
 use crate::text_formats::{Detail, Pieces, capped_list, count, note};
 use crate::unfinished::Writer;
 
+/// What datui does with a VCD dump: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    convert: Some(|input| {
+        crate::text_formats::read_one(input, |pieces| {
+            convert(input.display, input.options, input.writer, pieces)
+        })
+    }),
+    scan: crate::readers::read_into,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Text,
+        trusted: crate::readers::Trusted {
+            listing: false,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
+    ..crate::readers::BASE
+};
+
 /// The longest token read; a longer one is passed over.
 pub const MAX_TOKEN: usize = 1 << 20;
 /// The most text kept of one header section (`$date`, `$version`, `$comment`).
@@ -810,6 +829,7 @@ pub fn detail(reader: &VcdReader) -> Detail {
         list_title: "Signals",
         list,
         first: true,
+        ..Default::default()
     }
 }
 

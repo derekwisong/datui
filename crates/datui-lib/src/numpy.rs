@@ -30,6 +30,47 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with a NumPy file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    // An archive's compressed array, named by `--table` or found alone.
+    convert: Some(|input| {
+        let ([file], Some(name)) = (input.files, input.options.table.as_deref()) else {
+            return Err(eyre!("Open one array of an archive at a time."));
+        };
+        let (held, lf, opened) = convert(file, name, input.options, input.writer, input.read)?;
+        Ok((
+            crate::segments::Converted {
+                lf,
+                files: vec![held],
+                notes: opened.notes,
+                other_tables: opened.other_tables,
+            },
+            opened.detail,
+        ))
+    }),
+    scan,
+    signatures: &[
+        crate::readers::Signature {
+            says: |head, _| looks_like(head),
+            kind: crate::readers::Kind::Magic,
+            trusted: crate::readers::EVERYWHERE,
+        },
+        // An archive is a zip file named `.npz`: a zip file is many things.
+        crate::readers::Signature {
+            says: |head, file| file.is_some_and(|file| is_archive(file, head)),
+            kind: crate::readers::Kind::Magic,
+            trusted: crate::readers::Trusted {
+                pipe: false,
+                open: crate::readers::Unnamed::Any,
+                listing: false,
+                tables: true,
+            },
+        },
+    ],
+    tables: Some(tables),
+    ..crate::readers::BASE
+};
+
 /// The first six bytes of every `.npy` file.
 pub const MAGIC: &[u8; 6] = b"\x93NUMPY";
 
@@ -1055,6 +1096,7 @@ pub fn detail(header: &Header, archive: Option<(&Path, usize)>, compressed: bool
         list_title: "Fields",
         list,
         first: false,
+        ..Default::default()
     }
 }
 
@@ -1357,6 +1399,29 @@ pub(crate) fn convert(
     let mut opened = opened(array, Some((path, all.len())), true);
     opened.other_tables = crate::members::others(&tables, name);
     Ok((held, lf, opened))
+}
+
+/// The scan of a NumPy file: an `.npy` file's array, or the array of an archive
+/// `--table` names, or its only one, read in place; a compressed one decompressed
+/// first; or none yet when the archive has several.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let file = input.path();
+    Ok(match open(file, input.options.table.as_deref())? {
+        Open::Array { lf, opened } => {
+            input.report.opened = Some(Arc::new(*opened));
+            (*lf).into()
+        }
+        Open::Several(tables) => crate::scan::Scan::Tables {
+            file: file.to_path_buf(),
+            tables,
+            format: input.format,
+        },
+        Open::Compressed { member } => crate::scan::Scan::Unpack {
+            file: file.to_path_buf(),
+            member,
+            format: input.format,
+        },
+    })
 }
 
 #[cfg(test)]

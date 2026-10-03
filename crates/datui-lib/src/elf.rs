@@ -22,6 +22,23 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with an ELF file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
+    // Never in a listing, which would list every executable.
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::Trusted {
+            listing: false,
+            tables: true,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
+    tables: Some(|_| Ok(tables())),
+    ..crate::readers::BASE
+};
+
 /// The first four bytes of every ELF file.
 pub const MAGIC: &[u8; 4] = b"\x7fELF";
 
@@ -308,6 +325,7 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
             list_title: "Sections",
             list,
             first: false,
+            ..Default::default()
         },
         left_out: total - rows,
     })
@@ -355,6 +373,13 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
             units: Vec::new(),
         },
     ))
+}
+
+/// The scan of an ELF file: the table `--table` names, its symbols by default.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let (lf, opened) = open(input.path(), input.options.table.as_deref())?;
+    input.report.opened = Some(Arc::new(opened));
+    Ok(lf.into())
 }
 
 #[cfg(test)]

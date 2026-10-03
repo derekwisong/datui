@@ -538,11 +538,7 @@ impl Conversion {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Conversion::Streams => "Converting Arrow stream",
-            Conversion::Text(FileFormat::Vcd) => "Reading value change dump",
-            Conversion::Text(FileFormat::Fix) => "Reading FIX log",
-            Conversion::Text(FileFormat::Sdf) => "Reading SDF records",
-            Conversion::Text(FileFormat::Numpy) => "Decompressing NumPy array",
-            Conversion::Text(_) => "Reading GPS log",
+            Conversion::Text(format) => format.conversion().label,
         }
     }
 
@@ -550,12 +546,7 @@ impl Conversion {
     pub(crate) fn status(self) -> &'static str {
         match self {
             Conversion::Streams => "Converting Arrow stream...",
-            Conversion::Text(FileFormat::Gpx) => "Reading GPX...",
-            Conversion::Text(FileFormat::Vcd) => "Reading VCD...",
-            Conversion::Text(FileFormat::Fix) => "Reading FIX log...",
-            Conversion::Text(FileFormat::Sdf) => "Reading SDF...",
-            Conversion::Text(FileFormat::Numpy) => "Decompressing...",
-            Conversion::Text(_) => "Reading NMEA...",
+            Conversion::Text(format) => format.conversion().status,
         }
     }
 }
@@ -2270,12 +2261,12 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(
             loader.current().unwrap().phase().label(),
-            ("Reading GPS log", 10)
+            ("Reading NMEA log", 10)
         );
         read.store(100, Ordering::Relaxed);
         assert_eq!(
             loader.current().unwrap().phase().label(),
-            ("Reading GPS log", 20),
+            ("Reading NMEA log", 20),
             "the bar moves with the bytes read"
         );
         assert!(loader.waits());

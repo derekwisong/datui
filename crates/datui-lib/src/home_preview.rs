@@ -215,19 +215,14 @@ pub fn previewable(entry: &Entry, max_bytes: u64) -> bool {
     let Some(size) = entry.size else {
         return false;
     };
-    match FileFormat::from_path(&entry.path) {
-        // The first page of a Parquet file is its first row group, whatever the file.
-        Some(FileFormat::Parquet) => {
+    let preview = FileFormat::from_path(&entry.path).and_then(|f| crate::readers::of(f).preview);
+    match preview {
+        // The first page is the first row group, whatever the file.
+        Some(crate::readers::Preview::RowGroup) => {
             let groups = entry.cost.row_groups.unwrap_or(1).max(1) as u64;
             size / groups <= max_bytes
         }
-        Some(
-            FileFormat::Csv
-            | FileFormat::Tsv
-            | FileFormat::Psv
-            | FileFormat::Jsonl
-            | FileFormat::Arrow,
-        ) => size <= max_bytes,
-        _ => false,
+        Some(crate::readers::Preview::Scan) => size <= max_bytes,
+        None => false,
     }
 }

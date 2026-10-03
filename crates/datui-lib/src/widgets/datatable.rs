@@ -340,9 +340,6 @@ pub struct DataTableState {
     /// The lake format whose plain files this dataset is, if it is one. See
     /// [`crate::OpenOptions::read_as_plain_files_of`].
     not_the_table: Option<&'static str>,
-    /// What a SafeTensors or GGUF header said besides its tensors. See
-    /// [`crate::OpenOptions::model`].
-    model: Option<Arc<crate::model_files::ModelSummary>>,
     /// What a read through a format spec found: the spec, why, and its notes.
     format_read: Option<Arc<crate::formats::Read>>,
     /// What a read through a delimited spec found: units and metadata.
@@ -350,12 +347,6 @@ pub struct DataTableState {
     /// The fixed records the data as loaded is, while it still is: a window of a
     /// pristine view starts its columns at the window rather than decoding from row 0.
     fixed_window: Option<Arc<dyn crate::pushdown::Windowed>>,
-    /// The audio file the dataset is, and the root it was opened as: while the view is
-    /// that root, untouched, a window is read straight from the file's frames. See
-    /// [`crate::OpenOptions::audio`].
-    audio: Option<(Arc<crate::audio::AudioSource>, u64)>,
-    /// What a MIDI file said besides its events. See [`crate::OpenOptions::midi`].
-    midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A source that runs the sidebar's filters and sort itself (a SQLite table), while
     /// the data as loaded is the root: see [`Self::pushed_view`].
     pushdown: Option<Arc<dyn crate::pushdown::Pushdown>>,
@@ -365,7 +356,7 @@ pub struct DataTableState {
     read_mode: Option<crate::ReadMode>,
     /// The data was downloaded from a remote source before it was read.
     fetched: bool,
-    /// What a VCD, FIX or SDF file said besides its rows. See [`OpenFacts::detail`].
+    /// What the file said besides its rows. See [`OpenFacts::detail`].
     detail: Option<Arc<crate::text_formats::Detail>>,
     /// Each loaded column's unit, from the file. See [`OpenFacts::units`].
     file_units: Arc<Vec<(String, String)>>,
@@ -940,17 +931,11 @@ pub struct OpenFacts {
     pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
     /// The downloaded file the frame scans, held for as long as the state lives.
     pub download: Option<crate::download::TempDownload>,
-    /// What a model file's header said besides its tensors.
-    pub model: Option<Arc<crate::model_files::ModelSummary>>,
     /// The files a GPS log was read into, which the frame scans.
     pub converted: Vec<crate::download::TempDownload>,
     /// The file's other tables, each as `--table` names it with how many rows it holds
     /// where that is known, for the Info panel's Schema tab. Empty for a file of one.
     pub other_tables: Vec<String>,
-    /// The audio file the frame scans.
-    pub audio: Option<Arc<crate::audio::AudioSource>>,
-    /// What a MIDI file said besides its events.
-    pub midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A source that runs the sidebar's filters and sort itself: a SQLite table.
     pub pushdown: Option<Arc<dyn crate::pushdown::Pushdown>>,
     /// What stops that source's statements when the dataset goes.
@@ -960,11 +945,11 @@ pub struct OpenFacts {
     /// The data was downloaded from a remote source before it was read: not a local
     /// stream's conversion or standard input's spool, which are held as downloads are.
     pub fetched: bool,
-    /// What a VCD, FIX or SDF file said besides its rows, for the Info panel.
+    /// What the file said besides its rows, for the Info panel.
     pub detail: Option<Arc<crate::text_formats::Detail>>,
     /// Rows read straight from a reader that decodes them from the file (a NumPy
-    /// array), and how many it holds: a page deep in the table, and the count, need
-    /// no row index.
+    /// array, an audio file's frames), and how many it holds: a page deep in the table,
+    /// and the count, need no row index.
     pub records: Option<(Arc<dyn crate::pushdown::Windowed>, usize)>,
     /// Each column's unit, where the file says one.
     pub units: Vec<(String, String)>,
@@ -2046,12 +2031,9 @@ impl DataTableState {
             notes: Vec::new(),
             open_notes: Vec::new(),
             not_the_table: None,
-            model: None,
             format_read: None,
             delimited: None,
             fixed_window: None,
-            audio: None,
-            midi: None,
             pushdown: None,
             source_hold: None,
             read_mode: None,
@@ -2198,12 +2180,9 @@ impl DataTableState {
             notes: Vec::new(),
             open_notes: Vec::new(),
             not_the_table: None,
-            model: None,
             format_read: None,
             delimited: None,
             fixed_window: None,
-            audio: None,
-            midi: None,
             pushdown: None,
             source_hold: None,
             read_mode: None,
@@ -2267,11 +2246,8 @@ impl DataTableState {
             format_read,
             delimited,
             download,
-            model,
             converted,
             other_tables,
-            audio,
-            midi,
             pushdown,
             hold,
             read_mode,
@@ -2329,17 +2305,10 @@ impl DataTableState {
         self.format_read = format_read;
         self.delimited = delimited;
         self.download = download;
-        self.model = model;
         self.converted = converted;
         self.other_tables = other_tables;
         self.read_mode = read_mode;
         self.fetched = fetched;
-        if let Some(audio) = audio {
-            // The count is arithmetic on the file's size: nothing to scan for it.
-            self.set_num_rows(audio.frames() as usize);
-            self.audio = Some((audio, self.root_generation));
-        }
-        self.midi = midi;
         self.detail = detail;
         if let Some((window, rows)) = records {
             // The reader knows its rows; a count through the frame would build its row
@@ -6770,30 +6739,16 @@ impl DataTableState {
         notes
     }
 
-    /// The audio file the dataset is, when it is one.
-    pub fn audio(&self) -> Option<&crate::audio::AudioSource> {
-        self.audio.as_ref().map(|(source, _)| source.as_ref())
-    }
-
-    /// The audio file whose frames a window can read directly: the view is the root
-    /// the file was opened as, with nothing applied.
-    fn audio_window(&self) -> Option<&Arc<crate::audio::AudioSource>> {
-        self.audio
-            .as_ref()
-            .filter(|(_, root)| *root == self.root_generation && self.is_pristine())
-            .map(|(source, _)| source)
-    }
-
-    /// The audio file a data-quality run over `scope` reads every frame of, for the
-    /// checks that read the samples whole (clipping, runs of zeros, DC offset): the
-    /// whole source, or a view with nothing applied.
-    pub(crate) fn audio_for_quality(
+    /// The source a full quality run over `scope` reads every row of, for the checks
+    /// that read a source whole (an audio file's signal): the records of the data as
+    /// loaded, or a view with nothing applied.
+    pub(crate) fn window_for_quality(
         &self,
         scope: &crate::data_quality::QualityScope,
-    ) -> Option<Arc<crate::audio::AudioSource>> {
+    ) -> Option<Arc<dyn crate::pushdown::Windowed>> {
         use crate::data_quality::QualityScope;
         matches!(scope, QualityScope::WholeSource | QualityScope::CurrentView)
-            .then(|| self.audio_window().cloned())
+            .then(|| self.fixed_window.clone().filter(|_| self.is_pristine()))
             .flatten()
     }
 
@@ -6810,11 +6765,6 @@ impl DataTableState {
         &self.other_tables
     }
 
-    /// The model file's metadata and totals, when the dataset is a model's tensors.
-    pub fn model(&self) -> Option<&crate::model_files::ModelSummary> {
-        self.model.as_deref()
-    }
-
     /// What a read through a format spec found, when the dataset was read through one.
     pub fn format_read(&self) -> Option<&Arc<crate::formats::Read>> {
         self.format_read.as_ref()
@@ -6825,9 +6775,6 @@ impl DataTableState {
     fn window_now(&self) -> Option<Arc<dyn crate::pushdown::Windowed>> {
         if let Some(records) = self.fixed_window.as_ref().filter(|_| self.is_pristine()) {
             return Some(records.clone());
-        }
-        if let Some(audio) = self.audio_window() {
-            return Some(audio.clone());
         }
         self.pushed_view().map(|view| view.window)
     }
@@ -6852,11 +6799,6 @@ impl DataTableState {
     /// The view's own count, from a source that runs the view.
     pub(crate) fn source_counter(&self) -> Option<crate::pushdown::Counter> {
         self.pushed_view().map(|view| view.counter)
-    }
-
-    /// The MIDI file's header, tracks and tempo, when the dataset is MIDI events.
-    pub fn midi(&self) -> Option<&crate::midi::MidiSummary> {
-        self.midi.as_deref()
     }
 
     /// What a read through a delimited spec found, when the dataset was read through
@@ -6900,7 +6842,7 @@ impl DataTableState {
             .collect()
     }
 
-    /// What a VCD, FIX or SDF file said besides its rows: its Info panel tab.
+    /// What the file said besides its rows: its Info panel tab.
     pub fn format_detail(&self) -> Option<&crate::text_formats::Detail> {
         self.detail.as_deref()
     }

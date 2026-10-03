@@ -27,6 +27,23 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with a candump log: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Text,
+        trusted: crate::readers::Trusted {
+            tables: true,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
+    tables: Some(|path| {
+        listed(path).ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables."))
+    }),
+    ..crate::readers::BASE
+};
+
 /// The longest line read as a frame; a longer one is not one.
 const MAX_LINE: usize = 4096;
 /// Interfaces told apart; past this many, the rest share the last.
@@ -831,6 +848,7 @@ fn detail(index: &Index, listing: &Listing) -> Detail {
         list_title: "Messages",
         list: crate::text_formats::capped_list(list, listing.messages.len()),
         first: false,
+        ..Default::default()
     }
 }
 
@@ -987,6 +1005,25 @@ fn long_table(
             .with_maintain_order(true)
             .with_nulls_last(true),
     ))
+}
+
+/// The scan of a candump log: its frames, or with DBC files that name its messages,
+/// the table `--table` names or the list of them. The pass that indexes the log is
+/// kept, as a flight log's is.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let file = input.path();
+    let layers = Layers::new(input.formats, input.options.dbc.as_deref())?;
+    Ok(match open(file, input.options.table.as_deref(), layers)? {
+        Open::Table { lf, opened } => {
+            input.report.opened = Some(Arc::new(*opened));
+            (*lf).into()
+        }
+        Open::Several(tables) => crate::scan::Scan::Tables {
+            file: file.to_path_buf(),
+            tables,
+            format: input.format,
+        },
+    })
 }
 
 #[cfg(test)]

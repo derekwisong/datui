@@ -643,15 +643,7 @@ fn reader_target(path: &Path, record: &OpenRecord) -> Option<Target> {
 
 /// Whether the script reads `format` with a Polars scan, which expands globs.
 fn scans_by_pattern(format: FileFormat) -> bool {
-    matches!(
-        format,
-        FileFormat::Parquet
-            | FileFormat::Csv
-            | FileFormat::Tsv
-            | FileFormat::Psv
-            | FileFormat::Jsonl
-            | FileFormat::Arrow
-    )
+    python_of(format).is_some_and(|python| !python.eager)
 }
 
 /// The Arrow files of a Hugging Face directory the paths name, local and in order:
@@ -735,19 +727,199 @@ fn arrow_read(inputs: &[(String, bool)], extra: Option<&str>) -> String {
 }
 
 /// The extension a glob matches for `format`, for the formats datui reads as many
-/// files.
+/// files and Polars reads: the first its descriptor lists.
 fn format_extension(format: FileFormat) -> Option<&'static str> {
-    Some(match format {
-        FileFormat::Parquet => "parquet",
-        FileFormat::Csv => "csv",
-        FileFormat::Tsv => "tsv",
-        FileFormat::Psv => "psv",
-        FileFormat::Jsonl => "jsonl",
-        FileFormat::Arrow => "arrow",
-        FileFormat::Json => "json",
-        FileFormat::Avro => "avro",
-        _ => return None,
-    })
+    python_of(format)?;
+    let d = format.descriptor();
+    (d.many_files || format.separator().is_some())
+        .then(|| d.extensions.first().copied())
+        .flatten()
+}
+
+/// How Copy as Python reads a format with Polars: part of its reader
+/// ([`crate::readers::Reader::python`]).
+pub(crate) struct Python {
+    /// The Polars function: `pl.scan_parquet`.
+    pub call: &'static str,
+    /// A read into memory rather than a scan: the frame is made lazy after it.
+    pub eager: bool,
+    /// The scan takes `glob=False`, for a file whose name holds a glob character.
+    pub glob_flag: bool,
+    /// What the format adds to the call, as datui read it: its arguments, what follows
+    /// the call and notes; or the whole source, when the call is not one call.
+    pub arguments: Option<fn(&mut Call<'_>) -> Option<Source>>,
+}
+
+/// A reader call being written, for a format's [`Python::arguments`].
+pub(crate) struct Call<'a> {
+    pub record: &'a OpenRecord<'a>,
+    pub paths: &'a [PathBuf],
+    pub format: FileFormat,
+    /// The names read, as the call's first argument says them.
+    pub names: &'a [String],
+    /// Read from below a prefix or directory, as Hive partitions may be.
+    pub below: bool,
+    /// The S3 settings a bucket that is not AWS's needs, when one is read.
+    pub storage: Option<String>,
+    pub args: Vec<String>,
+    pub after: Vec<String>,
+    /// The footer dropped, after what the open did to the rows.
+    pub skip_tail: Option<String>,
+    pub notes: Vec<String>,
+}
+
+impl Call<'_> {
+    /// The S3 settings, for a call that reads from S3.
+    fn storage_for(&self, names: impl IntoIterator<Item = impl AsRef<str>>) -> Option<String> {
+        names
+            .into_iter()
+            .any(|n| n.as_ref().starts_with("s3://"))
+            .then(|| self.storage.clone())
+            .flatten()
+    }
+}
+
+fn python_of(format: FileFormat) -> Option<&'static Python> {
+    crate::readers::of(format).python.as_ref()
+}
+
+/// Parquet: hive partitions under a directory or prefix, and S3 settings.
+pub(crate) fn parquet_arguments(call: &mut Call<'_>) -> Option<Source> {
+    if call.record.options.hive || call.below {
+        call.args.push("hive_partitioning=True".to_string());
+    }
+    if let Some(s) = call.storage_for(call.names) {
+        call.args.push(s);
+    }
+    None
+}
+
+/// CSV, TSV and PSV: the dialect datui read with, where Polars has it.
+pub(crate) fn csv_arguments(call: &mut Call<'_>) -> Option<Source> {
+    let options = call.record.options;
+    let names = call.names.join(", ");
+    let dialect: Vec<&str> = [
+        (options.comment_char.is_some(), "--comment-char"),
+        (options.header_rows().is_some(), "--header-rows"),
+        (options.skip_initial_space, "--skip-initial-space"),
+    ]
+    .into_iter()
+    .filter_map(|(set, flag)| set.then_some(flag))
+    .collect();
+    if !dialect.is_empty() {
+        return Some(Source::Placeholder {
+            what: format!(
+                "{names}: datui read it with {}, which it cannot write as Python: load it here.",
+                dialect.join(", ")
+            ),
+        });
+    }
+    let separator = options
+        .delimiter
+        .or_else(|| call.format.separator())
+        .unwrap_or(b',');
+    let args = &mut call.args;
+    if separator != b',' {
+        args.push(format!(
+            "separator={}",
+            py_str(&(separator as char).to_string())
+        ));
+    }
+    if options.has_header == Some(false) {
+        args.push("has_header=False".to_string());
+    }
+    if let Some(n) = options.skip_lines {
+        args.push(format!("skip_lines={n}"));
+    }
+    if let Some(n) = options.skip_rows {
+        args.push(format!("skip_rows={n}"));
+    }
+    if let Some(n) = options.infer_schema_length {
+        args.push(format!("infer_schema_length={n}"));
+    }
+    if options.ignore_errors {
+        args.push("ignore_errors=True".to_string());
+    }
+    // A prefix in a bucket is read without it; see `build_lazyframe_from_paths`.
+    let bucket_prefix = call.below && call.paths.iter().any(|p| is_url(p));
+    if options.csv_try_parse_dates() && !bucket_prefix {
+        call.args.push("try_parse_dates=True".to_string());
+    }
+    if let Some(nulls) = csv_null_values(options, call.record.schema) {
+        call.args.push(format!("null_values={nulls}"));
+    }
+    if let Some(s) = call.storage_for(call.names) {
+        call.args.push(s);
+    }
+    if let Some(n) = options.skip_tail_rows.filter(|n| *n > 0) {
+        call.skip_tail = Some(format!(".filter(pl.int_range(pl.len()) < pl.len() - {n})"));
+    }
+    match options.compression.or_else(|| {
+        call.paths
+            .first()
+            .and_then(|p| CompressionFormat::from_extension(p))
+    }) {
+        Some(CompressionFormat::Bzip2 | CompressionFormat::Xz) => Some(Source::Placeholder {
+            what: format!(
+                "{names}: Polars cannot read bzip2 or xz; decompress it and read it with pl.scan_csv."
+            ),
+        }),
+        _ => None,
+    }
+}
+
+/// Arrow: what the open read, each input's kind, after a conversion or a bucket's
+/// listing, or the split of a Hugging Face directory of IPC files.
+pub(crate) fn arrow_arguments(call: &mut Call<'_>) -> Option<Source> {
+    let options = call.record.options;
+    let inputs: Option<Vec<(String, bool)>> = match &options.arrow_parts {
+        Some(parts) => Some(
+            parts
+                .iter()
+                .map(|part| match part {
+                    crate::ipc_stream::Part::InPlace(p) => (p, false),
+                    crate::ipc_stream::Part::Converted { source, .. } => (source, true),
+                })
+                .map(|(p, stream)| (without_secrets(&p.to_string_lossy()).0, stream))
+                .collect(),
+        ),
+        None => hugging_face_files(call.paths, options.table.as_deref())
+            .map(|files| files.into_iter().map(|f| (f, false)).collect()),
+    };
+    match inputs {
+        Some(inputs) => {
+            let extra = call.storage_for(inputs.iter().map(|(name, _)| name));
+            let read = arrow_read(&inputs, extra.as_deref());
+            let mut after = std::mem::take(&mut call.after);
+            after.extend(call.skip_tail.take());
+            Some(Source::Read {
+                call: read,
+                after,
+                notes: std::mem::take(&mut call.notes),
+            })
+        }
+        None => {
+            if let Some(s) = call.storage_for(call.names) {
+                call.args.push(s);
+            }
+            None
+        }
+    }
+}
+
+/// Excel: the sheet, counted as Polars counts it.
+pub(crate) fn excel_arguments(call: &mut Call<'_>) -> Option<Source> {
+    if let Some(sheet) = &call.record.options.excel_sheet {
+        match sheet.parse::<usize>() {
+            // datui counts sheets from 0, Polars from 1.
+            Ok(i) => call.args.push(format!("sheet_id={}", i + 1)),
+            Err(_) => call.args.push(format!("sheet_name={}", py_str(sheet))),
+        }
+    }
+    call.notes.push(
+        "datui types a sheet's columns itself; Polars may read some differently.".to_string(),
+    );
+    None
 }
 
 /// The reader for the open, with the options datui gave its own.
@@ -791,10 +963,13 @@ pub fn source(record: &OpenRecord) -> Source {
         };
     }
     let below = targets.iter().any(|t| t.below);
+    let python = python_of(format);
     // A file named like a glob is read with `glob=False`, unless the scan has no such
     // flag (NDJSON) or another name is a pattern; then its name is escaped instead.
     let literal = targets.iter().any(|t| t.literal);
-    let no_glob = literal && format != FileFormat::Jsonl && !targets.iter().any(|t| t.pattern);
+    let no_glob = literal
+        && python.is_some_and(|python| python.glob_flag)
+        && !targets.iter().any(|t| t.pattern);
     let names: Vec<String> = targets
         .into_iter()
         .map(|t| {
@@ -805,6 +980,14 @@ pub fn source(record: &OpenRecord) -> Source {
             }
         })
         .collect();
+    let Some(python) = python else {
+        return Source::Placeholder {
+            what: format!(
+                "{}: Polars has no reader for this format; load it here.",
+                names.join(", ")
+            ),
+        };
+    };
     let target = match names.as_slice() {
         [one] => py_str(one),
         many => py_names(many),
@@ -814,9 +997,6 @@ pub fn source(record: &OpenRecord) -> Source {
     if no_glob {
         args.push("glob=False".to_string());
     }
-    // What the open did to the rows read, as datui recorded it, then the footer.
-    let mut after = options.read_python.clone();
-    let mut skip_tail = None;
     let mut notes = Vec::new();
     let endpoint = record.s3_endpoint.as_deref().map(without_secrets);
     if paths
@@ -830,8 +1010,7 @@ pub fn source(record: &OpenRecord) -> Source {
                 .to_string(),
         );
     }
-    let remote_s3 = names.iter().any(|n| n.starts_with("s3://"));
-    let storage = || {
+    let storage = {
         let mut pairs = Vec::new();
         if let Some((endpoint, _)) = &endpoint {
             pairs.push(format!("\"aws_endpoint_url\": {}", py_str(endpoint)));
@@ -841,163 +1020,31 @@ pub fn source(record: &OpenRecord) -> Source {
         }
         (!pairs.is_empty()).then(|| format!("storage_options={{{}}}", pairs.join(", ")))
     };
-    let call = match format {
-        FileFormat::Parquet => {
-            if options.hive || below {
-                args.push("hive_partitioning=True".to_string());
-            }
-            if remote_s3 && let Some(s) = storage() {
-                args.push(s);
-            }
-            "pl.scan_parquet"
-        }
-        FileFormat::Csv | FileFormat::Tsv | FileFormat::Psv => {
-            let dialect: Vec<&str> = [
-                (options.comment_char.is_some(), "--comment-char"),
-                (options.header_rows().is_some(), "--header-rows"),
-                (options.skip_initial_space, "--skip-initial-space"),
-            ]
-            .into_iter()
-            .filter_map(|(set, flag)| set.then_some(flag))
-            .collect();
-            if !dialect.is_empty() {
-                return Source::Placeholder {
-                    what: format!(
-                        "{}: datui read it with {}, which it cannot write as Python: load it here.",
-                        names.join(", "),
-                        dialect.join(", ")
-                    ),
-                };
-            }
-            let separator = options
-                .delimiter
-                .or_else(|| format.separator())
-                .unwrap_or(b',');
-            if separator != b',' {
-                args.push(format!(
-                    "separator={}",
-                    py_str(&(separator as char).to_string())
-                ));
-            }
-            if options.has_header == Some(false) {
-                args.push("has_header=False".to_string());
-            }
-            if let Some(n) = options.skip_lines {
-                args.push(format!("skip_lines={n}"));
-            }
-            if let Some(n) = options.skip_rows {
-                args.push(format!("skip_rows={n}"));
-            }
-            if let Some(n) = options.infer_schema_length {
-                args.push(format!("infer_schema_length={n}"));
-            }
-            if options.ignore_errors {
-                args.push("ignore_errors=True".to_string());
-            }
-            // A prefix in a bucket is read without it; see `build_lazyframe_from_paths`.
-            let bucket_prefix = below && paths.iter().any(|p| is_url(p));
-            if options.csv_try_parse_dates() && !bucket_prefix {
-                args.push("try_parse_dates=True".to_string());
-            }
-            if let Some(nulls) = csv_null_values(options, record.schema) {
-                args.push(format!("null_values={nulls}"));
-            }
-            if remote_s3 && let Some(s) = storage() {
-                args.push(s);
-            }
-            if let Some(n) = options.skip_tail_rows.filter(|n| *n > 0) {
-                skip_tail = Some(format!(".filter(pl.int_range(pl.len()) < pl.len() - {n})"));
-            }
-            match options.compression.or_else(|| {
-                paths
-                    .first()
-                    .and_then(|p| CompressionFormat::from_extension(p))
-            }) {
-                Some(CompressionFormat::Bzip2 | CompressionFormat::Xz) => {
-                    return Source::Placeholder {
-                        what: format!(
-                            "{}: Polars cannot read bzip2 or xz; decompress it and read it with pl.scan_csv.",
-                            names.join(", ")
-                        ),
-                    };
-                }
-                _ => "pl.scan_csv",
-            }
-        }
-        FileFormat::Jsonl => "pl.scan_ndjson",
-        FileFormat::Json => "pl.read_json",
-        FileFormat::Arrow => {
-            // What the open read: each input's kind, after a conversion or a bucket's
-            // listing, or the split of a Hugging Face directory of IPC files.
-            let inputs: Option<Vec<(String, bool)>> = match &options.arrow_parts {
-                Some(parts) => Some(
-                    parts
-                        .iter()
-                        .map(|part| match part {
-                            crate::ipc_stream::Part::InPlace(p) => (p, false),
-                            crate::ipc_stream::Part::Converted { source, .. } => (source, true),
-                        })
-                        .map(|(p, stream)| (without_secrets(&p.to_string_lossy()).0, stream))
-                        .collect(),
-                ),
-                None => hugging_face_files(paths, options.table.as_deref())
-                    .map(|files| files.into_iter().map(|f| (f, false)).collect()),
-            };
-            match inputs {
-                Some(inputs) => {
-                    let in_s3 = inputs.iter().any(|(name, _)| name.starts_with("s3://"));
-                    let extra = if in_s3 { storage() } else { None };
-                    let call = arrow_read(&inputs, extra.as_deref());
-                    after.extend(skip_tail);
-                    return Source::Read { call, after, notes };
-                }
-                None => {
-                    if remote_s3 && let Some(s) = storage() {
-                        args.push(s);
-                    }
-                    "pl.scan_ipc"
-                }
-            }
-        }
-        FileFormat::Avro => "pl.read_avro",
-        FileFormat::Excel => {
-            if let Some(sheet) = &options.excel_sheet {
-                match sheet.parse::<usize>() {
-                    // datui counts sheets from 0, Polars from 1.
-                    Ok(i) => args.push(format!("sheet_id={}", i + 1)),
-                    Err(_) => args.push(format!("sheet_name={}", py_str(sheet))),
-                }
-            }
-            notes.push(
-                "datui types a sheet's columns itself; Polars may read some differently."
-                    .to_string(),
-            );
-            "pl.read_excel"
-        }
-        FileFormat::Orc
-        | FileFormat::Safetensors
-        | FileFormat::Gguf
-        | FileFormat::Nmea
-        | FileFormat::Gpx
-        | FileFormat::Audio
-        | FileFormat::Midi
-        | FileFormat::Sqlite
-        | FileFormat::Vcd
-        | FileFormat::Fix
-        | FileFormat::Sdf
-        | FileFormat::Numpy
-        | FileFormat::Elf
-        | FileFormat::Ulog
-        | FileFormat::Dataflash
-        | FileFormat::Candump => {
-            return Source::Placeholder {
-                what: format!(
-                    "{}: Polars has no reader for this format; load it here.",
-                    names.join(", ")
-                ),
-            };
-        }
+    let mut call = Call {
+        record,
+        paths,
+        format,
+        names: &names,
+        below,
+        storage,
+        args,
+        // What the open did to the rows read, as datui recorded it, then the footer.
+        after: options.read_python.clone(),
+        skip_tail: None,
+        notes,
     };
+    if let Some(arguments) = python.arguments
+        && let Some(source) = arguments(&mut call)
+    {
+        return source;
+    }
+    let Call {
+        args,
+        mut after,
+        skip_tail,
+        mut notes,
+        ..
+    } = call;
     after.extend(skip_tail);
     if !record.read_as_text.is_empty() {
         notes.push(format!(
@@ -1005,12 +1052,8 @@ pub fn source(record: &OpenRecord) -> Source {
             record.read_as_text.join(", ")
         ));
     }
-    let eager = matches!(
-        format,
-        FileFormat::Json | FileFormat::Avro | FileFormat::Excel
-    );
-    let mut call = format!("{call}({})", args.join(", "));
-    if eager {
+    let mut call = format!("{}({})", python.call, args.join(", "));
+    if python.eager {
         call.push_str(".lazy()");
     }
     Source::Read { call, after, notes }

@@ -26,7 +26,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--ignore-errors[=<BOOL>]` | When reading CSV, ignore parse errors and continue with the next batch (default: false) |
 | `--null-value <VAL>` | Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount= |
 | `--compression <COMPRESSION>` | Compression format, when the extension does not say (default: auto-detected from the extension) |
-| `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, vcd, fix, sdf, or the name of a binary format spec such as acme.l2feed |
+| `--format <FORMAT>` | File format, for a URL or a path whose extension does not say (default: auto-detected from the extension): parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, or the name of a binary format spec such as acme.l2feed |
 | `--spec <FILE>` | Read the file (or directory of column files) through this binary format spec, whatever else matches it |
 | `--dbc <FILE>` | Decode a candump log's frames with this DBC file too, over those on the format search path: a .dbc file, or TOML with kind = "dbc" |
 | `--fix-dict <FILE>` | Read a FIX log with this dictionary too, over the built-in one and those on the format search path: a QuickFIX XML data dictionary, or TOML with kind = "fix" |
@@ -43,7 +43,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--decompress-in-memory[=<BOOL>]` | Decompress into memory (default: decompress to a temp file and scan lazily) |
 | `--temp-dir <DIR>` | Directory for decompression temp files (default: system temp, e.g. TMPDIR) |
 | `--sheet <SHEET>` | Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales") |
-| `--table <TABLE>` | Table to open from a file that holds several. SQLite: a table or view by name. NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. Hugging Face cache and DatasetDict directories: a split (default train). NumPy archives (.npz): an array by name. ELF files: symbols (default) or sections. ULog and DataFlash logs: a topic or message type. candump logs: frames (default), signals, or a message a DBC file names |
+| `--table <TABLE>` | Table to open from a file that holds several. NMEA: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. SQLite: a table or view by name. NumPy: an array of an archive (.npz) by name. ELF: symbols (default) or sections. ULog: a topic. DataFlash: a message type. candump: frames (default), signals, or a message a DBC file names. Hugging Face cache and DatasetDict directories: a split (default train) |
 | `--normalize` | Show integer audio samples as float in [-1, 1] (default: the integers as stored) |
 | `--clear-recents` | Forget every recently opened dataset and exit; other caches are kept |
 | `--clear-cache` | Clear all cache data and exit |

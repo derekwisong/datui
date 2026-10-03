@@ -34,49 +34,60 @@ use crate::segments::{Converted, Segments};
 use crate::unfinished::Writer;
 use crate::{CompressionFormat, FileFormat, OpenOptions};
 
+/// What datui does with an NMEA log: see [`crate::readers`].
+pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
+    // Several logs are one table, and say nothing besides their rows.
+    convert: Some(|input| {
+        let converted = convert(
+            input.files,
+            input.display,
+            input.format,
+            input.options,
+            input.writer,
+            input.read,
+        )?;
+        Ok((converted, None))
+    }),
+    scan: crate::readers::read_into,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| nmea::looks_like(head),
+        kind: crate::readers::Kind::Text,
+        trusted: crate::readers::Trusted {
+            listing: false,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
+    ..crate::readers::BASE
+};
+
+/// What datui does with a GPX file: see [`crate::readers`].
+pub(crate) const GPX: crate::readers::Reader = crate::readers::Reader {
+    // Several logs are one table, and say nothing besides their rows.
+    convert: Some(|input| {
+        let converted = convert(
+            input.files,
+            input.display,
+            input.format,
+            input.options,
+            input.writer,
+            input.read,
+        )?;
+        Ok((converted, None))
+    }),
+    scan: crate::readers::read_into,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| gpx::looks_like(head),
+        kind: crate::readers::Kind::Text,
+        trusted: crate::readers::Trusted {
+            listing: false,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
+    ..crate::readers::BASE
+};
+
 /// How much of the file is read at a time.
 const CHUNK: usize = 1 << 16;
-/// Bytes looked at to tell a GPS log by its content.
-const HEAD: usize = 4096;
-
-/// Whether `format` is one of the GPS formats read here.
-pub fn is_gps(format: FileFormat) -> bool {
-    matches!(format, FileFormat::Nmea | FileFormat::Gpx)
-}
-
-/// The GPS format a name says, looking through a compression suffix:
-/// `track.nmea.gz` is NMEA.
-pub fn format_by_name(path: &Path) -> Option<FileFormat> {
-    FileFormat::from_path(path)
-        .or_else(|| {
-            CompressionFormat::from_extension(path)?;
-            FileFormat::from_path(Path::new(path.file_stem()?))
-        })
-        .filter(|f| is_gps(*f))
-}
-
-/// The GPS format the first bytes of a file say, if they say one.
-pub fn sniff(head: &[u8]) -> Option<FileFormat> {
-    if nmea::looks_like(head) {
-        Some(FileFormat::Nmea)
-    } else if gpx::looks_like(head) {
-        Some(FileFormat::Gpx)
-    } else {
-        None
-    }
-}
-
-/// The GPS format of the file at `path` by its first bytes. Only for a file whose
-/// name says no format, so a file that opens as something today opens the same way.
-pub fn sniff_path(path: &Path) -> Option<FileFormat> {
-    let mut head = Vec::with_capacity(HEAD);
-    File::open(path)
-        .ok()?
-        .take(HEAD as u64)
-        .read_to_end(&mut head)
-        .ok()?;
-    sniff(&head)
-}
 
 /// A reader that counts the bytes read through it, for the loading screen.
 struct Counted<'a, R> {
@@ -536,23 +547,6 @@ mod tests {
             nmea_other_tables(&with_gsv, nmea::Table::Fixes),
             ["GGA 3", "GSV 9", "sentences"]
         );
-    }
-
-    #[test]
-    fn names_and_first_bytes_say_the_format() {
-        assert_eq!(format_by_name(Path::new("a.nmea")), Some(FileFormat::Nmea));
-        assert_eq!(format_by_name(Path::new("a.GPX")), Some(FileFormat::Gpx));
-        assert_eq!(
-            format_by_name(Path::new("a.nmea.gz")),
-            Some(FileFormat::Nmea)
-        );
-        assert_eq!(format_by_name(Path::new("a.csv")), None);
-        assert_eq!(sniff(b"$GPGGA,1,2"), Some(FileFormat::Nmea));
-        assert_eq!(
-            sniff(b"<?xml version=\"1.0\"?>\n<gpx>"),
-            Some(FileFormat::Gpx)
-        );
-        assert_eq!(sniff(b"a,b\n1,2"), None);
     }
 
     /// A GPX file whose second batch brings a new field is two segments, joined with

@@ -34,11 +34,12 @@ pub(crate) enum Scan {
         tables: Vec<String>,
         format: FileFormat,
     },
-    /// An array compressed in a NumPy archive, decompressed to a file before it is read
-    /// (`Step::Convert`).
+    /// A member compressed in an archive (a NumPy array), decompressed to a file before
+    /// it is read (`Step::Convert`).
     Unpack {
         file: PathBuf,
         member: String,
+        format: FileFormat,
     },
     /// A local file to show as bytes: no reader and no spec takes it, or `--hex` asked.
     Hex {
@@ -57,7 +58,7 @@ impl Scan {
             Scan::Streams(_) => Some(FileFormat::Arrow),
             Scan::DecompressSpec { .. } => None,
             Scan::Tables { format, .. } => Some(*format),
-            Scan::Unpack { .. } => Some(FileFormat::Numpy),
+            Scan::Unpack { format, .. } => Some(*format),
             Scan::Hex { .. } => None,
         }
     }

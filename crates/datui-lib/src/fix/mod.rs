@@ -30,6 +30,28 @@ use crate::text_formats::{Detail, Pieces, capped_list, count, note};
 use crate::unfinished::Writer;
 use dict::{FixType, Layers, Resolved};
 
+/// What datui does with a FIX log: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    // The dictionaries are read before the file, so one that does not parse says so at
+    // once.
+    convert: Some(|input| {
+        let layers = layers(input.formats, input.options.fix_dict.as_deref())?;
+        crate::text_formats::read_one(input, |pieces| {
+            convert(input.display, input.options, layers, input.writer, pieces)
+        })
+    }),
+    scan: crate::readers::read_into,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Text,
+        trusted: crate::readers::Trusted {
+            listing: false,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
+    ..crate::readers::BASE
+};
+
 /// The longest message read; a longer one is cut there.
 pub const MAX_MESSAGE: usize = 1 << 20;
 /// The most fields one message may hold; the rest are left out.
@@ -964,6 +986,7 @@ pub fn detail(reader: &FixReader) -> Detail {
         list_title: "Tags",
         list,
         first: false,
+        ..Default::default()
     }
 }
 

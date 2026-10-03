@@ -26,6 +26,21 @@ use crate::model_files::MetaValue;
 use crate::sqlite::Table;
 use crate::text_formats::Detail;
 
+/// What datui does with a ULog flight log: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::Trusted {
+            tables: true,
+            ..crate::readers::EVERYWHERE
+        },
+    }],
+    tables: Some(listed),
+    ..crate::readers::BASE
+};
+
 /// The first seven bytes of every ULog file; the eighth is its version.
 pub const MAGIC: &[u8; 7] = b"ULog\x01\x12\x35";
 
@@ -576,6 +591,14 @@ fn find_sync(data: &[u8], from: usize, end: usize) -> Option<usize> {
     memchr::memmem::find(hay, &SYNC).map(|i| from + i + SYNC.len())
 }
 
+/// The log's tables as its indexing pass found them: listed once it has been opened,
+/// and not read here, where the home screen waits.
+pub fn listed(file: &Path) -> Result<Vec<Table>> {
+    crate::indexed::peek::<Index>(file)
+        .map(|index| tables(&index))
+        .ok_or_else(|| eyre!("Open the log to list its tables."))
+}
+
 /// The tables of an indexed log, for the home screen and `--table`.
 pub fn tables(index: &Index) -> Vec<Table> {
     let mut tables: Vec<Table> = index
@@ -656,6 +679,7 @@ pub fn detail(index: &Index) -> Detail {
         list_title: "Info and parameters",
         list: crate::text_formats::capped_list(list.into_iter(), total),
         first: false,
+        ..Default::default()
     }
 }
 
@@ -791,6 +815,24 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
     Ok(Open::Table {
         lf: Box::new(lf),
         opened: Box::new(opened),
+    })
+}
+
+/// The scan of a ULog log: the table `--table` names, or its only one, decoded from
+/// the file where it is shown; or none yet when it has several. The pass that indexes
+/// the log is kept, so a table chosen from the list reads nothing again.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let file = input.path();
+    Ok(match open(file, input.options.table.as_deref())? {
+        Open::Table { lf, opened } => {
+            input.report.opened = Some(Arc::new(*opened));
+            (*lf).into()
+        }
+        Open::Several(tables) => crate::scan::Scan::Tables {
+            file: file.to_path_buf(),
+            tables,
+            format: input.format,
+        },
     })
 }
 

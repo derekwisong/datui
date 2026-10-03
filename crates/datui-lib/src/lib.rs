@@ -144,6 +144,7 @@ pub mod sampling;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
 // hand-written and runs on whatever the user types, so it is fuzzed directly.
 pub mod query;
+mod readers;
 mod render;
 pub mod sanitize;
 mod scan;
@@ -226,35 +227,6 @@ pub const APP_NAME: &str = "datui";
 
 /// Re-export compression format and file format from CLI module
 pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored};
-
-/// Map FileFormat to ExportFormat for default export. Tsv/Psv map to Csv; Orc/Excel have no export variant.
-fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
-    match f {
-        FileFormat::Parquet => Some(ExportFormat::Parquet),
-        FileFormat::Csv | FileFormat::Tsv | FileFormat::Psv => Some(ExportFormat::Csv),
-        FileFormat::Json => Some(ExportFormat::Json),
-        FileFormat::Jsonl => Some(ExportFormat::Ndjson),
-        FileFormat::Arrow => Some(ExportFormat::Ipc),
-        FileFormat::Avro => Some(ExportFormat::Avro),
-        FileFormat::Orc
-        | FileFormat::Excel
-        | FileFormat::Safetensors
-        | FileFormat::Gguf
-        | FileFormat::Nmea
-        | FileFormat::Gpx
-        | FileFormat::Audio
-        | FileFormat::Midi
-        | FileFormat::Sqlite
-        | FileFormat::Vcd
-        | FileFormat::Fix
-        | FileFormat::Sdf
-        | FileFormat::Numpy
-        | FileFormat::Elf
-        | FileFormat::Ulog
-        | FileFormat::Dataflash
-        | FileFormat::Candump => None,
-    }
-}
 
 #[cfg(test)]
 mod text_input_flows;
@@ -7004,8 +6976,8 @@ impl App {
         }
         let (name, _) = holds.formats.first()?;
         // A GPS log is read whole from disk; a bucket's logs are opened one at a time.
-        let format = FileFormat::from_name(name)
-            .filter(|f| f.reads_many_files() && !crate::gps::is_gps(*f))?;
+        let format =
+            FileFormat::from_name(name).filter(|f| f.reads_many_files() && !f.reads_into())?;
         // And what taking the commonest passes over. The local read reports its own —
         // it is the pass that decides — but here Polars does the listing and never sees
         // the other formats, so the note has to be written from the listing on screen.
@@ -7855,7 +7827,7 @@ impl App {
         options
             .format
             .or_else(|| FileFormat::from_path(path))
-            .and_then(file_format_to_export_format)
+            .and_then(crate::readers::export_default)
             .or_else(|| {
                 path.file_stem()
                     .and_then(|s| s.to_str())
@@ -8202,11 +8174,8 @@ impl App {
             left_out: options.left_out.clone(),
             files_disagree: options.files_disagree,
             format: None,
-            model: None,
             format_read: None,
             read_python: Vec::new(),
-            audio: None,
-            midi: None,
             sqlite: None,
             opened: None,
             splits: options.splits.clone(),
@@ -8221,8 +8190,12 @@ impl App {
         let named = |e: color_eyre::Report| {
             crate::error_display::user_message_from_report(&e, path.as_deref())
         };
+        // NDJSON followed is scanned rather than read whole.
         let followed_lines = options.follow
-            && crate::follow::format_of(&paths[0], options.format) == FileFormat::Jsonl;
+            && crate::follow::format_of(&paths[0], options.format)
+                .descriptor()
+                .lines
+                == Some(crate::cli::Lines::Json);
         let scan = if followed_lines {
             crate::follow::scan_lines(&paths[0], &options, &mut report.read_python).map(Scan::from)
         } else {
@@ -8262,15 +8235,12 @@ impl App {
             left_out: report.left_out,
             files_disagree: report.files_disagree,
             format,
-            model: report.model,
             format_read: report.format_read,
             sqlite: report.sqlite,
             opened: report.opened,
             splits: report.splits,
             spec_choice: None,
             read_python: report.read_python,
-            audio: report.audio,
-            midi: report.midi,
             read_mode,
             tail,
             ..options
@@ -8311,8 +8281,12 @@ impl App {
                 options,
             },
             Scan::Tables { file, tables, .. } => LoadAnswer::Tables { file, tables, path },
-            Scan::Unpack { file, member } => LoadAnswer::Convert {
-                what: loading::Conversion::Text(FileFormat::Numpy),
+            Scan::Unpack {
+                file,
+                member,
+                format,
+            } => LoadAnswer::Convert {
+                what: loading::Conversion::Text(format),
                 bytes: bytes_of(std::slice::from_ref(&file)),
                 files: vec![file],
                 path,
@@ -8400,10 +8374,10 @@ impl App {
                             return Err(crate::logging::redact(&message, &[]));
                         }
                     };
-                    let model = Some(Arc::new(summary));
+                    let opened = Arc::new(crate::model_files::opened(&summary));
                     let options = OpenOptions {
                         format: Some(format),
-                        model: model.clone(),
+                        opened: Some(opened.clone()),
                         ..options
                     };
                     // The table is the headers, in memory: nothing is left to scan.
@@ -8417,7 +8391,7 @@ impl App {
                     )
                     .map_err(|e| crate::error_display::user_message_from_report(&e, Some(&url)))?
                     .with_open(OpenFacts {
-                        model,
+                        detail: opened.detail.clone(),
                         open_notes: notes,
                         ..Default::default()
                     });
@@ -8638,7 +8612,7 @@ impl App {
                 // Only delimited text comes this way, its format said by the loader;
                 // CSV when not, so it can have its header turned off.
                 let options = OpenOptions {
-                    format: options.format.or(Some(FileFormat::Csv)),
+                    format: options.format.or(Some(FileFormat::TEXT)),
                     ..options
                 };
                 let formats = self.formats.clone();
@@ -8707,10 +8681,17 @@ impl App {
                         }
                         loading::Conversion::Text(format) => {
                             let display = path.clone().unwrap_or_else(|| files[0].clone());
-                            let (converted, detail) = crate::text_formats::convert(
-                                &files, &display, format, &options, &formats, &writer, &read,
-                            )
-                            .map_err(named)?;
+                            let (converted, detail) =
+                                crate::readers::convert(&crate::readers::ConvertIn {
+                                    files: &files,
+                                    display: &display,
+                                    format,
+                                    options: &options,
+                                    formats: &formats,
+                                    writer: &writer,
+                                    read: &read,
+                                })
+                                .map_err(named)?;
                             loading::Converted::Frame {
                                 files: converted.files,
                                 lf: Box::new(converted.lf),
@@ -9967,7 +9948,6 @@ impl App {
         // And the half of it that cannot be missed: the row count on screen is a true
         // count of the files and a wrong one of the table.
         facts.not_the_table = options.read_as_plain_files_of;
-        facts.model = options.model.clone();
         if let Some(splits) = &options.splits {
             facts.other_tables = splits.others.clone();
             facts
@@ -9978,11 +9958,6 @@ impl App {
             facts.open_notes.extend(read.notes());
             facts.format_read = Some(read.clone());
         }
-        facts.audio = options.audio.clone();
-        if let Some(midi) = &options.midi {
-            facts.open_notes.extend(crate::midi::notes(midi));
-        }
-        facts.midi = options.midi.clone();
         if let Some(opened) = &options.opened {
             facts.records = opened.window.clone();
             facts.detail = opened.detail.clone();
@@ -10045,7 +10020,6 @@ impl App {
         glob: bool,
         options: &OpenOptions,
     ) -> Option<Result<LazyFrame>> {
-        use polars::prelude::{LazyCsvReader, LazyFileListReader};
         // The formats the docs say a prefix reads in place. Parquet takes the caller's
         // own scan, and a prefix of model files is read by its headers before this.
         if !format.reads_bucket_prefix() {
@@ -10059,82 +10033,15 @@ impl App {
         } else {
             PlRefPath::new(url)
         };
-        let named = |e: polars::error::PolarsError| {
-            color_eyre::eyre::eyre!("Could not read {} as {}: {e}", url, format.name())
-        };
-        let lf = match format {
-            FileFormat::Csv => {
-                // The flags the user gave mean what they mean for a local file.
-                let reader = || {
-                    LazyCsvReader::new(pl_path.clone())
-                        .with_cloud_options(Some(cloud_opts.clone()))
-                        .with_glob(glob)
-                };
-                // Each object has its own header lines, and the scan reads them all as
-                // one; the names cannot come from one of them.
-                if options.header_rows().is_some() {
-                    return Some(Err(color_eyre::eyre::eyre!(
-                        "--header-rows reads a file's own lines, so it cannot read {url} in place. Download the files, or name the header with --skip-lines"
-                    )));
-                }
-                let nv = match DataTableState::build_null_values_with(options, None, || {
-                    DataTableState::csv_schema_for_null_values(reader(), options)
-                }) {
-                    Ok(nv) => nv,
-                    Err(e) => return Some(Err(e)),
-                };
-                // No `--parse-strings` here: its sample would be a second read of
-                // the bucket. Nor Polars' `try_parse_dates`, which fails the whole
-                // read on a value it cannot parse, even one like those it inferred
-                // the type from. Timestamps stay text, and so do padded numbers:
-                // `--skip-initial-space` only takes their padding off.
-                DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
-                    .finish()
-                    .and_then(|lf| crate::csv_dialect::name_columns(lf, None))
-                    .and_then(|lf| {
-                        if !options.skip_initial_space {
-                            return Ok(lf);
-                        }
-                        crate::csv_dialect::skip_initial_space(lf, |column| {
-                            DataTableState::csv_null_values_for(options, column)
-                        })
-                    })
-                    .map_err(named)
-                    .and_then(|lf| {
-                        DataTableState::apply_skip_tail_rows_csv(lf, options).map_err(|e| {
-                            e.wrap_err(format!("Could not read {} as {}", url, format.name()))
-                        })
-                    })
-            }
-            FileFormat::Jsonl => polars::prelude::LazyJsonLineReader::new(pl_path)
-                .with_cloud_options(Some(cloud_opts))
-                .finish()
-                .map_err(named),
-            // IPC files, by range from their footers. A prefix is listed before it gets
-            // here (`cloud_arrow`), so this is a glob: a stream among its objects has no
-            // footer, and is read by its folder, which downloads it.
-            FileFormat::Arrow => {
-                let args = polars::prelude::UnifiedScanArgs {
-                    cloud_options: Some(cloud_opts),
-                    glob,
-                    ..Default::default()
-                };
-                LazyFrame::scan_ipc(pl_path, Default::default(), args).map_err(|e| {
-                    let folder = url
-                        .split('*')
-                        .next()
-                        .and_then(|head| head.rsplit_once('/'))
-                        .map_or(url, |(folder, _)| folder);
-                    color_eyre::eyre::eyre!(
-                        "Could not read {url} as Arrow IPC files: {e}. A glob reads IPC files in place; Arrow streams are read by their folder: open {folder}/"
-                    )
-                })
-            }
-            // Parquet has its own branch, and the rest have no multi-file cloud reader
-            // in Polars — an ORC or Avro prefix is still a file at a time.
-            _ => return None,
-        };
-        Some(lf)
+        let scan = crate::readers::of(format).bucket_scan?;
+        Some(scan(crate::readers::BucketIn {
+            url,
+            path: pl_path,
+            cloud: cloud_opts,
+            glob,
+            options,
+            format,
+        }))
     }
 
     /// The format a prefix or glob in a store is read as, other than Parquet: what
@@ -10382,10 +10289,7 @@ impl App {
 
     /// Why `--table` was refused for a file of `format`, which holds one table.
     fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
-        let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
-        color_eyre::eyre::eyre!(
-            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's, an ELF file's, a flight or CAN log's or an NMEA log's, or a Hugging Face dataset's split."
-        )
+        color_eyre::eyre::eyre!(cli::one_table(format))
     }
 
     /// The inputs of an Arrow read as one table, in order: each IPC file scanned where
@@ -10764,117 +10668,6 @@ impl App {
         Self::build_local_lazyframe(paths, options, report, formats)
     }
 
-    /// What opening the SQLite database `file` reads: the table `--table` names, or the
-    /// database's only table of its own, read in place; or none yet when it has several.
-    fn scan_sqlite(file: &Path, options: &OpenOptions, report: &mut ReadReport) -> Result<Scan> {
-        let tables = crate::sqlite::tables(file)?;
-        match crate::sqlite::pick(tables.clone(), options.table.as_deref(), file)? {
-            crate::sqlite::Pick::One(table) => {
-                let opened = crate::sqlite::open_table(file, file, &table, &tables)?;
-                report.format = Some(FileFormat::Sqlite);
-                report.sqlite = Some(Arc::new(SqliteOpen {
-                    pushdown: opened.pushdown,
-                    hold: std::sync::Mutex::new(Some(opened.hold)),
-                    other_tables: opened.other_tables,
-                }));
-                Ok(opened.lf.into())
-            }
-            crate::sqlite::Pick::Several(tables) => Ok(Scan::Tables {
-                file: file.to_path_buf(),
-                tables: tables
-                    .into_iter()
-                    .filter(|t| !t.internal)
-                    .map(|t| t.name)
-                    .collect(),
-                format: FileFormat::Sqlite,
-            }),
-        }
-    }
-
-    /// What opening a ULog or DataFlash log reads: the table `--table` names, or its
-    /// only one, decoded from the file where it is shown; or none yet when it has
-    /// several. The pass that indexes the log is kept, so a table chosen from the list
-    /// reads nothing again.
-    fn scan_flight_log(
-        file: &Path,
-        format: FileFormat,
-        options: &OpenOptions,
-        report: &mut ReadReport,
-    ) -> Result<Scan> {
-        report.format = Some(format);
-        let wanted = options.table.as_deref();
-        let opened = if format == FileFormat::Ulog {
-            match crate::ulog::open(file, wanted)? {
-                crate::ulog::Open::Table { lf, opened } => Ok((lf, opened)),
-                crate::ulog::Open::Several(tables) => Err(tables),
-            }
-        } else {
-            match crate::dataflash::open(file, wanted)? {
-                crate::dataflash::Open::Table { lf, opened } => Ok((lf, opened)),
-                crate::dataflash::Open::Several(tables) => Err(tables),
-            }
-        };
-        Ok(match opened {
-            Ok((lf, opened)) => {
-                report.opened = Some(Arc::new(*opened));
-                (*lf).into()
-            }
-            Err(tables) => Scan::Tables {
-                file: file.to_path_buf(),
-                tables,
-                format,
-            },
-        })
-    }
-
-    /// What opening a candump log reads: its frames, or with DBC files that name its
-    /// messages, the table `--table` names or the list of them. The pass that indexes
-    /// the log is kept, as a flight log's is.
-    fn scan_candump(
-        file: &Path,
-        options: &OpenOptions,
-        report: &mut ReadReport,
-        formats: &crate::formats::Registry,
-    ) -> Result<Scan> {
-        report.format = Some(FileFormat::Candump);
-        let layers = crate::candump::Layers::new(formats, options.dbc.as_deref())?;
-        Ok(
-            match crate::candump::open(file, options.table.as_deref(), layers)? {
-                crate::candump::Open::Table { lf, opened } => {
-                    report.opened = Some(Arc::new(*opened));
-                    (*lf).into()
-                }
-                crate::candump::Open::Several(tables) => Scan::Tables {
-                    file: file.to_path_buf(),
-                    tables,
-                    format: FileFormat::Candump,
-                },
-            },
-        )
-    }
-
-    /// What opening the NumPy file `file` reads: an `.npy` file's array, or the array
-    /// of an archive `--table` names, or its only one, read in place; a compressed one
-    /// decompressed first; or none yet when the archive has several.
-    fn scan_numpy(file: &Path, options: &OpenOptions, report: &mut ReadReport) -> Result<Scan> {
-        report.format = Some(FileFormat::Numpy);
-        Ok(match crate::numpy::open(file, options.table.as_deref())? {
-            crate::numpy::Open::Array { lf, opened } => {
-                report.opened = Some(Arc::new(*opened));
-                (*lf).into()
-            }
-            crate::numpy::Open::Several(tables) => Scan::Tables {
-                file: file.to_path_buf(),
-                tables,
-                format: FileFormat::Numpy,
-            },
-            crate::numpy::Open::Compressed { member } => Scan::Unpack {
-                file: file.to_path_buf(),
-                member,
-            },
-        })
-    }
-
     /// The files a directory holds, read as `found`: through the delimited spec the
     /// first of them matches, when one does, else as the format says.
     fn read_directory_files(
@@ -11127,86 +10920,27 @@ impl App {
         }
 
         // A file with no extension may still be Parquet: a part file in a directory named
-        // `.parquet`, or anything whose bytes say so. A regular file is only read when
-        // nothing else settled it.
+        // `.parquet`. A regular file is only read when nothing else settled it.
         let effective_format = options
             .format
             .or_else(|| FileFormat::from_path(path))
             .or_else(|| {
                 (path.extension().is_none()
-                    && (crate::discover::is_parquet_key(&path.to_string_lossy())
-                        || (path.is_file() && crate::discover::has_parquet_magic(path))))
+                    && crate::discover::is_parquet_key(&path.to_string_lossy()))
                 .then_some(FileFormat::Parquet)
             })
-            // A model, audio or MIDI file is known by its first bytes whatever it is called.
-            .or_else(|| {
-                path.is_file()
-                    .then(|| {
-                        crate::discover::sniff_signed_format(path)
-                            .or_else(|| crate::discover::sniff_audio_format(path))
-                    })
-                    .flatten()
-            })
-            .or_else(|| {
-                (path.extension().is_none()
-                    && path.is_file()
-                    && crate::ipc_stream::is_stream_file(path))
-                .then_some(FileFormat::Arrow)
-            })
-            // A SQLite database, an ELF file or another file of tables is known by its
-            // first bytes whatever it is called.
-            .or_else(|| {
-                path.is_file()
-                    .then(|| crate::members::holder(path))
-                    .flatten()
-            })
-            // A GPS log by a name under compression (`track.nmea.gz`), or by its first
-            // bytes when its name says no format at all (`gps.log`, `capture.txt`).
-            .or_else(|| crate::gps::format_by_name(path))
-            .or_else(|| {
-                (path.is_file() && options.compression.is_none())
-                    .then(|| crate::gps::sniff_path(path))
-                    .flatten()
-            })
-            // A VCD dump or an SDF file by a name under compression, and a FIX log (which
-            // has no extension of its own) or any of them by its first bytes, read through
-            // its compression.
-            .or_else(|| crate::text_formats::format_by_name(path))
-            .or_else(|| {
-                path.is_file()
-                    .then(|| crate::text_formats::sniff_path(path, options.compression))
-                    .flatten()
-            });
+            // Any other file whose name says no format, by its first bytes: each
+            // format's signature says where it is believed (`crate::readers`).
+            .or_else(|| crate::readers::sniff_open(path, options.compression));
         report.format = effective_format;
 
         // Refused rather than ignored: a file of one table opened with `--table` would
         // otherwise look like the table asked for.
         if options.table.is_some()
-            && !effective_format.is_some_and(|f| f == FileFormat::Nmea || f.holds_tables())
+            && !effective_format.is_some_and(FileFormat::takes_table)
             && options.splits.is_none()
         {
             return Err(Self::one_table(effective_format));
-        }
-
-        // A GPS log, a VCD dump, a FIX log or an SDF file is read into files of its own
-        // first: the load converts it (`Step::Convert`) into copies the dataset holds, as
-        // a compressed CSV is. Several GPS logs are one table; the others open one at a
-        // time.
-        if let Some(format) = effective_format.filter(|f| crate::text_formats::reads_into(*f))
-            && (paths.len() == 1 || format.reads_many_files())
-        {
-            return Ok(Scan::ReadInto {
-                files: paths.to_vec(),
-                format,
-            });
-        }
-
-        // A SQLite table is read in place, once it is known which: the one named, or
-        // the database's only one. A database of several lands on the home screen.
-        if let [file] = paths
-            && effective_format == Some(FileFormat::Sqlite)
-        {
-            return Self::scan_sqlite(file, options, report);
         }
 
         // One compressed CSV, TSV or PSV, as a directory of one resolves to: the load
@@ -11225,282 +10959,45 @@ impl App {
             });
         }
 
-        let lf = if paths.len() > 1 {
-            match effective_format {
-                Some(FileFormat::Parquet) => DataTableState::from_parquet_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Csv) => DataTableState::from_csv_paths(paths, options)?,
-                Some(FileFormat::Json) => DataTableState::from_json_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Jsonl) => DataTableState::from_json_lines_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Arrow) => {
-                    // The first file says: a `datasets` cache is all streams, and the
-                    // conversion reads each file anyway.
-                    if crate::ipc_stream::starts_with_stream(paths) {
-                        return Ok(Scan::Streams(paths.to_vec()));
-                    }
-                    // Polars reads every IPC file's footer for the schema, and fails on
-                    // a stream among them: only then is each file looked at.
-                    match DataTableState::from_ipc_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    ) {
-                        Ok(state) => state,
-                        Err(_) if crate::ipc_stream::any_stream(paths) => {
-                            return Ok(Scan::Streams(paths.to_vec()));
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-                Some(FileFormat::Avro) => DataTableState::from_avro_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Orc) => DataTableState::from_orc_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(format @ (FileFormat::Safetensors | FileFormat::Gguf)) => {
-                    let (lf, summary) = crate::model_files::read_model(paths, format)?;
-                    report.model = Some(Arc::new(summary));
-                    return Ok(lf.into());
-                }
-                Some(FileFormat::Midi) => {
-                    let (lf, summary) = crate::midi::read_midi(paths)?;
-                    report.midi = Some(Arc::new(summary));
-                    return Ok(lf.into());
-                }
-                Some(format @ (FileFormat::Nmea | FileFormat::Gpx)) => {
-                    // Settled above, before the compression check; here for the match.
-                    return Ok(Scan::ReadInto {
-                        files: paths.to_vec(),
-                        format,
-                    });
-                }
-                Some(FileFormat::Tsv)
-                | Some(FileFormat::Psv)
-                | Some(FileFormat::Excel)
-                | Some(FileFormat::Audio)
-                | Some(FileFormat::Sqlite)
-                | Some(FileFormat::Vcd)
-                | Some(FileFormat::Fix)
-                | Some(FileFormat::Sdf)
-                | Some(FileFormat::Numpy)
-                | Some(FileFormat::Elf)
-                | Some(FileFormat::Ulog)
-                | Some(FileFormat::Dataflash)
-                | Some(FileFormat::Candump)
-                | None => {
-                    // The home screen asks `reads_many_files` before it offers a
-                    // directory as one dataset, so a format that is refused here and
-                    // offered there would be a promise nothing keeps. Asserted rather
-                    // than restated: adding a format to this arm without the predicate
-                    // fails every debug run. The other direction — dropping one from the
-                    // predicate and not from here — this cannot see, and would hide a
-                    // directory datui can read rather than promise one it cannot.
-                    debug_assert!(
-                        effective_format.is_none_or(|f| !f.reads_many_files()),
-                        "this arm and FileFormat::reads_many_files must agree"
-                    );
-                    if !paths.is_empty() && !path.exists() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("File not found: {}", path.display()),
-                        )
-                        .into());
-                    }
-                    return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs, SDF files, NumPy arrays, ELF files, flight logs and CAN logs one at a time)"
-                    ));
-                }
+        let Some(format) = effective_format else {
+            if !path.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {}", path.display()),
+                )
+                .into());
             }
-        } else {
-            match effective_format {
-                Some(FileFormat::Parquet) => DataTableState::from_parquet(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Csv) => DataTableState::from_csv(path, options)?,
-                Some(FileFormat::Tsv) => DataTableState::from_delimited(path, b'\t', options)?,
-                Some(FileFormat::Psv) => DataTableState::from_delimited(path, b'|', options)?,
-                Some(FileFormat::Json) => DataTableState::from_json(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Jsonl) => DataTableState::from_json_lines(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Arrow) => {
-                    if crate::ipc_stream::starts_with_stream(paths) {
-                        return Ok(Scan::Streams(paths.to_vec()));
-                    }
-                    DataTableState::from_ipc(
-                        path,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(FileFormat::Avro) => DataTableState::from_avro(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Excel) => DataTableState::from_excel(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                    options.excel_sheet.as_deref(),
-                )?,
-                Some(format @ (FileFormat::Safetensors | FileFormat::Gguf)) => {
-                    let (lf, summary) = crate::model_files::read_model(paths, format)?;
-                    report.model = Some(Arc::new(summary));
-                    return Ok(lf.into());
-                }
-                Some(
-                    format @ (FileFormat::Nmea
-                    | FileFormat::Gpx
-                    | FileFormat::Vcd
-                    | FileFormat::Fix
-                    | FileFormat::Sdf),
-                ) => {
-                    // Settled above, before the compression check; here for the match.
-                    return Ok(Scan::ReadInto {
-                        files: paths.to_vec(),
-                        format,
-                    });
-                }
-                Some(FileFormat::Audio) => {
-                    let source =
-                        Arc::new(crate::audio::AudioSource::open(path, options.normalize)?);
-                    let lf = source.lazy();
-                    report.audio = Some(source);
-                    return Ok(lf.into());
-                }
-                Some(FileFormat::Midi) => {
-                    let (lf, summary) = crate::midi::read_midi(paths)?;
-                    report.midi = Some(Arc::new(summary));
-                    return Ok(lf.into());
-                }
-                Some(FileFormat::Sqlite) => return Self::scan_sqlite(path, options, report),
-                Some(FileFormat::Numpy) => return Self::scan_numpy(path, options, report),
-                Some(format @ (FileFormat::Ulog | FileFormat::Dataflash)) => {
-                    return Self::scan_flight_log(path, format, options, report);
-                }
-                Some(FileFormat::Candump) => {
-                    return Self::scan_candump(path, options, report, formats);
-                }
-                Some(FileFormat::Elf) => {
-                    let (lf, opened) = crate::elf::open(path, options.table.as_deref())?;
-                    report.opened = Some(Arc::new(opened));
-                    return Ok(lf.into());
-                }
-                Some(FileFormat::Orc) => DataTableState::from_orc(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                None => {
-                    if paths.len() == 1 && !path.exists() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("File not found: {}", path.display()),
-                        )
-                        .into());
-                    }
-                    // A local file nothing reads is shown as its bytes (#588).
-                    if paths.len() == 1 && path.is_file() {
-                        return Ok(Scan::Hex {
-                            file: path.clone(),
-                            asked: false,
-                        });
-                    }
-                    return Err(color_eyre::eyre::eyre!("Unsupported file type"));
-                }
+            // A local file nothing reads is shown as its bytes (#588).
+            if paths.len() == 1 && path.is_file() {
+                return Ok(Scan::Hex {
+                    file: path.clone(),
+                    asked: false,
+                });
             }
+            return Err(color_eyre::eyre::eyre!(match paths.len() {
+                1 => "Unsupported file type".to_string(),
+                _ => crate::readers::many_files_refused(),
+            }));
         };
-        // JSON is read into memory whole, so its sample costs no read of the file.
-        if matches!(
-            effective_format,
-            Some(FileFormat::Json) | Some(FileFormat::Jsonl)
-        ) {
-            return DataTableState::apply_parse_dates_to_json_lazyframe(
-                lf.into_lf(),
-                options,
-                &mut report.read_python,
-            )
-            .map(Scan::from);
+        // The home screen asks `reads_many_files` before it offers a directory as one
+        // dataset, and this is the same question, so it cannot offer one this refuses.
+        if paths.len() > 1 && !format.reads_many_files() {
+            if !path.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {}", path.display()),
+                )
+                .into());
+            }
+            return Err(color_eyre::eyre::eyre!(crate::readers::many_files_refused()));
         }
-        report.read_python = lf.read_python().to_vec();
-        Ok(lf.into_lf().into())
+        (crate::readers::of(format).scan)(crate::readers::ScanIn {
+            format,
+            paths,
+            options,
+            report,
+            formats,
+        })
     }
 
     /// Whether the plain help overlay is on screen.
@@ -12944,14 +12441,10 @@ impl App {
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
-            // The Model, Audio, MIDI, Metadata and format tabs scroll their lists the same way.
+            // The Metadata and the file's own tab scroll their lists the same way.
             let detail_tab = matches!(
                 self.info_modal.active_tab,
-                InfoTab::Model
-                    | InfoTab::Audio
-                    | InfoTab::Midi
-                    | InfoTab::Metadata
-                    | InfoTab::Format
+                InfoTab::Metadata | InfoTab::Format
             );
             let notes = self
                 .data_table_state
@@ -15054,21 +14547,10 @@ impl App {
                     if unseen {
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Notes);
-                    } else if state.audio().is_some() {
-                        // An audio file's columns are the frame, the time and one per
-                        // channel; what is particular to it is on the Audio tab.
-                        self.info_modal
-                            .open_on(crate::widgets::info::InfoTab::Audio);
-                    } else if state.model().is_some() {
-                        // A model's schema is the same seven columns every time; what
-                        // is particular to it is on the Model tab.
-                        self.info_modal
-                            .open_on(crate::widgets::info::InfoTab::Model);
-                    } else if state.midi().is_some() {
-                        // So is a MIDI file's.
-                        self.info_modal.open_on(crate::widgets::info::InfoTab::Midi);
                     } else if state.format_detail().is_some_and(|d| d.first) {
-                        // And a VCD dump's: what is particular to it is its header.
+                        // A table whose columns are the same for every file (a model's
+                        // tensors, an audio file's frames, a VCD dump's changes): what
+                        // is particular to it is its own tab.
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Format);
                     } else {
@@ -16043,8 +15525,9 @@ impl App {
                     let streaming = state.polars_streaming();
                     // An audio file's signal checks read its samples whole: a full run's.
                     let audio = (plan.compute == data_quality::QualityCompute::Full)
-                        .then(|| state.audio_for_quality(&plan.scope))
-                        .flatten();
+                        .then(|| state.window_for_quality(&plan.scope))
+                        .flatten()
+                        .and_then(crate::audio::recording);
                     let view_generation = state.len_generation();
                     let dataset_generation = self.dataset_generation;
                     let kept_entry = self.kept_quality_entry(&plan.sample());

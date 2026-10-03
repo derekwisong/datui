@@ -23,6 +23,17 @@ use color_eyre::eyre::eyre;
 use memmap2::Mmap;
 use polars::prelude::*;
 
+/// What datui does with an audio file: see [`crate::readers`].
+pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
+    signatures: &[crate::readers::Signature {
+        says: |head, _| looks_like_audio(head),
+        kind: crate::readers::Kind::Magic,
+        trusted: crate::readers::EVERYWHERE,
+    }],
+    ..crate::readers::BASE
+};
+
 /// The most channels a file may declare; each is a column.
 const MAX_CHANNELS: u16 = 1024;
 /// The most chunks walked. Real files have a handful; each step moves at least 8 bytes,
@@ -1362,6 +1373,134 @@ enum Which {
     Frame,
     Seconds,
     Channel(usize),
+}
+
+/// The recording a window of the dataset reads its rows from, when the dataset is
+/// one: for the quality checks that read every sample (clipping, runs of zeros, DC
+/// offset).
+pub(crate) fn recording(window: Arc<dyn crate::pushdown::Windowed>) -> Option<Arc<AudioSource>> {
+    let any: Arc<dyn std::any::Any + Send + Sync> = window;
+    any.downcast::<AudioSource>().ok()
+}
+
+/// The Audio tab: the file's format, size and length, then its metadata (`bext`, iXML,
+/// `LIST INFO`, AIFF text) and markers, markers last.
+pub fn detail(audio: &AudioSource) -> crate::text_formats::Detail {
+    use crate::model_files::MetaValue;
+    use crate::widgets::info::{clock, count_of, format_bytes, group_u64};
+    let h = audio.header();
+    let g = crate::glyphs::get();
+    let sep = format!(" {} ", g.middot);
+    let mut kind = h.container.label().to_string();
+    if h.broadcast {
+        kind.push_str(" (Broadcast WAV)");
+    }
+    let rate = if h.sample_rate.fract() == 0.0 {
+        group_u64(h.sample_rate as u64)
+    } else {
+        format!("{:.3}", h.sample_rate)
+    };
+    let mut samples = h.sample.label();
+    if !h.sample.is_float() && (h.valid_bits as usize) < h.sample.bytes() * 8 {
+        samples.push_str(&format!(" ({} valid)", h.valid_bits));
+    }
+    let mut lines = vec![
+        format!(
+            "{kind}{sep}{}{sep}{rate} Hz",
+            count_of(h.channels as u64, "channel", "channels"),
+        ),
+        format!(
+            "Samples: {samples}{sep}{}{}",
+            h.encoding,
+            if audio.normalize() && !h.sample.is_float() {
+                format!("{sep}shown as float in [-1, 1]")
+            } else {
+                String::new()
+            }
+        ),
+        format!(
+            "Frames: {}{sep}Length: {}",
+            group_u64(audio.frames()),
+            clock(audio.seconds()),
+        ),
+        format!(
+            "Data: {}",
+            format_bytes(audio.frames() * h.frame_bytes as u64)
+        ),
+    ];
+    let mut warnings = Vec::new();
+    if let Some((declared, held)) = audio.cut_short() {
+        warnings.push(format!(
+            "The header says {} of samples; the file holds {}",
+            format_bytes(declared),
+            format_bytes(held)
+        ));
+    } else if h.data_declared.is_none() && audio.frames() > 0 {
+        lines.push("No data size in the header; frames are counted from the file's size".into());
+    }
+    let past = audio.frames_past_limit();
+    if past > 0 {
+        warnings.push(format!(
+            "The last {} frames are past the most a table holds and are not shown",
+            group_u64(past)
+        ));
+    }
+    let trailing = audio.trailing_bytes();
+    if trailing > 0 {
+        warnings.push(format!(
+            "{trailing} bytes after the last whole frame are not shown"
+        ));
+    }
+    let mut metadata: crate::model_files::Metadata = h
+        .metadata
+        .iter()
+        .map(|(k, v)| (k.clone(), MetaValue::Text(v.clone())))
+        .collect();
+    for marker in &h.markers {
+        let mut value = format!(
+            "{}{sep}frame {}",
+            clock(marker.sample as f64 / h.sample_rate),
+            group_u64(marker.sample)
+        );
+        if let Some(length) = marker.length {
+            value.push_str(&format!(
+                "{sep}{} long",
+                clock(length as f64 / h.sample_rate)
+            ));
+        }
+        if !marker.label.is_empty() {
+            value.push_str(&sep);
+            value.push_str(&marker.label);
+        }
+        metadata.push((format!("marker {}", marker.id), MetaValue::Text(value)));
+    }
+    crate::text_formats::Detail {
+        tab: "Audio",
+        lines,
+        warnings,
+        list_title: "Metadata",
+        list: metadata,
+        // An audio file's columns are the frame, the time and one per channel; what is
+        // particular to it is here.
+        first: true,
+        own_columns: true,
+    }
+}
+
+/// The scan of an audio file: its frames, read from the file where they are shown.
+/// The source is the window the dataset reads them through, and what a full quality
+/// run checks the signal of ([`recording`]).
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let source = Arc::new(AudioSource::open(input.path(), input.options.normalize)?);
+    let lf = source.lazy();
+    // The count is arithmetic on the file's size: nothing to scan for it.
+    let rows = usize::try_from(source.frames()).unwrap_or(usize::MAX);
+    input.report.opened = Some(Arc::new(crate::members::Opened {
+        detail: Some(Arc::new(detail(&source))),
+        window: Some((source, rows)),
+        ..Default::default()
+    }));
+    Ok(lf.into())
 }
 
 #[cfg(test)]

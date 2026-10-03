@@ -593,6 +593,9 @@ pub struct ReadReport {
     pub splits: Option<Arc<crate::hf_splits::Splits>>,
     /// What a read through a delimited spec found. See `OpenOptions::delimited`.
     pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
+    /// The table the read opened where the open named none: a database's only table.
+    /// Carried back as `OpenOptions::table`, so the dataset says which table it is.
+    pub table: Option<String>,
 }
 
 /// A SQLite table opened in place, carried from the scan to the dataset.

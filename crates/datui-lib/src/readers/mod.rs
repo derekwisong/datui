@@ -602,6 +602,35 @@ mod tests {
         assert_eq!(sniff(npy, None, Asked::Tables, |_| true), None);
     }
 
+    /// The copying page's reader table names every format by its title and the Polars
+    /// call Copy as Python reads it with, or `df = ...` where it has none.
+    #[test]
+    fn the_copy_docs_name_each_format_s_reader() {
+        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/user-guide/copying.md");
+        let text = std::fs::read_to_string(&page).expect("the copying page");
+        let start = text.find("| Format | Reader |").expect("the reader table");
+        let rows: Vec<(String, String)> = text[start..]
+            .lines()
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .map(|l| {
+                let (format, reader) = l.trim_matches('|').split_once(" | ").expect("two cells");
+                (format.trim().to_string(), reader.trim().to_string())
+            })
+            .collect();
+        let said: Vec<&str> = rows.iter().map(|(f, _)| f.as_str()).collect();
+        let titles: Vec<&str> = FileFormat::ALL.iter().map(|f| f.title()).collect();
+        assert_eq!(said, titles, "one row per format, in --format's order");
+        for ((title, reader), format) in rows.iter().zip(FileFormat::ALL) {
+            let expected = of(format)
+                .python
+                .as_ref()
+                .map_or("`df = ...`".to_string(), |p| format!("`{}`", p.call));
+            assert_eq!(*reader, expected, "{title}");
+        }
+    }
+
     /// A reader does what its descriptor says: a format whose tables are listed has a
     /// way to list them, and only such a format does; one read into files of its own
     /// converts; a prefix is scanned in place only where the descriptor says it is.

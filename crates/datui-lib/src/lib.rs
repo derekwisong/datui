@@ -8212,6 +8212,7 @@ impl App {
             opened: None,
             splits: options.splits.clone(),
             delimited: None,
+            table: None,
         };
         // A followed file reads every row it can and counts the rest: a row
         // that does not fit the schema never stops the follow.
@@ -8288,6 +8289,7 @@ impl App {
             read_python: report.read_python,
             read_mode,
             tail,
+            table: report.table.or_else(|| options.table.clone()),
             ..options
         };
         // The spec's dialect stays with the dataset, so a read again (`H`,

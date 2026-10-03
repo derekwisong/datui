@@ -104,7 +104,7 @@ they were applied:
 
 | In datui | In the script |
 |---|---|
-| The file | `pl.scan_*`, or `pl.read_*(...).lazy()` for JSON, Avro, Excel and Arrow IPC streams, with the reader options datui used (delimiter, header, skipped lines and rows, null values), then the column names it trimmed and the text columns it read as numbers or dates; a directory or bucket prefix as a glob |
+| The file | The reader below, with the reader options datui used (delimiter, header, skipped lines and rows, null values), then the column names it trimmed and the text columns it read as numbers or dates; a directory or bucket prefix as a glob |
 | Query | `.filter`, `.group_by().agg()` ordered by the keys, `.select`, `.unique` |
 | SQL | `.sql(..., table_name="df")` |
 | Search | `.filter` with a case-insensitive pattern per word |
@@ -113,12 +113,51 @@ they were applied:
 | Filters, sort, <kbd>r</kbd> | `.filter`, `.sort(..., nulls_last=True, maintain_order=True)`, `.reverse()` |
 | Hidden and moved columns | `.select([...])` |
 
-Data piped in on standard input, in a format Polars has no reader for
-(ORC, SafeTensors, GGUF, NMEA, GPX, WAV, AIFF, MIDI, VCD, FIX, SDF, bzip2 or xz), read through a
-[binary format spec](binary-formats.md), or read with `--comment-char`,
-`--header-rows` or `--skip-initial-space`, starts from `df = ...` for you to
-fill in. A step the script cannot repeat, such as a drill into a group whose
-rows are lists, is a comment, and the steps after it are commented out.
+The reader is the one for the format datui read the data as, which a file
+known by its bytes rather than its name (a `.bin` log, a Parquet part file
+with no extension) is read as too:
+
+| Format | Reader |
+|---|---|
+| Parquet | `pl.scan_parquet` |
+| CSV | `pl.scan_csv` |
+| TSV | `pl.scan_csv` |
+| PSV | `pl.scan_csv` |
+| JSON | `pl.read_json` |
+| NDJSON | `pl.scan_ndjson` |
+| Arrow IPC | `pl.scan_ipc` |
+| Avro | `pl.read_avro` |
+| ORC | `df = ...` |
+| Excel | `pl.read_excel` |
+| SafeTensors | `df = ...` |
+| GGUF | `df = ...` |
+| NMEA | `df = ...` |
+| GPX | `df = ...` |
+| audio | `df = ...` |
+| MIDI | `df = ...` |
+| SQLite | `pl.read_database` |
+| VCD | `df = ...` |
+| FIX | `df = ...` |
+| SDF | `df = ...` |
+| NumPy | `pl.from_numpy` |
+| ELF | `df = ...` |
+| ULog | `df = ...` |
+| DataFlash | `df = ...` |
+| candump | `df = ...` |
+
+A reader that is not a scan reads the file whole and ends in `.lazy()`; so
+does an Arrow IPC stream, read with `pl.read_ipc_stream`. A SQLite table is
+read with `SELECT *` through Python's `sqlite3`, the one table of a database
+opened without `--table` included. A NumPy array is loaded with `np.load`,
+an archive's by its name, and named as datui names its columns.
+
+Data piped in on standard input, in a format with `df = ...` above, read
+through a [binary format spec](binary-formats.md), compressed with bzip2 or
+xz, or read with `--comment-char`, `--header-rows` or `--skip-initial-space`, starts from
+`df = ...` for you to fill in, with a comment naming the file and the table
+on screen (`flight.bin --table GPS`). A step the script cannot repeat, such
+as a drill into a group whose rows are lists, is a comment, and the steps
+after it are commented out.
 An S3 endpoint and region go into `storage_options`; credentials never do.
 A user and password in a URL, and an HTTP URL's query string (where a signed
 URL keeps its signature), are left out, with a comment saying so.

@@ -465,6 +465,8 @@ pub enum Source {
         call: String,
         after: Vec<String>,
         notes: Vec<String>,
+        /// Imports the call needs besides Polars: `import sqlite3`.
+        imports: Vec<&'static str>,
     },
     /// Data no reader call can name — standard input, a frame handed over, a format
     /// Polars does not read — left to the user as `df = ...`, with why.
@@ -900,6 +902,7 @@ pub(crate) fn arrow_arguments(call: &mut Call<'_>) -> Option<Source> {
                 call: read,
                 after,
                 notes: std::mem::take(&mut call.notes),
+                imports: Vec::new(),
             })
         }
         None => {
@@ -924,6 +927,99 @@ pub(crate) fn excel_arguments(call: &mut Call<'_>) -> Option<Source> {
         "datui types a sheet's columns itself; Polars may read some differently.".to_string(),
     );
     None
+}
+
+/// `name` as an SQL identifier, quoted.
+fn sql_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// The source a format read whole by a call of its own, with the steps the open
+/// recorded after it.
+fn whole(call: &mut Call<'_>, read: String, imports: Vec<&'static str>) -> Source {
+    let mut after = std::mem::take(&mut call.after);
+    after.extend(call.skip_tail.take());
+    Source::Read {
+        call: read,
+        after,
+        notes: std::mem::take(&mut call.notes),
+        imports,
+    }
+}
+
+/// SQLite: the table on screen, read through Python's own `sqlite3`.
+pub(crate) fn sqlite_arguments(call: &mut Call<'_>) -> Option<Source> {
+    let [file] = call.names else {
+        return None;
+    };
+    let Some(table) = call.record.options.table.as_deref() else {
+        return Some(Source::Placeholder {
+            what: format!("{file}: datui could not tell which table it read; load it here."),
+        });
+    };
+    if call.paths.iter().any(|p| is_url(p)) {
+        return Some(Source::Placeholder {
+            what: format!(
+                "{file} --table {table}: sqlite3 opens a local file; download it and read it \
+                 with pl.read_database."
+            ),
+        });
+    }
+    call.notes.push(
+        "datui types a table's columns from their declared types; Polars infers them from \
+         the values."
+            .to_string(),
+    );
+    let query = format!("SELECT * FROM {}", sql_ident(table));
+    let read = format!(
+        "pl.read_database({}, sqlite3.connect({})).lazy()",
+        py_str(&query),
+        py_str(file)
+    );
+    Some(whole(call, read, vec!["import sqlite3"]))
+}
+
+/// NumPy: the array on screen, loaded with NumPy and named as datui names its columns.
+pub(crate) fn numpy_arguments(call: &mut Call<'_>) -> Option<Source> {
+    let [file] = call.names else {
+        return None;
+    };
+    let table = call.record.options.table.as_deref();
+    let archive = table.is_some() || file.to_ascii_lowercase().ends_with(".npz");
+    let array = match table {
+        Some(name) => format!("np.load({})[{}]", py_str(file), py_str(name)),
+        // An archive of one array opens it.
+        None if archive => format!("next(iter(np.load({}).values()))", py_str(file)),
+        None => format!("np.load({})", py_str(file)),
+    };
+    let names: Vec<String> = call
+        .record
+        .schema
+        .iter_names()
+        .map(|n| n.to_string())
+        .collect();
+    // A nested field is a struct in Polars and `outer.inner` columns in datui.
+    let schema = if names.iter().any(|n| n.contains('.')) {
+        call.notes.push(
+            "datui names a nested field's columns outer.inner; Polars keeps the field as a struct."
+                .to_string(),
+        );
+        String::new()
+    } else {
+        format!(", schema={}", py_names(&names))
+    };
+    let read = format!("pl.from_numpy({array}{schema}, orient=\"row\").lazy()");
+    Some(whole(call, read, vec!["import numpy as np"]))
+}
+
+/// `names`, and the table picked inside them where the open named one, as the
+/// placeholders say what to load: `log.bin --table GPS`.
+fn named_with_table(names: &[String], record: &OpenRecord) -> String {
+    let names = names.join(", ");
+    match record.options.table.as_deref() {
+        Some(table) => format!("{names} --table {table}"),
+        None => names,
+    }
 }
 
 /// The reader for the open, with the options datui gave its own.
@@ -956,8 +1052,15 @@ pub fn source(record: &OpenRecord) -> Source {
     }
     let targets: Option<Vec<Target>> = paths.iter().map(|p| reader_target(p, record)).collect();
     let Some(targets) = targets.filter(|t| !t.is_empty()) else {
+        let names: Vec<String> = paths
+            .iter()
+            .map(|p| without_secrets(&p.to_string_lossy()).0)
+            .collect();
         return Source::Placeholder {
-            what: "datui could not name a Polars reader for this data: load it here.".to_string(),
+            what: format!(
+                "{}: datui could not name a Polars reader for this data; load it here.",
+                named_with_table(&names, record)
+            ),
         };
     };
     let format = targets[0].format;
@@ -988,7 +1091,7 @@ pub fn source(record: &OpenRecord) -> Source {
         return Source::Placeholder {
             what: format!(
                 "{}: Polars has no reader for {} files; load it here.",
-                names.join(", "),
+                named_with_table(&names, record),
                 format.title()
             ),
         };
@@ -1061,7 +1164,12 @@ pub fn source(record: &OpenRecord) -> Source {
     if python.eager {
         call.push_str(".lazy()");
     }
-    Source::Read { call, after, notes }
+    Source::Read {
+        call,
+        after,
+        notes,
+        imports: Vec::new(),
+    }
 }
 
 /// `--null-values` as `scan_csv` takes them: one value or a list for every column,
@@ -1142,9 +1250,18 @@ pub struct Script {
 
 impl Script {
     pub fn render(&self) -> String {
-        let mut out = String::from("import polars as pl\n\n");
+        let mut out = String::from("import polars as pl\n");
+        if let Source::Read { imports, .. } = &self.source {
+            for import in imports {
+                out.push_str(import);
+                out.push('\n');
+            }
+        }
+        out.push('\n');
         let (head, mut lines) = match &self.source {
-            Source::Read { call, after, notes } => {
+            Source::Read {
+                call, after, notes, ..
+            } => {
                 for note in notes {
                     out.push_str(&py_comment(note));
                     out.push('\n');
@@ -1211,6 +1328,7 @@ mod tests {
                 call: "pl.scan_parquet(\"sales.parquet\")".to_string(),
                 after: Vec::new(),
                 notes: Vec::new(),
+                imports: Vec::new(),
             },
             steps,
         }
@@ -1469,6 +1587,34 @@ mod tests {
         let mut space = OpenOptions::new();
         space.skip_initial_space = true;
         assert!(placeholder(&csv, &space, None).contains("--skip-initial-space"));
+    }
+
+    /// A file known by its bytes, read as a format Polars has no reader for: the
+    /// placeholder names the format and the table on screen.
+    #[test]
+    fn a_placeholder_names_the_format_read_and_the_table() {
+        let schema = Schema::default();
+        let paths = vec![PathBuf::from("flight.bin")];
+        let mut options = OpenOptions::new();
+        options.table = Some("GPS".into());
+        let record = OpenRecord {
+            paths: Some(&paths),
+            options: &options,
+            format: Some(FileFormat::Dataflash),
+            schema: &schema,
+            remote_objects: Vec::new(),
+            s3_endpoint: None,
+            s3_region: None,
+            read_as_text: Vec::new(),
+            spec: None,
+        };
+        let Source::Placeholder { what } = source(&record) else {
+            panic!("Polars reads no DataFlash");
+        };
+        assert_eq!(
+            what,
+            "flight.bin --table GPS: Polars has no reader for DataFlash files; load it here."
+        );
     }
 
     #[test]

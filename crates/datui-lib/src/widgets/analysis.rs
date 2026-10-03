@@ -187,16 +187,18 @@ impl<'a> AnalysisWidget<'a> {
                 if let Some(results) = self.results {
                     match tool {
                         AnalysisTool::Describe => {
-                            render_statistics_table(
+                            StatisticsTable {
                                 results,
-                                self.table_state,
-                                self.column_scroll,
-                                self.focus == AnalysisFocus::Main,
+                                focused: self.focus == AnalysisFocus::Main,
+                                theme: self.theme,
+                                table_cell_padding: self.table_cell_padding,
+                                number_format: self.number_format,
+                            }
+                            .render(
                                 main_layout[0],
                                 buf,
-                                self.theme,
-                                self.table_cell_padding,
-                                self.number_format,
+                                self.table_state,
+                                self.column_scroll,
                             );
                         }
                         AnalysisTool::DistributionAnalysis => {
@@ -551,135 +553,148 @@ fn render_correlation_pair_summary(
     Paragraph::new(lines).render(inner, buf);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_statistics_table(
-    results: &AnalysisResults,
-    table_state: &mut TableState,
-    columns: &mut ColumnScroll,
+/// The Describe tool's table: a row per column, a column per statistic.
+struct StatisticsTable<'a> {
+    results: &'a AnalysisResults,
     focused: bool,
-    area: Rect,
-    buf: &mut Buffer,
-    theme: &Theme,
+    theme: &'a Theme,
     table_cell_padding: u16,
-    number_format: &NumberFormatSettings,
-) {
-    let num_columns = results.column_statistics.len();
-    if num_columns == 0 {
-        Paragraph::new("No columns to display")
-            .centered()
-            .render(area, buf);
-        return;
-    }
+    number_format: &'a NumberFormatSettings,
+}
 
-    // Statistics to display (in order) - internal names for matching data
-    let stat_names = vec![
-        "count",
-        "null_count",
-        "mean",
-        "std",
-        "min",
-        "25%",
-        "50%",
-        "75%",
-        "max",
-    ];
-    // Display names in Title case for headers
-    let stat_display_names = vec![
-        "Count", "Nulls", "Mean", "Std", "Min", "25%", "50%", "75%", "Max",
-    ];
-    let num_stats = stat_names.len();
-
-    // Calculate column widths based on header names and content (minimal spacing)
-    // First, determine minimum width for each column based on header length
-    // Note: ratatui Table adds 1 space between columns by default, so we don't add extra padding
-    let mut min_col_widths: Vec<u16> = stat_display_names
-        .iter()
-        .map(|name| name.chars().count() as u16) // header length (no extra padding - table handles spacing)
-        .collect();
-
-    // Scan all data to find maximum width needed for each column
-    for col_stat in &results.column_statistics {
-        for (stat_idx, stat_name) in stat_names.iter().enumerate() {
-            let value_str = describe_value(col_stat, stat_name, number_format);
-            let value_len = value_str.chars().count() as u16;
-            // Ensure width is at least the header length (already initialized) AND value length
-            // This preserves header widths even if all data values are shorter
-            let header_len = stat_display_names[stat_idx].chars().count() as u16;
-            min_col_widths[stat_idx] = min_col_widths[stat_idx].max(value_len).max(header_len);
-            // must fit both header and content (no padding - table handles spacing)
+impl StatisticsTable<'_> {
+    fn render(
+        self,
+        area: Rect,
+        buf: &mut Buffer,
+        table_state: &mut TableState,
+        columns: &mut ColumnScroll,
+    ) {
+        let StatisticsTable {
+            results,
+            focused,
+            theme,
+            table_cell_padding,
+            number_format,
+        } = self;
+        let num_columns = results.column_statistics.len();
+        if num_columns == 0 {
+            Paragraph::new("No columns to display")
+                .centered()
+                .render(area, buf);
+            return;
         }
-    }
 
-    // Locked column width (column name) - calculate from header text AND actual column names
-    let header_text = "Column";
-    let header_len = header_text.chars().count() as u16;
-    let max_col_name_len = results
-        .column_statistics
-        .iter()
-        .map(|cs| cs.name.chars().count() as u16)
-        .max()
-        .unwrap_or(header_len);
-    let locked_col_width = max_col_name_len.max(header_len).max(10); // min 10, must fit both header and data (no padding - table handles spacing)
-
-    let column_spacing = table_cell_padding;
-    // The rail's column comes first, then the locked names.
-    let available_width = area
-        .width
-        .saturating_sub(RAIL_WIDTH + locked_col_width)
-        .saturating_sub(column_spacing);
-    let (start_stat, end_stat) =
-        stat_window(&min_col_widths, available_width, column_spacing, columns);
-    let visible_stats: Vec<usize> = (start_stat..end_stat).collect();
-
-    if visible_stats.is_empty() {
-        return;
-    }
-
-    let mut rows = Vec::new();
-
-    let mut header_cells = vec![Cell::from("Column").style(Style::default())];
-    for &stat_idx in &visible_stats {
-        header_cells.push(Cell::from(stat_display_names[stat_idx]).style(Style::default()));
-    }
-    let header_row_style = header_style(theme, "controls_bg", "table_header");
-    let header_row = Row::new(header_cells.clone()).style(header_row_style);
-
-    for col_stat in &results.column_statistics {
-        let mut cells = vec![
-            Cell::from(col_stat.name.as_str())
-                .style(Style::default().fg(theme.get("text_primary"))),
+        // Statistics to display (in order) - internal names for matching data
+        let stat_names = vec![
+            "count",
+            "null_count",
+            "mean",
+            "std",
+            "min",
+            "25%",
+            "50%",
+            "75%",
+            "max",
         ];
-        for &stat_idx in &visible_stats {
-            let stat_name = stat_names[stat_idx];
-            let value = describe_value(col_stat, stat_name, number_format);
+        // Display names in Title case for headers
+        let stat_display_names = vec![
+            "Count", "Nulls", "Mean", "Std", "Min", "25%", "50%", "75%", "Max",
+        ];
+        let num_stats = stat_names.len();
 
-            cells.push(Cell::from(value));
+        // Calculate column widths based on header names and content (minimal spacing)
+        // First, determine minimum width for each column based on header length
+        // Note: ratatui Table adds 1 space between columns by default, so we don't add extra padding
+        let mut min_col_widths: Vec<u16> = stat_display_names
+            .iter()
+            .map(|name| name.chars().count() as u16) // header length (no extra padding - table handles spacing)
+            .collect();
+
+        // Scan all data to find maximum width needed for each column
+        for col_stat in &results.column_statistics {
+            for (stat_idx, stat_name) in stat_names.iter().enumerate() {
+                let value_str = describe_value(col_stat, stat_name, number_format);
+                let value_len = value_str.chars().count() as u16;
+                // Ensure width is at least the header length (already initialized) AND value length
+                // This preserves header widths even if all data values are shorter
+                let header_len = stat_display_names[stat_idx].chars().count() as u16;
+                min_col_widths[stat_idx] = min_col_widths[stat_idx].max(value_len).max(header_len);
+                // must fit both header and content (no padding - table handles spacing)
+            }
         }
 
-        rows.push(Row::new(cells));
+        // Locked column width (column name) - calculate from header text AND actual column names
+        let header_text = "Column";
+        let header_len = header_text.chars().count() as u16;
+        let max_col_name_len = results
+            .column_statistics
+            .iter()
+            .map(|cs| cs.name.chars().count() as u16)
+            .max()
+            .unwrap_or(header_len);
+        let locked_col_width = max_col_name_len.max(header_len).max(10); // min 10, must fit both header and data (no padding - table handles spacing)
+
+        let column_spacing = table_cell_padding;
+        // The rail's column comes first, then the locked names.
+        let available_width = area
+            .width
+            .saturating_sub(RAIL_WIDTH + locked_col_width)
+            .saturating_sub(column_spacing);
+        let (start_stat, end_stat) =
+            stat_window(&min_col_widths, available_width, column_spacing, columns);
+        let visible_stats: Vec<usize> = (start_stat..end_stat).collect();
+
+        if visible_stats.is_empty() {
+            return;
+        }
+
+        let mut rows = Vec::new();
+
+        let mut header_cells = vec![Cell::from("Column").style(Style::default())];
+        for &stat_idx in &visible_stats {
+            header_cells.push(Cell::from(stat_display_names[stat_idx]).style(Style::default()));
+        }
+        let header_row_style = header_style(theme, "controls_bg", "table_header");
+        let header_row = Row::new(header_cells.clone()).style(header_row_style);
+
+        for col_stat in &results.column_statistics {
+            let mut cells = vec![
+                Cell::from(col_stat.name.as_str())
+                    .style(Style::default().fg(theme.get("text_primary"))),
+            ];
+            for &stat_idx in &visible_stats {
+                let stat_name = stat_names[stat_idx];
+                let value = describe_value(col_stat, stat_name, number_format);
+
+                cells.push(Cell::from(value));
+            }
+
+            rows.push(Row::new(cells));
+        }
+
+        let mut constraints = vec![Constraint::Length(locked_col_width)];
+        for &stat_idx in &visible_stats {
+            // Use minimum width needed (ratatui will add spacing between columns)
+            constraints.push(Constraint::Length(min_col_widths[stat_idx]));
+        }
+
+        let table = Table::new(rows, constraints)
+            .header(header_row)
+            .column_spacing(table_cell_padding)
+            .row_highlight_style(cursor_style(focused, theme))
+            .highlight_symbol(cursor_rail(focused, theme))
+            .highlight_spacing(HighlightSpacing::Always);
+
+        StatefulWidget::render(table, area, buf, table_state);
+        draw_scroll_marks(
+            area,
+            buf,
+            RAIL_WIDTH + locked_col_width,
+            (start_stat, end_stat, num_stats),
+            theme,
+        );
     }
-
-    let mut constraints = vec![Constraint::Length(locked_col_width)];
-    for &stat_idx in &visible_stats {
-        // Use minimum width needed (ratatui will add spacing between columns)
-        constraints.push(Constraint::Length(min_col_widths[stat_idx]));
-    }
-
-    let table = Table::new(rows, constraints)
-        .header(header_row)
-        .column_spacing(table_cell_padding)
-        .row_highlight_style(cursor_style(focused, theme))
-        .highlight_symbol(cursor_rail(focused, theme))
-        .highlight_spacing(HighlightSpacing::Always);
-
-    StatefulWidget::render(table, area, buf, table_state);
-    draw_scroll_marks(
-        area,
-        buf,
-        RAIL_WIDTH + locked_col_width,
-        (start_stat, end_stat, num_stats),
-        theme,
-    );
 }
 
 /// One Describe cell. A date, time or duration column gets its range, quartiles
@@ -2785,16 +2800,18 @@ mod tests {
         .unwrap();
         let area = Rect::new(0, 0, 220, 6);
         let mut buf = Buffer::empty(area);
-        render_statistics_table(
-            &results,
-            &mut TableState::default(),
-            &mut crate::analysis_modal::ColumnScroll::default(),
-            false,
+        StatisticsTable {
+            results: &results,
+            focused: false,
+            theme: &theme,
+            table_cell_padding: 1,
+            number_format: &settings("thousands", false),
+        }
+        .render(
             area,
             &mut buf,
-            &theme,
-            1,
-            &settings("thousands", false),
+            &mut TableState::default(),
+            &mut crate::analysis_modal::ColumnScroll::default(),
         );
         let text = rendered_text(&buf);
         let mut lines = text.lines();

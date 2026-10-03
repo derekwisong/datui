@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::{fs, fs::File, path::Path, path::PathBuf};
 
@@ -1653,6 +1653,97 @@ fn limit_files(
     (start.max(offsets[lo]), end.min(offsets[hi + 1]))
 }
 
+/// Each directory a walk read, with its entries in the order `read_dir` gave them and
+/// whether each is a directory. One that could not be read is absent.
+type WalkedDirs = HashMap<PathBuf, Vec<(PathBuf, bool)>>;
+
+/// Read every directory under `root` down to `max_depth` levels, a level at a time
+/// and many directories at once. Nothing is classified here, so the walk that does
+/// classify sees the tree exactly as reading it one directory at a time would.
+fn walk_dirs(root: &Path, max_depth: usize) -> WalkedDirs {
+    let mut walked = WalkedDirs::new();
+    let mut level = vec![root.to_path_buf()];
+    for _ in 0..max_depth {
+        if level.is_empty() {
+            break;
+        }
+        let read = each_at_once(level.len(), |i| {
+            let entries = fs::read_dir(&level[i]).ok()?;
+            Some(
+                entries
+                    .flatten()
+                    .map(|entry| {
+                        let path = entry.path();
+                        // The entry's own type costs no stat; a link is followed, as
+                        // `is_dir` would.
+                        let is_dir = match entry.file_type() {
+                            Ok(t) if t.is_symlink() => path.is_dir(),
+                            Ok(t) => t.is_dir(),
+                            Err(_) => path.is_dir(),
+                        };
+                        (path, is_dir)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
+        let mut next = Vec::new();
+        for (dir, entries) in level.into_iter().zip(read) {
+            let Some(entries) = entries else {
+                continue;
+            };
+            next.extend(
+                entries
+                    .iter()
+                    .filter(|(_, is_dir)| *is_dir)
+                    .map(|(p, _)| p.clone()),
+            );
+            walked.insert(dir, entries);
+        }
+        level = next;
+    }
+    walked
+}
+
+/// `work` for each index below `n`, on up to a wave of threads pulling the next index
+/// as each finishes, and the answers in index order. Sized for waiting on a disk or a
+/// network mount rather than for the cores; a worker that panics answers `None` for
+/// the indices it took.
+fn each_at_once<T: Send>(n: usize, work: impl Fn(usize) -> Option<T> + Sync) -> Vec<Option<T>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let workers = n.min(crate::schema_union::FOOTERS_AT_ONCE);
+    let mut out: Vec<Option<T>> = std::iter::repeat_with(|| None).take(n).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= n {
+                            break;
+                        }
+                        // Caught here rather than at the join: a worker that panicked
+                        // would otherwise lose the answers it had already given.
+                        let answer =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(i)))
+                                .ok()
+                                .flatten();
+                        done.push((i, answer));
+                    }
+                    done
+                })
+            })
+            .collect();
+        for handle in handles {
+            for (i, answer) in handle.join().unwrap_or_default() {
+                out[i] = answer;
+            }
+        }
+    });
+    out
+}
+
 /// The first and last files holding rows `[start, start + len)`, given where each file's
 /// rows start (`offsets`, with the total last). `None` when the rows lie past the end.
 fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, usize)> {
@@ -3256,7 +3347,9 @@ impl DataTableState {
     /// walks used for schema/partition discovery, this visits the whole tree because an
     /// exact row count needs every file. Bounded depth guards against pathological trees.
     fn collect_parquet_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize, max_depth: usize) {
+        let walked = walk_dirs(dir, max_depth - depth);
         Self::collect_parquet_files_counting(
+            &walked,
             dir,
             out,
             &mut crate::schema_union::SkippedFiles::default(),
@@ -3273,6 +3366,7 @@ impl DataTableState {
     /// `_SUCCESS` beside the data is a writer saying it finished, while three CSVs in
     /// the same directory are three files somebody expected to be in the table.
     fn collect_parquet_files_counting(
+        walked: &WalkedDirs,
         dir: &Path,
         out: &mut Vec<PathBuf>,
         skipped: &mut crate::schema_union::SkippedFiles,
@@ -3289,7 +3383,7 @@ impl DataTableState {
         if depth >= max_depth {
             return (false, 0);
         }
-        let Ok(entries) = fs::read_dir(dir) else {
+        let Some(entries) = walked.get(dir) else {
             return (false, 0);
         };
         // Held back until the directory has been read to the end: whether a file beside
@@ -3298,16 +3392,17 @@ impl DataTableState {
         let mut here: Vec<PathBuf> = Vec::new();
         let mut passed_over = 0usize;
         let mut data_below = false;
-        for entry in entries.flatten() {
-            let child = entry.path();
+        for (child, is_dir) in entries {
+            let child = child.clone();
             let bookkeeping = under_bookkeeping
                 || child
                     .file_name()
                     .map(|n| n.to_string_lossy())
                     .as_deref()
                     .is_some_and(crate::discover::is_bookkeeping);
-            if child.is_dir() {
+            if *is_dir {
                 let (below, deferred) = Self::collect_parquet_files_counting(
+                    walked,
                     &child,
                     out,
                     skipped,
@@ -3400,11 +3495,36 @@ impl DataTableState {
         Vec<Option<FileSchema>>,
         crate::schema_union::SkippedFiles,
     ) {
+        let (files, skipped) = Self::list_parquet_dir(dir, meter);
+        let read = crate::schema_union::footers_to_read(files.len());
+        let footers = Self::read_local_footers(&files, &read, progress, meter);
+        (files, read, footers, skipped)
+    }
+
+    /// Every Parquet file under `dir`, sorted, and what the walk passed over. Timed
+    /// into `meter` as the listing.
+    ///
+    /// The directories are read many at once and classified afterwards, in one pass
+    /// that sees the tree as the serial walk did: on a network mount each directory is
+    /// a round trip, and a Hive tree is thousands of them.
+    pub fn list_parquet_dir(
+        dir: &Path,
+        meter: &crate::measurements::Meter,
+    ) -> (Vec<PathBuf>, crate::schema_union::SkippedFiles) {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
         let mut skipped = crate::schema_union::SkippedFiles::default();
         let listing_began = std::time::Instant::now();
-        Self::collect_parquet_files_counting(dir, &mut files, &mut skipped, 0, MAX_DEPTH, false);
+        let walked = walk_dirs(dir, MAX_DEPTH);
+        Self::collect_parquet_files_counting(
+            &walked,
+            dir,
+            &mut files,
+            &mut skipped,
+            0,
+            MAX_DEPTH,
+            false,
+        );
         // Load-bearing beyond reading in a predictable order. The scan hands these to
         // Polars as they are, and Polars takes the hive schema from the first of them, so
         // this decides whether a directory whose partition keys disagree opens with its
@@ -3422,61 +3542,59 @@ impl DataTableState {
         // take an unpredictable share of one small number, so a test could only assert
         // that the total is the total.
         meter.listed(listing_began.elapsed(), Some(files.len()), false);
-        let read = crate::schema_union::footers_to_read(files.len());
-        let wanted: Vec<&Path> = read
-            .iter()
-            .filter_map(|i| files.get(*i).map(PathBuf::as_path))
-            .collect();
+        (files, skipped)
+    }
+
+    /// Each file's size and modification time in nanoseconds, many at once: what a
+    /// local dataset's fingerprint is taken from. `None` for a file gone since listing.
+    pub fn stat_files(files: &[PathBuf]) -> Vec<Option<(u64, u64)>> {
+        each_at_once(files.len(), |i| {
+            let meta = fs::metadata(&files[i]).ok()?;
+            let modified = meta
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_nanos() as u64;
+            Some((meta.len(), modified))
+        })
+    }
+
+    /// The footers of `files` at the indices `read`, in that order, counted off against
+    /// `progress` and timed into `meter`. A footer that will not read is `None`: one file
+    /// mid-write must not stop the dataset from opening.
+    pub fn read_local_footers(
+        files: &[PathBuf],
+        read: &[usize],
+        progress: &crate::schema_union::FooterProgress,
+        meter: &crate::measurements::Meter,
+    ) -> Vec<Option<FileSchema>> {
         let footers_began = std::time::Instant::now();
-        let pass = progress.pass(wanted.len());
-        let pass_ref = &pass;
-        let workers = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .min(wanted.len().max(1))
-            .max(1);
-        let chunk_size = wanted.len().div_ceil(workers).max(1);
-        let footers: Vec<Option<FileSchema>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = wanted
-                .chunks(chunk_size)
-                .map(|chunk| {
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|p| {
-                                let footer = Self::footer_of(p);
-                                // After the read, not before: the count is meant to be
-                                // footers done with, and a footer that will not parse
-                                // is done with too. No test holds this — both orders
-                                // reach the same final number, and the difference is
-                                // only visible mid-pass.
-                                pass_ref.advance();
-                                footer
-                            })
-                            .collect()
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                // A worker that panicked must still account for its files, or every
-                // footer after it would line up with the wrong file.
-                .zip(wanted.chunks(chunk_size))
-                .flat_map(|(h, chunk)| {
-                    h.join()
-                        .unwrap_or_else(|_| vec![None::<FileSchema>; chunk.len()])
-                })
-                .collect()
+        let pass = progress.pass(read.len());
+        let footers = each_at_once(read.len(), |i| {
+            // An abandoned open stops issuing reads; what it has is thrown away.
+            if progress.is_cancelled() {
+                pass.advance();
+                return None;
+            }
+            let footer = files.get(read[i]).and_then(|p| Self::footer_of(p));
+            // After the read, not before: the count is meant to be footers done with,
+            // and a footer that will not parse is done with too. No test holds this —
+            // both orders reach the same final number, and the difference is only
+            // visible mid-pass.
+            pass.advance();
+            footer
         });
         drop(pass);
-        meter.read_footers(footers_began.elapsed(), Some(wanted.len()), false);
-        (files, read, footers, skipped)
+        meter.read_footers(footers_began.elapsed(), Some(read.len()), false);
+        footers
     }
 
     /// One local Parquet file's columns, row count, row-group sizes and column sizes,
     /// from its footer. The metadata is already read for the row count; the sizes come
     /// off the same object.
     fn footer_of(path: &Path) -> Option<FileSchema> {
+        crate::schema_union::before_local_footer_read(path);
         let file = File::open(path).ok()?;
         // Asked of the open handle, so it is the file the footer was read from and not
         // whatever is at that path by the time anyone looks again.
@@ -3531,38 +3649,14 @@ impl DataTableState {
             ));
         }
         let counted = files.len();
-
-        let workers = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .min(files.len())
-            .max(1);
-        let chunk_size = files.len().div_ceil(workers);
-
-        let (total, read_ok) = std::thread::scope(|scope| {
-            let handles: Vec<_> = files
-                .chunks(chunk_size)
-                .map(|chunk| {
-                    scope.spawn(move || {
-                        let mut sum = 0usize;
-                        let mut ok = 0usize;
-                        for path in chunk {
-                            if let Ok(file) = File::open(path)
-                                && let Ok(n) = ParquetReader::new(file).num_rows()
-                            {
-                                sum += n;
-                                ok += 1;
-                            }
-                        }
-                        (sum, ok)
-                    })
-                })
-                .collect();
-            handles.into_iter().fold((0usize, 0usize), |(s, o), h| {
-                let (cs, co) = h.join().unwrap_or((0, 0));
-                (s + cs, o + co)
-            })
+        let rows = each_at_once(files.len(), |i| {
+            crate::schema_union::before_local_footer_read(&files[i]);
+            ParquetReader::new(File::open(&files[i]).ok()?)
+                .num_rows()
+                .ok()
         });
+        let total: usize = rows.iter().flatten().sum();
+        let read_ok = rows.iter().flatten().count();
 
         if read_ok == 0 {
             // Not recorded, and so not counted against the one shot this measurement

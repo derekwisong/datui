@@ -1094,6 +1094,69 @@ impl DatasetSchema {
     }
 }
 
+/// Footers read at once: one wave. A footer read is waiting, not computing — on a
+/// network mount or a store it is a few round trips — so this is not the core count.
+/// A dataset of more files than this opens from its ends and reads the rest behind.
+pub const FOOTERS_AT_ONCE: usize = 64;
+
+/// Something a test runs before each local footer read under a directory.
+type FooterHook = Arc<dyn Fn(&std::path::Path) + Send + Sync>;
+
+static FOOTER_HOOKS: std::sync::Mutex<Vec<(u64, std::path::PathBuf, FooterHook)>> =
+    std::sync::Mutex::new(Vec::new());
+/// Whether any hook is set, so a read with none takes no lock.
+static FOOTER_HOOKS_SET: AtomicUsize = AtomicUsize::new(0);
+
+/// Run `hook` before each local footer read under `dir` until the guard drops. For
+/// tests: to count a pass's reads, or hold one to stand in for a slow filesystem.
+/// Keyed by directory so tests running side by side do not see each other's reads.
+#[doc(hidden)]
+pub fn on_local_footer_read(
+    dir: &std::path::Path,
+    hook: impl Fn(&std::path::Path) + Send + Sync + 'static,
+) -> FooterHookGuard {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    FOOTER_HOOKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((id, dir.to_path_buf(), Arc::new(hook)));
+    FOOTER_HOOKS_SET.fetch_add(1, Ordering::Release);
+    FooterHookGuard(id)
+}
+
+/// Removes its hook when dropped.
+#[doc(hidden)]
+pub struct FooterHookGuard(u64);
+
+impl Drop for FooterHookGuard {
+    fn drop(&mut self) {
+        FOOTER_HOOKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(id, _, _)| *id != self.0);
+        FOOTER_HOOKS_SET.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Run the hooks set for `path`'s directory, if any. Called by every local footer read.
+pub(crate) fn before_local_footer_read(path: &std::path::Path) {
+    if FOOTER_HOOKS_SET.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    // Cloned out so a hook that blocks does not hold the lock against the others.
+    let hooks: Vec<FooterHook> = FOOTER_HOOKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, dir, _)| path.starts_with(dir))
+        .map(|(_, _, hook)| hook.clone())
+        .collect();
+    for hook in hooks {
+        hook(path);
+    }
+}
+
 /// Footers read before a dataset opens. Past this many files the reads cost more than
 /// the schema is worth, so a spread sample stands in for the rest. Documented in
 /// `docs/user-guide/loading-data.md`; a fixed threshold, not a setting.

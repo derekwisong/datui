@@ -340,7 +340,7 @@ pub fn dataset_schema_from_footers(
 }
 
 /// How many footers are read at once when counting.
-pub const FOOTERS_AT_ONCE: usize = 64;
+pub const FOOTERS_AT_ONCE: usize = crate::schema_union::FOOTERS_AT_ONCE;
 /// The first read of a footer. Most footers fit; a larger one costs a second request.
 const COUNT_TAIL_BYTES: u64 = 16 * 1024;
 

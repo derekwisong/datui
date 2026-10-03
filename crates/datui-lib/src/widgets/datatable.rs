@@ -864,6 +864,17 @@ pub struct RemoteRead {
     pub count: FileCounter,
 }
 
+impl From<RemoteRead> for RemoteFiles {
+    fn from(read: RemoteRead) -> Self {
+        RemoteFiles {
+            urls: Arc::new(read.urls),
+            scan: read.scan,
+            count: read.count,
+            offsets: None,
+        }
+    }
+}
+
 /// A compressed CSV's decompressed copy, then the open's claim on it: dropped in that
 /// order, so the claim goes only once the file has. See [`crate::unfinished`].
 struct Decompressed {
@@ -877,7 +888,8 @@ impl Decompressed {
     }
 }
 
-/// A remote dataset of many files, and how to read only some of them.
+/// A dataset of many files, and how to read only some of them: a remote one, or a
+/// local Hive directory once every footer is known.
 ///
 /// Polars reads a scan of many files in order: row 900,000 is reached by reading every
 /// file before it, and a count is a read of all of them. Once each file's rows are
@@ -1648,19 +1660,35 @@ fn limit_files(
     ) else {
         return (start, end);
     };
-    if last - first < max_files {
+    // An empty file is not opened (see `window_of`), so it costs nothing to reach past.
+    let opened = |from: usize, to: usize| (from..=to).filter(|&i| holds_rows(offsets, i)).count();
+    if opened(first, last) <= max_files {
         return (start, end);
     }
     let (mut lo, mut hi) = (view_first.max(first), view_last.min(last));
-    while hi - lo + 1 < max_files && (hi < last || lo > first) {
+    let mut files = opened(lo, hi);
+    while files < max_files && (hi < last || lo > first) {
         if hi < last {
             hi += 1;
+            files += usize::from(holds_rows(offsets, hi));
         }
-        if hi - lo + 1 < max_files && lo > first {
+        if files < max_files && lo > first {
             lo -= 1;
+            files += usize::from(holds_rows(offsets, lo));
         }
     }
     (start.max(offsets[lo]), end.min(offsets[hi + 1]))
+}
+
+/// Whether file `i` has any rows, given where each file's rows start.
+fn holds_rows(offsets: &[usize], i: usize) -> bool {
+    offsets[i + 1] > offsets[i]
+}
+
+/// The files from `first` to `last` that hold rows: a window reads these and passes
+/// over the empty ones, which a dataset written a file a day can be mostly made of.
+fn files_with_rows(offsets: &[usize], first: usize, last: usize) -> Vec<usize> {
+    (first..=last).filter(|&i| holds_rows(offsets, i)).collect()
 }
 
 /// Each directory a walk read, with its entries in the order `read_dir` gave them and
@@ -1789,7 +1817,13 @@ fn window_of(
     if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
         && let Some((first, last)) = files_holding(offsets, start, len)
     {
-        let lf = (files.scan)(&files.urls[first..=last], read_as_text)?;
+        // The window's first file holds its first row, so leaving out the empty files
+        // after it does not move the slice.
+        let urls: Vec<String> = files_with_rows(offsets, first, last)
+            .into_iter()
+            .map(|i| files.urls[i].clone())
+            .collect();
+        let lf = (files.scan)(&urls, read_as_text)?;
         return Ok(lf
             .select(all_columns)
             .slice((start - offsets[first]) as i64, len as u32));
@@ -6554,15 +6588,21 @@ impl DataTableState {
         // heard of the columns that just arrived. Left in place, the first windowed
         // page read asks it for a column it does not have and the table stops showing
         // rows at the moment it was supposed to show more of them.
-        if let (Some(found), Some(remote)) = (remote, self.remote_files.as_mut()) {
-            remote.urls = Arc::new(found.urls);
-            remote.scan = found.scan;
-            // The counter too, and for the same reason the scan is replaced: it answers
-            // one entry per file it was given, and the one the dataset opened with was
-            // given every file listed. Left beside a shorter `urls` its answer is
-            // dropped on a length check without a word, and the dataset spends the rest
-            // of the session re-counting itself and never reaching an end to jump to.
-            remote.count = found.count;
+        match (remote, self.remote_files.as_mut()) {
+            (Some(found), Some(remote)) => {
+                remote.urls = Arc::new(found.urls);
+                remote.scan = found.scan;
+                // The counter too, and for the same reason the scan is replaced: it
+                // answers one entry per file it was given, and the one the dataset
+                // opened with was given every file listed. Left beside a shorter `urls`
+                // its answer is dropped on a length check without a word, and the
+                // dataset spends the rest of the session re-counting itself and never
+                // reaching an end to jump to.
+                remote.count = found.count;
+            }
+            // A local directory reads by file only once every footer is known.
+            (Some(found), None) => self.remote_files = Some(found.into()),
+            (None, _) => {}
         }
         // Takes the notes, the drift groups and the row starts with it, and clears
         // `read_as_text` — sound only because the offer to read a column as text is
@@ -7194,13 +7234,9 @@ impl DataTableState {
     /// `None` is that second case — not zero, which would claim a page came from
     /// nowhere.
     pub fn files_a_page_reads(&self, start: usize, len: usize) -> Option<usize> {
-        let offsets = self
-            .remote_files
-            .as_ref()
-            .filter(|_| self.remote_window())
-            .and_then(|f| f.offsets.as_ref())?;
+        let offsets = self.files_window().and_then(|f| f.offsets.as_ref())?;
         let (first, last) = files_holding(offsets, start, len)?;
-        Some(last - first + 1)
+        Some(files_with_rows(offsets, first, last).len())
     }
 
     /// The frame for buffer rows `[start, start + len)`, columns in display order. For a
@@ -7223,7 +7259,7 @@ impl DataTableState {
     ) -> PolarsResult<LazyFrame> {
         window_of(
             &self.lf,
-            self.remote_files.as_ref().filter(|_| self.remote_window()),
+            self.files_window(),
             self.window_now().as_deref(),
             &self.read_as_text,
             start,
@@ -7237,11 +7273,7 @@ impl DataTableState {
     pub(crate) fn view_rows(&self) -> ViewRows {
         ViewRows {
             lf: self.lf.clone(),
-            files: self
-                .remote_files
-                .as_ref()
-                .filter(|_| self.remote_window())
-                .cloned(),
+            files: self.files_window().cloned(),
             records: self.window_now(),
             read_as_text: self.read_as_text.clone(),
             buffer: self
@@ -7322,6 +7354,12 @@ impl DataTableState {
     /// so the page-based window costs a row group where the remote one would read forty.
     fn remote_window(&self) -> bool {
         self.remote_source && self.is_pristine()
+    }
+
+    /// The files a page reads by, while the frame is the scan as loaded: a filter or
+    /// sort reads every file before its window, so it goes through the whole scan.
+    fn files_window(&self) -> Option<&RemoteFiles> {
+        self.remote_files.as_ref().filter(|_| self.is_pristine())
     }
 
     /// Rows the buffer reaches past the view in one direction: `pages` of it for a local
@@ -16148,6 +16186,24 @@ mod tests {
         assert_eq!((start, end), (0, 400));
         // Few files: unchanged.
         assert_eq!(limit_files(&offsets, 0, 40, 0, 100, 16), (0, 100));
+    }
+
+    /// A dataset written a file a day is mostly empty files in its quiet years; a window
+    /// opens only the files with rows, and the limit counts only those (#659).
+    #[test]
+    fn a_window_passes_over_empty_files() {
+        // Every other file empty: file 2i holds rows 10i..10i+10.
+        let offsets: Vec<usize> = (0..=1000_usize).map(|i| i.div_ceil(2) * 10).collect();
+        let (first, last) = files_holding(&offsets, 0, 40).unwrap();
+        assert_eq!((first, last), (0, 6));
+        assert_eq!(files_with_rows(&offsets, first, last), vec![0, 2, 4, 6]);
+        let (start, end) = limit_files(&offsets, 0, 40, 0, 2_000, 16);
+        let (first, last) = files_holding(&offsets, start, end - start).unwrap();
+        assert_eq!(
+            files_with_rows(&offsets, first, last).len(),
+            16,
+            "sixteen files with rows, not eight and the empty ones between"
+        );
     }
 
     /// The two checks that read footers rather than values: a column a file never had,

@@ -25,6 +25,12 @@ fn open(path: &Path, name: &str) -> Opened {
     open_table(path, path, &one, &all).unwrap()
 }
 
+/// As [`open`], with no census running behind it, for a test that takes it itself.
+fn open_without_census(path: &Path, name: &str) -> Opened {
+    let (one, all) = table(path, name);
+    open_table_with(path, path, &one, &all, false).unwrap()
+}
+
 /// Read all of `name` of `path` in place.
 fn read_table(path: &Path, name: &str) -> (DataFrame, Opened) {
     let opened = open(path, name);
@@ -909,7 +915,8 @@ fn an_index_serves_a_clean_column() {
          WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 500)
          INSERT INTO t SELECT i, i * 1.5, 'n' || i FROM c;",
     );
-    let opened = open(&db, "t");
+    // The background census could land before the first plan is read.
+    let opened = open_without_census(&db, "t");
     let filters = [filter(
         "price",
         FilterOperator::Gt,

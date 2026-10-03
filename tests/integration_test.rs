@@ -5348,6 +5348,11 @@ fn test_a_local_hive_past_one_wave_opens_from_its_ends_and_reads_each_footer_onc
         "bringing the column only a middle file has"
     );
     assert_eq!(
+        state.files_a_page_reads(0, 1),
+        Some(1),
+        "and a page now reads only the files holding its rows (#659)"
+    );
+    assert_eq!(
         state.num_rows_if_valid(),
         Some(total),
         "and the count, from the footers the pass read"
@@ -5404,6 +5409,128 @@ fn test_a_local_hive_reopened_unchanged_reads_no_footers() {
         app.data_table_state.as_ref().unwrap().num_rows_if_valid(),
         Some(total + 1),
         "and counts the row that was added"
+    );
+}
+
+/// Which of `files` are opened, by anyone, from when it is made: the kernel's count
+/// (inotify), since Polars opens a file without telling datui.
+#[cfg(target_os = "linux")]
+struct OpenWatch {
+    fd: i32,
+    watches: std::collections::HashMap<i32, PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+impl OpenWatch {
+    fn new(files: &[PathBuf]) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        // SAFETY: plain syscalls on a descriptor this struct owns and closes on drop.
+        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(fd >= 0, "inotify_init1");
+        let watches = files
+            .iter()
+            .map(|file| {
+                let path = std::ffi::CString::new(file.as_os_str().as_bytes()).unwrap();
+                let wd = unsafe { libc::inotify_add_watch(fd, path.as_ptr(), libc::IN_OPEN) };
+                assert!(wd >= 0, "inotify_add_watch {}", file.display());
+                (wd, file.clone())
+            })
+            .collect();
+        OpenWatch { fd, watches }
+    }
+
+    /// The files opened since the last call.
+    fn opened(&self) -> std::collections::BTreeSet<PathBuf> {
+        let mut opened = std::collections::BTreeSet::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = unsafe { libc::read(self.fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if n <= 0 {
+                return opened;
+            }
+            let mut at = 0;
+            while at < n as usize {
+                // SAFETY: the kernel writes whole events; read_unaligned for the buffer's
+                // alignment.
+                let event: libc::inotify_event =
+                    unsafe { std::ptr::read_unaligned(buf[at..].as_ptr().cast()) };
+                if let Some(file) = self.watches.get(&event.wd) {
+                    opened.insert(file.clone());
+                }
+                at += std::mem::size_of::<libc::inotify_event>() + event.len as usize;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for OpenWatch {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.fd) };
+    }
+}
+
+/// A local Hive directory reopened from its remembered footers reads its first page
+/// from the files holding those rows and no others (#659). Every eighth file stores
+/// `v` as text, which splits the scan into runs, and a scan of the whole dataset reads
+/// ahead into them; every eighth file but one is empty, which a window passes over.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_a_local_hive_reopened_unchanged_pages_from_only_the_files_holding_its_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (days, rows) = (datui::schema_union::FOOTERS_AT_ONCE + 6, 50);
+    let mut files = Vec::new();
+    for day in 0..days {
+        let v: Vec<i64> = (0..rows).map(|r| (day * rows + r) as i64).collect();
+        let df = match day % 8 {
+            1 => df!("v" => v.iter().map(i64::to_string).collect::<Vec<_>>()).unwrap(),
+            2 => df!("v" => Vec::<i64>::new()).unwrap(),
+            _ => df!("v" => &v).unwrap(),
+        };
+        let sub = format!("day={day:03}");
+        write_parquet(dir.path(), &sub, df);
+        files.push(dir.path().join(sub).join("data.parquet"));
+    }
+    // The first open reads every footer and remembers them.
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+
+    let watch = OpenWatch::new(&files);
+    let opts = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts);
+    let screen = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 30));
+    let state = app.data_table_state.as_ref().unwrap();
+    let total = (0..days).filter(|day| day % 8 != 2).count() * rows;
+    assert_eq!(state.num_rows_if_valid(), Some(total));
+    let df = state
+        .display_slice_df()
+        .unwrap_or_else(|| panic!("rows on screen: {screen}"));
+    assert_eq!(
+        df.column("v").unwrap().get(0).unwrap(),
+        AnyValue::Int64(0),
+        "the first page is the first file's"
+    );
+    assert_eq!(
+        df.column("day").unwrap().get(0).unwrap(),
+        AnyValue::Int64(0),
+        "partition values and all"
+    );
+    // The buffer reaches a few pages on, so a few files; never the dataset.
+    let buffered = state.buffered_rows();
+    let holding: std::collections::BTreeSet<PathBuf> = files
+        .iter()
+        .enumerate()
+        .filter(|(day, _)| day % 8 != 2)
+        .take(buffered.div_ceil(rows))
+        .map(|(_, file)| file.clone())
+        .collect();
+    let opened = watch.opened();
+    assert!(!opened.is_empty(), "the page was read from the files");
+    assert!(
+        opened.is_subset(&holding),
+        "only the files holding the buffer's {buffered} rows were opened: {opened:?}"
     );
 }
 

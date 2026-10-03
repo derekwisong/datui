@@ -18439,6 +18439,9 @@ struct LocalDataset {
     /// Each readable file's rows, one group a file, or empty unless every footer was
     /// read: the count, without a pass of its own.
     row_groups: Vec<Vec<usize>>,
+    /// The readable files and a scan of any of them, once every footer is known: a
+    /// page then reads only the files holding its rows (#659).
+    by_file: Option<crate::widgets::datatable::RemoteRead>,
 }
 
 impl LocalHive {
@@ -18492,10 +18495,40 @@ impl LocalHive {
         if readable.is_empty() {
             return None;
         }
-        let lf =
-            crate::schema_union::lenient_scan(&readable, schema.clone(), None, drift.as_ref(), &[])
-                .ok()?;
-        let lf = hoist_partition_columns(lf, &schema, &self.partition_columns, drift.is_some());
+        let scan: crate::widgets::datatable::FileScan = {
+            let (schema, partition_columns, drift) = (
+                schema.clone(),
+                self.partition_columns.clone(),
+                drift.map(Arc::new),
+            );
+            Arc::new(
+                move |files: &[String], as_text: &[polars::prelude::PlSmallStr]| {
+                    let lf = crate::schema_union::lenient_scan(
+                        files,
+                        schema.clone(),
+                        None,
+                        drift.as_deref(),
+                        as_text,
+                    )?;
+                    Ok(hoist_partition_columns(
+                        lf,
+                        &schema,
+                        &partition_columns,
+                        drift.is_some(),
+                    ))
+                },
+            )
+        };
+        let lf = scan(&readable, &[]).ok()?;
+        // The rows are in the footers, so the counter answers without reading anything.
+        let by_file = (!row_groups.is_empty()).then(|| {
+            let counted = row_groups.clone();
+            crate::widgets::datatable::RemoteRead {
+                urls: readable.into_owned(),
+                scan,
+                count: Arc::new(move || Ok(counted.clone())),
+            }
+        });
         let dataset = dataset
             .with_partition_layouts(&self.dir.to_string_lossy(), &paths)
             .with_skipped(self.skipped);
@@ -18505,6 +18538,7 @@ impl LocalHive {
             file_rows,
             paths,
             row_groups,
+            by_file,
         })
     }
 }
@@ -18685,6 +18719,7 @@ impl App {
         )
         .ok()?;
         let mut facts = OpenFacts {
+            remote_files: opened.by_file.map(Into::into),
             // The footers just read say how wide each column is, as the cloud object's
             // do: a binary column's width is known nowhere else.
             column_bytes: crate::schema_union::column_bytes_per_row(&footers),
@@ -18732,7 +18767,7 @@ impl App {
                     file_rows: whole.file_rows,
                     files: whole.paths,
                     row_groups: whole.row_groups,
-                    remote: None,
+                    remote: whole.by_file,
                 })
             }));
         }

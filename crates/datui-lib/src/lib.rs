@@ -10382,10 +10382,7 @@ impl App {
 
     /// Why `--table` was refused for a file of `format`, which holds one table.
     fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
-        let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
-        color_eyre::eyre::eyre!(
-            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's, an ELF file's, a flight or CAN log's or an NMEA log's, or a Hugging Face dataset's split."
-        )
+        color_eyre::eyre::eyre!(cli::one_table(format))
     }
 
     /// The inputs of an Arrow read as one table, in order: each IPC file scanned where

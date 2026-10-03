@@ -2,5 +2,5 @@
 
 pub use datui_cli::{
     Args, Command, CompressionFormat, FileFormat, FormatChoice, FormatsAction, ReadMode,
-    RemoteRead, Stored,
+    RemoteRead, Stored, one_table,
 };

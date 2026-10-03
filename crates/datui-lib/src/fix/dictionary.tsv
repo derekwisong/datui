@@ -43,7 +43,7 @@
 5	AdvTransType	STRING		C=Cancel;N=New;R=Replace
 6	AvgPx	PRICE
 7	BeginSeqNo	SEQNUM
-8	BeginString	STRING		FIX.4.2=Fix42;FIX.4.4=Fix44;FIXT.1.1=Fixt11
+8	BeginString	STRING
 9	BodyLength	LENGTH
 10	CheckSum	STRING
 11	ClOrdID	STRING

@@ -797,6 +797,10 @@ mod tests {
         assert_eq!(msg_type.name.as_deref(), Some("MsgType"));
         assert_eq!(msg_type.enums["D"], "NewOrderSingle");
         assert_eq!(dict.tags[&54].enums["1"], "Buy");
+        assert!(
+            dict.tags[&8].enums.is_empty(),
+            "FIX.4.4 is not renamed Fix44"
+        );
         assert_eq!(dict.tags[&44].ty, Some(FixType::Float));
         assert_eq!(dict.tags[&52].ty, Some(FixType::Timestamp));
         assert_eq!(dict.tags[&95].data, Some(96));

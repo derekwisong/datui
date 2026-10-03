@@ -11,7 +11,7 @@ Later versions win: a tag's name, type and enum names are FIX 5.0 SP2's where it
 has them, then FIX 4.4's, then FIX 4.2's, and the enums of all three are merged.
 MsgType (35) takes its names from the message definitions (`D` is
 NewOrderSingle). Enum descriptions are QuickFIX's UPPER_SNAKE words, written in
-CamelCase (`SELL_SHORT` is SellShort). The data tag is given for a LENGTH field
+CamelCase (`SELL_SHORT` is SellShort); BeginString (8) keeps its text. The data tag is given for a LENGTH field
 that sizes a DATA field (95 RawDataLength sizes 96 RawData).
 
 QuickFIX is distributed under the QuickFIX Software License 1.0, whose notice the
@@ -125,6 +125,9 @@ def main() -> int:
         messages.update(msgs)
     if 35 in merged:
         merged[35]["enums"].update(messages)
+    # FIX.4.4 says more than Fix44: the version keeps its own text.
+    if 8 in merged:
+        merged[8]["enums"] = {}
 
     by_name = {f["name"]: tag for tag, f in merged.items()}
     lines = [NOTICE.rstrip("\n")]

@@ -15,9 +15,13 @@ mod audio;
 #[path = "cloud/download.rs"]
 mod cloud_download;
 mod common;
+#[path = "formats/elf.rs"]
+mod elf;
 #[cfg(feature = "cloud")]
 #[path = "common/fake_s3.rs"]
 mod fake_s3;
+#[path = "formats/flight_logs.rs"]
+mod flight_logs;
 #[path = "formats/delimited.rs"]
 mod formats_delimited;
 #[path = "formats/follow.rs"]
@@ -32,6 +36,8 @@ mod hex;
 mod midi;
 #[path = "formats/model_files.rs"]
 mod model_files;
+#[path = "formats/numpy.rs"]
+mod numpy;
 #[cfg(feature = "cloud")]
 #[path = "quality/remote.rs"]
 mod remote_quality;

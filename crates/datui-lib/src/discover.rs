@@ -392,15 +392,19 @@ pub struct Entry {
     pub opens_whole_directory: bool,
     /// The format spec whose glob names this file, which reads it.
     pub format_spec: Option<String>,
-    /// A table inside a SQLite database, for the rows listed inside one: its path is the
-    /// database's with the table's name after it, which nothing on disk has.
+    /// A table inside a file of tables (a SQLite database, a NumPy archive), for the
+    /// rows listed inside one: its path is the file's with the table's name after it,
+    /// which nothing on disk has.
     pub table: Option<TableOf>,
 }
 
-/// What a row inside a database says about its table.
+/// What a row inside a file of tables says about its table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableOf {
-    /// What SQLite calls it: `table`, `view`, `virtual` or `shadow`.
+    /// The format of the file it is in.
+    pub format: crate::FileFormat,
+    /// What the file calls it: SQLite's `table`, `view`, `virtual` or `shadow`, or a
+    /// NumPy archive's `array`.
     pub kind: String,
     /// SQLite's own (its schema, its statistics, a virtual table's shadows): hidden
     /// like a file datui cannot open until Ctrl+A shows it, and opened like any other.
@@ -470,10 +474,13 @@ pub fn how_read(entry: &Entry) -> Option<HowRead> {
     };
     let choice = match &entry.format_spec {
         Some(name) => crate::cli::FormatChoice::Spec(name.clone()),
-        // A table inside a database, at its path inside it (`shop.db/orders`).
-        None if entry.table.is_some() => {
-            crate::cli::FormatChoice::Builtin(crate::FileFormat::Sqlite)
-        }
+        // A table inside a file of tables, at its path inside it (`shop.db/orders`).
+        None if entry.table.is_some() => crate::cli::FormatChoice::Builtin(
+            entry
+                .table
+                .as_ref()
+                .map_or(crate::FileFormat::Sqlite, |t| t.format),
+        ),
         None => crate::cli::FormatChoice::Builtin(data_format(&entry.path)?),
     };
     let mode = choice.read_mode(stored)?;
@@ -628,6 +635,12 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     if crate::audio::looks_like_audio(head) {
         return Some(crate::FileFormat::Audio);
     }
+    if crate::ulog::looks_like(head) {
+        return Some(crate::FileFormat::Ulog);
+    }
+    if crate::dataflash::looks_like(head) {
+        return Some(crate::FileFormat::Dataflash);
+    }
     // An Arrow IPC stream has no magic, only its schema message, read whole to be sure.
     if crate::ipc_stream::is_stream_file(path) {
         return Some(crate::FileFormat::Arrow);
@@ -654,8 +667,8 @@ fn read_head<'a>(path: &Path, buf: &'a mut [u8]) -> Option<&'a [u8]> {
     Some(&buf[..filled])
 }
 
-/// A model or MIDI file by its first bytes: GGUF's magic, a SafeTensors header's length
-/// and the `{` after it, or `MThd` and its length of 6.
+/// A model, MIDI or NumPy file by its first bytes: GGUF's magic, a SafeTensors header's
+/// length and the `{` after it, `MThd` and its length of 6, or `\x93NUMPY`.
 fn signed_format_of(head: &[u8]) -> Option<crate::FileFormat> {
     if crate::model_files::looks_like_gguf(head) {
         Some(crate::FileFormat::Gguf)
@@ -663,6 +676,8 @@ fn signed_format_of(head: &[u8]) -> Option<crate::FileFormat> {
         Some(crate::FileFormat::Safetensors)
     } else if crate::midi::looks_like_midi(head) {
         Some(crate::FileFormat::Midi)
+    } else if crate::numpy::looks_like(head) {
+        Some(crate::FileFormat::Numpy)
     } else {
         None
     }
@@ -694,6 +709,14 @@ const MAX_SNIFFS_PER_DIR: usize = 256;
 /// Whether a file's name has no extension at all: `part-00000`, `LICENSE`.
 pub fn has_no_extension(path: &Path) -> bool {
     path.extension().is_none()
+}
+
+/// Whether a listing looks inside a file to say what it is: one with no extension, or
+/// one whose extension says nothing (`.bin`, which ArduPilot's logs and model
+/// checkpoints share with everything else).
+pub fn worth_sniffing(path: &Path) -> bool {
+    path.extension()
+        .is_none_or(|e| e.eq_ignore_ascii_case("bin"))
 }
 
 /// Whether a local file is Parquet by its contents: `PAR1` at both ends.
@@ -1275,7 +1298,7 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                     .then_some(crate::FileFormat::Parquet)
             })
             .or_else(|| {
-                (is_file && sniffs_left > 0 && has_no_extension(&entry_path)).then(|| {
+                (is_file && sniffs_left > 0 && worth_sniffing(&entry_path)).then(|| {
                     sniffs_left -= 1;
                     sniff_format(&entry_path)
                 })?
@@ -1497,7 +1520,7 @@ pub fn scan_dir_progressive(dir: &Path, mut progress: impl FnMut(&[Entry])) -> S
             EntryKind::Unknown
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
-        } else if meta.is_file() && sniffs_left > 0 && has_no_extension(&path) {
+        } else if meta.is_file() && sniffs_left > 0 && worth_sniffing(&path) {
             sniffs_left -= 1;
             if sniff_format(&path).is_some() {
                 EntryKind::File
@@ -1586,7 +1609,7 @@ pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     match entry.kind {
         EntryKind::File => {
             enrich_parquet(entry);
-            enrich_sqlite(entry);
+            enrich_tables(entry);
             enrich_arrow(entry);
         }
         EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry, as_read),
@@ -2084,24 +2107,28 @@ pub fn enrich_parquet(entry: &mut Entry) {
     }
 }
 
-/// A SQLite database's tables, from its schema: how many of its own, and the columns of
-/// the one when there is one. A `.db` file that is not a SQLite database is one datui
-/// cannot open.
-pub fn enrich_sqlite(entry: &mut Entry) {
+/// A file of tables' tables (a SQLite database's schema, a NumPy archive's directory):
+/// how many of its own, and the columns of the one when there is one. A `.db` file that
+/// is not a SQLite database is one datui cannot open.
+pub fn enrich_tables(entry: &mut Entry) {
     if entry.kind != EntryKind::File || entry.table.is_some() {
         return;
     }
-    let named = data_format(&entry.path) == Some(crate::FileFormat::Sqlite);
+    let named = data_format(&entry.path);
     if !is_regular_file(&entry.path) {
         return;
     }
-    if !crate::sqlite::is_sqlite_file(&entry.path) {
-        if named {
+    let Some(format) = crate::members::holder(&entry.path) else {
+        if named == Some(crate::FileFormat::Sqlite) {
             entry.kind = EntryKind::Other;
         }
         return;
+    };
+    // An ELF file opens its symbols; its sections are a --table away.
+    if format == crate::FileFormat::Elf {
+        return;
     }
-    let Ok(tables) = crate::sqlite::tables(&entry.path) else {
+    let Ok(tables) = crate::members::tables(&entry.path, format) else {
         return;
     };
     let own: Vec<&crate::sqlite::Table> = tables.iter().filter(|t| !t.internal).collect();
@@ -2112,46 +2139,55 @@ pub fn enrich_sqlite(entry: &mut Entry) {
     }
 }
 
-/// The rows of a SQLite database's listing on the home screen: its tables and views by
-/// name, as a directory lists its files, SQLite's own marked to be hidden, each at its
-/// path inside the database.
-pub fn database_rows(db: &Path) -> Vec<Entry> {
-    let Ok(mut tables) = crate::sqlite::tables(db) else {
+/// The rows of a file of tables' listing on the home screen: a database's tables and
+/// views, or an archive's arrays, by name, as a directory lists its files, SQLite's own
+/// marked to be hidden, each at its path inside the file.
+pub fn database_rows(file: &Path) -> Vec<Entry> {
+    let Some(format) = crate::members::holder(file) else {
         return Vec::new();
     };
-    tables.sort_by_cached_key(|t| t.name.to_lowercase());
-    let modified = std::fs::metadata(db).and_then(|m| m.modified()).ok();
+    let Ok(mut tables) = crate::members::tables(file, format) else {
+        return Vec::new();
+    };
+    // A database's tables by name; an archive's arrays in the order they were saved.
+    if format == crate::FileFormat::Sqlite {
+        tables.sort_by_cached_key(|t| t.name.to_lowercase());
+    }
+    let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok();
     tables
         .into_iter()
-        .map(|table| table_entry(db, table, modified))
+        .map(|table| table_entry(file, format, table, modified))
         .collect()
 }
 
-/// The row of a table inside a database named by its path (`app.db/users`), as a
-/// recent is listed: `None` when the path names no table of a database.
+/// The row of a table inside a file of tables named by its path (`app.db/users`), as a
+/// recent is listed: `None` when the path names no table of such a file.
 pub fn table_row(path: &Path) -> Option<Entry> {
-    let (db, name) = crate::sqlite::table_path(path)?;
-    let table = crate::sqlite::tables(&db)
+    let (file, name) = crate::members::split(path)?;
+    let format = crate::members::holder(&file)?;
+    let table = crate::members::tables(&file, format)
         .ok()?
         .into_iter()
         .find(|t| t.name == name)?;
-    let modified = std::fs::metadata(&db).and_then(|m| m.modified()).ok();
-    let mut entry = table_entry(&db, table, modified);
+    let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+    let mut entry = table_entry(&file, format, table, modified);
     entry.path = path.to_path_buf();
     Some(entry)
 }
 
 fn table_entry(
-    db: &Path,
+    file: &Path,
+    format: crate::FileFormat,
     table: crate::sqlite::Table,
     modified: Option<std::time::SystemTime>,
 ) -> Entry {
-    let mut entry = Entry::new(crate::sqlite::table_place(db, &table.name), EntryKind::File);
+    let mut entry = Entry::new(crate::members::place(file, &table.name), EntryKind::File);
     entry.name = table.name;
     entry.modified = modified;
     entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
     entry.cols = (!entry.columns.is_empty()).then_some(entry.columns.len());
     entry.table = Some(TableOf {
+        format,
         kind: table.kind,
         internal: table.internal,
     });
@@ -2350,24 +2386,32 @@ pub fn format_age(t: std::time::SystemTime) -> String {
 /// Column name and type, for the home screen's preview pane.
 pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 
-/// The preview of a SQLite table: a row inside a database, or a database of one table.
-/// `None` when the entry is neither, `Some(None)` when it is and has nothing to show.
-fn sqlite_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
-    let (db, name) = match &entry.table {
-        Some(_) => match crate::sqlite::table_path(&entry.path) {
-            Some((db, _)) => (db, Some(entry.name.as_str())),
+/// The preview of a table of a file of tables: a row inside a database or an archive, a
+/// database or archive of one table, or a NumPy array file. `None` when the entry is
+/// none of these, `Some(None)` when it is and has nothing to show.
+fn table_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
+    let (file, format, name) = match &entry.table {
+        Some(table) => match crate::members::split(&entry.path) {
+            Some((file, _)) => (file, table.format, Some(entry.name.as_str())),
             None => return Some(None),
         },
-        None if is_regular_file(&entry.path) && crate::sqlite::is_sqlite_file(&entry.path) => {
-            (entry.path.clone(), None)
+        None if is_regular_file(&entry.path) => {
+            let format = crate::members::holder(&entry.path).or_else(|| {
+                (data_format(&entry.path) == Some(crate::FileFormat::Numpy))
+                    .then_some(crate::FileFormat::Numpy)
+            })?;
+            (entry.path.clone(), format, None)
         }
         None => return None,
     };
-    let preview = crate::sqlite::tables(&db)
+    if format == crate::FileFormat::Numpy {
+        return Some(crate::numpy::schema_preview(&file, name));
+    }
+    let preview = crate::sqlite::tables(&file)
         .ok()
-        .and_then(|tables| crate::sqlite::pick(tables, name, &db).ok())
+        .and_then(|tables| crate::sqlite::pick(tables, name, &file).ok())
         .and_then(|pick| match pick {
-            crate::sqlite::Pick::One(table) => crate::sqlite::schema_preview(&db, &table),
+            crate::sqlite::Pick::One(table) => crate::sqlite::schema_preview(&file, &table),
             crate::sqlite::Pick::Several(_) => None,
         });
     Some(preview)
@@ -2430,7 +2474,7 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
 
     let file_path = match entry.kind {
         EntryKind::File => {
-            if let Some(preview) = sqlite_preview(entry) {
+            if let Some(preview) = table_preview(entry) {
                 return preview;
             }
             if !is_parquet_path(&entry.path) {
@@ -2522,6 +2566,7 @@ mod classification_tests {
         at("s3://b/shop.sqlite", Lazy, true);
         let mut table = Entry::for_test(Path::new("/d/shop.db/orders"), "orders");
         table.table = Some(TableOf {
+            format: crate::FileFormat::Sqlite,
             kind: "table".into(),
             internal: false,
         });

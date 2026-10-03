@@ -575,6 +575,9 @@ jobs:
           - fix_parse
           - fix_dict
           - sdf_parse
+          - numpy_header
+          - elf_symbols
+          - flight_log
           - hex_input
     env:
       # The deep configuration. AddressSanitizer can reach the unsafe code inside polars

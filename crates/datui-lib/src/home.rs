@@ -1807,7 +1807,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         .iter()
         // `exists()` stats the path, so a remote entry is taken on trust and
         // dropped later only if its probe says it is gone.
-        .filter(|p| network_check(p) || p.exists() || crate::sqlite::table_path(p).is_some())
+        .filter(|p| network_check(p) || p.exists() || crate::members::split(p).is_some())
         // No display cap. The store already bounds this, the header states the
         // count, and the section folds — an invisible limit would just hide recents
         // with nothing to say it had.

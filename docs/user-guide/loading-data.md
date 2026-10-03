@@ -180,6 +180,10 @@ The format is taken from the extension, or from `--format` when there is none.
 | [FIX logs](#fix-logs) | any, by content (`8=FIX`), or `--format fix` | converted once | converted once | downloaded | downloaded | no |
 | [SDF](#sdf-compound-files) | `.sdf`, `.sd` | converted once | converted once | downloaded | downloaded | no |
 | [SQLite](#sqlite-databases) | `.db`, `.sqlite`, `.sqlite3`, `.db3` | lazy | no | downloaded | downloaded | no |
+| [NumPy](#numpy-arrays) | `.npy`, `.npz` | lazy | no | downloaded | downloaded | no |
+| [ELF](#elf-symbol-tables) | `.elf`, `.axf` | in memory | no | downloaded | downloaded | no |
+| [ULog](#flight-logs) | `.ulg` | lazy | no | downloaded | downloaded | no |
+| [DataFlash](#flight-logs) | any, by content, or `--format dataflash` | lazy | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
 | Read | What it means |
@@ -555,6 +559,138 @@ The database is only read:
 | Not a SQLite database, or damaged | An error |
 
 A compressed database (`shop.db.gz`) is not read; decompress it first.
+
+### NumPy arrays
+
+Read: [lazy](#how-each-format-is-read), from a map of the file; an array
+compressed in an `.npz` archive is decompressed once to a temporary file first.
+
+```bash
+datui prices.npy
+datui run.npz                    # its one array, or the list of its arrays
+datui run.npz --table weights    # an array by name
+datui run.npz/weights            # the same
+```
+
+| The array | Columns |
+|---|---|
+| 1-D | One, named for the file (`prices.npy` is `prices`) or the archive's array |
+| 2-D | One per index, `0` to `n-1`; more than 1,024 make one Array column, `values` |
+| Structured (`[('ts', '<u8'), ('px', '<f8')]`) | One per field; a nested field is `outer.inner`, a subarray field an Array column |
+| 0-D | One row |
+| 3-D or more | An error that gives the shape |
+
+| `dtype` | Column |
+|---|---|
+| `b1` | `bool` |
+| `i1` to `i8`, `u1` to `u8` | The integer of that width |
+| `f2`, `f4` | `f32` |
+| `f8` | `f64` |
+| `c8`, `c16` | An Array of two floats: real, imaginary |
+| `S` | `str`, NUL padding trimmed |
+| `U` | `str`, from UTF-32 |
+| `V` | `binary` |
+| `M8[ns]`, `M8[us]`, `M8[ms]` | `datetime` in that unit |
+| `M8[s]`, `M8[m]`, `M8[h]` | `datetime[ms]` |
+| `M8[D]` | `date` |
+| `m8[...]` | `duration`, by the same units |
+| `M8` and `m8` in months, years or finer than `ns` | `i64`, the count as stored |
+| `O` | An error: Python objects are pickled, and datui does not unpickle |
+
+- `NaT` is null.
+- Big-endian (`>i4`) and little-endian fields mix in one array.
+- Fortran (column-major) order reads the same as C order.
+- Padding fields (`align=True`) are left out, and fields at offsets
+  (`offsets`, `itemsize`) are read where they are.
+- A file shorter than its shape says shows the rows it holds; the Notes tab
+  says so.
+- A file named without `.npy` is known by its first bytes, `\x93NUMPY`.
+
+An `.npz` archive of several arrays opens the home screen inside it, a row per
+array in the order they were saved, like a directory. <kbd>Enter</kbd> opens
+one; <kbd>q</kbd> comes back to the list. An archive downloaded or piped in is
+refused with the names of its arrays; `--table` picks one. An array saved with
+`np.savez` is read in place in the archive; one saved with
+`np.savez_compressed` is decompressed to the temp directory and removed when
+the dataset closes.
+
+Press <kbd>i</kbd> for the NumPy tab: shape, type, order and format version,
+and each field's type and offset.
+### ELF symbol tables
+
+Read: [in memory](#how-each-format-is-read): the symbol and section tables,
+from a map of the file.
+
+```bash
+datui firmware.elf                    # one row per symbol
+datui firmware.elf --table sections   # one row per section
+datui firmware.elf/sections           # the same
+```
+
+| Column | Holds |
+|---|---|
+| `name` | The symbol's name; a Rust name demangled, without its hash. C++ names stay mangled |
+| `addr` | Its address (`u64`) |
+| `size` | Its size in bytes |
+| `kind` | `func`, `object`, `section`, `file`, `common`, `tls`, `ifunc` or `notype` |
+| `bind` | `local`, `global`, `weak` or `unique` |
+| `section` | The section it is in; `UND` for undefined, `ABS` for absolute, `COMMON` |
+| `region` | `flash` when its section is loaded and not written (code, constants), `ram` when it is written (`.data`, `.bss`); null for what is not loaded |
+
+The `sections` table has `name`, `addr`, `size`, `flags` (as `readelf` writes
+them: `W` write, `A` alloc, `X` execute, ...), `kind` and `region`.
+
+- Sort by `size` and group by `section` or `region` to see what fills flash and RAM.
+- The symbol table is `.symtab`, or `.dynsym` for a stripped library.
+- `.elf` and `.axf` files open by name; any file that starts with `\x7fELF`
+  opens too when named on the command line.
+- At most 10 million symbols are read; the Notes tab says how many more there are.
+
+Press <kbd>i</kbd> for the ELF tab: class, machine, type, entry point, the bytes
+in flash and in RAM, and each section's address, size and flags.
+
+### Flight logs
+
+Read: [lazy](#how-each-format-is-read): one pass indexes the log, then each
+table is decoded from a map of the file where it is shown.
+
+```bash
+datui flight.ulg                         # the list of its tables
+datui flight.ulg --table vehicle_status  # one topic
+datui 00000042.BIN/GPS                   # one DataFlash message type
+```
+
+Both formats describe their own messages; no spec is needed. A log of several
+tables opens the home screen inside it, a row per table, like a directory.
+<kbd>Enter</kbd> opens one; <kbd>q</kbd> comes back to the list without reading
+the log again. A log downloaded or piped in is refused with the names of its
+tables; `--table` picks one.
+
+| PX4 ULog (`.ulg`) | |
+|---|---|
+| A table per topic | Named for the topic; `sensor_accel.0`, `sensor_accel.1` when it has several instances. `timestamp` is a duration since boot; nested types are `outer.inner`, `outer[0].inner` for an array of them; a number array is an Array column, a `char` array text. `_padding` fields are left out |
+| `logged_messages` | `timestamp`, `level` (`error`, `warning`, `info`, ...), `tag`, `message` |
+| `parameters` | `name`, `type`, `value`, and the `timestamp` of a change made in flight (null for the value the log started with) |
+| Info tab | The version, dropouts, info messages (`sys_name`, `ver_hw`, ...) and each parameter's starting value |
+
+| ArduPilot DataFlash (`.bin`) | |
+|---|---|
+| A table per message type | Named for the type (`GPS`, `ATT`, `PARM`, ...), a column per label, typed by its format character |
+| `TimeUS`, `TimeMS` | A duration since boot |
+| `c`, `C`, `e`, `E` | Hundredths, as a float |
+| `L` | Degrees (latitude, longitude), as a float |
+| `a` | An Array of 32 `i16` |
+| Units | From `FMTU` and `UNIT`, on the Info panel's Schema tab; an integer field `FMTU` gives a multiplier (`MULT`) is scaled by it |
+| Info tab | Message types and their record counts, formats and lengths |
+
+- A ULog file is known by its first bytes. A DataFlash log is known by its first
+  record, an `FMT` that defines `FMT`, whatever it is called.
+- A damaged stretch is passed over to the next ULog sync marker or DataFlash
+  record header; a log cut off mid-message keeps what it holds. The Notes tab
+  says how many bytes were passed over.
+- ULog appended data (written after a crash) is read with the rest.
+- At most 67,108,864 messages are indexed in one log.
+
 ### VCD value change dumps
 
 Read: [converted once](#how-each-format-is-read).

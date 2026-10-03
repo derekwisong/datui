@@ -13,10 +13,14 @@ extern crate datui as datui_lib;
 mod audio_header;
 #[path = "../fuzz/src/config_parse.rs"]
 mod config_parse;
+#[path = "../fuzz/src/elf_symbols.rs"]
+mod elf_symbols;
 #[path = "../fuzz/src/fix_dict.rs"]
 mod fix_dict;
 #[path = "../fuzz/src/fix_parse.rs"]
 mod fix_parse;
+#[path = "../fuzz/src/flight_log.rs"]
+mod flight_log;
 #[path = "../fuzz/src/format_spec.rs"]
 mod format_spec;
 #[path = "../fuzz/src/fuzzy_match.rs"]
@@ -35,6 +39,8 @@ mod midi_file;
 mod model_header;
 #[path = "../fuzz/src/number_format.rs"]
 mod number_format;
+#[path = "../fuzz/src/numpy_header.rs"]
+mod numpy_header;
 #[path = "../fuzz/src/parse_query.rs"]
 mod parse_query;
 #[path = "../fuzz/src/sdf_parse.rs"]
@@ -140,6 +146,9 @@ fn every_corpus_input_passes_its_target() {
     replay("fix_parse", &mut failures, fix_parse::run);
     replay("fix_dict", &mut failures, fix_dict::run);
     replay("sdf_parse", &mut failures, sdf_parse::run);
+    replay("numpy_header", &mut failures, numpy_header::run);
+    replay("elf_symbols", &mut failures, elf_symbols::run);
+    replay("flight_log", &mut failures, flight_log::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
     });
@@ -172,8 +181,10 @@ fn every_corpus_has_a_replay() {
     let replayed: BTreeSet<String> = [
         "audio_header",
         "config_parse",
+        "elf_symbols",
         "fix_dict",
         "fix_parse",
+        "flight_log",
         "format_spec",
         "fuzzy_match",
         "glob_match",
@@ -183,6 +194,7 @@ fn every_corpus_has_a_replay() {
         "gps_parse",
         "hex_input",
         "number_format",
+        "numpy_header",
         "parse_query",
         "sdf_parse",
         "sql_group_plan",

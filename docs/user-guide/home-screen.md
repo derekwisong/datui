@@ -155,7 +155,7 @@ count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts
 | `delta`, `iceberg`, `hudi` | A lake-table marker |
 | `12 parquet`, `3 csv` | Direct data files of one format |
 | `3 safetensors`, `2 gguf` | A model: weight files of one format, with only JSON (config, tokenizer) beside them. Opens as one table |
-| `3 tables` | A SQLite database (a file, not a directory). One table opens; several are listed, a row each, when <kbd>Enter</kbd> or <kbd>→</kbd> goes inside |
+| `3 tables` | A SQLite database or a NumPy `.npz` archive (a file, not a directory). One table opens; several are listed, a row each, when <kbd>Enter</kbd> or <kbd>→</kbd> goes inside |
 | `mixed` | Several formats |
 | `dir` | No direct data files; `dir+` means the listing was cut short |
 | `bucket`, `container` | The top of an object store |

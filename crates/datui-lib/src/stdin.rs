@@ -142,6 +142,18 @@ pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     if crate::sqlite::looks_like(head) {
         return (FileFormat::Sqlite, None);
     }
+    if crate::numpy::looks_like(head) {
+        return (FileFormat::Numpy, None);
+    }
+    if crate::elf::looks_like(head) {
+        return (FileFormat::Elf, None);
+    }
+    if crate::ulog::looks_like(head) {
+        return (FileFormat::Ulog, None);
+    }
+    if crate::dataflash::looks_like(head) {
+        return (FileFormat::Dataflash, None);
+    }
     if crate::model_files::looks_like_gguf(head) {
         return (FileFormat::Gguf, None);
     }
@@ -259,8 +271,12 @@ mod tests {
     /// are not the data's first character.
     #[test]
     fn the_first_bytes_say_the_format() {
-        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 30] = [
+        let cases: [(&[u8], FileFormat, Option<CompressionFormat>); 34] = [
             (b"PAR1\x15\x04", FileFormat::Parquet, None),
+            (b"\x93NUMPY\x01\x00", FileFormat::Numpy, None),
+            (b"\x7fELF\x02\x01\x01", FileFormat::Elf, None),
+            (b"ULog\x01\x12\x35\x01", FileFormat::Ulog, None),
+            (b"\xa3\x95\x80\x80\x59FMT\0", FileFormat::Dataflash, None),
             (b"SQLite format 3\0\x10\x00", FileFormat::Sqlite, None),
             (b"8=FIX.4.4|9=5|35=0|10=000|\n", FileFormat::Fix, None),
             (b"$version Verilator $end\n", FileFormat::Vcd, None),

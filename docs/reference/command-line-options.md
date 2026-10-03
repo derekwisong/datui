@@ -42,7 +42,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--decompress-in-memory[=<BOOL>]` | Decompress into memory (default: decompress to a temp file and scan lazily) |
 | `--temp-dir <DIR>` | Directory for decompression temp files (default: system temp, e.g. TMPDIR) |
 | `--sheet <SHEET>` | Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales") |
-| `--table <TABLE>` | Table to open from a file that holds several. SQLite: a table or view by name. NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. Hugging Face cache and DatasetDict directories: a split (default train) |
+| `--table <TABLE>` | Table to open from a file that holds several. SQLite: a table or view by name. NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. Hugging Face cache and DatasetDict directories: a split (default train). NumPy archives (.npz): an array by name. ELF files: symbols (default) or sections. ULog and DataFlash logs: a topic or message type |
 | `--normalize` | Show integer audio samples as float in [-1, 1] (default: the integers as stored) |
 | `--clear-recents` | Forget every recently opened dataset and exit; other caches are kept |
 | `--clear-cache` | Clear all cache data and exit |

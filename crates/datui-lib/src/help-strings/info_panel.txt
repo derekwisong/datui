@@ -25,6 +25,7 @@ on Schema for anything else.
 Tabs:
   Schema:      Every column, its type, and which footers the schema came from.
                A column's unit too, when a delimited format spec read a unit row
+               or the file names one (DataFlash)
   Model:       A SafeTensors or GGUF file's parameter count, size, dtype or
                quantization mix, and its header metadata, each value whole up
                to 64 KiB. Only for model files
@@ -45,6 +46,14 @@ Tabs:
                dictionaries give it. Only for FIX logs
   SDF:         An SDF file's records, and each data field's type and how many
                records hold it. Only for SDF files
+  NumPy:       A NumPy array's shape, type, order and format version, and
+               each field's type and offset. Only for NumPy arrays
+  ELF:         An ELF file's class, machine, type, entry point, the bytes in
+               flash and in RAM, and each section. Only for ELF files
+  ULog:        A ULog's version, topics and dropouts, its info messages and
+               each parameter's starting value. Only for ULog files
+  DataFlash:   A DataFlash log's message types, each with its records,
+               format and length. Only for DataFlash logs
   Resources:   What the data costs to hold and to read, and how it is read:
                lazy, converted once, or in memory
   Partitions:  The layout of a partitioned dataset. Only when it has one

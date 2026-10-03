@@ -160,6 +160,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "numpy_header"
+path = "fuzz_targets/numpy_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "elf_symbols"
+path = "fuzz_targets/elf_symbols.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "flight_log"
+path = "fuzz_targets/flight_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "hex_input"
 path = "fuzz_targets/hex_input.rs"
 test = false

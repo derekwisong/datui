@@ -168,19 +168,33 @@ pub fn prefix_of_glob(key: &str) -> &str {
 /// gets — the schema union over every footer, the row count, the notes and the
 /// measurements. Handing the star to the object store instead matches nothing, because
 /// a listing prefix is a literal string and `*` is a character like any other.
+#[cfg(test)]
 pub async fn list_dataset_files(
     store: &Arc<dyn ObjectStore>,
     prefix: &str,
     pattern: Option<&globset::GlobMatcher>,
 ) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
-    use futures::TryStreamExt;
+    list_dataset_files_reporting(
+        store,
+        prefix,
+        pattern,
+        &crate::schema_union::FooterProgress::default(),
+    )
+    .await
+}
+
+/// As [`list_dataset_files`], counting each object off against `progress` as it is
+/// listed. A prefix of a few hundred thousand objects is hundreds of pages, and this
+/// count is all the loading screen has to say about them.
+pub async fn list_dataset_files_reporting(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+    pattern: Option<&globset::GlobMatcher>,
+    progress: &crate::schema_union::FooterProgress,
+) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
     let prefix = prefix.trim_matches('/');
     let prefix_path = (!prefix.is_empty()).then(|| crate::cloud_browse::object_path(prefix));
-    let objects: Vec<object_store::ObjectMeta> = store
-        .list(prefix_path.as_ref())
-        .try_collect()
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))?;
+    let objects = list_objects(store, prefix_path.as_ref(), progress).await?;
     // Counted as they are passed over rather than walked again: the listing is the one
     // place that sees every name, and a note that says how many objects were not read
     // costs nothing here and a second listing anywhere else.
@@ -278,6 +292,29 @@ pub async fn list_dataset_files(
     let mut files: Vec<DatasetFile> = all.into_iter().filter(|f| keep_of(f)).collect();
     files.sort_by(|a, b| a.key.cmp(&b.key));
     Ok((files, skipped))
+}
+
+/// Every object under `prefix`, in the order the store gave them.
+///
+/// Stops at the first page after the load is abandoned: a listing nobody is waiting on
+/// is hundreds of requests for nothing.
+async fn list_objects(
+    store: &Arc<dyn ObjectStore>,
+    prefix: Option<&OsPath>,
+    progress: &crate::schema_union::FooterProgress,
+) -> Result<Vec<object_store::ObjectMeta>> {
+    use futures::StreamExt;
+    let listing = progress.listing();
+    let mut stream = store.list(prefix);
+    let mut objects = Vec::new();
+    while let Some(object) = stream.next().await {
+        if progress.is_cancelled() {
+            return Err(color_eyre::eyre::eyre!("Cloud list cancelled"));
+        }
+        objects.push(object.map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))?);
+        listing.advance();
+    }
+    Ok(objects)
 }
 
 /// The schema to scan a dataset's files with, and its partition columns.
@@ -696,6 +733,44 @@ mod tests {
     /// the ones it exists for.
     /// An abandoned load's footer pass stops issuing reads: with the counter
     /// cancelled, the pass returns empty-handed and requests nothing.
+    /// A listing counts every object it passes over, data or not, and stops saying so
+    /// when it ends; a cancelled one stops.
+    #[test]
+    fn a_listing_counts_what_it_finds() {
+        use object_store::PutPayload;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for key in ["data/a.parquet", "data/b.parquet", "data/_SUCCESS"] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(b"PAR1".to_vec()))
+                    .await
+                    .unwrap();
+            }
+            let progress = crate::schema_union::FooterProgress::default();
+            let (files, _skipped) = list_dataset_files_reporting(&store, "data/", None, &progress)
+                .await
+                .unwrap();
+            assert_eq!(files.len(), 2);
+            assert_eq!(progress.listed(), None, "a finished listing shows no count");
+            let listing = progress.listing();
+            assert_eq!(
+                progress.listed(),
+                Some(0),
+                "a new listing starts from nothing"
+            );
+            drop(listing);
+
+            progress.cancel();
+            assert!(
+                list_dataset_files_reporting(&store, "data/", None, &progress)
+                    .await
+                    .is_err(),
+                "an abandoned load stops listing"
+            );
+        });
+    }
+
     #[test]
     fn a_cancelled_pass_reads_no_footers() {
         use object_store::PutPayload;

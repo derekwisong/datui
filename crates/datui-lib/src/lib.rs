@@ -873,6 +873,8 @@ pub struct App {
     /// one wait — and the bar could print a phase's flat percentage beside a count
     /// that had finished between the two reads.
     footers_this_frame: Option<(usize, usize)>,
+    /// The objects a listing had found when this frame began, for the same reason.
+    listed_this_frame: Option<usize>,
     /// Network roots currently being listed off-thread, so a probe is not started
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
@@ -3976,6 +3978,7 @@ impl App {
     /// moments, and a background thread is moving it between them.
     fn begin_frame(&mut self) {
         self.footers_this_frame = self.footer_progress().reading();
+        self.listed_this_frame = self.footer_progress().listed();
         // Whatever this frame does not draw cannot be clicked.
         self.pointer.forget_drawn();
         if let Some(state) = self.data_table_state.as_mut() {
@@ -4028,7 +4031,14 @@ impl App {
                 crate::numfmt::group_chrome(read),
                 crate::numfmt::group_chrome(total)
             )),
-            None => std::borrow::Cow::Borrowed(phase),
+            // A listing has no total to count towards, so it says how far it has got.
+            None => match self.listed_this_frame {
+                Some(listed) => std::borrow::Cow::Owned(format!(
+                    "Listing files: {}",
+                    crate::numfmt::group_chrome(listed)
+                )),
+                None => std::borrow::Cow::Borrowed(phase),
+            },
         }
     }
 
@@ -5308,6 +5318,7 @@ impl App {
             data_table_state: None,
             footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
             footers_this_frame: None,
+            listed_this_frame: None,
             home: home::HomeState {
                 hide_unreadable: !app_config.data.show_unreadable_files,
                 formats: formats.clone(),
@@ -8851,7 +8862,7 @@ impl App {
                     meter: Arc::new(crate::measurements::Meter::default()),
                     remembered: Some(self.cache.clone()),
                 };
-                self.spawn_job(job, Some("Caching schema..."), move |_| {
+                self.spawn_job(job, Some("Reading schema..."), move |_| {
                     Self::read_schema_for_open(*lf, path, options, &cloud, &runtime, &report, made)
                         .map(|answer| Answer::Load(Box::new(answer)))
                 });
@@ -9472,8 +9483,10 @@ impl App {
             // files, not every object under the prefix.
             let listing_began = std::time::Instant::now();
             let pattern = pattern.cloned();
+            let progress = report.progress.clone();
             let (files, skipped) = wait_on_runtime(runtime, async move {
-                cloud_hive::list_dataset_files(&store, &key, pattern.as_ref()).await
+                cloud_hive::list_dataset_files_reporting(&store, &key, pattern.as_ref(), &progress)
+                    .await
             })?
             .ok()?;
             report
@@ -11044,7 +11057,7 @@ impl App {
                     path.is_dir() || path.as_os_str().to_string_lossy().contains(".parquet");
                 if use_parquet_hive {
                     // Only build the LazyFrame here; schema and partition discovery are the
-                    // schema phase's ("Caching schema").
+                    // schema phase's ("Reading schema").
                     return DataTableState::scan_parquet_hive(path).map(Scan::from);
                 }
                 return Err(color_eyre::eyre::eyre!(
@@ -17595,7 +17608,8 @@ impl Widget for &mut App {
                 // and "(40%)" next to it reads as that count's progress. The same
                 // number the phase was built from, so a pass that ends mid-frame
                 // cannot leave the count showing with the percentage back beside it.
-                let counting = self.footers_this_frame.is_some();
+                let counting =
+                    self.footers_this_frame.is_some() || self.listed_this_frame.is_some();
                 if progress_percent > 0 && !counting {
                     Some(format!("{}... ({}%)", current_phase, progress_percent))
                 } else {

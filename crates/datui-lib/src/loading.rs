@@ -337,7 +337,7 @@ impl Phase {
             Phase::CountingFooter => (COUNTING_FOOTER, 10),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
-            Phase::ReadingSchema => ("Caching schema", 40),
+            Phase::ReadingSchema => ("Reading schema", 40),
             Phase::FirstRows => ("Loading buffer", 70),
         }
     }
@@ -2103,7 +2103,7 @@ mod tests {
         assert!(Arc::ptr_eq(&progress, loader.progress().unwrap()));
         assert_eq!(
             loader.current().unwrap().phase().label(),
-            ("Caching schema", 40)
+            ("Reading schema", 40)
         );
 
         let Step::Install(loaded) = answer(&mut loader, id, schema_read("data.parquet")) else {
@@ -2795,7 +2795,7 @@ mod tests {
         assert_eq!(path.as_deref(), Some(Path::new("logs")));
         assert_eq!(
             loader.current().unwrap().phase().label(),
-            ("Caching schema", 40)
+            ("Reading schema", 40)
         );
         assert_eq!(made.converted.len(), 1);
         assert_eq!(made.notes.len(), 1);

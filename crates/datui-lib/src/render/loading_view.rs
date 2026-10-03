@@ -6,7 +6,7 @@
 //!
 //! Drawn in the same family as the home screen: no boxes, centred, one accent. The
 //! phase name is the progress indicator. It is a real, observable step ("Scanning
-//! input", "Caching schema", "Loading buffer"), unlike the percentage beside it in
+//! input", "Reading schema", "Loading buffer"), unlike the percentage beside it in
 //! the control bar, which is a constant per phase.
 
 use std::path::Path;
@@ -30,7 +30,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
         _ => ("Loading", None, 0),
     };
     // A directory of many files reads a footer from each before a row is shown, and on a
-    // few thousand that is seconds of a screen saying only "Caching schema". The count
+    // few thousand that is seconds of a screen saying only "Reading schema". The count
     // is what makes the wait legible: a number climbing is a wait, a number stopped is
     // a problem. `App::loading_phase` decides it for the control bar too, so the two
     // halves of the screen cannot say different things about one wait.
@@ -153,7 +153,7 @@ mod tests {
     /// While the footers are being read the screen counts them, and stops when they
     /// land.
     ///
-    /// "Caching schema" is true of that wait but says nothing about its length; a
+    /// "Reading schema" is true of that wait but says nothing about its length; a
     /// directory of thousands of files spends seconds there. A number that climbs is a
     /// wait, and a number that stops is a problem — neither is legible without it.
     #[test]
@@ -163,7 +163,7 @@ mod tests {
         app.loading_for_tests(
             Some(std::path::PathBuf::from("/tmp/blocks")),
             2048,
-            "Caching schema",
+            "Reading schema",
             40,
         );
         let area = Rect::new(0, 0, 60, 20);
@@ -174,7 +174,7 @@ mod tests {
         };
 
         assert!(
-            painted(&app).contains("Caching schema"),
+            painted(&app).contains("Reading schema"),
             "the phase, while nothing is being counted"
         );
 
@@ -193,7 +193,7 @@ mod tests {
             "the count, grouped so six thousand does not read as sixty: {text}"
         );
         assert!(
-            !text.contains("Caching schema"),
+            !text.contains("Reading schema"),
             "and it replaces the phase rather than crowding in beside it: {text}"
         );
 
@@ -203,14 +203,58 @@ mod tests {
         app.footer_progress().done();
         app.begin_frame();
         assert!(
-            painted(&app).contains("Caching schema"),
+            painted(&app).contains("Reading schema"),
             "once they have landed there is no wait left to count"
         );
     }
 
+    /// A listing counts the objects it has found, and gives way to the footers.
+    ///
+    /// Listing a prefix of hundreds of thousands of objects is the longest wait of the
+    /// open, and it has no total, so the count is what says it is moving.
+    #[test]
+    fn the_listing_count_replaces_the_phase_while_it_is_running() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::App::new(tx, test_runtime());
+        app.loading_for_tests(
+            Some(std::path::PathBuf::from("/tmp/by_station")),
+            0,
+            "Reading schema",
+            40,
+        );
+        let area = Rect::new(0, 0, 60, 20);
+        let painted = |app: &crate::App| {
+            let mut buf = Buffer::empty(area);
+            render(area, &mut buf, app, &RenderContext::for_test());
+            cells(&buf)
+        };
+
+        let progress = app.footer_progress().clone();
+        let listing = progress.listing();
+        for _ in 0..412_000 {
+            listing.advance();
+        }
+        app.begin_frame();
+        let text = painted(&app);
+        assert!(text.contains("Listing files: 412,000"), "{text}");
+        assert!(!text.contains("Reading schema"), "{text}");
+
+        // The two footers that follow the listing are counted as footers.
+        drop(listing);
+        app.footer_progress().begin(2);
+        app.begin_frame();
+        let text = painted(&app);
+        assert!(text.contains("Reading footers: 0 of 2"), "{text}");
+        assert!(!text.contains("Listing files"), "{text}");
+
+        app.footer_progress().done();
+        app.begin_frame();
+        assert!(painted(&app).contains("Reading schema"));
+    }
+
     /// The count is cut with a mark at a width it does not fit, not by the terminal.
     ///
-    /// "Caching schema" is fourteen characters and always fitted; "Reading footers:
+    /// "Reading schema" is fourteen characters and always fitted; "Reading footers:
     /// 1,203 of 6,541" needs thirty-five. Cut by the terminal instead of by the panel it
     /// ends mid-number — "of 6" where it means "of 6,541", a smaller figure than the one
     /// it is counting towards, which is the one way this line could actively mislead.
@@ -221,7 +265,7 @@ mod tests {
         app.loading_for_tests(
             Some(std::path::PathBuf::from("/tmp/blocks")),
             2048,
-            "Caching schema",
+            "Reading schema",
             40,
         );
         app.footer_progress().begin(6541);
@@ -282,7 +326,7 @@ mod tests {
         app.loading_for_tests(
             Some(std::path::PathBuf::from("/tmp/quarterly.parquet")),
             2048,
-            "Caching schema",
+            "Reading schema",
             40,
         );
 
@@ -291,7 +335,7 @@ mod tests {
         render(area, &mut buf, &app, &RenderContext::for_test());
 
         let text = cells(&buf);
-        assert!(text.contains("Caching schema"), "phase missing: {text:?}");
+        assert!(text.contains("Reading schema"), "phase missing: {text:?}");
         assert!(text.contains("quarterly.parquet"), "file missing: {text:?}");
         assert!(text.contains("2.0 KB"), "size missing: {text:?}");
     }

@@ -83,7 +83,7 @@ pub struct OpenOptions {
     /// in how many files, and where — so saying it twice would be one vague note above
     /// several exact ones.
     pub files_disagree: crate::schema_union::Disagreement,
-    /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
+    /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Reading schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
     /// `--template NAME`: the template to apply to the dataset named on the command
     /// line, once it is on screen. Applied to that open only; what later opens get

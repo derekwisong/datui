@@ -1,0 +1,27 @@
+	$date Fri Oct 2 2026 $end
+$version Icarus Verilog $end
+$timescale 1ns $end
+$scope module tb $end
+$var wire 1 ! clk $end
+$var reg 4 " count [3:0] $end
+$var real 64 # temp $end
+$scope module dut $end
+$var wire 1 $ ready $end
+$var wire 1 ! clk_alias $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars
+0!
+b0 "
+r20.5 #
+x$
+$end
+#5
+1!
+b1 "
+#10
+0!
+bz "
+z$

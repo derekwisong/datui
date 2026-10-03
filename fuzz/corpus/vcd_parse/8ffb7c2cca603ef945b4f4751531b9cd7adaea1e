@@ -1,0 +1,1 @@
+$timescale 10ps $end $var wire 8 a bus $end $enddefinitions $end #3 b101 a #18446744073709551615 b1 a

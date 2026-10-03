@@ -711,6 +711,11 @@ impl FixReader {
         out
     }
 
+    /// `batch`, the last, which has every column, as the dataset shows it: for checks.
+    pub fn finished(&self, batch: DataFrame) -> PolarsResult<DataFrame> {
+        self.finish_frame(batch.lazy()).collect()
+    }
+
     /// The segments' columns renamed, typed and, for those that never held a value,
     /// dropped.
     pub fn finish_frame(&self, lf: LazyFrame) -> LazyFrame {

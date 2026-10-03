@@ -52,6 +52,10 @@ scripts/dev/test.sh integration fuzz_corpus_test
 | `midi_file` | `midi::parse`, `midi::build` | A Standard MIDI File parser reading chunk, delta and event lengths from the file. A corrupt file must be an error, never a panic or an allocation sized by the file. |
 | `model_header` | `model_files::read_safetensors`, `model_files::read_gguf` | Model file headers read by lengths the file states. A corrupt header must be an error, never a panic or an allocation sized by the file. |
 | `gps_parse` | `gps::nmea::NmeaReader`, `gps::gpx::GpxReader` | GPS logs read a piece at a time, with line, markup, text and depth bounds. The first byte picks the NMEA table and the piece size. Frames must keep their schema and every coordinate must be on the globe. |
+| `vcd_parse` | `vcd::VcdReader` | VCD tokens read a piece at a time, with token, header text, depth and signal bounds. The first byte picks the piece size. Batches keep their schema and the rows add up. |
+| `fix_parse` | `fix::FixReader` | FIX messages read a piece at a time, length-tagged values by their stated length. The first byte picks the piece size. The rows add up and the last batch types into a frame that collects. |
+| `fix_dict` | `fix::dict::Dictionary` | QuickFIX XML and TOML dictionaries on any text. Never a panic; names stay within bounds. |
+| `sdf_parse` | `sdf::SdfReader` | SDF records read a piece at a time, with line, value and field bounds. The first byte picks the piece size. The rows add up to the records. |
 
 ## Corpus
 
@@ -61,7 +65,9 @@ entries are readable. The three targets taking `arbitrary`-decoded input hold a 
 sample of minimised inputs, capped at 64 files each — a few minutes of fuzzing yields
 thousands, and carrying them buys little when none of them is reviewable.
 `gps_parse` takes the bytes as they are; its seeds are small NMEA logs and GPX files
-behind a first byte that picks the table and the piece size.
+behind a first byte that picks the table and the piece size. `vcd_parse`, `fix_parse`
+and `sdf_parse` do too, behind a first byte that picks the piece size; `fix_dict`
+takes text.
 
 Files named `regression-*` are inputs that once crashed a target. Add one whenever you
 fix a crash; leave general coverage to the fuzzer.

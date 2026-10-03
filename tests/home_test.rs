@@ -5886,6 +5886,34 @@ mod coming_back {
         assert_eq!(app.home.status, None, "nor after the dialog is dismissed");
     }
 
+    /// The whole screen at 80×24 and 200×50: the bar teaches typing, `~` and `?` at
+    /// both, the order shows only where every key fits, and the count is on the rule
+    /// (#547 M2, D11).
+    #[test]
+    fn the_home_screen_at_80_by_24_and_200_by_50() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let (mut app, _rx) = home_app(local_config(tmp.path()));
+        for (w, h) in [(80u16, 24u16), (200, 50)] {
+            let area = Rect::new(0, 0, w, h);
+            let mut buf = Buffer::empty(area);
+            app.render(area, &mut buf);
+            let row =
+                |y: u16| -> String { (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect() };
+            let bar = row(h - 1);
+            for chip in ["type  Filter", "~  Path", "?  Help", "^C  Quit"] {
+                assert!(bar.contains(chip), "{w}x{h}: {chip} in {bar:?}");
+            }
+            assert!(!bar.contains("datasets"), "{w}x{h}: {bar:?}");
+            assert_eq!(bar.contains("by name"), w == 200, "{w}x{h}: {bar:?}");
+            let screen: Vec<String> = (0..h).map(row).collect();
+            assert!(
+                screen.iter().any(|r| r.contains("  40   configured")),
+                "{w}x{h}: the rule counts the rows: {screen:#?}"
+            );
+        }
+    }
+
     #[test]
     fn esc_from_a_collection_dataset_puts_the_cursor_back_on_it() {
         let tmp = TempDir::new().unwrap();

@@ -9464,6 +9464,9 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
         InputMode::Normal,
         "Esc from home should return to the open dataset"
     );
+    // Said on arrival, so a reflexive Esc too many does not leave the next keys acting
+    // on a table nobody noticed coming back (#547 D14).
+    assert_eq!(app.flash_message(), Some("Back to people.parquet"));
     assert_eq!(
         app.open_path(),
         Some(open_first.as_path()),

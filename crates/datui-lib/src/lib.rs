@@ -16060,6 +16060,16 @@ impl App {
         }
         if self.data_table_state.is_some() {
             self.input_mode = InputMode::Normal;
+            // Said on arrival: Esc pressed once too often to clear the home screen lands
+            // here, and the keys typed next act on the table (#547 D14).
+            let name = self
+                .path
+                .as_deref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned());
+            if let Some(name) = name {
+                self.flash_note(format!("Back to {name}"));
+            }
         }
         None
     }

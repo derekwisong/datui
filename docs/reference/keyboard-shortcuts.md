@@ -157,7 +157,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember the directory under the cursor so it stays listed, or forget it if remembered |
 | <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or a remembered directory on its heading, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
-| <kbd>Esc</kbd> | Back out one layer: path prompt, filter, directory (back to the row it was entered from), then to the open table; the control bar says which |
+| <kbd>Esc</kbd> | Back out one layer: path prompt, filter, directory (back to the row it was entered from), then to the open table; the control bar says which, and `Back to` the table's name flashes on arrival |
 | <kbd>?</kbd> or <kbd>F1</kbd> | Help (<kbd>?</kbd> until you start typing; <kbd>F1</kbd> always) |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Return here from anywhere, including during a load |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |

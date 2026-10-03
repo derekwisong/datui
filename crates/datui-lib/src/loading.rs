@@ -430,6 +430,20 @@ pub(crate) enum Step {
     /// The open found a SQLite database of several tables and was asked for none: the
     /// home screen lists them. Its load is retired.
     Tables(Tables),
+    /// The open found a local file no reader and no spec takes, or was asked for its
+    /// bytes: the hex view shows it. Its load is retired.
+    Hex(Hex),
+}
+
+/// A local file to show in the hex view.
+#[derive(Debug)]
+pub(crate) struct Hex {
+    pub(crate) file: PathBuf,
+    pub(crate) from_home: bool,
+    /// Asked for (`--hex`) rather than fallen back to.
+    pub(crate) asked: bool,
+    /// `--record-size`: the bytes a row holds.
+    pub(crate) record_size: Option<usize>,
 }
 
 /// A database of several tables, to be listed on the home screen.
@@ -505,6 +519,13 @@ pub(crate) enum LoadAnswer {
         file: PathBuf,
         tables: Vec<String>,
         path: Option<PathBuf>,
+    },
+    /// The scan found a local file no reader and no spec takes, or `--hex` asked for
+    /// its bytes.
+    Hex {
+        file: PathBuf,
+        asked: bool,
+        record_size: Option<usize>,
     },
     /// The dataset, its schema read.
     SchemaRead {
@@ -1076,6 +1097,32 @@ impl Loader {
                     progress: load.progress.clone(),
                     download: load.download.as_ref().map(|fetched| fetched.file.clone()),
                 }
+            }
+            (
+                LoadAnswer::Hex {
+                    file,
+                    asked,
+                    record_size,
+                },
+                Phase::Scanning { .. } | Phase::ScanningStrings,
+            ) => {
+                let from_home = load.from_home;
+                // A download is a temporary file the load owns; it has no bytes to show
+                // once the load is put down.
+                let fetched = load.download.is_some();
+                self.retire();
+                if fetched {
+                    return Step::Failed(Failed {
+                        message: "Unsupported file type".to_string(),
+                        from_home,
+                    });
+                }
+                Step::Hex(Hex {
+                    file,
+                    from_home,
+                    asked,
+                    record_size,
+                })
             }
             (
                 LoadAnswer::Tables { file, tables, path },

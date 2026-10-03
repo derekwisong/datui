@@ -241,6 +241,7 @@ darkened. Set any slot to change it.
 | `distribution_normal`, `distribution_skewed`, `distribution_other`, `outlier_marker` | Analysis view | `#9ece6a`, `#e0af68`, `#c0caf5`, `#f7768e` |
 | `cursor_focused`, `cursor_dimmed` | The text cursor, focused and not | `default` |
 | `cursor_text` | Text under the cursor block; `default` picks black or white by the cursor color's luminance | `default` |
+| `hex_null`, `hex_printable`, `hex_whitespace`, `hex_control`, `hex_high`, `hex_ff` | Bytes in the [hex view](../user-guide/hex-view.md): 0x00, printable ASCII, whitespace, other control bytes, 0x80 to 0xFE, and 0xFF | `#565f89`, `#7dcfff`, `#9ece6a`, `#bb9af7`, `#e0af68`, `#f7768e` |
 
 Three formats are accepted:
 

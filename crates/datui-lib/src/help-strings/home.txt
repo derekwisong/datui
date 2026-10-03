@@ -39,6 +39,8 @@ Finding:
   Ctrl+R:           List again what is on screen
   Ctrl+A:           Show or hide files datui cannot read; inside a SQLite
                     database, its internal tables
+  Ctrl+X:           Show the local file under the cursor as bytes, in the
+                    hex view, whatever datui would read it as
   Ctrl+D:           Remember the directory under the cursor, so it stays
                     listed; again to forget it. A file stands for the
                     directory it is in, a heading for the one it lists
@@ -73,7 +75,8 @@ Reading a row:
   starts on it only for a hive table or one schema, and on the first row
   inside otherwise. The row hides while a filter is typed, and is absent
   when nothing inside is openable. Inside a directory, the last row
-  counts the files datui can't open; Enter on it shows them. A SQLite
+  counts the files with no reader; Enter on it shows them, labeled
+  binary, and Enter on one of those shows its bytes in the hex view. A SQLite
   database's label counts its tables ("3 tables"); one of several lists
   them inside, a row each, and Enter opens one. The Notes tab says what a
   read had to decide. In a collection, "dataset" marks a remote directory

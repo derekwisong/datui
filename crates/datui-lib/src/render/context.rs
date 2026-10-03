@@ -56,6 +56,14 @@ pub struct RenderContext {
     /// Placeholder color for binary-column cells. Applied regardless of `column_colors` since the
     /// `‹binary›` stub is a placeholder, not data.
     pub binary_col: Color,
+    /// The hex view's bytes by class: 0x00, printable, whitespace, control, 0x80 to
+    /// 0xFE, and 0xFF.
+    pub hex_null: Color,
+    pub hex_printable: Color,
+    pub hex_whitespace: Color,
+    pub hex_control: Color,
+    pub hex_high: Color,
+    pub hex_ff: Color,
 
     pub table_cell_padding: u16,
     pub column_colors: bool,
@@ -186,6 +194,12 @@ impl RenderContext {
                 Color::Reset
             },
             binary_col: theme.get("binary_col"),
+            hex_null: theme.get("hex_null"),
+            hex_printable: theme.get("hex_printable"),
+            hex_whitespace: theme.get("hex_whitespace"),
+            hex_control: theme.get("hex_control"),
+            hex_high: theme.get("hex_high"),
+            hex_ff: theme.get("hex_ff"),
 
             table_cell_padding,
             column_colors,

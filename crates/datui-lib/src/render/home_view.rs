@@ -741,8 +741,8 @@ fn hidden_line(
     let text = match (tables, count) {
         (true, 1) => format!("{ellipsis} 1 internal table"),
         (true, _) => format!("{ellipsis} {count} internal tables"),
-        (false, 1) => format!("{ellipsis} 1 file datui can't open"),
-        (false, _) => format!("{ellipsis} {count} files datui can't open"),
+        (false, 1) => format!("{ellipsis} 1 file with no reader"),
+        (false, _) => format!("{ellipsis} {count} files with no reader"),
     };
     note_row(text, selected, name_width, show_meta, ctx)
 }
@@ -1636,7 +1636,7 @@ fn kind_words(
             // Named nothing, and found by its bytes to be data.
             None => "data file".to_string(),
         },
-        EntryKind::Other => "file datui can't open".to_string(),
+        EntryKind::Other => "binary file: no reader, shown as bytes".to_string(),
         EntryKind::Hive => "hive table".to_string(),
         EntryKind::MultiFile => "multi-file table".to_string(),
         k if k.is_lake_table() => {
@@ -2030,7 +2030,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 // A collection's local dataset that is not there: the kind line says so.
                 EntryKind::Unknown if app.home.missing.contains(&entry.path) => "",
                 EntryKind::Unknown => "Not read yet.",
-                EntryKind::Other => "datui has no reader for this file.",
+                EntryKind::Other => "No reader or spec takes it; Enter shows its bytes.",
                 EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => {
                     "Enter lists its tables."
                 }

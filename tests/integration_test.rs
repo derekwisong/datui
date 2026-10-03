@@ -22,6 +22,8 @@ mod fake_s3;
 mod formats_open;
 #[path = "formats/gps.rs"]
 mod gps;
+#[path = "formats/hex.rs"]
+mod hex;
 #[path = "formats/midi.rs"]
 mod midi;
 #[path = "formats/model_files.rs"]
@@ -12786,7 +12788,7 @@ fn test_enter_on_the_hidden_row_shows_the_files() {
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let screen = rendered_text(&buf);
-    assert!(screen.contains("3 files datui can't open"), "{screen:?}");
+    assert!(screen.contains("3 files with no reader"), "{screen:?}");
     let bar: String = (0..area.width)
         .map(|x| buf[(x, area.height - 1)].symbol().to_string())
         .collect();
@@ -12802,7 +12804,7 @@ fn test_enter_on_the_hidden_row_shows_the_files() {
     app.event(&ctrl('a'));
     assert!(app.home.hide_unreadable);
     assert_eq!(app.home.status, None);
-    assert_eq!(app.flash_message(), Some("Hiding files datui can't open"));
+    assert_eq!(app.flash_message(), Some("Hiding files with no reader"));
 }
 
 /// `Enter` and `→` on the place of a recent opened over HTTP say why they do nothing,

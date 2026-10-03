@@ -10,6 +10,7 @@ pub mod format_spec;
 pub mod fuzzy_match;
 pub mod glob_match;
 pub mod gps_parse;
+pub mod hex_input;
 pub mod ipc_stream_head;
 pub mod midi_file;
 pub mod model_header;

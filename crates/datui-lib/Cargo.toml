@@ -78,6 +78,10 @@ ignore = "0.4.33"
 # Fixed-record binary files and audio samples are read through a memory map, a
 # window at a time. Already in the tree through polars-io.
 memmap2 = "0.9"
+# The hex view's find (memmem) and its byte inspector's half floats. Both already in
+# the tree, through Polars.
+memchr = "2"
+half = "2"
 # SQLite databases, read only. `bundled` compiles SQLite into the binary, so no
 # platform needs a system library; `hooks` lets a stopped open interrupt a statement.
 # Default features off, which leaves extension loading out.

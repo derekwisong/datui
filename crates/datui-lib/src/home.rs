@@ -1123,7 +1123,7 @@ pub enum Row<'a> {
         places: usize,
     },
     /// The last row inside a browsed directory whose files datui cannot read are
-    /// hidden: `… 10 files datui can't open`. Without it a directory of notes looks
+    /// hidden: `… 10 files with no reader`. Without it a directory of notes looks
     /// empty, or broken. `Enter` shows them, as `Ctrl+A` does.
     Hidden { section: usize, count: usize },
 }

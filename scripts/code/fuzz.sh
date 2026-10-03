@@ -49,7 +49,7 @@ fi
 
 cd "$(dirname "$0")/../.."
 
-TARGETS=(parse_query sql_group_plan number_format fuzzy_match glob_match ipc_stream_head config_parse model_header format_spec gps_parse audio_header midi_file)
+TARGETS=(parse_query sql_group_plan number_format fuzzy_match glob_match ipc_stream_head config_parse model_header format_spec gps_parse audio_header midi_file hex_input)
 
 case "${1:-}" in
     list)

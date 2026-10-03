@@ -21,6 +21,8 @@ mod fuzzy_match;
 mod glob_match;
 #[path = "../fuzz/src/gps_parse.rs"]
 mod gps_parse;
+#[path = "../fuzz/src/hex_input.rs"]
+mod hex_input;
 #[path = "../fuzz/src/ipc_stream_head.rs"]
 mod ipc_stream_head;
 #[path = "../fuzz/src/midi_file.rs"]
@@ -124,6 +126,7 @@ fn every_corpus_input_passes_its_target() {
     replay("midi_file", &mut failures, midi_file::run);
     replay("model_header", &mut failures, model_header::run);
     replay("gps_parse", &mut failures, gps_parse::run);
+    replay("hex_input", &mut failures, hex_input::run);
     replay("audio_header", &mut failures, audio_header::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
@@ -164,6 +167,7 @@ fn every_corpus_has_a_replay() {
         "midi_file",
         "model_header",
         "gps_parse",
+        "hex_input",
         "number_format",
         "parse_query",
         "sql_group_plan",

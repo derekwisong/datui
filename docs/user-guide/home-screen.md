@@ -148,9 +148,11 @@ Job markers and names beginning with `_` or `.` are skipped, except partition
 names such as `_date=2025-01-01`. Folder markers ending in `_$folder$` are
 also skipped. A capped listing says so, for example `5000+ parquet`.
 
-Select the `… files datui can't open` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>,
-to reveal unreadable files such as `README.md`.
-They are dimmed and cannot be opened. Set `[data] show_unreadable_files = true`
+Select the `… files with no reader` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>,
+to reveal files no reader takes, such as `README.md`.
+They are dimmed and labeled `binary`; <kbd>Enter</kbd> on a local one shows its
+bytes in the [hex view](hex-view.md). <kbd>Ctrl</kbd>+<kbd>X</kbd> shows any
+local file's bytes there. Set `[data] show_unreadable_files = true`
 to show them by default. Inside a SQLite database the same row and key show
 its internal tables (`sqlite_master`, `sqlite_sequence`), which open like the
 others. See [SQLite databases](loading-data.md#sqlite-databases).

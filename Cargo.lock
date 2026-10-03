@@ -1436,6 +1436,7 @@ dependencies = [
  "ureq",
  "windows-sys 0.61.2",
  "xz2",
+ "zip",
  "zstd 0.14.0",
 ]
 

@@ -120,6 +120,22 @@ pub(crate) fn convert(
             None,
         ));
     }
+    // A NumPy archive's compressed array, named by `--table` or found alone.
+    if format == FileFormat::Numpy {
+        let ([file], Some(name)) = (files, options.table.as_deref()) else {
+            return Err(eyre!("Open one array of an archive at a time."));
+        };
+        let (held, lf, opened) = crate::numpy::convert(file, name, options, writer, read)?;
+        return Ok((
+            Converted {
+                lf,
+                files: vec![held],
+                notes: opened.notes,
+                other_tables: opened.other_tables,
+            },
+            opened.detail,
+        ));
+    }
     let [file] = files else {
         return Err(eyre!("Open {} files one at a time.", format.name()));
     };

@@ -402,12 +402,12 @@ impl CacheManager {
         let stored = if looks_like_url {
             path.to_path_buf()
         } else {
-            // A table inside a SQLite database is no file of its own: its database is
-            // made absolute and the name kept.
+            // A table inside a file of tables is no file of its own: its file is made
+            // absolute and the name kept.
             crate::canonical::canonicalize(path)
-                .or_else(|e| match crate::sqlite::table_path(path) {
+                .or_else(|e| match crate::members::split(path) {
                     Some((db, table)) => crate::canonical::canonicalize(&db)
-                        .map(|db| crate::sqlite::table_place(&db, &table)),
+                        .map(|db| crate::members::place(&db, &table)),
                     None => Err(e),
                 })
                 .unwrap_or_else(|_| path.to_path_buf())

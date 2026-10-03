@@ -96,6 +96,9 @@ pub enum Physical {
     Latin1,
     /// Text in UTF-16, two bytes a unit, trimmed as `Text` is.
     Utf16 { big_endian: bool },
+    /// Text in UTF-32, four bytes a character, NUL characters trimmed from the right:
+    /// NumPy's `U` strings.
+    Utf32 { big_endian: bool },
     /// Raw bytes.
     Raw,
 }
@@ -107,7 +110,7 @@ impl Physical {
             Self::Unsigned(n) | Self::Signed(n) | Self::Float(n) => Some(n as usize),
             Self::Bool => Some(1),
             Self::BFloat16 => Some(2),
-            Self::Text | Self::Latin1 | Self::Utf16 { .. } | Self::Raw => None,
+            Self::Text | Self::Latin1 | Self::Utf16 { .. } | Self::Utf32 { .. } | Self::Raw => None,
         }
     }
 
@@ -128,7 +131,7 @@ impl Physical {
             Self::Float(2 | 4) | Self::BFloat16 => DataType::Float32,
             Self::Float(_) => DataType::Float64,
             Self::Bool => DataType::Boolean,
-            Self::Text | Self::Latin1 | Self::Utf16 { .. } => DataType::String,
+            Self::Text | Self::Latin1 | Self::Utf16 { .. } | Self::Utf32 { .. } => DataType::String,
             Self::Raw => DataType::Binary,
         }
     }
@@ -161,6 +164,8 @@ pub enum Logical {
     },
     /// A float count of a unit since an epoch, as a nanosecond datetime: serial dates.
     FloatTimestamp { ns_per_unit: f64, epoch_ns: i64 },
+    /// An integer count of `multiplier` of a unit, as a duration in `unit`.
+    Duration { unit: TimeUnit, multiplier: i64 },
     /// A count of days since `epoch_days` days past 1970-01-01, as a date.
     Days { epoch_days: i32 },
     /// An integer written as `YYYYMMDD`, as a date; anything else is null.
@@ -223,6 +228,7 @@ impl ColumnLayout {
         match &self.logical {
             Logical::Timestamp { unit, .. } => DataType::Datetime(*unit, None),
             Logical::FloatTimestamp { .. } => DataType::Datetime(TimeUnit::Nanoseconds, None),
+            Logical::Duration { unit, .. } => DataType::Duration(*unit),
             Logical::Days { .. } | Logical::Yyyymmdd => DataType::Date,
             Logical::TimeOfDay { date_ns: None, .. } => DataType::Time,
             Logical::TimeOfDay {
@@ -351,7 +357,7 @@ pub fn decode(bytes: &[u8], column: &ColumnLayout, rows: usize) -> PolarsResult<
         rows <= fits,
         ComputeError: "column {}: {rows} rows asked for, {fits} in {} bytes", column.name, bytes.len()
     );
-    decode_cells(bytes, column, rows, |row| row)
+    decode_strided(bytes, column, rows, |row| row)
 }
 
 /// The values of `column` from `bytes` for the rows `index` names, in that order. A
@@ -359,16 +365,48 @@ pub fn decode(bytes: &[u8], column: &ColumnLayout, rows: usize) -> PolarsResult<
 pub fn decode_rows(bytes: &[u8], column: &ColumnLayout, index: &IdxCa) -> PolarsResult<Column> {
     column.validate()?;
     let rows = crate::row_index::checked(index, column.rows_in(bytes.len()))?;
-    decode_cells(bytes, column, rows.len(), |i| rows[i] as usize)
+    decode_strided(bytes, column, rows.len(), |i| rows[i] as usize)
 }
 
-/// `rows` cells of `column`, the `i`th of them row `row(i)`; every row is one `bytes`
-/// holds.
-fn decode_cells(
+/// The values of `column` from `bytes` for records that start at `records`, in that
+/// order: each record's cell is `column.start` bytes into it, and `stride` is not used.
+/// For records that are not evenly spaced, such as the messages of a log, found by an
+/// index. A cell past the end of `bytes` is an error.
+pub fn decode_at(bytes: &[u8], column: &ColumnLayout, records: &[usize]) -> PolarsResult<Column> {
+    column.validate()?;
+    let cell = column.cell_width().unwrap_or(usize::MAX);
+    for &record in records {
+        let end = record
+            .checked_add(column.start)
+            .and_then(|start| start.checked_add(cell));
+        polars_ensure!(
+            end.is_some_and(|end| end <= bytes.len()),
+            OutOfBounds: "column {}: a record at {record} runs past the {} bytes on hand", column.name, bytes.len()
+        );
+    }
+    let start = column.start;
+    decode_cells(bytes, column, records.len(), |i| records[i] + start)
+}
+
+/// `rows` cells of `column`, the `i`th of them its row `row(i)`; every row is one
+/// `bytes` holds.
+fn decode_strided(
     bytes: &[u8],
     column: &ColumnLayout,
     rows: usize,
     row: impl Fn(usize) -> usize,
+) -> PolarsResult<Column> {
+    let (start, stride) = (column.start, column.stride);
+    decode_cells(bytes, column, rows, move |i| start + row(i) * stride)
+}
+
+/// `rows` cells of `column`, the `i`th of them starting at byte `cell(i)`; every cell
+/// is one `bytes` holds.
+fn decode_cells(
+    bytes: &[u8],
+    column: &ColumnLayout,
+    rows: usize,
+    cell: impl Fn(usize) -> usize,
 ) -> PolarsResult<Column> {
     let count = column.count.max(1);
     let values = rows
@@ -376,7 +414,7 @@ fn decode_cells(
         .ok_or_else(|| polars_err!(ComputeError: "column {}: too many values", column.name))?;
     // Each value's bytes, row by row and in a row left to right.
     let at = move |i: usize| {
-        let start = column.start + row(i / count) * column.stride + (i % count) * column.width;
+        let start = cell(i / count) + (i % count) * column.width;
         &bytes[start..start + column.width]
     };
     let name = column.name.clone();
@@ -486,6 +524,10 @@ fn decode_values<'a>(
             let values: StringChunked = (0..n).map(|i| Some(utf16(at(i), big_endian))).collect();
             Ok(values.into_series())
         }
+        Physical::Utf32 { big_endian } => {
+            let values: StringChunked = (0..n).map(|i| Some(utf32(at(i), big_endian))).collect();
+            Ok(values.into_series())
+        }
         Physical::Raw => {
             let values: BinaryChunked = (0..n).map(|i| Some(at(i))).collect();
             Ok(values.into_series())
@@ -493,8 +535,10 @@ fn decode_values<'a>(
     }
 }
 
-/// Integers as their column means them.
-fn integers(column: &ColumnLayout, ints: Vec<Option<i128>>) -> PolarsResult<Series> {
+/// Integers as their column means them: plain at its width, or as its `logical` says
+/// (a datetime, a duration, a factor and offset, an enum's labels). Public for readers
+/// that find their integers some other way, such as bit fields of CAN signals.
+pub fn integers(column: &ColumnLayout, ints: Vec<Option<i128>>) -> PolarsResult<Series> {
     let as_i64 = |v: Option<i128>| v.and_then(|v| i64::try_from(v).ok());
     Ok(match &column.logical {
         Logical::Plain => match column.physical {
@@ -518,6 +562,12 @@ fn integers(column: &ColumnLayout, ints: Vec<Option<i128>>) -> PolarsResult<Seri
             .map(|v| as_i64(v)?.checked_mul(*multiplier)?.checked_add(*epoch))
             .collect::<Int64Chunked>()
             .into_datetime(*unit, None)
+            .into_series(),
+        Logical::Duration { unit, multiplier } => ints
+            .into_iter()
+            .map(|v| as_i64(v)?.checked_mul(*multiplier))
+            .collect::<Int64Chunked>()
+            .into_duration(*unit)
             .into_series(),
         Logical::FloatTimestamp {
             ns_per_unit,
@@ -676,6 +726,32 @@ pub fn utf16(bytes: &[u8], big_endian: bool) -> String {
         units.pop();
     }
     String::from_utf16_lossy(&units)
+}
+
+/// Text from a fixed-width UTF-32 field, NUL characters trimmed from the right as NumPy
+/// trims them. A unit that is no character, and an odd last few bytes, read as the
+/// replacement character.
+pub fn utf32(bytes: &[u8], big_endian: bool) -> String {
+    let (units, rest) = bytes.as_chunks::<4>();
+    let mut chars: Vec<char> = units
+        .iter()
+        .map(|&unit| {
+            let code = if big_endian {
+                u32::from_be_bytes(unit)
+            } else {
+                u32::from_le_bytes(unit)
+            };
+            char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER)
+        })
+        .collect();
+    while chars.last() == Some(&'\0') {
+        chars.pop();
+    }
+    let mut text: String = chars.into_iter().collect();
+    if !rest.is_empty() {
+        text.push(char::REPLACEMENT_CHARACTER);
+    }
+    text
 }
 
 /// Bytes as space-separated hex pairs.

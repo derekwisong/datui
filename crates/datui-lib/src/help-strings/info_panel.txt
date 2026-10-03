@@ -45,6 +45,8 @@ Tabs:
                dictionaries give it. Only for FIX logs
   SDF:         An SDF file's records, and each data field's type and how many
                records hold it. Only for SDF files
+  NumPy:       A NumPy array's shape, type, order and format version, and
+               each field's type and offset. Only for NumPy arrays
   Resources:   What the data costs to hold and to read, and how it is read:
                lazy, converted once, or in memory
   Partitions:  The layout of a partitioned dataset. Only when it has one

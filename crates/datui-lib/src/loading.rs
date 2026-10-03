@@ -170,8 +170,9 @@ impl OpenRequest {
     /// is far more painful to retype than any local path, and it is recorded verbatim.
     /// Kept as named, since what is installed may be a download's temporary copy.
     ///
-    /// A table inside a SQLite database, as the home screen lists one (`app.db/users`),
-    /// is the database opened with `--table`, and is recorded as the table.
+    /// A table inside a file of tables, as the home screen lists one (`app.db/users`,
+    /// `run.npz/weights`), is the file opened with `--table`, and is recorded as the
+    /// table.
     pub(crate) fn named(mut paths: Vec<PathBuf>, mut options: OpenOptions) -> Self {
         let first = paths[0].clone();
         let piped = stdin::is_stdin(&first);
@@ -179,7 +180,7 @@ impl OpenRequest {
         let mut table = None;
         if local
             && paths.len() == 1
-            && let Some((db, name)) = crate::sqlite::table_path(&first)
+            && let Some((db, name)) = crate::members::split(&first)
         {
             table = Some(first.clone());
             options.table = Some(name);
@@ -187,9 +188,9 @@ impl OpenRequest {
         } else if local
             && let Some(name) = options.table.as_deref()
             && first.is_file()
-            && crate::sqlite::is_sqlite_file(&first)
+            && crate::members::holder(&first).is_some()
         {
-            table = Some(crate::sqlite::table_place(&first, name));
+            table = Some(crate::members::place(&first, name));
         }
         let first = &paths[0];
         let size = if local {
@@ -495,7 +496,7 @@ pub(crate) struct Hex {
     pub(crate) record_size: Option<usize>,
 }
 
-/// A database of several tables, to be listed on the home screen.
+/// A file of several tables, to be listed on the home screen.
 #[derive(Debug)]
 pub(crate) struct Tables {
     /// The database file, as the user named it.
@@ -521,6 +522,7 @@ impl Conversion {
             Conversion::Text(FileFormat::Vcd) => "Reading value change dump",
             Conversion::Text(FileFormat::Fix) => "Reading FIX log",
             Conversion::Text(FileFormat::Sdf) => "Reading SDF records",
+            Conversion::Text(FileFormat::Numpy) => "Decompressing NumPy array",
             Conversion::Text(_) => "Reading GPS log",
         }
     }
@@ -533,6 +535,7 @@ impl Conversion {
             Conversion::Text(FileFormat::Vcd) => "Reading VCD...",
             Conversion::Text(FileFormat::Fix) => "Reading FIX log...",
             Conversion::Text(FileFormat::Sdf) => "Reading SDF...",
+            Conversion::Text(FileFormat::Numpy) => "Decompressing...",
             Conversion::Text(_) => "Reading NMEA...",
         }
     }
@@ -622,8 +625,8 @@ pub(crate) enum LoadAnswer {
         path: Option<PathBuf>,
         options: OpenOptions,
     },
-    /// The scan found a SQLite database, `file`, of several tables named `tables`, and
-    /// no `--table` to say which.
+    /// The scan found a file of several tables (a SQLite database, a NumPy archive),
+    /// `file`, its tables named `tables`, and no `--table` to say which.
     Tables {
         file: PathBuf,
         tables: Vec<String>,

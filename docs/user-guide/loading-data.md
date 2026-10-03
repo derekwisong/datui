@@ -180,6 +180,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | [FIX logs](#fix-logs) | any, by content (`8=FIX`), or `--format fix` | converted once | converted once | downloaded | downloaded | no |
 | [SDF](#sdf-compound-files) | `.sdf`, `.sd` | converted once | converted once | downloaded | downloaded | no |
 | [SQLite](#sqlite-databases) | `.db`, `.sqlite`, `.sqlite3`, `.db3` | lazy | no | downloaded | downloaded | no |
+| [NumPy](#numpy-arrays) | `.npy`, `.npz` | lazy | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
 | Read | What it means |
@@ -555,6 +556,63 @@ The database is only read:
 | Not a SQLite database, or damaged | An error |
 
 A compressed database (`shop.db.gz`) is not read; decompress it first.
+
+### NumPy arrays
+
+Read: [lazy](#how-each-format-is-read), from a map of the file; an array
+compressed in an `.npz` archive is decompressed once to a temporary file first.
+
+```bash
+datui prices.npy
+datui run.npz                    # its one array, or the list of its arrays
+datui run.npz --table weights    # an array by name
+datui run.npz/weights            # the same
+```
+
+| The array | Columns |
+|---|---|
+| 1-D | One, named for the file (`prices.npy` is `prices`) or the archive's array |
+| 2-D | One per index, `0` to `n-1`; more than 1,024 make one Array column, `values` |
+| Structured (`[('ts', '<u8'), ('px', '<f8')]`) | One per field; a nested field is `outer.inner`, a subarray field an Array column |
+| 0-D | One row |
+| 3-D or more | An error that gives the shape |
+
+| `dtype` | Column |
+|---|---|
+| `b1` | `bool` |
+| `i1` to `i8`, `u1` to `u8` | The integer of that width |
+| `f2`, `f4` | `f32` |
+| `f8` | `f64` |
+| `c8`, `c16` | An Array of two floats: real, imaginary |
+| `S` | `str`, NUL padding trimmed |
+| `U` | `str`, from UTF-32 |
+| `V` | `binary` |
+| `M8[ns]`, `M8[us]`, `M8[ms]` | `datetime` in that unit |
+| `M8[s]`, `M8[m]`, `M8[h]` | `datetime[ms]` |
+| `M8[D]` | `date` |
+| `m8[...]` | `duration`, by the same units |
+| `M8` and `m8` in months, years or finer than `ns` | `i64`, the count as stored |
+| `O` | An error: Python objects are pickled, and datui does not unpickle |
+
+- `NaT` is null.
+- Big-endian (`>i4`) and little-endian fields mix in one array.
+- Fortran (column-major) order reads the same as C order.
+- Padding fields (`align=True`) are left out, and fields at offsets
+  (`offsets`, `itemsize`) are read where they are.
+- A file shorter than its shape says shows the rows it holds; the Notes tab
+  says so.
+- A file named without `.npy` is known by its first bytes, `\x93NUMPY`.
+
+An `.npz` archive of several arrays opens the home screen inside it, a row per
+array in the order they were saved, like a directory. <kbd>Enter</kbd> opens
+one; <kbd>q</kbd> comes back to the list. An archive downloaded or piped in is
+refused with the names of its arrays; `--table` picks one. An array saved with
+`np.savez` is read in place in the archive; one saved with
+`np.savez_compressed` is decompressed to the temp directory and removed when
+the dataset closes.
+
+Press <kbd>i</kbd> for the NumPy tab: shape, type, order and format version,
+and each field's type and offset.
 ### VCD value change dumps
 
 Read: [converted once](#how-each-format-is-read).

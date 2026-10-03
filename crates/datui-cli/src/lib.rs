@@ -50,6 +50,8 @@ pub enum FileFormat {
     Fix,
     /// SDF compound file (.sdf, .sd): one row per record, data items as columns
     Sdf,
+    /// NumPy array (.npy), or archive of arrays (.npz): one array, picked with --table
+    Numpy,
 }
 
 impl FileFormat {
@@ -97,6 +99,7 @@ impl FileFormat {
             Self::Vcd => "vcd",
             Self::Fix => "fix",
             Self::Sdf => "sdf",
+            Self::Numpy => "numpy",
         }
     }
 
@@ -109,7 +112,7 @@ impl FileFormat {
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
     /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -130,6 +133,7 @@ impl FileFormat {
         Self::Vcd,
         Self::Fix,
         Self::Sdf,
+        Self::Numpy,
     ];
 
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
@@ -163,7 +167,15 @@ impl FileFormat {
                 | Self::Vcd
                 | Self::Fix
                 | Self::Sdf
+                | Self::Numpy
         )
+    }
+
+    /// Whether a file of this format can hold several tables, each with a path inside
+    /// it (`shop.db/orders`, `run.npz/weights`) that the home screen lists like a
+    /// directory's files and `--table` names.
+    pub fn holds_tables(self) -> bool {
+        matches!(self, Self::Sqlite | Self::Numpy)
     }
 
     /// How a file of this format is read when it is opened, as `stored` on disk.
@@ -176,7 +188,9 @@ impl FileFormat {
     /// JSON, Avro, ORC and Excel have readers that take the whole file, and a model
     /// file's tensor list is small by nature: one row per tensor, from the header. A
     /// MIDI file is decoded whole, and is refused over 64 MiB. A SQLite table is read
-    /// in place, a page at a time, with sort and filters run in SQLite.
+    /// in place, a page at a time, with sort and filters run in SQLite. A NumPy array
+    /// is decoded from a map of the file where it is shown; a compressed member of an
+    /// archive is decompressed once to a file first.
     /// Arrow streams, GPS logs, VCD dumps, FIX logs and SDF files cannot be scanned
     /// where they are, so they are read once into an IPC file that is; compressed text
     /// is decompressed once to a file.
@@ -188,7 +202,8 @@ impl FileFormat {
             | Self::Psv
             | Self::Arrow
             | Self::Audio
-            | Self::Sqlite => ReadMode::Lazy,
+            | Self::Sqlite
+            | Self::Numpy => ReadMode::Lazy,
             Self::Nmea | Self::Gpx | Self::Vcd | Self::Fix | Self::Sdf => ReadMode::Converted,
             Self::Json
             | Self::Jsonl
@@ -312,6 +327,7 @@ impl FileFormat {
             "db" | "db3" | "sqlite" | "sqlite3" => Some(Self::Sqlite),
             "vcd" => Some(Self::Vcd),
             "sdf" | "sd" => Some(Self::Sdf),
+            "npy" | "npz" => Some(Self::Numpy),
             _ => None,
         }
     }
@@ -628,7 +644,8 @@ pub struct Args {
 
     /// Table to open from a file that holds several. SQLite: a table or view by name.
     /// NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences.
-    /// Hugging Face cache and DatasetDict directories: a split (default train)
+    /// Hugging Face cache and DatasetDict directories: a split (default train).
+    /// NumPy archives (.npz): an array by name
     #[arg(long = "table", value_name = "TABLE", help_heading = "Reading")]
     pub table: Option<String>,
     /// Show integer audio samples as float in [-1, 1] (default: the integers as stored)
@@ -1227,7 +1244,8 @@ mod format_tests {
                 | FileFormat::Sqlite
                 | FileFormat::Vcd
                 | FileFormat::Fix
-                | FileFormat::Sdf => FileFormat::ALL.contains(&f),
+                | FileFormat::Sdf
+                | FileFormat::Numpy => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -1263,7 +1281,8 @@ mod format_tests {
                 "sqlite",
                 "vcd",
                 "fix",
-                "sdf"
+                "sdf",
+                "numpy"
             ]
         );
     }

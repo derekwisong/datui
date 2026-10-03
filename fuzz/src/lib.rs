@@ -17,6 +17,7 @@ pub mod ipc_stream_head;
 pub mod midi_file;
 pub mod model_header;
 pub mod number_format;
+pub mod numpy_header;
 pub mod parse_query;
 pub mod sdf_parse;
 pub mod sql_group_plan;

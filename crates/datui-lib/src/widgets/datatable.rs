@@ -367,6 +367,8 @@ pub struct DataTableState {
     fetched: bool,
     /// What a VCD, FIX or SDF file said besides its rows. See [`OpenFacts::detail`].
     detail: Option<Arc<crate::text_formats::Detail>>,
+    /// Each loaded column's unit, from the file. See [`OpenFacts::units`].
+    file_units: Arc<Vec<(String, String)>>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -948,6 +950,12 @@ pub struct OpenFacts {
     pub fetched: bool,
     /// What a VCD, FIX or SDF file said besides its rows, for the Info panel.
     pub detail: Option<Arc<crate::text_formats::Detail>>,
+    /// Rows read straight from a reader that decodes them from the file (a NumPy
+    /// array), and how many it holds: a page deep in the table, and the count, need
+    /// no row index.
+    pub records: Option<(Arc<dyn crate::pushdown::Windowed>, usize)>,
+    /// Each column's unit, where the file says one.
+    pub units: Vec<(String, String)>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -2008,6 +2016,7 @@ impl DataTableState {
             read_mode: None,
             fetched: false,
             detail: None,
+            file_units: Arc::new(Vec::new()),
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2159,6 +2168,7 @@ impl DataTableState {
             read_mode: None,
             fetched: false,
             detail: None,
+            file_units: Arc::new(Vec::new()),
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2226,6 +2236,8 @@ impl DataTableState {
             read_mode,
             fetched,
             detail,
+            records,
+            units,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2288,6 +2300,13 @@ impl DataTableState {
         }
         self.midi = midi;
         self.detail = detail;
+        if let Some((window, rows)) = records {
+            // The reader knows its rows; a count through the frame would build its row
+            // index whole.
+            self.set_num_rows(rows);
+            self.fixed_window = Some(window);
+        }
+        self.file_units = Arc::new(units);
         self
     }
 
@@ -6799,11 +6818,13 @@ impl DataTableState {
         self.delimited.as_ref()
     }
 
-    /// The unit of the column named `column`, from a delimited spec's unit row. A
-    /// filter, sort, drill or query that keeps the loaded column, renamed or not, keeps
-    /// its unit; a column a query computes has none, whatever it is called.
+    /// The unit of the column named `column`, from a delimited spec's unit row or the
+    /// file itself. A filter, sort, drill or query that keeps the loaded column, renamed
+    /// or not, keeps its unit; a column a query computes has none, whatever it is called.
     pub fn unit_of(&self, column: &str) -> Option<&str> {
-        let read = self.delimited.as_ref()?;
+        if self.delimited.is_none() && self.file_units.is_empty() {
+            return None;
+        }
         let loaded = match &self.lineage {
             None => column,
             Some(lineage) => lineage
@@ -6811,12 +6832,19 @@ impl DataTableState {
                 .find(|(shown, _)| shown == column)
                 .map(|(_, loaded)| loaded.as_str())?,
         };
-        read.unit_of(loaded)
+        match &self.delimited {
+            Some(read) => read.unit_of(loaded),
+            None => self
+                .file_units
+                .iter()
+                .find(|(name, _)| name == loaded)
+                .map(|(_, unit)| unit.as_str()),
+        }
     }
 
     /// Each column of the view that has a unit, with it.
     pub fn units(&self) -> Vec<(String, String)> {
-        if self.delimited.is_none() {
+        if self.delimited.is_none() && self.file_units.is_empty() {
             return Vec::new();
         }
         self.schema

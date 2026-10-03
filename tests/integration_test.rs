@@ -32,6 +32,8 @@ mod hex;
 mod midi;
 #[path = "formats/model_files.rs"]
 mod model_files;
+#[path = "formats/numpy.rs"]
+mod numpy;
 #[cfg(feature = "cloud")]
 #[path = "quality/remote.rs"]
 mod remote_quality;

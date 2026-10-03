@@ -686,8 +686,9 @@ fn place_line(
         _ => ctx.dimmed,
     });
     let mut name = crate::home::display_path(path);
-    // A SQLite database is a place, and a file.
-    if !name.ends_with('/') && crate::discover::data_format(path) != Some(crate::FileFormat::Sqlite)
+    // A file of tables (a SQLite database, a NumPy archive) is a place, and a file.
+    if !name.ends_with('/')
+        && !crate::discover::data_format(path).is_some_and(crate::FileFormat::holds_tables)
     {
         name.push('/');
     }

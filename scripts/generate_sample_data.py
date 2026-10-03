@@ -17,6 +17,7 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - GPS logs: an NMEA 0183 drive and a GPX ride, written as text
 - Short WAV, Broadcast WAV and AIFF files: the wave module, and struct where it cannot
 - SQLite databases: one of several tables and one of a single table, with sqlite3
+- NumPy arrays and archives: each dtype, structured, 2-D in both orders, .npz
 
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
@@ -1349,6 +1350,86 @@ def generate_sqlite():
     print(f"Generated: {one}")
 
 
+def generate_numpy():
+    """NumPy `.npy` files of each kind datui reads (and two it refuses), and `.npz`
+    archives stored and compressed, of one array and of several."""
+    out = OUTPUT_DIR / "numpy"
+    out.mkdir(exist_ok=True)
+    n = 500
+    np.save(out / "vector.npy", np.arange(n, dtype="<f8") / 4)
+    trades = np.zeros(n, dtype=[("ts", "<u8"), ("px", "<f8"), ("qty", "<i4")])
+    trades["ts"] = 1_700_000_000_000 + np.arange(n) * 250
+    trades["px"] = 100 + np.arange(n) / 100
+    trades["qty"] = np.arange(n) % 7 - 3
+    np.save(out / "trades.npy", trades)
+    grid = np.arange(400, dtype="<f4").reshape(100, 4)
+    np.save(out / "grid.npy", grid)
+    np.save(out / "grid_fortran.npy", np.asfortranarray(grid))
+    dtypes = np.dtype(
+        [
+            ("b1", "?"),
+            ("i1", "i1"),
+            ("i2", "<i2"),
+            ("i4", "<i4"),
+            ("i8", "<i8"),
+            ("u1", "u1"),
+            ("u2", "<u2"),
+            ("u4", "<u4"),
+            ("u8", "<u8"),
+            ("f2", "<f2"),
+            ("f4", "<f4"),
+            ("f8", "<f8"),
+            ("c8", "<c8"),
+            ("c16", "<c16"),
+            ("big", ">i4"),
+            ("bytes", "S5"),
+            ("text", "<U4"),
+            ("at", "<M8[ns]"),
+            ("day", "<M8[D]"),
+            ("second", "<M8[s]"),
+            ("took", "<m8[us]"),
+        ]
+    )
+    each = np.zeros(3, dtype=dtypes)
+    for name in ["i1", "i2", "i4", "i8", "u1", "u2", "u4", "u8", "big"]:
+        each[name] = [1, 2, 3]
+    for name in ["f2", "f4", "f8"]:
+        each[name] = [0.5, 1.5, 2.5]
+    each["b1"] = [True, False, True]
+    each["c8"] = [1 + 2j, 3 - 4j, 0j]
+    each["c16"] = [1 + 2j, 3 - 4j, 0j]
+    each["bytes"] = [b"ab", b"cdefg", b""]
+    each["text"] = ["h\u00e9", "\u65e5\u672c", ""]
+    each["at"] = np.array(["2024-01-02T03:04:05.000000006", "NaT", "1970-01-01"], dtype="M8[ns]")
+    each["day"] = np.array(["2024-02-29", "1969-12-31", "NaT"], dtype="M8[D]")
+    each["second"] = np.array(["2024-01-01T00:00:01", "NaT", "2000-01-01"], dtype="M8[s]")
+    each["took"] = np.array([1500, 0, -2], dtype="m8[us]")
+    np.save(out / "dtypes.npy", each)
+    aligned = np.zeros(4, dtype=np.dtype([("flag", "u1"), ("value", "<f8"), ("id", "<i2")], align=True))
+    aligned["flag"] = [1, 0, 1, 0]
+    aligned["value"] = [1.25, 2.5, 3.75, 5.0]
+    aligned["id"] = [10, 20, 30, 40]
+    np.save(out / "aligned.npy", aligned)
+    offsets = np.zeros(
+        3,
+        dtype=np.dtype({"names": ["a", "b"], "formats": ["<i4", "<f4"], "offsets": [4, 12], "itemsize": 20}),
+    )
+    offsets["a"] = [7, 8, 9]
+    offsets["b"] = [0.5, 0.25, 0.125]
+    np.save(out / "offsets.npy", offsets)
+    sub = np.zeros(5, dtype=[("id", "<i4"), ("px", "<f8", (10,))])
+    sub["id"] = np.arange(5)
+    sub["px"] = np.arange(50).reshape(5, 10) / 2
+    np.save(out / "subarray.npy", sub)
+    np.save(out / "cube.npy", np.zeros((2, 3, 4), dtype="<i2"))
+    np.save(out / "objects.npy", np.array([{"a": 1}, None], dtype=object), allow_pickle=True)
+    np.savez(out / "run.npz", prices=np.arange(n, dtype="<f8") / 4, grid=grid, trades=trades)
+    np.savez_compressed(out / "packed.npz", prices=np.arange(n, dtype="<f8") / 4, grid=grid, trades=trades)
+    np.savez(out / "single.npz", values=np.arange(10, dtype="<i8"))
+    np.savez_compressed(out / "single_packed.npz", values=np.arange(10, dtype="<i8"))
+    print(f"Generated: {out}")
+
+
 def _vlq(n):
     """A MIDI variable-length quantity: seven bits a byte, high bit on all but the last."""
     out = [n & 0x7F]
@@ -1585,6 +1666,9 @@ def main():
     # SQLite databases
     print("\n18. Generating SQLite databases...")
     generate_sqlite()
+
+    print("\n19. Generating NumPy arrays...")
+    generate_numpy()
 
     print("\nSample data generation complete!")
 

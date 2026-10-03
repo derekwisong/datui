@@ -20,7 +20,7 @@
 //! cannot be read without writing beside it (a hot journal, or a `-wal` without its
 //! `-shm` in a read-only directory) is refused rather than read wrong.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The first sixteen bytes of every SQLite 3 database.
 pub const MAGIC: &[u8; 16] = b"SQLite format 3\0";
@@ -40,43 +40,8 @@ pub fn is_sqlite_file(path: &Path) -> bool {
         && looks_like(&head)
 }
 
-/// The path of `table` inside the database `db`, as the home screen lists it and recents
-/// record it: `app.db/users`. The name is appended as it is, so a name that looks like a
-/// path (`/etc`, `a/../b`) stays inside the database and reads back whole.
-pub fn table_place(db: &Path, table: &str) -> PathBuf {
-    let mut place = db.as_os_str().to_owned();
-    place.push("/");
-    place.push(table);
-    place.into()
-}
-
-/// The database and the table a path inside a database names, the inverse of
-/// [`table_place`]: `app.db/users` is the table `users` of `app.db`, and `app.db/a/b`
-/// the table `a/b`. `None` for a path that is there, or that is inside no SQLite file.
-pub fn table_path(path: &Path) -> Option<(PathBuf, String)> {
-    // A path ending in `..` is a table so named: Windows resolves it before it looks,
-    // and `app.db/..` is the directory the database is in.
-    if path.file_name().is_some() && path.exists() {
-        return None;
-    }
-    let db = path
-        .ancestors()
-        .skip(1)
-        .take_while(|p| !p.as_os_str().is_empty())
-        // Windows resolves `..` before it looks, so `app.db/a/..` would be the
-        // database itself and the table `b` rather than `a/../b`.
-        .find(|p| p.file_name().is_some() && p.is_file())?;
-    if !is_sqlite_file(db) {
-        return None;
-    }
-    // What follows the database's name, less the one separator after it, as written:
-    // a parent is a prefix of the path's own text.
-    let rest = path.to_str()?.strip_prefix(db.to_str()?)?;
-    let mut chars = rest.chars();
-    chars.next().filter(|c| std::path::is_separator(*c))?;
-    let table = chars.as_str().trim_end_matches(std::path::is_separator);
-    (!table.is_empty()).then(|| (db.to_path_buf(), table.to_string()))
-}
+/// The path of a table inside a database, and the way back: see [`crate::members`].
+pub use crate::members::{place as table_place, split as table_path};
 
 /// Whether a table is SQLite's own: the schema, `sqlite_sequence`, the statistics
 /// tables, or the shadow tables a virtual table keeps its data in.
@@ -139,50 +104,13 @@ pub enum Pick {
 /// The table `wanted` names among `tables`, or the database's one table of its own
 /// when nothing is named. `display` names the database in errors.
 pub fn pick(tables: Vec<Table>, wanted: Option<&str>, display: &Path) -> color_eyre::Result<Pick> {
-    use color_eyre::eyre::eyre;
-    let own: Vec<&Table> = tables.iter().filter(|t| !t.internal).collect();
-    let names = || {
-        const SHOWN: usize = 20;
-        let mut names: Vec<&str> = own.iter().take(SHOWN).map(|t| t.name.as_str()).collect();
-        let more = own.len().saturating_sub(SHOWN);
-        let more = format!("and {more} more");
-        if own.len() > SHOWN {
-            names.push(&more);
-        }
-        names.join(", ")
-    };
-    if let Some(wanted) = wanted {
-        // Exactly as written first; SQLite itself matches names without regard to case.
-        let found = tables.iter().find(|t| t.name == wanted).or_else(|| {
-            let mut alike = tables
-                .iter()
-                .filter(|t| t.name.eq_ignore_ascii_case(wanted));
-            match (alike.next(), alike.next()) {
-                (Some(one), None) => Some(one),
-                _ => None,
-            }
-        });
-        return match found {
-            Some(table) => Ok(Pick::One(table.clone())),
-            None if own.is_empty() => Err(eyre!(
-                "No table {wanted:?} in {}, which holds no tables.",
-                display.display()
-            )),
-            None => Err(eyre!(
-                "No table {wanted:?} in {}. Its tables: {}.",
-                display.display(),
-                names()
-            )),
-        };
-    }
-    match own.as_slice() {
-        [] => Err(eyre!(
-            "{} holds no tables. --table sqlite_master shows its schema.",
-            display.display()
-        )),
-        [one] => Ok(Pick::One((*one).clone())),
-        _ => Ok(Pick::Several(tables)),
-    }
+    crate::members::pick(
+        tables,
+        wanted,
+        display,
+        crate::FileFormat::Sqlite,
+        " --table sqlite_master shows its schema.",
+    )
 }
 
 #[cfg(feature = "sqlite")]

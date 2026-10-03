@@ -23,6 +23,7 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `fix_parse` | `fix::FixReader` | A hand-written reader of FIX messages a piece at a time: tag and value framing, length-tagged values read by the length they state, checksums and body lengths. The first byte picks the piece size. Never a panic; the rows add up to the messages, and the last batch renames and types into a frame that collects. |
 | `fix_dict` | `fix::dict::Dictionary` | QuickFIX XML data dictionaries, read by a hand-written scanner of tags and attributes, and the TOML form. Any text must parse or fail, never panic, and a dictionary that parses keeps its names within bounds. |
 | `sdf_parse` | `sdf::SdfReader` | A hand-written reader of SDF records a piece at a time, with line, value and field bounds. The first byte picks the piece size. Never a panic; the rows add up to the records and no value passes its bound. |
+| `numpy_header` | `numpy::parse_literal`, `numpy::parse_header`, `numpy::open_in` | The `.npy` header's Python dict literal, parsed by hand, and the structured types in it, whose offsets, itemsizes and subarray shapes come from the file. A corrupt header must be an error, never a panic or an allocation sized by the file; a header that parses must give columns inside the bytes on hand, and its rows must decode. |
 
 ## Layout
 

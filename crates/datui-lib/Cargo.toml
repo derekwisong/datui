@@ -90,6 +90,9 @@ brotli = { version = "8.0", default-features = false, features = ["std"] }
 # platform needs a system library; `hooks` lets a stopped open interrupt a statement.
 # Default features off, which leaves extension loading out.
 rusqlite = { version = "0.40", optional = true, default-features = false, features = ["bundled", "hooks"] }
+# NumPy archives (.npz) are zip files. Already in the tree through calamine, with
+# the same features.
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 # The log facade, for the log file. Already in the tree through Polars and ureq.
 log = "0.4"
 # Where `polars_warn!` goes (`set_warning_function`); Polars' own error crate.

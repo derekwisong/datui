@@ -107,11 +107,13 @@ pub mod local_copy;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
+pub mod members;
 pub mod midi;
 pub mod model_files;
 pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
+pub mod numpy;
 pub mod output_file;
 pub mod past_calendar;
 pub mod pivot_melt_modal;
@@ -220,7 +222,8 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         | FileFormat::Sqlite
         | FileFormat::Vcd
         | FileFormat::Fix
-        | FileFormat::Sdf => None,
+        | FileFormat::Sdf
+        | FileFormat::Numpy => None,
     }
 }
 
@@ -8638,6 +8641,10 @@ pub struct OpenOptions {
     pub midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A SQLite table opened in place, carried from the scan to the dataset.
     pub sqlite: Option<Arc<SqliteOpen>>,
+    /// What a reader that decodes its table from the file found (a NumPy array): its
+    /// window, row count, Info panel tab and other tables, carried from the scan to the
+    /// dataset as `model` is. `None` for every other open.
+    pub opened: Option<Arc<crate::members::Opened>>,
     /// The delimited spec the file is read through, once chosen: its dialect is in
     /// these options, and the read's units and metadata ride with it to the dataset.
     pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
@@ -8721,6 +8728,7 @@ impl OpenOptions {
             normalize: false,
             audio: None,
             sqlite: None,
+            opened: None,
             splits: None,
             arrow_parts: None,
             delimited: None,
@@ -9417,6 +9425,8 @@ pub struct ReadReport {
     pub midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A SQLite table opened in place. See `OpenOptions::sqlite`.
     pub sqlite: Option<Arc<SqliteOpen>>,
+    /// See [`OpenOptions::opened`].
+    pub opened: Option<Arc<crate::members::Opened>>,
     /// The split a Hugging Face cache directory was read as. See `OpenOptions::splits`.
     pub splits: Option<Arc<crate::hf_splits::Splits>>,
     /// What a read through a delimited spec found. See `OpenOptions::delimited`.
@@ -9460,11 +9470,18 @@ pub(crate) enum Scan {
         files: Vec<PathBuf>,
         format: FileFormat,
     },
-    /// A SQLite database of several tables, named, and no `--table`: the home screen
-    /// lists them.
+    /// A file of several tables (a SQLite database, a NumPy archive), named, and no
+    /// `--table`: the home screen lists them.
     Tables {
         file: PathBuf,
         tables: Vec<String>,
+        format: FileFormat,
+    },
+    /// An array compressed in a NumPy archive, decompressed to a file before it is read
+    /// (`Step::Convert`).
+    Unpack {
+        file: PathBuf,
+        member: String,
     },
     /// A local file to show as bytes: no reader and no spec takes it, or `--hex` asked.
     Hex {
@@ -9491,7 +9508,8 @@ impl Scan {
             Scan::Decompress { format, .. } | Scan::ReadInto { format, .. } => Some(*format),
             Scan::Streams(_) => Some(FileFormat::Arrow),
             Scan::DecompressSpec { .. } => None,
-            Scan::Tables { .. } => Some(FileFormat::Sqlite),
+            Scan::Tables { format, .. } => Some(*format),
+            Scan::Unpack { .. } => Some(FileFormat::Numpy),
             Scan::Hex { .. } => None,
         }
     }
@@ -9524,7 +9542,8 @@ impl Scan {
             Scan::Streams(_) => FileFormat::Arrow.read_mode(Stored::Stream),
             Scan::ReadInto { format, .. } => format.read_mode(Stored::Plain),
             Scan::DecompressSpec { .. } => spec_read(Stored::Compressed { in_memory: false }),
-            Scan::Tables { .. } => FileFormat::Sqlite.read_mode(Stored::Plain),
+            Scan::Tables { format, .. } => format.read_mode(Stored::Plain),
+            Scan::Unpack { .. } => Some(crate::ReadMode::Converted),
             Scan::Hex { .. } => None,
         }
     }
@@ -16922,7 +16941,7 @@ impl App {
                     && !crate::stdin::is_stdin(path)
                     && !source::expands_as_glob(path)
                     && !path.exists()
-                    && crate::sqlite::table_path(path).is_none()
+                    && crate::members::split(path).is_none()
             })
             .cloned()
     }
@@ -17168,7 +17187,7 @@ impl App {
                     }
                     // Before the prompt closes: a typo is worth fixing where it was
                     // typed, rather than retyping the whole path.
-                    if !path.exists() && crate::sqlite::table_path(&path).is_none() {
+                    if !path.exists() && crate::members::split(&path).is_none() {
                         self.home.status = Some(format!("No such path: {}", path.display()));
                         return None;
                     }
@@ -18071,6 +18090,7 @@ impl App {
                         audio: None,
                         midi: None,
                         sqlite: None,
+                        opened: None,
                         splits: options.splits.clone(),
                         delimited: None,
                     };
@@ -18136,6 +18156,7 @@ impl App {
                         model: report.model,
                         format_read: report.format_read,
                         sqlite: report.sqlite,
+                        opened: report.opened,
                         splits: report.splits,
                         spec_choice: None,
                         read_python: report.read_python,
@@ -18180,7 +18201,19 @@ impl App {
                             path,
                             options,
                         },
-                        Scan::Tables { file, tables } => LoadAnswer::Tables { file, tables, path },
+                        Scan::Tables { file, tables, .. } => {
+                            LoadAnswer::Tables { file, tables, path }
+                        }
+                        Scan::Unpack { file, member } => LoadAnswer::Convert {
+                            what: loading::Conversion::Text(FileFormat::Numpy),
+                            bytes: bytes_of(std::slice::from_ref(&file)),
+                            files: vec![file],
+                            path,
+                            options: OpenOptions {
+                                table: Some(member),
+                                ..options
+                            },
+                        },
                         Scan::Hex { file, asked } => LoadAnswer::Hex {
                             file,
                             asked,
@@ -19429,6 +19462,13 @@ impl App {
             facts.open_notes.extend(crate::midi::notes(midi));
         }
         facts.midi = options.midi.clone();
+        if let Some(opened) = &options.opened {
+            facts.records = opened.window.clone();
+            facts.detail = opened.detail.clone();
+            facts.other_tables = opened.other_tables.clone();
+            facts.open_notes.extend(opened.notes.iter().cloned());
+            facts.units = opened.units.clone();
+        }
         if let Some(sqlite) = &options.sqlite {
             facts.pushdown = Some(sqlite.pushdown.clone());
             facts.hold = sqlite.hold.lock().ok().and_then(|mut hold| hold.take());
@@ -19823,7 +19863,7 @@ impl App {
     fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
         let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
         color_eyre::eyre::eyre!(
-            "{what} holds one table; --table picks one of a SQLite database's or an NMEA log's, or a Hugging Face dataset's split."
+            "{what} holds one table; --table picks one of a SQLite database's, a NumPy archive's or an NMEA log's, or a Hugging Face dataset's split."
         )
     }
 
@@ -20225,8 +20265,31 @@ impl App {
                     .filter(|t| !t.internal)
                     .map(|t| t.name)
                     .collect(),
+                format: FileFormat::Sqlite,
             }),
         }
+    }
+
+    /// What opening the NumPy file `file` reads: an `.npy` file's array, or the array
+    /// of an archive `--table` names, or its only one, read in place; a compressed one
+    /// decompressed first; or none yet when the archive has several.
+    fn scan_numpy(file: &Path, options: &OpenOptions, report: &mut ReadReport) -> Result<Scan> {
+        report.format = Some(FileFormat::Numpy);
+        Ok(match crate::numpy::open(file, options.table.as_deref())? {
+            crate::numpy::Open::Array { lf, opened } => {
+                report.opened = Some(Arc::new(*opened));
+                (*lf).into()
+            }
+            crate::numpy::Open::Several(tables) => Scan::Tables {
+                file: file.to_path_buf(),
+                tables,
+                format: FileFormat::Numpy,
+            },
+            crate::numpy::Open::Compressed { member } => Scan::Unpack {
+                file: file.to_path_buf(),
+                member,
+            },
+        })
     }
 
     /// The files a directory holds, read as `found`: through the delimited spec the
@@ -20534,10 +20597,7 @@ impl App {
         // Refused rather than ignored: a file of one table opened with `--table` would
         // otherwise look like the table asked for.
         if options.table.is_some()
-            && !matches!(
-                effective_format,
-                Some(FileFormat::Nmea | FileFormat::Sqlite)
-            )
+            && !effective_format.is_some_and(|f| f == FileFormat::Nmea || f.holds_tables())
             && options.splits.is_none()
         {
             return Err(Self::one_table(effective_format));
@@ -20677,6 +20737,7 @@ impl App {
                 | Some(FileFormat::Vcd)
                 | Some(FileFormat::Fix)
                 | Some(FileFormat::Sdf)
+                | Some(FileFormat::Numpy)
                 | None => {
                     // The home screen asks `reads_many_files` before it offers a
                     // directory as one dataset, so a format that is refused here and
@@ -20697,7 +20758,7 @@ impl App {
                         .into());
                     }
                     return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs and SDF files one at a time)"
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc, nmea, gpx only; open SQLite databases, VCD dumps, FIX logs, SDF files and NumPy arrays one at a time)"
                     ));
                 }
             }
@@ -20797,6 +20858,7 @@ impl App {
                     return Ok(lf.into());
                 }
                 Some(FileFormat::Sqlite) => return Self::scan_sqlite(path, options, report),
+                Some(FileFormat::Numpy) => return Self::scan_numpy(path, options, report),
                 Some(FileFormat::Orc) => DataTableState::from_orc(
                     path,
                     options.pages_lookahead,

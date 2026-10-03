@@ -785,6 +785,18 @@ fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     // table; Tab is one of several ways down a form whose rail shows the rows.
     use crate::chart_modal::ChartFocus;
     let mut keys = vec![("1-6", "Chart")];
+    // The plot has the keys: the arrows move the crosshair, Tab hands them back.
+    if modal.plot_focus {
+        keys.extend([
+            (g.updown_lr, "Cursor"),
+            ("e", "Export"),
+            ("g", "Grid"),
+            ("Tab", "Options"),
+            ("?", "Help"),
+            ("Esc", "Back"),
+        ]);
+        return keys;
+    }
     if modal.is_picker_row(modal.focus) {
         keys.push(("Space", "Edit"));
     } else if modal.is_toggle_row(modal.focus) {
@@ -802,6 +814,9 @@ fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     keys.push(("e", "Export"));
     if modal.has_grid() {
         keys.push(("g", "Grid"));
+    }
+    if modal.has_crosshair() {
+        keys.push(("x", "Cursor"));
     }
     keys.push(("Tab", "Options"));
     keys.push(("?", "Help"));

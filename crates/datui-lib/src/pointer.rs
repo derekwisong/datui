@@ -3,7 +3,8 @@
 //! Keys stay the interface and the mouse is a shortcut to them. The wheel presses
 //! the arrows of whatever has the keys, a click on a control-bar chip presses its key,
 //! and a click on the table or the home list moves the cursor there, a double click
-//! then pressing Enter. Nothing here changes what a key does.
+//! then pressing Enter. A click on a chart's plot puts the crosshair there, as `x` and
+//! the arrows would. Nothing here changes what a key does.
 //!
 //! A pointer is aimed at what is on screen when it is used, so mouse input is never
 //! held for later the way typed keys are: where a typed key would wait, a mouse event
@@ -79,6 +80,9 @@ pub enum Target {
     /// The home list's selection, moved this many rows and stopped at the ends: the
     /// arrows there go round, which a wheel must not.
     HomeStep(isize),
+    /// The chart's crosshair, on the point drawn nearest this column; the plot takes
+    /// the keys, as `x` gives them to it.
+    ChartColumn(u16),
 }
 
 /// What the last frame drew where, and the last click.
@@ -232,12 +236,28 @@ impl App {
                 self.home.status = None;
                 self.home.page_selection(*rows);
             }
+            Target::ChartColumn(column) => {
+                self.chart_modal.plot_focus = true;
+                self.move_crosshair_to(Some(*column));
+            }
         }
     }
 
     /// The home screen is up with nothing over it, so its keys go to it.
     fn home_has_the_keys(&self) -> bool {
         self.input_mode == InputMode::Home
+            && !self.show_help
+            && !self.error_modal.active
+            && !self.confirmation_modal.active
+    }
+
+    /// The chart view is up with nothing over it: no export dialog, Picker, help or
+    /// modal.
+    fn chart_has_the_keys(&self) -> bool {
+        self.input_mode == InputMode::Chart
+            && self.chart_modal.active
+            && self.chart_modal.picker.is_none()
+            && !self.chart_export_modal.active
             && !self.show_help
             && !self.error_modal.active
             && !self.confirmation_modal.active
@@ -284,6 +304,15 @@ impl App {
                 }
                 _ => Pointer::Nothing,
             };
+        }
+        if self.chart_has_the_keys()
+            && self.chart_modal.has_crosshair()
+            && self
+                .chart_modal
+                .plot
+                .is_some_and(|plot| plot.graph.contains(at))
+        {
+            return Pointer::Point(Target::ChartColumn(at.x), None);
         }
         if self.in_normal_table_view()
             && let Some(hit) = self

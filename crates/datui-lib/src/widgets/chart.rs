@@ -20,6 +20,7 @@ use crate::render::context::RenderContext;
 use crate::widgets::axes::{
     AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels, resolution,
 };
+use crate::widgets::crosshair::{self, PlotPlace};
 use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
 use unicode_width::UnicodeWidthStr;
 
@@ -45,6 +46,9 @@ pub enum ChartRenderData<'a> {
         series: Option<&'a Vec<Vec<(f64, f64)>>>,
         /// Per series, where its line starts again after a gap.
         breaks: Option<&'a Vec<Vec<usize>>>,
+        /// The series before any log, for the crosshair's readout; `None` reads
+        /// `series`.
+        values: Option<&'a Vec<Vec<(f64, f64)>>>,
         x_axis_kind: XAxisTemporalKind,
         x_bounds: Option<(f64, f64)>,
         numbers: PlotNumbers,
@@ -217,7 +221,8 @@ fn render_sidebar(
         FormRow {
             label: row_label(row),
             value,
-            focused: modal.focus == row,
+            // While the plot has the keys its crosshair carries the focus.
+            focused: modal.focus == row && !modal.plot_focus,
             label_width: LABEL_WIDTH,
         }
         .render(
@@ -284,6 +289,7 @@ pub fn render_chart_view(
     render_sidebar(main_layout[0], buf, modal, ctx);
 
     let mut chart_inner = main_layout[1];
+    modal.plot = None;
     if let Some(message) = view.error {
         Paragraph::new(message)
             .style(Style::default().fg(ctx.error))
@@ -314,7 +320,7 @@ pub fn render_chart_view(
             .render(notes, buf);
         chart_inner = plot;
     }
-    render_plot(
+    modal.plot = render_plot(
         chart_inner,
         buf,
         modal,
@@ -325,7 +331,8 @@ pub fn render_chart_view(
     );
 }
 
-/// The plot itself, drawn with the marks of the glyph set `g`.
+/// The plot itself, drawn with the marks of the glyph set `g`; where an XY plot with
+/// points was drawn.
 fn render_plot(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -334,30 +341,27 @@ fn render_plot(
     ctx: &RenderContext,
     data: ChartRenderData<'_>,
     g: &Glyphs,
-) {
+) -> Option<PlotPlace> {
     let text_secondary = theme.get("text_secondary");
     match data {
         ChartRenderData::XY {
             series,
             breaks,
+            values,
             x_axis_kind,
             x_bounds,
             numbers,
-        } => render_xy_chart(
-            area,
-            buf,
-            modal,
-            theme,
-            XYData {
+        } => {
+            let xy = XYData {
                 series,
                 breaks,
+                values,
                 x_axis_kind,
                 x_bounds,
                 numbers,
-            },
-            text_secondary,
-            g,
-        ),
+            };
+            return render_xy_chart(area, buf, modal, theme, xy, text_secondary, g);
+        }
         ChartRenderData::Histogram { data, x } => {
             let numbers = PlotNumbers {
                 x,
@@ -384,6 +388,7 @@ fn render_plot(
             render_bar_chart(area, buf, ctx, data, picked, g)
         }
     }
+    None
 }
 
 /// One horizontal bar per category: the label, the value, then the bar, from a zero
@@ -539,10 +544,22 @@ fn render_bar_chart(
     }
 }
 
+/// The XY series' colors, in order.
+const SERIES_COLORS: [&str; 7] = [
+    "chart_series_color_1",
+    "chart_series_color_2",
+    "chart_series_color_3",
+    "chart_series_color_4",
+    "chart_series_color_5",
+    "chart_series_color_6",
+    "chart_series_color_7",
+];
+
 /// The XY chart's prepared series, as `ChartRenderData::XY` carries them.
 struct XYData<'a> {
     series: Option<&'a Vec<Vec<(f64, f64)>>>,
     breaks: Option<&'a Vec<Vec<usize>>>,
+    values: Option<&'a Vec<Vec<(f64, f64)>>>,
     x_axis_kind: XAxisTemporalKind,
     x_bounds: Option<(f64, f64)>,
     numbers: PlotNumbers,
@@ -563,10 +580,11 @@ fn render_xy_chart(
     xy: XYData<'_>,
     text_secondary: ratatui::style::Color,
     g: &Glyphs,
-) {
+) -> Option<PlotPlace> {
     let XYData {
         series: chart_data,
         breaks,
+        values,
         x_axis_kind,
         x_bounds,
         numbers,
@@ -606,7 +624,7 @@ fn render_xy_chart(
                 ChartType::Bar => GraphType::Bar,
             });
         axes.render(Chart::new(vec![empty_dataset]), area, buf, g);
-        return;
+        return None;
     }
 
     if has_data {
@@ -617,15 +635,6 @@ fn render_xy_chart(
                 ChartType::Scatter => GraphType::Scatter,
                 ChartType::Bar => GraphType::Bar,
             };
-            let series_colors = [
-                "chart_series_color_1",
-                "chart_series_color_2",
-                "chart_series_color_3",
-                "chart_series_color_4",
-                "chart_series_color_5",
-                "chart_series_color_6",
-                "chart_series_color_7",
-            ];
 
             let mut all_x_min = f64::INFINITY;
             let mut all_x_max = f64::NEG_INFINITY;
@@ -689,7 +698,7 @@ fn render_xy_chart(
                 .iter()
                 .enumerate()
                 .flat_map(|(i, series)| {
-                    let color_key = series_colors
+                    let color_key = SERIES_COLORS
                         .get(i)
                         .copied()
                         .unwrap_or("primary_chart_series_color");
@@ -717,7 +726,7 @@ fn render_xy_chart(
                     .style(Style::default().fg(text_secondary))
                     .centered()
                     .render(area, buf);
-                return;
+                return None;
             }
 
             let y_min_bounds = if chart_type == ChartType::Bar {
@@ -755,12 +764,7 @@ fn render_xy_chart(
             let y_bounds = [y_min_bounds, y_max_bounds];
             // On a log scale a tick stands for its value before the log.
             let y = if log_scale {
-                AxisSpec::numbers_as(
-                    y_bounds,
-                    &numbers.y.fractional(),
-                    &y_axis_title,
-                    f64::exp_m1,
-                )
+                AxisSpec::y_log(y_bounds, &numbers.y.clone().fractional(), &y_axis_title)
             } else {
                 AxisSpec::y_numbers(y_bounds, &numbers.y, &y_axis_title)
             };
@@ -777,7 +781,44 @@ fn render_xy_chart(
                 modal.grid,
             );
             axes.legend = legend(show_legend, names_and_points.len(), name_width);
-            axes.render(Chart::new(datasets), area, buf, g);
+            let x_bounds = [x_min_bounds, x_max_bounds];
+            let sub = resolution(marker).0;
+            // The crosshair's readout takes the rows under the plot while the plot
+            // has the keys.
+            let values = values.unwrap_or(data);
+            let cursor = modal
+                .cursor_x
+                .filter(|_| modal.plot_focus)
+                .and_then(|x| crosshair::nearest(&crosshair::xs(values), x));
+            let readout = cursor
+                .map(|x| {
+                    let written = crosshair::format_x(x, x_axis_kind, &numbers.x);
+                    let entries = readout_entries(
+                        theme,
+                        g,
+                        (x, &x_axis_title, written),
+                        &numbers.y,
+                        values,
+                        &y_columns,
+                    );
+                    crosshair::readout_lines(&entries, area.width as usize, g)
+                })
+                .unwrap_or_default();
+            let rows = (readout.len() as u16).min(area.height / 3);
+            let [plot_area, readout_area] =
+                Layout::vertical([Constraint::Fill(1), Constraint::Length(rows)]).areas(area);
+            let frame = axes.render(Chart::new(datasets), plot_area, buf, g);
+            let place = PlotPlace {
+                graph: frame.graph,
+                x_bounds,
+                sub,
+            };
+            if let Some(x) = cursor {
+                let style = Style::default().fg(theme.get("accent"));
+                crosshair::draw(buf, &place, x, style, g);
+                Paragraph::new(readout).render(readout_area, buf);
+            }
+            return Some(place);
         }
     } else {
         Paragraph::new("Select X and Y columns in the sidebar.")
@@ -785,6 +826,48 @@ fn render_xy_chart(
             .centered()
             .render(area, buf);
     }
+    None
+}
+
+/// The readout at the crosshair's `x`: x under its title as `written`, then each
+/// series' value there under its name in its color, `∅` where it has a gap.
+fn readout_entries(
+    theme: &Theme,
+    g: &Glyphs,
+    (x, x_title, written): (f64, &str, String),
+    y: &AxisNumbers,
+    series: &[Vec<(f64, f64)>],
+    names: &[String],
+) -> Vec<crosshair::Entry> {
+    let value_style = Style::default().fg(theme.get("text_primary"));
+    let x_title = if x_title.is_empty() { "x" } else { x_title };
+    let mut entries = vec![crosshair::Entry {
+        name: x_title.to_string(),
+        name_style: Style::default().fg(theme.get("text_secondary")),
+        value: written,
+        value_style,
+    }];
+    for (i, (value, name)) in crosshair::values_at(series, x)
+        .into_iter()
+        .zip(names)
+        .enumerate()
+    {
+        let color = SERIES_COLORS
+            .get(i)
+            .copied()
+            .unwrap_or("primary_chart_series_color");
+        let (value, value_style) = match value {
+            Some(v) => (crosshair::format_number(v, y), value_style),
+            None => (g.null.to_string(), Style::default().fg(theme.get("dimmed"))),
+        };
+        entries.push(crosshair::Entry {
+            name: name.clone(),
+            name_style: Style::default().fg(theme.get(color)),
+            value,
+            value_style,
+        });
+    }
+    entries
 }
 
 /// Axes drawn in the theme's primary text color, ticked for series drawn with
@@ -1247,6 +1330,7 @@ mod tests {
                 data: ChartRenderData::XY {
                     series: None,
                     breaks: None,
+                    values: None,
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
                     numbers: PlotNumbers::default(),
@@ -1360,6 +1444,7 @@ mod tests {
                 data: ChartRenderData::XY {
                     series: Some(&series),
                     breaks: None,
+                    values: None,
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
                     numbers: PlotNumbers::default(),
@@ -1420,6 +1505,7 @@ mod tests {
                 data: ChartRenderData::XY {
                     series: None,
                     breaks: None,
+                    values: None,
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
                     numbers: PlotNumbers::default(),
@@ -1448,6 +1534,7 @@ mod tests {
                     data: ChartRenderData::XY {
                         series: Some(&series),
                         breaks: Some(breaks),
+                        values: None,
                         x_axis_kind: XAxisTemporalKind::Numeric,
                         x_bounds: None,
                         numbers: PlotNumbers::default(),
@@ -1719,6 +1806,7 @@ mod tests {
                         ChartRenderData::XY {
                             series: Some(&dates),
                             breaks: None,
+                            values: None,
                             x_axis_kind: XAxisTemporalKind::Date,
                             x_bounds: None,
                             numbers: PlotNumbers::default(),
@@ -1732,6 +1820,7 @@ mod tests {
                         ChartRenderData::XY {
                             series: Some(&numbers),
                             breaks: None,
+                            values: None,
                             x_axis_kind: XAxisTemporalKind::Numeric,
                             x_bounds: None,
                             numbers: PlotNumbers::default(),
@@ -1830,6 +1919,7 @@ mod tests {
         let xy = || ChartRenderData::XY {
             series: Some(&series),
             breaks: None,
+            values: None,
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
             numbers: PlotNumbers {
@@ -1960,7 +2050,8 @@ mod tests {
         let text = plot_text_with(&ctx, &open_modal(), data, g, area);
         // Up to the nice value past the tallest bar, in thousands-grouped whole steps.
         assert_eq!(y_labels(&text), ["5,000", "2,500", "0"], "{text}");
-        assert_eq!(axis_row(&text), "0 5", "{text}");
+        // Four labels fit, so not the two of the step nearest the spacing.
+        assert_eq!(axis_row(&text), "0 2 4 6", "{text}");
 
         // The same for an XY chart of integer columns.
         let series = vec![vec![(0.0, 3.0), (5.0, 10.0)]];
@@ -1971,6 +2062,7 @@ mod tests {
         let xy = |numbers| ChartRenderData::XY {
             series: Some(&series),
             breaks: None,
+            values: None,
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
             numbers,
@@ -2015,6 +2107,7 @@ mod tests {
         let xy = |series| ChartRenderData::XY {
             series,
             breaks: None,
+            values: None,
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
             numbers: PlotNumbers::default(),
@@ -2123,6 +2216,7 @@ mod tests {
                 ChartRenderData::XY {
                     series: Some(&series),
                     breaks: None,
+                    values: None,
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
                     numbers: PlotNumbers::default(),
@@ -2162,6 +2256,7 @@ mod tests {
         ChartRenderData::XY {
             series: Some(series),
             breaks: None,
+            values: None,
             x_axis_kind: XAxisTemporalKind::Date,
             x_bounds: None,
             numbers: PlotNumbers::default(),
@@ -2261,6 +2356,187 @@ mod tests {
         );
     }
 
+    /// The light theme's grid stays a color under 16 colors, not the white of the
+    /// background, and the grid draws in it.
+    #[test]
+    fn the_light_grid_survives_sixteen_colors() {
+        use ratatui::style::Color;
+        let g = crate::glyphs::unicode();
+        let sixteen = |hex: &str| {
+            let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
+            crate::config::rgb_to_basic_ansi(channel(1), channel(3), channel(5))
+        };
+        let light = crate::config::ColorConfig::light();
+        let grid = sixteen(&light.chart_grid);
+        assert!(
+            !matches!(grid, Color::White | Color::Black | Color::Reset),
+            "{grid:?}"
+        );
+        let dark = sixteen(&crate::config::ColorConfig::default().chart_grid);
+        assert!(!matches!(dark, Color::White | Color::Black), "{dark:?}");
+
+        let mut theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        theme.colors.insert("chart_grid".to_string(), grid);
+        let mut modal = open_modal();
+        modal.x_column = Some("date".to_string());
+        modal.y_columns = vec!["price".to_string()];
+        modal.toggle_grid();
+        let series = decade();
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let ctx = RenderContext::for_test();
+        render_plot(area, &mut buf, &modal, &theme, &ctx, xy_dates(&series), g);
+        let cells: Vec<_> = buf
+            .content()
+            .iter()
+            .filter(|c| c.symbol() == g.plot.grid_across || c.symbol() == g.plot.grid_down)
+            .collect();
+        assert!(cells.len() > 50);
+        assert!(cells.iter().all(|c| c.fg == grid));
+    }
+
+    fn rows_of(buf: &Buffer) -> Vec<String> {
+        let area = buf.area;
+        (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// A log scale ticks at the powers of ten, and 2 and 5 between when there is
+    /// room, every label in one format; the short form names each tick's own k or M.
+    #[test]
+    fn log_scale_ticks_fall_on_the_decades() {
+        let g = crate::glyphs::unicode();
+        let mut modal = open_modal();
+        modal.x_column = Some("x".to_string());
+        modal.y_columns = vec!["count".to_string()];
+        modal.log_scale = true;
+        // 0 to 300,000, as the view has it: ln(1 + y).
+        let linear: Vec<Vec<(f64, f64)>> = vec![
+            (0..=300)
+                .map(|i| (f64::from(i), f64::from(i).powi(2) * 3.333))
+                .collect(),
+        ];
+        let logged = crate::chart_jobs::log_series(&linear);
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let ctx = RenderContext::for_test();
+        let y_labels = |height: u16| {
+            let area = Rect::new(0, 0, 60, height);
+            let mut buf = Buffer::empty(area);
+            let data = ChartRenderData::XY {
+                series: Some(&logged),
+                breaks: None,
+                values: Some(&linear),
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+            };
+            render_plot(area, &mut buf, &modal, &theme, &ctx, data, g);
+            let rows = rows_of(&buf);
+            let labels: Vec<String> = rows
+                .iter()
+                .filter_map(|row| {
+                    let (label, _) = row.split_once(g.plot.tick_y)?;
+                    let label = label.trim();
+                    (!label.is_empty()).then(|| label.to_string())
+                })
+                .collect();
+            (labels, rows)
+        };
+        // Top down: falling, each a 1, 2 or 5 a power of ten up, or zero.
+        let nice = |labels: &[String]| {
+            let values: Vec<f64> = labels.iter().map(|l| l.parse().unwrap()).collect();
+            values.windows(2).all(|w| w[0] > w[1])
+                && values.iter().all(|&v| {
+                    let decade = 10f64.powf(v.log10().floor());
+                    v == 0.0 || [1.0, 2.0, 5.0].contains(&(v / decade))
+                })
+        };
+        let (tall, rows) = y_labels(40);
+        assert!(nice(&tall), "{rows:#?}");
+        // Every power of ten up to the top, which the axis widens to.
+        for decade in ["0", "10", "100", "1000", "10000", "100000", "1000000"] {
+            assert!(tall.contains(&decade.to_string()), "{decade}: {rows:#?}");
+        }
+        assert_eq!(tall[0], "1000000", "{rows:#?}");
+        assert_eq!(tall.last().unwrap(), "0", "{rows:#?}");
+        let (short, rows) = y_labels(12);
+        assert!(nice(&short), "{rows:#?}");
+        assert!(short.len() >= 3 && short.len() < tall.len(), "{rows:#?}");
+    }
+
+    /// With the plot focused the crosshair stands on a point: a line down its column
+    /// in the accent, and under the plot each series' value there.
+    #[test]
+    fn the_crosshair_reads_out_every_series() {
+        let mut modal = open_modal();
+        modal.x_column = Some("date".to_string());
+        modal.y_columns = vec!["price".to_string(), "volume".to_string()];
+        let series: Vec<Vec<(f64, f64)>> = vec![
+            (0..10)
+                .map(|i| (19_783.0 + f64::from(i), 1.5 * f64::from(i)))
+                .collect(),
+            (0..10)
+                .filter(|i| *i != 4)
+                .map(|i| (19_783.0 + f64::from(i), f64::from(i * 100)))
+                .collect(),
+        ];
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let ctx = RenderContext::for_test();
+        let draw = |modal: &ChartModal, g: &Glyphs| {
+            let area = Rect::new(0, 0, 60, 20);
+            let mut buf = Buffer::empty(area);
+            let data = ChartRenderData::XY {
+                series: Some(&series),
+                breaks: None,
+                values: None,
+                x_axis_kind: XAxisTemporalKind::Date,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+            };
+            let place = render_plot(area, &mut buf, modal, &theme, &ctx, data, g);
+            (buf, place)
+        };
+        for g in [crate::glyphs::unicode(), crate::glyphs::ascii()] {
+            // The options have the keys: no crosshair, no readout.
+            modal.plot_focus = false;
+            modal.cursor_x = Some(19_786.0);
+            let (off, place) = draw(&modal, g);
+            let place = place.expect("an XY plot with points says where it is");
+            assert!(!rows_of(&off).concat().contains("price:"));
+
+            modal.plot_focus = true;
+            let (on, _) = draw(&modal, g);
+            let rows = rows_of(&on);
+            let last = rows.last().unwrap().trim_end();
+            assert_eq!(
+                last, "date: 2024-03-04   price: 4.5   volume: 300",
+                "{rows:#?}"
+            );
+            let column = place.column(19_786.0);
+            let accent = theme.get("accent");
+            let marks = (place.graph.top()..place.graph.bottom())
+                .filter(|&y| on[(column, y)].symbol() == g.plot.axis.vertical)
+                .inspect(|&y| assert_eq!(on[(column, y)].fg, accent))
+                .count();
+            assert!(marks > 5, "{rows:#?}");
+
+            // A gap in a series reads as one.
+            modal.cursor_x = Some(19_787.0);
+            let (gap, _) = draw(&modal, g);
+            let rows = rows_of(&gap);
+            assert!(
+                rows.last()
+                    .unwrap()
+                    .contains(&format!("volume: {}", g.null)),
+                "{rows:#?}"
+            );
+        }
+    }
+
     /// A scatter of a few points marks each with a whole-cell dot; a dense one
     /// switches to braille, which keeps neighbors apart.
     #[test]
@@ -2279,6 +2555,7 @@ mod tests {
             let data = ChartRenderData::XY {
                 series: Some(&series),
                 breaks: None,
+                values: None,
                 x_axis_kind: XAxisTemporalKind::Numeric,
                 x_bounds: None,
                 numbers: PlotNumbers::default(),

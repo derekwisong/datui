@@ -264,9 +264,18 @@ On the Filters tab:
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Cycle the plot style, range or bar order, or adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>=</kbd> works as <kbd>+</kbd>, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size) |
 | type, <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Enter</kbd> or <kbd>Space</kbd> | In the picker: narrow, move, choose (on the Y series row <kbd>Space</kbd> toggles a series in or out; <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd> choose and move to the next or previous row) |
 | <kbd>g</kbd> | Grid on or off (XY, Histogram, Box Plot, KDE) |
+| <kbd>x</kbd> | XY: give the plot the keys for the crosshair, or hand them back to the option rows |
 | <kbd>e</kbd> | Export to PNG or EPS; needs the chart's required columns picked |
 | <kbd>t</kbd> | While following, draw again with the rows that arrived since |
 | <kbd>Esc</kbd> | Back to the table, or out of the open picker |
+
+While the plot has the keys:
+
+| Key | Action |
+|---|---|
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Move the crosshair to the next point, or the next column when points crowd |
+| <kbd>Home</kbd> <kbd>End</kbd> | The first or last point |
+| <kbd>x</kbd> <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> <kbd>Esc</kbd> | Back to the option rows |
 
 In the chart export dialog:
 
@@ -475,6 +484,7 @@ The mouse is a shortcut to the keys: it never does what no key does.
 | <kbd>Shift</kbd>+wheel, or a sideways wheel | <kbd>←</kbd> <kbd>→</kbd>: the column cursor, at the table only |
 | Click a cell | Puts the cursor on its row and column; on a header, its column |
 | Click a home row | Selects it |
+| Click a chart's plot | XY: the crosshair on the point nearest, as <kbd>x</kbd> and <kbd>←</kbd> <kbd>→</kbd> would |
 | Double-click | <kbd>Enter</kbd> on the row: inspect or drill at the table, open on the home screen |
 | Click a chip on the bottom bar | Presses its key |
 

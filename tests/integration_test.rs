@@ -454,6 +454,105 @@ fn test_chart_g_toggles_the_grid() {
     assert!(app.chart_modal.grid);
 }
 
+/// `x` gives the plot the keys: ←→ (h/l) step the crosshair from point to point,
+/// Home and End go to the ends, and the readout under the plot names each value.
+/// Tab, `x` or Esc hand the keys back to the option rows, where ←→ adjust the row
+/// again; the crosshair comes back where it was. A click on the plot puts it there.
+#[test]
+fn test_chart_crosshair_keys_and_click() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use datui::chart_modal::ChartType;
+    let (mut app, rx, tx) = open_chart_view("chart_crosshair_test.csv");
+    app.chart_modal.x_column = Some("x".to_string());
+    app.chart_modal.y_columns = vec!["y".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    // Wide enough for the bar to name x beside the rest.
+    let area = Rect::new(0, 0, 120, 30);
+    let draw = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect::<Vec<String>>()
+    };
+    let press = |app: &mut App, code: KeyCode| {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+    let screen = draw(&mut app);
+    assert!(screen.concat().contains("x  Cursor"), "{screen:#?}");
+    assert!(!app.chart_modal.plot_focus);
+
+    // In the middle of the plot, on x = 2 of 0..4.
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.chart_modal.plot_focus);
+    assert_eq!(app.chart_modal.cursor_x, Some(2.0));
+    let screen = draw(&mut app);
+    assert!(
+        screen.iter().any(|row| row.contains("x: 2   y: 6")),
+        "{screen:#?}"
+    );
+    for (key, at) in [
+        (KeyCode::Right, 3.0),
+        (KeyCode::Char('l'), 4.0),
+        (KeyCode::Right, 4.0),
+        (KeyCode::Home, 0.0),
+        (KeyCode::Left, 0.0),
+        (KeyCode::End, 4.0),
+        (KeyCode::Char('h'), 3.0),
+    ] {
+        press(&mut app, key);
+        assert_eq!(app.chart_modal.cursor_x, Some(at), "{key:?}");
+    }
+    // The arrows never reached the Style row.
+    assert_eq!(app.chart_modal.chart_type, ChartType::Line);
+    let screen = draw(&mut app);
+    assert!(
+        screen.iter().any(|row| row.contains("x: 3   y: 9")),
+        "{screen:#?}"
+    );
+
+    // Tab hands the keys back: → cycles the Style row again.
+    press(&mut app, KeyCode::Tab);
+    assert!(!app.chart_modal.plot_focus);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.chart_modal.chart_type, ChartType::Scatter);
+    assert_eq!(app.chart_modal.cursor_x, Some(3.0));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let screen = draw(&mut app);
+    assert!(!screen.concat().contains("y: 9"), "no readout: {screen:#?}");
+
+    // Back where it was; x hands the keys back as well, and so does Esc, which then
+    // leaves the chart as before.
+    press(&mut app, KeyCode::Char('x'));
+    assert_eq!(app.chart_modal.cursor_x, Some(3.0));
+    press(&mut app, KeyCode::Char('x'));
+    assert!(!app.chart_modal.plot_focus);
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.chart_modal.plot_focus);
+    assert_eq!(app.input_mode, InputMode::Chart);
+
+    // A click on the plot: the crosshair on the point drawn nearest it.
+    draw(&mut app);
+    let plot = app.chart_modal.plot.expect("the plot was drawn");
+    let mut pump = EventPump::new(app, tx, rx);
+    let column = plot.column(1.0);
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row: plot.graph.top() + 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert!(pump.terminal_mouse(click).unwrap());
+    assert!(pump.app.chart_modal.plot_focus);
+    assert_eq!(pump.app.chart_modal.cursor_x, Some(1.0));
+
+    press(&mut pump.app, KeyCode::Esc);
+    press(&mut pump.app, KeyCode::Esc);
+    assert_eq!(pump.app.input_mode, InputMode::Normal);
+}
+
 /// Columns are picked through the shared Picker: Space opens it on a column
 /// row, Enter chooses, and the choice is remembered on the row.
 #[test]

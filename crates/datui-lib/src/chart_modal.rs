@@ -208,6 +208,14 @@ pub struct ChartModal {
     /// Each column's unit, from a delimited spec's unit row: the axis titles name
     /// them. Set as the chart is drawn.
     pub units: Vec<(String, String)>,
+    /// The plot has the keys rather than the options (`x`): ←→ move the crosshair.
+    pub plot_focus: bool,
+    /// The x of the point the crosshair stands on, kept while the options have the
+    /// keys so it comes back where it was.
+    pub cursor_x: Option<f64>,
+    /// Where the XY plot was last drawn, for the crosshair and a click; `None` when
+    /// it has no points on screen.
+    pub plot: Option<crate::widgets::crosshair::PlotPlace>,
 }
 
 impl ChartModal {
@@ -250,12 +258,14 @@ impl ChartModal {
         }
         self.numeric_candidates = numeric_columns.to_vec();
         self.category_candidates = category_columns.to_vec();
+        self.plot_focus = false;
         if self.dataset == Some(dataset) {
             self.keep_existing_choices();
             self.focus = self.row_order()[0];
             return;
         }
         self.dataset = Some(dataset);
+        self.cursor_x = None;
         self.chart_kind = ChartKind::XY;
         self.chart_type = ChartType::Line;
         self.y_starts_at_zero = false;
@@ -290,6 +300,12 @@ impl ChartModal {
     pub fn close(&mut self) {
         self.active = false;
         self.picker = None;
+        self.plot_focus = false;
+    }
+
+    /// Whether the crosshair can take the keys: an XY plot with points on screen.
+    pub fn has_crosshair(&self) -> bool {
+        self.chart_kind == ChartKind::XY && self.plot.is_some()
     }
 
     /// Drop the choices whose columns the view no longer offers, and a Y series that
@@ -361,6 +377,9 @@ impl ChartModal {
     /// Switch the chart kind directly (the 1-6 keys). Focus lands on the new
     /// form's first row; a Picker open for the old form dies with it.
     pub fn set_chart_kind(&mut self, kind: ChartKind) {
+        if kind != ChartKind::XY {
+            self.plot_focus = false;
+        }
         self.chart_kind = kind;
         self.picker = None;
         self.focus = self.row_order()[0];

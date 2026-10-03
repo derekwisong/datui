@@ -125,8 +125,11 @@ on a time axis), about one label per 15 columns and one per 4 rows; labels
 never touch, and a crowded axis takes a coarser step before a shorter form.
 Tick marks and the grid are `PlotMarks` slots with ASCII twins. The grid is
 off until asked for, sits under the series in `chart_grid` (a shade under
-`dimmed`), and never takes a cell a series drew in; a legend names two or
-more series from the emptiest corner.
+`dimmed`, and a color rather than a grey so 16 colors keep it off the
+background), and never takes a cell a series drew in; a legend names two or
+more series from the emptiest corner. The XY crosshair (`x`, or a click) takes
+the keys from the options: its line is in the accent, under the series, and
+its readout sits under the plot.
 
 ## Shapes
 

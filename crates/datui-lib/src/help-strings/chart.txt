@@ -21,6 +21,12 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap, Bar.
                     label; bars that do not fit are counted
   g:                Grid on or off at the labeled ticks: XY, Histogram,
                     Box Plot and KDE. [chart] grid sets where it starts
+  x:                XY: the plot takes the keys, and a crosshair reads
+                    out x and every series' value under the plot.
+                    ← / → (h/l) step to the next point or column,
+                    Home/End go to the ends; x, Tab or Esc hand the
+                    keys back to the option rows. A click on the
+                    plot puts the crosshair there
   e:                Export the chart to PNG or EPS. Needs the chart's
                     required columns picked first
   t:                While following a file, draw again with the rows

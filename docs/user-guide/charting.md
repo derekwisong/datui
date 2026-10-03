@@ -53,12 +53,14 @@ labels where there is room.
 |---|---|
 | Numbers | One notation and precision per axis, in the table's digit grouping and decimal separator ([number format](../reference/settings.md#number-formatting)). Counts and integer columns tick in whole numbers |
 | Dates and times | Calendar boundaries: years, months, days, hours, minutes. A label names the unit that turns there: `2026` at a new year, `Apr` at a new month, `Mar 5` at a new day among hours, otherwise `12` or `06:00`. The first label also names the year |
-| Too narrow | Fewer ticks, then shorter labels (`12.3k`, `12,3k`); a time axis falls back to its ends |
+| Log scale | 1, 10, 100 and on, with 2 and 5 between when there is room, and 0 where the data starts there; one format, shortened to `1k`, `10k`, `1M` when narrow |
+| Too narrow | Fewer ticks, then shorter labels (`12.3k`, `12,3k`); a time axis falls back to its ends. When two labels are nearest the spacing and more fit, more: `0 2 4 6`, not `0 5` |
 
 | Feature | What it does |
 |---|---|
 | **Grid** | Dotted lines at the labeled ticks, under the series, in `chart_grid`. <kbd>g</kbd> or the **Grid** row toggles it; `grid` in the [`[chart]` section](../reference/settings.md#charts) sets where a new chart starts (off) |
 | **Legend** | Names the series when there are two or more, in the corner the series leave emptiest. The **Legend** row hides it |
+| **Crosshair** | XY: <kbd>x</kbd> gives the plot the keys. <kbd>←</kbd> <kbd>→</kbd> step a line down the plot from point to point (a column at a time where they crowd), <kbd>Home</kbd> <kbd>End</kbd> go to the ends, and under the plot a readout gives x and each series' value there: `date: 2020-04-30   high_temp: 67.2`. A series with no value there reads `∅`. <kbd>x</kbd>, <kbd>Tab</kbd> or <kbd>Esc</kbd> hand the keys back to the options. A click on the plot puts the crosshair there |
 | Marks | Lines in braille. A scatter marks each point with a dot, or in braille past one point per four cells. Histogram bars fill their bins |
 
 Without UTF-8 the grid is `.` and `:` and the tick marks `+`. Exports and the

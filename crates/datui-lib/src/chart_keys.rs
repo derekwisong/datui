@@ -4,7 +4,9 @@ use crate::chart_export::{ChartExportFormat, ChartExportRequest};
 use crate::chart_export_modal::ChartExportFocus;
 use crate::chart_modal::{ChartFocus, ChartKind};
 use crate::output_file::Overwrite;
+use crate::widgets::crosshair::{self, Move};
 use crate::{App, AppEvent, InputMode, home};
+use crate::{ChartPrepared, ChartRequest};
 use crossterm::event::{KeyCode, KeyEvent};
 
 impl App {
@@ -190,7 +192,42 @@ impl App {
             return None;
         }
 
+        // The plot has the keys: ←→ step the crosshair, Home and End go to the ends,
+        // and x, Tab, Shift+Tab or Esc hand the keys back to the option rows. The keys
+        // that act from anywhere still do; the rest would edit a row with no rail on
+        // it, so they do nothing.
+        if self.chart_modal.plot_focus {
+            let to = match event.code {
+                KeyCode::Left | KeyCode::Char('h') => Some(Move::Left),
+                KeyCode::Right | KeyCode::Char('l') => Some(Move::Right),
+                KeyCode::Home => Some(Move::First),
+                KeyCode::End => Some(Move::Last),
+                _ => None,
+            };
+            if let Some(to) = to {
+                if event.is_press() {
+                    self.move_crosshair(to);
+                }
+                return None;
+            }
+            match event.code {
+                KeyCode::Char('x') | KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
+                    if event.is_press() {
+                        self.chart_modal.plot_focus = false;
+                    }
+                    return None;
+                }
+                KeyCode::Char('1'..='6' | '[' | ']' | 'g' | 'e' | 't' | '?') => {}
+                _ => return None,
+            }
+        }
+
         match event.code {
+            // The crosshair: the plot takes the keys.
+            KeyCode::Char('x') if event.is_press() && self.chart_modal.has_crosshair() => {
+                self.chart_modal.plot_focus = true;
+                self.move_crosshair_to(None);
+            }
             // The chart kind switches from anywhere: 1-6 name a tab in
             // order, [ and ] cycle. Safe as plain keys — with the Picker
             // closed, nothing on this screen types.
@@ -291,4 +328,51 @@ impl App {
         }
         None
     }
+
+    /// The XY series on screen, before any log.
+    fn chart_xy_series(&self) -> Option<&Vec<Vec<(f64, f64)>>> {
+        let request = ChartRequest::from_modal(&self.chart_modal)?;
+        match self.chart_cache.prepared(&request)? {
+            ChartPrepared::XY(xy) => Some(&xy.series),
+            _ => None,
+        }
+    }
+
+    /// Step the crosshair, from where it stands or the middle of the plot.
+    fn move_crosshair(&mut self, to: Move) {
+        let (Some(place), Some(series)) = (self.chart_modal.plot, self.chart_xy_series()) else {
+            return;
+        };
+        let xs = crosshair::xs(series);
+        let from = self
+            .chart_modal
+            .cursor_x
+            .or_else(|| crosshair::at_column(&xs, &place, middle(place.graph)));
+        let to = from.and_then(|from| crosshair::step(&xs, &place, from, to));
+        if to.is_some() {
+            self.chart_modal.cursor_x = to;
+        }
+    }
+
+    /// Put the crosshair on the point nearest `column`, or with none, back on the
+    /// point it stood on (the nearest one now), or in the middle of the plot.
+    pub(crate) fn move_crosshair_to(&mut self, column: Option<u16>) {
+        let (Some(place), Some(series)) = (self.chart_modal.plot, self.chart_xy_series()) else {
+            return;
+        };
+        let xs = crosshair::xs(series);
+        let at = match (column, self.chart_modal.cursor_x) {
+            (Some(column), _) => crosshair::at_column(&xs, &place, column),
+            (None, Some(x)) => crosshair::nearest(&xs, x),
+            (None, None) => crosshair::at_column(&xs, &place, middle(place.graph)),
+        };
+        if at.is_some() {
+            self.chart_modal.cursor_x = at;
+        }
+    }
+}
+
+/// The middle column of `area`.
+fn middle(area: ratatui::layout::Rect) -> u16 {
+    area.left() + area.width / 2
 }

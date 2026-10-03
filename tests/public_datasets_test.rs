@@ -44,9 +44,10 @@ fn pump(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, done: impl Fn(&
     }
     assert!(
         done(app),
-        "timed out: {:?}, rows: {:?}",
+        "timed out: {:?}, rows: {:?}, pending: {}",
         app.home.status,
-        app.home.visible()
+        app.home.visible(),
+        common::home_pending(app)
     );
 }
 

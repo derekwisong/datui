@@ -9237,10 +9237,18 @@ pub(crate) fn hoist_partition_columns(
 /// read against.
 struct LocalHive {
     dir: PathBuf,
+    /// Every file, sorted, as listed.
+    files: Arc<Vec<PathBuf>>,
     partition_columns: Vec<String>,
-    /// The first file's partition values, which type the partition columns.
+    /// The first and newest files' partition values, which type the partition columns.
     values: Vec<(String, String)>,
     skipped: crate::schema_union::SkippedFiles,
+    /// What the listing says the directory is now, past one wave of files: what its
+    /// shape is kept against.
+    fingerprint: Option<String>,
+    /// The open's meter, which the count's reads are tallied into.
+    meter: Arc<crate::measurements::Meter>,
+    remembered: Option<crate::cache::CacheManager>,
 }
 
 /// A local dataset as some set of its footers describes it, and the scan that reads it.
@@ -9254,21 +9262,39 @@ struct LocalDataset {
     /// Each readable file's rows, one group a file, or empty unless every footer was
     /// read: the count, without a pass of its own.
     row_groups: Vec<Vec<usize>>,
-    /// The readable files and a scan of any of them, once every footer is known: a
-    /// page then reads only the files holding its rows (#659).
-    by_file: Option<crate::widgets::datatable::RemoteRead>,
+    /// The readable files, a scan of any of them, and their count: once every footer is
+    /// known a page reads only the files holding its rows (#659). The count reads only
+    /// the footers not yet read, once, and keeps the shape when they are all in.
+    by_file: crate::widgets::datatable::RemoteRead,
 }
 
 impl LocalHive {
-    /// What the footers at `read` say about the dataset of `files`. Shared by the open,
-    /// which may have read only the two ends, and the pass that reads the rest: the two
-    /// differ only in how much they know. `None` when nothing could be read.
+    /// The key the shape cache keeps this directory under.
+    fn key(&self) -> String {
+        self.dir.to_string_lossy().into_owned()
+    }
+
+    /// Keep the directory's footers, if every one was read and parsed.
+    fn remember(&self, read: &[usize], footers: &[Option<crate::schema_union::FileSchema>]) {
+        remember_local_shape(
+            self.remembered.as_ref(),
+            &self.key(),
+            self.fingerprint.as_deref(),
+            self.files.len(),
+            read,
+            footers,
+        );
+    }
+
+    /// What the footers at `read` say about the dataset. Shared by the open, which may
+    /// have read only the two ends, and the pass that reads the rest: the two differ
+    /// only in how much they know. `None` when nothing could be read.
     fn dataset(
-        &self,
-        files: &[PathBuf],
+        self: &Arc<Self>,
         read: &[usize],
         footers: &[Option<crate::schema_union::FileSchema>],
     ) -> Option<LocalDataset> {
+        let files = &self.files;
         let mut dataset = crate::schema_union::union_sampled(files.len(), read, footers);
         if dataset.schema.is_empty() {
             return None;
@@ -9335,15 +9361,30 @@ impl LocalHive {
             )
         };
         let lf = scan(&readable, &[]).ok()?;
-        // The rows are in the footers, so the counter answers without reading anything.
-        let by_file = (!row_groups.is_empty()).then(|| {
-            let counted = row_groups.clone();
-            crate::widgets::datatable::RemoteRead {
-                urls: readable.into_owned(),
-                scan,
-                count: Arc::new(move || Ok(counted.clone())),
+        let count: crate::widgets::datatable::FileCounter = if row_groups.is_empty() {
+            // Over the same files as the scan, as the cloud count is, so its answer
+            // fits the list beside it.
+            let counted: Vec<usize> = (0..files.len())
+                .filter(|index| dataset.unreadable.binary_search(index).is_err())
+                .collect();
+            if counted.len() != readable.len() {
+                return None;
             }
-        });
+            self.counter(crate::schema_union::FooterCount::new(
+                files.len(),
+                counted,
+                read.iter().copied().zip(footers.iter().cloned()),
+            ))
+        } else {
+            // The rows are in the footers, so the counter answers without reading.
+            let counted = row_groups.clone();
+            Arc::new(move || Ok(counted.clone()))
+        };
+        let by_file = crate::widgets::datatable::RemoteRead {
+            urls: readable.into_owned(),
+            scan,
+            count,
+        };
         let dataset = dataset
             .with_partition_layouts(&self.dir.to_string_lossy(), &paths)
             .with_skipped(self.skipped);
@@ -9356,13 +9397,28 @@ impl LocalHive {
             by_file,
         })
     }
+
+    /// The counter for a dataset whose open did not read every footer: it reads the
+    /// rest, once, and keeps the shape when they are all in, so a reopen reads none.
+    fn counter(
+        self: &Arc<Self>,
+        count: crate::schema_union::FooterCount<crate::schema_union::FileSchema>,
+    ) -> crate::widgets::datatable::FileCounter {
+        let (hive, count) = (self.clone(), Arc::new(count));
+        Arc::new(move || {
+            let counted = count.count(
+                |missing| DataTableState::footers_for_count(&hive.files, missing, &hive.meter),
+                |footer| vec![footer.rows],
+            );
+            if let Some(whole) = counted.whole.as_deref() {
+                let every: Vec<usize> = (0..hive.files.len()).collect();
+                hive.remember(&every, whole);
+            }
+            Ok(counted.row_groups)
+        })
+    }
 }
 
-/// Keep a local dataset's footers against its listing's fingerprint, if every one was
-/// read and parsed — the same two conditions the cloud cache keeps, for the same
-/// reasons (see `App::remember_dataset_shape`). No fingerprint, no keeping: a dataset
-/// within one wave is not worth it, and one whose files moved under the listing has
-/// none.
 /// A number for each walk the home search starts, so scorings of one are never taken
 /// for another's, even when the two walked the same place.
 fn next_search_epoch() -> u64 {
@@ -9370,6 +9426,11 @@ fn next_search_epoch() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Keep a local dataset's footers against its listing's fingerprint, if every one was
+/// read and parsed — the same two conditions the cloud cache keeps, for the same
+/// reasons (see `App::remember_dataset_shape`). No fingerprint, no keeping: a dataset
+/// within one wave is not worth it, and one whose files moved under the listing has
+/// none.
 fn remember_local_shape(
     cache: Option<&crate::cache::CacheManager>,
     key: &str,
@@ -9441,26 +9502,40 @@ impl App {
             return None;
         }
         let p = path.filter(|p| p.is_dir() && options.hive)?;
-        let (files, skipped) = DataTableState::list_parquet_dir(p, &report.meter);
-        let first = files.first()?;
-        let hive = LocalHive {
-            dir: p.to_path_buf(),
-            partition_columns: DataTableState::discover_hive_partition_columns(p),
-            values: DataTableState::hive_partition_values(p, first),
-            skipped,
-        };
-        let files = Arc::new(files);
-        let key = p.to_string_lossy().into_owned();
+        // The listing and the stat behind it are one wait, counted on the loading
+        // screen as the cloud listing is, and an abandoned open stops both.
+        let listing = report.progress.listing();
+        let (files, skipped) = DataTableState::list_parquet_dir(p, &report.meter, Some(&listing));
         // Up to a wave the footers cost one round of reads either way, so the dataset
         // opens whole and nothing is worth remembering.
         let wave = files.len() > crate::schema_union::FOOTERS_AT_ONCE;
         let stat_began = std::time::Instant::now();
         let stats = if wave {
-            DataTableState::stat_files(&files)
+            DataTableState::stat_files(&files, &report.progress)
         } else {
             Vec::new()
         };
         let stat_took = stat_began.elapsed();
+        drop(listing);
+        if report.progress.is_cancelled() {
+            return None;
+        }
+        let (first, newest) = (files.first()?, files.last()?);
+        // From the listing, as a cloud prefix's are: the newest file names the columns
+        // and the two ends type them, so the tree is the same table from a disk or a
+        // bucket, and no directory is read twice to find them.
+        let below = |file: &Path| -> String {
+            file.strip_prefix(p)
+                .unwrap_or(file)
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let (partition_columns, values) =
+            crate::schema_union::partitions_of_listing(&below(first), &below(newest));
+        let files = Arc::new(files);
+        let key = p.to_string_lossy().into_owned();
         // None when a file went between the listing and its stat: that listing
         // describes nothing worth keeping.
         let sizes: Option<Vec<u64>> = stats.iter().map(|s| s.map(|(size, _)| size)).collect();
@@ -9479,7 +9554,18 @@ impl App {
                 ))
             })
             .flatten();
-        let remembered = fingerprint
+        let hive = Arc::new(LocalHive {
+            dir: p.to_path_buf(),
+            files: files.clone(),
+            partition_columns,
+            values,
+            skipped,
+            fingerprint,
+            meter: report.meter.clone(),
+            remembered: report.remembered.clone(),
+        });
+        let remembered = hive
+            .fingerprint
             .as_ref()
             .zip(report.remembered.as_ref())
             .and_then(|(fingerprint, cache)| cache.dataset_shape(&key, fingerprint))
@@ -9503,14 +9589,7 @@ impl App {
             }
         };
         if !from_cache {
-            remember_local_shape(
-                report.remembered.as_ref(),
-                &key,
-                fingerprint.as_deref(),
-                files.len(),
-                &read,
-                &footers,
-            );
+            hive.remember(&read, &footers);
         }
         log::debug!(
             target: "datui",
@@ -9525,7 +9604,7 @@ impl App {
                 "read"
             }
         );
-        let opened = hive.dataset(&files, &read, &footers)?;
+        let opened = hive.dataset(&read, &footers)?;
         let state = DataTableState::from_schema_and_lazyframe(
             opened.dataset.schema.clone(),
             opened.lf,
@@ -9534,7 +9613,7 @@ impl App {
         )
         .ok()?;
         let mut facts = OpenFacts {
-            remote_files: opened.by_file.map(Into::into),
+            remote_files: Some(opened.by_file.into()),
             // The footers just read say how wide each column is, as the cloud object's
             // do: a binary column's width is known nowhere else.
             column_bytes: crate::schema_union::column_bytes_per_row(&footers),
@@ -9548,15 +9627,14 @@ impl App {
             ..Default::default()
         };
         if staged {
-            // The meter the open writes into: what the footers cost is both passes.
-            let (meter, remembered) = (report.meter.clone(), report.remembered.clone());
             let ends = read;
             facts.footers_pending = Some(Arc::new(move |progress: &Arc<_>| {
                 let read = crate::schema_union::footers_to_read(files.len());
                 // The ends were read by the open; a footer is read once.
                 let rest: Vec<usize> = read.iter().copied().filter(|i| !ends.contains(i)).collect();
                 let mut fresh =
-                    DataTableState::read_local_footers(&files, &rest, progress, &meter).into_iter();
+                    DataTableState::read_local_footers(&files, &rest, progress, &hive.meter)
+                        .into_iter();
                 if progress.is_cancelled() {
                     return None;
                 }
@@ -9567,22 +9645,17 @@ impl App {
                         None => fresh.next().flatten(),
                     })
                     .collect();
-                remember_local_shape(
-                    remembered.as_ref(),
-                    &key,
-                    fingerprint.as_deref(),
-                    files.len(),
-                    &read,
-                    &footers,
-                );
-                let whole = hive.dataset(&files, &read, &footers)?;
+                hive.remember(&read, &footers);
+                // Past `MAX_FOOTER_READS` this read a sample, and the dataset has no
+                // row groups until its count reads the rest — only the rest.
+                let whole = hive.dataset(&read, &footers)?;
                 Some(crate::widgets::datatable::FootersFound {
                     dataset: whole.dataset,
                     lf: whole.lf,
                     file_rows: whole.file_rows,
                     files: whole.paths,
                     row_groups: whole.row_groups,
-                    remote: whole.by_file,
+                    remote: Some(whole.by_file),
                 })
             }));
         }
@@ -10401,7 +10474,9 @@ impl App {
         // here because a stat on a mount that has stopped answering hangs its thread.
         // A directory read as another format counts its rows by a scan: its footers
         // are not Parquet's.
+        // Not for one read by file: its counter reads only the footers the open did not.
         if options.hive
+            && facts.remote_files.is_none()
             && options.format.is_none_or(|f| f == FileFormat::Parquet)
             && let Some(dir) = path.filter(|p| !source::is_remote_url(p) && p.is_dir())
         {
@@ -10623,6 +10698,10 @@ impl App {
                 ..facts
             };
             return Ok((state, facts, "one-file (local)".to_string()));
+        }
+        // An open abandoned mid-listing is not one for the routes below to scan whole.
+        if report.progress.is_cancelled() {
+            return Err(color_eyre::eyre::eyre!("cancelled"));
         }
         #[cfg(feature = "cloud")]
         let cloud_hive_attempt = attempt(report);

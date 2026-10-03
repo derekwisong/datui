@@ -5349,7 +5349,8 @@ fn test_hive_dir_loads_and_counts_via_footers() {
 }
 
 /// The open's worker, not the install, finds out that a hive path is a directory, so
-/// the dataset arrives already counting by its footers (#457).
+/// the dataset arrives already counting by its footers (#457). Through the scan route:
+/// the footer-union route counts by the files it listed instead (#710).
 #[test]
 fn test_hive_dir_is_known_from_the_open() {
     let dir = tempfile::tempdir().unwrap();
@@ -5364,6 +5365,7 @@ fn test_hive_dir_is_known_from_the_open() {
     let mut app = App::new(tx.clone(), common::test_runtime());
     let opts = OpenOptions {
         hive: true,
+        single_spine_schema: false,
         ..OpenOptions::default()
     };
     pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts);
@@ -5557,6 +5559,59 @@ fn test_a_local_hive_reopened_unchanged_reads_no_footers() {
         Some(total + 1),
         "and counts the row that was added"
     );
+}
+
+/// A local Hive directory past the footer sample (#710): the pass behind the open reads
+/// a sample, the count reads only the footers it skipped, each footer is read once in
+/// all, the shape is kept, and a reopen reads none. The files are one small Parquet
+/// file written 25,000 times.
+#[test]
+fn test_a_local_hive_past_the_sample_reads_each_footer_once_and_reopens_reading_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = datui::schema_union::MAX_FOOTER_READS + 5_000;
+    let mut bytes = Vec::new();
+    ParquetWriter::new(&mut bytes)
+        .finish(&mut df!("v" => [1i64, 2, 3]).unwrap())
+        .unwrap();
+    for i in 0..files {
+        let sub = dir.path().join(format!("part={:02}", i / 1_000));
+        if i % 1_000 == 0 {
+            std::fs::create_dir_all(&sub).unwrap();
+        }
+        std::fs::write(sub.join(format!("f{i:05}.parquet")), &bytes).unwrap();
+    }
+    let (reads, _counting) = count_footer_reads(dir.path());
+
+    let (mut app, rx, _tx) = open_local_dataset_with_channel(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows_if_valid(), Some(files * 3), "counted");
+    assert_eq!(
+        state.schema().get("part"),
+        Some(&polars::prelude::DataType::Int64),
+        "with its partition column"
+    );
+    {
+        let reads = reads.lock().unwrap();
+        assert_eq!(reads.len(), files, "every footer was read");
+        assert!(
+            reads.values().all(|&n| n == 1),
+            "each once: the count read only what the sample skipped"
+        );
+    }
+    reads.lock().unwrap().clear();
+
+    let opts = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        reads.lock().unwrap().is_empty(),
+        "the shape was kept, so a reopen reads no footer"
+    );
+    assert!(state.footers_pending().is_none(), "and opens whole");
+    assert_eq!(state.num_rows_if_valid(), Some(files * 3), "and counted");
 }
 
 /// Which of `files` are opened, by anyone, from when it is made: the kernel's count

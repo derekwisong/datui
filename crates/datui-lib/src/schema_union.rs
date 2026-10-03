@@ -55,6 +55,16 @@ impl Listing<'_> {
     pub fn counter(&self) -> std::sync::Arc<AtomicUsize> {
         self.0.listed.clone()
     }
+
+    /// `n` more objects listed at once: a directory's worth.
+    pub fn add(&self, n: usize) {
+        self.0.listed.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// The load was abandoned: the listing stops.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
 }
 
 impl Drop for Listing<'_> {
@@ -1804,6 +1814,165 @@ pub fn with_partition_columns(
         }
     }
     merged
+}
+
+/// Partition column names from one file's path, in path order: every `key=value`
+/// segment, each key once.
+pub fn partition_columns_of_key(key: &str) -> Vec<String> {
+    let mut columns = Vec::new();
+    let mut seen = HashSet::new();
+    for segment in key.split('/') {
+        if let Some((name, _)) = segment.split_once('=')
+            && !name.is_empty()
+            && seen.insert(name.to_string())
+        {
+            columns.push(name.to_string());
+        }
+    }
+    columns
+}
+
+/// A listed dataset's partition columns and the values that type them, from its first
+/// and newest files' keys, `/`-separated. The newest names the columns, since a key
+/// added later is in it; both give values. Local directories and cloud prefixes derive
+/// them here alike, so a tree is the same table from either.
+pub fn partitions_of_listing(first: &str, newest: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let values = [first, newest]
+        .iter()
+        .flat_map(|key| key.split('/'))
+        .filter_map(|segment| segment.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    (partition_columns_of_key(newest), values)
+}
+
+/// A dataset's row count from its footers, each read once.
+///
+/// It starts from the footers the open already read — the two ends, or a sample — and
+/// reads only the rest. Once every file's footer is in, the whole set is handed back
+/// once, for the shape cache, so a reopen reads none. Shared by local directories and
+/// cloud prefixes; `F` is the route's footer.
+pub struct FooterCount<F> {
+    files: usize,
+    /// The files the count answers for, as indices, in order: those whose footer the
+    /// open could read.
+    counted: Vec<usize>,
+    /// Every file's footer, where read. Emptied once the count is whole.
+    footers: std::sync::Mutex<Vec<Option<F>>>,
+}
+
+/// What a count found.
+pub struct Counted<F> {
+    /// The rows in each row group of each counted file, in order.
+    pub row_groups: Vec<Vec<usize>>,
+    /// Every file's footer, the first time all of them are in.
+    pub whole: Option<Vec<Option<F>>>,
+}
+
+impl<F: Clone> FooterCount<F> {
+    /// A count of `counted` among `files` files, starting from the footers `known`
+    /// already holds, given as each one's index.
+    pub fn new(
+        files: usize,
+        counted: Vec<usize>,
+        known: impl IntoIterator<Item = (usize, Option<F>)>,
+    ) -> Self {
+        let mut footers = vec![None; files];
+        for (index, footer) in known {
+            if let Some(slot) = footers.get_mut(index) {
+                *slot = footer;
+            }
+        }
+        Self {
+            files,
+            counted,
+            footers: std::sync::Mutex::new(footers),
+        }
+    }
+
+    /// Count, reading the footers not yet in with `read`, which answers in the order it
+    /// is asked. One that would not read before is tried again: a read can fail for a
+    /// moment's trouble as well as a broken file. Holds the footers while it reads, so
+    /// two counts at once do not both read the same ones.
+    pub fn count(
+        &self,
+        read: impl FnOnce(&[usize]) -> Vec<Option<F>>,
+        row_groups: impl Fn(&F) -> Vec<usize>,
+    ) -> Counted<F> {
+        let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
+        let missing = self.missing(&mut footers);
+        let read = if missing.is_empty() {
+            Vec::new()
+        } else {
+            read(&missing)
+        };
+        self.settle(&mut footers, missing, read, row_groups)
+    }
+
+    /// The footers a count has yet to read, for a caller that reads them where it
+    /// cannot hold a lock (across an `await`) and so serializes its counts itself.
+    /// [`Self::settle_now`] takes what it read.
+    pub fn missing_now(&self) -> Vec<usize> {
+        let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
+        self.missing(&mut footers)
+    }
+
+    /// The count, given `read`, the footers at `missing` from [`Self::missing_now`].
+    pub fn settle_now(
+        &self,
+        missing: Vec<usize>,
+        read: Vec<Option<F>>,
+        row_groups: impl Fn(&F) -> Vec<usize>,
+    ) -> Counted<F> {
+        let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
+        self.settle(&mut footers, missing, read, row_groups)
+    }
+
+    fn missing(&self, footers: &mut Vec<Option<F>>) -> Vec<usize> {
+        if footers.is_empty() {
+            // Already whole once; asked again, read again.
+            *footers = vec![None; self.files];
+        }
+        self.counted
+            .iter()
+            .copied()
+            .filter(|&index| footers[index].is_none())
+            .collect()
+    }
+
+    fn settle(
+        &self,
+        footers: &mut Vec<Option<F>>,
+        missing: Vec<usize>,
+        read: Vec<Option<F>>,
+        row_groups: impl Fn(&F) -> Vec<usize>,
+    ) -> Counted<F> {
+        if footers.is_empty() {
+            *footers = vec![None; self.files];
+        }
+        for (index, footer) in missing.into_iter().zip(read) {
+            footers[index] = footer;
+        }
+        let groups: Vec<Vec<usize>> = self
+            .counted
+            .iter()
+            .map(|&index| footers[index].as_ref().map(&row_groups).unwrap_or_default())
+            .collect();
+        let whole = if footers.iter().all(Option::is_some) {
+            Some(std::mem::take(footers))
+        } else {
+            if self.counted.iter().all(|&index| footers[index].is_some()) {
+                // Counted, but a file the open could not read stays unread, so there
+                // is nothing whole to keep and nothing more to hold on to.
+                footers.clear();
+            }
+            None
+        };
+        Counted {
+            row_groups: groups,
+            whole,
+        }
+    }
 }
 
 /// The column the scan writes each row's position in the dataset into, so a cell can be

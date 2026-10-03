@@ -7275,4 +7275,40 @@ mod first_rows {
         assert_eq!(app.reads.previews, before.previews);
         draw(&mut app);
     }
+
+    /// At 200×50 the list keeps a reading measure: a row's size sits near its name,
+    /// and the pane takes the rest of the width (#547 M8, D13).
+    #[test]
+    fn the_list_keeps_its_measure_at_200_by_50() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, rx, _file) = into_small(tmp.path());
+        wait_for_rows(&mut app, &rx, 200, 50);
+        let screen = render(&mut app, 200, 50);
+        let row = screen
+            .iter()
+            .find(|line| line.contains("people.csv") && line.contains(" now"))
+            .unwrap_or_else(|| panic!("the file's row: {screen:#?}"));
+        let chars: Vec<char> = row.chars().collect();
+        let name_end = row
+            .find("people.csv")
+            .map(|i| row[..i].chars().count() + 10)
+            .unwrap();
+        let size_at = row
+            .find(" B ")
+            .or_else(|| row.find(" KB "))
+            .map(|i| row[..i].chars().count())
+            .unwrap_or_else(|| panic!("the size on the row: {row:?}"));
+        assert!(
+            size_at - name_end <= 60,
+            "size {size_at} is {} columns from the name: {row:?}",
+            size_at - name_end
+        );
+        assert!(chars.len() == 200);
+        // The pane starts where the list ends and shows the rows.
+        let rows_at = screen
+            .iter()
+            .find_map(|line| line.find("ROWS").map(|i| line[..i].chars().count()))
+            .expect("ROWS in the pane");
+        assert!(rows_at < 100, "the pane takes the width: ROWS at {rows_at}");
+    }
 }

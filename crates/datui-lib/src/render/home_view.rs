@@ -129,12 +129,18 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
 
     let show_preview = padded.width >= PREVIEW_MIN_WIDTH;
     if show_preview {
+        // The list keeps a reading measure on a wide screen, so a row's size and age sit
+        // near its name; the pane, which has rows to show, takes the rest (#547 M8).
+        let list_w = padded
+            .width
+            .saturating_sub(3 + PREVIEW_WIDTH)
+            .min(LIST_MAX_WIDTH);
         let body = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Fill(1),
+                Constraint::Length(list_w),
                 Constraint::Length(3), // the rule and its gutters
-                Constraint::Length(PREVIEW_WIDTH),
+                Constraint::Fill(1),
             ])
             .split(rows[2]);
         render_list(body[0], buf, app, ctx);
@@ -145,6 +151,10 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
         render_rows_strip(rows[2], used, buf, app, ctx, area.height);
     }
 }
+
+/// The widest the list gets. Past it the facts on the right of a row drift away from
+/// its name, and the pane has better use for the columns.
+const LIST_MAX_WIDTH: u16 = 84;
 
 /// The fewest rows the bottom strip is drawn in: its heading, the column names and
 /// two rows.

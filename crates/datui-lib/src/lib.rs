@@ -1,6 +1,5 @@
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use polars::datatypes::AnyValue;
 use polars::datatypes::DataType;
 #[cfg(feature = "cloud")]
 use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
@@ -44,6 +43,7 @@ pub mod avro_types;
 pub mod aws_profiles;
 #[cfg(feature = "cloud")]
 pub mod azure;
+mod background;
 pub mod cache;
 pub mod candump;
 pub mod canonical;
@@ -178,6 +178,7 @@ pub use config::{
 };
 
 use analysis_modal::{AnalysisModal, AnalysisProgress};
+use background::{InflightCollect, LenCount, OwedAnswer, OwedCount};
 use chart_export::{
     BoxPlotExportBounds, ChartExportBounds, ChartExportFormat, ChartExportRequest,
     ChartExportSeries, write_bar_eps, write_bar_png, write_box_plot_eps, write_box_plot_png,
@@ -2187,90 +2188,6 @@ pub(crate) struct ChartCacheXY {
     pub(crate) rows: chart_data::RowsRead,
 }
 
-/// The buffer collect in flight: what it will fill, and for which data.
-///
-/// The first frame after a load sets `visible_rows` and asks for a recollect while the
-/// pre-frame collect is still running; on an object store that restarted the same
-/// row-group download. A collect that already covers the view is left to land instead,
-/// provided nothing has moved underneath it: its job must still be current, and the
-/// data the one it was spawned for (`len_generation` changes with every change to
-/// `lf`, so a filter applied while it runs plans a fresh collect).
-///
-/// The payload of [`Job::Rows`]. Whether anyone waits on it is the job's keys: a
-/// load-ahead starts with nobody waiting, and a scroll that finds its rows already on
-/// the way waits on it from then.
-#[derive(Debug, Clone, Copy)]
-struct InflightCollect {
-    /// When the request went out, and how many of the dataset's files it will read, for
-    /// the Last page measurement. `files` is `None` where Polars was handed the whole
-    /// scan and reads what it decides to.
-    began: std::time::Instant,
-    files: Option<usize>,
-    dataset: u64,
-    /// The columns it reads ([`Self::columns_of`]). A new column order is the same
-    /// frame read through another projection, so these rows do not serve it.
-    columns: u64,
-    start: usize,
-    end: usize,
-}
-
-impl InflightCollect {
-    /// The columns a read of `state` projects, as a hash: kept `Copy`.
-    fn columns_of(state: &DataTableState) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        state.get_column_order().hash(&mut hasher);
-        hasher.finish()
-    }
-
-    /// A read of rows `start..end` of no data in particular, for tests.
-    #[cfg(test)]
-    fn for_tests(start: usize, end: usize) -> Self {
-        Self {
-            began: std::time::Instant::now(),
-            files: None,
-            dataset: 0,
-            columns: 0,
-            start,
-            end,
-        }
-    }
-
-    fn covers(&self, state: &DataTableState) -> bool {
-        // The view ends at the data when there is less than a screen of it.
-        let bound = state.num_rows_if_valid().unwrap_or(usize::MAX);
-        let view_end = (state.start_row() + state.visible_rows).min(bound);
-        // A row group being stitched on to the buffer covers the view with it.
-        let (mut start, mut end) = (self.start, self.end);
-        let (held_start, held_end) = (state.buffered_start(), state.buffered_end());
-        if state.stitches_buffer() && (start == held_end || end == held_start) {
-            start = start.min(held_start);
-            end = end.max(held_end);
-        }
-        self.dataset == state.len_generation()
-            && self.columns == Self::columns_of(state)
-            && start <= state.start_row()
-            && view_end <= end
-    }
-}
-
-/// The exact row count of a frame, to run off the UI thread: the footer sum for a
-/// pristine local Parquet hive directory or remote dataset of many files, otherwise
-/// `len()`. Carries the `len_generation` it was spawned under, so a result for data since
-/// changed is dropped.
-struct LenCount {
-    len_generation: u64,
-    count_dir: Option<PathBuf>,
-    files: Option<crate::widgets::datatable::FileCounter>,
-    /// The view's own count, from a source that runs the view (a SQLite table).
-    counter: Option<crate::pushdown::Counter>,
-    lf: LazyFrame,
-    streaming: bool,
-    /// The open's meter. Counting a local directory re-reads every footer, which costs
-    /// what the open's own pass cost and is tallied with it.
-    meter: Arc<crate::measurements::Meter>,
-}
-
 /// What a cloud open was pointed at: the URL as the user gave it, the prefix to list,
 /// and the glob to keep, where they named one.
 ///
@@ -2285,211 +2202,6 @@ struct CloudTarget<'a> {
     /// The glob the user named, where they named one. The listing keeps only the keys
     /// it matches, so everything downstream sees a plain list of files.
     pattern: Option<&'a globset::GlobMatcher>,
-}
-
-/// A count, and for a remote dataset of many files the row groups it was summed from.
-struct Counted {
-    rows: usize,
-    file_row_groups: Option<Vec<Vec<usize>>>,
-}
-
-impl From<usize> for Counted {
-    fn from(rows: usize) -> Self {
-        Counted {
-            rows,
-            file_row_groups: None,
-        }
-    }
-}
-
-impl LenCount {
-    fn for_state(state: &DataTableState) -> Self {
-        Self {
-            len_generation: state.len_generation(),
-            count_dir: state.parquet_count_dir(),
-            files: state.remote_files_counter(),
-            counter: state.source_counter(),
-            meter: state.measurements().clone(),
-            lf: state.lf_clone(),
-            streaming: state.polars_streaming_enabled(),
-        }
-    }
-
-    /// Whether this count reads only footers, and so can run beside a buffer read
-    /// rather than waiting for it.
-    fn reads_footers(&self) -> bool {
-        self.files.is_some() || self.count_dir.is_some()
-    }
-
-    /// Count the rows. Blocks; `Err` when the count could not be taken.
-    fn run(&self) -> Result<Counted, ()> {
-        let kind = if self.reads_footers() {
-            "footers"
-        } else {
-            "scan"
-        };
-        let began = std::time::Instant::now();
-        log::debug!(target: "datui", "row count {} ({kind}): started", self.len_generation);
-        let counted = self.count();
-        match &counted {
-            Ok(counted) => log::debug!(
-                target: "datui",
-                "row count {} ({kind}): {} rows in {:.1?}",
-                self.len_generation,
-                counted.rows,
-                began.elapsed()
-            ),
-            Err(()) => log::debug!(
-                target: "datui",
-                "row count {} ({kind}): failed after {:.1?}",
-                self.len_generation,
-                began.elapsed()
-            ),
-        }
-        counted
-    }
-
-    fn count(&self) -> Result<Counted, ()> {
-        if let Some(counter) = &self.counter {
-            return counter()
-                .map(Counted::from)
-                .map_err(|e| log::warn!(target: "datui", "row count failed: {e}"));
-        }
-        // A dataset's footers, many at once. Should one not read, the scan counts itself.
-        if let Some(count) = &self.files
-            && let Ok(groups) = count()
-        {
-            return Ok(Counted {
-                rows: groups.iter().flatten().sum(),
-                file_row_groups: Some(groups),
-            });
-        }
-        match &self.count_dir {
-            Some(dir) => DataTableState::count_rows_from_parquet_dir(dir, &self.meter)
-                .map(Counted::from)
-                .map_err(|e| log::warn!(target: "datui", "row count failed: {e:#}")),
-            None => {
-                match crate::statistics::collect_lazy(
-                    crate::widgets::datatable::row_count_lf(&self.lf),
-                    self.streaming,
-                ) {
-                    Ok(df) => Ok(match df.get(0) {
-                        Some(col) => match col.first() {
-                            Some(AnyValue::UInt64(n)) => *n as usize,
-                            _ => 0,
-                        },
-                        None => 0,
-                    }
-                    .into()),
-                    Err(e) => {
-                        log::warn!(target: "datui", "row count failed: {e}");
-                        Err(())
-                    }
-                }
-            }
-        }
-    }
-
-    /// The count once a buffer collect of `requested` rows from `start` has returned
-    /// `returned` of them. A short read that began inside the data — at its top, or
-    /// finding at least a row — ran off its end, which names the total without a pass
-    /// over it. A full read, or a slice deep in a frame that found nothing and may lie
-    /// past the data entirely, leaves the count to `run`.
-    fn after_collect(
-        &self,
-        start: usize,
-        returned: usize,
-        requested: usize,
-    ) -> Result<Counted, ()> {
-        if returned < requested && (start == 0 || returned > 0) {
-            Ok((start + returned).into())
-        } else {
-            self.run()
-        }
-    }
-
-    /// Report the count. A failure leaves the total provisional and allows a retry on a
-    /// later interaction; the buffer paint is unaffected either way.
-    fn send(&self, counted: Result<Counted, ()>, tx: &Sender<AppEvent>) {
-        let _ = tx.send(match counted {
-            Ok(counted) => AppEvent::BackgroundLenReady {
-                len_generation: self.len_generation,
-                num_rows: counted.rows,
-                file_row_groups: counted.file_row_groups,
-            },
-            Err(()) => AppEvent::BackgroundLenFailed {
-                len_generation: self.len_generation,
-            },
-        });
-    }
-}
-
-/// A count that has been started, and so owes `len_count_inflight` an answer.
-///
-/// Answered however its worker ends. A count that panics, or a collect it rides in that
-/// fails or panics before reaching it, reports itself failed: unanswered, the marker
-/// would stand for the session, with a spinner where the row count goes and `End`
-/// waiting on nothing.
-struct OwedCount {
-    job: Option<LenCount>,
-    tx: Sender<AppEvent>,
-}
-
-impl OwedCount {
-    fn new(job: LenCount, tx: Sender<AppEvent>) -> Self {
-        Self { job: Some(job), tx }
-    }
-
-    /// Count with `count` and report it, a panic as a failure.
-    fn answer(mut self, count: impl FnOnce(&LenCount) -> Result<Counted, ()>) {
-        if let Some(job) = self.job.take() {
-            let counted = logging::catch_panic(|| count(&job)).unwrap_or(Err(()));
-            job.send(counted, &self.tx);
-        }
-    }
-}
-
-impl Drop for OwedCount {
-    fn drop(&mut self) {
-        if let Some(job) = self.job.take() {
-            job.send(Err(()), &self.tx);
-        }
-    }
-}
-
-/// The answer a home-screen worker owes whatever marks it in flight, sent in its place
-/// if the worker panics before sending its own. Unanswered, the marker stands for the
-/// session: a listing that says "Looking..." over nothing, a search that never ends,
-/// a root never probed again.
-///
-/// Not a [`jobs::Jobs`] job: these are keyed by place and `home_generation`, take no
-/// lease and hold no keys. The panic itself is left to the hook, which logs it and has
-/// `flash_background_panic` say so.
-struct OwedAnswer {
-    tx: Sender<AppEvent>,
-    instead: Option<AppEvent>,
-    #[cfg(test)]
-    dies: bool,
-}
-
-impl OwedAnswer {
-    /// Run the worker, which sends its own answer.
-    fn run(mut self, work: impl FnOnce()) {
-        #[cfg(test)]
-        if self.dies {
-            panic!("worker died");
-        }
-        work();
-        self.instead = None;
-    }
-}
-
-impl Drop for OwedAnswer {
-    fn drop(&mut self) {
-        if let Some(instead) = self.instead.take() {
-            let _ = self.tx.send(instead);
-        }
-    }
 }
 
 /// Why Data Quality's Run did not start: a cancelled run has not exited yet. Said

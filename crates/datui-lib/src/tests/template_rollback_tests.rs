@@ -1,5 +1,6 @@
 use super::chart_prepare_tests::open;
 use crate::*;
+use polars::datatypes::AnyValue;
 use std::sync::mpsc;
 
 /// An app with `long.csv` open, `id,key,val` over five ids, and views of its own.

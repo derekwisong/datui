@@ -1,3 +1,4 @@
+use crate::background::Counted;
 use crate::*;
 use std::path::Path;
 

@@ -1679,8 +1679,11 @@ fn test_the_dataset_index_is_disposable() {
         "a missing index reads as no knowledge, not an error"
     );
 
-    fs::create_dir_all(tmp.path()).unwrap();
-    fs::write(tmp.path().join("datasets.json"), b"{ not json").unwrap();
+    cache.record_dataset_facts(&[("/d".into(), Default::default())]);
+    assert_eq!(cache.load_dataset_facts().len(), 1);
+    for entry in fs::read_dir(tmp.path().join("facts")).unwrap().flatten() {
+        fs::write(entry.path(), b"{ not json").unwrap();
+    }
     assert!(
         cache.load_dataset_facts().is_empty(),
         "a corrupt index reads as no knowledge, not a crash"

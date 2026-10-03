@@ -4,6 +4,10 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod store;
+pub(crate) use store::{Kind, Store};
+pub use store::{StableHasher, stable_hash};
+
 /// Manages cache directory and cache file operations
 #[derive(Clone, Debug)]
 pub struct CacheManager {
@@ -78,41 +82,32 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Clear all registered cache files
-    /// Note: Views are stored in config directory, not cache, so they are not cleared here.
-    /// Note: History files (e.g., `{id}_history.txt`) are dynamic and excluded from `clear_all()`.
-    /// They can be cleared individually via `clear_file()` if needed.
+    /// Remove every cache kind's directory and every line-file list (recents,
+    /// histories, hidden sources, remembered places).
+    ///
+    /// Nothing else: lock files may be held by another instance, the log is not a
+    /// cache, and Data Quality's copies belong to the sessions holding them. Views live
+    /// in the config directory.
     pub fn clear_all(&self) -> Result<()> {
-        // Everything datui writes here, not a fixed list: the list rotted — it held
-        // two names while the directory grew histories, measurements, cloud sources
-        // and the hidden-source file, so `datui cache clear` kept most of the cache and
-        // broke the documented way to unhide a source. Files only, by the extensions
-        // datui writes, so a stray directory or foreign file is left alone.
-        match fs::remove_dir_all(self.dataset_shape_dir()) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                log::warn!(target: "datui", "remove the dataset shapes: {e}");
+        for dir in [Shapes::DIR, Facts::DIR, CloudListings::DIR] {
+            match fs::remove_dir_all(self.cache_file(dir)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    log::warn!(target: "datui", "remove the {dir} cache: {e}");
+                }
+                _ => {}
             }
-            _ => {}
         }
         let Ok(entries) = fs::read_dir(&self.cache_dir) else {
             return Ok(());
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let log = crate::logging::LOG_FILE_NAME;
-            let ours = path.is_file()
-                && (matches!(
-                    path.extension().and_then(|e| e.to_str()),
-                    Some("json" | "txt" | "lock")
-                ) || path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n == log || n.strip_prefix(log) == Some(".1")));
-            if ours {
+            // The list, and any temp file a writer of it left.
+            let list = entry.file_name().to_string_lossy().contains(HISTORY_SUFFIX);
+            if list && path.is_file() {
                 fs::remove_file(&path).or_log(&format!("remove {}", path.display()));
             }
         }
-
         Ok(())
     }
 
@@ -122,7 +117,7 @@ impl CacheManager {
     /// would be written back by the next push, and every entry would be gone. A line
     /// that is not UTF-8 is skipped alone, so one bad byte costs one entry.
     pub fn load_history_file(&self, history_id: &str) -> Result<Vec<String>> {
-        let history_file = self.cache_file(&format!("{}_history.txt", history_id));
+        let history_file = self.cache_file(&format!("{history_id}{HISTORY_SUFFIX}"));
 
         let bytes = match fs::read(&history_file) {
             Ok(bytes) => bytes,
@@ -198,7 +193,7 @@ impl CacheManager {
     /// Save history to a history file
     pub fn save_history_file(&self, history_id: &str, history: &[String]) -> Result<()> {
         self.ensure_cache_dir()?;
-        let history_file = self.cache_file(&format!("{}_history.txt", history_id));
+        let history_file = self.cache_file(&format!("{history_id}{HISTORY_SUFFIX}"));
 
         // Oldest first, but we keep the most recent entries.
         let mut text = String::new();
@@ -213,27 +208,17 @@ impl CacheManager {
     }
 }
 
-/// A JSON cache file. Missing is empty; unreadable or malformed is logged and empty,
-/// since a cache that cannot be read must never be worse than not having it.
-fn read_json_cache<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return T::default(),
-        Err(e) => {
-            log::warn!(target: "datui", "read {}: {e}", path.display());
-            return T::default();
-        }
-    };
-    serde_json::from_str(&text).unwrap_or_else(|e| {
-        log::warn!(target: "datui", "{} is malformed, ignoring it: {e}", path.display());
-        T::default()
-    })
-}
+/// What a line-file list's name ends in: `recents_history.txt`.
+const HISTORY_SUFFIX: &str = "_history.txt";
 
-/// Write `bytes` to `path` through a sibling temp file renamed over it, so a reader,
-/// another instance or a crash mid-write sees the old file or the new one, never part
-/// of either. The temp name ends in `.tmp`, so nothing that lists `.json` or `.txt`
-/// files ever sees it.
+/// Write `bytes` to `path` through a sibling temp file, synced, then renamed over it,
+/// so a reader, another instance or a crash mid-write sees the old file or the new
+/// one, never part of either. Every write into the cache, and every view, goes
+/// through here.
+///
+/// The temp name is unique to the write: the process id, then a counter shared by
+/// every thread of the process. It ends in `.tmp`, which nothing reads and a cache
+/// sweep removes once it is stale.
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -341,10 +326,24 @@ impl CacheManager {
     /// This is the *only* thing datui remembers about your data between runs. It is
     /// a convenience, not a record: deleting it loses nothing but ordering.
     pub fn load_recents(&self) -> Vec<std::path::PathBuf> {
-        self.load_history_or_log("recents")
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .collect()
+        self.load_recents_with_visits().0
+    }
+
+    /// Recents, most recent first, and how often and how lately each was opened, by
+    /// its path as recorded: one read of the list.
+    pub fn load_recents_with_visits(
+        &self,
+    ) -> (Vec<PathBuf>, std::collections::HashMap<PathBuf, Visits>) {
+        let mut recents = Vec::new();
+        let mut visits = std::collections::HashMap::new();
+        for line in self.load_history_or_log("recents") {
+            let (path, seen) = parse_recent(&line);
+            recents.push(PathBuf::from(path));
+            if seen.count > 0 {
+                visits.insert(PathBuf::from(path), seen);
+            }
+        }
+        (recents, visits)
     }
 
     /// Which home-screen sections the user folded or opened, by title.
@@ -380,7 +379,7 @@ impl CacheManager {
     pub fn forget_recent(&self, path: &std::path::Path) {
         let target = path.to_string_lossy().into_owned();
         self.update_history_file("recents", |recents| {
-            recents.retain(|p| p != &target);
+            recents.retain(|line| parse_recent(line).0 != target);
         })
         .or_log("forget a recent");
     }
@@ -392,7 +391,7 @@ impl CacheManager {
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         self.update_history_file("recents", |recents| {
-            recents.retain(|p| !targets.contains(p));
+            recents.retain(|line| !targets.iter().any(|t| t == parse_recent(line).0));
         })
         .or_log("forget recents");
     }
@@ -466,47 +465,38 @@ impl CacheManager {
         // file, so reading it cannot block on the filesystems it describes.
         let mounts = crate::locality::Mounts::current();
 
-        let mut kept = Vec::new();
-        let update = self
-            .update_history_file("recents", |recents| {
-                recents.retain(|p| p != &entry);
-                recents.insert(0, entry.clone());
-                recents.retain(|p| Self::recent_is_worth_keeping(p, &mounts));
-                recents.truncate(MAX_RECENTS);
-                kept = recents.clone();
-            })
-            .inspect_err(|e| log::warn!(target: "datui", "record a recent: {e:#}"))
-            .unwrap_or(HistoryUpdate::SkippedBusy);
-        if update == HistoryUpdate::Written {
-            self.record_visit(&entry, &kept);
-        }
-        update
+        let now = unix_now();
+        self.update_history_file("recents", |recents| {
+            let mut visits = Visits::default();
+            if let Some(at) = recents.iter().position(|l| parse_recent(l).0 == entry) {
+                visits = parse_recent(&recents.remove(at)).1;
+            }
+            visits.count = visits.count.saturating_add(1);
+            visits.last = now;
+            recents.insert(0, format!("{entry}\t{}\t{}", visits.count, visits.last));
+            recents.retain(|line| Self::recent_is_worth_keeping(parse_recent(line).0, &mounts));
+            recents.truncate(MAX_RECENTS);
+        })
+        .inspect_err(|e| log::warn!(target: "datui", "record a recent: {e:#}"))
+        .unwrap_or(HistoryUpdate::SkippedBusy)
     }
 
     /// How often and how lately each recent was opened, by its path as recorded.
     pub fn load_visits(&self) -> std::collections::HashMap<PathBuf, Visits> {
-        read_json_cache(&self.cache_file("visits.json"))
+        self.load_recents_with_visits().1
     }
+}
 
-    /// Count an open of `entry`, keeping visits only for the recents still listed.
-    fn record_visit(&self, entry: &str, recents: &[String]) {
-        let now = unix_now();
-        self.with_cache_lock("visits", || {
-            let mut visits = self.load_visits();
-            let visit = visits.entry(PathBuf::from(entry)).or_default();
-            visit.count = visit.count.saturating_add(1);
-            visit.last = now;
-            visits.retain(|path, _| recents.iter().any(|r| Path::new(r) == path));
-            let json = serde_json::to_string(&visits)?;
-            let temp = self.cache_file(&format!("visits.{}.tmp", std::process::id()));
-            fs::write(&temp, json)?;
-            fs::rename(&temp, self.cache_file("visits.json")).inspect_err(|_| {
-                let _ = fs::remove_file(&temp);
-            })?;
-            Ok(())
-        })
-        .or_log("record a visit");
+/// One line of the recents list: `path<TAB>opens<TAB>last opened`, its visits kept
+/// with it so forgetting a recent forgets them too. A bare path has none.
+fn parse_recent(line: &str) -> (&str, Visits) {
+    let mut parts = line.rsplitn(3, '\t');
+    if let (Some(last), Some(count), Some(path)) = (parts.next(), parts.next(), parts.next())
+        && let (Ok(last), Ok(count)) = (last.parse(), count.parse())
+    {
+        return (path, Visits { count, last });
     }
+    (line, Visits::default())
 }
 
 fn unix_now() -> u64 {
@@ -681,15 +671,15 @@ impl DatasetShape {
     pub fn fingerprint_of<'a>(
         files: impl IntoIterator<Item = (&'a str, u64, u64, Option<&'a str>)>,
     ) -> String {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = StableHasher::default();
         let mut count = 0usize;
         let mut bytes = 0u64;
         for (key, size, stamp, etag) in files {
-            key.hash(&mut hasher);
-            size.hash(&mut hasher);
-            stamp.hash(&mut hasher);
-            etag.hash(&mut hasher);
+            hasher.bytes(key.as_bytes()).u64(size).u64(stamp);
+            match etag {
+                Some(etag) => hasher.u64(1).bytes(etag.as_bytes()),
+                None => hasher.u64(0),
+            };
             count += 1;
             bytes = bytes.saturating_add(size);
         }
@@ -805,12 +795,6 @@ fn cargo_test_layout(exe: &Path, target_dir: Option<&std::ffi::OsStr>) -> bool {
         .any(|dir| dir.file_name().is_some_and(|name| name == "target"))
 }
 
-/// Entries kept in the dataset index.
-///
-/// Large enough to cover everywhere someone actually works, small enough that the
-/// file stays trivial to read and rewrite.
-pub const MAX_DATASET_FACTS: usize = 4096;
-
 /// The buckets a cloud source listed on an earlier run, shown straight away on the next
 /// one while a fresh listing is out.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -823,28 +807,77 @@ pub struct CloudListing {
     pub listed_at: u64,
 }
 
-/// Bytes of dataset shapes kept, all of them together. A shape's size follows its
-/// dataset's file count — NOAA's by_station, 842k files, is a few megabytes — so a
-/// count alone would let a handful of huge datasets hold the disk while a small one
-/// pushed out a shape still being opened. The one just stored is always kept.
-pub const MAX_DATASET_SHAPE_BYTES: u64 = 128 << 20;
+/// Dataset shapes, by dataset path, at their listing's fingerprint.
+///
+/// Bounded by bytes: a shape's size follows its dataset's file count — NOAA's
+/// by_station, 842k files, is a few megabytes — so a count alone would let a handful of
+/// huge datasets hold the disk while a small one pushed out a shape still being opened.
+pub(crate) struct Shapes;
 
-/// The first bytes of a shape file, which also say how the rest is laid out. A file
-/// that does not start with them is from another build and is ignored.
-const SHAPE_MAGIC: &[u8; 8] = b"DTSHAPE1";
+impl Kind for Shapes {
+    const DIR: &'static str = "shapes";
+    const EXT: &'static str = "shape";
+    const VERSION: u16 = 1;
+    const BUDGET: u64 = 128 << 20;
+    type Value = DatasetShape;
 
-/// The part of a shape file read before deciding whether the rest is wanted: which
-/// dataset it is, the fingerprint it was taken at, and its schemas. JSON because the
-/// schemas are Polars types, serialised as Polars serialises them; the per-file
-/// footers, which are most of the bytes, follow as varints.
+    fn encode(shape: &DatasetShape) -> Result<Vec<u8>> {
+        encode_shape(shape)
+    }
+
+    fn decode(payload: &[u8]) -> Option<DatasetShape> {
+        decode_shape(payload)
+    }
+}
+
+/// What home has measured of each dataset, by path. Each record carries the size and
+/// mtime it was taken at, so the store's fingerprint is empty.
+pub(crate) struct Facts;
+
+impl Kind for Facts {
+    const DIR: &'static str = "facts";
+    const EXT: &'static str = "facts";
+    const VERSION: u16 = 1;
+    const BUDGET: u64 = 16 << 20;
+    type Value = DatasetFacts;
+
+    fn encode(facts: &DatasetFacts) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(facts)?)
+    }
+
+    fn decode(payload: &[u8]) -> Option<DatasetFacts> {
+        serde_json::from_slice(payload).ok()
+    }
+}
+
+/// Each cloud source's last bucket listing, by source ID, at the source's fingerprint.
+pub(crate) struct CloudListings;
+
+impl Kind for CloudListings {
+    const DIR: &'static str = "cloud_listings";
+    const EXT: &'static str = "listing";
+    const VERSION: u16 = 1;
+    const BUDGET: u64 = 4 << 20;
+    type Value = CloudListing;
+
+    fn encode(listing: &CloudListing) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(listing)?)
+    }
+
+    fn decode(payload: &[u8]) -> Option<CloudListing> {
+        serde_json::from_slice(payload).ok()
+    }
+}
+
+/// The part of a shape read before its footers: its fingerprint, its schemas and when
+/// it was taken. JSON because the schemas are Polars types, serialised as Polars
+/// serialises them; the per-file footers, which are most of the bytes, follow as varints.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ShapeHeader {
-    path: String,
     fingerprint: String,
     schemas: Vec<Vec<(String, polars::prelude::DataType)>>,
     taken_at: u64,
 }
-
 fn put_varint(out: &mut Vec<u8>, mut n: u64) {
     while n >= 0x80 {
         out.push((n as u8) | 0x80);
@@ -885,15 +918,13 @@ fn take_list(bytes: &mut &[u8]) -> Option<Vec<usize>> {
         .collect()
 }
 
-fn encode_shape(path: &str, shape: &DatasetShape) -> Result<Vec<u8>> {
+fn encode_shape(shape: &DatasetShape) -> Result<Vec<u8>> {
     let header = serde_json::to_vec(&ShapeHeader {
-        path: path.to_string(),
         fingerprint: shape.fingerprint.clone(),
         schemas: shape.schemas.clone(),
         taken_at: shape.taken_at,
     })?;
-    let mut out = Vec::with_capacity(16 + header.len() + shape.files.len() * 8);
-    out.extend_from_slice(SHAPE_MAGIC);
+    let mut out = Vec::with_capacity(8 + header.len() + shape.files.len() * 8);
     out.extend_from_slice(&u32::try_from(header.len())?.to_le_bytes());
     out.extend_from_slice(&header);
     put_varint(&mut out, shape.files.len() as u64);
@@ -906,17 +937,12 @@ fn encode_shape(path: &str, shape: &DatasetShape) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The shape in `bytes` if it is `path`'s and was taken at `fingerprint`. The footers
-/// are decoded only once the header says they are wanted.
-fn decode_shape(bytes: &[u8], path: &str, fingerprint: &str) -> Option<DatasetShape> {
-    let rest = bytes.strip_prefix(SHAPE_MAGIC)?;
-    let (len, rest) = rest.split_first_chunk::<4>()?;
+/// The shape in `bytes`, or `None` for one that does not hold together.
+fn decode_shape(bytes: &[u8]) -> Option<DatasetShape> {
+    let (len, rest) = bytes.split_first_chunk::<4>()?;
     let len = usize::try_from(u32::from_le_bytes(*len)).ok()?;
     let (header, mut body) = (rest.get(..len)?, rest.get(len..)?);
     let header: ShapeHeader = serde_json::from_slice(header).ok()?;
-    if header.path != path || header.fingerprint != fingerprint {
-        return None;
-    }
     let count = usize::try_from(take_varint(&mut body)?).ok()?;
     if count > body.len() {
         return None;
@@ -958,31 +984,9 @@ fn decode_shape(bytes: &[u8], path: &str, fingerprint: &str) -> Option<DatasetSh
 }
 
 impl CacheManager {
-    /// One file per dataset, so a lookup reads its own dataset and nothing else. They
-    /// were one JSON map, and by_station alone made it 51 MB that every lookup of any
-    /// dataset parsed and every hit rewrote.
-    fn dataset_shape_dir(&self) -> PathBuf {
-        self.cache_file("dataset_shapes")
-    }
-
-    /// The file `path`'s shape lives in: named by a hash of the path, which the file
-    /// repeats, so two paths that hash alike only cost each other their entries.
-    fn dataset_shape_file(&self, path: &str) -> PathBuf {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        path.hash(&mut hasher);
-        self.dataset_shape_dir()
-            .join(format!("{:016x}.shape", hasher.finish()))
-    }
-
     /// How many dataset shapes are kept.
     pub fn dataset_shapes_kept(&self) -> usize {
-        fs::read_dir(self.dataset_shape_dir()).map_or(0, |entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().extension().is_some_and(|x| x == "shape"))
-                .count()
-        })
+        Store::<Shapes>::new(self).len()
     }
 
     /// What datui remembers about one dataset, if the fingerprint still matches.
@@ -990,116 +994,33 @@ impl CacheManager {
     /// Taking the fingerprint as an argument rather than returning the entry and
     /// letting the caller check is deliberate: an entry whose fingerprint has moved on
     /// describes a dataset that no longer exists, and there is no use for it that is
-    /// not a mistake.
-    ///
-    /// Unreadable means absent — a cache that cannot be read is one that has nothing
-    /// to say, not an error worth stopping an open for.
+    /// not a mistake. A hit counts as use, so the datasets that never change, with the
+    /// most to gain, are not the first to age out.
     pub fn dataset_shape(&self, path: &str, fingerprint: &str) -> Option<DatasetShape> {
-        let file = self.dataset_shape_file(path);
-        let bytes = fs::read(&file).ok()?;
-        let shape = decode_shape(&bytes, path, fingerprint)?;
-        // A hit counts as use. Without this the clock only moves on a miss, so the
-        // entries that age out first are the datasets that never change — the ones with
-        // a perfect hit rate and the most to gain — while a dataset rewritten every day
-        // keeps resetting its own and stays forever. The file's mtime is the clock, so
-        // marking it costs nothing like rewriting it.
-        Self::touch(&file);
-        Some(shape)
+        Store::<Shapes>::new(self).get(path, fingerprint)
     }
 
-    /// Mark a file as used just now. Best effort: a shape that cannot be re-dated is
-    /// still a shape that can be used.
-    fn touch(file: &Path) {
-        fs::OpenOptions::new()
-            .write(true)
-            .open(file)
-            .and_then(|f| f.set_modified(std::time::SystemTime::now()))
-            .or_log("re-date a dataset shape");
-    }
-
-    /// Remember one dataset's shape, keeping the others while they fit in
-    /// [`MAX_DATASET_SHAPE_BYTES`].
+    /// Remember one dataset's shape, keeping the others while they fit the budget.
     pub fn save_dataset_shape(&self, path: &str, shape: DatasetShape) {
-        self.save_dataset_shape_within(path, &shape, MAX_DATASET_SHAPE_BYTES);
+        Store::<Shapes>::new(self).put(path, &shape.fingerprint, &shape);
     }
 
-    fn save_dataset_shape_within(&self, path: &str, shape: &DatasetShape, max_bytes: u64) {
-        let file = self.dataset_shape_file(path);
-        let write = || -> Result<()> {
-            fs::create_dir_all(self.dataset_shape_dir())?;
-            let bytes = encode_shape(path, shape)?;
-            let temp = file.with_extension(format!("{}.tmp", std::process::id()));
-            fs::write(&temp, bytes)?;
-            fs::rename(&temp, &file).inspect_err(|_| {
-                let _ = fs::remove_file(&temp);
-            })?;
-            Ok(())
-        };
-        write().or_log("save a dataset shape");
-        // Under the lock only to keep two evictions from racing each other; writes
-        // land by rename and need none.
-        self.with_cache_lock("dataset_shapes", || {
-            // The single map this replaced, which nothing reads any more.
-            let _ = fs::remove_file(self.cache_file("dataset_shapes.json"));
-            self.evict_dataset_shapes(&file, max_bytes);
-            Ok(())
-        })
-        .or_log("evict dataset shapes");
+    /// The last listing of cloud source `id`, if it was taken at `fingerprint`.
+    pub fn cloud_listing(&self, id: &str, fingerprint: &str) -> Option<CloudListing> {
+        Store::<CloudListings>::new(self).get(id, fingerprint)
     }
 
-    /// Drop the least recently used shapes until what is left fits in `max_bytes`,
-    /// never `keep`, which was just stored.
-    fn evict_dataset_shapes(&self, keep: &Path, max_bytes: u64) {
-        let Ok(entries) = fs::read_dir(self.dataset_shape_dir()) else {
-            return;
-        };
-        let mut kept: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "shape"))
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                Some((meta.modified().ok()?, meta.len(), e.path()))
-            })
-            .collect();
-        let mut total: u64 = kept.iter().map(|(_, len, _)| len).sum();
-        if total <= max_bytes {
-            return;
-        }
-        kept.sort();
-        for (_, len, file) in kept {
-            if total <= max_bytes {
-                break;
-            }
-            if file != keep && fs::remove_file(&file).is_ok() {
-                total -= len;
-            }
-        }
-    }
-
-    fn cloud_listing_path(&self) -> PathBuf {
-        self.cache_file("cloud_sources.json")
-    }
-
-    /// Every source's last listing, by source ID. Unreadable means empty.
+    /// Every source's last listing, by source ID.
     pub fn load_cloud_listings(&self) -> std::collections::HashMap<String, CloudListing> {
-        read_json_cache(&self.cloud_listing_path())
+        Store::<CloudListings>::new(self)
+            .scan()
+            .into_iter()
+            .collect()
     }
 
     /// Record one source's listing, keeping the others.
     pub fn save_cloud_listing(&self, id: &str, listing: CloudListing) {
-        self.with_cache_lock("cloud_sources", || {
-            self.ensure_cache_dir()?;
-            let mut all = self.load_cloud_listings();
-            all.insert(id.to_string(), listing);
-            let json = serde_json::to_string(&all)?;
-            let temp = self.cache_file(&format!("cloud_sources.{}.tmp", std::process::id()));
-            fs::write(&temp, json)?;
-            fs::rename(&temp, self.cloud_listing_path()).inspect_err(|_| {
-                let _ = fs::remove_file(&temp);
-            })?;
-            Ok(())
-        })
-        .or_log("save a cloud listing");
+        Store::<CloudListings>::new(self).put(id, &listing.fingerprint.clone(), &listing);
     }
 
     /// Source IDs hidden from the home screen with Delete.
@@ -1152,51 +1073,39 @@ impl CacheManager {
 }
 
 impl CacheManager {
-    fn dataset_index_path(&self) -> PathBuf {
-        self.cache_file("datasets.json")
-    }
-
-    /// What datui already knows about datasets it has measured before.
-    ///
-    /// A malformed or unreadable file yields an empty index: this is a cache, and
-    /// failing to read it must never be worse than not having it.
+    /// Everything datui knows about datasets it has measured before, without counting
+    /// any of it as use. Unreadable records are absent: this is a cache, and failing to
+    /// read it must never be worse than not having it.
     pub fn load_dataset_facts(&self) -> std::collections::HashMap<PathBuf, DatasetFacts> {
-        read_json_cache(&self.dataset_index_path())
+        Store::<Facts>::new(self)
+            .scan()
+            .into_iter()
+            .map(|(path, facts)| (PathBuf::from(path), facts))
+            .collect()
     }
 
-    /// Merge newly measured datasets into the index.
-    ///
-    /// Locked and written atomically for the same reason history is: two datui
-    /// instances measuring at once must not produce a torn file or lose each other's
-    /// work.
-    pub fn record_dataset_facts(&self, facts: &[(PathBuf, DatasetFacts)]) {
-        if facts.is_empty() {
-            return;
+    /// What datui knows about one dataset, counted as use.
+    pub fn dataset_facts(&self, path: &Path) -> Option<DatasetFacts> {
+        Store::<Facts>::new(self).get(path.to_str()?, "")
+    }
+
+    /// Count these datasets' records as used: shown on the home screen, say. The
+    /// least recently used go first once the records pass their budget.
+    pub fn touch_dataset_facts<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        let store = Store::<Facts>::new(self);
+        for path in paths.into_iter().filter_map(Path::to_str) {
+            store.touch(path);
         }
-        self.with_cache_lock("datasets", || {
-            let mut index = self.load_dataset_facts();
-            for (path, entry) in facts {
-                index.insert(path.clone(), entry.clone());
-            }
+    }
 
-            // Keep the newest by modification time; an index that grows without limit
-            // eventually costs more to read than the reads it saves.
-            if index.len() > MAX_DATASET_FACTS {
-                let mut kept: Vec<_> = index.into_iter().collect();
-                kept.sort_by_key(|(_, f)| std::cmp::Reverse(f.mtime));
-                kept.truncate(MAX_DATASET_FACTS);
-                index = kept.into_iter().collect();
-            }
-
-            let json = serde_json::to_string(&index)?;
-            let temp = self.cache_file(&format!("datasets.{}.tmp", std::process::id()));
-            fs::write(&temp, json)?;
-            fs::rename(&temp, self.dataset_index_path()).inspect_err(|_| {
-                let _ = fs::remove_file(&temp);
-            })?;
-            Ok(())
-        })
-        .or_log("save dataset facts");
+    /// Record newly measured datasets, one file each. A path that is not UTF-8 is
+    /// not recorded.
+    pub fn record_dataset_facts(&self, facts: &[(PathBuf, DatasetFacts)]) {
+        Store::<Facts>::new(self).put_all(
+            facts
+                .iter()
+                .filter_map(|(path, facts)| Some((path.to_str()?, "", facts))),
+        );
     }
 
     /// Run `work` holding the named cache lock, or skip it if the lock is contended
@@ -1383,63 +1292,6 @@ mod recents_pruning_tests {
 
 #[cfg(test)]
 mod dataset_shape_tests {
-
-    /// A damaged shape file is a miss, never a panic: every truncation, and a flipped
-    /// bit at every byte, of a real entry.
-    #[test]
-    fn a_damaged_shape_file_is_a_miss() {
-        let shape = DatasetShape {
-            fingerprint: "fp".to_string(),
-            files: vec![
-                CachedFooter {
-                    schema: Some(0),
-                    row_group_rows: vec![3, 4],
-                    row_group_bytes: vec![100, 200],
-                    column_bytes: vec![],
-                },
-                CachedFooter {
-                    schema: None,
-                    row_group_rows: vec![],
-                    row_group_bytes: vec![],
-                    column_bytes: vec![],
-                },
-            ],
-            schemas: vec![vec![("a".to_string(), polars::prelude::DataType::Int64)]],
-            taken_at: 1,
-        };
-        let good = encode_shape("s3://b/d/", &shape).unwrap();
-        assert!(decode_shape(&good, "s3://b/d/", "fp").is_some());
-        for cut in 0..good.len() {
-            assert!(
-                decode_shape(&good[..cut], "s3://b/d/", "fp").is_none(),
-                "cut {cut}"
-            );
-        }
-        for at in 0..good.len() {
-            for bit in 0..8 {
-                let mut bad = good.clone();
-                bad[at] ^= 1 << bit;
-                // Decoding may succeed with other numbers; it must not panic, and what
-                // it returns must be self-consistent.
-                if let Some(back) = decode_shape(&bad, "s3://b/d/", "fp") {
-                    assert!(
-                        back.files
-                            .iter()
-                            .all(|f| f.schema.is_none_or(|s| s < back.schemas.len()))
-                    );
-                }
-            }
-        }
-        // A schema index past the table, and totals that overflow, are refused.
-        let mut wild = shape.clone();
-        wild.files[0].schema = Some(5);
-        let bytes = encode_shape("s3://b/d/", &wild).unwrap();
-        assert!(decode_shape(&bytes, "s3://b/d/", "fp").is_none());
-        let mut huge = shape.clone();
-        huge.files[0].row_group_rows = vec![usize::MAX, 1];
-        let bytes = encode_shape("s3://b/d/", &huge).unwrap();
-        assert!(decode_shape(&bytes, "s3://b/d/", "fp").is_none());
-    }
     use super::*;
 
     fn shape(fingerprint: &str, taken_at: u64) -> DatasetShape {
@@ -1461,6 +1313,27 @@ mod dataset_shape_tests {
             ],
             schemas: vec![vec![("id".into(), polars::prelude::DataType::Int64)]],
             taken_at,
+        }
+    }
+
+    /// A payload that frames fine but does not hold together is refused, never a
+    /// panic: a schema index past the table, or totals that overflow.
+    #[test]
+    fn a_shape_that_does_not_hold_together_is_refused() {
+        let good = shape("fp", 1);
+        assert_eq!(
+            decode_shape(&encode_shape(&good).unwrap()),
+            Some(good.clone())
+        );
+        let mut wild = good.clone();
+        wild.files[0].schema = Some(5);
+        assert!(decode_shape(&encode_shape(&wild).unwrap()).is_none());
+        let mut huge = good.clone();
+        huge.files[0].row_group_rows = vec![usize::MAX, 1];
+        assert!(decode_shape(&encode_shape(&huge).unwrap()).is_none());
+        let bytes = encode_shape(&good).unwrap();
+        for cut in 0..bytes.len() {
+            assert!(decode_shape(&bytes[..cut]).is_none(), "cut {cut}");
         }
     }
 
@@ -1508,69 +1381,65 @@ mod dataset_shape_tests {
             ]),
             "the same listing twice is the same fingerprint"
         );
-        assert_ne!(
-            base,
+        for (changed, why) in [
+            (vec![("a.parquet", 100, 7, Some("e1"))], "a file removed"),
+            (
+                vec![
+                    ("a.parquet", 100, 7, Some("e1")),
+                    ("b.parquet", 200, 8, Some("e2")),
+                    ("c.parquet", 50, 9, Some("e3")),
+                ],
+                "a file added",
+            ),
+            (
+                vec![
+                    ("a.parquet", 100, 7, Some("e1")),
+                    ("b.parquet", 201, 8, Some("e2")),
+                ],
+                "a file resized",
+            ),
+            (
+                vec![
+                    ("a.parquet", 100, 7, Some("e1")),
+                    ("b.parquet", 200, 9, Some("e2")),
+                ],
+                "a file rewritten, which the stamp catches",
+            ),
+            (
+                vec![
+                    ("a.parquet", 100, 7, Some("e1")),
+                    ("b.parquet", 200, 8, Some("e9")),
+                ],
+                "rewritten within the same second at the same length: only the tag sees it",
+            ),
+            (
+                vec![
+                    ("a.parquet", 100, 7, Some("e1")),
+                    ("b.parquet", 200, 8, None),
+                ],
+                "a tag gone",
+            ),
+            (
+                vec![
+                    ("a.parquet", 100, 7, Some("e1")),
+                    ("renamed.parquet", 200, 8, Some("e2")),
+                ],
+                "a file renamed, which reorders the positional join the cache is",
+            ),
+        ] {
+            assert_ne!(base, DatasetShape::fingerprint_of(changed), "{why}");
+        }
+    }
+
+    /// The same in every build: a file named or fingerprinted by a hash that moved with
+    /// the Rust release would be orphaned by the next upgrade.
+    #[test]
+    fn the_stable_hash_is_pinned() {
+        assert_eq!(stable_hash(b"123456789"), 0x995d_c9bb_df19_39fa);
+        assert_eq!(
             DatasetShape::fingerprint_of([("a.parquet", 100, 7, Some("e1"))]),
-            "a file removed"
+            "1-100-7bb7c5da2f222965"
         );
-        assert_ne!(
-            base,
-            DatasetShape::fingerprint_of([
-                ("a.parquet", 100, 7, Some("e1")),
-                ("b.parquet", 200, 8, Some("e2")),
-                ("c.parquet", 50, 9, Some("e3")),
-            ]),
-            "a file added"
-        );
-        assert_ne!(
-            base,
-            DatasetShape::fingerprint_of([
-                ("a.parquet", 100, 7, Some("e1")),
-                ("b.parquet", 201, 8, Some("e2")),
-            ]),
-            "a file resized"
-        );
-        assert_ne!(
-            base,
-            DatasetShape::fingerprint_of([
-                ("a.parquet", 100, 7, Some("e1")),
-                ("b.parquet", 200, 9, Some("e2")),
-            ]),
-            "a file rewritten, which the stamp catches"
-        );
-        assert_ne!(
-            base,
-            DatasetShape::fingerprint_of([
-                ("a.parquet", 100, 7, Some("e1")),
-                ("b.parquet", 200, 8, Some("e9")),
-            ]),
-            "a file rewritten within the same second at the same length, which only \
-             the store's own tag catches"
-        );
-        assert_ne!(
-            base,
-            DatasetShape::fingerprint_of([
-                ("a.parquet", 100, 7, Some("e1")),
-                ("renamed.parquet", 200, 8, Some("e2")),
-            ]),
-            "and a file renamed, which reorders the positional join the cache is"
-        );
-    }
-
-    /// Set a shape file's clock, so eviction order does not hang on how fast the test ran.
-    fn age(cache: &super::CacheManager, path: &str, secs: u64) {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(cache.dataset_shape_file(path))
-            .unwrap()
-            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
-            .unwrap();
-    }
-
-    fn shape_bytes(cache: &super::CacheManager, path: &str) -> u64 {
-        std::fs::metadata(cache.dataset_shape_file(path))
-            .unwrap()
-            .len()
     }
 
     /// Every field a reopen uses comes back as it was stored, an unreadable footer and
@@ -1601,98 +1470,6 @@ mod dataset_shape_tests {
         ]);
         cache.save_dataset_shape("s3://b/events/", stored.clone());
         assert_eq!(cache.dataset_shape("s3://b/events/", "f"), Some(stored));
-    }
-
-    /// A lookup reads its own dataset's file and no other: a small dataset beside a
-    /// huge one costs what the small one weighs.
-    #[test]
-    fn a_lookup_reads_only_its_own_dataset() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
-        cache.save_dataset_shape("s3://b/big/", shape("big", 1));
-        cache.save_dataset_shape("s3://b/small/", shape("small", 1));
-        age(&cache, "s3://b/big/", 1_000);
-        let big = cache.dataset_shape_file("s3://b/big/");
-        // Unreadable, so a lookup that went through it would find nothing.
-        std::fs::write(&big, b"not a shape").unwrap();
-        age(&cache, "s3://b/big/", 1_000);
-
-        assert!(cache.dataset_shape("s3://b/small/", "small").is_some());
-        assert_eq!(
-            std::fs::metadata(&big).unwrap().modified().unwrap(),
-            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000),
-            "the big one's file was not touched"
-        );
-        assert_eq!(
-            cache.dataset_shape("s3://b/big/", "big"),
-            None,
-            "and a broken file is a miss, not an error"
-        );
-    }
-
-    /// A hit dates the shape as used without rewriting it.
-    #[test]
-    fn a_hit_counts_as_use() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
-        cache.save_dataset_shape("s3://b/events/", shape("f", 1));
-        age(&cache, "s3://b/events/", 1_000);
-        let file = cache.dataset_shape_file("s3://b/events/");
-        let before = std::fs::read(&file).unwrap();
-
-        assert!(cache.dataset_shape("s3://b/events/", "f").is_some());
-        let used = std::fs::metadata(&file).unwrap().modified().unwrap();
-        assert!(
-            used > std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000),
-            "dated now"
-        );
-        assert_eq!(std::fs::read(&file).unwrap(), before, "and not rewritten");
-
-        age(&cache, "s3://b/events/", 1_000);
-        assert!(cache.dataset_shape("s3://b/events/", "moved").is_none());
-        assert_eq!(
-            std::fs::metadata(&file).unwrap().modified().unwrap(),
-            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000),
-            "a miss is not use"
-        );
-    }
-
-    /// The cache is bounded by bytes, and what goes is what was used longest ago.
-    #[test]
-    fn the_least_recently_used_shapes_go_once_they_pass_the_bound() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
-        for (i, name) in ["s3://b/a/", "s3://b/b/", "s3://b/c/"].iter().enumerate() {
-            cache.save_dataset_shape(name, shape("f", 1));
-            age(&cache, name, 1_000 + i as u64);
-        }
-        let one = shape_bytes(&cache, "s3://b/a/");
-        // `a` is the oldest, but opening it makes `b` the one used longest ago.
-        assert!(cache.dataset_shape("s3://b/a/", "f").is_some());
-
-        cache.save_dataset_shape_within("s3://b/d/", &shape("f", 1), 3 * one);
-        assert_eq!(cache.dataset_shapes_kept(), 3, "kept to its bound in bytes");
-        assert!(cache.dataset_shape("s3://b/b/", "f").is_none(), "b went");
-        for kept in ["s3://b/a/", "s3://b/c/", "s3://b/d/"] {
-            assert!(cache.dataset_shape(kept, "f").is_some(), "{kept} stayed");
-        }
-
-        // One shape larger than the whole bound is still kept: it is the one in use.
-        let mut huge = shape("f", 1);
-        huge.files = vec![huge.files[0].clone(); 1_000];
-        cache.save_dataset_shape_within("s3://b/huge/", &huge, 3 * one);
-        assert_eq!(cache.dataset_shapes_kept(), 1, "everything else made room");
-        assert!(cache.dataset_shape("s3://b/huge/", "f").is_some());
-    }
-
-    /// The single map the cache used to be is dropped, not read.
-    #[test]
-    fn the_old_single_file_is_dropped() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
-        std::fs::write(dir.path().join("dataset_shapes.json"), b"{}").unwrap();
-        cache.save_dataset_shape("s3://b/events/", shape("f", 1));
-        assert!(!dir.path().join("dataset_shapes.json").exists());
     }
 
     /// What a dataset the size of NOAA's by_station costs to keep and find again.
@@ -1754,39 +1531,356 @@ mod dataset_shape_tests {
         time("lookup + touch the small one", &mut || {
             assert!(cache.dataset_shape("s3://b/small/", "small").is_some())
         });
-        let on_disk: u64 = walk_bytes(dir.path());
-        eprintln!("on disk: {:.1} MB", on_disk as f64 / 1e6);
-    }
-
-    fn walk_bytes(dir: &std::path::Path) -> u64 {
-        std::fs::read_dir(dir)
+        let on_disk = Store::<Shapes>::new(&cache)
+            .dir()
+            .read_dir()
             .unwrap()
             .flatten()
-            .map(|e| {
-                let meta = e.metadata().unwrap();
-                if meta.is_dir() {
-                    walk_bytes(&e.path())
-                } else {
-                    meta.len()
-                }
-            })
-            .sum()
+            .map(|e| e.metadata().unwrap().len())
+            .sum::<u64>();
+        eprintln!("on disk: {:.1} MB", on_disk as f64 / 1e6);
+    }
+}
+
+/// The same checks for every kind the [`Store`] holds.
+#[cfg(test)]
+mod store_harness_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    /// What a kind's checks store: two values of one encoded size, and one larger than
+    /// any budget a check sets.
+    trait Sample: Kind + Send + Sync + 'static {
+        fn sample(variant: u8) -> Self::Value;
+        fn big() -> Self::Value;
     }
 
-    /// `datui cache clear` takes it with everything else.
-    #[test]
-    fn clearing_the_cache_forgets_the_shapes() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
-        cache.save_dataset_shape("s3://b/events/", shape("f", 1));
-        assert!(cache.dataset_shape("s3://b/events/", "f").is_some());
+    impl Sample for Shapes {
+        fn sample(variant: u8) -> DatasetShape {
+            DatasetShape {
+                fingerprint: "fp".into(),
+                files: vec![CachedFooter {
+                    schema: Some(0),
+                    row_group_rows: vec![usize::from(variant)],
+                    row_group_bytes: vec![100],
+                    column_bytes: vec![8],
+                }],
+                schemas: vec![vec![("id".into(), polars::prelude::DataType::Int64)]],
+                taken_at: 1,
+            }
+        }
+        fn big() -> DatasetShape {
+            let mut shape = Self::sample(1);
+            shape.files = vec![shape.files[0].clone(); 2_000];
+            shape
+        }
+    }
 
-        cache.clear_all().unwrap();
-        assert_eq!(
-            cache.dataset_shape("s3://b/events/", "f"),
-            None,
-            "nothing kept here survives being told to forget"
+    impl Sample for Facts {
+        fn sample(variant: u8) -> DatasetFacts {
+            DatasetFacts {
+                mtime: 1,
+                size: 2,
+                rows: Some(usize::from(variant)),
+                cols: Some(1),
+                columns: vec!["a".into()],
+                ..Default::default()
+            }
+        }
+        fn big() -> DatasetFacts {
+            DatasetFacts {
+                columns: (0..2_000).map(|i| format!("column_{i}")).collect(),
+                ..Self::sample(1)
+            }
+        }
+    }
+
+    impl Sample for CloudListings {
+        fn sample(variant: u8) -> CloudListing {
+            CloudListing {
+                fingerprint: "fp".into(),
+                buckets: vec![format!("bucket-{variant}")],
+                listed_at: 1,
+            }
+        }
+        fn big() -> CloudListing {
+            CloudListing {
+                buckets: (0..2_000).map(|i| format!("bucket-{i}")).collect(),
+                ..Self::sample(1)
+            }
+        }
+    }
+
+    fn encoded<K: Kind>(value: &K::Value) -> Vec<u8> {
+        K::encode(value).unwrap()
+    }
+
+    fn same<K: Kind>(a: Option<K::Value>, b: &K::Value) -> bool {
+        a.is_some_and(|a| encoded::<K>(&a) == encoded::<K>(b))
+    }
+
+    fn store<K: Kind>() -> (Store<K>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        (
+            Store::new(&CacheManager::with_dir(dir.path().to_path_buf())),
+            dir,
+        )
+    }
+
+    fn age(file: &Path, secs: u64) {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    fn modified(file: &Path) -> SystemTime {
+        fs::metadata(file).unwrap().modified().unwrap()
+    }
+
+    fn round_trip<K: Sample>() {
+        let (store, _dir) = store::<K>();
+        let value = K::sample(1);
+        store.put("s3://b/a/", "fp", &value);
+        assert!(same::<K>(store.get("s3://b/a/", "fp"), &value), "a hit");
+        assert!(
+            store.get("s3://b/a/", "moved").is_none(),
+            "another fingerprint"
         );
+        assert!(store.get("s3://b/z/", "fp").is_none(), "another key");
+        let scanned = store.scan();
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].0, "s3://b/a/");
+        // A key whose hash collides costs only its own entry: the frame holds the key.
+        let other = K::sample(2);
+        fs::copy(store.file("s3://b/a/"), store.file("s3://b/z/")).unwrap();
+        assert!(
+            store.get("s3://b/z/", "fp").is_none(),
+            "a collision is a miss"
+        );
+        store.put("s3://b/a/", "fp", &other);
+        assert!(same::<K>(store.get("s3://b/a/", "fp"), &other), "replaced");
+    }
+
+    fn damage_is_a_miss<K: Sample>() {
+        let (store, _dir) = store::<K>();
+        store.put("k", "fp", &K::sample(1));
+        let file = store.file("k");
+        let good = fs::read(&file).unwrap();
+        for cut in 0..good.len() {
+            fs::write(&file, &good[..cut]).unwrap();
+            assert!(store.get("k", "fp").is_none(), "cut at {cut}");
+        }
+        for at in 0..good.len() {
+            for bit in 0..8 {
+                let mut bad = good.clone();
+                bad[at] ^= 1 << bit;
+                fs::write(&file, &bad).unwrap();
+                assert!(store.get("k", "fp").is_none(), "bit {bit} of byte {at}");
+            }
+        }
+        assert!(store.scan().is_empty(), "nor does a scan see it");
+        fs::write(&file, &good).unwrap();
+        assert!(
+            store.get("k", "fp").is_some(),
+            "and the good bytes still read"
+        );
+    }
+
+    fn evicts_by_bytes_in_lru_order<K: Sample>() {
+        let (store, _dir) = store::<K>();
+        for (i, key) in ["k/a", "k/b", "k/c"].into_iter().enumerate() {
+            store.put(key, "fp", &K::sample(1));
+            age(&store.file(key), 1_000 + i as u64);
+        }
+        let one = fs::metadata(store.file("k/a")).unwrap().len();
+        // `a` is the oldest, but using it makes `b` the one used longest ago.
+        assert!(store.get("k/a", "fp").is_some());
+
+        let store = store.with_budget(3 * one);
+        store.put("k/d", "fp", &K::sample(1));
+        assert_eq!(store.len(), 3, "kept to its budget in bytes");
+        assert!(store.get("k/b", "fp").is_none(), "b went");
+        for kept in ["k/a", "k/c", "k/d"] {
+            assert!(store.get(kept, "fp").is_some(), "{kept} stayed");
+        }
+
+        // One entry larger than the whole budget is still kept: it is the one in use.
+        store.put("k/huge", "fp", &K::big());
+        assert_eq!(store.len(), 1, "everything else made room");
+        assert!(store.get("k/huge", "fp").is_some());
+    }
+
+    fn a_hit_only_touches<K: Sample>() {
+        let (store, _dir) = store::<K>();
+        store.put("k/a", "fp", &K::sample(1));
+        store.put("k/b", "fp", &K::sample(1));
+        let (a, b) = (store.file("k/a"), store.file("k/b"));
+        age(&a, 1_000);
+        age(&b, 1_000);
+        let before = fs::read(&a).unwrap();
+
+        assert!(store.get("k/a", "fp").is_some());
+        assert!(
+            modified(&a) > UNIX_EPOCH + Duration::from_secs(1_000),
+            "dated now"
+        );
+        assert_eq!(fs::read(&a).unwrap(), before, "and not rewritten");
+        assert_eq!(
+            modified(&b),
+            UNIX_EPOCH + Duration::from_secs(1_000),
+            "b untouched"
+        );
+
+        age(&a, 1_000);
+        assert!(store.get("k/a", "moved").is_none());
+        assert_eq!(
+            modified(&a),
+            UNIX_EPOCH + Duration::from_secs(1_000),
+            "a miss is not use"
+        );
+        assert_eq!(store.scan().len(), 2);
+        assert_eq!(
+            modified(&a),
+            UNIX_EPOCH + Duration::from_secs(1_000),
+            "nor is a scan"
+        );
+
+        // Storing what is already there dates it, and writes nothing.
+        let inode = fs::metadata(&a).unwrap();
+        store.put("k/a", "fp", &K::sample(1));
+        assert!(modified(&a) > UNIX_EPOCH + Duration::from_secs(1_000));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&a).unwrap().ino(), inode.ino(), "not replaced");
+        }
+        let _ = inode;
+    }
+
+    fn sweeps_stale_temp_files<K: Sample>() {
+        let (store, _dir) = store::<K>();
+        store.put("k/a", "fp", &K::sample(1));
+        let stale = store.dir().join("x.shape.1.0.tmp");
+        let fresh = store.dir().join("x.shape.1.1.tmp");
+        fs::write(&stale, b"half").unwrap();
+        fs::write(&fresh, b"half").unwrap();
+        age(&stale, 1_000);
+        store.put("k/b", "fp", &K::sample(1));
+        assert!(!stale.exists(), "a dead writer's temp file goes");
+        assert!(fresh.exists(), "a live writer's stays");
+    }
+
+    fn clear_all_removes_it<K: Sample>() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CacheManager::with_dir(dir.path().to_path_buf());
+        let store = Store::<K>::new(&cache);
+        store.put("k", "fp", &K::sample(1));
+        assert!(store.get("k", "fp").is_some());
+        cache.clear_all().unwrap();
+        assert!(store.get("k", "fp").is_none());
+        assert!(!store.dir().exists(), "the kind's directory is gone");
+        assert!(
+            cache.cache_file(&format!("{}.lock", K::DIR)).exists(),
+            "its lock, which another instance may hold, is not"
+        );
+    }
+
+    fn two_writers_race<K: Sample>() {
+        let (store, _dir) = store::<K>();
+        let store = std::sync::Arc::new(store);
+        let writers: Vec<_> = (1..=2u8)
+            .map(|variant| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for i in 0..25 {
+                        store.put("shared", "fp", &K::sample(variant));
+                        store.put(&format!("own/{variant}/{i}"), "fp", &K::sample(variant));
+                        assert!(store.get("shared", "fp").is_some(), "never torn");
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let shared = encoded::<K>(&store.get("shared", "fp").unwrap());
+        assert!(
+            shared == encoded::<K>(&K::sample(1)) || shared == encoded::<K>(&K::sample(2)),
+            "one writer's value, whole"
+        );
+        assert_eq!(store.len(), 51, "every entry landed");
+        let temps = fs::read_dir(store.dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "tmp"))
+            .count();
+        assert_eq!(temps, 0, "and no temp file is left");
+    }
+
+    macro_rules! suite {
+        ($name:ident, $kind:ty) => {
+            mod $name {
+                use super::*;
+                #[test]
+                fn round_trip() {
+                    super::round_trip::<$kind>();
+                }
+                #[test]
+                fn damage_is_a_miss() {
+                    super::damage_is_a_miss::<$kind>();
+                }
+                #[test]
+                fn evicts_by_bytes_in_lru_order() {
+                    super::evicts_by_bytes_in_lru_order::<$kind>();
+                }
+                #[test]
+                fn a_hit_only_touches() {
+                    super::a_hit_only_touches::<$kind>();
+                }
+                #[test]
+                fn sweeps_stale_temp_files() {
+                    super::sweeps_stale_temp_files::<$kind>();
+                }
+                #[test]
+                fn clear_all_removes_it() {
+                    super::clear_all_removes_it::<$kind>();
+                }
+                #[test]
+                fn two_writers_race() {
+                    super::two_writers_race::<$kind>();
+                }
+            }
+        };
+    }
+
+    suite!(shapes, Shapes);
+    suite!(facts, Facts);
+    suite!(cloud_listings, CloudListings);
+
+    /// The files earlier builds wrote are removed, not read.
+    #[test]
+    fn the_old_files_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CacheManager::with_dir(dir.path().to_path_buf());
+        let old = [
+            "datasets.json",
+            "dataset_shapes.json",
+            "cloud_sources.json",
+            "visits.json",
+        ];
+        for name in old {
+            fs::write(dir.path().join(name), b"{}").unwrap();
+        }
+        fs::create_dir(dir.path().join("dataset_shapes")).unwrap();
+        fs::write(dir.path().join("dataset_shapes/0.shape"), b"x").unwrap();
+        cache.record_dataset_facts(&[(PathBuf::from("/d"), Facts::sample(1))]);
+        for name in old {
+            assert!(!dir.path().join(name).exists(), "{name}");
+        }
+        assert!(!dir.path().join("dataset_shapes").exists());
     }
 }
 
@@ -1822,45 +1916,47 @@ mod facts_compat_tests {
         assert_eq!(map.len(), 2, "both rows, not none of them");
     }
 
-    /// `datui cache clear` clears the cache — all of it. The old fixed list held two
-    /// names while the directory grew histories, measurements and the hidden-source
-    /// file, so the documented promises ("clears everything", "hidden until
-    /// --clear-cache") were both broken.
+    /// `datui cache clear` clears every cache kind and every list, and nothing else:
+    /// not a lock another instance may hold, not the log, not a foreign file.
     #[test]
-    fn clear_all_removes_every_file_datui_writes() {
+    fn clear_all_removes_the_caches_and_lists_only() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let cache = super::CacheManager::with_dir(dir.path().to_path_buf());
         for name in [
             "query_history.txt",
             "fuzzy_history.txt",
             "recents_history.txt",
+            "recents_history.txt.12.0.tmp",
             "cloud_hidden_history.txt",
-            "datasets.json",
-            "dataset_shapes.json",
-            "cloud_sources.json",
-            "datasets.lock",
-            "datui.log",
-            "datui.log.1",
         ] {
             std::fs::write(dir.path().join(name), b"x").expect("write");
         }
-        // A foreign file and a directory are not datui's to delete.
-        std::fs::write(dir.path().join("keep.parquet"), b"x").expect("write");
-        std::fs::create_dir(dir.path().join("subdir")).expect("mkdir");
+        cache.record_dataset_facts(&[("/d".into(), DatasetFacts::default())]);
+        let kept = [
+            "facts.lock",
+            "recents_history.lock",
+            "datui.log",
+            "keep.parquet",
+            "subdir",
+        ];
+        for name in kept {
+            if name == "subdir" {
+                std::fs::create_dir(dir.path().join(name)).expect("mkdir");
+            } else {
+                std::fs::write(dir.path().join(name), b"x").expect("write");
+            }
+        }
 
         cache.clear_all().expect("clear");
 
-        let left: Vec<String> = std::fs::read_dir(dir.path())
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
             .expect("read dir")
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            left.len(),
-            2,
-            "only the foreign file and the directory: {left:?}"
-        );
-        assert!(left.contains(&"keep.parquet".to_string()));
-        assert!(left.contains(&"subdir".to_string()));
+        left.sort();
+        let mut kept = kept.map(String::from).to_vec();
+        kept.sort();
+        assert_eq!(left, kept);
     }
 }

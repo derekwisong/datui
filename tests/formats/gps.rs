@@ -324,8 +324,22 @@ fn a_directory_of_activities_is_one_table() {
         (Some("monday.gpx"), Some("tuesday.gpx"))
     );
     assert_eq!(df.column("hr").unwrap().dtype(), &DataType::Int64);
-    assert!(app.data_table_state.as_ref().unwrap().scans_a_temp_file());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.scans_a_temp_file());
+    assert_eq!(state.num_rows(), 310);
     assert_eq!(files_in(&dir), 3, "the logs' directory and a file per log");
     drop(app);
     assert_eq!(files_in(&dir), 1, "removed with the dataset");
+
+    // As the home screen opens it: the directory as one dataset, counted by its rows.
+    let (options, _) = scratch();
+    let (app, _rx) = open_with(
+        logs,
+        OpenOptions {
+            hive: true,
+            ..options
+        },
+    );
+    assert_eq!(app.error_message(), None);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 310);
 }

@@ -778,9 +778,10 @@ impl Follow {
         self.new_below
     }
 
-    /// Whether the view has rows or a restart to take.
+    /// Whether the view has rows or a restart to take: not while paused. The rows
+    /// counted before standard input ended are taken after it did.
     pub fn behind(&self) -> bool {
-        self.standing == Standing::Following && (self.restarted || self.counted != self.shown)
+        self.standing != Standing::Paused && (self.restarted || self.counted != self.shown)
     }
 
     /// Standard input being copied, if this follows it.

@@ -200,13 +200,16 @@ fn standard_input_keeps_arriving() {
     until(&mut app, &rx, |app| shown(app) == 3 && app.follow_settled());
     assert_eq!(rows(&app), 3);
     assert!(on_last_row(&app), "a follow starts on the last row");
+    // Rows that arrive just before the end are shown after it.
+    producer.write_all(b"4,40\n5,50\n").unwrap();
     drop(producer);
     until(&mut app, &rx, |app| {
         app.follow()
             .is_some_and(|f| *f.standing() == Standing::Ended)
+            && app.follow_settled()
     });
     assert_eq!(app.flash_message(), Some("Standard input ended"));
-    assert_eq!(rows(&app), 3, "what arrived stays");
+    assert_eq!(rows(&app), 5, "what arrived stays");
 }
 
 /// `t` pauses: rows are counted and wait; `t` again shows them.

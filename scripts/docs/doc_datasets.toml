@@ -1,0 +1,25 @@
+# The datasets the docs' queries run against (`sql,dataset=NAME`, `q,dataset=NAME`).
+# A `url` is public data from the built-in catalog, downloaded by
+# `doc_examples.py --fetch-datasets DIR` for the nightly job; a `path` ships with the
+# docs and runs on every pull request.
+
+[penguins]
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+
+[flights]
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/nycflights13/flights.csv"
+
+[food]
+url = "https://vincentarelbundock.github.io/Rdatasets/csv/openintro/fastfood.csv"
+
+[names]
+url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2022/2022-03-22/babynames.csv"
+
+[football]
+url = "https://raw.githubusercontent.com/footballcsv/england/master/2020s/2020-21/eng.1.csv"
+
+[launches]
+url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2019/2019-01-15/launches.csv"
+
+[taxis]
+url = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet"

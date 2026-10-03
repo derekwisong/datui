@@ -379,8 +379,20 @@ jobs:
       - name: Test documentation navigation and builds
         run: .venv/bin/python -m unittest discover -s scripts/docs -p 'test_*.py'
 
+      # The book's structure, and every code block labeled runnable, template or
+      # output (#683).
+      - name: Lint the docs
+        run: |
+          .venv/bin/python scripts/docs/lint_docs.py
+          .venv/bin/python scripts/docs/doc_examples.py --lint
+
       - name: Build CLI
         run: cargo build -p datui --locked
+
+      # Every runnable block and example that needs no network, run as a reader would
+      # run it. The network ones run in Nightly.
+      - name: Run the docs' examples
+        run: .venv/bin/python scripts/docs/doc_examples.py --bin target/debug/datui
 
       - name: Bundle CLI for wheel
         run: |
@@ -394,6 +406,9 @@ jobs:
 
       - name: Run Python tests
         run: . .venv/bin/activate && pytest python/tests/ -v
+
+      - name: Run the docs' Python examples
+        run: .venv/bin/python scripts/docs/doc_examples.py --python
 
   # Windows on every pull request: the build, the library and binary tests, and the
   # binary run without a terminal. The full suite stays on the windows job below

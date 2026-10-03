@@ -4044,3 +4044,7 @@ mod inspector_tests;
 
 /// The inspector's layout at the sizes the canon names.
 mod inspector_layout_tests;
+
+/// The docs' queries parse, and run on the datasets they name (#683).
+#[cfg(feature = "sql")]
+mod doc_queries_tests;

@@ -21,7 +21,7 @@ Navigation:
                     exact (Esc or Space closes). The bar's first chip
                     says what Enter does: Inspect, or Drill
 
-Data Operations:
+Data operations:
   /:                Query: SQL, Text or q
   c:                Open charts
   s:                Open the Sort & Filter sidebar (tabs: Columns, Filters),
@@ -62,7 +62,7 @@ Display:
   Only the keys above are table keys: a letter with Ctrl or Alt held does
   nothing here, beyond Ctrl+F/Ctrl+B and Ctrl+D/Ctrl+U paging.
 
-Help Navigation:
+Help navigation:
   ↑↓ (j/k):         Scroll help content
   PageUp/PageDown:  Scroll help pages
   Home/End:         Jump to top/bottom

@@ -153,12 +153,25 @@ struct Text {
 fn whole_file(path: &Path) -> Text {
     let body = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{} should be readable: {e}", path.display()));
+    let markdown = path.extension().is_some_and(|e| e == "md");
     Text {
         origin: relative(path),
         lines: body
             .lines()
             .enumerate()
-            .map(|(i, l)| (i + 1, l.to_string()))
+            .map(|(i, l)| {
+                // A fence's info string (`bash,template`) labels the block for the
+                // doc-example runner; readers never see it.
+                let fence = markdown && l.trim_start().starts_with("```");
+                (
+                    i + 1,
+                    if fence {
+                        "```".to_string()
+                    } else {
+                        l.to_string()
+                    },
+                )
+            })
             .collect(),
     }
 }

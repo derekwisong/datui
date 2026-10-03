@@ -132,8 +132,14 @@ pub(crate) enum Job {
     SampleRows,
     /// A pivot from the Pivot & Melt form.
     Pivot,
-    /// A view's pivot, read before the view's rows: the view it is for.
-    ViewPivot(Box<crate::template::Template>),
+    /// A view's pivot, read before the view's rows: the view it is for, and why it
+    /// was applied when it was for a match.
+    ViewPivot(
+        Box<(
+            crate::template::Template,
+            Option<crate::template::MatchReason>,
+        )>,
+    ),
     /// The group row Enter drills into, when the buffer did not hold it.
     DrillRow,
     /// The inspector's fields of one row that the buffer does not hold: row `row` of

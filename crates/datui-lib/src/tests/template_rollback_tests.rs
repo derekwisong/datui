@@ -39,6 +39,7 @@ fn pivot_view(app: &mut App, name: &str) -> Template {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();
@@ -407,7 +408,7 @@ fn a_stale_view_pivot_is_dropped() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let template = pivot_view(&mut app, "pivot");
     // A view's pivot on a generation since passed.
-    let passed = app.job_for_tests(Job::ViewPivot(Box::new(template.clone())), None);
+    let passed = app.job_for_tests(Job::ViewPivot(Box::new((template.clone(), None))), None);
     app.jobs.advance();
     assert!(app.apply_template(&template).is_ok());
 
@@ -633,6 +634,7 @@ fn a_failed_template_rolls_back_what_the_rows_knew() {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();
@@ -721,6 +723,7 @@ fn a_failed_template_does_not_make_the_views_note_permanent() {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();
@@ -897,6 +900,7 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();
@@ -964,6 +968,7 @@ fn a_template_whose_sort_names_a_column_its_query_removed_fails_loudly() {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();
@@ -1029,6 +1034,7 @@ fn a_view_whose_query_fails_on_the_data_is_not_applied() {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();
@@ -1126,6 +1132,7 @@ fn a_failed_template_rolls_back_what_a_grouped_row_drills_into() {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();

@@ -570,6 +570,7 @@ fn test_template_save_and_apply_pivot() {
         filename_pattern: None,
         schema_columns: None,
         schema_types: None,
+        table: None,
     };
     let template = app
         .create_template_from_current_state(

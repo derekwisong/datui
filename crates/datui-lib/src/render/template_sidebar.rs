@@ -402,6 +402,21 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut TemplateModal, ctx: &Re
         }
         .render(area, buf, ctx);
     }
+
+    // The table is the dataset's, not typed: echoed, never focused. The path
+    // criteria fit only it.
+    if let Some(table) = &modal.table {
+        let area = row(section_y + 6, 1);
+        if area.height > 0 {
+            FormRow {
+                label: "Table:",
+                value: FormValue::Choice(table),
+                focused: false,
+                label_width: LABEL_WIDTH,
+            }
+            .render(area, buf, ctx);
+        }
+    }
 }
 
 fn render_delete_confirm(
@@ -473,6 +488,7 @@ mod tests {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
             settings: TemplateSettings {
                 query: None,
@@ -564,7 +580,7 @@ mod tests {
         assert!(
             !other_row.contains("same file")
                 && !other_row.contains("same columns")
-                && !other_row.contains("pattern"),
+                && !other_row.contains("glob"),
             "a view that fits nothing carries no annotation: {other_row:?}"
         );
         let footer = &rows[14];
@@ -604,6 +620,17 @@ mod tests {
         ] {
             assert!(text.contains(label), "expanded form misses {label}");
         }
+        assert!(!text.contains("Table:"), "no table, no row");
+
+        // A view of one table of a file echoes the table it is for.
+        modal.table = Some("orders".to_string());
+        let text = render_to_rows(&mut modal, 80, 20).join("\n");
+        assert!(text.contains("2 rules"), "the table counts as a rule");
+        let table_row = text
+            .lines()
+            .find(|line| line.contains("Table:"))
+            .expect("the table row");
+        assert!(table_row.contains("orders"), "{table_row:?}");
     }
 
     /// The delete confirmation is a small Surface with its keys in the

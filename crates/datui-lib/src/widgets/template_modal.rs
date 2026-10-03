@@ -56,6 +56,9 @@ pub struct TemplateModal {
     pub path_pattern_input: TextInput,
     pub filename_pattern_input: TextInput,
     pub schema_match_enabled: bool,
+    /// The table of a file of tables the view is for, echoed under the criteria: set
+    /// from the dataset on save, kept from the view on edit.
+    pub table: Option<String>,
     pub editing_template_id: Option<String>, // None while creating
     pub show_help: bool,
     pub delete_confirm: bool,
@@ -163,7 +166,7 @@ impl TemplateModal {
         }
     }
 
-    /// How many of the five criteria are set, for the collapsed section's chip.
+    /// How many of the criteria are set, for the collapsed section's chip.
     pub fn criteria_count(&self) -> usize {
         [
             &self.exact_path_input,
@@ -175,6 +178,7 @@ impl TemplateModal {
         .filter(|input| !input.value().trim().is_empty())
         .count()
             + usize::from(self.schema_match_enabled)
+            + usize::from(self.table.is_some())
     }
 
     fn reset_form(&mut self, history_limit: usize, theme: &crate::config::Theme) {
@@ -201,6 +205,7 @@ impl TemplateModal {
             .with_history_limit(history_limit)
             .with_theme(theme);
         self.schema_match_enabled = false;
+        self.table = None;
     }
 
     pub fn enter_create_mode(&mut self, history_limit: usize, theme: &crate::config::Theme) {
@@ -251,6 +256,7 @@ impl TemplateModal {
                 .unwrap_or_default(),
         );
         self.schema_match_enabled = template.match_criteria.schema_columns.is_some();
+        self.table = template.match_criteria.table.clone();
     }
 
     pub fn exit_form(&mut self) {

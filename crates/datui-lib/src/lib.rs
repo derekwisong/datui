@@ -726,8 +726,12 @@ enum RunOrigin {
     /// it is open in this mode, else a dialog.
     Query(QueryMode),
     /// A view applied. Its failure is a dialog, and the view marked applied before
-    /// it is marked again.
-    View { previous: Option<String> },
+    /// it is marked again. Applied for a match rather than picked, `matched` says
+    /// why once its rows are in.
+    View {
+        previous: Option<String>,
+        matched: Option<(String, template::MatchReason)>,
+    },
 }
 
 /// Focus within the query prompt: the tab bar or the current mode's input.
@@ -2509,14 +2513,27 @@ impl App {
             .is_some_and(|(paths, _)| matches!(paths.as_slice(), [path] if stdin::is_stdin(path)))
     }
 
-    /// What views are matched against: the dataset's path, or for what was piped in
-    /// `-`, which no path criterion fits, so it matches by its columns alone.
-    fn view_path(&self) -> Option<&Path> {
-        if self.reads_stdin() {
-            Some(Path::new(stdin::PATH))
-        } else {
-            self.path.as_deref()
-        }
+    /// What views are matched against: the dataset's path and the table of its file it
+    /// is. What was piped in, or a frame handed over (`datui.view(frame)`), is `-`,
+    /// which no path criterion fits, so it matches by its columns alone.
+    fn view_dataset(&self) -> Option<template::Dataset<'_>> {
+        self.data_table_state.as_ref()?;
+        let path = match self.path.as_deref() {
+            Some(path) if !self.reads_stdin() => path,
+            _ => Path::new(stdin::PATH),
+        };
+        Some(template::Dataset {
+            path,
+            table: self.view_table(),
+        })
+    }
+
+    /// The table of a file of tables the dataset on screen is: the one named by
+    /// `--table`, or by a path inside the file (`shop.db/orders`), which opens as the
+    /// file with `--table`.
+    fn view_table(&self) -> Option<&str> {
+        let (_, options) = self.opened.as_ref()?;
+        options.table.as_deref().or(options.spec_variant.as_deref())
     }
 
     /// Whether any leased background work, current or abandoned, has yet to report
@@ -4657,26 +4674,35 @@ impl App {
         // A fresh dataset starts with no view applied: the previous file's view
         // must not wear the check mark here, nor count as applied when edited.
         self.active_template_id = None;
-        let template = match self.startup_template.take() {
+        let (template, reason) = match self.startup_template.take() {
             Some(name) => match self.template_manager.get_template_by_name(&name).cloned() {
-                Some(template) => Some(template),
+                Some(template) => (Some(template), None),
                 None => {
                     self.error_modal.show(format!("No view named \"{name}\""));
-                    None
+                    (None, None)
                 }
             },
-            None if self.app_config.templates.auto_apply => self.view_path().and_then(|path| {
-                self.data_table_state.as_ref().and_then(|state| {
+            None if self.app_config.templates.auto_apply => self
+                .view_dataset()
+                .zip(self.data_table_state.as_ref())
+                .and_then(|(dataset, state)| {
                     self.template_manager
-                        .get_most_relevant(path, state.source_schema())
+                        .get_most_relevant(dataset, state.source_schema())
                 })
-            }),
-            None => None,
+                .map_or((None, None), |(template, reason)| {
+                    (Some(template), Some(reason))
+                }),
+            None => (None, None),
         };
         let Some(template) = template else {
             return false;
         };
-        match self.apply_template(&template) {
+        let applied = match reason {
+            // Applied unasked, it says which view and why.
+            Some(why) => self.apply_matched_view(&template, why),
+            None => self.apply_template(&template),
+        };
+        match applied {
             // The view reads its own first rows, so the dataset's are never read.
             Ok(()) => true,
             Err(e) => {
@@ -4685,6 +4711,11 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Say that the view `name` was applied because its criteria fit as `why` says.
+    fn flash_view_applied(&mut self, name: &str, why: template::MatchReason) {
+        self.flash_note(format!("View \"{name}\" applied: {}", why.as_str()));
     }
 
     /// Ensures file path has an extension when user did not provide one; only adds
@@ -11195,7 +11226,7 @@ impl App {
 
     /// Open the views list for the dataset on screen, scored against it.
     fn open_template_list(&mut self) {
-        if self.data_table_state.is_none() || self.path.is_none() {
+        if self.view_dataset().is_none() {
             return;
         }
         self.template_modal.table_state.select(Some(0));
@@ -11207,15 +11238,15 @@ impl App {
     /// Rebuild the list's rows from the store, scored and annotated against
     /// the open dataset; the selection stays near where it was.
     fn refresh_view_list(&mut self) {
-        let (Some(state), Some(path)) = (&self.data_table_state, self.view_path()) else {
+        let (Some(state), Some(dataset)) = (&self.data_table_state, self.view_dataset()) else {
             return;
         };
         let rows: Vec<ViewRow> = self
             .template_manager
-            .find_relevant_templates(path, state.source_schema())
+            .find_relevant_templates(dataset, state.source_schema())
             .into_iter()
             .map(|(template, score)| {
-                let reason = template::match_reason(&template, path, state.source_schema());
+                let reason = template::match_reason(&template, dataset, state.source_schema());
                 ViewRow {
                     template,
                     score,
@@ -11301,6 +11332,8 @@ impl App {
             }
         }
 
+        self.template_modal.table = self.view_table().map(str::to_string);
+
         // Schema match starts on: "apply this to a similar table" is the
         // reason views exist, and the columns are the only criterion that
         // says similar.
@@ -11359,6 +11392,7 @@ impl App {
                 None
             },
             schema_types: None,
+            table: self.template_modal.table.clone(),
         };
         let description = {
             let value = self.template_modal.description_input.value();
@@ -11428,7 +11462,7 @@ impl App {
     /// The selected view's score breakdown, for the list's `i` popup.
     fn view_score_details(&self) -> Option<(String, String)> {
         let state = self.data_table_state.as_ref()?;
-        let path = self.view_path()?;
+        let path = self.view_dataset()?;
         let idx = self.template_modal.table_state.selected()?;
         let row = self.template_modal.rows.get(idx)?;
         let template = &row.template;
@@ -12330,14 +12364,14 @@ impl App {
                 // does, the answer is not silence and not the best-scored stranger: the
                 // list opens, so the user sees what exists and picks — or saves one.
                 if let Some(ref state) = self.data_table_state
-                    && let Some(path) = self.view_path()
+                    && let Some(dataset) = self.view_dataset()
                 {
                     match self
                         .template_manager
-                        .get_most_relevant(path, state.source_schema())
+                        .get_most_relevant(dataset, state.source_schema())
                     {
-                        Some(template) => {
-                            if let Err(e) = self.apply_template(&template) {
+                        Some((template, why)) => {
+                            if let Err(e) = self.apply_matched_view(&template, why) {
                                 self.error_modal.show(format!("Error applying view: {}", e));
                             }
                         }
@@ -12347,9 +12381,7 @@ impl App {
                 None
             }
             KeyCode::Char('v') => {
-                if self.data_table_state.is_some() && self.path.is_some() {
-                    self.open_template_list();
-                }
+                self.open_template_list();
                 None
             }
             KeyCode::Char('s') => {
@@ -14473,13 +14505,31 @@ impl App {
     /// then the view's first rows — run in the background, and the view is installed
     /// when they are in. One that fails there puts the view before it back (#400).
     fn apply_template(&mut self, template: &Template) -> Result<()> {
+        self.apply_view(template, None)
+    }
+
+    /// [`Self::apply_template`], for a view applied because its criteria fit as `why`
+    /// says: once its rows are in, a flash names it and the reason.
+    fn apply_matched_view(
+        &mut self,
+        template: &Template,
+        why: template::MatchReason,
+    ) -> Result<()> {
+        self.apply_view(template, Some(why))
+    }
+
+    fn apply_view(
+        &mut self,
+        template: &Template,
+        why: Option<template::MatchReason>,
+    ) -> Result<()> {
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
         let Some(state) = self.data_table_state.as_mut() else {
             return Ok(());
         };
         match state.try_transition(|s| Self::replay_view(s, &template.settings, None))? {
             (Replayed::Planned, rollback) => {
-                self.view_planned(template, rollback);
+                self.view_planned(template, rollback, why);
                 Ok(())
             }
             (Replayed::Pivot(job), rollback) => {
@@ -14488,7 +14538,7 @@ impl App {
                 // Past any load-ahead for the view on screen, whose rows must not land
                 // in the one that replaces it.
                 self.jobs.try_advance();
-                let view = Job::ViewPivot(Box::new(template.clone()));
+                let view = Job::ViewPivot(Box::new((template.clone(), why)));
                 self.spawn_job(view, Some(Self::APPLYING_VIEW), move |_| {
                     let pivoted = job
                         .run()
@@ -14507,6 +14557,7 @@ impl App {
         &mut self,
         template: &Template,
         rollback: crate::widgets::datatable::ViewRollback,
+        why: Option<template::MatchReason>,
     ) {
         if let Some(path) = &self.path {
             let mut used = template.clone();
@@ -14520,7 +14571,10 @@ impl App {
             return;
         };
         self.query_running = Some(QueryRun {
-            origin: RunOrigin::View { previous },
+            origin: RunOrigin::View {
+                previous,
+                matched: why.map(|why| (template.name.clone(), why)),
+            },
             frame: state.len_generation(),
             rollback,
             len_count_inflight: self.len_count_inflight,
@@ -14531,6 +14585,9 @@ impl App {
         if !self.spawn_async_collect(Self::APPLYING_VIEW) {
             // Nothing to read: the view has no rows. Applied on open, it was the
             // open's last step.
+            if let Some(why) = why {
+                self.flash_view_applied(&template.name, why);
+            }
             self.query_running = None;
             self.busy = false;
             self.status_message = None;
@@ -14790,10 +14847,16 @@ impl App {
                 // way meanwhile keeps its spinner and its message.
                 if waited {
                     self.first_rows_settled();
-                    if let Some(RunOrigin::Query(mode)) = ran.map(|run| run.origin)
-                        && self.query_prompt_mode() == Some(mode)
-                    {
-                        self.leave_query_prompt_after_run();
+                    match ran.map(|run| run.origin) {
+                        Some(RunOrigin::Query(mode)) if self.query_prompt_mode() == Some(mode) => {
+                            self.leave_query_prompt_after_run();
+                        }
+                        // Shown once the wait is over, or the spinner's message hides it.
+                        Some(RunOrigin::View {
+                            matched: Some((name, why)),
+                            ..
+                        }) => self.flash_view_applied(&name, why),
+                        _ => {}
                     }
                 }
                 None
@@ -14888,9 +14951,10 @@ impl App {
             Answer::ViewPivoted(pivoted) => {
                 // Superseded means the view was cancelled or something replaced it, which
                 // owns the wait.
-                let Job::ViewPivot(template) = job else {
+                let Job::ViewPivot(view) = job else {
                     return None;
                 };
+                let (template, why) = *view;
                 if !current {
                     return None;
                 }
@@ -14904,7 +14968,7 @@ impl App {
                 });
                 match planned {
                     // The wait passes to the read of its rows.
-                    Some(Ok(rollback)) => self.view_planned(&template, rollback),
+                    Some(Ok(rollback)) => self.view_planned(&template, rollback, why),
                     Some(Err(message)) => self.view_pivot_failed(&message),
                     None => {}
                 }
@@ -15463,7 +15527,7 @@ impl App {
         self.len_count_inflight = run.len_count_inflight;
         self.count_after_paint = run.count_after_paint;
         self.len_count_failed = run.len_count_failed;
-        if let RunOrigin::View { previous } = &run.origin {
+        if let RunOrigin::View { previous, .. } = &run.origin {
             self.active_template_id = previous.clone();
         }
         run.origin

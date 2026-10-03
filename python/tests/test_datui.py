@@ -196,10 +196,9 @@ def test_deserialize_captured_wraps_garbage_in_a_clear_error():
         datui._deserialize_captured(b"not a plan at all")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="pty is not available on Windows")
-def test_capture_round_trip_through_the_tui(tmp_path):
-    """view(lf, capture=True) hands the frame back after a plain q, and it collects
-    after the TUI (and its temp state) is gone — the in-memory round trip."""
+def _capture_through_the_tui(tmp_path, frame_code, env=None):
+    """Run `datui.view(<frame_code>, capture=True)` in a child on a pty, press q once
+    the table is drawn, and return the captured rows (None when nothing came back)."""
     import fcntl
     import json
     import os
@@ -215,8 +214,7 @@ def test_capture_round_trip_through_the_tui(tmp_path):
         "import json\n"
         "import polars as pl\n"
         "import datui\n"
-        'df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})\n'
-        "res = datui.view(df.lazy(), capture=True)\n"
+        f"res = datui.view({frame_code}, capture=True)\n"
         "rows = None if res is None else res.collect().to_dicts()\n"
         f"with open({str(out)!r}, 'w') as f:\n"
         "    json.dump(rows, f)\n"
@@ -229,7 +227,7 @@ def test_capture_round_trip_through_the_tui(tmp_path):
         stdin=slave,
         stdout=slave,
         stderr=subprocess.PIPE,
-        env={**os.environ, "TERM": "xterm-256color"},
+        env={**os.environ, "TERM": "xterm-256color", **(env or {})},
     )
     os.close(slave)
     deadline = time.monotonic() + 60
@@ -281,9 +279,56 @@ def test_capture_round_trip_through_the_tui(tmp_path):
             proc.kill()
             proc.wait()
     assert proc.returncode == 0, f"child failed: {stderr.decode(errors='replace')}"
-    rows = json.loads(out.read_text())
+    return json.loads(out.read_text())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pty is not available on Windows")
+def test_capture_round_trip_through_the_tui(tmp_path):
+    """view(lf, capture=True) hands the frame back after a plain q, and it collects
+    after the TUI (and its temp state) is gone — the in-memory round trip."""
+    rows = _capture_through_the_tui(
+        tmp_path, 'pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}).lazy()'
+    )
     assert rows == [
         {"a": 1, "b": "x"},
         {"a": 2, "b": "y"},
         {"a": 3, "b": "z"},
+    ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pty is not available on Windows")
+def test_a_saved_view_applies_to_a_frame_by_its_columns(tmp_path):
+    """A frame has no path, so a view matches it by its columns: auto-apply sorts it
+    as the view says, and the captured frame carries the sort."""
+    import json
+
+    config = tmp_path / "config"
+    (config / "templates").mkdir(parents=True)
+    (config / "config.toml").write_text("[templates]\nauto_apply = true\n")
+    view = {
+        "id": "0000000000000680",
+        "name": "a descending",
+        "description": None,
+        "created": 0,
+        "usage_count": 0,
+        "match_criteria": {"schema_columns": ["a", "b"]},
+        "settings": {
+            "filters": [],
+            "sort_columns": ["a"],
+            "sort_descending": [True],
+            "sort_ascending": False,
+            "column_order": ["a", "b"],
+            "locked_columns_count": 0,
+        },
+    }
+    (config / "templates" / "template_0000000000000680.json").write_text(json.dumps(view))
+    rows = _capture_through_the_tui(
+        tmp_path,
+        'pl.DataFrame({"a": [1, 3, 2], "b": ["x", "z", "y"]}).lazy()',
+        env={"DATUI_CONFIG_DIR": str(config), "DATUI_CACHE_DIR": str(tmp_path / "cache")},
+    )
+    assert rows == [
+        {"a": 3, "b": "z"},
+        {"a": 2, "b": "y"},
+        {"a": 1, "b": "x"},
     ]

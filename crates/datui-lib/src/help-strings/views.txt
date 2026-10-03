@@ -14,9 +14,11 @@ Views list:
   Esc:              Close
 
   The score mark says how well each view fits the open dataset, and the
-  applied view carries a check mark. The Match column says why a view fits.
-  V at the table applies the best view that matches; when none does, V
-  opens this list instead. A view's rows are read in the background; Esc
+  applied view carries a check mark. The Match column says why a view
+  fits: same file (exact or relative path), same columns (schema) or glob
+  (a path or filename pattern). V at the table applies the best view that
+  matches and the bottom bar says why; when none does, V opens this list
+  instead. A view's rows are read in the background; Esc
   at the table stops it and keeps the table as it was.
 
 Save and edit form:
@@ -34,7 +36,9 @@ Save and edit form:
   criteria, filled in the same way: exact path, relative path, path
   pattern and filename pattern (glob-like), and schema match (column
   names). Schema match starts enabled — it is what carries the view to
-  the next table with these columns.
+  the next table with these columns. A view saved on one table of a
+  database or archive shows it as Table, and its path rules fit only that
+  table. Piped data and frames from Python match by schema alone.
 
   Editing changes a view's name, description and matching. Its saved
   settings follow the table only while the view is the one applied, so

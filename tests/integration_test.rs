@@ -17226,6 +17226,7 @@ fn a_freeze_survives_a_narrow_window() {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();
@@ -19093,6 +19094,7 @@ fn view_and_steps_on_the_next_file(
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();
@@ -19240,6 +19242,7 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
                 filename_pattern: None,
                 schema_columns: None,
                 schema_types: None,
+                table: None,
             },
         )
         .unwrap();

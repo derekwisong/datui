@@ -877,7 +877,7 @@ tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 
         for (text, said) in [
             (
                 "name = \"a.b\"\nkind = \"fix\"\ncolour = 1",
-                "unknown key `colour`",
+                "Unknown key `colour`",
             ),
             ("name = \"plain\"\nkind = \"fix\"", "namespaced"),
             (
@@ -896,8 +896,7 @@ tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 
         ] {
             let e = Dictionary::parse_toml(text, Some(Path::new("d.toml"))).unwrap_err();
             let e = e.to_string();
-            // Said as a sentence: its first word capitalized.
-            assert!(e.to_lowercase().contains(&said.to_lowercase()), "{e}");
+            assert!(e.contains(said), "{e}");
             assert!(e.starts_with("\"d.toml\":"), "{e}");
         }
     }

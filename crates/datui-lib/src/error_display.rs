@@ -110,7 +110,12 @@ pub fn sentence(what: &str) -> String {
     let mut said = String::with_capacity(what.len() + 1);
     let mut chars = first.chars();
     if let Some(c) = chars.next() {
-        said.extend(c.to_uppercase());
+        // A key or a name is written as the user wrote it, to be searched for.
+        if starts_with_a_key(first) {
+            said.push(c);
+        } else {
+            said.extend(c.to_uppercase());
+        }
         said.push_str(chars.as_str());
     }
     if !first.ends_with(['.', '?', '!']) {
@@ -121,6 +126,15 @@ pub fn sentence(what: &str) -> String {
         said.push_str(rest);
     }
     said
+}
+
+/// Whether `what` starts with a key, a path or a name rather than a word: its first
+/// word followed by `:` (`type: expected …`), or holding `.`, `_`, `=`, a digit, a
+/// quote or a backtick (`tags.nine`, `"day"`). [`sentence`] leaves it as written.
+pub fn starts_with_a_key(what: &str) -> bool {
+    let word = what.split_whitespace().next().unwrap_or_default();
+    word.ends_with(':')
+        || word.contains(|c: char| matches!(c, '.' | '_' | '=' | '"' | '`') || c.is_ascii_digit())
 }
 
 /// What an object store said about a file in it: a missing object, refused access, or
@@ -823,6 +837,41 @@ fn short_csv_parse_error_message(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sentence starts with a capital, unless it starts with a key or a name the
+    /// user wrote, which is kept as written.
+    #[test]
+    fn keys_keep_their_case() {
+        for (what, said) in [
+            ("not a WAV file", "Not a WAV file."),
+            ("could not read it: gone", "Could not read it: gone."),
+            ("type: expected u1", "type: expected u1."),
+            (
+                "tags.nine: expected a tag number",
+                "tags.nine: expected a tag number.",
+            ),
+            (
+                "header_rows: missing `name`",
+                "header_rows: missing `name`.",
+            ),
+            (
+                "\"day\" is made from \"date\"",
+                "\"day\" is made from \"date\".",
+            ),
+            ("u9 is not a type", "u9 is not a type."),
+            ("`colour` is not a key", "`colour` is not a key."),
+        ] {
+            assert_eq!(sentence(what), said, "{what}");
+        }
+        assert_eq!(
+            located_message(
+                Some(Path::new("d.toml")),
+                Some((3, 1)),
+                "tags.x: expected a tag number"
+            ),
+            "\"d.toml\":3:1: tags.x: expected a tag number."
+        );
+    }
 
     /// A reader's error names its file in quotes, once, in sentence case, ended.
     #[test]

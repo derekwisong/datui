@@ -572,7 +572,8 @@ pub(crate) mod bad_input {
         let first = message.lines().next().unwrap_or_default();
         assert!(first.ends_with('.'), "ends with a full stop: {message}");
         assert!(
-            what.chars().next().is_some_and(|c| !c.is_lowercase()),
+            crate::error_display::starts_with_a_key(what)
+                || what.chars().next().is_some_and(|c| !c.is_lowercase()),
             "sentence case: {message}"
         );
         assert_eq!(

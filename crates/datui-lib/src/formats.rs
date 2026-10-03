@@ -1023,7 +1023,7 @@ impl Reader<'_> {
             let Some(header_fields) = header else {
                 return Err(self.error(
                     &w.span(),
-                    "where compares a binary header's fields; a delimited spec matches by glob and magic",
+                    "`where` compares a binary header's fields; a delimited spec matches by glob and magic",
                 ));
             };
             let table = self.table(w, "where")?;
@@ -2654,7 +2654,10 @@ impl Reader<'_> {
                 if !ty.is_number() {
                     return Err(self.error(
                         &span,
-                        format!("factor and offset are for numbers, not {}", type_name(ty)),
+                        format!(
+                            "`factor` and `offset` are for numbers, not {}",
+                            type_name(ty)
+                        ),
                     ));
                 }
                 let factor = keys
@@ -2719,7 +2722,7 @@ impl Reader<'_> {
         if let Some(v) = keys.get("epoch")
             && (unit.is_none() || of_day)
         {
-            return Err(self.error(&v.span(), "epoch goes with time, and not with of_day"));
+            return Err(self.error(&v.span(), "`epoch` goes with time, and not with of_day"));
         }
         match (unit, of_day, date) {
             (None, false, Some((date, at))) => {
@@ -2732,7 +2735,7 @@ impl Reader<'_> {
                 if !ty.is_integer() {
                     return Err(self.error(
                         &at,
-                        format!("date is for integer types, not {}", type_name(ty)),
+                        format!("`date` is for integer types, not {}", type_name(ty)),
                     ));
                 }
                 Ok(Meaning::Yyyymmdd)
@@ -2766,9 +2769,10 @@ impl Reader<'_> {
                     return Err(self.error(&at, "date: goes with of_day, or alone as \"yyyymmdd\""));
                 }
                 if !ty.is_number() {
-                    return Err(
-                        self.error(span, format!("time is for numbers, not {}", type_name(ty)))
-                    );
+                    return Err(self.error(
+                        span,
+                        format!("`time` is for numbers, not {}", type_name(ty)),
+                    ));
                 }
                 let epoch_ns = keys
                     .get("epoch")
@@ -5760,7 +5764,7 @@ fields = [
         assert_eq!((e.line, e.column), (3, 32), "{e}");
         assert!(
             e.to_string()
-                .starts_with("\"a.toml\":3:32: Type: expected u1"),
+                .starts_with("\"a.toml\":3:32: type: expected u1"),
             "{e}"
         );
         let e = Spec::parse(
@@ -6098,7 +6102,7 @@ fields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]"#;
         let listing = registry.listing(&path);
         assert!(listing.contains("overrides"), "{listing}");
         assert!(
-            listing.contains("bad.toml\":1:8: Name: expected a string."),
+            listing.contains("bad.toml\":1:8: name: expected a string."),
             "{listing}"
         );
     }
@@ -6216,7 +6220,7 @@ fields = [{{ name = "x", type = "u1" }}]"#
         )
         .unwrap_err();
         assert!(
-            e.contains("l2.toml\":3:10: Fields: expected an array"),
+            e.contains("l2.toml\":3:10: fields: expected an array"),
             "{e}"
         );
         assert!(
@@ -6286,7 +6290,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         for (rest, said) in [
             (
                 "records = 1",
-                "3:1: unknown key `records` in a delimited spec",
+                "3:1: Unknown key `records` in a delimited spec",
             ),
             ("header_rows = { unit = 2 }", "header_rows: missing `name`"),
             (
@@ -6318,7 +6322,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             ("comment = \"\"", "comment: must not be empty"),
             (
                 "match = { where = { \"header.v\" = 1 } }",
-                "where compares a binary header's fields",
+                "`where` compares a binary header's fields",
             ),
             (
                 "[columns]\nt = { from = [\"a\", \"b\"], as = \"date\" }",
@@ -6341,11 +6345,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
                 1,
             );
             let e = Spec::parse(&text, None).unwrap_err().to_string();
-            // Said as a sentence: its first word capitalized.
-            assert!(
-                e.to_lowercase().contains(&said.to_lowercase()),
-                "{rest}: {e}"
-            );
+            assert!(e.contains(said), "{rest}: {e}");
         }
         // A metadata line below the header lines is fine when it is a comment line.
         let text = format!("{head}header_rows = 2\ncomment = \"#\"\nmetadata_line = 5");
@@ -6505,7 +6505,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         let names: Vec<&str> = registry.fix.iter().map(|f| f.dict.name.as_str()).collect();
         assert_eq!(names, ["FIX44-custom", "acme.fix.broker-x"]);
         assert_eq!(registry.errors.len(), 1, "{:?}", registry.errors);
-        assert!(registry.errors[0].to_string().contains("Tags.nine"));
+        assert!(registry.errors[0].to_string().contains("tags.nine"));
         let listing = registry.listing(&path);
         assert!(listing.contains("Dictionaries (FIX):"), "{listing}");
         assert!(
@@ -6541,6 +6541,6 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             &crate::OpenOptions::default(),
         )
         .unwrap_err();
-        assert!(e.contains("broken.toml\":3:1: Tags.nine"), "{e}");
+        assert!(e.contains("broken.toml\":3:1: tags.nine"), "{e}");
     }
 }

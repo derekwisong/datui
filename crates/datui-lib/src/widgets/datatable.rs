@@ -1700,31 +1700,43 @@ type WalkedDirs = HashMap<PathBuf, Vec<(PathBuf, bool)>>;
 /// Read every directory under `root` down to `max_depth` levels, a level at a time
 /// and many directories at once. Nothing is classified here, so the walk that does
 /// classify sees the tree exactly as reading it one directory at a time would.
-fn walk_dirs(root: &Path, max_depth: usize) -> WalkedDirs {
+///
+/// With a `listing`, each directory's files are counted off against it as it is read,
+/// and an abandoned load stops the walk: what it has is incomplete and is not used.
+fn walk_dirs(
+    root: &Path,
+    max_depth: usize,
+    listing: Option<&crate::schema_union::Listing<'_>>,
+) -> WalkedDirs {
     let mut walked = WalkedDirs::new();
     let mut level = vec![root.to_path_buf()];
     for _ in 0..max_depth {
-        if level.is_empty() {
+        if level.is_empty() || listing.is_some_and(|l| l.is_cancelled()) {
             break;
         }
         let read = each_at_once(level.len(), |i| {
+            if listing.is_some_and(|l| l.is_cancelled()) {
+                return None;
+            }
             let entries = fs::read_dir(&level[i]).ok()?;
-            Some(
-                entries
-                    .flatten()
-                    .map(|entry| {
-                        let path = entry.path();
-                        // The entry's own type costs no stat; a link is followed, as
-                        // `is_dir` would.
-                        let is_dir = match entry.file_type() {
-                            Ok(t) if t.is_symlink() => path.is_dir(),
-                            Ok(t) => t.is_dir(),
-                            Err(_) => path.is_dir(),
-                        };
-                        (path, is_dir)
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            let entries: Vec<(PathBuf, bool)> = entries
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    // The entry's own type costs no stat; a link is followed, as
+                    // `is_dir` would.
+                    let is_dir = match entry.file_type() {
+                        Ok(t) if t.is_symlink() => path.is_dir(),
+                        Ok(t) => t.is_dir(),
+                        Err(_) => path.is_dir(),
+                    };
+                    (path, is_dir)
+                })
+                .collect();
+            if let Some(listing) = listing {
+                listing.add(entries.iter().filter(|(_, is_dir)| !is_dir).count());
+            }
+            Some(entries)
         });
         let mut next = Vec::new();
         for (dir, entries) in level.into_iter().zip(read) {
@@ -3214,7 +3226,7 @@ impl DataTableState {
     /// walks used for schema/partition discovery, this visits the whole tree because an
     /// exact row count needs every file. Bounded depth guards against pathological trees.
     fn collect_parquet_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize, max_depth: usize) {
-        let walked = walk_dirs(dir, max_depth - depth);
+        let walked = walk_dirs(dir, max_depth - depth, None);
         Self::collect_parquet_files_counting(
             &walked,
             dir,
@@ -3362,27 +3374,29 @@ impl DataTableState {
         Vec<Option<FileSchema>>,
         crate::schema_union::SkippedFiles,
     ) {
-        let (files, skipped) = Self::list_parquet_dir(dir, meter);
+        let (files, skipped) = Self::list_parquet_dir(dir, meter, Some(&progress.listing()));
         let read = crate::schema_union::footers_to_read(files.len());
         let footers = Self::read_local_footers(&files, &read, progress, meter);
         (files, read, footers, skipped)
     }
 
     /// Every Parquet file under `dir`, sorted, and what the walk passed over. Timed
-    /// into `meter` as the listing.
+    /// into `meter` as the listing, and counted off against `listing` as it goes.
     ///
     /// The directories are read many at once and classified afterwards, in one pass
     /// that sees the tree as the serial walk did: on a network mount each directory is
-    /// a round trip, and a Hive tree is thousands of them.
+    /// a round trip, and a Hive tree is thousands of them. A cancelled listing stops
+    /// reading directories and returns what it had, which the caller drops.
     pub fn list_parquet_dir(
         dir: &Path,
         meter: &crate::measurements::Meter,
+        listing: Option<&crate::schema_union::Listing<'_>>,
     ) -> (Vec<PathBuf>, crate::schema_union::SkippedFiles) {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
         let mut skipped = crate::schema_union::SkippedFiles::default();
         let listing_began = std::time::Instant::now();
-        let walked = walk_dirs(dir, MAX_DEPTH);
+        let walked = walk_dirs(dir, MAX_DEPTH, listing);
         Self::collect_parquet_files_counting(
             &walked,
             dir,
@@ -3413,9 +3427,16 @@ impl DataTableState {
     }
 
     /// Each file's size and modification time in nanoseconds, many at once: what a
-    /// local dataset's fingerprint is taken from. `None` for a file gone since listing.
-    pub fn stat_files(files: &[PathBuf]) -> Vec<Option<(u64, u64)>> {
+    /// local dataset's fingerprint is taken from. `None` for a file gone since listing,
+    /// and for every file once `progress` is cancelled.
+    pub fn stat_files(
+        files: &[PathBuf],
+        progress: &crate::schema_union::FooterProgress,
+    ) -> Vec<Option<(u64, u64)>> {
         each_at_once(files.len(), |i| {
+            if progress.is_cancelled() {
+                return None;
+            }
             let meta = fs::metadata(&files[i]).ok()?;
             let modified = meta
                 .modified()
@@ -3454,6 +3475,27 @@ impl DataTableState {
         });
         drop(pass);
         meter.read_footers(footers_began.elapsed(), Some(read.len()), false);
+        footers
+    }
+
+    /// The footers of `files` at `read`, as the pass that settles the row count: timed
+    /// into `meter` as that pass, once, and only when something parsed. See
+    /// `cloud_hive::footers_for_count`, its remote twin.
+    pub(crate) fn footers_for_count(
+        files: &[PathBuf],
+        read: &[usize],
+        meter: &crate::measurements::Meter,
+    ) -> Vec<Option<FileSchema>> {
+        let began = std::time::Instant::now();
+        let footers = Self::read_local_footers(
+            files,
+            read,
+            &crate::schema_union::FooterProgress::default(),
+            &crate::measurements::Meter::default(),
+        );
+        if footers.iter().any(Option::is_some) {
+            meter.counted_rows(began.elapsed(), Some(read.len()), None);
+        }
         footers
     }
 
@@ -16567,6 +16609,35 @@ mod tests {
             read.len(),
             "and every one of them was counted off, parse or no parse"
         );
+    }
+
+    /// A local listing counts the files it finds for the loading screen, as a cloud
+    /// one does, and an abandoned open stops it before it reads a directory (#710).
+    #[test]
+    fn a_local_listing_counts_its_files_and_stops_when_abandoned() {
+        let dir = tempfile::tempdir().unwrap();
+        for day in 0..3 {
+            let sub = dir.path().join(format!("day={day}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            for i in 0..4 {
+                std::fs::write(sub.join(format!("f{i}.parquet")), b"x").unwrap();
+            }
+        }
+        let meter = crate::measurements::Meter::default();
+        let progress = crate::schema_union::FooterProgress::default();
+        {
+            let listing = progress.listing();
+            let (files, _) = DataTableState::list_parquet_dir(dir.path(), &meter, Some(&listing));
+            assert_eq!(files.len(), 12);
+            assert_eq!(progress.listed(), Some(12), "Listing files: 12");
+        }
+        assert_eq!(progress.listed(), None, "and says nothing once it is done");
+
+        progress.cancel();
+        let listing = progress.listing();
+        let (files, _) = DataTableState::list_parquet_dir(dir.path(), &meter, Some(&listing));
+        assert!(files.is_empty(), "a cancelled listing reads no directory");
+        assert_eq!(progress.listed(), Some(0));
     }
 
     #[test]

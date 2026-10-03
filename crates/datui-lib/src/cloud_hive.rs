@@ -2239,6 +2239,91 @@ mod tests {
         assert_eq!(from_bucket, wanted, "and the bucket reads the same one");
     }
 
+    /// Partition columns and their types are the same whether a tree is opened from a
+    /// disk or a bucket: both derive them from the listing (#710). The middle `k=2x`
+    /// and the `m` only the newest file has are what a walk of the first directory
+    /// would have got differently.
+    #[test]
+    fn partitions_are_the_same_from_a_disk_or_a_bucket() {
+        use object_store::PutPayload;
+        use polars::prelude::{DataType, ParquetWriter, df};
+
+        let body = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        let layout = [
+            "k=1/a.parquet",
+            "k=2x/b.parquet",
+            "k=3/m=2024-01-01/c.parquet",
+        ];
+        let partitions = |state: &crate::widgets::datatable::DataTableState| {
+            let columns = state.partition_columns().unwrap_or_default().to_vec();
+            columns
+                .iter()
+                .map(|c| (c.clone(), state.schema().get(c).cloned()))
+                .collect::<Vec<_>>()
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        for rel in layout {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body()).unwrap();
+        }
+        let report = || crate::measurements::OpenReport {
+            progress: Arc::new(crate::schema_union::FooterProgress::default()),
+            meter: Arc::new(crate::measurements::Meter::default()),
+            remembered: None,
+        };
+        let (local, _) = crate::App::schema_state_from_local_hive(
+            Some(dir.path()),
+            &crate::OpenOptions {
+                hive: true,
+                ..crate::OpenOptions::default()
+            },
+            &report(),
+        )
+        .expect("the directory opens");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for rel in layout {
+                store
+                    .put(
+                        &OsPath::from(format!("data/{rel}")),
+                        PutPayload::from(body()),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let (cloud, _) = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &report(),
+        )
+        .expect("the prefix opens");
+
+        let from_disk = partitions(&local);
+        assert_eq!(
+            from_disk,
+            [
+                ("k".to_string(), Some(DataType::Int64)),
+                ("m".to_string(), Some(DataType::Date)),
+            ],
+            "the newest file names the columns and the two ends type them"
+        );
+        assert_eq!(partitions(&cloud), from_disk, "and the bucket agrees");
+    }
+
     /// The twin of the test above, for the meter rather than the counter: a cloud open
     /// times its listing and its footer pass and counts what each cost.
     ///

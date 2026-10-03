@@ -1197,8 +1197,13 @@ Above 20,000 files the background pass reads a sample, and the row count reads
 the footers the sample skipped. Once every footer is read, the dataset is cached
 and a reopen reads none. The control bar reports footer-reading progress.
 
-A large S3 or Google Cloud prefix is listed in parallel key ranges. While it is
-listed, the loading screen counts the objects found: `Listing files: 412,000`.
+While a directory or prefix is listed, the loading screen counts the files
+found: `Listing files: 412,000`. <kbd>Ctrl</kbd>+<kbd>O</kbd> stops the listing.
+A large S3 or Google Cloud prefix is listed in parallel key ranges.
+
+Partition columns come from the listing, the same way for a local directory and a
+cloud prefix. The newest file's path names the columns. The first and newest
+files' values set each column's type.
 
 The Notes tab also flags storage layouts that may explain a slow open:
 

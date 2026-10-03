@@ -5827,6 +5827,47 @@ mod coming_back {
         assert_eq!(first, column, "{:?}", text(next));
     }
 
+    /// A Parquet file whose footer cannot be read says so before Enter, and the open
+    /// that fails is reported once, in the dialog, not again on the prompt (#547 D8).
+    #[test]
+    fn a_broken_parquet_file_says_so_and_its_failure_is_said_once() {
+        let tmp = TempDir::new().unwrap();
+        let broken = touch(tmp.path(), "broken.parquet");
+        std::fs::write(&broken, vec![7u8; 4000]).unwrap();
+        touch(tmp.path(), "fine.csv");
+        let (mut app, rx) = home_app(local_config(tmp.path()));
+        select(&mut app, &broken);
+        settle(&mut app, &rx, |app| {
+            app.home.enriched.contains_key(&broken) && !app.home.measure_in_flight
+        });
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen: String = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Its footer could not be read"), "{screen}");
+        assert!(!screen.contains("Columns are read when opened"), "{screen}");
+
+        let Some(AppEvent::Open(paths, options)) = press(&mut app, KeyCode::Enter) else {
+            panic!("Enter on a file opens it");
+        };
+        crate::common::pump_open_until_loaded(&mut app, &rx, paths, options);
+        assert!(app.error_message().is_some(), "the dialog says it failed");
+        assert_eq!(
+            app.home.status, None,
+            "and the prompt does not say it again"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.error_message(), None);
+        assert_eq!(app.home.status, None, "nor after the dialog is dismissed");
+    }
+
     #[test]
     fn esc_from_a_collection_dataset_puts_the_cursor_back_on_it() {
         let tmp = TempDir::new().unwrap();

@@ -27388,12 +27388,15 @@ impl App {
         let loading::Failed { message, from_home } = failed;
         self.status_message = None;
         self.busy = false;
-        // Kept so the home screen can say why, if that is where dismissing the error
-        // lands the user.
-        self.last_load_error = Some(message.clone());
+        // Kept so the home screen can say why, if dismissing the error lands the user
+        // there from a command line that named the file. Chosen at home, the dialog
+        // has said it, and the prompt's line saying it again was the same failure
+        // reported twice (#547 D8).
         if from_home {
+            self.last_load_error = None;
             self.enter_home();
-            self.home.status = self.last_load_error.clone();
+        } else {
+            self.last_load_error = Some(message.clone());
         }
         self.error_modal.show(message);
     }

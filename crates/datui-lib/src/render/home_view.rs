@@ -2137,6 +2137,10 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // door will be there — and a user with a filter typed is the one most likely
             // to be lost.
             let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
+            let footer_unreadable = entry.kind == EntryKind::File
+                && entry.rows.is_none()
+                && discover::is_parquet_path(&entry.path)
+                && app.home.enriched.contains_key(&entry.path);
             let note = match entry.kind {
                 // The door itself. It is the row the other notes point at, so it says
                 // what it does rather than where to find it.
@@ -2163,16 +2167,22 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 // The log says which files are live, and datui does not read it.
                 k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
                 k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
+                // Measured, and its footer said nothing: the open will most likely fail
+                // the same way, and saying so before Enter beats a pane promising columns
+                // (#547 D8).
+                EntryKind::File if footer_unreadable => FOOTER_UNREADABLE,
                 _ if reading => "Reading...",
                 // Only Parquet says its columns without being read; everything else is
                 // read when it is opened, which is nothing to warn about.
                 _ => "Columns are read when opened.",
             };
             if !note.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    note,
-                    Style::default().fg(ctx.dimmed),
-                )));
+                let color = if note == FOOTER_UNREADABLE {
+                    ctx.warning
+                } else {
+                    ctx.dimmed
+                };
+                lines.push(Line::from(Span::styled(note, Style::default().fg(color))));
             }
         }
     }
@@ -2181,6 +2191,9 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         .wrap(ratatui::widgets::Wrap { trim: false })
         .render(area, buf);
 }
+
+/// What the pane says on a Parquet file whose footer could not be read.
+const FOOTER_UNREADABLE: &str = "Its footer could not be read; it may not open.";
 
 /// What the pane says on a directory `Enter` steps into rather than opens.
 ///
@@ -2210,8 +2223,9 @@ const DOOR_OF_A_MIX: &str = "Enter reads the files on the reads line as one tabl
 
 /// Every sentence the pane offers as guidance, for the test that reads them.
 #[cfg(test)]
-fn guidance_notes() -> [&'static str; 7] {
+fn guidance_notes() -> [&'static str; 8] {
     [
+        FOOTER_UNREADABLE,
         INSIDE_AND_THE_DOOR,
         INSIDE_A_LAKE_TABLE,
         THE_DOOR,

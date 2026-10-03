@@ -10203,15 +10203,11 @@ fn a_load_chosen_at_home_fails_at_home() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert!(!recorded(&broken), "a file that failed is not a recent");
 
-    // Dismissed, the reason stays beside the prompt.
+    // Dismissed, it is not said a second time beside the prompt: the dialog said it
+    // (#547 D8).
     app.event(&key(KeyCode::Enter));
     assert_eq!(app.input_mode, InputMode::Home);
-    assert!(
-        app.home
-            .status
-            .as_deref()
-            .is_some_and(|s| s.contains("broken.parquet"))
-    );
+    assert_eq!(app.home.status, None);
 
     // A file no reader takes is refused before anything is read.
     let model = dir.path().join("model.onnx");

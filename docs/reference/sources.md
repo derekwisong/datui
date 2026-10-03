@@ -87,7 +87,7 @@ edit. It is a snapshot: later datui releases do not change it. Run
 `datui --generate-config --force` for a new one, after saving any edits you want
 to keep.
 
-Across [imported files](settings.md#importing-other-config-files), collections are listed in
+Across [imported files](../user-guide/configuration.md#importing-other-config-files), collections are listed in
 the order defined, imports first. A later collection with the same name replaces
 the earlier one whole; datasets are never merged. `hide_sources` adds up across
 files, and the last file that sets `builtin_catalog` decides it. Two

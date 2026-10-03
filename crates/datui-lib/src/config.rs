@@ -76,24 +76,49 @@ impl ConfigManager {
         Ok(subdir_path)
     }
 
-    /// Generate the default configuration template.
-    ///
-    /// Ordinary settings are commented out so defaults continue to apply. The built-in
-    /// catalog is active: deleting one of its dataset tables must remove that dataset.
+    /// The commented file `datui config init` writes, from the option registry: every
+    /// key with its doc line and its default, commented out so the defaults keep
+    /// applying. The built-in catalog is active: deleting one of its dataset tables
+    /// must remove that dataset.
     pub fn generate_default_config(&self) -> String {
-        // Serialize default config to TOML
-        let config = AppConfig::default();
-        let toml_str = toml::to_string_pretty(&config)
-            .unwrap_or_else(|e| panic!("Failed to serialize default config: {}", e));
-
-        // Build comment map from all struct comment constants
-        let comments = Self::collect_all_comments();
-
-        // Comment out ordinary fields, then append the built-in catalog as live TOML.
-        // Keeping it separate also avoids teaching the generic formatter about arrays of
-        // tables and their nested arrays.
-        let mut result = Self::comment_all_fields(toml_str, comments);
-        result.push_str(
+        use datui_cli::settings::{DefaultValue, Kind, SECTIONS, in_section};
+        let mut out = String::from(
+            "# datui configuration file (TOML: https://toml.io).\n\
+             # Every setting is commented out at its default; remove the # to change one.\n\
+             # `datui config keys` lists them with the values in effect.\n",
+        );
+        for section in SECTIONS {
+            let settings: Vec<_> = in_section(section.name)
+                .filter(|s| s.kind != Kind::Tables)
+                .collect();
+            if settings.is_empty() {
+                continue;
+            }
+            out.push('\n');
+            if !section.name.is_empty() {
+                out.push_str(&format!(
+                    "# {rule}\n# {}\n# {rule}\n# [{}]\n",
+                    section.title,
+                    section.name,
+                    rule = "=".repeat(76)
+                ));
+            }
+            for setting in settings {
+                for line in wrap(setting.doc, 86) {
+                    out.push_str(&format!("# {line}\n"));
+                }
+                let value = match setting.default {
+                    DefaultValue::Value(v) | DefaultValue::Unset(v) => v.to_string(),
+                    DefaultValue::Color { dark, .. } => format!("\"{dark}\""),
+                };
+                if setting.key.ends_with(".*") {
+                    out.push_str(&format!("# {value}\n"));
+                } else {
+                    out.push_str(&format!("# {} = {value}\n", setting.name()));
+                }
+            }
+        }
+        out.push_str(
             "\n# ============================================================================\n\
              # Sources\n\
              # ============================================================================\n\
@@ -105,281 +130,8 @@ impl ConfigManager {
              # This active catalog is a snapshot. Delete or edit a dataset table to curate it;\n\
              # configs generated today do not automatically receive future catalog updates.\n",
         );
-        result.push_str(&serialize_builtin_catalog());
-        result
-    }
-
-    /// Collect all field comments from struct constants into a map
-    fn collect_all_comments() -> std::collections::HashMap<String, String> {
-        let mut comments = std::collections::HashMap::new();
-
-        // Top-level fields
-        for (field, comment) in APP_COMMENTS {
-            comments.insert(field.to_string(), comment.to_string());
-        }
-
-        // Cloud fields
-        for (field, comment) in CLOUD_COMMENTS {
-            comments.insert(format!("cloud.{}", field), comment.to_string());
-        }
-
-        comments.insert(
-            "display.unicode".to_string(),
-            DISPLAY_UNICODE_COMMENT.to_string(),
-        );
-
-        // Data (home screen roots)
-        for (field, comment) in DATA_COMMENTS {
-            comments.insert(format!("data.{}", field), comment.to_string());
-        }
-
-        // Data search (recursive search below the working directory)
-        for (field, comment) in DATA_SEARCH_COMMENTS {
-            comments.insert(format!("data.search.{}", field), comment.to_string());
-        }
-
-        // File loading fields
-        for (field, comment) in FILE_LOADING_COMMENTS {
-            comments.insert(format!("file_loading.{}", field), comment.to_string());
-        }
-
-        // Display fields
-        for (field, comment) in DISPLAY_COMMENTS {
-            comments.insert(format!("display.{}", field), comment.to_string());
-        }
-
-        // Performance fields
-        for (field, comment) in PERFORMANCE_COMMENTS {
-            comments.insert(format!("performance.{}", field), comment.to_string());
-        }
-
-        // Chart fields
-        for (field, comment) in CHART_COMMENTS {
-            comments.insert(format!("chart.{}", field), comment.to_string());
-        }
-
-        // Theme fields
-        for (field, comment) in THEME_COMMENTS {
-            comments.insert(format!("theme.{}", field), comment.to_string());
-        }
-
-        // Color fields
-        for (field, comment) in COLOR_COMMENTS {
-            comments.insert(format!("theme.colors.{}", field), comment.to_string());
-        }
-
-        // Clipboard fields
-        for (field, comment) in CLIPBOARD_COMMENTS {
-            comments.insert(format!("clipboard.{}", field), comment.to_string());
-        }
-
-        // Query fields
-        for (field, comment) in QUERY_COMMENTS {
-            comments.insert(format!("query.{}", field), comment.to_string());
-        }
-
-        // Template fields
-        for (field, comment) in TEMPLATE_COMMENTS {
-            comments.insert(format!("templates.{}", field), comment.to_string());
-        }
-
-        // Debug fields
-        for (field, comment) in DEBUG_COMMENTS {
-            comments.insert(format!("debug.{}", field), comment.to_string());
-        }
-
-        comments
-    }
-
-    /// Comment out all fields in TOML and add comments, then add the settings that
-    /// are unset by default as commented examples
-    fn comment_all_fields(
-        toml: String,
-        comments: std::collections::HashMap<String, String>,
-    ) -> String {
-        let mut result = String::new();
-        result.push_str("# datui configuration file\n");
-        result
-            .push_str("# This file uses TOML format. See https://toml.io/ for syntax reference.\n");
-        result.push('\n');
-
-        let lines: Vec<&str> = toml.lines().collect();
-        let mut i = 0;
-        let mut current_section = String::new();
-        let mut seen_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        // First pass: process existing fields and track what we've seen
-        while i < lines.len() {
-            let line = lines[i];
-
-            // Check if this is a section header
-            if let Some(section) = Self::extract_section_name(line) {
-                current_section = section.clone();
-
-                // Add section header comment if we have one
-                if let Some(header) = SECTION_HEADERS.iter().find(|(s, _)| s == &section) {
-                    result.push_str(header.1);
-                    result.push('\n');
-                }
-
-                // Comment out the section header
-                result.push_str("# ");
-                result.push_str(line);
-                result.push('\n');
-                i += 1;
-                continue;
-            }
-
-            // Check if this is a field assignment
-            if let Some(field_path) = Self::extract_field_path_simple(line, &current_section) {
-                seen_fields.insert(field_path.clone());
-
-                // Add comment if we have one
-                if let Some(comment) = comments.get(&field_path) {
-                    for comment_line in comment.lines() {
-                        // Blank comment lines stay bare so generated configs
-                        // carry no trailing whitespace.
-                        if comment_line.is_empty() {
-                            result.push_str("#\n");
-                            continue;
-                        }
-                        result.push_str("# ");
-                        result.push_str(comment_line);
-                        result.push('\n');
-                    }
-                }
-
-                // Comment out the field line, and every line it continues onto.
-                // `toml` renders a non-empty array across several lines, and
-                // commenting only the first leaves the elements behind as bare
-                // text — a generated config that does not parse.
-                result.push_str("# ");
-                result.push_str(line);
-                result.push('\n');
-                let mut depth = bracket_depth(line);
-                while depth > 0 && i + 1 < lines.len() {
-                    i += 1;
-                    result.push_str("# ");
-                    result.push_str(lines[i]);
-                    result.push('\n');
-                    depth += bracket_depth(lines[i]);
-                }
-            } else {
-                // Empty line or other content - preserve as-is
-                result.push_str(line);
-                result.push('\n');
-            }
-
-            i += 1;
-        }
-
-        // Second pass: settings that are unset by default and so were not serialized
-        result = Self::add_unset_settings(result, &comments, &seen_fields);
-
-        result
-    }
-
-    /// Add the documented settings that are unset by default, which serializing the
-    /// defaults leaves out, each as a commented example in its section. A section with
-    /// nothing serialized of its own, such as `[theme]` beside `[theme.colors]`, gets
-    /// its header placed before its first subsection.
-    fn add_unset_settings(
-        mut result: String,
-        comments: &std::collections::HashMap<String, String>,
-        seen_fields: &std::collections::HashSet<String>,
-    ) -> String {
-        let mut sections: Vec<(&str, String)> = Vec::new();
-        for (path, example) in UNSET_EXAMPLES {
-            if seen_fields.contains(*path) {
-                continue;
-            }
-            let (section, field) = path
-                .rsplit_once('.')
-                .expect("an unset setting lives in a section");
-            let block = match sections.iter().position(|(s, _)| *s == section) {
-                Some(i) => &mut sections[i].1,
-                None => {
-                    sections.push((section, String::new()));
-                    &mut sections.last_mut().expect("just pushed").1
-                }
-            };
-            if let Some(comment) = comments.get(*path) {
-                for line in comment.lines() {
-                    if line.is_empty() {
-                        block.push_str("#\n");
-                    } else {
-                        block.push_str(&format!("# {line}\n"));
-                    }
-                }
-            }
-            block.push_str(&format!("# {field} = {example}\n"));
-        }
-
-        for (section, block) in sections {
-            let header = format!("# [{section}]\n");
-            if let Some(pos) = result.find(&header) {
-                result.insert_str(pos + header.len(), &block);
-                continue;
-            }
-            let mut at = result
-                .find(&format!("# [{section}."))
-                .unwrap_or(result.len());
-            // Keep a subsection's banner above the subsection.
-            let sub = Self::extract_section_name(
-                result[at..]
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim_start_matches("# "),
-            );
-            if let Some((_, banner)) =
-                sub.and_then(|sub| SECTION_HEADERS.iter().find(|(s, _)| *s == sub))
-                && result[..at].ends_with(&format!("{banner}\n"))
-            {
-                at -= banner.len() + 1;
-            }
-            let mut opened = String::new();
-            if let Some((_, banner)) = SECTION_HEADERS.iter().find(|(s, _)| *s == section) {
-                opened.push_str(banner);
-                opened.push('\n');
-            }
-            opened.push_str(&header);
-            opened.push_str(&block);
-            opened.push('\n');
-            result.insert_str(at, &opened);
-        }
-
-        result
-    }
-
-    /// Extract section name from TOML line like "[performance]" or "[theme.colors]"
-    fn extract_section_name(line: &str) -> Option<String> {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            Some(trimmed[1..trimmed.len() - 1].to_string())
-        } else {
-            None
-        }
-    }
-
-    /// Extract field path from a line (simpler version)
-    fn extract_field_path_simple(line: &str, current_section: &str) -> Option<String> {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
-            return None;
-        }
-
-        // Extract field name from line (e.g., "analysis_sample_rows = 10000")
-        if let Some(eq_pos) = trimmed.find('=') {
-            let field_name = trimmed[..eq_pos].trim();
-            if current_section.is_empty() {
-                Some(field_name.to_string())
-            } else {
-                Some(format!("{}.{}", current_section, field_name))
-            }
-        } else {
-            None
-        }
+        out.push_str(&serialize_builtin_catalog());
+        out
     }
 
     /// Write default configuration to config file
@@ -409,7 +161,6 @@ impl ConfigManager {
 #[serde(default)]
 pub struct AppConfig {
     /// Additional config files merged in before this file's own values.
-    /// See `APP_COMMENTS` for the user-facing description.
     pub import: Vec<String>,
     /// Configuration format version (for future compatibility)
     pub version: String,
@@ -432,83 +183,6 @@ pub struct AppConfig {
     pub templates: TemplateConfig,
     pub debug: DebugConfig,
 }
-
-// Field comments for AppConfig (top-level fields)
-const APP_COMMENTS: &[(&str, &str)] = &[
-    (
-        "import",
-        "Config files to merge in before this file's own values.\n\
-         Precedence, lowest first: datui defaults -> each import in order -> this file.\n\
-         So an imported theme restyles datui, but anything you set here still wins.\n\
-         Paths may be absolute, relative to this file, or use ~ and $VAR.\n\
-         An import that does not exist is skipped with a warning on stderr.\n\
-         To follow the active Omarchy theme:\n\
-         import = [\"~/.local/state/omarchy/current/theme/datui.toml\"]",
-    ),
-    (
-        "version",
-        "Configuration format version (for future compatibility)",
-    ),
-    (
-        "formats_path",
-        "Directories of binary format specs (*.toml), searched after ~/.config/datui/formats\n\
-         and $DATUI_FORMATS_PATH; the first spec of a name wins. Adds up across imports.\n\
-         A relative path is relative to the config file that names it.\n\
-         Example: formats_path = [\"~/src/acme-formats\"]",
-    ),
-];
-
-// Section header comments
-const SECTION_HEADERS: &[(&str, &str)] = &[
-    (
-        "cloud",
-        "# ============================================================================\n# Cloud / Object Storage (S3, MinIO)\n# ============================================================================\n# Optional overrides for s3:// URLs. Leave unset to use AWS defaults (env, ~/.aws/).\n# Set endpoint_url to use MinIO or other S3-compatible backends.",
-    ),
-    (
-        "file_loading",
-        "# ============================================================================\n# File Loading Defaults\n# ============================================================================",
-    ),
-    (
-        "display",
-        "# ============================================================================\n# Display Settings\n# ============================================================================",
-    ),
-    (
-        "performance",
-        "# ============================================================================\n# Performance Settings\n# ============================================================================",
-    ),
-    (
-        "chart",
-        "# ============================================================================\n# Chart View\n# ============================================================================",
-    ),
-    (
-        "theme",
-        "# ============================================================================\n# Color Theme\n# ============================================================================",
-    ),
-    (
-        "theme.colors",
-        "# Color definitions\n# Supported formats:\n#   - Named colors: \"red\", \"blue\", \"bright_red\", \"dark_gray\", etc. (case-insensitive)\n#   - Hex colors: \"#ff0000\" or \"#FF0000\" (case-insensitive)\n#   - Indexed colors: \"indexed(0-255)\" for specific xterm 256-color palette entries\n# Colors automatically adapt to your terminal's capabilities",
-    ),
-    (
-        "glyphs",
-        "# ============================================================================\n# Glyph Overrides\n# ============================================================================\n# Replace individual UI glyphs when your font carries more than the tested\n# coverage floor (see scripts/code/audit_glyphs.py in the datui repo). Keys\n# are the slot names in glyphs.rs; an override must keep the display width of\n# the glyph it replaces, and applies only when the Unicode set is active — the\n# ASCII tier never changes. Examples, for fonts that carry them:\n#   in_object_store = \"☁\"                  # the cloud, back again\n#   spinner = [\"◐\", \"◓\", \"◑\", \"◒\"]  # quarter-circle spinner",
-    ),
-    (
-        "clipboard",
-        "# ============================================================================\n# Clipboard\n# ============================================================================\n# How the copy dialog (y) reaches the system clipboard.",
-    ),
-    (
-        "query",
-        "# ============================================================================\n# Query System\n# ============================================================================",
-    ),
-    (
-        "templates",
-        "# ============================================================================\n# View Settings (the section keeps its pre-0.4 name)\n# ============================================================================",
-    ),
-    (
-        "debug",
-        "# ============================================================================\n# Debug Settings\n# ============================================================================",
-    ),
-];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -1334,85 +1008,6 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Documented settings that are unset by default, so serializing the defaults leaves
-/// them out, with the value the generated config shows for each. Every key here needs
-/// a comment, and every commented key must reach the generated config one way or the
-/// other; a test checks both.
-const UNSET_EXAMPLES: &[(&str, &str)] = &[
-    ("cloud.s3_endpoint_url", "\"http://localhost:9000\""),
-    ("cloud.s3_access_key_id", "\"\""),
-    ("cloud.s3_secret_access_key", "\"\""),
-    ("cloud.s3_region", "\"us-east-1\""),
-    ("cloud.azure_account_keys", "true"),
-    ("cloud.env_files", "[\".env\"]"),
-    ("cloud.instance_identity", "false"),
-    ("cloud.discover", "true"),
-    ("cloud.list_on_start", "false"),
-    ("cloud.hide", "[]"),
-    ("file_loading.null_values", "[\"NA\", \"amount=\"]"),
-    ("file_loading.parse_dates", "true"),
-    ("file_loading.parse_strings", "true"),
-    ("file_loading.parse_strings_sample_rows", "1000"),
-    ("file_loading.infer_schema_length", "1000"),
-    ("file_loading.ignore_errors", "false"),
-    ("file_loading.comment_char", "\"#\""),
-    ("file_loading.header_join", "\" \""),
-    ("file_loading.skip_initial_space", "false"),
-    ("file_loading.decompress_in_memory", "false"),
-    ("file_loading.temp_dir", "\"/tmp\""),
-    ("file_loading.single_spine_schema", "true"),
-    ("file_loading.follow_interval_ms", "250"),
-    ("file_loading.memory_warning_mb", "1024"),
-    ("display.sidebar_width", "70"),
-    ("theme.mode", "\"auto\""),
-    ("debug.log_file", "\"~/datui.log\""),
-];
-
-const CLOUD_COMMENTS: &[(&str, &str)] = &[
-    (
-        "s3_endpoint_url",
-        "Custom endpoint for S3-compatible storage (MinIO, etc.). Example: \"http://localhost:9000\". Unset = AWS.",
-    ),
-    (
-        "s3_access_key_id",
-        "Access key when using custom endpoint (or set AWS_ACCESS_KEY_ID).",
-    ),
-    (
-        "s3_secret_access_key",
-        "Secret key when using custom endpoint. Prefer AWS_SECRET_ACCESS_KEY, or the usual AWS credential chain: a secret written here sits in a plain file that backups and dotfile repos will happily copy.",
-    ),
-    (
-        "s3_region",
-        "Region (e.g. us-east-1). Required for custom endpoints; MinIO often uses us-east-1.",
-    ),
-    (
-        "azure_account_keys",
-        "Read an Azure account with its access keys when a sign-in has no data role (default: true)",
-    ),
-    (
-        "env_files",
-        "Files to read cloud variables from, relative to the working directory. None unless listed.\n\
-         Only known cloud variable names are taken, and nothing is exported. Adds up across imports.",
-    ),
-    (
-        "instance_identity",
-        "Use the identity of the cloud VM datui runs on: EC2, GCE or Azure (default: false)",
-    ),
-    (
-        "discover",
-        "Logins found on this machine that become home-screen sources:\n\
-         true or \"all\" (default), false or \"none\", or a list such as [\"s3\", \"gcs\", \"azure\"]",
-    ),
-    (
-        "list_on_start",
-        "List every source's buckets when the home screen opens, not when one is entered (default: false)",
-    ),
-    (
-        "hide",
-        "Cloud source IDs never shown on the home screen. Adds up across imports.",
-    ),
-];
-
 /// The variables that name an S3 endpoint, in the order they are consulted. The AWS
 /// SDKs read the service-specific one first, then the general one; `AWS_ENDPOINT` is
 /// what `object_store` accepts.
@@ -1556,67 +1151,6 @@ fn removed_file_loading_keys(layer: &toml::Table) -> Vec<(&'static str, &'static
         .filter(|(k, _)| section.contains_key(*k))
         .collect()
 }
-
-// Field comments for FileLoadingConfig
-// Format: (field_name, comment_text)
-const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
-    (
-        "parse_dates",
-        "When true (default), CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime",
-    ),
-    (
-        "decompress_in_memory",
-        "When true, decompress a compressed CSV, TSV or PSV into memory (eager). When false (default), decompress to a temp file and use lazy scan",
-    ),
-    (
-        "temp_dir",
-        "Directory for decompression temp files. Unset = system default (e.g. TMPDIR)",
-    ),
-    (
-        "single_spine_schema",
-        "When true (default), a partitioned Parquet dataset's schema is every column any of its files has, read from their footers. When false, Polars decides it from one file.",
-    ),
-    (
-        "null_values",
-        "CSV: values to treat as null. Plain string = all columns; \"COL=VAL\" = column COL only. Example: [\"NA\", \"amount=\"]",
-    ),
-    (
-        "parse_strings",
-        "When false, disable parse-strings. When true or unset, parse all CSV string columns (default). Use CLI --parse-strings=COL or --no-parse-strings.",
-    ),
-    (
-        "parse_strings_sample_rows",
-        "Rows to sample for parse_strings type inference (default 1000).",
-    ),
-    (
-        "infer_schema_length",
-        "Number of rows to use when inferring CSV schema (default 1000). Larger values reduce risk of wrong type (e.g. int then N/A).",
-    ),
-    (
-        "ignore_errors",
-        "When true, CSV reader ignores parse errors and continues with the next batch (default false).",
-    ),
-    (
-        "comment_char",
-        "CSV: lines starting with this are comments, skipped before the header and among the data. Unset = none",
-    ),
-    (
-        "header_join",
-        "CSV: joins a column's names when --header-rows names several lines (default \" \")",
-    ),
-    (
-        "skip_initial_space",
-        "CSV: when true, ignore the spaces after a delimiter; padded numbers are numbers and a cell of spaces is null (default false)",
-    ),
-    (
-        "follow_interval_ms",
-        "--follow: in milliseconds, how often a followed file is checked for new rows, or on Linux the least time between two reads; a burst of appends within one interval is one refresh (default 250, 10 to 60000)",
-    ),
-    (
-        "memory_warning_mb",
-        "Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel, ...); 0 never asks (default 1024)",
-    ),
-];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1905,92 +1439,6 @@ impl NumberFormatConfig {
     }
 }
 
-// Field comments for DisplayConfig
-const DISPLAY_COMMENTS: &[(&str, &str)] = &[
-    (
-        "pages_lookahead",
-        "Number of pages to buffer ahead of visible area\nLarger values = smoother scrolling but more memory",
-    ),
-    (
-        "pages_lookback",
-        "Number of pages to buffer behind visible area\nLarger values = smoother scrolling but more memory",
-    ),
-    (
-        "max_buffered_rows",
-        "Maximum rows in scroll buffer (0 = no limit)\nPrevents unbounded memory use when scrolling",
-    ),
-    (
-        "max_buffered_mb",
-        "Maximum buffer size in MB (0 = no limit)\nUses estimated memory; helps with very wide tables",
-    ),
-    (
-        "row_numbers",
-        "Display row numbers on the left side of the table",
-    ),
-    ("row_start_index", "Starting index for row numbers (0 or 1)"),
-    (
-        "table_cell_padding",
-        "Spacing between columns in the main data table: \"comfortable\" (2 cells, the default),\n\"compact\" (1 cell) or a number of cells (>= 0)",
-    ),
-    (
-        "column_colors",
-        "Colorize main table cells by column type (string, int, float, bool, date/datetime)\nSet to false to use default text color for all cells",
-    ),
-    (
-        "dtype_row",
-        "Show a second header row naming each column's type (str, i64, f64, bool, datetime ...)
-D toggles it for the session",
-    ),
-    (
-        "notes_accent",
-        "Accent the i key when datui has noticed something about the data and the Info
-panel has not been opened since. The Notes tab is there either way",
-    ),
-    (
-        "mouse",
-        "Wheel scrolls, click selects, double-click is Enter. Set false to leave the mouse
-to the terminal. While it is on, Shift-drag selects text in most terminals",
-    ),
-    (
-        "sidebar_width",
-        "Optional: fixed width in characters for all sidebars (Info, Sort & Filter, Views, Pivot & Melt). When unset, each sidebar uses its default width. Example: sidebar_width = 70",
-    ),
-    (
-        "align_numeric_right",
-        "Right-align numeric columns and their headers in the data table (default: true)\nSet to false to left-align everything as in datui 0.2.55 and earlier",
-    ),
-    (
-        "number_format",
-        "How numbers are displayed in the data table. Press , to toggle on/off while running.\n\
-         Shorthand — one of:\n\
-         \x20  none         1234567    (default: renders exactly as the file stores it)\n\
-         \x20  thousands    1,234,567\n\
-         \x20  european     1.234.567,89\n\
-         \x20  si           1 234 567.89   (narrow no-break space, ISO 31-0)\n\
-         \x20  swiss        1'234'567.89\n\
-         \x20  indian       12,34,567.89   (lakh / crore)\n\
-         \x20  underscore   1_234_567\n\
-         \n\
-         For finer control, replace the line below with a table:\n\
-         \x20  [display.number_format]\n\
-         \x20  grouping = \"thousands\"     # none | thousands | indian | system | any preset above\n\
-         \x20  group_separator = \",\"\n\
-         \x20  decimal_separator = \".\"\n\
-         \x20  floats = true              # group float columns too\n\
-         \x20  float_precision = 2        # omit to keep the file's own decimal rendering\n\
-         \x20  exclude_columns = [\"*_id\", \"year\"]   # never format these (globs: * and ?)\n\
-         \n\
-         Every value in a formatted column is grouped. Use exclude_columns for columns that hold\n\
-         identifiers rather than quantities -- years, sample IDs, ZIP codes, accession numbers.\n\
-         \n\
-         grouping = \"system\" is opt-in: it reads LC_ALL / LC_NUMERIC / LANG and picks a matching\n\
-         preset. Formatting is otherwise never taken from the environment, because a data file has\n\
-         no locale and the same file should render identically on every machine.\n\
-         \n\
-         Formatting is display-only. Exports, queries, filters and views always use raw values.",
-    ),
-];
-
 /// Rows an analysis samples by default. Enough that a distribution's shape and a
 /// correlation are stable to two decimals; few enough to read in seconds.
 pub const DEFAULT_ANALYSIS_SAMPLE_ROWS: usize = 100_000;
@@ -2010,22 +1458,6 @@ pub struct PerformanceConfig {
     pub quality_local_copy_mb: u64,
 }
 
-// Field comments for PerformanceConfig
-const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
-    (
-        "analysis_sample_rows",
-        "The analysis sample's starting size (default 100000): the rows every analysis tool\nreads from a larger table, spread across the whole of it. A smaller table is read whole.\n0 starts at every row. The Sample form (s) changes it, and the method, per session.",
-    ),
-    (
-        "polars_streaming",
-        "Use Polars streaming engine for LazyFrame collect when available (default: true). Reduces memory and can improve performance on large or partitioned data.",
-    ),
-    (
-        "quality_local_copy_mb",
-        "Data Quality full scans of a remote dataset (default 2048): up to this many MiB are\nfetched once into the cache directory and every pass reads the copy. A larger dataset,\nor one past the free disk, is read in its passes from the source. 0 never copies.",
-    ),
-];
-
 /// Default for `performance.quality_local_copy_mb`: 2 GiB.
 pub const DEFAULT_QUALITY_LOCAL_COPY_MB: u64 = 2048;
 
@@ -2043,18 +1475,6 @@ pub struct ChartConfig {
     /// Whether a chart starts with its grid at the major ticks. Default false.
     pub grid: bool,
 }
-
-// Field comments for ChartConfig
-const CHART_COMMENTS: &[(&str, &str)] = &[
-    (
-        "row_limit",
-        "Rows a chart reads (display and export). A larger table is sampled across all of it, and the chart says so.\nCan also be changed in the chart view (Sample size). Example: row_limit = 10000",
-    ),
-    (
-        "grid",
-        "Start charts with a grid at the major ticks. g toggles it in the chart view",
-    ),
-];
 
 impl Default for ChartConfig {
     fn default() -> Self {
@@ -2254,53 +1674,6 @@ impl DataConfig {
     }
 }
 
-const DISPLAY_UNICODE_COMMENT: &str = "Draw box-drawing and arrow characters: \"auto\" (default), \"always\", or \"never\".\n\
-     \"auto\" uses them when the locale is UTF-8. Set \"never\" on a terminal that shows\n\
-     replacement boxes instead — datui falls back to plain ASCII throughout.";
-
-const DATA_COMMENTS: &[(&str, &str)] = &[
-    (
-        "directories",
-        "Directories to offer as roots on the datui home screen (opened with no arguments).\n\
-     Think of this like PATH: a list of places, not a catalog. datui stores nothing\n\
-     about what it finds. Supports ~ and $VAR.\n\
-     Directories of datasets you opened recently are offered automatically, so this is\n\
-     only needed for places you have not visited yet. Ctrl+D on the home screen keeps\n\
-     a directory listed without editing this file.\n\
-     Example: directories = [\"/mnt/data\", \"~/datasets\"]",
-    ),
-    (
-        "use_desktop_recents",
-        "Also offer directories your desktop records you opening data files from\n\
-         (freedesktop's recently-used list, written by file managers and GTK apps).\n\
-         Only the DIRECTORIES are used, never the file names: that list often holds\n\
-         things you would not want on a screen you are sharing.\n\
-         Set false to ignore it entirely.",
-    ),
-    (
-        "show_unreadable_files",
-        "List files datui has no reader for (README.md, model.onnx) on the home screen,\n\
-         dimmed, instead of hiding them. Ctrl+A shows or hides them for the session.",
-    ),
-    (
-        "builtin_catalog",
-        "Offer the built-in \"public\" collection of datasets on the home screen.\n\
-         A [[sources]] entry named \"public\" replaces it instead.",
-    ),
-    (
-        "hide_sources",
-        "[[sources]] collections not to show, by name, the built-in \"public\" included.\n\
-         Names add up across imported files. Example: hide_sources = [\"public\"]",
-    ),
-    (
-        "preview_max_mb",
-        "Show the first rows of the selected local file on the home screen when it is at\n\
-         most this many MB (Parquet: its average row group). They are read the way the\n\
-         open reads them and become its first page, so nothing is read twice.\n\
-         Files on network shares are never previewed. 0 turns the preview off.",
-    ),
-];
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ThemeConfig {
@@ -2309,17 +1682,6 @@ pub struct ThemeConfig {
     pub mode: Option<ThemeMode>,
     pub colors: ColorConfig,
 }
-
-// Field comments for ThemeConfig
-const THEME_COMMENTS: &[(&str, &str)] = &[(
-    "mode",
-    "Which built-in color set to start from: \"auto\" (default), \"dark\" or \"light\".\n\
-     datui's stock chrome (header fills, row striping, borders, dim text) uses fixed\n\
-     shades, and a set tuned for a dark terminal is unreadable on a light one.\n\
-     \"auto\" reads COLORFGBG and falls back to dark; Alacritty, Kitty and Ghostty do\n\
-     not set it, so on a light background in those terminals set this to \"light\".\n\
-     Individual colors below always override whichever set is chosen.",
-)];
 
 fn default_row_numbers_color() -> String {
     "dark_gray".to_string()
@@ -2523,116 +1885,6 @@ fn default_hex_ff() -> String {
     ColorConfig::default().hex_ff
 }
 
-// Field comments for ColorConfig
-const COLOR_COMMENTS: &[(&str, &str)] = &[
-    (
-        "keybind_hints",
-        "Keybind hints (modals, breadcrumb, correlation matrix)",
-    ),
-    ("keybind_labels", "Action labels in controls bar"),
-    ("throbber", "Busy indicator (spinner) in control bar"),
-    (
-        "primary_chart_series_color",
-        "Chart data (histogram bars, Q-Q plot data points)",
-    ),
-    (
-        "secondary_chart_series_color",
-        "Chart theory (histogram overlays, Q-Q plot reference line)",
-    ),
-    ("success", "Success indicators, normal distributions"),
-    ("error", "Error messages, outliers"),
-    ("warning", "Warnings, skewed distributions"),
-    ("dimmed", "Dimmed elements, axis lines"),
-    ("background", "Main background"),
-    ("surface", "Modal/surface backgrounds"),
-    ("controls_bg", "Controls bar background"),
-    ("text_primary", "Primary text"),
-    ("text_secondary", "Secondary text"),
-    ("text_inverse", "Text on light backgrounds"),
-    ("table_header", "Table column header text"),
-    ("table_header_bg", "Table column header background"),
-    (
-        "row_numbers",
-        "Row numbers column text; use \"default\" for terminal default",
-    ),
-    ("column_separator", "Vertical line between columns"),
-    ("table_selected", "Selected row style"),
-    (
-        "find_match",
-        "Behind the cell a find (f) landed on; its text is black or white by contrast",
-    ),
-    ("column_cursor", "Tint under the column cursor's cells"),
-    (
-        "cell_cursor",
-        "The column cursor's header and the current cell",
-    ),
-    ("sidebar_border", "Sidebar borders"),
-    ("modal_border_active", "Active modal elements"),
-    ("modal_border_error", "Error modal borders"),
-    ("distribution_normal", "Normal distribution indicator"),
-    ("distribution_skewed", "Skewed distribution indicator"),
-    ("distribution_other", "Other distribution types"),
-    ("outlier_marker", "Outlier indicators"),
-    (
-        "cursor_focused",
-        "Cursor color when text input is focused\n\"default\" reverses the text under the cursor instead",
-    ),
-    (
-        "cursor_dimmed",
-        "Cursor color when text input is unfocused (currently unused - unfocused inputs hide cursor)",
-    ),
-    (
-        "cursor_text",
-        "Text color under the cursor block\n\"default\" picks black or white by the cursor color's luminance",
-    ),
-    (
-        "alternate_row_color",
-        "Background color for every other row in the main data table\nSet to \"default\" to disable alternate row coloring",
-    ),
-    ("str_col", "Main table: string column text color"),
-    ("int_col", "Main table: integer column text color"),
-    ("float_col", "Main table: float column text color"),
-    ("bool_col", "Main table: boolean column text color"),
-    (
-        "temporal_col",
-        "Main table: date/datetime/time column text color",
-    ),
-    ("binary_col", "Main table: binary column placeholder color"),
-    ("chart_series_color_1", "Chart view: first series color"),
-    ("chart_series_color_2", "Chart view: second series color"),
-    ("chart_series_color_3", "Chart view: third series color"),
-    ("chart_series_color_4", "Chart view: fourth series color"),
-    ("chart_series_color_5", "Chart view: fifth series color"),
-    ("chart_series_color_6", "Chart view: sixth series color"),
-    ("chart_series_color_7", "Chart view: seventh series color"),
-    ("chart_grid", "Chart view: the grid, dimmer than dimmed"),
-    (
-        "accent",
-        "The accent: key chips in the control bar, focused section titles, the selection rail",
-    ),
-    (
-        "accent_bright",
-        "A brighter accent, for the section the cursor is in",
-    ),
-    (
-        "gradient_start",
-        "First stop of the wordmark gradient on the home screen",
-    ),
-    (
-        "gradient_end",
-        "Last stop of the wordmark gradient on the home screen",
-    ),
-    ("hex_null", "Hex view: the byte 0x00"),
-    ("hex_printable", "Hex view: printable ASCII bytes"),
-    (
-        "hex_whitespace",
-        "Hex view: space, tab, line feed and the other whitespace bytes",
-    ),
-    ("hex_control", "Hex view: the other ASCII control bytes"),
-    ("hex_high", "Hex view: bytes from 0x80 to 0xFE"),
-    ("hex_ff", "Hex view: the byte 0xFF"),
-];
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueryConfig {
@@ -2703,32 +1955,11 @@ impl QueryMode {
     }
 }
 
-// Field comments for QueryConfig
-const QUERY_COMMENTS: &[(&str, &str)] = &[
-    (
-        "history_limit",
-        "Maximum number of queries to keep in history",
-    ),
-    ("enable_history", "Enable query history caching"),
-    (
-        "default_mode",
-        "Mode / opens on when no query is active: \"sql\", \"search\" or \"q-style\".\n\
-         Editing an active query reopens its own mode.\n\
-         A build without SQL opens on \"search\" instead of \"sql\".",
-    ),
-];
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TemplateConfig {
     pub auto_apply: bool,
 }
-
-// Field comments for TemplateConfig
-const TEMPLATE_COMMENTS: &[(&str, &str)] = &[(
-    "auto_apply",
-    "Apply the best-matching view when a file opens",
-)];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -2740,24 +1971,6 @@ pub struct DebugConfig {
     /// Where the log goes. Unset: `datui.log` in the cache directory.
     pub log_file: Option<String>,
 }
-
-// Field comments for DebugConfig
-const DEBUG_COMMENTS: &[(&str, &str)] = &[
-    ("enabled", "Enable debug overlay by default"),
-    (
-        "show_performance",
-        "Show performance metrics in debug overlay",
-    ),
-    ("show_query", "Show LazyFrame query in debug overlay"),
-    (
-        "show_transformations",
-        "Show transformation state in debug overlay",
-    ),
-    (
-        "log_file",
-        "Log file path (default: datui.log in the cache directory; DATUI_LOG sets the level)",
-    ),
-];
 
 // Default implementations
 /// `[clipboard]`: how the copy dialog reaches the system clipboard.
@@ -2780,21 +1993,6 @@ impl Default for ClipboardConfig {
         }
     }
 }
-
-// Field comments for ClipboardConfig
-const CLIPBOARD_COMMENTS: &[(&str, &str)] = &[
-    (
-        "backend",
-        "How the copy dialog (y) reaches the system clipboard\n\
-         \"auto\": native where a display server answers, osc52 elsewhere (SSH)\n\
-         \"native\": the display server, with an HTML flavor beside tabular copies\n\
-         \"osc52\": an escape sequence the terminal applies; tmux needs set-clipboard on",
-    ),
-    (
-        "osc52_limit_kb",
-        "Longest osc52 copy to attempt, in KB of base64 (terminals cap what they accept)",
-    ),
-];
 
 /// `[glyphs]`: per-slot overrides laid over the Unicode set, so a font that has
 /// more than the coverage floor gets to use it — `☁` back for the object-store
@@ -3218,7 +2416,37 @@ impl ConfigLayer {
     /// against the file that holds it rather than after merging.
     pub fn parse(text: &str) -> Result<Self> {
         let typed: AppConfig = toml::from_str(text)?;
-        let mut table: toml::Table = toml::from_str(text)?;
+        let table: toml::Table = toml::from_str(text)?;
+        Ok(Self::from_table(table, typed.import))
+    }
+
+    /// The layer `-c KEY=VALUE` makes: each key at its place, the last of one key
+    /// winning. Keys and value shapes were checked as the command line was read; the
+    /// types are checked here, as a file's are.
+    pub fn from_overrides(overrides: &[datui_cli::settings::Override]) -> Result<Self> {
+        let mut table = toml::Table::new();
+        for o in overrides {
+            let mut at = &mut table;
+            let mut parts: Vec<&str> = o.key.split('.').collect();
+            let last = parts.pop().unwrap_or_default();
+            for part in parts {
+                let entry = at
+                    .entry(part.to_string())
+                    .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+                if !entry.is_table() {
+                    *entry = toml::Value::Table(toml::Table::new());
+                }
+                at = entry.as_table_mut().expect("just made a table");
+            }
+            at.insert(last.to_string(), o.value.clone());
+        }
+        toml::Value::Table(table.clone())
+            .try_into::<AppConfig>()
+            .map_err(|e| eyre!("-c: {}", e.message().trim_end()))?;
+        Ok(Self::from_table(table, Vec::new()))
+    }
+
+    fn from_table(mut table: toml::Table, imports: Vec<String>) -> Self {
         table.remove("import");
         if let Some(cloud) = table.get_mut("cloud").and_then(toml::Value::as_table_mut) {
             for key in CLOUD_BLANK_IS_UNSET {
@@ -3230,10 +2458,7 @@ impl ConfigLayer {
                 }
             }
         }
-        Ok(Self {
-            table,
-            imports: typed.import,
-        })
+        Self { table, imports }
     }
 
     /// The layer in `path`, or `None` when there is no such file. A file that exists
@@ -3393,11 +2618,20 @@ fn merge_by_name(lower: &mut Vec<toml::Value>, upper: Vec<toml::Value>) {
 impl AppConfig {
     /// Load configuration from all layers (default → imports → user config)
     pub fn load(app_name: &str) -> Result<Self> {
+        Self::load_with(app_name, &[])
+    }
+
+    /// [`Self::load`], with `-c KEY=VALUE` over the files.
+    pub fn load_with(app_name: &str, overrides: &[datui_cli::settings::Override]) -> Result<Self> {
         match ConfigManager::new(app_name) {
-            Ok(manager) => Self::load_from_file(&manager.config_path("config.toml")),
+            Ok(manager) => {
+                Self::load_from_file_with(&manager.config_path("config.toml"), overrides)
+            }
             // No config directory on this platform: defaults are all there is.
             Err(_) => {
-                let config = AppConfig::default();
+                let layers = vec![ConfigLayer::from_overrides(overrides)?];
+                let config =
+                    Self::from_layers(layers).map_err(|e| eyre!("Invalid configuration: {}", e))?;
                 config
                     .validate()
                     .map_err(|e| eyre!("Invalid configuration: {}", e))?;
@@ -3420,6 +2654,14 @@ impl AppConfig {
     /// generated by a theme system that may not have run yet — but an import that
     /// exists and cannot be read or parsed is an error too.
     pub fn load_from_file(config_path: &Path) -> Result<Self> {
+        Self::load_from_file_with(config_path, &[])
+    }
+
+    /// [`Self::load_from_file`], with `-c KEY=VALUE` laid over every file.
+    pub fn load_from_file_with(
+        config_path: &Path,
+        overrides: &[datui_cli::settings::Override],
+    ) -> Result<Self> {
         let mut layers: Vec<ConfigLayer> = Vec::new();
         let mut imports: Vec<String> = Vec::new();
 
@@ -3431,15 +2673,24 @@ impl AppConfig {
             Self::collect_imports(&imports, config_path, &mut stack, &mut layers)?;
             layers.push(root);
         }
+        if !overrides.is_empty() {
+            layers.push(ConfigLayer::from_overrides(overrides)?);
+        }
+        // A bad value may be the file's or a `-c`'s.
+        let place = if overrides.is_empty() {
+            config_path.display().to_string()
+        } else {
+            format!("{} with -c", config_path.display())
+        };
 
         let mut config = Self::from_layers(layers)
-            .map_err(|e| eyre!("Invalid configuration in {}: {}", config_path.display(), e))?;
+            .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
         // `import` is a load-time directive, never merged; report what the root declared.
         config.import = imports;
 
         config
             .validate()
-            .map_err(|e| eyre!("Invalid configuration in {}: {}", config_path.display(), e))?;
+            .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
 
         Ok(config)
     }
@@ -4366,75 +3617,19 @@ fn xterm_rgb(i: u8) -> (u8, u8, u8) {
     }
 }
 
-const DATA_SEARCH_COMMENTS: &[(&str, &str)] = &[
-    (
-        "enabled",
-        "Search below the working directory when you type on the home screen.\n\
-         The walk runs once, in the background, the first time you type; every\n\
-         keystroke after that filters the result in memory. Set false to list only\n\
-         the directories themselves.",
-    ),
-    (
-        "max_depth",
-        "How deep to descend. Data is rarely twelve directories down, and every\n\
-         extra level costs a listing on every branch.",
-    ),
-    (
-        "max_results",
-        "Stop after this many datasets. The list is a way to find something, not an\n\
-         inventory. Hitting the limit is reported on screen, never silent.",
-    ),
-    (
-        "time_budget_ms",
-        "Give up walking after this long and keep whatever was found. A cold or\n\
-         enormous tree must degrade to partial results, never to a wait.",
-    ),
-    (
-        "cross_filesystems",
-        "Descend into directories on a different filesystem than the one you started\n\
-         in. Off by default, and the most important limit here: it is what keeps a\n\
-         search from wandering onto a network share, and on autofs, from MOUNTING one\n\
-         merely by looking at it. Turn it on only if your data lives on a mount\n\
-         beneath your working directory and you know that mount is fast.",
-    ),
-    (
-        "follow_gitignore",
-        "Obey .gitignore. Off by default, and deliberately: people gitignore data\n\
-         directories precisely because the data is too big to commit, which is the\n\
-         same reason they want to open it in datui. In datui's own repository,\n\
-         honouring it hides 38 real test datasets while hiding 69 files of virtualenv\n\
-         noise -- wrong in both directions. Use skip/skip_extra for the noise.",
-    ),
-    (
-        "skip",
-        "Directory names never descended into. Setting this REPLACES the defaults:\n\
-         node_modules, target, build, dist, vendor, site-packages, __pycache__,\n\
-         venv, env. Hidden directories (.git, .venv, the caches) are always skipped.\n\
-         To add to the defaults rather than replace them, use skip_extra.",
-    ),
-    (
-        "skip_extra",
-        "Directory names to skip in addition to the defaults, so adding one does not\n\
-         mean restating the whole list. Example: skip_extra = [\"archive\", \"raw\"]",
-    ),
-    (
-        "extensions",
-        "File extensions to search for. Empty (default) means every format datui can\n\
-         open -- which includes json and txt, noisy in a source tree. Narrow it if\n\
-         that bothers you. Example: extensions = [\"parquet\", \"csv\"]",
-    ),
-];
-
-/// Net change in unclosed brackets across one line of TOML.
-///
-/// Enough to tell whether a rendered array is still open at the end of the line.
-/// Brackets inside strings would fool it, and none of the values here contain any.
-fn bracket_depth(line: &str) -> i32 {
-    line.chars().fold(0, |acc, c| match c {
-        '[' => acc + 1,
-        ']' => acc - 1,
-        _ => acc,
-    })
+/// `text` in lines of at most `width` characters, broken between words.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.len() + 1 + word.len() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -4589,9 +3784,14 @@ mod tests {
         };
         let mut out = Vec::new();
         walk(&defaults, "", &mut out);
-        for (path, example) in UNSET_EXAMPLES {
-            let value: toml::Table = toml::from_str(&format!("v = {example}")).unwrap();
-            out.push((path.to_string(), value["v"].clone()));
+        for setting in datui_cli::settings::SETTINGS {
+            if let datui_cli::settings::DefaultValue::Unset(example) = setting.default
+                && !setting.key.ends_with(".*")
+                && setting.kind != datui_cli::settings::Kind::Tables
+            {
+                let value: toml::Table = toml::from_str(&format!("v = {example}")).unwrap();
+                out.push((setting.key.to_string(), value["v"].clone()));
+            }
         }
         out
     }
@@ -4613,20 +3813,75 @@ mod tests {
         table.get(key)
     }
 
+    /// The registry and the config structs describe the same keys with the same
+    /// defaults: every key the defaults serialize is registered with that value, and
+    /// every registered key is one the structs read.
     #[test]
-    fn every_setting_is_documented_in_the_generated_config() {
-        // A new option needs a comment and a line in the generated config, whether its
-        // default serializes or it is unset and so needs an `UNSET_EXAMPLES` entry.
-        let comments = ConfigManager::collect_all_comments();
+    fn the_registry_and_the_config_structs_agree() {
+        use datui_cli::settings::{DefaultValue, Kind, SETTINGS, find};
+        let toml::Value::Table(defaults) = toml::Value::try_from(AppConfig::default()).unwrap()
+        else {
+            unreachable!("a struct serializes to a table")
+        };
+        let light = toml::Value::try_from(ColorConfig::light()).unwrap();
+        for (path, value) in leaf_settings() {
+            let setting = find(&path).unwrap_or_else(|| panic!("{path} is not registered"));
+            let registered = match setting.default {
+                DefaultValue::Value(v) | DefaultValue::Unset(v) => {
+                    toml::from_str::<toml::Table>(&format!("v = {v}")).unwrap()["v"].clone()
+                }
+                DefaultValue::Color { dark, light: lit } => {
+                    let name = setting.name();
+                    assert_eq!(
+                        light.get(name).and_then(|v| v.as_str()),
+                        Some(lit),
+                        "{path} (light)"
+                    );
+                    toml::Value::String(dark.to_string())
+                }
+            };
+            assert_eq!(value, registered, "{path}: the registry's default differs");
+        }
+        for setting in SETTINGS {
+            if setting.key.ends_with(".*") || setting.kind == Kind::Tables {
+                continue;
+            }
+            let serialized = value_at(&defaults, setting.key).is_some();
+            let unset = matches!(setting.default, DefaultValue::Unset(_));
+            assert_eq!(
+                serialized,
+                !unset,
+                "{}: registered as {}set by default",
+                setting.key,
+                if unset { "un" } else { "" }
+            );
+            // Each value it shows is one the config reads.
+            let example = match setting.default {
+                DefaultValue::Value(v) | DefaultValue::Unset(v) => v.to_string(),
+                DefaultValue::Color { dark, .. } => format!("\"{dark}\""),
+            };
+            let value =
+                toml::from_str::<toml::Table>(&format!("v = {example}")).unwrap()["v"].clone();
+            layer_at(setting.key, value).unwrap_or_else(|e| panic!("{}: {e}", setting.key));
+        }
+    }
+
+    #[test]
+    fn the_generated_config_shows_every_key_and_parses_uncommented() {
         let generated = ConfigManager::with_dir(PathBuf::new()).generate_default_config();
         let mut shown = std::collections::HashSet::new();
         let mut section = String::new();
+        let mut uncommented = String::new();
         for line in generated.lines() {
             let Some(line) = line.strip_prefix("# ") else {
+                uncommented.push_str(line);
+                uncommented.push('\n');
                 continue;
             };
             if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
                 section = name.to_string();
+                uncommented.push_str(line);
+                uncommented.push('\n');
             } else if let Some((key, _)) = line.split_once(" = ")
                 && !key.contains(' ')
             {
@@ -4634,22 +3889,18 @@ mod tests {
                     "" => key.to_string(),
                     s => format!("{s}.{key}"),
                 });
+                uncommented.push_str(line);
+                uncommented.push('\n');
             }
         }
-        let settings = leaf_settings();
-        for (path, _) in &settings {
-            assert!(comments.contains_key(path), "{path} has no comment");
+        for (path, _) in leaf_settings() {
             assert!(
-                shown.contains(path),
+                shown.contains(&path),
                 "{path} is not in the generated config"
             );
         }
-        for path in comments.keys() {
-            assert!(
-                settings.iter().any(|(p, _)| p == path),
-                "{path} is commented but is no setting"
-            );
-        }
+        // Every value shown, uncommented, is a config datui reads.
+        ConfigLayer::parse(&uncommented).unwrap();
     }
 
     #[test]

@@ -275,7 +275,7 @@ wins, as with `PATH`.
 |---|---|
 | `~/.config/datui/formats/` | Your own specs |
 | `$DATUI_FORMATS_PATH` | Directories separated by `:` (`;` on Windows), such as a checked-out repository of a team's specs |
-| `formats_path` in [config](../reference/settings.md#binary-formats) | More directories. Lists add up across imported config files |
+| `formats_path` in [config](../reference/settings.md#top-level) | More directories. Lists add up across imported config files |
 
 `datui formats` lists each spec, what it matches, the file it came from, any copy
 of the same name it overrides, and the files that could not be read, with the

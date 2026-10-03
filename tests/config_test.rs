@@ -1066,13 +1066,7 @@ fn test_generated_config_documents_number_format() {
     assert!(template.contains("number_format = \"none\""));
     assert!(template.contains("[display.number_format]"));
     assert!(template.contains("align_numeric_right = true"));
-    assert!(template.contains("Press , to toggle"));
-    assert!(template.contains("exclude_columns"));
-    // No magnitude threshold: the comment must point at exclude_columns as the
-    // way to leave identifier columns alone.
     assert!(!template.contains("min_digits"));
-    assert!(!template.contains("include_columns"));
-    assert!(template.contains("identifiers rather than quantities"));
 
     // Generated configs must not carry trailing whitespace.
     for (i, line) in template.lines().enumerate() {
@@ -1557,8 +1551,7 @@ fn test_generated_config_documents_import() {
     let (_temp_dir, config_manager) = setup_test_config_dir();
     let template = config_manager.generate_default_config();
 
-    assert!(template.contains("import"));
-    assert!(template.contains("omarchy/current/theme/datui.toml"));
+    assert!(template.contains("# import = []"));
 
     // Still valid TOML with the new key present.
     let parsed: AppConfig = toml::from_str(&template).expect("Template should be valid TOML");
@@ -2197,8 +2190,8 @@ fn test_the_generated_config_shows_every_documented_setting() {
 
 #[test]
 fn test_a_multi_line_array_default_is_fully_commented() {
-    // `skip` renders across ten lines. Commenting only the first left the elements
-    // behind as bare text, which does not parse.
+    // A list default is written on its one commented line, so no element is left
+    // behind as bare text, which would not parse.
     let manager = ConfigManager::with_dir(
         TempDir::new()
             .expect("Failed to create temp dir")
@@ -2212,7 +2205,7 @@ fn test_a_multi_line_array_default_is_fully_commented() {
         "the skip list should appear in the generated config"
     );
     assert!(
-        generated.contains("#     \"node_modules\","),
+        generated.contains("# skip = [\"node_modules\","),
         "array elements must be commented too"
     );
 }
@@ -2276,7 +2269,7 @@ fn generated_config_is_not_readable_by_other_users() {
     );
 }
 
-/// `--generate-config --force` overwrites a file that already exists, and
+/// `datui config init --force` overwrites a file that already exists, and
 /// `OpenOptions::mode` only applies when creating. Without an explicit
 /// `set_permissions`, a config first written by an older datui would keep its
 /// 0644 forever.
@@ -3085,8 +3078,8 @@ fn glyph_override_errors_name_the_slot() {
 fn template_documents_the_glyphs_section() {
     let (_temp_dir, config_manager) = setup_test_config_dir();
     let template = config_manager.generate_default_config();
-    assert!(template.contains("# Glyph Overrides"), "{template}");
-    assert!(template.contains("audit_glyphs.py"), "{template}");
+    assert!(template.contains("# Glyphs"), "{template}");
+    assert!(template.contains("glyphs.rs"), "{template}");
 }
 
 #[test]

@@ -134,7 +134,11 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
 /// The configuration file, read. From the command line its error says how to get
 /// past it; a library caller gets the error as it is.
 pub(crate) fn load_config(input: &RunInput) -> Result<AppConfig> {
-    AppConfig::load(APP_NAME).map_err(|e| match input {
+    let overrides = match input {
+        RunInput::Cli(args) => args.config.as_slice(),
+        _ => &[],
+    };
+    AppConfig::load_with(APP_NAME, overrides).map_err(|e| match input {
         // In full: a TOML parse error's later lines show the offending line and why.
         RunInput::Cli(_) => color_eyre::eyre::eyre!(
             "{e}\nFix the configuration and try again, or remove/rename the config file to \
@@ -247,6 +251,65 @@ mod tests {
         assert!(after(&["--mouse=true"], false));
         assert!(after(&[], true));
         assert!(!after(&[], false));
+    }
+
+    /// A key is read from the file, `-c` beats the file, and a flag beats `-c`.
+    #[test]
+    fn a_flag_beats_dash_c_which_beats_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(
+            &file,
+            "[performance]\nanalysis_sample_rows = 10\n[display]\nrow_start_index = 5\n",
+        )
+        .unwrap();
+        let effective = |flags: &[&str]| {
+            let args = Args::try_parse_from(std::iter::once("datui").chain(flags.iter().copied()))
+                .expect("parses");
+            let mut config = AppConfig::load_from_file_with(&file, &args.config).unwrap();
+            apply_args(&mut config, &args);
+            (
+                config.performance.analysis_sample_rows,
+                config.display.row_start_index,
+            )
+        };
+        assert_eq!(effective(&[]), (10, 5));
+        assert_eq!(
+            effective(&["-c", "performance.analysis_sample_rows=20"]),
+            (20, 5)
+        );
+        assert_eq!(
+            effective(&[
+                "-c",
+                "performance.analysis_sample_rows=20",
+                "--sample-rows",
+                "30"
+            ]),
+            (30, 5)
+        );
+        // The last `-c` of a key wins, and keys it does not name keep the file's.
+        assert_eq!(
+            effective(&[
+                "-c",
+                "display.row_start_index=0",
+                "-c",
+                "display.row_start_index=2"
+            ]),
+            (10, 2)
+        );
+    }
+
+    /// A `-c` value of the right shape for its key but not for datui says it came
+    /// from `-c`.
+    #[test]
+    fn a_dash_c_the_config_cannot_read_is_named() {
+        let args =
+            Args::try_parse_from(["datui", "-c", "display.number_format=[1, 2]"]).expect("parses");
+        let dir = tempfile::tempdir().unwrap();
+        let error = AppConfig::load_from_file_with(&dir.path().join("none.toml"), &args.config)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("-c:"), "{error}");
     }
 
     #[test]

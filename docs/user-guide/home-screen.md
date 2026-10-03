@@ -447,7 +447,7 @@ beside its name, whether it is local or on a share.
 The details pane hides below roughly 100 columns; size and shape columns hide
 below roughly 56. On a wide terminal the list stops at 84 columns, so a row's
 size and age stay near its name, and the pane takes the rest. Below 28 rows, the wordmark becomes a one-line title.
-Without UTF-8 ([detection](../reference/settings.md#glyphs-or-ascii)), markers
+Without UTF-8 ([detection](../user-guide/configuration.md#glyphs-or-ascii)), markers
 and borders use ASCII. Override detection with:
 
 ```toml

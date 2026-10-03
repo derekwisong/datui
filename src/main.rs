@@ -5,7 +5,7 @@ use datui::{ConfigManager, TemplateManager};
 
 fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
     if let Some(datui::cli::Command::Formats { action }) = &args.command {
-        let config = match datui::AppConfig::load(APP_NAME) {
+        let config = match datui::AppConfig::load_with(APP_NAME, &args.config) {
             Ok(config) => config,
             Err(e) => {
                 eprintln!(
@@ -207,6 +207,7 @@ mod tests {
             follow: false,
             tee: None,
             tee_raw: false,
+            config: vec![],
         };
         let opts: OpenOptions = (&args).into();
         assert_eq!(opts.skip_lines, Some(1));

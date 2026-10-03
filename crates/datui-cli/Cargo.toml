@@ -18,3 +18,5 @@ path = "src/bin/gen_docs.rs"
 
 [dependencies]
 clap = { version = "4.5.54", features = ["derive"] }
+serde = "1.0"
+toml = "1.1"

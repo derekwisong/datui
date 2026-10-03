@@ -51,7 +51,7 @@ labels where there is room.
 
 | Axis | Ticks and labels |
 |---|---|
-| Numbers | One notation and precision per axis, in the table's digit grouping and decimal separator ([number format](../reference/settings.md#number-formatting)). Counts and integer columns tick in whole numbers |
+| Numbers | One notation and precision per axis, in the table's digit grouping and decimal separator ([number format](../user-guide/configuration.md#number-formatting)). Counts and integer columns tick in whole numbers |
 | Dates and times | Calendar boundaries: years, months, days, hours, minutes. A label names the unit that turns there: `2026` at a new year, `Apr` at a new month, `Mar 5` at a new day among hours, otherwise `12` or `06:00`. The first label also names the year |
 | Log scale | 1, 10, 100 and on, with 2 and 5 between when there is room, and 0 where the data starts there; one format, shortened to `1k`, `10k`, `1M` when narrow |
 | Too narrow | Fewer ticks, then shorter labels (`12.3k`, `12,3k`); a time axis falls back to its ends. When two labels are nearest the spacing and more fit, more: `0 2 4 6`, not `0 5` |

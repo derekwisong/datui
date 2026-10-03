@@ -8,6 +8,8 @@ use std::path::Path;
 
 mod formats;
 pub use formats::*;
+pub mod settings;
+pub mod units;
 
 /// Compression format for data files
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -373,6 +375,10 @@ pub struct Args {
     /// Which cloud logins found on this machine appear on the home screen: all, none, or kinds separated by commas (s3, gcs, azure). Overrides [cloud] discover. Entries in [[cloud.connections]] always appear
     #[arg(long = "cloud-discover", value_name = "WHICH", value_parser = parse_cloud_discover, help_heading = "Cloud")]
     pub cloud_discover: Option<String>,
+
+    /// Set a config key for this run, as in the config file: -c display.row_numbers=true. Repeatable; flags still win. `datui config keys` lists the keys
+    #[arg(short = 'c', long = "config", value_name = "KEY=VALUE", global = true)]
+    pub config: Vec<settings::Override>,
 
     #[command(subcommand)]
     pub command: Option<Command>,

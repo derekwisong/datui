@@ -40,7 +40,6 @@ fn test_config_used_for_row_numbers() {
         number_format: None,
         align_numeric_right: None,
         mouse: None,
-        generate_config: false,
         force: false,
         hive: false,
         single_spine_schema: None,
@@ -67,7 +66,9 @@ fn test_config_used_for_row_numbers() {
         ignore_errors: None,
         follow: false,
         tee: None,
+        generate_config: false,
         tee_raw: false,
+        config: vec![],
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -115,7 +116,6 @@ fn test_cli_args_override_config() {
         number_format: None,
         align_numeric_right: None,
         mouse: None,
-        generate_config: false,
         force: false,
         hive: false,
         single_spine_schema: None,
@@ -142,7 +142,9 @@ fn test_cli_args_override_config() {
         ignore_errors: None,
         follow: false,
         tee: None,
+        generate_config: false,
         tee_raw: false,
+        config: vec![],
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -190,7 +192,6 @@ fn test_config_display_settings() {
         number_format: None,
         align_numeric_right: None,
         mouse: None,
-        generate_config: false,
         force: false,
         hive: false,
         single_spine_schema: None,
@@ -217,7 +218,9 @@ fn test_config_display_settings() {
         ignore_errors: None,
         follow: false,
         tee: None,
+        generate_config: false,
         tee_raw: false,
+        config: vec![],
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -265,7 +268,6 @@ fn test_config_file_loading_settings() {
         number_format: None,
         align_numeric_right: None,
         mouse: None,
-        generate_config: false,
         force: false,
         hive: false,
         single_spine_schema: None,
@@ -292,7 +294,9 @@ fn test_config_file_loading_settings() {
         ignore_errors: None,
         follow: false,
         tee: None,
+        generate_config: false,
         tee_raw: false,
+        config: vec![],
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -338,7 +342,6 @@ fn test_config_null_values_merge() {
         number_format: None,
         align_numeric_right: None,
         mouse: None,
-        generate_config: false,
         force: false,
         hive: false,
         single_spine_schema: None,
@@ -365,7 +368,9 @@ fn test_config_null_values_merge() {
         ignore_errors: None,
         follow: false,
         tee: None,
+        generate_config: false,
         tee_raw: false,
+        config: vec![],
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -424,7 +429,6 @@ fn test_parse_strings_default_and_no_parse_strings() {
         number_format: None,
         align_numeric_right: None,
         mouse: None,
-        generate_config: false,
         force: false,
         hive: false,
         single_spine_schema: None,
@@ -451,7 +455,9 @@ fn test_parse_strings_default_and_no_parse_strings() {
         ignore_errors: None,
         follow: false,
         tee: None,
+        generate_config: false,
         tee_raw: false,
+        config: vec![],
     };
     let opts = OpenOptions::from_args_and_config(&args, &config);
     assert!(matches!(opts.parse_strings, Some(ParseStringsTarget::All)));

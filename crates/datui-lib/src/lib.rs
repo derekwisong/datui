@@ -1166,6 +1166,44 @@ mod probe_slot_tests {
 
 /// #455: a home-screen worker that panics still answers, so what marks it in flight
 /// stops waiting and the next request is made.
+#[cfg(all(test, feature = "cloud"))]
+mod cloud_row_tests {
+    /// A source that cannot list says the problem once and what to do about it, rather
+    /// than `not signed in  not signed in` (#547 D5).
+    #[test]
+    fn a_source_not_signed_in_says_what_to_run() {
+        let source = crate::cloud_sources::Source {
+            id: "az".to_string(),
+            label: "Azure".to_string(),
+            kind: crate::cloud_browse::ProviderKind::Azure,
+            tier: crate::cloud_sources::Tier::Tools,
+            origin: "not signed in".to_string(),
+            s3: Default::default(),
+            azure: Default::default(),
+            project: None,
+            profile: None,
+            buckets: Vec::new(),
+            problem: Some("not signed in: run az login".to_string()),
+            gcloud: None,
+            secret_command: None,
+            google_credentials: None,
+        };
+        let row = super::home_cloud_source(&source, None, false);
+        assert_eq!(row.count_text(), "not signed in");
+        assert_eq!(row.note, "run az login");
+
+        // A problem with nothing after the short word keeps its whole text.
+        let source = crate::cloud_sources::Source {
+            problem: Some("no credentials in AWS_PROFILE".to_string()),
+            origin: "env".to_string(),
+            ..source
+        };
+        let row = super::home_cloud_source(&source, None, false);
+        assert_eq!(row.count_text(), "not configured");
+        assert_eq!(row.note, "no credentials in AWS_PROFILE");
+    }
+}
+
 #[cfg(test)]
 mod home_worker_panic_tests {
     use super::*;
@@ -29905,33 +29943,46 @@ fn home_cloud_source(
     }
     details.push(("login".to_string(), source.origin.clone()));
 
-    let note = [source.detail(), Some(source.origin.clone())]
-        .into_iter()
-        .flatten()
-        .filter(|n| !n.is_empty())
-        .collect::<Vec<_>>()
-        .join(&format!(" {} ", crate::glyphs::get().middot));
+    let short = source.problem.as_deref().map(|problem| {
+        if problem.starts_with("not signed in") {
+            "not signed in"
+        } else if problem.starts_with("unsupported login") {
+            "unsupported login"
+        } else {
+            "not configured"
+        }
+    });
+    // A source that cannot list says what to do about it where the row has room: the
+    // count already carries the short problem, and the login it would use is moot
+    // (#547 D5).
+    let note = match (&source.problem, short) {
+        (Some(problem), Some(short)) => problem
+            .strip_prefix(short)
+            .map(|rest| rest.trim_start_matches([':', ' ']))
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(problem)
+            .to_string(),
+        _ => [source.detail(), Some(source.origin.clone())]
+            .into_iter()
+            .flatten()
+            .filter(|n| !n.is_empty())
+            .collect::<Vec<_>>()
+            .join(&format!(" {} ", crate::glyphs::get().middot)),
+    };
     let mut names: Vec<String> = cached.map(|c| c.buckets.clone()).unwrap_or_default();
     for bucket in &source.buckets {
         if !names.contains(bucket) {
             names.push(bucket.clone());
         }
     }
-    let status = match &source.problem {
-        Some(problem) => home::CloudStatus::Failed {
-            short: if problem.starts_with("not signed in") {
-                "not signed in"
-            } else if problem.starts_with("unsupported login") {
-                "unsupported login"
-            } else {
-                "not configured"
-            }
-            .to_string(),
+    let status = match (&source.problem, short) {
+        (Some(problem), Some(short)) => home::CloudStatus::Failed {
+            short: short.to_string(),
             detail: problem.clone(),
         },
-        None if cached.is_some() => home::CloudStatus::Listed,
-        None if listing => home::CloudStatus::Listing,
-        None => home::CloudStatus::Unlisted,
+        _ if cached.is_some() => home::CloudStatus::Listed,
+        _ if listing => home::CloudStatus::Listing,
+        _ => home::CloudStatus::Unlisted,
     };
     home::CloudSource {
         id: source.id.clone(),

@@ -1096,22 +1096,17 @@ impl Reader<'_> {
             }
         };
         let mut spec = Delimited::default();
+        // The `[csv]` keys and `--delimiter`'s words, read by the same rules.
         if let Some(v) = top.get("delimiter") {
             let text = self.string(v, "delimiter")?;
-            spec.delimiter = match text.as_bytes() {
-                [b] if b.is_ascii() && !matches!(b, b'"' | b'\n' | b'\r') => Some(*b),
-                _ => {
-                    return Err(self.error(
-                        &v.span(),
-                        "delimiter: expected one character, such as \",\", \";\" or \"\\t\"",
-                    ));
-                }
-            };
+            let byte = datui_cli::parse_delimiter(&text)
+                .map_err(|e| self.error(&v.span(), format!("delimiter: {e}")))?;
+            spec.delimiter = Some(byte);
         }
-        if let Some(v) = top.get("comment_char") {
-            let text = self.string(v, "comment_char")?;
+        if let Some(v) = top.get("comment") {
+            let text = self.string(v, "comment")?;
             crate::csv_dialect::check_comment_char(&text)
-                .map_err(|e| self.error(&v.span(), format!("comment_char: {e}")))?;
+                .map_err(|e| self.error(&v.span(), format!("comment: {e}")))?;
             spec.comment_char = Some(text);
         }
         if let Some(v) = top.get("skip_initial_space") {
@@ -1127,17 +1122,17 @@ impl Reader<'_> {
             }
             spec.skip_lines = Some(n as usize);
         }
-        if let Some(v) = top.get("null_value") {
+        if let Some(v) = top.get("null_values") {
             spec.null_values = match v.get_ref() {
                 DeValue::String(s) => vec![s.to_string()],
                 DeValue::Array(items) => items
                     .iter()
-                    .map(|item| self.string(item, "null_value"))
+                    .map(|item| self.string(item, "null_values"))
                     .collect::<Result<_, _>>()?,
                 _ => {
                     return Err(self.error(
                         &v.span(),
-                        "null_value: expected a string or a list of them, such as \"NA\" or \"COL=-999\"",
+                        "null_values: expected a string or a list of them, such as \"NA\" or \"COL=-999\"",
                     ));
                 }
             };
@@ -1197,7 +1192,7 @@ impl Reader<'_> {
                 return Err(self.error(
                     &v.span(),
                     format!(
-                        "metadata_line: line {n} would be read as data; put it above header_rows, or set skip_lines or comment_char"
+                        "metadata_line: line {n} would be read as data; put it above header_rows, or set skip_lines or comment"
                     ),
                 ));
             }
@@ -3285,25 +3280,8 @@ impl Spec {
         document: &DeTable<'_>,
         path: Option<&Path>,
     ) -> Result<Self, SpecError> {
-        let top = reader.entries(
-            document,
-            "a delimited spec",
-            &[
-                "name",
-                "description",
-                "kind",
-                "match",
-                "delimiter",
-                "comment_char",
-                "skip_initial_space",
-                "header_rows",
-                "header_join",
-                "metadata_line",
-                "null_value",
-                "skip_lines",
-                "columns",
-            ],
-        )?;
+        let keys = delimited_spec_keys();
+        let top = reader.entries(document, "a delimited spec", &keys)?;
         let name = reader.spec_name(&top)?;
         let description = top
             .get("description")
@@ -4907,6 +4885,24 @@ pub enum Route {
     Delimited(Choice),
 }
 
+/// The keys a delimited spec takes: its own, and the dialect the option registry
+/// gives a spec key (`[csv]`'s keys and the layout flags'), so a spec reads as a
+/// `[csv]` block.
+fn delimited_spec_keys() -> Vec<&'static str> {
+    use datui_cli::settings::{OPEN, SETTINGS};
+    let mut keys = vec![
+        "name",
+        "description",
+        "kind",
+        "match",
+        "metadata_line",
+        "columns",
+    ];
+    keys.extend(SETTINGS.iter().filter_map(|s| s.spec));
+    keys.extend(OPEN.iter().filter_map(|o| o.spec));
+    keys
+}
+
 /// Whether, and with which spec, `path` is read. In order: `--format FILE`, then
 /// `--format NAME`, then a glob, then magic. A file whose name or bytes say it is a
 /// format datui reads already keeps opening that way.
@@ -6233,7 +6229,7 @@ name = "acme.instrument-log"
 kind = "delimited"
 match = { magic = "#device_info" }
 
-comment_char = "#"
+comment = "#"
 skip_initial_space = true
 header_rows = { name = 3, unit = 2 }
 metadata_line = 1
@@ -6266,7 +6262,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         assert_eq!(d.columns[0].from.len(), 3);
         // A list of name lines joins them, as Frictionless does.
         let joined = Spec::parse(
-            "name = \"a.b\"\nkind = \"delimited\"\nheader_rows = [1, 2]\ndelimiter = \"\\t\"\nnull_value = [\"NA\", \"x=-1\"]",
+            "name = \"a.b\"\nkind = \"delimited\"\nheader_rows = [1, 2]\ndelimiter = \"\\t\"\nnull_values = [\"NA\", \"x=-1\"]",
             None,
         )
         .unwrap();
@@ -6308,8 +6304,12 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
                 "header_rows = 2\nmetadata_line = 2",
                 "metadata_line: line 2 is a header line",
             ),
-            ("delimiter = \"ab\"", "delimiter: expected one character"),
-            ("comment_char = \"\"", "comment_char: must not be empty"),
+            (
+                "delimiter = \"ab\"",
+                "delimiter: \"ab\" is not one ASCII character",
+            ),
+            ("comment_char = \"#\"", "comment_char"),
+            ("comment = \"\"", "comment: must not be empty"),
             (
                 "match = { where = { \"header.v\" = 1 } }",
                 "where compares a binary header's fields",
@@ -6338,7 +6338,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             assert!(e.contains(said), "{rest}: {e}");
         }
         // A metadata line below the header lines is fine when it is a comment line.
-        let text = format!("{head}header_rows = 2\ncomment_char = \"#\"\nmetadata_line = 5");
+        let text = format!("{head}header_rows = 2\ncomment = \"#\"\nmetadata_line = 5");
         assert!(Spec::parse(&text, None).is_ok());
     }
 

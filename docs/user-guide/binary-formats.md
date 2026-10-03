@@ -339,14 +339,16 @@ header:
 
 A spec of `kind = "delimited"` holds the [CSV options](loading-data.md#csv-options)
 for such a family of files, so they open with no flags: from the command line,
-from the home screen, compressed, or as a directory.
+from the home screen, compressed, or as a directory. It is a `[csv]` block of
+the [config](../reference/settings.md#csv), with the same keys, plus `match`,
+`kind`, the layout keys and `[columns]`.
 
 ```toml
 name = "acme.instrument-log"
 kind = "delimited"
 match = { magic = "#device_info" }       # or glob = ["**/logs/log_*.csv"]
 
-comment_char = "#"
+comment = "#"
 skip_initial_space = true
 header_rows = { name = 3, unit = 2 }     # a list, such as [3] or [3, 2], also works
 metadata_line = 1
@@ -359,13 +361,13 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
 |---|---|
 | `kind` | `delimited`. Default `binary` |
 | `match` | `glob` and `magic`, as for binary specs. `magic` compares the start of the first line |
-| `delimiter` | One character, such as `";"` or `"\t"`. Default `,`, or the one the file's name implies |
-| `comment_char` | Lines that start with it are skipped wherever they are |
+| `delimiter` | One character, `"tab"`, `"\t"` or a code such as `"0x1f"`, as `--delimiter` takes. Default `,`, or the one the file's name implies |
+| `comment` | Lines that start with it are skipped wherever they are |
 | `skip_initial_space` | `true`: ignore the spaces after a delimiter |
 | `header_rows` | `{ name = N, unit = M }`: the line that names the columns and the line that gives their units. `name` may be a list of lines, joined with `header_join` (default a space). A number or a list is `name` alone. A header line is never data |
 | `header_join` | What joins the pieces of a name from several lines |
 | `metadata_line` | A line of `key="value"` or `key=value` pairs, separated by commas, for the Info panel. It must not be data: above the last header line, within `skip_lines`, or a comment line |
-| `null_value` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
+| `null_values` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
 | `skip_lines` | Lines to pass over before the header |
 | `[columns]` | Derived columns, below |
 

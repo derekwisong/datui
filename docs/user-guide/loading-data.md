@@ -1019,13 +1019,13 @@ all of them except `--infer-types` and `--header-rows`, and
 | `--no-header` | | The first row is data, not names. <kbd>H</kbd> does the same, or undoes it, on the file on screen |
 | `--skip-lines N`, `--skip-rows N` | | Ignore a preamble |
 | `--footer-rows N` | | Ignore a footer. Counts every row first, and the loading screen says `Counting rows to skip the footer` meanwhile: on a directory in a bucket, that downloads every file before the table opens |
-| `--null NA`, `--null amount=` | `null_values` | Values to read as null, for every column or one (`COL=VAL`, the name as shown). Repeatable; replaces the config's list |
-| `--comment '#'` | `comment_char` | Skip lines that start with it, before the header and among the data. The header is the first line that is not a comment |
-| `--header-rows 3`, `--header-rows 3,2` | `header_join` | The line or lines holding the header, counted from 1 at the top of the file. Several are joined per column, in the order given, with `header_join` (default a space) |
-| `--skip-initial-space` | `skip_initial_space` | Ignore the spaces after a delimiter: padded numbers are numbers and a cell of spaces is null |
-| `--infer-rows 10000` | `infer_schema_length` | Rows used to infer column types (default 1000). Raise it when a column turns from integer to text late in the file |
-| `--ignore-errors` | `ignore_errors` | Skip rows that fail to parse instead of failing the load |
-| `--infer-types=COL`, `--infer-types=off` | `parse_strings`, `parse_dates` | Trim and type-infer string columns, dates included; limit it to named columns, or turn it off |
+| `--null NA`, `--null amount=` | `csv.null_values` | Values to read as null, for every column or one (`COL=VAL`, the name as shown). Repeatable; replaces the config's list |
+| `--comment '#'` | `csv.comment` | Skip lines that start with it, before the header and among the data. The header is the first line that is not a comment |
+| `--header-rows 3`, `--header-rows 3,2` | `csv.header_join` | The line or lines holding the header, counted from 1 at the top of the file. Several are joined per column, in the order given, with `header_join` (default a space) |
+| `--skip-initial-space` | `csv.skip_initial_space` | Ignore the spaces after a delimiter: padded numbers are numbers and a cell of spaces is null |
+| `--infer-rows 10000` | `csv.infer_rows` | Rows used to infer column types (default 1000). Raise it when a column turns from integer to text late in the file |
+| `--ignore-errors` | `csv.ignore_errors` | Skip rows that fail to parse instead of failing the load |
+| `--infer-types=COL`, `--infer-types=off` | `read.infer_types` | Trim and type-infer string columns, dates included; limit it to named columns, or turn it off |
 
 Column names are always trimmed: `"     Latitude"` reads as `Latitude`. A blank
 name reads as `column_N`, and a repeated one gets `_duplicated_0`.

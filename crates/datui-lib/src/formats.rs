@@ -4112,13 +4112,15 @@ impl Spec {
     }
 
     /// Read `bytes`, one file, named `named` in what it says; a symbol list a field
-    /// names is looked for in `dir`.
+    /// names is looked for beside `path`, the file the bytes are, which also keeps the
+    /// walk of its records for the next open of it.
     pub fn open_rows_in(
         &self,
         bytes: Arc<Bytes>,
         named: &str,
-        dir: Option<&Path>,
+        path: Option<&Path>,
     ) -> Result<Opened, String> {
+        let dir = path.and_then(Path::parent);
         if self.reads_directory() {
             return Err(format!(
                 "{} reads a directory ({}); open the directory",
@@ -4164,6 +4166,7 @@ impl Spec {
                 &header,
                 header.size as usize..len as usize,
                 named,
+                path,
             )?;
             notes.extend(more);
             return Ok(Opened {
@@ -4399,7 +4402,7 @@ impl Spec {
             ));
         }
         let bytes = Bytes::map(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        self.open_rows_in(Arc::new(bytes), named, path.parent())
+        self.open_rows_in(Arc::new(bytes), named, Some(path))
     }
 }
 

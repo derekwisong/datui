@@ -206,10 +206,16 @@ pub fn cached<T: Any + Send + Sync, E>(
         return Ok(index);
     }
     let index = Arc::new(build()?);
+    keep(path, index.clone());
+    Ok(index)
+}
+
+/// Keep `index` as the one of `path`, in place of any kept before.
+pub fn keep<T: Any + Send + Sync>(path: &Path, index: Arc<T>) {
     if let Some(key) = key::<T>(path) {
         let mut kept = KEPT_INDEXES.lock().unwrap_or_else(|e| e.into_inner());
         kept.retain(|(k, _)| *k != key);
-        kept.push((key, index.clone() as Arc<dyn Any + Send + Sync>));
+        kept.push((key, index as Arc<dyn Any + Send + Sync>));
         // Oldest first, until what is left fits.
         let mut total: u64 = kept.iter().map(|((_, len, ..), _)| *len).sum();
         let mut excess = 0;
@@ -221,7 +227,6 @@ pub fn cached<T: Any + Send + Sync, E>(
         }
         kept.drain(..excess);
     }
-    Ok(index)
 }
 
 #[cfg(test)]

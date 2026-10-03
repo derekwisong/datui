@@ -487,6 +487,101 @@ fn itch_bytes(pairs: u64, tail: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Times queries over a large file of [`ITCH`] messages, which are walked rather than
+/// read at a stride: `DATUI_BENCH_ITCH=~/tmp/big.itch cargo test --release --test
+/// integration_test formats_open::time_a_large_framed_file -- --ignored --nocapture`
+#[test]
+#[ignore = "needs a large generated file"]
+fn time_a_large_framed_file() {
+    let Some(path) = std::env::var_os("DATUI_BENCH_ITCH").map(PathBuf::from) else {
+        return;
+    };
+    let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);
+    let started = std::time::Instant::now();
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    let opened = started.elapsed();
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let records = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .format_read()
+        .unwrap()
+        .records
+        .clone();
+    let lf = Arc::clone(&records).into_lazy().unwrap();
+    let names: Vec<String> = lf
+        .clone()
+        .collect_schema()
+        .unwrap()
+        .iter_names()
+        .map(|n| n.to_string())
+        .collect();
+    println!("open to first page {opened:?}; columns {names:?}");
+    let each = |names: &[String]| -> Vec<Expr> {
+        names.iter().map(|n| col(n.as_str()).null_count()).collect()
+    };
+    // The best of three runs, so a busy machine says less.
+    let best = |query: &LazyFrame| -> (std::time::Duration, u64) {
+        (0..3)
+            .map(|_| {
+                with_peak_anon(|| {
+                    datui::statistics::collect_lazy(query.clone(), true).unwrap();
+                })
+            })
+            .min()
+            .unwrap()
+    };
+    let mut one_by_one = std::time::Duration::ZERO;
+    for name in &names {
+        let (took, _) = best(&lf.clone().select(each(std::slice::from_ref(name))));
+        println!("null count of {name}: {took:?}");
+        one_by_one += took;
+    }
+    println!("columns one at a time: {one_by_one:?}");
+    let queries = |lf: &LazyFrame| -> [(&str, LazyFrame); 3] {
+        [
+            (
+                "null count of every column",
+                lf.clone().select(each(&names)),
+            ),
+            (
+                "filter on price, every column of the rows kept",
+                lf.clone()
+                    .filter(col("price").cast(DataType::Float64).gt(lit(100.0)))
+                    .select(each(&names)),
+            ),
+            (
+                "sort by ref, top 10",
+                lf.clone()
+                    .sort(
+                        ["ref"],
+                        SortMultipleOptions::default().with_order_descending(true),
+                    )
+                    .limit(10),
+            ),
+        ]
+    };
+    for (name, query) in queries(&lf) {
+        let (took, peak) = best(&query);
+        println!("{name}: {took:?}, peak anonymous memory {} MiB", peak >> 20);
+    }
+    // The same queries over the table decoded whole into memory first.
+    let mut whole = None;
+    let (took, peak) = with_peak_anon(|| {
+        whole = Some(datui::statistics::collect_lazy(lf.clone(), true).unwrap());
+    });
+    println!(
+        "decoded whole: {took:?}, peak anonymous memory {} MiB",
+        peak >> 20
+    );
+    let in_memory = whole.unwrap().lazy();
+    for (name, query) in queries(&in_memory) {
+        let (took, _) = best(&query);
+        println!("in memory, {name}: {took:?}");
+    }
+}
+
 #[test]
 fn length_prefixed_variants_open_as_one_table_and_scroll_to_the_last_row() {
     let dir = common::fixture_dir();

@@ -871,7 +871,8 @@ mod format_tests {
                 | FileFormat::Elf
                 | FileFormat::Ulog
                 | FileFormat::Dataflash
-                | FileFormat::Candump => FileFormat::ALL.contains(&f),
+                | FileFormat::Candump
+                | FileFormat::Text => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -912,7 +913,8 @@ mod format_tests {
                 "elf",
                 "ulog",
                 "dataflash",
-                "candump"
+                "candump",
+                "text"
             ]
         );
     }

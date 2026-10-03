@@ -28,6 +28,8 @@ mod flight_logs;
 mod formats_delimited;
 #[path = "formats/follow.rs"]
 mod formats_follow;
+#[path = "formats/lines.rs"]
+mod formats_lines;
 #[path = "formats/open.rs"]
 mod formats_open;
 #[path = "formats/gps.rs"]
@@ -14803,7 +14805,7 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
 
     // Nothing datui has a reader for. `holds.formats` is empty here, so a test written
     // over the formats alone let it through and the scan came back blaming the login.
-    let (options, said) = door("s3://bucket/docs", &["README.md", "notes.txt"]);
+    let (options, said) = door("s3://bucket/docs", &["README.md", "notes.pdf"]);
     assert!(options.is_none());
     assert!(said.contains("nothing datui can read"), "{said:?}");
     assert!(!said.to_lowercase().contains("credential"), "{said:?}");

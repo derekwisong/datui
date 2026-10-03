@@ -646,10 +646,12 @@ pub fn has_no_extension(path: &Path) -> bool {
 
 /// Whether a listing looks inside a file to say what it is: one with no extension, or
 /// one whose extension says nothing (`.bin`, which ArduPilot's logs and model
-/// checkpoints share with everything else; `.log`, which candump writes).
+/// checkpoints share with everything else) or only text (`.log`, which candump
+/// writes; `.txt`).
 pub fn worth_sniffing(path: &Path) -> bool {
-    path.extension()
-        .is_none_or(|e| e.eq_ignore_ascii_case("bin") || e.eq_ignore_ascii_case("log"))
+    path.extension().is_none_or(|e| {
+        e.eq_ignore_ascii_case("bin") || data_format(path).is_some_and(crate::FileFormat::is_lines)
+    })
 }
 
 /// Whether a local file is Parquet by its contents: `PAR1` at both ends.
@@ -777,7 +779,12 @@ pub(crate) fn directory_and_name(path: &Path) -> String {
 /// to remove, and a fixture on disk cannot pin an order that depends on it: the tie is
 /// the whole point and only a caller choosing the input order can put one there.
 pub(crate) fn rank_formats(a: (&str, usize), b: (&str, usize)) -> std::cmp::Ordering {
-    b.1.cmp(&a.1)
+    // Text is what is read when nothing else is: a README among data files is not
+    // the table, however many there are.
+    let text = crate::FileFormat::Text.name();
+    (a.0 == text)
+        .cmp(&(b.0 == text))
+        .then_with(|| b.1.cmp(&a.1))
         .then_with(|| (a.0 != "parquet").cmp(&(b.0 != "parquet")))
         .then_with(|| a.0.cmp(b.0))
 }
@@ -981,6 +988,12 @@ pub fn directory_format(dir: &Path) -> DirectoryFormat {
         {
             by_format.push((found, nameless));
         }
+    }
+
+    // Text is data only where nothing else is: a README beside Parquet is not a
+    // candidate, as the listing does not count it.
+    if by_format.iter().any(|(f, _)| !f.is_lines()) {
+        by_format.retain(|(f, _)| !f.is_lines());
     }
 
     // A Hugging Face dataset's own JSON files, beside its shards.
@@ -1215,6 +1228,8 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                 partitions += 1;
             }
         } else if let Some(found) = data_format(&entry_path)
+            // Text by its name, unless its bytes say more: below.
+            .filter(|f| !f.is_lines())
             // A sharded checkpoint's index is counted as the JSON it is, so the label
             // counts the shards; the read still takes it, for the metadata it carries.
             .map(
@@ -1234,6 +1249,7 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
                     sniff_format(&entry_path)
                 })?
             })
+            .or_else(|| data_format(&entry_path))
             .filter(|_| is_file)
         {
             if found == crate::FileFormat::Json && is_hugging_face_metadata(&name) {
@@ -1275,6 +1291,18 @@ pub fn look_at_directory(path: &Path) -> (EntryKind, Holds) {
         holds.skipped_names.extend(hugging_face);
         holds.skipped_names.sort();
         holds.skipped_names.truncate(SKIPPED_NAMES_SHOWN);
+        mixed_formats = counts.len() > 1;
+        format = counts.first().map(|(f, _)| *f);
+    }
+
+    // Text is data only where nothing else is: a README beside Parquet is a file
+    // nothing reads as the directory's table, as it is to the cloud route.
+    if counts.iter().any(|(f, _)| !f.is_lines())
+        && let Some(at) = counts.iter().position(|(f, _)| f.is_lines())
+    {
+        let (_, n) = counts.remove(at);
+        data_files -= n;
+        holds.not_read += n;
         mixed_formats = counts.len() > 1;
         format = counts.first().map(|(f, _)| *f);
     }
@@ -2599,10 +2627,11 @@ mod classification_tests {
                 ".{ext} opens, so the home screen must offer it"
             );
         }
-        // Offered and unreadable was the other half of the same drift.
-        assert!(
-            data_format(Path::new("README.txt")).is_none(),
-            "a README is not a dataset"
+        // A README is text, read as lines; beside data it is not the directory's
+        // table (`a_file_datui_does_not_read_does_not_disqualify_a_directory`).
+        assert_eq!(
+            data_format(Path::new("README.txt")),
+            Some(crate::FileFormat::Text)
         );
         assert!(data_format(Path::new("notes")).is_none());
     }

@@ -116,6 +116,7 @@ pub mod inspector_reader;
 pub mod intent_modal;
 pub mod ipc_stream;
 mod jobs;
+pub mod lines;
 mod loading;
 pub mod local_copy;
 pub mod locality;
@@ -7057,9 +7058,10 @@ impl App {
             return FileFormat::from_name(name).map(|format| (format, Vec::new()));
         }
         let (name, _) = holds.formats.first()?;
-        // A GPS log is read whole from disk; a bucket's logs are opened one at a time.
-        let format =
-            FileFormat::from_name(name).filter(|f| f.reads_many_files() && !f.reads_into())?;
+        // A GPS log is read whole from disk; a bucket's logs are opened one at a time,
+        // as its text files are.
+        let format = FileFormat::from_name(name)
+            .filter(|f| f.reads_many_files() && !f.reads_into() && !f.is_lines())?;
         // And what taking the commonest passes over. The local read reports its own —
         // it is the pass that decides — but here Polars does the listing and never sees
         // the other formats, so the note has to be written from the listing on screen.
@@ -8263,6 +8265,7 @@ impl App {
             splits: options.splits.clone(),
             delimited: None,
             table: None,
+            guessed: false,
         };
         // A followed file reads every row it can and counts the rest: a row
         // that does not fit the schema never stops the follow.
@@ -8340,6 +8343,7 @@ impl App {
             read_mode,
             tail,
             table: report.table.or_else(|| options.table.clone()),
+            format_guessed: options.format_guessed || report.guessed,
             ..options
         };
         // The spec's dialect stays with the dataset, so a read again (`H`,
@@ -8761,8 +8765,8 @@ impl App {
                 writer,
                 download,
             } => {
-                // Only delimited text comes this way, its format said by the loader;
-                // CSV when not, so it can have its header turned off.
+                // Only delimited text and lines come this way, the format said by the
+                // loader or the scan.
                 let options = OpenOptions {
                     format: options.format.or(Some(FileFormat::TEXT)),
                     ..options
@@ -8774,26 +8778,39 @@ impl App {
                     };
                     let options =
                         Self::with_delimited_spec(&file, options, &formats).map_err(failed)?;
-                    let state = Self::decompressed_delimited_state(&file, &options, &writer)
-                        .map_err(failed)?
-                        .with_open(OpenFacts {
-                            fetched: Self::fetched(download.as_ref(), Some(&path)),
-                            download,
-                            open_notes: options
-                                .delimited
-                                .as_ref()
-                                .map(|read| read.notes())
-                                .unwrap_or_default(),
-                            delimited: options.delimited.clone(),
-                            read_as: options.format,
-                            // The loader sends a compressed file here without a scan.
-                            read_mode: options.format.and_then(|f| {
-                                f.read_mode(crate::Stored::Compressed {
-                                    in_memory: options.decompress_in_memory,
-                                })
-                            }),
-                            ..Default::default()
-                        });
+                    let lines = options.delimited.is_none()
+                        && options.format.is_some_and(FileFormat::is_lines);
+                    let (state, opened) = if lines {
+                        let (state, opened) =
+                            DataTableState::from_lines_decompressed(&file, &options, &writer)
+                                .map_err(failed)?;
+                        (state, Some(opened))
+                    } else {
+                        let state = Self::decompressed_delimited_state(&file, &options, &writer)
+                            .map_err(failed)?;
+                        (state, None)
+                    };
+                    let mut open_notes = options
+                        .delimited
+                        .as_ref()
+                        .map(|read| read.notes())
+                        .unwrap_or_default();
+                    open_notes.extend(opened.iter().flat_map(|o| o.notes.iter().cloned()));
+                    let state = state.with_open(OpenFacts {
+                        fetched: Self::fetched(download.as_ref(), Some(&path)),
+                        download,
+                        open_notes,
+                        records: opened.and_then(|o| o.window),
+                        delimited: options.delimited.clone(),
+                        read_as: options.format,
+                        // The loader sends a compressed file here without a scan.
+                        read_mode: options.format.and_then(|f| {
+                            f.read_mode(crate::Stored::Compressed {
+                                in_memory: options.decompress_in_memory,
+                            })
+                        }),
+                        ..Default::default()
+                    });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
                         state: Box::new(state),
                         path: Some(path),
@@ -11139,10 +11156,24 @@ impl App {
         }
 
         // A file with no extension may still be Parquet: a part file in a directory named
-        // `.parquet`. A regular file is only read when nothing else settled it.
-        let effective_format = options
+        // `.parquet`. A regular file is only read when nothing else settled it. A name
+        // that says text (`.log`, `.txt`) is read as lines unless its bytes say a format:
+        // candump writes `.log`.
+        let compressed = options
+            .compression
+            .or_else(|| CompressionFormat::from_extension(path))
+            .is_some();
+        // Under a compression suffix, the name before it says delimited text or lines
+        // (`x.tsv.gz`, `app.log.gz`).
+        let named = FileFormat::from_path(path).or_else(|| {
+            compressed
+                .then(|| FileFormat::from_path(Path::new(path.file_stem()?)))
+                .flatten()
+                .filter(|f| f.decompressed_once())
+        });
+        let mut effective_format = options
             .format
-            .or_else(|| FileFormat::from_path(path))
+            .or_else(|| named.filter(|f| !f.is_lines()))
             .or_else(|| {
                 (path.extension().is_none()
                     && crate::discover::is_parquet_key(&path.to_string_lossy()))
@@ -11150,7 +11181,18 @@ impl App {
             })
             // Any other file whose name says no format, by its first bytes: each
             // format's signature says where it is believed (`crate::readers`).
-            .or_else(|| crate::readers::sniff_open(path, options.compression));
+            .or_else(|| crate::readers::sniff_open(path, options.compression))
+            .or(named);
+        // Text no signature claims: JSON, CSV or TSV on evidence, lines otherwise. Bytes
+        // that are not text are shown as they are.
+        if effective_format.is_none()
+            && let [file] = paths
+            && file.is_file()
+        {
+            effective_format = crate::lines::guess_file(file, options.compression)
+                .map(|f| crate::lines::as_asked(f, options));
+            report.guessed = effective_format.is_some();
+        }
         report.format = effective_format;
 
         // Refused rather than ignored: a file of one table opened with `--table` would
@@ -11162,15 +11204,13 @@ impl App {
             return Err(Self::one_table(effective_format));
         }
 
-        // One compressed CSV, TSV or PSV, as a directory of one resolves to: the load
-        // decompresses it (`Step::Decompress`) into a copy the dataset holds. Read here,
-        // the copy went with the state dropped below and the frame scanned nothing.
+        // One compressed CSV, TSV, PSV or text file, as a directory of one resolves to:
+        // the load decompresses it (`Step::Decompress`) into a copy the dataset holds.
+        // Read here, the copy went with the state dropped below and the frame scanned
+        // nothing.
         if let [file] = paths
-            && options
-                .compression
-                .or_else(|| CompressionFormat::from_extension(file))
-                .is_some()
-            && let Some(format) = crate::loading::delimited_format(file, options)
+            && compressed
+            && let Some(format) = effective_format.filter(|f| f.decompressed_once())
         {
             return Ok(Scan::Decompress {
                 file: file.clone(),
@@ -11210,6 +11250,16 @@ impl App {
             }
             return Err(color_eyre::eyre::eyre!(crate::readers::many_files_refused()));
         }
+        let guessed;
+        let options = if report.guessed {
+            guessed = OpenOptions {
+                format_guessed: true,
+                ..options.clone()
+            };
+            &guessed
+        } else {
+            options
+        };
         crate::readers::scan(crate::readers::ScanIn {
             format,
             paths,

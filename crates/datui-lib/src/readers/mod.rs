@@ -30,8 +30,10 @@
 //! - SQLite, NumPy and ELF on the home screen: a `.db` file that is not SQLite cannot
 //!   open, a database's tables sort by name, a database table or NumPy array previews
 //!   its schema, and an ELF file opens its symbols, so its sections are not counted.
-//! - CSV: what text with nothing else to say is read as ([`FileFormat::TEXT`]), and
-//!   the reader a delimited spec reads through.
+//! - CSV: the reader a delimited spec reads through.
+//! - Text: what text with nothing else to say is read as ([`FileFormat::TEXT`],
+//!   [`crate::lines::guess`]); a name that says text is still asked its bytes, and a
+//!   followed file's lines are counted by the watcher.
 //! - Audio: a full quality run checks a recording's signal ([`crate::audio::recording`]).
 
 use std::path::{Path, PathBuf};
@@ -202,6 +204,7 @@ pub(crate) fn of(format: FileFormat) -> &'static Reader {
         FileFormat::Ulog => &crate::ulog::READER,
         FileFormat::Dataflash => &crate::dataflash::READER,
         FileFormat::Candump => &crate::candump::READER,
+        FileFormat::Text => &crate::lines::READER,
     }
 }
 
@@ -250,7 +253,7 @@ pub(crate) struct Trusted {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Unnamed {
     Never,
-    /// Any: `.bin`, `.log`, `.txt`, or none.
+    /// Any: `.bin`, text (`.log`, `.txt`), or none.
     Any,
     /// Only a file with no extension at all, such as a part file.
     NoExtension,

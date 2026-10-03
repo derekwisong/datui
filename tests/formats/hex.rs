@@ -301,7 +301,8 @@ fn an_empty_file_and_a_one_byte_file_open() {
     open(
         &mut app,
         &rx,
-        write("hex_one.weird", b"A"),
+        // A byte that is not text: text is read as lines.
+        write("hex_one.weird", b"\x01"),
         OpenOptions::default(),
     );
     for code in [
@@ -315,7 +316,7 @@ fn an_empty_file_and_a_one_byte_file_open() {
         assert_eq!(cursor(&app), 0);
     }
     let s = screen(&mut app, 80, 24);
-    assert!(s.contains("00000000  41"), "{s}");
+    assert!(s.contains("00000000  01"), "{s}");
     assert!(s.contains("100.0%"), "{s}");
 }
 

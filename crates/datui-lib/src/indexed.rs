@@ -68,6 +68,23 @@ impl Offsets {
         }
     }
 
+    /// Keep the first `len`.
+    pub fn truncate(&mut self, len: usize) {
+        match self {
+            Self::Narrow(v) => v.truncate(len),
+            Self::Wide(v) => v.truncate(len),
+        }
+    }
+
+    /// Eight bytes an offset once a file of `len` bytes needs them.
+    pub fn widen_for(&mut self, len: usize) {
+        if let Self::Narrow(v) = self
+            && u32::try_from(len).is_err()
+        {
+            *self = Self::Wide(v.iter().map(|&at| u64::from(at)).collect());
+        }
+    }
+
     pub fn shrink(&mut self) {
         match self {
             Self::Narrow(v) => v.shrink_to_fit(),

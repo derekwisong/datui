@@ -301,6 +301,8 @@ pub(crate) enum Phase {
     Scanning {
         downloaded: bool,
     },
+    /// The scan of text read as lines, which indexes them.
+    ReadingLines,
     /// The schema, and whatever the dataset needs before its first rows.
     ReadingSchema,
     /// Installed: its first rows are being read. The dataset is the one on screen, and
@@ -337,6 +339,7 @@ impl Phase {
             Phase::CountingFooter => (COUNTING_FOOTER, 10),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
+            Phase::ReadingLines => (READING_LINES, 10),
             Phase::ReadingSchema => ("Reading schema", 40),
             Phase::FirstRows => ("Loading buffer", 70),
         }
@@ -1229,6 +1232,15 @@ impl Loader {
             };
             return Step::AskRead(read);
         }
+        if reads_lines(&paths, &options) {
+            load.phase = Phase::ReadingLines;
+            return Step::Scan {
+                paths,
+                options,
+                display,
+                status: READING_LINES_STATUS,
+            };
+        }
         load.phase = Phase::Scanning { downloaded: false };
         Step::Scan {
             paths,
@@ -1278,6 +1290,9 @@ impl Loader {
         let status = if counts_footer(&paths, &options) {
             load.phase = Phase::CountingFooter;
             COUNTING_FOOTER_STATUS
+        } else if reads_lines(&paths, &options) {
+            load.phase = Phase::ReadingLines;
+            READING_LINES_STATUS
         } else {
             load.phase = Phase::Scanning { downloaded: true };
             "Scanning..."
@@ -1307,7 +1322,8 @@ impl Loader {
                 Phase::Scanning { .. }
                 | Phase::ScanningStrings
                 | Phase::CountingFooter
-                | Phase::ReadingRecords,
+                | Phase::ReadingRecords
+                | Phase::ReadingLines,
             ) => {
                 load.phase = Phase::ReadingSchema;
                 Step::ReadSchema {
@@ -1326,7 +1342,10 @@ impl Loader {
                     path,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingLines,
             ) if load.converted.is_empty() => {
                 let read = Arc::<AtomicU64>::default();
                 load.phase = Phase::Converting {
@@ -1408,7 +1427,10 @@ impl Loader {
                     path,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingLines,
             ) => {
                 load.phase = Phase::Decompressing;
                 Step::Decompress {
@@ -1439,7 +1461,7 @@ impl Loader {
                     choice,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::ReadingLines,
             ) => {
                 load.phase = Phase::DecompressingRecords;
                 Step::DecompressRecords {
@@ -1476,7 +1498,10 @@ impl Loader {
                     asked,
                     record_size,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingLines,
             ) => {
                 let from_home = load.from_home;
                 // A download is a temporary file the load owns; it has no bytes to show
@@ -1500,7 +1525,10 @@ impl Loader {
             }
             (
                 LoadAnswer::Tables { file, tables, path },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingLines,
             ) => {
                 let from_home = load.from_home;
                 let database = path.unwrap_or(file);
@@ -1756,7 +1784,24 @@ impl Drop for Loader {
     }
 }
 
-/// The delimited format (CSV, TSV or PSV) `path` is read as, if it is one: `--format`
+/// What the loading screen and the control bar say while text is read as lines.
+const READING_LINES: &str = "Reading as lines";
+const READING_LINES_STATUS: &str = "Reading as lines...";
+
+/// Whether `paths` are read as lines, as `--format` or their names say: a name that
+/// says text may still hold a format its bytes say (a candump `.log`), so this is
+/// what the open expects, for its loading line.
+fn reads_lines(paths: &[PathBuf], options: &OpenOptions) -> bool {
+    options
+        .format
+        .or_else(|| match paths {
+            [one] => FileFormat::from_path(one),
+            _ => None,
+        })
+        .is_some_and(FileFormat::is_lines)
+}
+
+/// The delimited format (CSV, TSV, PSV) or text `path` is read as, if it is one: `--format`
 /// when given, else the extension, looking through a compression suffix
 /// (`x.tsv.gz` is TSV).
 /// What reading `paths` would read whole into memory, by what their names and the
@@ -1838,7 +1883,7 @@ pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<Fil
             FileFormat::from_path(Path::new(path.file_stem()?))
         })
     })?;
-    format.separator().is_some().then_some(format)
+    format.decompressed_once().then_some(format)
 }
 
 /// Why a remote model is downloaded rather than read by its headers.
@@ -1977,6 +2022,7 @@ mod tests {
             "db",
             "vcd",
             "sdf",
+            "log",
             "npy",
             "elf",
             "ulg",

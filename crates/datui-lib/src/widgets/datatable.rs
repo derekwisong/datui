@@ -4766,6 +4766,49 @@ impl DataTableState {
         }
     }
 
+    /// A compressed file read as lines: decompressed once to a file in `--temp-dir`, or
+    /// into memory with `--decompress-in-memory`, then indexed.
+    pub(crate) fn from_lines_decompressed(
+        path: &Path,
+        options: &OpenOptions,
+        writer: &Writer,
+    ) -> Result<(Self, crate::members::Opened)> {
+        let compression = options
+            .compression
+            .or_else(|| CompressionFormat::from_extension(path))
+            .ok_or_else(|| color_eyre::eyre::eyre!("{} is not compressed", path.display()))?;
+        let (lines, temp) = if options.decompress_in_memory {
+            let mut bytes = Vec::new();
+            let read = std::sync::atomic::AtomicU64::new(0);
+            crate::gps::open_reader(path, options, &read)?.read_to_end(&mut bytes)?;
+            let name = path
+                .file_stem()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let bytes = Arc::new(crate::fixed_records::Bytes::Owned(bytes));
+            (crate::lines::Lines::from_bytes(vec![(name, bytes)]), None)
+        } else {
+            let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
+            let temp =
+                Self::decompress_compressed_csv_to_temp(path, compression, &temp_dir, writer)?;
+            let lines = crate::lines::Lines::open(&[temp.path().to_path_buf()], false)?;
+            (lines, Some(Arc::new(temp)))
+        };
+        let lines = Arc::new(lines);
+        let opened = crate::lines::opened(&lines, options);
+        let mut state = Self::new(
+            lines.lazy(),
+            options.pages_lookahead,
+            options.pages_lookback,
+            options.max_buffered_rows,
+            options.max_buffered_mb,
+            options.polars_streaming,
+        )?;
+        state.row_numbers = options.row_numbers;
+        state.row_start_index = options.row_start_index;
+        state.decompress_temp_file = temp;
+        Ok((state, opened))
+    }
+
     /// One uncompressed delimited file, scanned lazily. The frame is finished before
     /// the state is made from it, so the column order is of the names shown.
     fn scan_csv_file(path: &Path, options: &OpenOptions) -> Result<Self> {

@@ -38,7 +38,13 @@ pub trait RowSource: Send + Sync + 'static {
 
 /// `source` as a lazy frame that Polars can stream, slice and prune. See the module.
 pub fn lazy<S: RowSource>(source: &Arc<S>) -> LazyFrame {
-    let base = DataFrame::empty_with_height(source.height().min(MAX_ROWS))
+    lazy_with_height(source, source.height())
+}
+
+/// [`lazy`] with `height` rows, for a source that grows: the frame of no columns at
+/// its root is replaced with a taller one as rows arrive (`crate::lines::bound`).
+pub fn lazy_with_height<S: RowSource>(source: &Arc<S>, height: usize) -> LazyFrame {
+    let base = DataFrame::empty_with_height(height.min(MAX_ROWS))
         .lazy()
         .with_row_index(INDEX, None);
     let exprs: Vec<Expr> = source

@@ -177,6 +177,9 @@ pub struct OpenOptions {
     /// How the scan found the data is read: lazily, through a copy, or into memory.
     /// Found by the scan and carried to the dataset for the Info panel's `Read:` line.
     pub read_mode: Option<crate::ReadMode>,
+    /// The format was guessed from the first bytes of text no format's signature
+    /// claims, rather than named, so a note can say how to read it otherwise.
+    pub format_guessed: bool,
     /// `--hex`: show the file's bytes in the hex view, whatever it holds.
     pub hex: bool,
     /// `--record-size N`: the bytes a row of the hex view holds.
@@ -281,6 +284,7 @@ impl OpenOptions {
             arrow_parts: None,
             delimited: None,
             read_mode: None,
+            format_guessed: false,
             hex: false,
             record_size: None,
             follow: false,
@@ -596,6 +600,9 @@ pub struct ReadReport {
     /// The table the read opened where the open named none: a database's only table.
     /// Carried back as `OpenOptions::table`, so the dataset says which table it is.
     pub table: Option<String>,
+    /// The format was guessed from the text's first bytes. See
+    /// [`OpenOptions::format_guessed`].
+    pub guessed: bool,
 }
 
 /// A SQLite table opened in place, carried from the scan to the dataset.

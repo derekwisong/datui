@@ -5,7 +5,6 @@ use color_eyre::Result;
 use object_store::path::Path as OsPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 use polars::prelude::{ParquetReader, Schema, SchemaExt, SerReader};
-use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -14,20 +13,6 @@ pub use crate::schema_union::lenient_scan;
 use crate::schema_union::with_partition_columns;
 
 const PARQUET_FOOTER_TAIL_BYTES: usize = 256 * 1024;
-/// Discover partition column names from the first common prefix at each level (single spine).
-fn partition_columns_from_prefix(prefix_str: &str) -> Vec<String> {
-    let mut columns = Vec::new();
-    let mut seen = HashSet::new();
-    for segment in prefix_str.split('/') {
-        if let Some((key, _)) = segment.split_once('=')
-            && !key.is_empty()
-            && seen.insert(key.to_string())
-        {
-            columns.push(key.to_string());
-        }
-    }
-    columns
-}
 
 /// What one Parquet footer says about its object, short of the data.
 pub struct ParquetFooter {
@@ -749,13 +734,8 @@ pub fn dataset_schema_from_footers(
         ));
     }
 
-    let partition_columns = partition_columns_from_prefix(&newest.key);
-    let values: Vec<(String, String)> = [&first.key, &newest.key]
-        .iter()
-        .flat_map(|key| key.split('/'))
-        .filter_map(|segment| segment.split_once('='))
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
+    let (partition_columns, values) =
+        crate::schema_union::partitions_of_listing(&first.key, &newest.key);
     union.schema = Arc::new(with_partition_columns(
         &union.schema,
         &partition_columns,
@@ -951,27 +931,18 @@ pub async fn footers_for_count(
     footers
 }
 
-/// A remote dataset's row count, taken from its footers, each read once.
-///
-/// It starts from the footers the open already read — the two ends, or a sample of
-/// twenty thousand — and reads only the rest. Once every file's footer is in, the
-/// whole set is handed back once, for the cache, so a reopen reads none.
+/// A remote dataset's row count, taken from its footers, each read once: the shared
+/// [`crate::schema_union::FooterCount`], read from the store.
 pub struct FooterCount {
     files: Arc<Vec<DatasetFile>>,
-    /// The files the count answers for, as indices into `files`, in order: those whose
-    /// footer the open could read.
-    counted: Vec<usize>,
-    /// Every file's footer, where read. Emptied once the count is whole.
-    footers: tokio::sync::Mutex<Vec<Option<FileFooter>>>,
+    count: crate::schema_union::FooterCount<FileFooter>,
+    /// Held across the reads, which await, so two counts at once do not both read
+    /// the same footers.
+    reading: tokio::sync::Mutex<()>,
 }
 
 /// What a count found.
-pub struct Counted {
-    /// The rows in each row group of each counted file, in order.
-    pub row_groups: Vec<Vec<usize>>,
-    /// Every file's footer, the first time all of them are in.
-    pub whole: Option<Vec<Option<FileFooter>>>,
-}
+pub type Counted = crate::schema_union::Counted<FileFooter>;
 
 impl FooterCount {
     /// A count of `counted`, starting from the footers `known` already holds, given as
@@ -981,16 +952,11 @@ impl FooterCount {
         counted: Vec<usize>,
         known: impl IntoIterator<Item = (usize, Option<FileFooter>)>,
     ) -> Self {
-        let mut footers = vec![None; files.len()];
-        for (index, footer) in known {
-            if let Some(slot) = footers.get_mut(index) {
-                *slot = footer;
-            }
-        }
+        let count = crate::schema_union::FooterCount::new(files.len(), counted, known);
         Self {
             files,
-            counted,
-            footers: tokio::sync::Mutex::new(footers),
+            count,
+            reading: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -1001,44 +967,15 @@ impl FooterCount {
         store: &Arc<dyn ObjectStore>,
         meter: &Arc<crate::measurements::Meter>,
     ) -> Counted {
-        let mut footers = self.footers.lock().await;
-        if footers.is_empty() {
-            // Already whole once; asked again, read again.
-            *footers = vec![None; self.files.len()];
-        }
-        let missing: Vec<usize> = self
-            .counted
-            .iter()
-            .copied()
-            .filter(|&index| footers[index].is_none())
-            .collect();
-        if !missing.is_empty() {
-            let read = footers_for_count(store, &self.files, &missing, meter).await;
-            for (index, footer) in missing.into_iter().zip(read) {
-                footers[index] = footer;
-            }
-        }
-        let row_groups: Vec<Vec<usize>> = self
-            .counted
-            .iter()
-            .map(|&index| {
-                footers[index]
-                    .as_ref()
-                    .map(|f| f.row_group_rows.clone())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let whole = if footers.iter().all(Option::is_some) {
-            Some(std::mem::take(&mut *footers))
+        let _reading = self.reading.lock().await;
+        let missing = self.count.missing_now();
+        let read = if missing.is_empty() {
+            Vec::new()
         } else {
-            if self.counted.iter().all(|&index| footers[index].is_some()) {
-                // Counted, but a file the open could not read stays unread, so there
-                // is nothing whole to keep and nothing more to hold on to.
-                footers.clear();
-            }
-            None
+            footers_for_count(store, &self.files, &missing, meter).await
         };
-        Counted { row_groups, whole }
+        self.count
+            .settle_now(missing, read, |f| f.row_group_rows.clone())
     }
 }
 
@@ -1117,6 +1054,7 @@ pub fn url_of_key(url: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema_union::partition_columns_of_key as partition_columns_from_prefix;
     use polars::prelude::{NamedFrom, Series};
 
     #[test]

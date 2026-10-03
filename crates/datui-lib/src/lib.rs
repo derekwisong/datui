@@ -4887,7 +4887,7 @@ pub mod tests {
             .map(|c| KeyCode::Char(c as char))
             .collect();
         candidates.extend((1..=12).map(KeyCode::F));
-        candidates.extend("[]{}#,".chars().map(KeyCode::Char));
+        candidates.extend("[]{}#,<>=".chars().map(KeyCode::Char));
         candidates.extend([
             KeyCode::Left,
             KeyCode::Right,
@@ -13106,8 +13106,12 @@ impl App {
             KeyCode::Char('q')
                     | KeyCode::Char('Q')
                     // Drawn from what the table holds: row numbers, digit grouping, the
-                    // type row (#646).
+                    // type row (#646), a column's width (#647).
                     | KeyCode::Char('#')
+                    | KeyCode::Char('<')
+                    | KeyCode::Char('>')
+                    | KeyCode::Char('=')
+                    | KeyCode::Char('w')
                     | KeyCode::Char(',')
                     | KeyCode::Char('D')
                     | KeyCode::Left
@@ -23090,6 +23094,24 @@ impl App {
             KeyCode::Char('#') => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.toggle_row_numbers();
+                }
+                None
+            }
+            // The column cursor's width, applied as typed so its effect shows (#647).
+            KeyCode::Char('<' | '>' | '=' | 'w')
+                if event.is_press() && !event.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if let Some(state) = self.data_table_state.as_mut()
+                    && let Some(name) = state.current_column().map(str::to_string)
+                {
+                    let (choice, shown) = (state.width_choice(&name), state.shown_width(&name));
+                    let width = match event.code {
+                        KeyCode::Char('<') => choice.narrower(shown),
+                        KeyCode::Char('>') => choice.wider(shown),
+                        KeyCode::Char('=') => WidthChoice::Fit,
+                        _ => WidthChoice::Auto,
+                    };
+                    state.set_width_choices([(name, width)]);
                 }
                 None
             }

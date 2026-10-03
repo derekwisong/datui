@@ -37,6 +37,8 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>v</kbd> | [Views](../user-guide/views.md) |
 | <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |
 | <kbd>#</kbd> | Toggle row numbers |
+| <kbd>&lt;</kbd> <kbd>&gt;</kbd> | The column cursor's column 4 cells narrower or wider ([widths](../user-guide/filtering-sorting.md#column-widths)) |
+| <kbd>=</kbd> <kbd>w</kbd> | Fit the column cursor's column to the rows on screen; back to its automatic width |
 | <kbd>,</kbd> | Toggle [digit grouping](settings.md#number-formatting) (was <kbd>F</kbd>) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
@@ -407,7 +409,7 @@ The bar at the bottom of the screen shows the ones that matter
 most. A spinner in that bar means datui is busy. While it is, at the plain
 table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
 <kbd>l</kbd>), <kbd>[</kbd> <kbd>]</kbd>, <kbd>{</kbd> <kbd>}</kbd>,
-<kbd>#</kbd>, <kbd>,</kbd>, <kbd>D</kbd>, <kbd>?</kbd> and <kbd>F1</kbd> act
+<kbd>#</kbd>, <kbd>,</kbd>, <kbd>D</kbd>, the width keys, <kbd>?</kbd> and <kbd>F1</kbd> act
 at once, as do <kbd>↑</kbd> <kbd>↓</kbd> (<kbd>j</kbd> <kbd>k</kbd>) inside
 the rows already read while all that is awaited is more rows; and
 <kbd>Ctrl</kbd>+<kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> and

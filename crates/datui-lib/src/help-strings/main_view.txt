@@ -45,6 +45,8 @@ Data Operations:
 Display:
   i:                Open Info panel (tabs: Schema, Resources, Partitions, Notes)
   #:                Toggle row numbers
+  < / >:            The column cursor's column 4 cells narrower or wider
+  = / w:            Fit it to the rows on screen; back to automatic width
   ,:                Toggle number formatting (digit grouping)
   D:                Toggle the type row under the column headers
   b:                A binary file read through a format spec: read it again
@@ -81,6 +83,7 @@ Mouse:
 
 While busy:
   At the plain table, q, Q, column scroll (←/→, h/l, [ ], { }), # , D,
+  the width keys (< > = w),
   ? and F1 act at once, and so do ↑/↓ (j/k) inside the rows already read
   while all that is awaited is more rows; Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load at once.
   Other keys are queued and replayed in order once the work is done —

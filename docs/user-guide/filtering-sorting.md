@@ -80,7 +80,13 @@ A query, a pivot or melt, drilling down or back up, a new sort, <kbd>r</kbd>
 and a new filter change the rows, so automatic widths are learned again from
 the first page they show.
 
-A width set with <kbd>&lt;</kbd> <kbd>&gt;</kbd> or <kbd>f</kbd> is kept through
+At the table, the [column cursor](#move-across-a-wide-table)'s column takes
+<kbd>&lt;</kbd> <kbd>&gt;</kbd> (4 cells narrower or wider), <kbd>=</kbd> (fit
+to the rows on screen) and <kbd>w</kbd> (automatic) at once, so you see each
+change as you make it. The Sort tab stages the same keys for any column until
+<kbd>Enter</kbd>.
+
+A width set with <kbd>&lt;</kbd> <kbd>&gt;</kbd>, <kbd>=</kbd> or <kbd>f</kbd> is kept through
 paging, resizing and reordering until <kbd>w</kbd>, <kbd>C</kbd> or
 <kbd>R</kbd>. Text gets exactly that width; a number column is never narrower
 than its numbers. Applying only width changes leaves the table on the page

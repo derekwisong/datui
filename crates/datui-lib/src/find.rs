@@ -1863,6 +1863,35 @@ mod app_tests {
         assert!(!app.data_table_state.as_ref().unwrap().row_numbers());
     }
 
+    /// `<` `>` `=` `w` at the table set the column cursor's width at once (#647).
+    #[test]
+    fn width_keys_set_the_column_cursors_width() {
+        use crate::widgets::column_widths::{UNSEEN_WIDTH, WIDTH_STEP, WidthChoice};
+        let (mut app, _rx) = app_over(haystack(5, &[]));
+        let name = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .current_column()
+            .unwrap()
+            .to_string();
+        let width = |app: &App| app.data_table_state.as_ref().unwrap().width_choice(&name);
+        let start = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .shown_width(&name)
+            .unwrap_or(UNSEEN_WIDTH);
+        key(&mut app, KeyCode::Char('>'));
+        assert_eq!(width(&app), WidthChoice::Manual(start + WIDTH_STEP));
+        key(&mut app, KeyCode::Char('<'));
+        assert_eq!(width(&app), WidthChoice::Manual(start));
+        key(&mut app, KeyCode::Char('='));
+        assert_eq!(width(&app), WidthChoice::Fit);
+        key(&mut app, KeyCode::Char('w'));
+        assert_eq!(width(&app), WidthChoice::Auto);
+    }
+
     /// After the view changes under it, `n` starts from the cursor in the new view:
     /// the cell it landed on belongs to a frame that is gone.
     #[test]

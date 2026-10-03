@@ -6,7 +6,7 @@ cursor's column. <kbd>Esc</kbd> or <kbd>Space</kbd> closes it.
 
 <kbd>Enter</kbd>, or a double-click on the row, opens it too, except on a row of a `by` query or a SQL
 `GROUP BY`, where <kbd>Enter</kbd>
-[drills into the group](querying-data.md#drill-into-a-group-by) and <kbd>Space</kbd> inspects.
+[drills down into the group](querying-data.md#drill-down-a-group-by) and <kbd>Space</kbd> inspects.
 The bottom bar's first chip says what <kbd>Enter</kbd> does: `Enter Inspect`,
 or `Enter Drill` where it drills. On a narrow terminal it yields to
 `? Help`.
@@ -54,7 +54,7 @@ Exact means the value as Polars stored it, not the spelling in a CSV file: a
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page of fields |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
 | <kbd>Tab</kbd> | Move into the value ([below](#read-a-long-value)) |
-| <kbd>Enter</kbd> | On a row of a `by` query or `GROUP BY`, drill into its rows, as at the table. Else open a struct, a list or JSON text ([below](#drill-into-nested-values)), or read a field the table's rows do not hold |
+| <kbd>Enter</kbd> | On a row of a `by` query or `GROUP BY`, drill down to its rows, as at the table. Else open a struct, a list or JSON text ([below](#drill-down-into-nested-values)), or read a field the table's rows do not hold |
 | <kbd>r</kbd> | On a group's row, read a field the table's rows do not hold |
 | <kbd>y</kbd> | Copy the focused value as its view shows it |
 | <kbd>Y</kbd> | Copy the whole row as one JSON object |
@@ -129,7 +129,7 @@ order (previous, this, next), each named over its column, and the title says
 move to with <kbd>←</kbd> <kbd>→</kbd>, and the title says `compare with pinned 3`.
 <kbd>m</kbd> on the pinned row lets it go.
 
-## Drill into nested values
+## Drill down into nested values
 
 <kbd>Enter</kbd> on a struct, a list or an array opens it one level down:
 a struct's fields, or a list's items as `[0]`, `[1]`, … with their types and

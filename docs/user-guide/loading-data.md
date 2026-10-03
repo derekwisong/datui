@@ -119,7 +119,7 @@ refuses them, and remote data, with a message.
 ### Recording standard input
 
 `--tee FILE` records standard input to FILE while you view it: the bytes
-exactly as they arrive, in any format. The table reads FILE itself; there is
+exactly as they arrive, whatever the format. The table reads FILE itself; there is
 no second copy.
 
 ```bash
@@ -238,7 +238,7 @@ The format is taken from the extension, or from `--format` when there is none.
   headers. An Arrow prefix scans its IPC files in place and downloads its
   streams, one split of a Hugging Face cache as on disk; a glob of Arrow reads
   IPC files only. A prefix marked `no` opens one object at a time from the
-  [cloud browser](cloud-browser.md).
+  [cloud source](cloud-browser.md).
 - [Standard input](#standard-input) is written to a temporary file first, then
   read as **Read** says.
 
@@ -344,14 +344,14 @@ than the temp directory's free space is refused before it is written.
 
 Read: [in memory](#how-each-format-is-read).
 
-Excel opens the first sheet unless `--table` names another, by name
-(`--table Sales`) or, when no sheet is so named, by index (`--table 0`).
+Excel opens the first worksheet unless `--table` names another, by name
+(`--table Sales`) or, when no worksheet is so named, by index (`--table 0`).
 
 On the [home screen](home-screen.md), Enter on an `.xlsx` or `.xlsm` workbook opens
-its first sheet and <kbd>→</kbd> lists its sheets (`book.xlsx/Sales`), read from the
-workbook's directory without its cells; a hidden sheet shows with <kbd>Ctrl</kbd>+<kbd>A</kbd>.
-An `.xls` or `.xlsb` workbook opens its first sheet. The Info panel's
-[Excel tab](dataset-info.md#file-format-tabs) gives each sheet's range and size.
+its first worksheet and <kbd>→</kbd> lists its worksheets as tables (`book.xlsx/Sales`), read from the
+workbook's directory without its cells; a hidden worksheet shows with <kbd>Ctrl</kbd>+<kbd>A</kbd>.
+An `.xls` or `.xlsb` workbook opens its first worksheet. The Info panel's
+[Excel tab](dataset-info.md#file-format-tabs) gives each worksheet's range and size.
 
 ### Model files
 
@@ -459,7 +459,7 @@ has no dates, and `time` is null throughout.
 
 `--table` (`-t`) is for any file that holds several tables: an NMEA log's
 sentence types, a [SQLite database](#sqlite-databases)'s tables, an Excel
-workbook's sheets, a format spec's variants, or a Hugging Face cache directory's
+workbook's worksheets, a format spec's record types, or a Hugging Face cache directory's
 splits ([Arrow IPC streams](#arrow-ipc-streams)). Any other file opened with it
 is refused.
 
@@ -824,7 +824,7 @@ for CAN FD, `#R` for a remote request), or `can0  123   [4]  DE AD BE EF` as
 | `fd`, `flags` | Whether it is a CAN FD frame, and its flags (BRS, ESI) |
 | `kind` | `data`, `remote` or `error` |
 
-With a DBC file that names the log's messages, the log opens the home screen
+With a dictionary that names the log's messages, the log opens the home screen
 inside it, like a directory: a table per message with frames, `frames`, and
 `signals`.
 
@@ -837,9 +837,9 @@ Signals in Intel and Motorola byte order, signed and unsigned, and floats
 (`SIG_VALTYPE_`) are read; a signal past the end of a short frame is null.
 Extended multiplexing (`SG_MUL_VAL_`) is not; the Notes tab says so.
 
-#### DBC files
+#### CAN log dictionaries
 
-DBC files are found where [format specs](binary-formats.md) are: the `formats`
+DBC dictionaries are found where [format specs](binary-formats.md) are: the `formats`
 directory of the config directory, `$DATUI_FORMATS_PATH`, and `[formats] path`.
 A `.dbc` file there applies to every interface. A TOML file names one for an
 interface:
@@ -853,7 +853,7 @@ interface = "can1"
 
 They are read in that order, then `--dict FILE`; where two name a message of the
 same id, the later one is read. Press <kbd>i</kbd> for the CAN tab: frames,
-interfaces, the DBC files read and the frames none of them names, and each
+interfaces, the dictionaries read and the frames none of them names, and each
 message's id, frames, signals and comment.
 
 ### VCD value change dumps
@@ -954,7 +954,7 @@ be one per line or back to back.
   give it.
 - Binary FIX encodings (SBE, FAST) are not read.
 
-#### FIX dictionaries
+#### FIX log dictionaries
 
 The built-in dictionary is FIX 4.2, 4.4 and 5.0 SP2 together, the newest
 version's names winning. Venues and brokers add their own tags (5000-9999 and
@@ -984,8 +984,8 @@ The built-in dictionary comes first, then each matching dictionary on the search
 path in order, then `--dict`; a later one renames a tag or adds to its enums.
 One log can hold two counterparties that name tag 9001 differently: each
 message is read with its own, the column falls back to the tag number, and the
-FIX tab shows both names. `datui formats` lists FIX dictionaries beside the
-binary specs, and `datui formats check NAME [LOG]` checks one, and with a log
+FIX tab shows both names. `datui formats` lists dictionaries beside the
+format specs, and `datui formats check NAME [LOG]` checks one, and with a log
 says how many messages it matches and which of its tags they hold.
 
 The built-in dictionary is generated from QuickFIX's data dictionaries. This
@@ -1246,7 +1246,7 @@ datui https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.csv
 Each of these is public and opens with no login.
 
 [Remote data](remote-data.md) explains credentials, public access and what gets
-downloaded. Use the [cloud browser](cloud-browser.md) to find data without
+downloaded. Use a [cloud source](cloud-browser.md) on the home screen to find data without
 typing a URL.
 
 | Connect to | Setup |

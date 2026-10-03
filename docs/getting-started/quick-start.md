@@ -28,7 +28,7 @@ datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins
 | Arrow keys or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move around |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
 | Wheel, click | Scroll; put the cursor on a cell. A double-click inspects the row |
-| <kbd>i</kbd> | Inspect columns and file details |
+| <kbd>i</kbd> | Info panel: columns and file details |
 | <kbd>?</kbd> | Show help for this screen |
 | <kbd>Esc</kbd> | Close a panel or go back |
 | <kbd>q</kbd> | Back to the home screen; quits when the table was opened from the shell |
@@ -58,7 +58,7 @@ Type it on one line, or press <kbd>Alt</kbd>+<kbd>Enter</kbd> for a new line.
 table is named `df`. Press <kbd>Enter</kbd> on Gentoo to see its 124 penguins,
 and <kbd>Esc</kbd> to come back.
 
-The same summary is one line in **q-style**, a subset of q that evaluates right
+The same summary is one line in **q**, a subset of q that evaluates right
 to left. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> twice:
 
 ```text
@@ -66,7 +66,7 @@ select mean_mass_g: avg body_mass_g by species
 ```
 
 A new query starts a fresh view, clearing sidebar filters and sort. See
-[querying](../user-guide/querying-data.md) for search and more SQL.
+[querying](../user-guide/querying-data.md) for Text queries and more SQL.
 
 ## 3. Chart the measurements
 
@@ -86,7 +86,7 @@ the picker. The two penguins with no measurements are left out.
 Now press <kbd>6</kbd> for **Bar**, choose `species` for **Category** and
 **Count** for **Value**: Adelie 152, Gentoo 124, Chinstrap 68.
 
-Press <kbd>e</kbd> in the chart to save a PNG or EPS. Press <kbd>Esc</kbd> to
+Press <kbd>e</kbd> in the chart to export a PNG or EPS. Press <kbd>Esc</kbd> to
 return to the table. [More chart options](../user-guide/charting.md).
 
 ## 4. Copy or export
@@ -96,7 +96,7 @@ Run the species summary again, then choose an output:
 | Do this | How |
 |---|---|
 | Copy the summary into a note | <kbd>y</kbd> → Scope **Table** → Format **Markdown** → <kbd>Enter</kbd> |
-| Save a data file | <kbd>e</kbd> → type `penguin-summary.csv` in **Path** → <kbd>Enter</kbd> |
+| Export a data file | <kbd>e</kbd> → type `penguin-summary.csv` in **Path** → <kbd>Enter</kbd> |
 | Reuse the query on another file | <kbd>v</kbd> → <kbd>s</kbd> to save a view |
 
 Export and copy use the current rows and columns. They do not overwrite the
@@ -108,7 +108,7 @@ input file unless you export to that path and confirm.
 datui sales.parquet
 datui ./exports/
 datui s3://bucket/events/
-datui                        # browse from the home screen
+datui                        # start at the home screen
 ```
 
 Next: [file formats](../user-guide/loading-data.md),

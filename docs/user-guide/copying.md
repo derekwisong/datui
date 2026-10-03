@@ -61,7 +61,7 @@ A TSV or CSV copy to the `native` clipboard also carries an HTML table flavor,
 so a paste into a spreadsheet or an email keeps its columns while a paste into
 a terminal stays plain text. Values are raw, like an export: display formatting
 is not applied, a float is copied as stored rather than as the table rounds it,
-and a null is an empty field. List and struct cells are JSON in every format,
+and a null is an empty field. List and struct cells are JSON,
 as in a [CSV export](exporting-data.md#lists-and-structs), and a duration is
 [ISO 8601](exporting-data.md#durations) text such as `PT3723.004S`. A binary column is
 [base64](exporting-data.md#binary) in a Table copy; Cell, Row and View copies
@@ -107,7 +107,7 @@ they were applied:
 | The file | The reader below, with the reader options datui used (delimiter, header, comment lines, skipped lines and rows, null values), then the column names it trimmed and the text columns it read as numbers or dates; a directory or bucket prefix as a glob |
 | Query | `.filter`, `.group_by().agg()` ordered by the keys, `.select`, `.unique` |
 | SQL | `.sql(..., table_name="df")` |
-| Search | `.filter` with a case-insensitive pattern per word |
+| Text query | `.filter` with a case-insensitive pattern per word |
 | Pivot, Melt | `.group_by().agg()` then `.pivot()`; `.unpivot()` |
 | Drill-down | `.filter` on the grouped rows with `eq_missing` |
 | Filters, sort, <kbd>r</kbd> | `.filter`, `.sort(..., nulls_last=True, maintain_order=True)`, `.reverse()` |
@@ -162,12 +162,12 @@ file and the table on screen (`flight.bin --table GPS`):
 - Data piped in on standard input; recorded with `--tee FILE`, it is read
   from FILE instead
 - A format with `df = ...` above, or a read through a
-  [binary format spec](binary-formats.md)
+  [format spec](binary-formats.md)
 - A file compressed with bzip2 or xz
 - A CSV read with `--header-rows`, `--skip-initial-space`, or a
   `--comment` longer than five characters
 
-A step the script cannot repeat, such as a drill into a group whose rows are
+A step the script cannot repeat, such as a drill-down into a group whose rows are
 lists, is a comment, and the steps after it are commented out.
 
 A file in an object store is read where datui read it, with `storage_options`
@@ -214,7 +214,7 @@ you are sitting at does the copy. Caveats terminals impose:
 
 - tmux needs `set-clipboard on` to pass the sequence through.
 - Terminals cap the sequence length; datui refuses payloads above
-  `osc52_limit_kb` (default 100) rather than sending a copy that arrives
+  `osc52_limit` (default 100 KiB) rather than sending a copy that arrives
   truncated. A Table copy is read in batches and stops at the first one over
   the cap, so a copy too large is refused without reading the whole table.
   The clipboard keeps what it held. Some terminals disable OSC 52 writes

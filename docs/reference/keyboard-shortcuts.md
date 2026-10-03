@@ -21,7 +21,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>:</kbd> | Go to a row number: type it, <kbd>Enter</kbd>. <kbd>Esc</kbd> cancels; <kbd>F1</kbd> opens help |
 | <kbd>f</kbd> | [Find](../user-guide/finding.md) text or a regex; the cursor, column cursor and all, goes to the first match at or after its row |
 | <kbd>n</kbd> <kbd>N</kbd> | Next and previous match from the cursor's cell, wrapping round the view; each one typed while a find reads runs in turn. <kbd>Esc</kbd> stops a find still reading, and those typed behind it; with none reading, <kbd>Esc</kbd> clears the find |
-| <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill into its rows. <kbd>Esc</kbd> comes back. Anywhere else, inspect the row, as <kbd>Space</kbd> does |
+| <kbd>Enter</kbd> | On a row of a `by` query or a SQL `GROUP BY`, drill down to its rows. <kbd>Esc</kbd> comes back. Anywhere else, inspect the row, as <kbd>Space</kbd> does |
 | <kbd>Space</kbd> | [Inspect the row](../user-guide/inspecting-rows.md): every field, each value whole and exact |
 | <kbd>/</kbd> | [Query](../user-guide/querying-data.md) |
 | <kbd>s</kbd> | [Sort and filter](../user-guide/filtering-sorting.md), open on the cursor's column |
@@ -33,7 +33,7 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>p</kbd> | [Pivot and melt](../user-guide/reshaping.md) |
 | <kbd>e</kbd> | [Export](../user-guide/exporting-data.md) |
 | <kbd>y</kbd> | [Copy to the clipboard](../user-guide/copying.md); a cell is the cursor's; the Python (Polars) scope copies the view as code |
-| <kbd>i</kbd> | [Dataset info](../user-guide/dataset-info.md) |
+| <kbd>i</kbd> | [Info panel](../user-guide/dataset-info.md) |
 | <kbd>v</kbd> | [Views](../user-guide/views.md) |
 | <kbd>V</kbd> | Apply the best-matching view; with no match, open the list |
 | <kbd>#</kbd> | Toggle row numbers |
@@ -85,7 +85,7 @@ key, beyond the paging chords above.
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page |
-| <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last line |
+| <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous or next column; the table's column cursor moves with it |
 | <kbd>Enter</kbd> | The rows holding the value, as a drill-down; <kbd>Esc</kbd> there comes back |
 | <kbd>s</kbd> | Sort by count or by value |
@@ -142,11 +142,11 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A screenful, stopping at the first and last |
 | <kbd>Home</kbd> <kbd>End</kbd> | The first or last row |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any directory, a SQLite database, NumPy archive or file of spec variants, or a place row under `RECENT`, goes inside it |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on any directory, a SQLite database, NumPy archive or file of several tables, or a place row under `RECENT`, goes inside it |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, SQLite database or NumPy archive of several tables, cloud source, bucket or place, show the rest of `RECENT` or the hidden files, or fold the section. The control bar names which, for the row you are on |
 | <kbd>Enter</kbd> on the first row inside a directory | Read the directory as one table, as its label says: `(hive table: year, month)`, `(3 Parquet files, one schema)`, `(2 Parquet files, schemas differ)`, `(all files, mixed)`. The cursor starts there only for a hive table or one schema; hidden while a filter is typed |
 | <kbd>Space</kbd> | While the filter is empty, fold or unfold the section header under the cursor; with a filter typed, it types a space |
-| type | Filter by name or column name, and search below the directory you are inside |
+| type | Narrow by name or column name, and search below the directory you are inside |
 | <kbd>~</kbd> | While the filter is empty, type a path or URL. The list shows the directory being typed, narrowed by the name after the last `/`. The prompt is a plain editor: characters, <kbd>Backspace</kbd>, <kbd>Ctrl</kbd>+<kbd>U</kbd> clears, <kbd>Tab</kbd> completes the one name left or what the names share, <kbd>↑</kbd> <kbd>↓</kbd> pick a name, <kbd>Enter</kbd> opens a file or browses a directory, <kbd>Esc</kbd> closes |
 | <kbd>Tab</kbd> | Cycle the sort: natural (name, or recency under `RECENT`), size, modified, rows — the control bar names the order in effect when it has room |
 | <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level. From the top of a collection's remote dataset, back to the list |
@@ -173,9 +173,9 @@ asking to download it) and steps into a directory or object-store prefix.
 
 | Key | Action |
 |---|---|
-| <kbd>Ctrl</kbd>+<kbd>T</kbd> | Next mode: SQL, Search, q-style, from the input or the tab bar |
+| <kbd>Ctrl</kbd>+<kbd>T</kbd> | Next mode: SQL, Text, q, from the input or the tab bar |
 | <kbd>Shift</kbd>+<kbd>Tab</kbd> | From the input, go to the tab bar; from the tab bar, back to the input |
-| <kbd>Tab</kbd> | In SQL, complete a column name or `df` (again for the next match). In Search and q-style, and on the tab bar, move between the input and the tab bar |
+| <kbd>Tab</kbd> | In SQL, complete a column name or `df` (again for the next match). In Text and q, and on the tab bar, move between the input and the tab bar |
 | <kbd>Alt</kbd>+<kbd>Enter</kbd> | In SQL, start a new line |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | On the tab bar, switch mode |
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | History; each mode keeps its own. In a SQL statement of several lines, <kbd>↑</kbd> <kbd>↓</kbd> move between them first |
@@ -211,7 +211,7 @@ or <kbd>Tab</kbd> keeps it. Editing a saved view opens its values unselected.
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>K</kbd> | Delete to the start or the end of the line |
 | <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Paste the last deletion |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> <kbd>Ctrl</kbd>+<kbd>R</kbd> | Undo, redo |
-| <kbd>Ctrl</kbd>+<kbd>J</kbd> | The same as <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, on every terminal: saves a view from its description and applies Sort & Filter. In the query and go-to-line prompts it submits, like <kbd>Enter</kbd> |
+| <kbd>Ctrl</kbd>+<kbd>J</kbd> | The same as <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, on every terminal: saves a view from its description and applies Sort & Filter. In the query and go-to-row prompts it submits, like <kbd>Enter</kbd> |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selection (does not quit while a text field is focused) |
 | <kbd>F1</kbd> | Help |
 
@@ -395,7 +395,7 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 | <kbd>Enter</kbd> | Copy, from anywhere in the form; in a picker, choose |
 | <kbd>Esc</kbd> | Close a picker, then the dialog |
 
-## Row inspector
+## Inspector
 
 | Key | Action |
 |---|---|
@@ -404,7 +404,7 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page of fields; on the footer when the list runs past its rows |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
 | <kbd>Tab</kbd> | Move into the value: <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> scroll it, <kbd>Home</kbd> <kbd>End</kbd> reach its top and end, <kbd>/</kbd> finds in it with <kbd>n</kbd> <kbd>N</kbd>; <kbd>Esc</kbd> or <kbd>Tab</kbd> goes back to the fields |
-| <kbd>Enter</kbd> | On a group's row, drill into its rows. Else open a struct, a list or JSON text one level down, or read the row's hidden and binary fields |
+| <kbd>Enter</kbd> | On a group's row, drill down to its rows. Else open a struct, a list or JSON text one level down, or read the row's hidden and binary fields |
 | <kbd>r</kbd> | On a group's row, read the row's hidden and binary fields |
 | <kbd>→</kbd> <kbd>l</kbd> / <kbd>←</kbd> <kbd>h</kbd> | Inside a level: open the focused item / go up a level (at the row they move between rows) |
 | <kbd>y</kbd> | Copy the focused value as its view shows it |
@@ -419,7 +419,7 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 | <kbd>/</kbd> | Find a field by name, then by value: type to narrow, <kbd>Enter</kbd> or <kbd>↓</kbd> keeps the list narrowed, <kbd>Esc</kbd> clears it |
 | <kbd>Esc</kbd> <kbd>Space</kbd> | Close; <kbd>Esc</kbd> clears a find first, inside a level goes up one, and in the value goes back to the fields |
 
-## Dataset info
+## Info panel
 
 | Key | Action |
 |---|---|

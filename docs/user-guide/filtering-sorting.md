@@ -10,7 +10,7 @@ Open **Food nutrition (fast food)** from **Public datasets**: 515 menu items
 from eight chains, nutrients per item. Find the chicken dishes with at least
 40 g of protein, heaviest first:
 
-1. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for **Search**. Type
+1. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for **Text**. Type
    `chicken` and press <kbd>Enter</kbd>: 178 of 515.
 2. Press <kbd>s</kbd>, <kbd>→</kbd> for **Filters**, <kbd>Tab</kbd> into the
    list and <kbd>Enter</kbd> on `add filter…`. Type `protein` and press
@@ -92,7 +92,7 @@ paging, resizing and reordering until <kbd>w</kbd>, <kbd>C</kbd> or
 than its numbers. Applying only width changes leaves the table on the page
 you were on.
 
-The space between columns is the `table_cell_padding` setting:
+The space between columns is the `display.cell_padding` setting:
 `"comfortable"` (2 cells, the default), `"compact"` (1) or a number. See the
 [settings reference](../reference/settings.md#display).
 
@@ -193,5 +193,5 @@ and are saved in [views](views.md).
 ## From the query prompt
 
 For anything more involved, a SQL `WHERE` or the `where` clause of a
-[q-style query](../reference/query-syntax.md#where-clause--and-) takes
+[q query](../reference/query-syntax.md#where-clause--and-) takes
 expressions, `OR` groups, null tests and date arithmetic.

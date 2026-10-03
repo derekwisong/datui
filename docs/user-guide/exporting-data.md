@@ -3,7 +3,7 @@
 Press <kbd>e</kbd> to write the current view to a file: the rows and columns
 as queried, filtered and sorted.
 
-## Save a CSV
+## Export a CSV
 
 1. Open **Premier League (2020-21)** from **Public datasets** and run the
    [goals query](querying-data.md#dates-and-messy-text).
@@ -37,7 +37,7 @@ on screen. Numbers use their raw values, without display formatting.
 | Arrow IPC | `.arrow`, `.ipc`, `.feather` | |
 | Avro | `.avro` | |
 
-Every format also offers **Source file** for a dataset whose files disagree; see
+Each export format also offers **Source file** for a dataset whose files disagree; see
 [below](#source-file).
 
 The dialog starts on the format datui read the data as, where it writes that
@@ -178,7 +178,7 @@ can still be replaced. Chart and Data Quality report exports work the same way.
 | CSV, TSV and PSV without compression, Parquet | Streamed: written in batches as the rows are read; the export never holds the whole view |
 | Compressed CSV, TSV and PSV, JSON, NDJSON, Arrow IPC, Avro | The whole view is read into memory, then written |
 
-Streaming needs `polars_streaming` on in `[performance]`, the default, and a
+Streaming needs `streaming` on in `[performance]`, the default, and a
 build with the `streaming` feature; without either, every export reads the
 whole view first. Streaming bounds what the export
 holds, not what the view needs: a sort, a `by` or `GROUP BY` query, or a join

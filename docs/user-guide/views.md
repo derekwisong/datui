@@ -94,11 +94,11 @@ Data piped to standard input and frames passed from Python
 Schema matching is enabled by default. It records the columns as loaded,
 before the query, so a view whose query renames columns still matches the next
 file. Matching views rank above unrelated ones; exact schemas rank above
-schemas with extra columns. Other match rules and usage history also affect
-the score. Press <kbd>i</kbd> to inspect it.
+schemas with extra columns. Other match rules, and how often and how recently a
+view was used, also affect the score. Press <kbd>i</kbd> to inspect it.
 <kbd>V</kbd> and automatic application use only views with a matching rule.
 
-Only the active query is saved, in its own mode: **SQL**, **Search** or **q-style**. Filters,
+Only the active query is saved, in its own mode: **SQL**, **Text** or **q**. Filters,
 sort, column order and reshape are saved regardless. After a pivot or melt, the
 view also keeps the query, filters and sort the reshape ran over, and applies
 them before it. A reshape of a reshape, such as a melt of a pivot, cannot be

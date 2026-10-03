@@ -33,7 +33,7 @@ screen.
 | Page | Do | Expect |
 |---|---|---|
 | [Quick start](../getting-started/quick-start.md) | Every step | The numbers in the page; Gentoo drills to 124 rows |
-| [Queries and search](../user-guide/querying-data.md) | Each query, the drill-downs, the q-style table | Results as written; AS drills to 714 flights, taxi hour 4 to 20,033 |
+| [Query data](../user-guide/querying-data.md) | Each query, the drill-downs, the q table | Results as written; AS drills to 714 flights, taxi hour 4 to 20,033 |
 | [Sort, filter and arrange columns](../user-guide/filtering-sorting.md) | The five steps | `30 of 515`, 2,430 calories first, `vit_a` and `vit_c` hidden |
 | [Pivot and melt](../user-guide/reshaping.md) | Names pivot, melt, launches count | 138, 414 and 62 rows |
 | [Make a chart](../user-guide/charting.md) | Every row of the examples table | The shapes and labels described |

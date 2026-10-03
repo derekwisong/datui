@@ -24,7 +24,7 @@ the executables Cargo builds.
 | `./scripts/dev/test.sh unit data_quality::` | Library test executable; only data-quality tests execute |
 | `./scripts/dev/test.sh integration integration_test test_data_quality` | App integration executable; matching quality tests execute |
 | `./scripts/dev/test.sh integration home_test` | Home integration executable |
-| `./scripts/dev/test.sh integration statistics_test` | Statistics integration executable |
+| `./scripts/dev/test.sh integration statistics_test` | Analysis integration executable |
 | `./scripts/dev/test.sh cli` | CLI library tests |
 | `./scripts/dev/test.sh preflight` | Formatting (workspace and fuzz targets) and workspace clippy with all targets |
 | `./scripts/dev/test.sh features` | Clippy on `datui` and `datui-lib`, all targets, with no default features and then each feature alone |

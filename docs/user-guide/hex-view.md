@@ -46,7 +46,7 @@ rest of the layout is found.
 | About 300 columns | 64 |
 | Under 50 columns | As many as fit, without the ASCII column |
 
-The inspector sits beside the bytes when there is room for it and 16 bytes a
+The byte inspector sits beside the bytes when there is room for it and 16 bytes a
 row; elsewhere <kbd>i</kbd> opens it under them. <kbd>r</kbd> or
 `--hex-width N` fixes the bytes per row (1 to 4096) so that records line up;
 a row wider than the screen shows the part the cursor is in.
@@ -71,10 +71,10 @@ byte that is not printable is `·` (`.` on a terminal without Unicode).
 | <kbd>R</kbd> | Make the distance between matches the bytes per row |
 | <kbd>r</kbd> | Bytes per row; empty for as many as fit |
 | <kbd>v</kbd> | Mark a range from the cursor; the status line counts it |
-| <kbd>i</kbd> <kbd>Enter</kbd> | Show or hide the inspector |
+| <kbd>i</kbd> <kbd>Enter</kbd> | Show or hide the byte inspector |
 | <kbd>#</kbd> | Offsets in decimal or hex |
 | <kbd>B</kbd> | Read the file with a format spec |
-| <kbd>Esc</kbd> | Stop a find; close the inspector or the mark; then back to the table or home screen it came from |
+| <kbd>Esc</kbd> | Stop a find; close the byte inspector or the mark; then back to the table or home screen it came from |
 | <kbd>q</kbd> | Home, when opened from there; otherwise quit |
 
 ## Go to an offset
@@ -100,7 +100,7 @@ byte that is not printable is `·` (`.` on a terminal without Unicode).
 A match may span rows. Every match on screen is marked, and <kbd>Esc</kbd> stops
 a find still reading a large file.
 
-## The inspector
+## The byte inspector
 
 At the cursor, little-endian and big-endian side by side:
 

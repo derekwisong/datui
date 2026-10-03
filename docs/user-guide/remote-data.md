@@ -1,6 +1,6 @@
 # Connect to cloud storage
 
-Pass a cloud URL to datui, or use the [cloud browser](cloud-browser.md).
+Pass a cloud URL to datui, or open a [cloud source](cloud-browser.md) on the home screen.
 The setup examples below use placeholder bucket and account names; substitute
 your own. [Public data](#public-data) has examples that run as written.
 
@@ -162,7 +162,7 @@ datui abfss://container@account.dfs.core.windows.net/data.parquet
 ```
 
 In Azure PowerShell, use `Connect-AzAccount` instead of `az login`.
-The [cloud browser](cloud-browser.md) lists the accounts the login can access.
+The [cloud source](cloud-browser.md) lists the accounts the login can access.
 
 | URL | Also accepted |
 |---|---|

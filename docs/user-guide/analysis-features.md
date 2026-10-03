@@ -134,7 +134,7 @@ Partitions, files and time ranges read the source, ignoring the query and filter
 | Key | Action |
 |---|---|
 | <kbd>s</kbd> | Open the Sample form |
-| <kbd>v</kbd> | View the sample's rows in the table viewer: sort, filter, query, copy or export them; <kbd>Esc</kbd> returns to the tool |
+| <kbd>v</kbd> | View the sample's rows in the table: sort, filter, query, copy or export them; <kbd>Esc</kbd> returns to the tool |
 | <kbd>r</kbd> | Draw another sample (a new seed) |
 | <kbd>a</kbd> | Read every row, after confirming the count; sets the method to Every row |
 | <kbd>Esc</kbd> | Cancel a run in progress |

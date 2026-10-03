@@ -1,4 +1,4 @@
-# Count values
+# Value counts
 
 Press <kbd>F</kbd> at the table to see how many rows hold each value of the
 column under the column cursor, with a summary of the column above them.
@@ -42,9 +42,9 @@ the column can be added up:
 |---|---|
 | Header | The column, and what was counted: `all 336,776 rows`, or `sample of 100,000 of 657,752 rows` |
 | Summary | `Rows`, `Distinct` (null not among them) and `Nulls`; `Sum`, `Mean`, `Min` and `Max` for numbers; `Min` and `Max` for dates and times. A sample has no `Sum` |
-| Lines | Each value's rows, its percent of all of them, the running percent, and a bar beside the most common value's |
-| `∅` | The nulls, on a line of their own: ranked by their rows when sorted by count, last when sorted by value |
-| `other (N values)` | Past the 1,000 most common values, the rest on one line, without a bar |
+| Rows | Each value's rows, its percent of all of them, the running percent, and a bar beside the most common value's |
+| `∅` | The nulls, on a row of their own: ranked by their rows when sorted by count, last when sorted by value |
+| `other (N values)` | Past the 1,000 most common values, the rest in one row, without a bar |
 
 Values are written as the table writes them: <kbd>,</kbd> groups digits
 here too.
@@ -55,7 +55,7 @@ here too.
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page |
-| <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last line |
+| <kbd>Home</kbd> <kbd>End</kbd> or <kbd>G</kbd> | First and last row |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous or next column; a column counted before shows at once |
 | <kbd>Enter</kbd> | The rows holding the value, as a drill-down. <kbd>Esc</kbd> there comes back |
 | <kbd>s</kbd> | Sort by count or by value; the header's mark says which |

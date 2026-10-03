@@ -1,13 +1,13 @@
-# Browse files
+# Home screen
 
 Run `datui` without a path, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>, to find and
-open a dataset. Type to filter the list; press <kbd>Enter</kbd> to open the
+open a dataset. Type to narrow the list; press <kbd>Enter</kbd> to open the
 selected row. The details pane shows the selected file's first rows and its
 schema when available.
 
 ## Open a file or directory
 
-1. Type part of a name to filter the list.
+1. Type part of a name to narrow the list.
 2. Select the file with <kbd>↑</kbd> / <kbd>↓</kbd> and press <kbd>Enter</kbd>,
    or double-click it. The wheel moves the selection; see [Mouse](../reference/keyboard-shortcuts.md#mouse).
 3. To browse inside a directory instead of combining its files, press <kbd>→</kbd>.
@@ -104,7 +104,7 @@ desktop_recents = false
 
 ## Searching below the current directory
 
-Typing filters the visible list and starts a background search below the
+Typing narrows the visible list and starts a background search below the
 working directory. `Found` results show relative paths, so identically named
 files in different folders remain distinguishable. The directory walk runs
 once and keeps every data file it finds; each keystroke scores those files in
@@ -190,7 +190,7 @@ spaces, then the label: `data/  3 dirs`, `events/  hive`, `Palmer penguins  csv`
 | `12 parquet`, `3 csv` | Direct data files of one format |
 | `3 safetensors`, `2 gguf` | A model: weight files of one format, with only JSON (config, tokenizer) beside them. Opens as one table |
 | `3 tables` | A file of tables (a file, not a directory): a SQLite database, a NumPy `.npz` archive, a flight or CAN log. One table opens; several are listed, a row each, when <kbd>Enter</kbd> or <kbd>→</kbd> goes inside |
-| `3 sheets` | A file that opens one of its tables: an Excel workbook's first sheet, an NMEA log's fixes, an ELF file's symbols. <kbd>Enter</kbd> opens it; <kbd>→</kbd> lists them all |
+| `3 tables` | A file that opens one of its tables: an Excel workbook's first worksheet, an NMEA log's fixes, an ELF file's symbols. <kbd>Enter</kbd> opens it; <kbd>→</kbd> lists them all |
 | `mixed` | Several formats |
 | `3 dirs` | Only directories: how many there are to go into |
 | `dir` | No direct data files and no directories; `dir+` means the listing was cut short |
@@ -345,8 +345,8 @@ the publisher's: check it before you use the data.
 | Dataset | Used in |
 |---|---|
 | Palmer penguins | [Quick start](../getting-started/quick-start.md), [charts](charting.md), [correlation](analysis-features.md#correlation-matrix), [Python](python-module.md) |
-| NYC flights (2013) | [Queries](querying-data.md#run-a-query), [drill-down](querying-data.md#drill-into-a-group-by), [bar charts](charting.md#chart-one-value-per-category) |
-| Food nutrition (fast food) | [Search, filter and sort](filtering-sorting.md), [copy](copying.md), [data quality](data-quality.md) |
+| NYC flights (2013) | [Queries](querying-data.md#run-a-query), [drill-down](querying-data.md#drill-down-a-group-by), [bar charts](charting.md#chart-one-value-per-category) |
+| Food nutrition (fast food) | [Sort and filter](filtering-sorting.md), [copy](copying.md), [data quality](data-quality.md) |
 | US baby names (1880-2017) | [Pivot and melt](reshaping.md) |
 | Space launches (1957-2018) | [Count with a pivot](reshaping.md#count-with-a-pivot) |
 | Premier League (2020-21) | [Dates and messy text](querying-data.md#dates-and-messy-text), [export](exporting-data.md) |
@@ -364,7 +364,7 @@ A collection named `public` replaces this one,
 ## Cloud storage
 
 Open a source under `CLOUD` to browse buckets, projects or containers.
-See [Cloud browser](cloud-browser.md)
+See [Cloud sources](cloud-browser.md)
 for discovery, refresh behavior and listing errors, or
 [Remote data](remote-data.md) for credentials and URLs.
 

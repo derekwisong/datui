@@ -7,7 +7,7 @@ the full input. Lazy loading does not make every operation fit in memory.
 
 | Task | What helps |
 |---|---|
-| Browse a large dataset | Prefer Parquet: types and row counts are stored in footers, and data is read in row groups |
+| Page through a large dataset | Prefer Parquet: types and row counts are stored in footers, and data is read in row groups |
 | Open local partitions | Pass the directory, such as `datui ./events/`, to use datui's schema union and file metadata |
 | Pivot a large table | Filter first; pivot reads all affected rows to discover the output columns |
 | Analyze many rows | Use the sample-size setting for Describe, Distribution and Correlation |

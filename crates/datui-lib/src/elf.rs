@@ -325,6 +325,7 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
             list_title: "Sections",
             list,
             first: false,
+            ..Default::default()
         },
         left_out: total - rows,
     })

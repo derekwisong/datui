@@ -82,6 +82,32 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
         .join("\n")
 }
 
+/// The Audio tab of the dataset on screen.
+fn audio_tab(app: &App) -> datui::text_formats::Detail {
+    let detail = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .format_detail()
+        .cloned()
+        .expect("an Audio tab");
+    assert_eq!(detail.tab, "Audio");
+    detail
+}
+
+/// The markers on an Audio tab, in order.
+fn marker_values(detail: &datui::text_formats::Detail) -> Vec<&str> {
+    detail
+        .list
+        .iter()
+        .filter(|(k, _)| k.starts_with("marker "))
+        .map(|(_, v)| match v {
+            datui::model_files::MetaValue::Text(text) => text.as_str(),
+            other => panic!("a marker is text: {other:?}"),
+        })
+        .collect()
+}
+
 #[test]
 fn a_wav_file_opens_as_its_frames() {
     let (app, _rx) = open("tone.wav");
@@ -134,17 +160,15 @@ fn a_broadcast_wav_shows_its_format_metadata_and_markers_on_the_audio_tab() {
     let ch2 = ints(&df, "ch2");
     assert_eq!(ch1[12], -ch2[12], "the channels are mirror images");
 
-    let header = app
-        .data_table_state
-        .as_ref()
-        .unwrap()
-        .audio()
-        .unwrap()
-        .header();
-    assert!(header.broadcast);
-    assert_eq!(header.markers.len(), 2);
-    assert_eq!(header.markers[1].label, "Action");
-    assert_eq!(header.markers[1].length, Some(1200));
+    let detail = audio_tab(&app);
+    assert!(detail.lines[0].contains("(Broadcast WAV)"), "{detail:?}");
+    let markers: Vec<&str> = marker_values(&detail);
+    assert_eq!(markers.len(), 2);
+    assert!(markers[1].ends_with("Action"), "{markers:?}");
+    assert!(
+        markers[1].contains("0:00.025 long"),
+        "1,200 frames: {markers:?}"
+    );
 
     // `i` opens on the Audio tab.
     press(&mut app, KeyCode::Char('i'));
@@ -206,16 +230,11 @@ fn an_aiff_file_opens_with_its_marker() {
     let (app, _rx) = open("loop.aiff");
     let df = frame(&app);
     assert_eq!(df.height(), 441);
-    let header = app
-        .data_table_state
-        .as_ref()
-        .unwrap()
-        .audio()
-        .unwrap()
-        .header();
-    assert_eq!(header.sample_rate, 44100.0);
-    assert_eq!(header.markers[0].label, "Loop");
-    assert_eq!(header.markers[0].sample, 220);
+    let detail = audio_tab(&app);
+    assert!(detail.lines[0].contains("44,100 Hz"), "{detail:?}");
+    let markers = marker_values(&detail);
+    assert!(markers[0].ends_with("Loop"), "{markers:?}");
+    assert!(markers[0].contains("frame 220"), "{markers:?}");
 }
 
 #[test]

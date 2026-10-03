@@ -848,6 +848,7 @@ fn detail(index: &Index, listing: &Listing) -> Detail {
         list_title: "Messages",
         list: crate::text_formats::capped_list(list, listing.messages.len()),
         first: false,
+        ..Default::default()
     }
 }
 

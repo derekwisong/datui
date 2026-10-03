@@ -599,6 +599,7 @@ pub fn detail(reader: &SdfReader) -> Detail {
         list_title: "Fields",
         list,
         first: false,
+        ..Default::default()
     }
 }
 

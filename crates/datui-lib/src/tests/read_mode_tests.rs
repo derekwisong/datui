@@ -19,7 +19,7 @@ fn opened(path: &Path) -> (Option<crate::ReadMode>, Option<bool>) {
     // A frame of rows already in memory is a `DF` node in the plan. Audio's frame
     // is one too: an empty frame of its row count, mapped to the file's samples.
     let in_memory = match &scan {
-        Scan::Frame(lf) if report.audio.is_none() => {
+        Scan::Frame(lf) if report.format != Some(FileFormat::Audio) => {
             Some(lf.describe_plan().unwrap().contains("DF ["))
         }
         _ => None,

@@ -69,6 +69,19 @@ fn screen(app: &mut App) -> String {
         .join("\n")
 }
 
+/// The MIDI tab of the dataset on screen.
+fn midi_tab(app: &App) -> datui::text_formats::Detail {
+    let detail = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .format_detail()
+        .cloned()
+        .expect("a MIDI tab");
+    assert_eq!(detail.tab, "MIDI");
+    detail
+}
+
 #[test]
 fn a_midi_file_opens_as_its_events() {
     let (mut app, rx) = open(midi().join("song.mid"));
@@ -133,8 +146,11 @@ fn a_midi_file_opens_as_its_events() {
     assert_eq!(channel.get(bass), Some(2), "channels count from 1");
 
     let state = app.data_table_state.as_ref().unwrap();
-    let summary = state.midi().expect("a MIDI summary");
-    assert_eq!((summary.notes, summary.unended), (6, 1));
+    let summary = midi_tab(&app);
+    assert!(
+        summary.lines[1].contains("6 notes (1 never ends)"),
+        "{summary:?}"
+    );
     assert!(
         state
             .notes()
@@ -190,10 +206,10 @@ fn format_0_and_smpte_files_keep_their_own_time() {
     let (app, _rx) = open(midi().join("smpte.mid"));
     let df = frame(&app);
     assert_eq!(floats(&df, "seconds")[1], Some(1.0));
-    let summary = app.data_table_state.as_ref().unwrap().midi().unwrap();
-    assert_eq!(
-        summary.division.map(|d| d.label()).as_deref(),
-        Some("25 fps, 40 ticks per frame")
+    let summary = midi_tab(&app);
+    assert!(
+        summary.lines[0].contains("25 fps, 40 ticks per frame"),
+        "{summary:?}"
     );
 }
 
@@ -215,10 +231,11 @@ fn a_directory_of_songs_is_one_table_without_the_broken_one() {
     assert_eq!(df.get_column_names()[0].as_str(), "file");
     assert_eq!(df.height(), 34, "drums 4 and song 30");
     let state = app.data_table_state.as_ref().unwrap();
-    let summary = state.midi().unwrap();
-    assert_eq!(summary.files, 2);
-    assert_eq!(summary.unreadable.len(), 1);
-    assert_eq!(summary.unreadable[0].0, "broken.mid");
+    let summary = midi_tab(&app);
+    assert!(summary.lines[0].contains("2 files"), "{summary:?}");
+    assert_eq!(summary.list_title, "Unreadable");
+    assert_eq!(summary.list.len(), 1);
+    assert_eq!(summary.list[0].0, "broken.mid");
     assert!(
         state
             .notes()

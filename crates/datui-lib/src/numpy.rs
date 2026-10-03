@@ -1096,6 +1096,7 @@ pub fn detail(header: &Header, archive: Option<(&Path, usize)>, compressed: bool
         list_title: "Fields",
         list,
         first: false,
+        ..Default::default()
     }
 }
 

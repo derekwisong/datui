@@ -136,10 +136,6 @@ pub struct OpenOptions {
     pub typed_dialect: TypedDialect,
     /// When true, show the debug overlay (session info, performance, query, etc.).
     pub debug: bool,
-    /// What a SafeTensors or GGUF header said besides its tensors: its metadata and
-    /// totals, for the Info panel. Found by the scan, which reads the header once, and
-    /// carried to the dataset as `left_out` is. `None` for every other open.
-    pub model: Option<Arc<crate::model_files::ModelSummary>>,
     /// The split of a Hugging Face cache directory this read chose, the others and the
     /// `map()` files it left out. Found by the read, or by a bucket listing, and carried
     /// to the dataset as `left_out` is. `None` for every other open.
@@ -168,18 +164,11 @@ pub struct OpenOptions {
     pub read_python: Vec<String>,
     /// `--normalize`: integer audio samples as float in [-1, 1].
     pub normalize: bool,
-    /// The audio file the scan opened: its header for the Info panel, and its frames
-    /// for a window read straight from the file. Found by the scan and carried to the
-    /// dataset as `left_out` is. `None` for every other open.
-    pub audio: Option<Arc<crate::audio::AudioSource>>,
-    /// What a MIDI file said besides its events, for the Info panel; carried as
-    /// `model` is. `None` for every other open.
-    pub midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A SQLite table opened in place, carried from the scan to the dataset.
     pub sqlite: Option<Arc<SqliteOpen>>,
-    /// What a reader that decodes its table from the file found (a NumPy array): its
-    /// window, row count, Info panel tab and other tables, carried from the scan to the
-    /// dataset as `model` is. `None` for every other open.
+    /// What the reader found besides the frame: a window read straight from the file,
+    /// its row count, its Info panel tab, other tables and notes. Found by the scan and
+    /// carried to the dataset as `left_out` is. `None` for a reader with nothing to add.
     pub opened: Option<Arc<crate::members::Opened>>,
     /// The delimited spec the file is read through, once chosen: its dialect is in
     /// these options, and the read's units and metadata ride with it to the dataset.
@@ -240,9 +229,7 @@ impl OpenOptions {
             skip_rows: None,
             skip_tail_rows: None,
             left_out: Vec::new(),
-            model: None,
             read_python: Vec::new(),
-            midi: None,
             read_as_plain_files_of: None,
             files_disagree: Default::default(),
             compression: None,
@@ -287,7 +274,6 @@ impl OpenOptions {
             spec_choice: None,
             format_read: None,
             normalize: false,
-            audio: None,
             sqlite: None,
             opened: None,
             splits: None,
@@ -594,16 +580,10 @@ pub struct ReadReport {
     /// commonest format, or a file's extension. Carried back as `OpenOptions::format`,
     /// so what is on screen knows whether it has a header row to turn off.
     pub format: Option<FileFormat>,
-    /// What a model file's header said besides its tensors. See [`OpenOptions::model`].
-    pub model: Option<Arc<crate::model_files::ModelSummary>>,
     /// What a read through a format spec found. See `OpenOptions::format_read`.
     pub format_read: Option<Arc<crate::formats::Read>>,
     /// See [`OpenOptions::read_python`].
     pub read_python: Vec<String>,
-    /// The audio file the scan opened. See [`OpenOptions::audio`].
-    pub audio: Option<Arc<crate::audio::AudioSource>>,
-    /// What a MIDI file said besides its events. See [`OpenOptions::midi`].
-    pub midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A SQLite table opened in place. See `OpenOptions::sqlite`.
     pub sqlite: Option<Arc<SqliteOpen>>,
     /// See [`OpenOptions::opened`].

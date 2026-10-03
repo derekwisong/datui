@@ -24,20 +24,27 @@ const CHUNK: usize = 1 << 16;
 /// The most rows of a [`Detail`] list; a file of more says how many are left out.
 pub const MAX_DETAIL_ROWS: usize = 10_000;
 
-/// What a text format's file says besides its rows, for its tab of the Info panel.
+/// What a file says besides its rows, for its tab of the Info panel: a VCD header, the
+/// FIX dictionaries used, a model's totals and metadata, an audio file's format and
+/// markers. Every format's tab is one of these, made by its reader when it opens.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Detail {
-    /// The tab's name: `VCD`, `FIX`, `SDF`.
+    /// The tab's name: `VCD`, `Model`, `Audio`.
     pub tab: &'static str,
     /// The lines above the list.
     pub lines: Vec<String>,
-    /// The list's title: `Signals`, `Tags`, `Fields`.
+    /// Lines after them in the warning color: what the file holds that is not shown.
+    pub warnings: Vec<String>,
+    /// The list's title: `Signals`, `Metadata`, `Tracks`.
     pub list_title: &'static str,
     /// The list, key and value.
     pub list: Vec<(String, MetaValue)>,
     /// Whether `i` opens on this tab rather than the schema: a table whose columns are
     /// the same for every file, where what is particular to it is here.
     pub first: bool,
+    /// Whether the columns are datui's own rather than the file's, as the Schema tab
+    /// says of where they came from.
+    pub own_columns: bool,
 }
 
 /// Read the one file of `input` a piece at a time with `read`, a text format's reader,

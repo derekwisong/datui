@@ -679,6 +679,7 @@ pub fn detail(index: &Index) -> Detail {
         list_title: "Info and parameters",
         list: crate::text_formats::capped_list(list.into_iter(), total),
         first: false,
+        ..Default::default()
     }
 }
 

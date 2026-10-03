@@ -829,6 +829,7 @@ pub fn detail(reader: &VcdReader) -> Detail {
         list_title: "Signals",
         list,
         first: true,
+        ..Default::default()
     }
 }
 

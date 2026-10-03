@@ -986,6 +986,7 @@ pub fn detail(reader: &FixReader) -> Detail {
         list_title: "Tags",
         list,
         first: false,
+        ..Default::default()
     }
 }
 

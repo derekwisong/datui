@@ -141,7 +141,7 @@ pub(crate) fn group_u64(n: u64) -> String {
 }
 
 /// `n` and the noun for it: `1 tensor`, `291 tensors`.
-fn count_of(n: u64, one: &str, many: &str) -> String {
+pub(crate) fn count_of(n: u64, one: &str, many: &str) -> String {
     format!("{} {}", group_u64(n), if n == 1 { one } else { many })
 }
 
@@ -159,38 +159,6 @@ pub(crate) fn short_count(n: u64) -> String {
         }
     }
     n.to_string()
-}
-
-/// Each type's share of the parameters, most first: `Q4_K 87% · Q6_K 12% · F32 <1%`.
-/// By tensors when no tensor has a parameter count.
-fn type_mix(types: &[crate::model_files::TypeShare], sep: &str) -> String {
-    let by_params = types.iter().any(|t| t.params > 0);
-    let total: u64 = if by_params {
-        types.iter().map(|t| t.params).fold(0, u64::saturating_add)
-    } else {
-        types.iter().map(|t| t.tensors as u64).sum()
-    };
-    types
-        .iter()
-        .map(|t| {
-            let part = if by_params {
-                t.params
-            } else {
-                t.tensors as u64
-            };
-            let pct = if total == 0 {
-                0.0
-            } else {
-                part as f64 * 100.0 / total as f64
-            };
-            if pct > 0.0 && pct < 1.0 {
-                format!("{} <1%", t.name)
-            } else {
-                format!("{} {:.0}%", t.name, pct)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(sep)
 }
 
 /// Break one line of text into lines no wider than `width` columns, between words: the
@@ -270,7 +238,7 @@ pub(crate) fn meta_text(value: &crate::model_files::MetaValue) -> String {
     }
 }
 
-/// The most of one metadata value the Model tab draws. A chat template is a few KB and
+/// The most of one metadata value a detail tab draws. A chat template is a few KB and
 /// is shown whole; a GGUF can carry a whole `tokenizer.json` as one string, megabytes
 /// that would be wrapped again on every frame.
 pub(crate) const VALUE_SHOWN_BYTES: usize = 64 * 1024;
@@ -346,127 +314,6 @@ pub(crate) fn clock(seconds: f64) -> String {
     }
 }
 
-/// A detail tab's lines above its metadata, each with its style.
-pub(crate) type HeadLines = Vec<(String, Style)>;
-
-/// The Audio tab: its head lines and its metadata, markers last.
-pub(crate) fn audio_detail(
-    audio: &crate::audio::AudioSource,
-    theme: &RenderContext,
-) -> (HeadLines, crate::model_files::Metadata) {
-    use crate::model_files::MetaValue;
-    let h = audio.header();
-    let g = crate::glyphs::get();
-    let sep = format!(" {} ", g.middot);
-    let plain = Style::default();
-    let mut kind = h.container.label().to_string();
-    if h.broadcast {
-        kind.push_str(" (Broadcast WAV)");
-    }
-    let rate = if h.sample_rate.fract() == 0.0 {
-        group_u64(h.sample_rate as u64)
-    } else {
-        format!("{:.3}", h.sample_rate)
-    };
-    let mut samples = h.sample.label();
-    if !h.sample.is_float() && (h.valid_bits as usize) < h.sample.bytes() * 8 {
-        samples.push_str(&format!(" ({} valid)", h.valid_bits));
-    }
-    let mut lines = vec![
-        (
-            format!(
-                "{kind}{sep}{}{sep}{rate} Hz",
-                count_of(h.channels as u64, "channel", "channels"),
-            ),
-            plain,
-        ),
-        (
-            format!(
-                "Samples: {samples}{sep}{}{}",
-                h.encoding,
-                if audio.normalize() && !h.sample.is_float() {
-                    format!("{sep}shown as float in [-1, 1]")
-                } else {
-                    String::new()
-                }
-            ),
-            plain,
-        ),
-        (
-            format!(
-                "Frames: {}{sep}Length: {}",
-                group_u64(audio.frames()),
-                clock(audio.seconds()),
-            ),
-            plain,
-        ),
-        (
-            format!(
-                "Data: {}",
-                format_bytes(audio.frames() * h.frame_bytes as u64)
-            ),
-            plain,
-        ),
-    ];
-    let warn = Style::default().fg(theme.warning);
-    if let Some((declared, held)) = audio.cut_short() {
-        lines.push((
-            format!(
-                "The header says {} of samples; the file holds {}",
-                format_bytes(declared),
-                format_bytes(held)
-            ),
-            warn,
-        ));
-    } else if h.data_declared.is_none() && audio.frames() > 0 {
-        lines.push((
-            "No data size in the header; frames are counted from the file's size".into(),
-            plain,
-        ));
-    }
-    let past = audio.frames_past_limit();
-    if past > 0 {
-        lines.push((
-            format!(
-                "The last {} frames are past the most a table holds and are not shown",
-                group_u64(past)
-            ),
-            warn,
-        ));
-    }
-    let trailing = audio.trailing_bytes();
-    if trailing > 0 {
-        lines.push((
-            format!("{trailing} bytes after the last whole frame are not shown"),
-            warn,
-        ));
-    }
-    let mut metadata: crate::model_files::Metadata = h
-        .metadata
-        .iter()
-        .map(|(k, v)| (k.clone(), MetaValue::Text(v.clone())))
-        .collect();
-    for marker in &h.markers {
-        let mut value = format!(
-            "{}{sep}frame {}",
-            clock(marker.sample as f64 / h.sample_rate),
-            group_u64(marker.sample)
-        );
-        if let Some(length) = marker.length {
-            value.push_str(&format!(
-                "{sep}{} long",
-                clock(length as f64 / h.sample_rate)
-            ));
-        }
-        if !marker.label.is_empty() {
-            value.push_str(&sep);
-            value.push_str(&marker.label);
-        }
-        metadata.push((format!("marker {}", marker.id), MetaValue::Text(value)));
-    }
-    (lines, metadata)
-}
-
 /// Human-readable byte size (e.g. "1.2 MiB", "456 KiB").
 pub fn format_bytes(n: u64) -> String {
     const K: u64 = 1024;
@@ -483,122 +330,15 @@ pub fn format_bytes(n: u64) -> String {
     }
 }
 
-/// The MIDI tab's lines above its list: format and timing, length and counts, tempo,
-/// meter and key, copyright.
-pub(crate) fn midi_facts(midi: &crate::midi::MidiSummary, sep: &str) -> Vec<String> {
-    let mut head = match midi.format {
-        Some(format) => format!("MIDI format {format}"),
-        None => "MIDI".to_string(),
-    };
-    if midi.files > 1 {
-        head.push_str(sep);
-        head.push_str(&count_of(midi.files as u64, "file", "files"));
-    }
-    if let Some(division) = midi.division {
-        head.push_str(sep);
-        head.push_str(&division.label());
-    }
-    head.push_str(sep);
-    head.push_str(&count_of(midi.track_count as u64, "track", "tracks"));
-    let mut counts = format!(
-        "Length: {}{sep}{}{sep}{}",
-        clock(midi.length_seconds),
-        count_of(midi.events as u64, "event", "events"),
-        count_of(midi.notes as u64, "note", "notes"),
-    );
-    if midi.unended > 0 {
-        let n = midi.unended;
-        let verb = if n == 1 { "ends" } else { "end" };
-        counts.push_str(&format!(" ({} never {verb})", group_u64(n as u64)));
-    }
-    let mut lines = vec![head, counts];
-    let mut music = Vec::new();
-    // In microseconds a quarter, so the fewest is the fastest.
-    if let Some((first, fastest, slowest)) = midi.tempo {
-        let bpm = crate::midi::bpm;
-        let n = midi.tempo_changes;
-        let changes = format!(
-            "{} {}",
-            group_u64(n as u64),
-            if n == 1 { "change" } else { "changes" }
-        );
-        music.push(match (midi.files > 1, slowest == fastest) {
-            (_, true) => format!("Tempo: {} bpm", bpm(first)),
-            // Of many songs, the first one's tempo says nothing of the rest.
-            (true, false) => format!("Tempo: {}-{} bpm", bpm(slowest), bpm(fastest)),
-            (false, false) => format!(
-                "Tempo: {} bpm ({}-{}, {changes})",
-                bpm(first),
-                bpm(slowest),
-                bpm(fastest)
-            ),
-        });
-    }
-    // The first of each, which for a directory of songs would be one song's.
-    if midi.files == 1 {
-        if let Some(time) = &midi.time_signature {
-            music.push(format!("Time: {time}"));
-        }
-        if let Some(key) = &midi.key {
-            music.push(format!("Key: {key}"));
-        }
-    }
-    if !music.is_empty() {
-        lines.push(music.join(sep));
-    }
-    if let Some(copyright) = midi.copyright.as_ref().filter(|_| midi.files == 1) {
-        lines.push(format!("Copyright: {copyright}"));
-    }
-    lines
-}
-
-/// Each track as a key and a value: `2 Piano` and `2,000 events · 600 notes · channel 1`.
-pub(crate) fn midi_track_rows(
-    midi: &crate::midi::MidiSummary,
-    sep: &str,
-) -> Vec<(String, crate::model_files::MetaValue)> {
-    midi.tracks
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let key = match &t.name {
-                Some(name) if !name.trim().is_empty() => format!("{} {}", i + 1, name.trim()),
-                _ => (i + 1).to_string(),
-            };
-            let mut parts = vec![count_of(t.events as u64, "event", "events")];
-            if t.notes > 0 {
-                parts.push(count_of(t.notes as u64, "note", "notes"));
-            }
-            if !t.channels.is_empty() {
-                let channels: Vec<String> = t.channels.iter().map(u8::to_string).collect();
-                let label = if channels.len() == 1 {
-                    "channel"
-                } else {
-                    "channels"
-                };
-                parts.push(format!("{label} {}", channels.join(", ")));
-            }
-            if let Some(instrument) = t.instrument.as_deref().filter(|i| !i.trim().is_empty()) {
-                parts.push(instrument.trim().to_string());
-            }
-            (key, crate::model_files::MetaValue::Text(parts.join(sep)))
-        })
-        .collect()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InfoTab {
     #[default]
     Schema,
-    /// A SafeTensors or GGUF model's totals and metadata.
-    Model,
-    /// An audio file's format, length and metadata.
-    Audio,
-    /// A MIDI file's header, timing and tracks.
-    Midi,
     /// A delimited spec's metadata line, as key and value.
     Metadata,
-    /// A VCD, FIX or SDF file's header and what it holds; titled by the format.
+    /// What the file says besides its rows, as its reader found it
+    /// ([`crate::text_formats::Detail`]): a model's totals, a VCD header. Titled by
+    /// the detail.
     Format,
     Resources,
     Partitions,
@@ -608,15 +348,9 @@ pub enum InfoTab {
 /// Which of the optional tabs the dataset on screen offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TabsOffered {
-    /// The dataset is a model file's tensors.
-    pub model: bool,
-    /// The dataset is an audio file's frames.
-    pub audio: bool,
-    /// The dataset is a MIDI file's events.
-    pub midi: bool,
     /// A delimited spec read a metadata line.
     pub metadata: bool,
-    /// The dataset is a VCD, FIX or SDF file's rows.
+    /// The file said something besides its rows.
     pub format: bool,
     pub partitions: bool,
     pub notes: bool,
@@ -626,9 +360,6 @@ impl TabsOffered {
     /// What `state` offers.
     pub fn of(state: &DataTableState) -> Self {
         Self {
-            model: state.model().is_some(),
-            audio: state.audio().is_some(),
-            midi: state.midi().is_some(),
             metadata: state
                 .delimited_read()
                 .is_some_and(|read| read.metadata.is_some()),
@@ -643,20 +374,11 @@ impl TabsOffered {
 }
 
 impl InfoTab {
-    /// The tabs on offer, in order: Model only for a model file and Audio only for an
-    /// audio file, beside the schema they explain; Partitions only for a partitioned
-    /// dataset; Notes only when datui has something to say about the data.
+    /// The tabs on offer, in order: the file's own tab only when it says something
+    /// besides its rows, beside the schema it explains; Partitions only for a
+    /// partitioned dataset; Notes only when datui has something to say about the data.
     pub fn visible(offered: TabsOffered) -> Vec<InfoTab> {
         let mut tabs = vec![InfoTab::Schema];
-        if offered.model {
-            tabs.push(InfoTab::Model);
-        }
-        if offered.audio {
-            tabs.push(InfoTab::Audio);
-        }
-        if offered.midi {
-            tabs.push(InfoTab::Midi);
-        }
         if offered.metadata {
             tabs.push(InfoTab::Metadata);
         }
@@ -676,9 +398,6 @@ impl InfoTab {
     pub fn title(self) -> &'static str {
         match self {
             InfoTab::Schema => "Schema",
-            InfoTab::Model => "Model",
-            InfoTab::Audio => "Audio",
-            InfoTab::Midi => "MIDI",
             InfoTab::Metadata => "Metadata",
             InfoTab::Format => "Format",
             InfoTab::Resources => "Resources",
@@ -732,10 +451,10 @@ pub struct InfoModal {
     /// The first row of the notes list on screen; the render keeps the selected note
     /// inside the window.
     pub notes_scroll_offset: usize,
-    /// The first line of the Model or Audio tab's metadata on screen. The render clamps
-    /// it. One for both: a dataset is never a model and audio at once.
+    /// The first line of a detail tab's list on screen. The render clamps it. One for
+    /// all: a dataset has one detail tab at most.
     pub detail_scroll: usize,
-    /// The metadata lines the Model or Audio tab last had room for; set during render.
+    /// The list lines a detail tab last had room for; set during render.
     pub detail_visible: usize,
 }
 
@@ -804,13 +523,13 @@ impl InfoModal {
         }
     }
 
-    /// Scroll the Model or Audio tab's metadata by `delta` lines; the render keeps it
+    /// Scroll a detail tab's list by `delta` lines; the render keeps it
     /// in range.
     pub fn detail_scroll_by(&mut self, delta: isize) {
         self.detail_scroll = self.detail_scroll.saturating_add_signed(delta);
     }
 
-    /// Scroll the Model or Audio tab's metadata by a page.
+    /// Scroll a detail tab's list by a page.
     pub fn detail_page(&mut self, down: bool) {
         let page = self.detail_visible.max(1) as isize;
         self.detail_scroll_by(if down { page } else { -page });
@@ -1170,10 +889,7 @@ impl<'a> DataTableInfo<'a> {
         let src = match dataset {
             Some(dataset) => dataset.origin.to_string(),
             // A model's, an audio file's or MIDI's columns are datui's own.
-            None if self.state.model().is_some()
-                || self.state.audio().is_some()
-                || self.state.midi().is_some() =>
-            {
+            None if self.state.format_detail().is_some_and(|d| d.own_columns) => {
                 "Known".to_string()
             }
             None => self.ctx.schema_source().to_string(),
@@ -1639,91 +1355,6 @@ impl<'a> DataTableInfo<'a> {
         }
     }
 
-    /// A model file's totals, then its metadata as key and value, every value whole: a
-    /// chat template wraps over as many lines as it takes, and the list scrolls.
-    fn render_model_tab(&mut self, area: Rect, buf: &mut Buffer) {
-        // Copied out, so what it lends does not hold `self`.
-        let state = self.state;
-        let Some(model) = state.model() else {
-            return;
-        };
-        let g = crate::glyphs::get();
-        let sep = format!(" {} ", g.middot);
-        let mut head = model.kind.label();
-        head.push_str(&sep);
-        head.push_str(&count_of(model.tensors as u64, "tensor", "tensors"));
-        if model.files > 1 {
-            head.push_str(&sep);
-            head.push_str(&count_of(model.files as u64, "file", "files"));
-        }
-        let mut lines = vec![
-            head,
-            format!(
-                "Parameters: {}{}{sep}Size: {}",
-                group_u64(model.params),
-                // The short form only where it is shorter.
-                if model.params >= 1000 {
-                    format!(" ({})", short_count(model.params))
-                } else {
-                    String::new()
-                },
-                format_bytes(model.bytes)
-            ),
-        ];
-        if !model.types.is_empty() {
-            lines.push(format!("Types: {}", type_mix(&model.types, &sep)));
-        }
-        let lines: Vec<(String, Style)> = lines
-            .into_iter()
-            .map(|line| (line, Style::default()))
-            .collect();
-        self.render_detail(area, buf, &lines, "Metadata", &model.metadata);
-    }
-
-    /// An audio file's format, size and length, then its metadata (`bext`, iXML, `LIST
-    /// INFO`, AIFF text) and markers as key and value, in a list that scrolls.
-    fn render_audio_tab(&mut self, area: Rect, buf: &mut Buffer) {
-        let Some(audio) = self.state.audio() else {
-            return;
-        };
-        if area.height == 0 || area.width < 8 {
-            return;
-        }
-        let (lines, metadata) = audio_detail(audio, self.theme);
-        self.render_detail(area, buf, &lines, "Metadata", &metadata);
-    }
-
-    /// A MIDI file's header, length and tempo, then its tracks; for a directory of
-    /// songs, the totals, then the files that could not be read.
-    fn render_midi_tab(&mut self, area: Rect, buf: &mut Buffer) {
-        let state = self.state;
-        let Some(midi) = state.midi() else {
-            return;
-        };
-        let g = crate::glyphs::get();
-        let sep = format!(" {} ", g.middot);
-        let lines: Vec<(String, Style)> = midi_facts(midi, &sep)
-            .into_iter()
-            .map(|line| (line, Style::default()))
-            .collect();
-        let (title, rows) = if midi.files > 1 {
-            let rows: Vec<_> = midi
-                .unreadable
-                .iter()
-                .map(|(file, why)| {
-                    (
-                        file.clone(),
-                        crate::model_files::MetaValue::Text(why.clone()),
-                    )
-                })
-                .collect();
-            ("Unreadable", rows)
-        } else {
-            ("Tracks", midi_track_rows(midi, &sep))
-        };
-        self.render_detail(area, buf, &lines, title, &rows);
-    }
-
     /// A delimited spec's metadata line: its title, then each key and value. A line
     /// that is not key=value pairs is shown as it is.
     fn render_metadata_tab(&mut self, area: Rect, buf: &mut Buffer) {
@@ -1759,16 +1390,18 @@ impl<'a> DataTableInfo<'a> {
         self.render_detail(area, buf, &lines, "Metadata", &shown);
     }
 
-    /// A VCD, FIX or SDF file's lines, then its list: signals, tags or fields.
+    /// A file's lines, its warnings, then its list: signals, tags, metadata, tracks.
     fn render_format_tab(&mut self, area: Rect, buf: &mut Buffer) {
         let state = self.state;
         let Some(detail) = state.format_detail() else {
             return;
         };
+        let warn = Style::default().fg(self.theme.warning);
         let lines: Vec<(String, Style)> = detail
             .lines
             .iter()
             .map(|line| (line.clone(), Style::default()))
+            .chain(detail.warnings.iter().map(|line| (line.clone(), warn)))
             .collect();
         self.render_detail(area, buf, &lines, detail.list_title, &detail.list);
     }
@@ -2187,9 +1820,6 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let scrolls = match tab {
             InfoTab::Schema => !on_tab_bar,
             InfoTab::Notes => offered.notes,
-            InfoTab::Model => offered.model,
-            InfoTab::Audio => offered.audio,
-            InfoTab::Midi => offered.midi,
             InfoTab::Metadata => offered.metadata,
             InfoTab::Format => offered.format,
             _ => false,
@@ -2243,7 +1873,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             } else {
                 Style::default().fg(ctx.text_secondary)
             };
-            // The Format tab is named for the format: VCD, FIX, SDF.
+            // The Format tab is named by the file's detail: VCD, Model, Audio.
             let title = match (t, self.state.format_detail()) {
                 (InfoTab::Format, Some(detail)) => detail.tab,
                 _ => t.title(),
@@ -2268,22 +1898,15 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         match tab {
             InfoTab::Schema => self.render_schema_tab(body, buf),
             InfoTab::Resources => self.render_resources_tab(body, buf),
-            InfoTab::Model if offered.model => self.render_model_tab(body, buf),
-            InfoTab::Audio if offered.audio => self.render_audio_tab(body, buf),
-            InfoTab::Midi if offered.midi => self.render_midi_tab(body, buf),
             InfoTab::Metadata if offered.metadata => self.render_metadata_tab(body, buf),
             InfoTab::Format if offered.format => self.render_format_tab(body, buf),
             InfoTab::Partitions if offered.partitions => {
                 self.render_partitioned_data_tab(body, buf)
             }
             InfoTab::Notes if offered.notes => self.render_notes_tab(body, buf),
-            InfoTab::Model
-            | InfoTab::Audio
-            | InfoTab::Midi
-            | InfoTab::Metadata
-            | InfoTab::Format
-            | InfoTab::Partitions
-            | InfoTab::Notes => self.render_schema_tab(body, buf),
+            InfoTab::Metadata | InfoTab::Format | InfoTab::Partitions | InfoTab::Notes => {
+                self.render_schema_tab(body, buf)
+            }
         }
     }
 }
@@ -2299,12 +1922,9 @@ pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
 mod tests {
     use super::*;
 
-    /// The optional tabs, as the tests before the Model tab named them.
+    /// The optional tabs: Partitions and Notes as asked, no others.
     fn offer(partitions: bool, notes: bool) -> TabsOffered {
         TabsOffered {
-            model: false,
-            audio: false,
-            midi: false,
             metadata: false,
             format: false,
             partitions,
@@ -2845,6 +2465,7 @@ mod tests {
                 list_title: "Signals",
                 list,
                 first: true,
+                ..Default::default()
             })),
             ..Default::default()
         });
@@ -2999,56 +2620,6 @@ mod tests {
             [InfoTab::Schema, InfoTab::Resources, InfoTab::Notes],
             "notes without partitions still sit last"
         );
-    }
-
-    #[test]
-    fn the_model_tab_sits_beside_the_schema() {
-        let offered = TabsOffered {
-            model: true,
-            audio: false,
-            midi: false,
-            metadata: false,
-            format: false,
-            partitions: false,
-            notes: true,
-        };
-        assert_eq!(
-            InfoTab::visible(offered),
-            [
-                InfoTab::Schema,
-                InfoTab::Model,
-                InfoTab::Resources,
-                InfoTab::Notes
-            ]
-        );
-        assert_eq!(InfoTab::Schema.next(offered), InfoTab::Model);
-        assert_eq!(InfoTab::Model.index(offer(false, false)), 0, "not offered");
-    }
-
-    #[test]
-    fn the_audio_tab_sits_beside_the_schema() {
-        let offered = TabsOffered {
-            audio: true,
-            ..offer(false, false)
-        };
-        assert_eq!(
-            InfoTab::visible(offered),
-            [InfoTab::Schema, InfoTab::Audio, InfoTab::Resources]
-        );
-        assert_eq!(InfoTab::Audio.prev(offered), InfoTab::Schema);
-    }
-
-    #[test]
-    fn the_midi_tab_sits_beside_the_schema() {
-        let offered = TabsOffered {
-            midi: true,
-            ..offer(false, false)
-        };
-        assert_eq!(
-            InfoTab::visible(offered),
-            [InfoTab::Schema, InfoTab::Midi, InfoTab::Resources]
-        );
-        assert_eq!(InfoTab::Midi.prev(offered), InfoTab::Schema);
     }
 
     #[test]

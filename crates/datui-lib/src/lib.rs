@@ -8174,11 +8174,8 @@ impl App {
             left_out: options.left_out.clone(),
             files_disagree: options.files_disagree,
             format: None,
-            model: None,
             format_read: None,
             read_python: Vec::new(),
-            audio: None,
-            midi: None,
             sqlite: None,
             opened: None,
             splits: options.splits.clone(),
@@ -8234,15 +8231,12 @@ impl App {
             left_out: report.left_out,
             files_disagree: report.files_disagree,
             format,
-            model: report.model,
             format_read: report.format_read,
             sqlite: report.sqlite,
             opened: report.opened,
             splits: report.splits,
             spec_choice: None,
             read_python: report.read_python,
-            audio: report.audio,
-            midi: report.midi,
             read_mode,
             tail,
             ..options
@@ -8376,10 +8370,10 @@ impl App {
                             return Err(crate::logging::redact(&message, &[]));
                         }
                     };
-                    let model = Some(Arc::new(summary));
+                    let opened = Arc::new(crate::model_files::opened(&summary));
                     let options = OpenOptions {
                         format: Some(format),
-                        model: model.clone(),
+                        opened: Some(opened.clone()),
                         ..options
                     };
                     // The table is the headers, in memory: nothing is left to scan.
@@ -8393,7 +8387,7 @@ impl App {
                     )
                     .map_err(|e| crate::error_display::user_message_from_report(&e, Some(&url)))?
                     .with_open(OpenFacts {
-                        model,
+                        detail: opened.detail.clone(),
                         open_notes: notes,
                         ..Default::default()
                     });
@@ -9950,7 +9944,6 @@ impl App {
         // And the half of it that cannot be missed: the row count on screen is a true
         // count of the files and a wrong one of the table.
         facts.not_the_table = options.read_as_plain_files_of;
-        facts.model = options.model.clone();
         if let Some(splits) = &options.splits {
             facts.other_tables = splits.others.clone();
             facts
@@ -9961,11 +9954,6 @@ impl App {
             facts.open_notes.extend(read.notes());
             facts.format_read = Some(read.clone());
         }
-        facts.audio = options.audio.clone();
-        if let Some(midi) = &options.midi {
-            facts.open_notes.extend(crate::midi::notes(midi));
-        }
-        facts.midi = options.midi.clone();
         if let Some(opened) = &options.opened {
             facts.records = opened.window.clone();
             facts.detail = opened.detail.clone();
@@ -12517,14 +12505,10 @@ impl App {
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
-            // The Model, Audio, MIDI, Metadata and format tabs scroll their lists the same way.
+            // The Metadata and the file's own tab scroll their lists the same way.
             let detail_tab = matches!(
                 self.info_modal.active_tab,
-                InfoTab::Model
-                    | InfoTab::Audio
-                    | InfoTab::Midi
-                    | InfoTab::Metadata
-                    | InfoTab::Format
+                InfoTab::Metadata | InfoTab::Format
             );
             let notes = self
                 .data_table_state
@@ -14627,21 +14611,10 @@ impl App {
                     if unseen {
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Notes);
-                    } else if state.audio().is_some() {
-                        // An audio file's columns are the frame, the time and one per
-                        // channel; what is particular to it is on the Audio tab.
-                        self.info_modal
-                            .open_on(crate::widgets::info::InfoTab::Audio);
-                    } else if state.model().is_some() {
-                        // A model's schema is the same seven columns every time; what
-                        // is particular to it is on the Model tab.
-                        self.info_modal
-                            .open_on(crate::widgets::info::InfoTab::Model);
-                    } else if state.midi().is_some() {
-                        // So is a MIDI file's.
-                        self.info_modal.open_on(crate::widgets::info::InfoTab::Midi);
                     } else if state.format_detail().is_some_and(|d| d.first) {
-                        // And a VCD dump's: what is particular to it is its header.
+                        // A table whose columns are the same for every file (a model's
+                        // tensors, an audio file's frames, a VCD dump's changes): what
+                        // is particular to it is its own tab.
                         self.info_modal
                             .open_on(crate::widgets::info::InfoTab::Format);
                     } else {
@@ -15616,8 +15589,9 @@ impl App {
                     let streaming = state.polars_streaming();
                     // An audio file's signal checks read its samples whole: a full run's.
                     let audio = (plan.compute == data_quality::QualityCompute::Full)
-                        .then(|| state.audio_for_quality(&plan.scope))
-                        .flatten();
+                        .then(|| state.window_for_quality(&plan.scope))
+                        .flatten()
+                        .and_then(crate::audio::recording);
                     let view_generation = state.len_generation();
                     let dataset_generation = self.dataset_generation;
                     let kept_entry = self.kept_quality_entry(&plan.sample());

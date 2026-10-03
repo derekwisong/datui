@@ -463,6 +463,7 @@ pub fn detail(index: &Index) -> Detail {
         list_title: "Messages",
         list: crate::text_formats::capped_list(list, names.len()),
         first: false,
+        ..Default::default()
     }
 }
 

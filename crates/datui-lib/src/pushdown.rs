@@ -13,7 +13,10 @@ use polars::prelude::{LazyFrame, PolarsResult};
 use crate::filter_modal::FilterStatement;
 
 /// A source that reads rows `[start, start + len)` of a view without the ones before.
-pub trait Windowed: Send + Sync {
+///
+/// `Any`, so a reader whose source the app asks more of than rows can find its own
+/// again: an audio file's, whose signal a quality run checks.
+pub trait Windowed: Send + Sync + std::any::Any {
     /// The rows as a frame, read when it is collected.
     fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame>;
 }

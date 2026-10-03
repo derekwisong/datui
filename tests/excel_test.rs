@@ -220,7 +220,7 @@ fn the_excel_tab_lists_the_sheets() {
     let detail = state.format_detail().expect("an Excel tab");
     assert_eq!(detail.tab, "Excel");
     assert!(
-        detail.lines[0].starts_with("3 sheets"),
+        detail.lines[0].starts_with("3 worksheets"),
         "{:?}",
         detail.lines
     );

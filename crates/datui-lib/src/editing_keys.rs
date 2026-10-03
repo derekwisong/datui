@@ -6,9 +6,9 @@ use crate::{App, AppEvent, InputMode, InputType, QueryFocus};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
-    /// Keys while a prompt (query, find, go to line) is being edited.
+    /// Keys while a prompt (query, find, go to row) is being edited.
     pub(crate) fn editing_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        if self.input_type == Some(InputType::Search) {
+        if self.input_type == Some(InputType::Query) {
             const RIGHT_KEYS: [KeyCode; 2] = [KeyCode::Right, KeyCode::Char('l')];
             const LEFT_KEYS: [KeyCode; 2] = [KeyCode::Left, KeyCode::Char('h')];
 
@@ -77,17 +77,17 @@ impl App {
             let mode = self.query_mode;
             let input = match mode {
                 QueryMode::Sql => &mut self.sql_input,
-                QueryMode::Search => &mut self.fuzzy_input,
-                QueryMode::QStyle => &mut self.query_input,
+                QueryMode::Text => &mut self.fuzzy_input,
+                QueryMode::Q => &mut self.query_input,
             };
             match input.handle_key(event, Some(&self.cache)) {
                 TextInputEvent::Submit => {
                     let _ = input.save_to_history(&self.cache);
                     let text = input.value().to_string();
                     return Some(match mode {
-                        QueryMode::Sql => AppEvent::SqlSearch(text),
-                        QueryMode::Search => AppEvent::FuzzySearch(text),
-                        QueryMode::QStyle => AppEvent::Search(text),
+                        QueryMode::Sql => AppEvent::SqlQuery(text),
+                        QueryMode::Text => AppEvent::TextQuery(text),
+                        QueryMode::Q => AppEvent::QQuery(text),
                     });
                 }
                 TextInputEvent::Cancel => self.close_query_prompt(),

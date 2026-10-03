@@ -4,7 +4,7 @@ cursor's column.
 
   ↑ / ↓ (j/k):      Move
   PgUp/PgDn:        A page
-  Home/End:         First and last line
+  Home/End:         First and last row
   ← / → (h/l):      The previous or next column; the table's column
                     cursor moves with it
   Enter:            The rows holding the value, as a drill-down; Esc
@@ -34,8 +34,8 @@ What is read:
   every row.
 
 The listing:
-  The 1,000 most common values, then the rest summed on one line: other
-  (N values). Nulls (∅) have a line of their own: ranked by their rows
+  The 1,000 most common values, then the rest summed on one row: other
+  (N values). Nulls (∅) have a row of their own: ranked by their rows
   when sorted by count, last when sorted by value. Cum % runs down the
-  list. The bar is the line's rows beside the most common value's;
-  the other line has none.
+  list. The bar is the value's rows beside the most common value's;
+  the other row has none.

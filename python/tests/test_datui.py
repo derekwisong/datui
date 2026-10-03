@@ -329,7 +329,7 @@ def test_a_saved_view_applies_to_a_frame_by_its_columns(tmp_path):
     import json
 
     config = tmp_path / "config"
-    (config / "templates").mkdir(parents=True)
+    (config / "views").mkdir(parents=True)
     (config / "config.toml").write_text("[views]\nauto_apply = true\n")
     view = {
         "id": "0000000000000680",
@@ -347,7 +347,7 @@ def test_a_saved_view_applies_to_a_frame_by_its_columns(tmp_path):
             "locked_columns_count": 0,
         },
     }
-    (config / "templates" / "template_0000000000000680.json").write_text(json.dumps(view))
+    (config / "views" / "view_0000000000000680.json").write_text(json.dumps(view))
     rows = _capture_through_the_tui(
         tmp_path,
         'pl.DataFrame({"a": [1, 3, 2], "b": ["x", "z", "y"]}).lazy()',

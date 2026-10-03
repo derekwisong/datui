@@ -8,7 +8,7 @@ The fields:
   Home / End:       First and last field
   PgUp / PgDn:      A page of fields
   ← / → (h/l):      Previous and next row; the table's cursor moves with it
-  Tab:              Move into the value, to scroll and search it
+  Tab:              Move into the value, to scroll and find in it
   Enter:            On a group's row, its rows, as at the table. Else open a
                     struct, a list, or text holding a JSON object or array;
                     or read a field the table's rows do not hold (hidden and

@@ -634,7 +634,7 @@ fn a_bar_chart_draws_a_grouped_string_column() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
-    if let Some(next) = app.event(&AppEvent::Search(
+    if let Some(next) = app.event(&AppEvent::QQuery(
         "select delay: avg arr_delay by carrier".to_string(),
     )) {
         let _ = tx.send(next);

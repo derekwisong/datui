@@ -12,10 +12,10 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 |--------|-------------|
 | `[<PATH>]` | Files, directories, globs or URLs to open; files of one shape are one table. - reads standard input, as does no PATH when data is piped in. No PATH opens the home screen |
 | `-F, --format <FMT>` | File format, when the extension does not say: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, text, journal; or a format spec, by name (acme.l2feed), file (./acme.toml) or http(s), s3, gs or az URL (at most 1 MiB) |
-| `-t, --table <NAME>` | Table to open from a file that holds several. Excel: a sheet by 0-based index or name. NMEA: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. SQLite: a table or view by name. NumPy: an array of an archive (.npz) by name. ELF: symbols (default) or sections. ULog: a topic. DataFlash: a message type. candump: frames (default), signals, or a message a DBC file names. Hugging Face cache and DatasetDict directories: a split (default train) |
+| `-t, --table <NAME>` | Table to open from a file that holds several. Excel: a worksheet by name, or by 0-based index when no worksheet is so named. NMEA: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. SQLite: a table or view by name. NumPy: an array of an archive (.npz) by name. ELF: symbols (default) or sections. ULog: a topic. DataFlash: a message type. candump: frames (default), signals, or a message a dictionary names. Hugging Face cache and DatasetDict directories: a split (default train) |
 | `--hive` | Read a glob as one partitioned table, or force partition columns on a directory whose layout does not say so. Ignored for a single file |
 | `--compression <C>` | Compression, when the extension does not say: gzip, zstd, bzip2 or xz |
-| `--dict <FILE>` | A dictionary to decode with, over those on the format search path: a FIX dictionary (QuickFIX .xml) or a DBC file (.dbc), or TOML with kind = "fix" or "dbc". Repeatable |
+| `--dict <FILE>` | A dictionary to decode with, over those on the format search path: QuickFIX XML (.xml) for FIX logs, DBC (.dbc) for CAN logs, or TOML with kind = "fix" or "dbc". Repeatable |
 | `-f, --follow` | Follow the file as it grows, as tail -f does: a local CSV, TSV, PSV or NDJSON file or Arrow IPC stream, or standard input (-). t pauses and resumes; Esc stops |
 | `--tee <FILE>` | Record standard input to FILE while viewing it, byte for byte. A WAV file's sizes are filled in when the stream ends. With -, pass it on to standard output, as tee does, and draw on the terminal |
 | `--tee-raw` | With --tee: leave FILE exactly as the bytes came, a WAV header's sizes included |
@@ -49,7 +49,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | Command | Does |
 |---------|------|
 | `datui formats` | List the format specs and dictionaries (FIX, DBC) on the search path: each one's name, what it matches, its file, and the copies it overrides |
-| `datui formats check SPEC [FILE]` | Check a spec or FIX dictionary, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error |
+| `datui formats check SPEC [FILE]` | Check a format spec or a QuickFIX dictionary, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error |
 | `datui config` | Write the default config file, list the files read, or list every key |
 | `datui config init ` | Write the default config file, every key commented out at its default |
 | `datui config path ` | Print the config files read, lowest precedence first |
@@ -69,7 +69,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui` | Open the home screen. Public datasets lists the built-in catalog |
 | `datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv` | Palmer penguins from the web; datui asks before it downloads |
 | `datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/` | NOAA daily highs for 2024, one table from public S3 |
-| `datui abfss://release@overturemapswestus2.dfs.core.windows.net/` | Browse Overture Maps releases in public Azure storage |
+| `datui abfss://release@overturemapswestus2.dfs.core.windows.net/` | Overture Maps releases in public Azure storage, listed on the home screen |
 | `datui jan.csv feb.csv mar.csv` | Files of the same shape, as one table |
 | `curl -s https://example.com/data.csv.gz \| datui` | Data piped in; the format is read from its first bytes |
 | `serial-logger \| datui -f -` | Rows as they arrive; t pauses, Esc stops following |

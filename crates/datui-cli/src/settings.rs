@@ -300,7 +300,7 @@ pub const SETTINGS: &[Setting] = &[
     s("home.search.follow_gitignore", Bool, Value("false"), "Skip what .gitignore ignores."),
     s("home.search.skip", List, Value("[\"node_modules\", \"target\", \"build\", \"dist\", \"vendor\", \"site-packages\", \"__pycache__\", \"venv\", \"env\"]"), "Directory names never searched. Replaces the defaults; skip_extra adds to them."),
     s("home.search.skip_extra", List, Value("[]"), "Directory names never searched, besides skip."),
-    s("home.search.extensions", List, Value("[]"), "Extensions searched for; empty means every format datui opens."),
+    s("home.search.extensions", List, Value("[]"), "Extensions searched for; empty means those of the formats datui reads."),
     // [cloud]
     s("cloud.connections", Tables, Unset("[]"), "Cloud stores to list on the home screen; see Cloud sources."),
     s("cloud.hide", List, Value("[]"), "Cloud source IDs not shown on the home screen. Adds up across imports."),
@@ -312,7 +312,7 @@ pub const SETTINGS: &[Setting] = &[
     // [query]
     s("query.history_limit", Count, Value("1000"), "Queries remembered."),
     s("query.history", Bool, Value("true"), "Remember queries."),
-    s("query.default_mode", Choice(&["sql", "search", "q-style"]), Value("\"sql\""), "The mode / opens on when no query is active."),
+    s("query.default_mode", Choice(&["sql", "text", "q"]), Value("\"sql\""), "The mode / opens on when no query is active."),
     // [views]
     s("views.auto_apply", Bool, Value("false"), "Apply the best-matching view when a file opens."),
     // [clipboard]

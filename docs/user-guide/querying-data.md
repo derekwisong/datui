@@ -1,4 +1,4 @@
-# Queries and search
+# Query data
 
 Press <kbd>/</kbd> to open the query prompt. It opens on **SQL**, or on the
 active query's mode when you edit one.
@@ -9,8 +9,8 @@ active query's mode when you edit one.
 | Mode | What you type | Example, on NYC flights (2013) |
 |---|---|---|
 | **SQL** | SQL over the table named `df` | `SELECT carrier, COUNT(*) AS flights FROM df GROUP BY carrier ORDER BY flights DESC` |
-| **Search** | Words; each word's letters in order, in any text column | `jfk sea` (2,092 flights) |
-| **q-style** | Datui's short language, a subset of q, described below | `select flights: count flight by carrier` |
+| **Text** | Words; each word's letters in order, in any text column | `jfk sea` (2,092 flights) |
+| **q** | Datui's short language, a subset of q, described below | `select flights: count flight by carrier` |
 
 <kbd>Enter</kbd> runs the query, <kbd>Esc</kbd> cancels, <kbd>↑</kbd> <kbd>↓</kbd>
 walk the history of the current mode. Submit an empty query to return to the
@@ -25,11 +25,11 @@ To open on another mode, set it in the [config](../reference/settings.md#query):
 
 ```toml
 [query]
-default_mode = "q-style"   # "sql" (default), "search" or "q-style"
+default_mode = "q"   # "sql" (default), "text" or "q"
 ```
 
 A build without the `sql` [feature](../getting-started/installation.md#from-source)
-has no SQL tab and opens on Search instead.
+has no SQL tab and opens on Text instead.
 
 ## Run a query
 
@@ -48,7 +48,7 @@ ORDER BY hour
 Statements are split over lines here to read; type them on one line, or press
 <kbd>Alt</kbd>+<kbd>Enter</kbd> for a new line. 19 rows, one per scheduled
 hour. The mean delay climbs from 0.5 minutes at 5:00 to 26.1 at 21:00. In
-q-style the same query is one line:
+q the same query is one line:
 
 ```text
 select mean_delay: avg dep_delay, flights: count dep_delay by hour where origin = "JFK"
@@ -65,7 +65,7 @@ ORDER BY delay DESC
 
 F9 is last at +21.9 minutes; AS, at −9.9, arrives early on average. Press
 <kbd>Enter</kbd> on AS to see its 714 flights: every one is Newark to Seattle.
-<kbd>Esc</kbd> comes back. See [Drill into a GROUP BY](#drill-into-a-group-by).
+<kbd>Esc</kbd> comes back. See [Drill down a GROUP BY](#drill-down-a-group-by).
 
 ## SQL
 
@@ -75,7 +75,7 @@ not the full SQL standard. A statement reads one table, `df`:
 
 | `df` is | While |
 |---|---|
-| The group's rows | Drilled into a group |
+| The group's rows | Drilled down into a group |
 | The pivot or melt result | A pivot or melt is in effect |
 | The data as loaded | Otherwise |
 
@@ -84,7 +84,7 @@ statement's result: each statement starts from `df` again.
 
 A statement's rows come back in one order on every read: joins, unions,
 `DISTINCT` and groupings keep the order of the rows they read (a grouping that
-[drills](#drill-into-a-group-by), with no `ORDER BY` or `LIMIT`, is sorted by
+[drills down](#drill-down-a-group-by), with no `ORDER BY` or `LIMIT`, is sorted by
 its keys instead), and rows that an `ORDER BY` ranks equal keep the order they
 come in. Paging through the result never repeats a row or skips one, and a
 `LIMIT` without `ORDER BY` keeps the same rows.
@@ -169,7 +169,7 @@ such as pandas' `Timestamp.max`:
 | With a time zone: `.date`, `.time`, `.doy` and the rows above | Null within a day of either end |
 | A date cast to a nanosecond datetime or met with one, as above | Null before 1677-09-22 or after 2262-04-11 |
 
-## Drill into a GROUP BY
+## Drill down a GROUP BY
 
 Press <kbd>Enter</kbd> on a row of a `GROUP BY` result to see the rows behind
 it: the rows of `df` that passed the `WHERE` and share the row's keys, with
@@ -201,12 +201,12 @@ ORDER BY pickup_hour
 Where a statement does not drill, <kbd>Enter</kbd>
 [inspects the row](inspecting-rows.md) instead. The bar's first chip says
 which: `Enter Drill` or `Enter Inspect`. A result that drills has the
-keys that lead it frozen, as a q-style `by` does. Without `ORDER BY` or `LIMIT` it comes back sorted by its keys,
+keys that lead it frozen, as a q `by` does. Without `ORDER BY` or `LIMIT` it comes back sorted by its keys,
 since Polars returns groups in no fixed order.
 
-## Search
+## Text
 
-Type words on the **Search** tab and press <kbd>Enter</kbd>. A row matches
+Type words on the **Text** tab and press <kbd>Enter</kbd>. A row matches
 when, for every word, one of its text columns contains that word's characters
 in order, not necessarily adjacent. Matching is case-insensitive. Reopen the
 prompt to see how many rows matched.
@@ -218,13 +218,13 @@ On **Food nutrition (fast food)**, `chicken` keeps 178 of 515 menu items.
 letters need not be adjacent, `Three Cheese Steak Sandwich`. On NYC flights,
 `jfk sea` keeps the 2,092 flights from JFK to Seattle.
 
-## q-style
+## q
 
-q-style is a scoped option for people who know q: a subset of the q
+q is a scoped option for people who know q: a subset of the q
 language, not a complete q or q-sql, and it **evaluates right to left**.
 Use it where it is shorter than the SQL:
 
-| Dataset | q-style | SQL |
+| Dataset | q | SQL |
 |---|---|---|
 | Palmer penguins | `select mean_mass_g: avg body_mass_g by species` | `SELECT species, AVG(body_mass_g) AS mean_mass_g FROM df GROUP BY species` |
 | NYC flights (2013) | `select mean_delay: (avg dep_delay).round[1] by hour` | `SELECT hour, ROUND(AVG(dep_delay), 1) AS mean_delay FROM df GROUP BY hour` |
@@ -237,8 +237,8 @@ Right to left means `a * b + c` is `a * (b + c)`, and `(a + b) * 2 > 100` is
 and more examples on the built-in datasets.
 
 A `by` clause without aggregates gives one row per group; with aggregates,
-one summary row per group. Press <kbd>Enter</kbd> on a group to see its rows;
-a line above the table names the group, and <kbd>Esc</kbd> comes back.
+one summary row per group. Press <kbd>Enter</kbd> on a group to drill down to
+its rows; a row above the table names the group, and <kbd>Esc</kbd> comes back.
 A group without aggregates shows the columns you selected; an aggregated one shows
 every column of the rows behind it, after the query's `where`, key columns first.
 The cursor, frozen columns and column order come back with <kbd>Esc</kbd>.

@@ -1,4 +1,4 @@
-# Browse cloud data
+# Cloud sources
 
 Run `datui` and select a source under **CLOUD**.
 

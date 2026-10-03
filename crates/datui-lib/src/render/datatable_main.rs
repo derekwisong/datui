@@ -1,4 +1,4 @@
-//! Datatable main view: table content, input strip, sidebars (sort/filter, template, pivot/melt), export modal.
+//! Datatable main view: table content, input strip, sidebars (sort/filter, views, pivot/melt), export modal.
 
 use crate::render::context::RenderContext;
 use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
@@ -26,7 +26,7 @@ pub fn render(
     );
     let input_strip_visible = main_view_content == MainViewContent::Datatable
         && app.input_mode == crate::InputMode::Editing;
-    let prompt = app.input_type == Some(crate::InputType::Search);
+    let prompt = app.input_type == Some(crate::InputType::Query);
     let finding = app.input_type == Some(crate::InputType::Find);
     let error = if prompt {
         app.query_prompt_error()
@@ -57,7 +57,7 @@ pub fn render(
     let active_sidebar = ActiveSidebar::from_modals(
         app.info_modal.active,
         app.sort_filter_modal.active,
-        app.template_modal.active,
+        app.view_modal.active,
         app.pivot_melt_modal.active,
     );
 
@@ -198,12 +198,12 @@ pub fn render(
         crate::render::sort_filter_sidebar::render(sort_area, buf, &mut app.sort_filter_modal, ctx);
     }
 
-    if app.template_modal.active {
-        crate::render::template_sidebar::render(
+    if app.view_modal.active {
+        crate::render::view_sidebar::render(
             sort_area,
             buf,
-            &mut app.template_modal,
-            app.active_template_id.as_deref(),
+            &mut app.view_modal,
+            app.active_view_id.as_deref(),
             ctx,
         );
     }

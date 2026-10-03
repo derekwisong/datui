@@ -10,27 +10,27 @@
 
 # Open data
 
-- [Browse files](user-guide/home-screen.md)
+- [Home screen](user-guide/home-screen.md)
 - [Files and formats](user-guide/loading-data.md)
 - [Binary formats](user-guide/binary-formats.md)
 - [Hex view](user-guide/hex-view.md)
 - [Connect to cloud storage](user-guide/remote-data.md)
-- [Browse cloud data](user-guide/cloud-browser.md)
-- [Inspect a dataset](user-guide/dataset-info.md)
+- [Cloud sources](user-guide/cloud-browser.md)
+- [Info panel](user-guide/dataset-info.md)
 - [Inspect a row](user-guide/inspecting-rows.md)
 
 # Query and reshape
 
-- [Queries and search](user-guide/querying-data.md)
+- [Query data](user-guide/querying-data.md)
 - [Find in the table](user-guide/finding.md)
 - [Sort, filter and arrange columns](user-guide/filtering-sorting.md)
 - [Pivot and melt](user-guide/reshaping.md)
 
 # Charts and analysis
 
-- [Count values](user-guide/value-counts.md)
+- [Value counts](user-guide/value-counts.md)
 - [Make a chart](user-guide/charting.md)
-- [Statistics and distributions](user-guide/analysis-features.md)
+- [Analysis](user-guide/analysis-features.md)
 - [Check data quality](user-guide/data-quality.md)
 - [Large datasets](advanced/performance-tips.md)
 
@@ -56,6 +56,7 @@
 - [Cloud sources](reference/cloud-sources.md)
 - [Data quality](reference/data-quality.md)
 - [Performance](reference/performance.md)
+- [Glossary](reference/glossary.md)
 
 # Contribute
 

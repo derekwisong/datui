@@ -4,7 +4,7 @@ use datui_cli::{CacheAction, ViewsAction};
 
 use crate::cache::CacheManager;
 use crate::config::ConfigManager;
-use crate::template::{MatchCriteria, TemplateManager};
+use crate::view::{MatchCriteria, ViewManager};
 
 /// What `datui cache ACTION` prints, and its exit code.
 pub fn cache(cache: Option<&CacheManager>, action: &CacheAction) -> (String, i32) {
@@ -24,13 +24,13 @@ pub fn cache(cache: Option<&CacheManager>, action: &CacheAction) -> (String, i32
 
 /// What `datui views ACTION` prints, and its exit code.
 pub fn views(config: &ConfigManager, action: &ViewsAction) -> (String, i32) {
-    let mut views = match TemplateManager::new(config) {
+    let mut views = match ViewManager::new(config) {
         Ok(views) => views,
         Err(e) => return (format!("{e}\n"), 1),
     };
     match action {
         ViewsAction::List => {
-            let all = views.all_templates();
+            let all = views.all_views();
             if all.is_empty() {
                 return ("No saved views\n".into(), 0);
             }
@@ -50,20 +50,20 @@ pub fn views(config: &ConfigManager, action: &ViewsAction) -> (String, i32) {
             (out, 0)
         }
         ViewsAction::Rm { name } => {
-            let Some(id) = views.get_template_by_name(name).map(|v| v.id.clone()) else {
+            let Some(id) = views.get_view_by_name(name).map(|v| v.id.clone()) else {
                 return (
                     format!("No saved view named \"{name}\"; `datui views list` lists them\n"),
                     1,
                 );
             };
-            match views.delete_template(&id) {
+            match views.delete_view(&id) {
                 Ok(()) => (format!("Removed {name}\n"), 0),
                 Err(e) => (format!("{e}\n"), 1),
             }
         }
         ViewsAction::Clear => {
-            let count = views.all_templates().len();
-            match views.remove_all_templates() {
+            let count = views.all_views().len();
+            match views.remove_all_views() {
                 Ok(()) => (format!("Removed {count} saved views\n"), 0),
                 Err(e) => (format!("{e}\n"), 1),
             }
@@ -104,7 +104,7 @@ mod tests {
     fn views_are_listed_removed_by_name_and_cleared() {
         let dir = tempfile::tempdir().unwrap();
         let config = ConfigManager::with_dir(dir.path().to_path_buf());
-        let mut manager = TemplateManager::new(&config).unwrap();
+        let mut manager = ViewManager::new(&config).unwrap();
         for name in ["daily", "weekly"] {
             let criteria = MatchCriteria {
                 exact_path: None,
@@ -115,7 +115,7 @@ mod tests {
                 schema_types: None,
                 table: None,
             };
-            let settings = crate::template::TemplateSettings {
+            let settings = crate::view::ViewSettings {
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -130,7 +130,7 @@ mod tests {
                 reshape_source: None,
             };
             manager
-                .create_template(name.to_string(), None, criteria, settings)
+                .create_view(name.to_string(), None, criteria, settings)
                 .unwrap();
         }
         let (text, code) = views(&config, &ViewsAction::List);

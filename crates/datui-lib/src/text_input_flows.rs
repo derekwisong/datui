@@ -5,7 +5,7 @@
 //! These drive the real `App` instead, one key event at a time, so that each
 //! prior use of the old wrapped-textarea widget has a test that says what the
 //! user sees: the query bar and its tabs, go-to-line, the export path, the
-//! chart axis filters, the sort and pivot filters, and the multi-line template
+//! chart axis filters, the sort and pivot filters, and the multi-line view
 //! description.
 
 use std::io::Write;
@@ -52,10 +52,10 @@ impl Harness {
         harness
     }
 
-    /// Loaded, with `/` preferring the q-style mode.
+    /// Loaded, with `/` preferring the q mode.
     fn q_style() -> Self {
         let mut h = Self::with_data();
-        h.app.app_config.query.default_mode = crate::QueryMode::QStyle;
+        h.app.app_config.query.default_mode = crate::QueryMode::Q;
         h
     }
 
@@ -319,7 +319,7 @@ fn the_view_description_holds_several_lines() {
     h.press(KeyCode::Enter);
     h.type_str("second");
 
-    let description = &h.app.template_modal.description_input;
+    let description = &h.app.view_modal.description_input;
     assert_eq!(description.value(), "first\nsecond");
     assert_eq!(description.line_count(), 2);
     assert_eq!(description.cursor_line(), 1);
@@ -345,14 +345,14 @@ fn the_view_description_pages_through_its_lines() {
             h.press(KeyCode::Enter);
         }
     }
-    assert_eq!(h.app.template_modal.description_input.cursor_line(), 7);
+    assert_eq!(h.app.view_modal.description_input.cursor_line(), 7);
 
     h.press(KeyCode::PageUp);
-    assert_eq!(h.app.template_modal.description_input.cursor_line(), 2);
+    assert_eq!(h.app.view_modal.description_input.cursor_line(), 2);
     h.press(KeyCode::PageUp);
-    assert_eq!(h.app.template_modal.description_input.cursor_line(), 0);
+    assert_eq!(h.app.view_modal.description_input.cursor_line(), 0);
     h.press(KeyCode::PageDown);
-    assert_eq!(h.app.template_modal.description_input.cursor_line(), 5);
+    assert_eq!(h.app.view_modal.description_input.cursor_line(), 5);
 }
 
 #[test]
@@ -368,21 +368,21 @@ fn the_view_name_field_takes_text() {
     h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
     // Creating from a loaded file suggests a name; typing replaces it.
-    let suggested = h.app.template_modal.name_input.value().to_string();
+    let suggested = h.app.view_modal.name_input.value().to_string();
     assert!(!suggested.is_empty(), "a name should be suggested");
     h.type_str("by age");
 
-    assert_eq!(h.app.template_modal.name_input.value(), "by age");
-    assert_eq!(drawn(&h.app.template_modal.name_input, 20), "by age");
+    assert_eq!(h.app.view_modal.name_input.value(), "by age");
+    assert_eq!(drawn(&h.app.view_modal.name_input, 20), "by age");
 
     // Opened again, → keeps the suggestion and typing extends it.
     h.press(KeyCode::Esc);
     h.press(KeyCode::Char('s'));
-    assert_eq!(h.app.template_modal.name_input.value(), suggested);
+    assert_eq!(h.app.view_modal.name_input.value(), suggested);
     h.press(KeyCode::Right);
     h.type_str(" v2");
     assert_eq!(
-        h.app.template_modal.name_input.value(),
+        h.app.view_modal.name_input.value(),
         format!("{suggested} v2")
     );
 }
@@ -495,7 +495,7 @@ fn each_query_tab_keeps_its_own_value() {
     h.press(KeyCode::Tab);
     assert_eq!(h.app.query_focus, crate::QueryFocus::TabBar);
     h.press(KeyCode::Left);
-    assert_eq!(h.app.query_mode, crate::QueryMode::Search);
+    assert_eq!(h.app.query_mode, crate::QueryMode::Text);
 
     h.press(KeyCode::Tab);
     assert_eq!(h.app.query_focus, crate::QueryFocus::Input);
@@ -503,13 +503,13 @@ fn each_query_tab_keeps_its_own_value() {
     assert_eq!(h.app.fuzzy_input.value(), "ada");
     assert_eq!(drawn(&h.app.fuzzy_input, 20), "ada");
 
-    // The q-style tab still holds what was typed there, and going back to
+    // The q tab still holds what was typed there, and going back to
     // it, text and all, is the tab bar's round trip.
     assert_eq!(h.app.query_input.value(), "select name");
     h.press(KeyCode::Tab);
     h.press(KeyCode::Right);
     h.press(KeyCode::Tab);
-    assert_eq!(h.app.query_mode, crate::QueryMode::QStyle);
+    assert_eq!(h.app.query_mode, crate::QueryMode::Q);
     assert_eq!(h.app.query_input.value(), "select name");
     assert_eq!(h.app.fuzzy_input.value(), "ada");
 }
@@ -535,13 +535,13 @@ fn ctrl_t_cycles_the_mode_without_leaving_the_input() {
     h.type_str("d");
     let typed = match first {
         crate::QueryMode::Sql => &h.app.sql_input,
-        crate::QueryMode::Search => &h.app.fuzzy_input,
-        crate::QueryMode::QStyle => &h.app.query_input,
+        crate::QueryMode::Text => &h.app.fuzzy_input,
+        crate::QueryMode::Q => &h.app.query_input,
     };
     assert_eq!(typed.value(), "abcd");
 }
 
-/// Esc closes the prompt whole from every mode. The q-style path used to leave
+/// Esc closes the prompt whole from every mode. The q path used to leave
 /// the prompt's input type behind.
 #[test]
 fn esc_closes_the_query_prompt_from_every_mode() {
@@ -575,7 +575,7 @@ fn a_search_that_ran_says_how_many_rows_matched() {
         csv.push_str(&format!("\nalan{i},{i}"));
     }
     let mut h = Harness::with_csv(&csv);
-    h.app.app_config.query.default_mode = crate::QueryMode::Search;
+    h.app.app_config.query.default_mode = crate::QueryMode::Text;
     h.press(KeyCode::Char('/'));
     h.type_str("al");
     // The rows on screen with their count still out: more rows match than the first
@@ -594,7 +594,7 @@ fn a_search_that_ran_says_how_many_rows_matched() {
         ))),
         |_| true,
     );
-    assert_eq!(h.app.query_mode, crate::QueryMode::Search);
+    assert_eq!(h.app.query_mode, crate::QueryMode::Text);
     // Until the count settles there is nothing to claim.
     assert!(!screen(&mut h.app).contains(" match"));
     for event in count {
@@ -615,7 +615,7 @@ fn a_search_that_ran_says_how_many_rows_matched() {
 #[test]
 fn a_search_that_fits_on_a_page_is_counted_by_its_rows() {
     let mut h = Harness::with_data();
-    h.app.app_config.query.default_mode = crate::QueryMode::Search;
+    h.app.app_config.query.default_mode = crate::QueryMode::Text;
     h.press(KeyCode::Char('/'));
     h.type_str("al");
     let counts = h.run_holding(

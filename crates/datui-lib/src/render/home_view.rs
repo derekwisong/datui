@@ -443,7 +443,7 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
     let (glyph, value, hint) = if home.path_input_active {
         (" ~ ", home.path_input.as_str(), "file or directory")
     } else {
-        (g.prompt, home.filter.as_str(), "filter and search")
+        (g.prompt, home.filter.as_str(), "narrow and search")
     };
 
     let mut spans = vec![Span::styled(
@@ -2200,13 +2200,7 @@ fn preview_head_keyed(
         None => {}
     }
     if let Some(n) = entry.cost.tables {
-        let (one, many) = crate::discover::data_format(&entry.path)
-            .map_or(("table", "tables"), crate::members::noun);
-        let what = match (entry.format_spec.is_some(), n == 1) {
-            (true, _) => "variants",
-            (false, true) => one,
-            (false, false) => many,
-        };
+        let what = if n == 1 { "table" } else { "tables" };
         facts.push(("contains", format!("{n} {what}"), plain));
     }
     // A door that is not one table reads part of the directory: which part, and what it
@@ -2514,24 +2508,21 @@ fn render_preview(
                 && discover::is_parquet_path(&entry.path)
                 && app.home.enriched.contains_key(&entry.path);
             let variants_note = format!(
-                "Enter opens every record; {} lists its variants.",
+                "Enter opens every record; {} lists its tables.",
                 glyphs::get().arrow_right
             );
             // A file of tables that opens one of them, as its format's descriptor says.
             let format = discover::data_format(&entry.path);
             let opens_note = format
                 .and_then(|f| f.descriptor().tables.as_ref())
-                .and_then(|t| t.opens.map(|opens| (opens, t.noun.1)))
-                .map_or_else(String::new, |(opens, many)| {
+                .and_then(|t| t.opens)
+                .map_or_else(String::new, |opens| {
                     format!(
-                        "Enter opens {opens}; {} lists its {many}.",
+                        "Enter opens {opens}; {} lists its tables.",
                         glyphs::get().arrow_right
                     )
                 });
-            let lists_note = format!(
-                "Enter lists its {}.",
-                format.map_or("tables", |f| crate::members::noun(f).1)
-            );
+            let lists_note = "Enter lists its tables.".to_string();
             let note = match entry.kind {
                 // The door itself. It is the row the other notes point at, so it says
                 // what it does rather than where to find it.

@@ -6,7 +6,7 @@ pub enum ActiveSidebar {
     None,
     Info,
     SortFilter,
-    Template,
+    Views,
     PivotMelt,
 }
 
@@ -15,15 +15,15 @@ impl ActiveSidebar {
     pub fn from_modals(
         info_active: bool,
         sort_filter_active: bool,
-        template_active: bool,
+        view_active: bool,
         pivot_melt_active: bool,
     ) -> Self {
         if info_active {
             ActiveSidebar::Info
         } else if sort_filter_active {
             ActiveSidebar::SortFilter
-        } else if template_active {
-            ActiveSidebar::Template
+        } else if view_active {
+            ActiveSidebar::Views
         } else if pivot_melt_active {
             ActiveSidebar::PivotMelt
         } else {
@@ -41,7 +41,7 @@ impl ActiveSidebar {
             ActiveSidebar::None => 0,
             ActiveSidebar::Info => 72,
             ActiveSidebar::SortFilter => 50,
-            ActiveSidebar::Template => 80,
+            ActiveSidebar::Views => 80,
             ActiveSidebar::PivotMelt => 50,
         }
     }
@@ -142,7 +142,7 @@ mod tests {
         );
         assert_eq!(
             ActiveSidebar::from_modals(false, false, true, true),
-            ActiveSidebar::Template
+            ActiveSidebar::Views
         );
         assert_eq!(
             ActiveSidebar::from_modals(false, false, false, true),
@@ -155,7 +155,7 @@ mod tests {
         assert_eq!(ActiveSidebar::None.width(None), 0);
         assert_eq!(ActiveSidebar::Info.width(None), 72);
         assert_eq!(ActiveSidebar::SortFilter.width(None), 50);
-        assert_eq!(ActiveSidebar::Template.width(None), 80);
+        assert_eq!(ActiveSidebar::Views.width(None), 80);
         assert_eq!(ActiveSidebar::PivotMelt.width(None), 50);
         assert_eq!(ActiveSidebar::Info.width(Some(70)), 70);
         assert_eq!(ActiveSidebar::SortFilter.width(Some(60)), 60);
@@ -188,7 +188,7 @@ mod tests {
         for sidebar in [
             ActiveSidebar::Info,
             ActiveSidebar::SortFilter,
-            ActiveSidebar::Template,
+            ActiveSidebar::Views,
             ActiveSidebar::PivotMelt,
         ] {
             for (width, height) in [(60u16, 20u16), (80, 24), (160, 40)] {
@@ -210,7 +210,7 @@ mod tests {
         // Below the floor the two split evenly rather than the sidebar
         // taking the whole terminal.
         let tiny = Rect::new(0, 0, 44, 16);
-        let layout = DatatableLayout::compute(tiny, ActiveSidebar::Template, false, 0, None);
+        let layout = DatatableLayout::compute(tiny, ActiveSidebar::Views, false, 0, None);
         assert_eq!(layout.sidebar_area.unwrap().width, 22);
         assert_eq!(layout.content_area.width, 22);
     }

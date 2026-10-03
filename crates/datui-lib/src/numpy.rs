@@ -1289,13 +1289,12 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
             columns: Vec::new(),
         })
         .collect();
-    let picked =
-        match crate::members::pick(tables.clone(), wanted, path, crate::FileFormat::Numpy, "")? {
-            crate::sqlite::Pick::One(table) => table,
-            crate::sqlite::Pick::Several(tables) => {
-                return Ok(Open::Several(tables.into_iter().map(|t| t.name).collect()));
-            }
-        };
+    let picked = match crate::members::pick(tables.clone(), wanted, path, "")? {
+        crate::sqlite::Pick::One(table) => table,
+        crate::sqlite::Pick::Several(tables) => {
+            return Ok(Open::Several(tables.into_iter().map(|t| t.name).collect()));
+        }
+    };
     let member = members
         .iter()
         .find(|m| m.name == picked.name)

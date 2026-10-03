@@ -4754,7 +4754,7 @@ impl Registry {
             }
         }
         if !self.fix.is_empty() {
-            out.push_str("\nFIX dictionaries:\n");
+            out.push_str("\nDictionaries (FIX):\n");
         }
         for found in &self.fix {
             let dict = &found.dict;
@@ -4772,7 +4772,7 @@ impl Registry {
             }
         }
         if !self.dbc.is_empty() {
-            out.push_str("\nDBC files:\n");
+            out.push_str("\nDictionaries (DBC):\n");
         }
         for found in &self.dbc {
             let dbc = &found.dbc;
@@ -6459,7 +6459,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         assert_eq!(registry.errors.len(), 1, "{:?}", registry.errors);
         assert_eq!(registry.errors[0].line, 2);
         let listing = registry.listing(&path);
-        assert!(listing.contains("DBC files:"), "{listing}");
+        assert!(listing.contains("Dictionaries (DBC):"), "{listing}");
         assert!(
             listing.contains("body  (1 message, interface can1)"),
             "{listing}"
@@ -6497,7 +6497,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         assert_eq!(registry.errors.len(), 1, "{:?}", registry.errors);
         assert!(registry.errors[0].to_string().contains("tags.nine"));
         let listing = registry.listing(&path);
-        assert!(listing.contains("FIX dictionaries:"), "{listing}");
+        assert!(listing.contains("Dictionaries (FIX):"), "{listing}");
         assert!(
             listing.contains("acme.fix.broker-x  (sender BROKERX)"),
             "{listing}"

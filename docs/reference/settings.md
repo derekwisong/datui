@@ -123,7 +123,7 @@ lives, imports, the theme and troubleshooting.
 | `home.search.follow_gitignore` | bool | `false` |  | Skip what .gitignore ignores. |
 | `home.search.skip` | list | `["node_modules", "target", "build", "dist", "vendor", "site-packages", "__pycache__", "venv", "env"]` |  | Directory names never searched. Replaces the defaults; skip_extra adds to them. |
 | `home.search.skip_extra` | list | `[]` |  | Directory names never searched, besides skip. |
-| `home.search.extensions` | list | `[]` |  | Extensions searched for; empty means every format datui opens. |
+| `home.search.extensions` | list | `[]` |  | Extensions searched for; empty means those of the formats datui reads. |
 
 ## Cloud
 
@@ -147,7 +147,7 @@ lives, imports, the theme and troubleshooting.
 |---|---|---|---|---|
 | `query.history_limit` | integer | `1000` |  | Queries remembered. |
 | `query.history` | bool | `true` |  | Remember queries. |
-| `query.default_mode` | sql \| search \| q-style | `"sql"` |  | The mode / opens on when no query is active. |
+| `query.default_mode` | sql \| text \| q | `"sql"` |  | The mode / opens on when no query is active. |
 
 ## Views
 

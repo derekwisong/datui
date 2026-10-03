@@ -338,12 +338,10 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
     let tables = tables();
     let picked = match wanted {
         None => SYMBOLS.to_string(),
-        Some(_) => {
-            match crate::members::pick(tables.clone(), wanted, path, crate::FileFormat::Elf, "")? {
-                crate::sqlite::Pick::One(table) => table.name,
-                crate::sqlite::Pick::Several(_) => SYMBOLS.to_string(),
-            }
-        }
+        Some(_) => match crate::members::pick(tables.clone(), wanted, path, "")? {
+            crate::sqlite::Pick::One(table) => table.name,
+            crate::sqlite::Pick::Several(_) => SYMBOLS.to_string(),
+        },
     };
     let bytes = crate::fixed_records::Bytes::map(path).map_err(|e| in_file(path, e.into()))?;
     let elf = read(bytes.as_slice()).map_err(|e| FileError::new(path, e))?;

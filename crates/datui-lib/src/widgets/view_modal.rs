@@ -1,13 +1,12 @@
 //! State for the Views sidebar: the list of saved views scored against the
-//! open file, and the save/edit form. (The code says "template" where the UI
-//! says "view": the store format and config section keep the old name.)
+//! open file, and the save/edit form.
 
-use crate::template::{BrokenTemplate, MatchReason, Template};
+use crate::view::{BrokenView, MatchReason, SavedView};
 use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
-pub enum TemplateModalMode {
+pub enum ViewModalMode {
     #[default]
     List,
     Create,
@@ -17,7 +16,7 @@ pub enum TemplateModalMode {
 /// One row of the list: a view scored against the open file, and the reason
 /// its criteria fit, when they do.
 pub struct ViewRow {
-    pub template: Template,
+    pub view: SavedView,
     pub score: f64,
     pub reason: Option<MatchReason>,
 }
@@ -38,12 +37,12 @@ pub enum FormFocus {
 }
 
 #[derive(Default)]
-pub struct TemplateModal {
+pub struct ViewModal {
     pub active: bool,
-    pub mode: TemplateModalMode,
+    pub mode: ViewModalMode,
     pub table_state: TableState,
     pub rows: Vec<ViewRow>,
-    pub broken_templates: Vec<BrokenTemplate>, // Views that failed to parse
+    pub broken_views: Vec<BrokenView>, // Views that failed to parse
     // Save/edit form
     pub form_focus: FormFocus,
     /// Whether the Matching section's criteria rows are open for editing.
@@ -59,7 +58,7 @@ pub struct TemplateModal {
     /// The table of a file of tables the view is for, echoed under the criteria: set
     /// from the dataset on save, kept from the view on edit.
     pub table: Option<String>,
-    pub editing_template_id: Option<String>, // None while creating
+    pub editing_view_id: Option<String>, // None while creating
     pub show_help: bool,
     pub delete_confirm: bool,
     pub name_error: Option<String>,
@@ -71,16 +70,16 @@ pub struct TemplateModal {
     pub score_details: Option<(String, String)>,
 }
 
-impl TemplateModal {
+impl ViewModal {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn selected_template(&self) -> Option<&Template> {
+    pub fn selected_view(&self) -> Option<&SavedView> {
         self.table_state
             .selected()
             .and_then(|i| self.rows.get(i))
-            .map(|row| &row.template)
+            .map(|row| &row.view)
     }
 
     /// Move the list selection by one, wrapping. Broken rows are shown after
@@ -209,59 +208,51 @@ impl TemplateModal {
     }
 
     pub fn enter_create_mode(&mut self, history_limit: usize, theme: &crate::config::Theme) {
-        self.mode = TemplateModalMode::Create;
-        self.editing_template_id = None;
+        self.mode = ViewModalMode::Create;
+        self.editing_view_id = None;
         self.reset_form(history_limit, theme);
     }
 
     pub fn enter_edit_mode(
         &mut self,
-        template: &Template,
+        view: &SavedView,
         history_limit: usize,
         theme: &crate::config::Theme,
     ) {
-        self.mode = TemplateModalMode::Edit;
+        self.mode = ViewModalMode::Edit;
         self.reset_form(history_limit, theme);
-        self.editing_template_id = Some(template.id.clone());
-        self.name_input.set_value(&template.name);
+        self.editing_view_id = Some(view.id.clone());
+        self.name_input.set_value(&view.name);
         self.description_input
-            .set_value(template.description.clone().unwrap_or_default());
+            .set_value(view.description.clone().unwrap_or_default());
         self.exact_path_input.set_value(
-            template
-                .match_criteria
+            view.match_criteria
                 .exact_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
         );
         self.relative_path_input.set_value(
-            template
-                .match_criteria
+            view.match_criteria
                 .relative_path
                 .clone()
                 .unwrap_or_default(),
         );
-        self.path_pattern_input.set_value(
-            template
-                .match_criteria
-                .path_pattern
-                .clone()
-                .unwrap_or_default(),
-        );
+        self.path_pattern_input
+            .set_value(view.match_criteria.path_pattern.clone().unwrap_or_default());
         self.filename_pattern_input.set_value(
-            template
-                .match_criteria
+            view.match_criteria
                 .filename_pattern
                 .clone()
                 .unwrap_or_default(),
         );
-        self.schema_match_enabled = template.match_criteria.schema_columns.is_some();
-        self.table = template.match_criteria.table.clone();
+        self.schema_match_enabled = view.match_criteria.schema_columns.is_some();
+        self.table = view.match_criteria.table.clone();
     }
 
     pub fn exit_form(&mut self) {
-        self.mode = TemplateModalMode::List;
-        self.editing_template_id = None;
+        self.mode = ViewModalMode::List;
+        self.editing_view_id = None;
         self.name_error = None;
     }
 
@@ -283,7 +274,7 @@ mod tests {
     /// criteria only join the walk once the section is expanded.
     #[test]
     fn tab_walks_the_criteria_only_when_expanded() {
-        let mut modal = TemplateModal::new();
+        let mut modal = ViewModal::new();
         modal.form_focus = FormFocus::Name;
         modal.next_focus();
         modal.next_focus();
@@ -304,7 +295,7 @@ mod tests {
     /// section header instead of leaving it on a hidden row.
     #[test]
     fn collapsing_rescues_focus_from_a_hidden_row() {
-        let mut modal = TemplateModal::new();
+        let mut modal = ViewModal::new();
         modal.matching_expanded = true;
         modal.form_focus = FormFocus::PathPattern;
         modal.toggle_matching();
@@ -314,7 +305,7 @@ mod tests {
 
     #[test]
     fn criteria_count_counts_set_fields_and_the_schema_toggle() {
-        let mut modal = TemplateModal::new();
+        let mut modal = ViewModal::new();
         assert_eq!(modal.criteria_count(), 0);
         modal.exact_path_input.set_value("/data/x.csv");
         modal.filename_pattern_input.set_value("x_*.csv");

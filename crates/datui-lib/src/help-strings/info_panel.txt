@@ -25,7 +25,7 @@ on Schema for anything else.
 Tabs:
   Schema:      Every column, its type, and which footers the schema came from.
                A column's unit too, when a delimited format spec read a unit row
-               or the file names one (DataFlash, a DBC file)
+               or the file names one (DataFlash, a DBC dictionary)
   Model:       A SafeTensors or GGUF file's parameter count, size, dtype or
                quantization mix, and its header metadata, each value whole up
                to 64 KiB. Only for model files
@@ -54,7 +54,7 @@ Tabs:
                each parameter's starting value. Only for ULog files
   DataFlash:   A DataFlash log's message types, each with its records,
                format and length. Only for DataFlash logs
-  CAN:         A candump log's frames and interfaces, the DBC files read
+  CAN:         A candump log's frames and interfaces, the dictionaries read
                with it, and each message's id, frames and signals. Only for
                CAN logs
   Parquet:     A Parquet file's row groups, compression and writer, and each
@@ -63,7 +63,7 @@ Tabs:
   Arrow, Avro, ORC:
                The record batches, record or stripes, codec and metadata at
                an end of the file. Read when the panel first opens
-  Excel:       A workbook's sheets, each with its range and size, and which
+  Excel:       A workbook's worksheets, each with its range and size, and which
                one is open. Only for Excel files
   SQLite:      A database's page size, versions and tables, with their
                columns and the rows ANALYZE stored. Only for SQLite tables

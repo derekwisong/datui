@@ -8,8 +8,8 @@ and the publisher-hosted datasets in datui's public cloud catalog.
 
 | Watch | Guide |
 |---|---|
-| [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud browser](user-guide/cloud-browser.md) |
-| [Querying](#querying) | [Queries, SQL and search](user-guide/querying-data.md) |
+| [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud sources](user-guide/cloud-browser.md) |
+| [Querying](#querying) | [Queries](user-guide/querying-data.md) |
 | [Sorting](#sorting) · [Filtering](#filtering) | [Table controls](user-guide/filtering-sorting.md) |
 | [Pivot](#pivot) · [Melt](#melt) | [Reshaping](user-guide/reshaping.md) |
 | [Export](#export) | [Export a file](user-guide/exporting-data.md) |
@@ -27,7 +27,7 @@ open the local Palmer penguins data.
 The browse-first cut spends more time on the six publisher-maintained public
 datasets and their details, then descends into BigQuery sample data.
 
-![Cloud Browse Demo](demos/15-cloud-home-browse.gif)
+![Cloud Sources Demo](demos/15-cloud-home-browse.gif)
 
 The local-first cut starts with populated recents and Central Park weather,
 then moves from the same home screen into NOAA's public Parquet directories. See
@@ -61,7 +61,7 @@ See [Querying Data](user-guide/querying-data.md).
 ## Info panel
 
 <kbd>i</kbd> on every orbital launch attempt since Sputnik: the schema and
-resources tabs. See [Dataset Info](user-guide/dataset-info.md).
+resources tabs. See [Info panel](user-guide/dataset-info.md).
 
 ![Info Panel Demo](demos/03-info.gif)
 

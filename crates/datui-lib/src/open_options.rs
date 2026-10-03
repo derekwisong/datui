@@ -89,7 +89,7 @@ pub struct OpenOptions {
     /// `--view NAME`: the view to apply to the dataset named on the command
     /// line, once it is on screen. Applied to that open only; what later opens get
     /// is `[views] auto_apply`'s business.
-    pub template: Option<String>,
+    pub view: Option<String>,
     /// When true, CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime.
     pub parse_dates: bool,
     /// When set, trim and parse CSV string columns: None = off, Some(true) = all columns, Some(cols) = those columns only.
@@ -232,7 +232,7 @@ impl OpenOptions {
             row_start_index: 1,
             hive: false,
             single_spine_schema: true,
-            template: None,
+            view: None,
             parse_dates: true,
             parse_strings: None,
             parse_strings_sample_rows: 1000,
@@ -358,7 +358,7 @@ impl OpenOptions {
         opts.skip_tail_rows = args.footer_rows;
         opts.has_header = args.no_header.then_some(false);
         opts.header_rows = args.header_rows.iter().map(|&n| n as usize).collect();
-        opts.template = args.view.clone();
+        opts.view = args.view.clone();
         opts.compression = args.compression;
 
         // A spec's name is looked up on the search path when the file is opened.

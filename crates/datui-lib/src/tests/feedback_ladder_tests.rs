@@ -33,11 +33,11 @@ fn the_views_save_refusal_stays_on_the_surface() {
         crate::widgets::datatable::DataTableState::new(df.lazy(), None, None, None, None, true)
             .unwrap(),
     );
-    app.template_modal.active = true;
+    app.view_modal.active = true;
     key(&mut app, KeyCode::Char('s'));
     assert!(!app.error_modal.active, "a refusal is not a failure");
     assert!(
-        app.template_modal
+        app.view_modal
             .status
             .as_deref()
             .unwrap_or("")
@@ -45,8 +45,5 @@ fn the_views_save_refusal_stays_on_the_surface() {
         "the refusal is on the list's status line"
     );
     key(&mut app, KeyCode::Down);
-    assert!(
-        app.template_modal.status.is_none(),
-        "the next key clears it"
-    );
+    assert!(app.view_modal.status.is_none(), "the next key clears it");
 }

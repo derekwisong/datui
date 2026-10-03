@@ -70,7 +70,7 @@ tests/
   config/
     main.rs
     settings.rs
-    templates.rs
+    views.rs
     themes.rs
 ```
 
@@ -85,7 +85,7 @@ separately in each child module. Update relative paths and commands deliberately
 | Statistics, distribution, pivot/melt, Excel | First consolidation pilot: `data` |
 | App analysis/chart/query/loading, capture, views, terminal | Split the big file into `app` modules without adding an executable per module |
 | Home, search, locality | `home`, after separating environment-dependent cases |
-| Config, templates, themes | `config`; keep process-global environment cases isolated until repaired |
+| Config, views, themes | `config`; keep process-global environment cases isolated until repaired |
 | Live cloud, AWS profiles, credential discovery | Separate process-isolated targets initially; retain ignored/live behavior |
 | Desktop entry and release-note wiring | Retain inexpensive targets or move to a lightweight repository-check package if measurements justify it |
 

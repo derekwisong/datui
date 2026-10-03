@@ -24,7 +24,7 @@ the executables Cargo builds.
 | `./scripts/dev/test.sh unit data_quality::` | Library test executable; only data-quality tests execute |
 | `./scripts/dev/test.sh integration integration_test test_data_quality` | App integration executable; matching quality tests execute |
 | `./scripts/dev/test.sh integration home_test` | Home integration executable |
-| `./scripts/dev/test.sh integration statistics_test` | Statistics integration executable |
+| `./scripts/dev/test.sh integration statistics_test` | Analysis integration executable |
 | `./scripts/dev/test.sh cli` | CLI library tests |
 | `./scripts/dev/test.sh preflight` | Formatting (workspace and fuzz targets) and workspace clippy with all targets |
 | `./scripts/dev/test.sh features` | Clippy on `datui` and `datui-lib`, all targets, with no default features and then each feature alone |
@@ -172,12 +172,13 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | `tests/quality_bench_test.rs` | Data Quality's cost: time, requests, bytes, peak memory and spill. Ignored; `scripts/dev/quality_bench.py BEFORE_REF` runs it here and at an earlier commit |
 | `tests/statistics_test.rs`, `tests/distribution_detection_test.rs` | Analysis |
 | `tests/pivot_melt_backend_test.rs` | Reshaping |
-| `tests/template_test.rs` | Templates and their scoring |
+| `tests/view_store_test.rs` | Saved views on disk and their scoring |
 | `tests/home_test.rs`, `tests/search_test.rs`, `tests/locality_test.rs` | Home screen, recursive search, filesystem detection |
 | `tests/config_test.rs`, `tests/config_integration_test.rs`, `tests/theme_application_test.rs` | Configuration and themes |
 | `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |
 | `tests/fuzz_corpus_test.rs` | Every committed fuzz corpus input through its target's body in `fuzz/src/`; see [Fuzzing](fuzzing.md) |
 | `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
+| `tests/wording_test.rs` | Retired words ([glossary](../reference/glossary.md)) and "opens anything" claims, in the UI strings, help strings, docs, `--help` and the manpage. A real use goes in its `ALLOWED` list |
 | `tests/common/` | Shared helpers |
 
 Unit tests live beside the code they test.

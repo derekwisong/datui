@@ -22,9 +22,9 @@ impl ConfigManager {
 
     /// Create a new ConfigManager for the given app name.
     ///
-    /// `DATUI_CONFIG_DIR` overrides the location. The test suite sets it: templates
+    /// `DATUI_CONFIG_DIR` overrides the location. The test suite sets it: views
     /// live under the config directory, so without the override every App-level test
-    /// that saved one wrote it into the developer's own template list — dozens of
+    /// that saved one wrote it into the developer's own view list — dozens of
     /// "pivot then break" entries were found there. As with the cache, a test that
     /// reaches the real directory refuses rather than writes.
     pub fn new(app_name: &str) -> Result<Self> {
@@ -38,7 +38,7 @@ impl ConfigManager {
         if crate::cache::running_as_a_cargo_test() {
             panic!(
                 "DATUI_CONFIG_DIR is not set: a test would read and write the real \
-                 config (templates included). Call common::isolate_cache() before \
+                 config (saved views included). Call common::isolate_cache() before \
                  building an App or a ConfigManager."
             );
         }
@@ -149,7 +149,7 @@ impl ConfigManager {
         // Ensure config directory exists
         self.ensure_config_dir()?;
 
-        // Generate and write default template
+        // Generate and write default config
         let template = self.generate_default_config();
         write_private(&config_path, &template)?;
 
@@ -1820,9 +1820,9 @@ pub enum QueryMode {
     #[default]
     Sql,
     /// Rows whose text columns contain every word (the fuzzy search).
-    Search,
+    Text,
     /// Datui's q-inspired language.
-    QStyle,
+    Q,
 }
 
 impl QueryMode {
@@ -1831,11 +1831,11 @@ impl QueryMode {
     pub fn available() -> &'static [QueryMode] {
         #[cfg(feature = "sql")]
         {
-            &[QueryMode::Sql, QueryMode::Search, QueryMode::QStyle]
+            &[QueryMode::Sql, QueryMode::Text, QueryMode::Q]
         }
         #[cfg(not(feature = "sql"))]
         {
-            &[QueryMode::Search, QueryMode::QStyle]
+            &[QueryMode::Text, QueryMode::Q]
         }
     }
 
@@ -1844,15 +1844,15 @@ impl QueryMode {
         if Self::available().contains(&self) {
             self
         } else {
-            QueryMode::Search
+            QueryMode::Text
         }
     }
 
     pub fn title(self) -> &'static str {
         match self {
             QueryMode::Sql => "SQL",
-            QueryMode::Search => "Search",
-            QueryMode::QStyle => "q-style",
+            QueryMode::Text => "Text",
+            QueryMode::Q => "q",
         }
     }
 

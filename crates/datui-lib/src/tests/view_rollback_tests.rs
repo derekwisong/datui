@@ -21,18 +21,18 @@ fn long_csv_app() -> (
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
-    app.template_manager = TemplateManager::new(&config).unwrap().into();
+    app.view_manager = ViewManager::new(&config).unwrap().into();
     open(&mut app, &rx, &tx, path);
     (app, rx, tx, dir)
 }
 
 /// A view of `long.csv` that pivots `key` into columns.
-fn pivot_view(app: &mut App, name: &str) -> Template {
-    let mut template = app
-        .create_template_from_current_state(
+fn pivot_view(app: &mut App, name: &str) -> SavedView {
+    let mut view = app
+        .create_view_from_current_state(
             name.to_string(),
             None,
-            template::MatchCriteria {
+            view::MatchCriteria {
                 exact_path: None,
                 relative_path: None,
                 path_pattern: None,
@@ -43,15 +43,15 @@ fn pivot_view(app: &mut App, name: &str) -> Template {
             },
         )
         .unwrap();
-    template.settings.pivot = Some(PivotSpec {
+    view.settings.pivot = Some(PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
         aggregation: pivot_melt_modal::PivotAggregation::First,
         sort_columns: None,
     });
-    template.settings.column_order.clear();
-    template
+    view.settings.column_order.clear();
+    view
 }
 
 fn columns(app: &App) -> Vec<String> {
@@ -70,18 +70,18 @@ fn control_bar(app: &mut App) -> String {
         .collect()
 }
 
-/// Open `long.csv` with `template` applied on open and handle events until the
+/// Open `long.csv` with `view` applied on open and handle events until the
 /// open is done; `intercept` may take an event instead. Returns how many times the
 /// dataset's own rows were asked for.
 fn open_with_view(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
     dir: &tempfile::TempDir,
-    template: &Template,
+    view: &SavedView,
     mut intercept: impl FnMut(&mut App, &AppEvent) -> bool,
 ) -> usize {
-    app.template_manager.update_template(template).unwrap();
-    app.startup_template = Some(template.name.clone());
+    app.view_manager.update_view(view).unwrap();
+    app.startup_view = Some(view.name.clone());
     let path = dir.path().join("long.csv");
     let mut next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
     let asked = app.first_rows_asked;
@@ -107,18 +107,18 @@ fn open_with_view(
 #[test]
 fn a_startup_view_waits_for_views_still_being_read() {
     let (mut first, _rx, _tx, dir) = long_csv_app();
-    let template = pivot_view(&mut first, "pivot");
+    let view = pivot_view(&mut first, "pivot");
     let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
-    TemplateManager::new(&config)
+    ViewManager::new(&config)
         .unwrap()
-        .update_template(&template)
+        .update_view(&view)
         .unwrap();
 
     let (views_tx, views_rx) = mpsc::channel();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    app.template_manager = Templates::waiting_on(views_rx);
-    app.startup_template = Some(template.name.clone());
+    app.view_manager = Views::waiting_on(views_rx);
+    app.startup_view = Some(view.name.clone());
     app.set_loading_phase("Scanning input", 10);
     app.busy = true;
     // The app draws and handles a key with the views still out.
@@ -127,17 +127,12 @@ fn a_startup_view_waits_for_views_still_being_read() {
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
-    assert!(
-        !app.template_manager.is_read(),
-        "nothing has needed them yet"
-    );
+    assert!(!app.view_manager.is_read(), "nothing has needed them yet");
 
     // The views land only after the open has started.
     let sender = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        views_tx
-            .send(TemplateManager::new(&config).unwrap())
-            .unwrap();
+        views_tx.send(ViewManager::new(&config).unwrap()).unwrap();
     });
     let mut next = app.event(&AppEvent::Open(
         vec![dir.path().join("long.csv")],
@@ -155,10 +150,7 @@ fn a_startup_view_waits_for_views_still_being_read() {
         next = rx.recv_timeout(std::time::Duration::from_millis(50)).ok();
     }
     sender.join().unwrap();
-    assert_eq!(
-        app.active_template_id.as_deref(),
-        Some(template.id.as_str())
-    );
+    assert_eq!(app.active_view_id.as_deref(), Some(view.id.as_str()));
     assert!(
         columns(&app).iter().any(|c| c == "k1"),
         "the rows shown are the view's: {:?}",
@@ -171,13 +163,13 @@ fn a_startup_view_waits_for_views_still_being_read() {
 #[test]
 fn a_view_returns_before_its_pivot_is_read_and_installs_when_it_is() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    let template = pivot_view(&mut app, "pivot");
+    let view = pivot_view(&mut app, "pivot");
 
-    assert!(app.apply_template(&template).is_ok());
+    assert!(app.apply_view(&view).is_ok());
     assert!(app.is_busy(), "the pivot is read in the background");
     assert!(app.view_applying());
     assert_eq!(columns(&app), ["id", "key", "val"], "nothing changed yet");
-    assert!(app.active_template_id.is_none());
+    assert!(app.active_view_id.is_none());
 
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
     assert!(!app.error_modal.active, "{}", app.error_modal.message);
@@ -185,10 +177,7 @@ fn a_view_returns_before_its_pivot_is_read_and_installs_when_it_is() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_some());
     assert_eq!(state.display_df().map(|df| df.height()), Some(5));
-    assert_eq!(
-        app.active_template_id.as_deref(),
-        Some(template.id.as_str())
-    );
+    assert_eq!(app.active_view_id.as_deref(), Some(view.id.as_str()));
 }
 
 /// Applying a view counts the use on the stored view: a rename made by another
@@ -197,36 +186,29 @@ fn a_view_returns_before_its_pivot_is_read_and_installs_when_it_is() {
 #[test]
 fn applying_a_view_keeps_another_instances_edit_and_delete() {
     let (mut app, rx, tx, dir) = long_csv_app();
-    let mut template = pivot_view(&mut app, "sorted");
-    template.settings.pivot = None;
-    template.settings.sort_columns = vec!["val".to_string()];
+    let mut view = pivot_view(&mut app, "sorted");
+    view.settings.pivot = None;
+    view.settings.sort_columns = vec!["val".to_string()];
     let config = crate::config::ConfigManager::with_dir(dir.path().join("config"));
-    let mut other = TemplateManager::new(&config).unwrap();
-    let mut renamed = other.get_template_by_id(&template.id).cloned().unwrap();
+    let mut other = ViewManager::new(&config).unwrap();
+    let mut renamed = other.get_view_by_id(&view.id).cloned().unwrap();
     renamed.name = "renamed elsewhere".to_string();
-    other.update_template(&renamed).unwrap();
+    other.update_view(&renamed).unwrap();
 
-    assert!(app.apply_template(&template).is_ok());
+    assert!(app.apply_view(&view).is_ok());
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
-    let stored = TemplateManager::new(&config).unwrap();
-    let view = stored.get_template_by_id(&template.id).unwrap();
-    assert_eq!(view.name, "renamed elsewhere");
-    assert_eq!(view.usage_count, 1);
+    let stored = ViewManager::new(&config).unwrap();
+    let stored_view = stored.get_view_by_id(&view.id).unwrap();
+    assert_eq!(stored_view.name, "renamed elsewhere");
+    assert_eq!(stored_view.usage_count, 1);
 
-    other.delete_template(&template.id).unwrap();
-    assert!(app.apply_template(&template).is_ok());
+    other.delete_view(&view.id).unwrap();
+    assert!(app.apply_view(&view).is_ok());
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
     assert!(!app.error_modal.active, "{}", app.error_modal.message);
-    let stored = TemplateManager::new(&config).unwrap();
-    assert!(
-        stored.all_templates().is_empty(),
-        "the deleted view came back"
-    );
-    assert!(
-        app.template_manager
-            .get_template_by_id(&template.id)
-            .is_none()
-    );
+    let stored = ViewManager::new(&config).unwrap();
+    assert!(stored.all_views().is_empty(), "the deleted view came back");
+    assert!(app.view_manager.get_view_by_id(&view.id).is_none());
 }
 
 /// Without a pivot every step plans at once, and the first rows are read in the
@@ -234,12 +216,12 @@ fn applying_a_view_keeps_another_instances_edit_and_delete() {
 #[test]
 fn a_view_returns_before_its_rows_are_read() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    let mut template = pivot_view(&mut app, "sorted");
-    template.settings.pivot = None;
-    template.settings.sort_columns = vec!["val".to_string()];
-    template.settings.sort_descending = vec![true];
+    let mut view = pivot_view(&mut app, "sorted");
+    view.settings.pivot = None;
+    view.settings.sort_columns = vec!["val".to_string()];
+    view.settings.sort_descending = vec![true];
 
-    assert!(app.apply_template(&template).is_ok());
+    assert!(app.apply_view(&view).is_ok());
     assert!(app.is_busy(), "the rows are read in the background");
     assert!(app.view_applying());
     assert!(
@@ -251,23 +233,20 @@ fn a_view_returns_before_its_rows_are_read() {
     let state = app.data_table_state.as_ref().unwrap();
     let first = state.display_df().unwrap().column("val").unwrap().get(0);
     assert_eq!(first.unwrap(), AnyValue::Int64(40));
-    assert_eq!(
-        app.active_template_id.as_deref(),
-        Some(template.id.as_str())
-    );
+    assert_eq!(app.active_view_id.as_deref(), Some(view.id.as_str()));
 }
 
-/// A template that pivots and then fails must roll the pivot back too: otherwise the
+/// A view that pivots and then fails must roll the pivot back too: otherwise the
 /// view shows the original columns while SQL still runs against the pivot.
 #[test]
-fn a_failed_template_rolls_back_the_reshape() {
+fn a_failed_view_rolls_back_the_reshape() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    let mut template = pivot_view(&mut app, "pivot then break");
+    let mut view = pivot_view(&mut app, "pivot then break");
     // Applied after the pivot, and referring to a column that does not exist.
-    template.settings.column_order = vec!["no_such_column".to_string()];
+    view.settings.column_order = vec!["no_such_column".to_string()];
 
     let shown = app.data_table_state.as_ref().unwrap().display_df().cloned();
-    assert!(app.apply_template(&template).is_ok(), "the pivot plans");
+    assert!(app.apply_view(&view).is_ok(), "the pivot plans");
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
     assert!(app.error_modal.active, "the step after it fails");
 
@@ -287,7 +266,7 @@ fn a_failed_template_rolls_back_the_reshape() {
     assert!(state.last_pivot_spec().is_none());
     assert!(state.reshaped_lf_clone().is_none());
     assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
-    assert!(app.active_template_id.is_none());
+    assert!(app.active_view_id.is_none());
 }
 
 /// A pivot that fails on the data, in the worker, leaves the table as it was.
@@ -295,14 +274,14 @@ fn a_failed_template_rolls_back_the_reshape() {
 #[test]
 fn a_view_whose_pivot_fails_on_the_data_changes_nothing() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    let mut template = pivot_view(&mut app, "cast then pivot");
-    template.settings.reshape_source = Some(pivot_melt_modal::ReshapeSource {
+    let mut view = pivot_view(&mut app, "cast then pivot");
+    view.settings.reshape_source = Some(pivot_melt_modal::ReshapeSource {
         sql_query: Some("SELECT id, key, CAST(key AS INT) AS val FROM df".to_string()),
         ..Default::default()
     });
 
     let shown = app.data_table_state.as_ref().unwrap().display_df().cloned();
-    assert!(app.apply_template(&template).is_ok(), "it plans");
+    assert!(app.apply_view(&view).is_ok(), "it plans");
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
 
     assert!(app.error_modal.active, "the failure is said");
@@ -311,7 +290,7 @@ fn a_view_whose_pivot_fails_on_the_data_changes_nothing() {
     assert!(state.get_active_sql_query().is_empty());
     assert!(state.last_pivot_spec().is_none());
     assert_eq!(state.display_df(), shown.as_ref(), "with its rows");
-    assert!(app.active_template_id.is_none());
+    assert!(app.active_view_id.is_none());
 }
 
 /// A view saved with SQL, applied in a build without `sql`: it fails and says the
@@ -320,10 +299,10 @@ fn a_view_whose_pivot_fails_on_the_data_changes_nothing() {
 #[test]
 fn a_sql_view_without_the_sql_feature_says_why() {
     let (mut app, _rx, _tx, _dir) = long_csv_app();
-    let mut template = pivot_view(&mut app, "sql view");
-    template.settings.pivot = None;
-    template.settings.sql_query = Some("SELECT id FROM df".to_string());
-    let error = match app.apply_template(&template) {
+    let mut view = pivot_view(&mut app, "sql view");
+    view.settings.pivot = None;
+    view.settings.sql_query = Some("SELECT id FROM df".to_string());
+    let error = match app.apply_view(&view) {
         Err(error) => error.to_string(),
         Ok(()) => panic!("a SQL view applied without SQL"),
     };
@@ -332,7 +311,7 @@ fn a_sql_view_without_the_sql_feature_says_why() {
         "{error}"
     );
     assert_eq!(columns(&app), ["id", "key", "val"]);
-    assert!(app.active_template_id.is_none());
+    assert!(app.active_view_id.is_none());
 }
 
 /// While a view's pivot or rows are read, the bar says Esc stops it.
@@ -340,14 +319,14 @@ fn a_sql_view_without_the_sql_feature_says_why() {
 fn the_bar_offers_esc_while_a_view_applies() {
     for pivot in [true, false] {
         let (mut app, rx, tx, _dir) = long_csv_app();
-        let mut template = pivot_view(&mut app, "view");
+        let mut view = pivot_view(&mut app, "view");
         if !pivot {
-            template.settings.pivot = None;
-            template.settings.column_order = vec!["id".to_string(), "val".to_string()];
+            view.settings.pivot = None;
+            view.settings.column_order = vec!["id".to_string(), "val".to_string()];
         }
         let bar = control_bar(&mut app);
         assert!(!bar.contains("Cancel"), "nothing to stop yet: {bar}");
-        assert!(app.apply_template(&template).is_ok());
+        assert!(app.apply_view(&view).is_ok());
         let bar = control_bar(&mut app);
         assert!(
             bar.contains("Applying view") && bar.contains("Esc") && bar.contains("Cancel"),
@@ -387,8 +366,8 @@ fn the_bar_offers_esc_while_a_pivot_is_computed() {
 #[test]
 fn esc_cancels_a_view_being_pivoted() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    let template = pivot_view(&mut app, "pivot");
-    assert!(app.apply_template(&template).is_ok());
+    let view = pivot_view(&mut app, "pivot");
+    assert!(app.apply_view(&view).is_ok());
 
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.hard_escape_while_busy(&esc), "it jumps the queue");
@@ -413,7 +392,7 @@ fn esc_cancels_a_view_being_pivoted() {
         assert!(std::time::Instant::now() < deadline, "the pivot never came");
     }
     assert_eq!(columns(&app), ["id", "key", "val"]);
-    assert!(app.active_template_id.is_none());
+    assert!(app.active_view_id.is_none());
     assert!(!app.is_busy());
 }
 
@@ -421,10 +400,10 @@ fn esc_cancels_a_view_being_pivoted() {
 #[test]
 fn esc_cancels_a_view_being_read() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    let mut template = pivot_view(&mut app, "narrow");
-    template.settings.pivot = None;
-    template.settings.column_order = vec!["id".to_string(), "val".to_string()];
-    assert!(app.apply_template(&template).is_ok());
+    let mut view = pivot_view(&mut app, "narrow");
+    view.settings.pivot = None;
+    view.settings.column_order = vec!["id".to_string(), "val".to_string()];
+    assert!(app.apply_view(&view).is_ok());
     assert!(app.view_applying());
 
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -435,7 +414,7 @@ fn esc_cancels_a_view_being_read() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.get_column_order(), ["id", "key", "val"]);
     assert_eq!(state.display_df().map(|df| df.width()), Some(3));
-    assert!(app.active_template_id.is_none());
+    assert!(app.active_view_id.is_none());
     assert!(!app.error_modal.active);
 }
 
@@ -444,11 +423,11 @@ fn esc_cancels_a_view_being_read() {
 #[test]
 fn a_stale_view_pivot_is_dropped() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    let template = pivot_view(&mut app, "pivot");
+    let view = pivot_view(&mut app, "pivot");
     // A view's pivot on a generation since passed.
-    let passed = app.job_for_tests(Job::ViewPivot(Box::new((template.clone(), None))), None);
+    let passed = app.job_for_tests(Job::ViewPivot(Box::new((view.clone(), None))), None);
     app.jobs.advance();
-    assert!(app.apply_template(&template).is_ok());
+    assert!(app.apply_view(&view).is_ok());
 
     let stale = polars::prelude::df!("id" => [1i64], "zz" => [2i64]).unwrap();
     let ticket = passed.ticket();
@@ -470,8 +449,8 @@ fn a_stale_view_pivot_is_dropped() {
 #[test]
 fn a_view_applied_on_open_reads_the_rows_once() {
     let (mut app, rx, tx, dir) = long_csv_app();
-    let template = pivot_view(&mut app, "on open");
-    let loads = open_with_view(&mut app, &rx, &dir, &template, |_, _| false);
+    let view = pivot_view(&mut app, "on open");
+    let loads = open_with_view(&mut app, &rx, &dir, &view, |_, _| false);
     drop(tx);
     assert_eq!(loads, 0, "the view reads the first rows");
     assert!(!app.error_modal.active, "{}", app.error_modal.message);
@@ -486,9 +465,9 @@ fn a_view_applied_on_open_reads_the_rows_once() {
 #[test]
 fn a_view_whose_pivot_worker_dies_on_open_reads_the_dataset() {
     let (mut app, rx, tx, dir) = long_csv_app();
-    let template = pivot_view(&mut app, "dies");
+    let view = pivot_view(&mut app, "dies");
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::ViewPivot(_)));
-    open_with_view(&mut app, &rx, &dir, &template, |_, _| false);
+    open_with_view(&mut app, &rx, &dir, &view, |_, _| false);
     drop(tx);
     assert!(app.error_modal.active);
     assert!(
@@ -501,7 +480,7 @@ fn a_view_whose_pivot_worker_dies_on_open_reads_the_dataset() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
     assert!(state.display_df().is_some_and(|df| df.height() > 0));
-    assert!(app.active_template_id.is_none());
+    assert!(app.active_view_id.is_none());
     assert!(app.nothing_loading());
 }
 
@@ -509,18 +488,18 @@ fn a_view_whose_pivot_worker_dies_on_open_reads_the_dataset() {
 #[test]
 fn a_view_whose_rows_worker_dies_rolls_back() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    let mut template = pivot_view(&mut app, "narrow");
-    template.settings.pivot = None;
-    template.settings.column_order = vec!["id".to_string(), "val".to_string()];
+    let mut view = pivot_view(&mut app, "narrow");
+    view.settings.pivot = None;
+    view.settings.column_order = vec!["id".to_string(), "val".to_string()];
     let shown = app.data_table_state.as_ref().unwrap().display_df().cloned();
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
-    assert!(app.apply_template(&template).is_ok());
+    assert!(app.apply_view(&view).is_ok());
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
     assert!(app.error_modal.active);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.get_column_order(), ["id", "key", "val"]);
     assert_eq!(state.display_df(), shown.as_ref());
-    assert!(app.active_template_id.is_none());
+    assert!(app.active_view_id.is_none());
 }
 
 /// `long.csv` sorted on `val` descending and filtered to `val > 0`, with the rows
@@ -611,7 +590,7 @@ fn a_query_whose_rows_worker_dies_rolls_back() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let shown = sorted_and_filtered(&mut app, &rx, &tx);
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
-    app.event(&AppEvent::Search("select id where val > 5".to_string()));
+    app.event(&AppEvent::QQuery("select id where val > 5".to_string()));
     assert!(app.query_running.is_some(), "the query planned");
     pump_with_dying_rows(&mut app, &rx, &tx);
 
@@ -624,11 +603,11 @@ fn a_query_whose_rows_worker_dies_rolls_back() {
     );
 }
 
-/// Rolling a failed template back restores the frame, and the frame's rows still
+/// Rolling a failed view back restores the frame, and the frame's rows still
 /// stand for rows of a file — so what the state believes about them has to be
 /// rolled back with it, or the cells go back to reading as plain nulls.
 #[test]
-fn a_failed_template_rolls_back_what_the_rows_knew() {
+fn a_failed_view_rolls_back_what_the_rows_knew() {
     use polars::prelude::{ParquetWriter, df};
     let dir = tempfile::tempdir().unwrap();
     let write = |sub: &str, mut frame: polars::prelude::DataFrame| {
@@ -661,11 +640,11 @@ fn a_failed_template_rolls_back_what_the_rows_knew() {
         "the directory drifts to begin with"
     );
 
-    let mut template = app
-        .create_template_from_current_state(
+    let mut view = app
+        .create_view_from_current_state(
             "query then break".to_string(),
             None,
-            template::MatchCriteria {
+            view::MatchCriteria {
                 exact_path: None,
                 relative_path: None,
                 path_pattern: None,
@@ -676,11 +655,11 @@ fn a_failed_template_rolls_back_what_the_rows_knew() {
             },
         )
         .unwrap();
-    template.settings.sql_query = Some("select * from df".to_string());
+    view.settings.sql_query = Some("select * from df".to_string());
     // Applied after the query, and referring to a column that does not exist.
-    template.settings.column_order = vec!["no_such_column".to_string()];
+    view.settings.column_order = vec!["no_such_column".to_string()];
 
-    assert!(app.apply_template(&template).is_err());
+    assert!(app.apply_view(&view).is_err());
 
     let state = app.data_table_state.as_ref().unwrap();
     assert!(
@@ -702,7 +681,7 @@ fn a_failed_template_rolls_back_what_the_rows_knew() {
 /// — it outlived the sort that earned it, and sorting again added a second copy —
 /// because the field it is handed back into is the one only a reset clears.
 #[test]
-fn a_failed_template_does_not_make_the_views_note_permanent() {
+fn a_failed_view_does_not_make_the_views_note_permanent() {
     use polars::prelude::{ParquetWriter, df};
     let dir = tempfile::tempdir().unwrap();
     let write = |sub: &str, mut frame: polars::prelude::DataFrame| {
@@ -750,11 +729,11 @@ fn a_failed_template_does_not_make_the_views_note_permanent() {
         .sort(vec!["n".to_string()], true);
     assert_eq!(left_out(&app), 1, "the sort has something to say");
 
-    let mut template = app
-        .create_template_from_current_state(
+    let mut view = app
+        .create_view_from_current_state(
             "query then break".to_string(),
             None,
-            template::MatchCriteria {
+            view::MatchCriteria {
                 exact_path: None,
                 relative_path: None,
                 path_pattern: None,
@@ -765,9 +744,9 @@ fn a_failed_template_does_not_make_the_views_note_permanent() {
             },
         )
         .unwrap();
-    template.settings.sql_query = Some("select * from df".to_string());
-    template.settings.column_order = vec!["no_such_column".to_string()];
-    assert!(app.apply_template(&template).is_err());
+    view.settings.sql_query = Some("select * from df".to_string());
+    view.settings.column_order = vec!["no_such_column".to_string()];
+    assert!(app.apply_view(&view).is_err());
 
     // The sort is back, so the rows it leaves out are back out — and the note has
     // to be back with them. A frame three rows short of the dataset with nothing
@@ -878,13 +857,13 @@ fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
     assert_eq!(left_out(state), 1, "the note stays: {:#?}", state.notes());
 }
 
-/// A rollback that stops half way leaves a state that is neither the template's nor
+/// A rollback that stops half way leaves a state that is neither the view's nor
 /// the user's, and the note then describes the half that lost.
 ///
-/// The user has no sort at all; the template brings one, on a column the files
+/// The user has no sort at all; the view brings one, on a column the files
 /// disagree on, and then fails on a column order that does not fit. Every step of
 /// the rollback used to be guarded on the one before, and the first of them
-/// collected against the template's column order and errored — so the template's
+/// collected against the view's column order and errored — so the view's
 /// sort stayed in the sidebar, the notes were built from it, and the row counter
 /// reported a frame three rows shorter than the one on screen.
 #[test]
@@ -927,11 +906,11 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
         .get_column_order()
         .to_vec();
 
-    let mut template = app
-        .create_template_from_current_state(
+    let mut view = app
+        .create_view_from_current_state(
             "sort then break".to_string(),
             None,
-            template::MatchCriteria {
+            view::MatchCriteria {
                 exact_path: None,
                 relative_path: None,
                 path_pattern: None,
@@ -943,14 +922,14 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
         )
         .unwrap();
     // A sort the user never asked for, and a column order that cannot be applied.
-    template.settings.sort_columns = vec!["n".to_string()];
-    template.settings.column_order = vec!["no_such_column".to_string()];
-    assert!(app.apply_template(&template).is_err());
+    view.settings.sort_columns = vec!["n".to_string()];
+    view.settings.column_order = vec!["no_such_column".to_string()];
+    assert!(app.apply_view(&view).is_err());
 
     let state = app.data_table_state.as_ref().unwrap();
     assert!(
         state.view_sort_columns().is_empty(),
-        "the template's sort does not survive its own failure"
+        "the view's sort does not survive its own failure"
     );
     assert_eq!(
         state.get_column_order(),
@@ -979,14 +958,14 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
     assert!(state.error().is_none(), "with no error left over");
 }
 
-/// A template whose SQL drops a column that the same template's sort names. The
+/// A view whose SQL drops a column that the same view's sort names. The
 /// sorted frame cannot be built at all, so the row count errors — and reporting
 /// that as zero rows used to blank the table and return before `load_buffer`, the
-/// only other place a failure is recorded. `apply_template` decides whether to roll
+/// only other place a failure is recorded. `apply_view` decides whether to roll
 /// back by looking for an error, found none, and returned `Ok`: the user was left
-/// with a blank table wearing the template's sort, told nothing.
+/// with a blank table wearing the view's sort, told nothing.
 #[test]
-fn a_template_whose_sort_names_a_column_its_query_removed_fails_loudly() {
+fn a_view_whose_sort_names_a_column_its_query_removed_fails_loudly() {
     crate::tests::ensure_sample_data();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("three.csv");
@@ -995,11 +974,11 @@ fn a_template_whose_sort_names_a_column_its_query_removed_fails_loudly() {
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
 
-    let mut template = app
-        .create_template_from_current_state(
+    let mut view = app
+        .create_view_from_current_state(
             "sort what the query dropped".to_string(),
             None,
-            template::MatchCriteria {
+            view::MatchCriteria {
                 exact_path: None,
                 relative_path: None,
                 path_pattern: None,
@@ -1010,13 +989,13 @@ fn a_template_whose_sort_names_a_column_its_query_removed_fails_loudly() {
             },
         )
         .unwrap();
-    template.settings.sql_query = Some("select id, keep from df".to_string());
+    view.settings.sql_query = Some("select id, keep from df".to_string());
     // Applied after the query, and naming the column the query just dropped.
-    template.settings.sort_columns = vec!["dropped".to_string()];
+    view.settings.sort_columns = vec!["dropped".to_string()];
 
     assert!(
-        app.apply_template(&template).is_err(),
-        "the template fails, rather than quietly leaving a blank table"
+        app.apply_view(&view).is_err(),
+        "the view fails, rather than quietly leaving a blank table"
     );
 
     let state = app.data_table_state.as_ref().unwrap();
@@ -1061,11 +1040,11 @@ fn a_view_whose_query_fails_on_the_data_is_not_applied() {
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
 
-    let mut template = app
-        .create_template_from_current_state(
+    let mut view = app
+        .create_view_from_current_state(
             "cast the words".to_string(),
             None,
-            template::MatchCriteria {
+            view::MatchCriteria {
                 exact_path: None,
                 relative_path: None,
                 path_pattern: None,
@@ -1076,9 +1055,9 @@ fn a_view_whose_query_fails_on_the_data_is_not_applied() {
             },
         )
         .unwrap();
-    template.settings.sql_query = Some("SELECT CAST(name AS INT) AS n FROM df".to_string());
-    template.settings.column_order.clear();
-    let applied = app.apply_template(&template);
+    view.settings.sql_query = Some("SELECT CAST(name AS INT) AS n FROM df".to_string());
+    view.settings.column_order.clear();
+    let applied = app.apply_view(&view);
     assert!(applied.is_ok(), "it plans: {applied:?}");
     // As the event loop does: the frame drawn asks for its rows.
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
@@ -1100,8 +1079,8 @@ fn a_view_whose_query_fails_on_the_data_is_not_applied() {
     assert!(state.is_num_rows_valid());
     assert_eq!(state.num_rows(), 40);
     assert_ne!(
-        app.active_template_id.as_deref(),
-        Some(template.id.as_str()),
+        app.active_view_id.as_deref(),
+        Some(view.id.as_str()),
         "the view that failed is not marked applied"
     );
 }
@@ -1125,7 +1104,7 @@ fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
     let counting = state.len_generation();
     app.len_count_inflight = Some(counting);
 
-    app.event(&AppEvent::SqlSearch(
+    app.event(&AppEvent::SqlQuery(
         "SELECT CAST(name AS INT) AS n FROM df".to_string(),
     ));
     assert!(app.query_running.is_some());
@@ -1148,7 +1127,7 @@ fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
 /// rolled back to drilling by that view's own keys, not the failed view's.
 #[cfg(feature = "sql")]
 #[test]
-fn a_failed_template_rolls_back_what_a_grouped_row_drills_into() {
+fn a_failed_view_rolls_back_what_a_grouped_row_drills_into() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("depts.csv");
     std::fs::write(&path, "dept,salary\neng,1\nops,2\neng,3\nops,4\neng,5\n").unwrap();
@@ -1159,11 +1138,11 @@ fn a_failed_template_rolls_back_what_a_grouped_row_drills_into() {
     state.sql_query("SELECT dept, COUNT(*) AS n FROM df GROUP BY dept".to_string());
     assert!(state.error().is_none(), "{:?}", state.error());
 
-    let mut template = app
-        .create_template_from_current_state(
+    let mut view = app
+        .create_view_from_current_state(
             "group another way then break".to_string(),
             None,
-            template::MatchCriteria {
+            view::MatchCriteria {
                 exact_path: None,
                 relative_path: None,
                 path_pattern: None,
@@ -1174,10 +1153,10 @@ fn a_failed_template_rolls_back_what_a_grouped_row_drills_into() {
             },
         )
         .unwrap();
-    template.settings.sql_query =
+    view.settings.sql_query =
         Some("SELECT salary > 2 AS dept, COUNT(*) AS n FROM df GROUP BY 1".to_string());
-    template.settings.column_order = vec!["no_such_column".to_string()];
-    assert!(app.apply_template(&template).is_err());
+    view.settings.column_order = vec!["no_such_column".to_string()];
+    assert!(app.apply_view(&view).is_err());
 
     let state = app.data_table_state.as_mut().unwrap();
     state.drill_down_into_group(0).unwrap();
@@ -1189,9 +1168,9 @@ fn a_failed_template_rolls_back_what_a_grouped_row_drills_into() {
 }
 
 /// A view of `long.csv` that does nothing yet.
-fn blank_view(app: &mut App, name: &str) -> Template {
-    let mut template = pivot_view(app, name);
-    template.settings = template::TemplateSettings {
+fn blank_view(app: &mut App, name: &str) -> SavedView {
+    let mut view = pivot_view(app, name);
+    view.settings = view::ViewSettings {
         query: None,
         sql_query: None,
         fuzzy_query: None,
@@ -1205,7 +1184,7 @@ fn blank_view(app: &mut App, name: &str) -> Template {
         melt: None,
         reshape_source: None,
     };
-    template
+    view
 }
 
 /// #458: a view that fails after any one of its steps — while it is planned, once
@@ -1236,14 +1215,14 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
         sort_columns: None,
     };
     enum Fails {
-        /// While planning: `apply_template` says so and nothing is read.
+        /// While planning: `apply_view` says so and nothing is read.
         Planning,
         /// In the background, once the pivot is in or the rows are read.
         Reading,
         /// Every step plans; the worker reading the pivot or the rows dies.
         WorkerDies,
     }
-    type Steps = Box<dyn Fn(&mut template::TemplateSettings)>;
+    type Steps = Box<dyn Fn(&mut view::ViewSettings)>;
     let cases: Vec<(&str, Fails, Steps)> = vec![
         (
             "the query",
@@ -1325,7 +1304,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
     for (step, fails, steps) in cases {
         let (mut app, rx, tx, _dir) = long_csv_app();
         // The view it is applied over: a query, a sort and a filter, a selection.
-        app.event(&AppEvent::Search(
+        app.event(&AppEvent::QQuery(
             "select id, key, val where val >= 0".to_string(),
         ));
         super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
@@ -1335,15 +1314,15 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
         let before = state.snapshot();
         assert!(before.has_rows(), "{step}: the view's rows are on hand");
 
-        let mut template = blank_view(&mut app, step);
-        steps(&mut template.settings);
+        let mut view = blank_view(&mut app, step);
+        steps(&mut view.settings);
         if matches!(fails, Fails::WorkerDies) {
             // The view's first read, its pivot or its rows, panics.
             app.jobs.worker_dies = crate::tests::worker_dies_once(|job| {
                 matches!(job, Job::ViewPivot(_) | Job::Rows(_))
             });
         }
-        let applied = app.apply_template(&template);
+        let applied = app.apply_view(&view);
         match fails {
             Fails::Planning => assert!(applied.is_err(), "{step}: fails as it plans"),
             Fails::Reading => {
@@ -1365,10 +1344,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
         assert!(app.query_running.is_none(), "{step}");
         assert!(!app.view_applying(), "{step}");
         assert!(!app.is_busy(), "{step}: nothing is left to read");
-        assert!(
-            app.active_template_id.is_none(),
-            "{step}: not marked applied"
-        );
+        assert!(app.active_view_id.is_none(), "{step}: not marked applied");
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.snapshot(), before, "{step}: the view is put back");
     }

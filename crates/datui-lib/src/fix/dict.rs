@@ -346,7 +346,7 @@ impl Dictionary {
                 return Err(fail(
                     key,
                     format!(
-                        "unknown key `{key}`; a FIX dictionary has name, kind, description, match and tags"
+                        "unknown key `{key}`; a dictionary of kind = \"fix\" has name, kind, description, match and tags"
                     ),
                 ));
             }

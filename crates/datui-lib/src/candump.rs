@@ -672,7 +672,7 @@ impl Layers {
                 Ok(None) => {
                     return Err(FileError::new(
                         path,
-                        "not a DBC file. --dict takes a .dbc file, or TOML with kind = \"dbc\".",
+                        "not a DBC dictionary. --dict takes a .dbc file, or TOML with kind = \"dbc\".",
                     )
                     .into());
                 }
@@ -906,18 +906,17 @@ pub fn open(path: &Path, wanted: Option<&str>, layers: Layers) -> Result<Open> {
         return Err(FileError::new(
             path,
             format!(
-                "no table \"{wanted}\": with no DBC file only its {FRAMES} are read. --dict names one that decodes its messages."
+                "no table \"{wanted}\": with no dictionary only its {FRAMES} are read. --dict names one that decodes its messages."
             ),
         )
         .into());
     }
-    let picked =
-        match crate::members::pick(tables.clone(), wanted, path, crate::FileFormat::Candump, "")? {
-            crate::sqlite::Pick::One(table) => table.name,
-            crate::sqlite::Pick::Several(tables) => {
-                return Ok(Open::Several(tables.into_iter().map(|t| t.name).collect()));
-            }
-        };
+    let picked = match crate::members::pick(tables.clone(), wanted, path, "")? {
+        crate::sqlite::Pick::One(table) => table.name,
+        crate::sqlite::Pick::Several(tables) => {
+            return Ok(Open::Several(tables.into_iter().map(|t| t.name).collect()));
+        }
+    };
     let mut notes: Vec<String> = Vec::new();
     if index.skipped > 0 {
         notes.push(format!(
@@ -1015,12 +1014,12 @@ fn long_table(
                 "{} signals past the first {MAX_LONG_PARTS} are left out of this table; each message's own table has them.",
                 crate::numfmt::group_chrome(left_out)
             ),
-            "the DBC files".to_string(),
+            "the dictionaries".to_string(),
         ));
     }
     if parts.is_empty() {
         return Err(eyre!(
-            "no signals to decode: no frame of the log is a message of the DBC files"
+            "no signals to decode: no frame of the log is a message of the dictionaries"
         ));
     }
     let all = concat(parts, UnionArgs::default())?;

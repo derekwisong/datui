@@ -1652,7 +1652,7 @@ fn parse_node(tokens: &[Token]) -> Result<Node, String> {
     }
 }
 
-/// A parsed q-style query, ready to apply to a LazyFrame.
+/// A parsed q query, ready to apply to a LazyFrame.
 #[derive(Debug, Default)]
 pub struct ParsedQuery {
     /// The select list; empty means every column.
@@ -1706,7 +1706,7 @@ pub fn sanitize_query_error(msg: &str) -> String {
     msg.to_string()
 }
 
-/// A q-style query as parsed, before it becomes Polars expressions: what
+/// A q query as parsed, before it becomes Polars expressions: what
 /// [`parse_query`] runs and "Copy as Python" writes out.
 #[derive(Debug, Default)]
 pub(crate) struct QueryNodes {
@@ -1801,7 +1801,7 @@ pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
     parse_nodes(query).map(QueryNodes::into_parsed)
 }
 
-/// Parse a q-style query into nodes. An empty query selects every column.
+/// Parse a q query into nodes. An empty query selects every column.
 pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
     // Empty query is equivalent to "select" - return all columns with no filter or grouping
     let trimmed = query.trim();
@@ -2864,7 +2864,7 @@ mod tests {
         );
     }
 
-    // --- q-style additions (#367) ---
+    // --- q additions (#367) ---
 
     /// Run a query over `df` the way `DataTableState::query` does.
     fn eval(query: &str, df: &DataFrame) -> DataFrame {

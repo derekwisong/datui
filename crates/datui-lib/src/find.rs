@@ -512,7 +512,7 @@ impl Search {
                 .map_err(message)?,
         };
         let offset = IdxSize::try_from(start)
-            .map_err(|_| "The view has too many rows to search".to_string())?;
+            .map_err(|_| "The view has too many rows to find in".to_string())?;
         let row = || col(ROW).cast(DataType::UInt64);
         let mut aggregates = vec![polars::prelude::len().cast(DataType::UInt64).alias(ROWS)];
         for i in 0..self.columns.len() {

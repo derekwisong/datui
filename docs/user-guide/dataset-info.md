@@ -1,6 +1,6 @@
-# Dataset Info
+# Info panel
 
-Press <kbd>i</kbd> to inspect the dataset's schema and storage details.
+Press <kbd>i</kbd> for the Info panel: the dataset's schema and storage details.
 Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 
 ![Info Panel Demo](../demos/03-info.gif)
@@ -33,7 +33,7 @@ tables lists them on the [home screen](home-screen.md) as places inside it
 | Arrow IPC | **Arrow** | no |
 | Avro | **Avro** | no |
 | ORC | **ORC** | no |
-| Excel | **Excel** | sheets |
+| Excel | **Excel** | tables |
 | SQLite | **SQLite** | tables |
 | CSV, TSV, PSV, JSON, NDJSON | none | no |
 | SafeTensors, GGUF | **Model** | no |
@@ -44,7 +44,7 @@ tables lists them on the [home screen](home-screen.md) as places inside it
 | VCD | **VCD** | no |
 | FIX | **FIX** | no |
 | SDF | **SDF** | no |
-| NumPy | **NumPy** | arrays |
+| NumPy | **NumPy** | tables |
 | ELF | **ELF** | tables |
 | ULog | **ULog** | tables |
 | DataFlash | **DataFlash** | tables |
@@ -53,9 +53,9 @@ tables lists them on the [home screen](home-screen.md) as places inside it
 | text | none | no |
 
 CSV, TSV, PSV, JSON, NDJSON and plain text have no tab of their own: text holds its rows and nothing else.
-An `.xlsx` or `.xlsm` workbook lists its sheets
-from its directory, without reading them; an `.xls` or `.xlsb` file keeps its sheet
-names where only reading the workbook finds them, so it opens its first sheet and
+An `.xlsx` or `.xlsm` workbook lists its worksheets
+from its directory, without reading them; an `.xls` or `.xlsb` file keeps its worksheet
+names where only reading the workbook finds them, so it opens its first worksheet and
 `--table` names another.
 
 A [Hugging Face](loading-data.md#arrow-ipc-streams) cache directory lists its
@@ -138,7 +138,7 @@ VCD tab; for every other format the tab sits beside Schema.
 | Arrow | Record batches and dictionaries; columns and byte order | Metadata: the schema's and the footer's key and value |
 | Avro | The record's name, fields and codec; its documentation | Field docs: each field's documentation, where it has one |
 | ORC | Rows and stripes, the rows per stripe; format version and compression | Metadata: what the writer kept, key and value |
-| Excel | Sheets, how many are hidden or hold no cells; the sheet opened | Sheets: each one's range and size (`A1:D100, 100 × 4`), as the opened sheet's cells or the other sheets' declarations give it |
+| Excel | Worksheets, how many are hidden or hold no cells; the worksheet opened | Worksheets: each one's range and size (`A1:D100, 100 × 4`), as the opened worksheet's cells or the other worksheets' declarations give it |
 | SQLite | Page size and pages; schema version, user version and text encoding; tables and views; whether row counts are stored | Tables: each one's kind, columns and the rows `ANALYZE` stored for it. No table is counted to fill it |
 | GPS | NMEA: rows of the table opened, sentences and lines. GPX: points, tracks, routes and waypoints. Both: the time span and the latitude and longitude bounds of the rows | Sentences (NMEA): each type and how many |
 | VCD | Timescale, signal and scope counts; value changes and their time span; `$date`, `$version`, `$comment` | Signals: each path with its type, width and identifier |
@@ -148,7 +148,7 @@ VCD tab; for every other format the tab sits beside Schema.
 | ELF | Class, machine, type, entry point; bytes in loaded, unwritten sections (flash) and in written ones (RAM); the symbol count | Sections: each one's address, size and flags |
 | ULog | Version, topic tables, dropouts | Info and parameters: each info message, and each parameter's starting value |
 | DataFlash | Message types with records and defined; records; whether the log has units | Messages: each type's records, format characters and length |
-| CAN | Frames, interfaces, whether timestamps are wall-clock; each DBC file read and what it matches; frames no DBC names | Messages: each one's id, frames, signals and comment |
+| CAN | Frames, interfaces, whether timestamps are wall-clock; each dictionary read and what it matches; frames no dictionary names | Messages: each one's id, frames, signals and comment |
 
 A list of more than 10,000 shows the first 10,000 and how many more there are.
 

@@ -44,10 +44,10 @@ and building from source. [Prebuilt binaries][latest-release] are also available
 
 | Action | Key | Guide |
 |---|---|---|
-| Query, run SQL, or search text | `/` | [Queries][query-guide] |
+| Query with SQL, q or text | `/` | [Queries][query-guide] |
 | Sort, filter, hide or freeze columns | `s` | [Table controls][filter-guide] |
 | Plot a trend or distribution | `c` | [Charts][chart-guide] |
-| Check statistics, correlations or data quality | `a` | [Analysis][analysis-guide] |
+| Describe columns, correlations or data quality | `a` | [Analysis][analysis-guide] |
 | Pivot or melt | `p` | [Reshaping][reshape-guide] |
 | Copy a result or export a file | `y` / `e` | [Copy][copy-guide] · [Export][export-guide] |
 | Save a view to reuse on another file | `v` | [Views][views-guide] |

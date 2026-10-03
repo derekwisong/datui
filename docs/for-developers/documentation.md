@@ -97,7 +97,7 @@ The release workflow builds tagged documentation when a `v*` tag is pushed.
 
 | Path | Contents |
 |---|---|
-| `/` | Landing page from the workflow checkout's template |
+| `/` | Landing page, rendered from the workflow checkout's `scripts/docs/index.html.j2` |
 | `/latest/` | Copy of the newest tagged book |
 | `/vX.Y.Z/` | Book built from that tag's files |
 

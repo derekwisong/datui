@@ -79,7 +79,7 @@ impl CacheManager {
     }
 
     /// Clear all registered cache files
-    /// Note: Templates are stored in config directory, not cache, so they are not cleared here.
+    /// Note: Views are stored in config directory, not cache, so they are not cleared here.
     /// Note: History files (e.g., `{id}_history.txt`) are dynamic and excluded from `clear_all()`.
     /// They can be cleared individually via `clear_file()` if needed.
     pub fn clear_all(&self) -> Result<()> {
@@ -712,11 +712,11 @@ impl DatasetShape {
 /// Library tests need not call this: `CacheManager::new` and `ConfigManager::new`
 /// do, so no unit test reaches either without it, whatever order the tests run in
 /// and however few share the process. Opening a dataset records it in recents and
-/// saving a template writes under the config directory; left alone, both land in
+/// saving a view writes under the config directory; left alone, both land in
 /// the developer's own. The variables are process-wide, so this runs once.
 ///
 /// The directories are named at random, not by process id: ids are reused, and a run
-/// that landed on a finished run's id inherited its recents and templates. They are
+/// that landed on a finished run's id inherited its recents and views. They are
 /// removed when the process exits.
 #[cfg(test)]
 pub(crate) fn isolate_cache() {

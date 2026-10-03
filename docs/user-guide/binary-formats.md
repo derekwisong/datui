@@ -188,9 +188,9 @@ a type no variant names shows as `?X` when its size is known
 records and its columns.
 
 On the home screen, a file a spec's glob names that holds several variants
-counts them ("2 variants" in its details). Enter opens every record; → lists
-the variants inside it, one row each at `capture.bin/add`, and Enter on one
-opens it alone. That path opens the variant on the command line too, and is
+counts them as tables ("2 tables" in its details). Enter opens every record; →
+lists the tables inside it, one row each at `capture.bin/add`, and Enter on one
+opens it alone. That path opens the table on the command line too, and is
 what recents record.
 
 ## Footer
@@ -280,11 +280,11 @@ wins, as with `PATH`.
 `datui formats` lists each spec, what it matches, the file it came from, any copy
 of the same name it overrides, and the files that could not be read, with the
 line and column of each problem. The same places hold
-[FIX dictionaries](loading-data.md#fix-dictionaries): QuickFIX XML files and TOML
+[FIX log dictionaries](loading-data.md#fix-log-dictionaries): QuickFIX XML files and TOML
 files of `kind = "fix"`, listed after the specs.
 
 `datui formats check SPEC [FILE]` checks one spec, by name or file. With a file,
-it prints the warnings and the first ten rows. Given a FIX dictionary, it checks
+it prints the warnings and the first ten rows. Given a QuickFIX dictionary, it checks
 that, and with a FIX log says how many messages it matches and which of its tags
 they hold. It exits non-zero on an error, so
 a repository of specs can run it in CI.
@@ -360,7 +360,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
 | Key | What it says |
 |---|---|
 | `kind` | `delimited`. Default `binary` |
-| `match` | `glob` and `magic`, as for binary specs. `magic` compares the start of the first line |
+| `match` | `glob` and `magic`, as for other format specs. `magic` compares the start of the first line |
 | `delimiter` | One character, `"tab"`, `"\t"` or a code such as `"0x1f"`, as `--delimiter` takes. Default `,`, or the one the file's name implies |
 | `comment` | Lines that start with it are skipped wherever they are |
 | `skip_initial_space` | `true`: ignore the spaces after a delimiter |

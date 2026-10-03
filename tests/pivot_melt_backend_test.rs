@@ -5,7 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotMeltFocus, PivotSpec};
-use datui::template::MatchCriteria;
+use datui::view::MatchCriteria;
 use datui::{App, AppEvent, InputMode, OpenOptions};
 use polars::prelude::AnyValue;
 use std::path::PathBuf;
@@ -536,9 +536,9 @@ fn test_space_chooses_in_a_pick_one_picker() {
     assert_eq!(app.pivot_melt_modal.pivot_column, Some("date".to_string()));
 }
 
-/// Save a template after pivot, reload file, apply via T, and verify pivoted result.
+/// Save a view after pivot, reload file, apply via V, and verify pivoted result.
 #[test]
-fn test_template_save_and_apply_pivot() {
+fn test_view_save_and_apply_pivot() {
     ensure_sample_data();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
@@ -567,13 +567,13 @@ fn test_template_save_and_apply_pivot() {
         schema_types: None,
         table: None,
     };
-    let template = app
-        .create_template_from_current_state(
-            "pivot_melt_test_pivot_template".to_string(),
+    let view = app
+        .create_view_from_current_state(
+            "pivot_melt_test_pivot_view".to_string(),
             None,
             match_criteria,
         )
-        .expect("create template");
+        .expect("create view");
 
     load_file(&mut app, &rx, path.clone());
     let raw_names: Vec<String> = app
@@ -603,7 +603,7 @@ fn test_template_save_and_apply_pivot() {
     assert!(names.contains(&"C"));
     assert!(df.height() > 0);
 
-    assert!(template.settings.pivot.is_some());
+    assert!(view.settings.pivot.is_some());
 }
 
 /// The pivot reads its data off the UI thread: the event returns at once with the app

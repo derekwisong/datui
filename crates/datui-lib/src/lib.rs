@@ -179,8 +179,6 @@ pub mod startup;
 pub mod statistics;
 pub mod stdin;
 pub mod tee;
-pub mod template;
-mod template_keys;
 mod terminal;
 pub mod terminal_input;
 pub mod text_formats;
@@ -189,6 +187,8 @@ mod unfinished;
 pub mod value_counts;
 pub mod value_counts_modal;
 pub mod vcd;
+pub mod view;
+mod view_keys;
 pub mod widgets;
 
 pub use cache::CacheManager;
@@ -227,15 +227,15 @@ use quality_memory::{QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopy
 use scan::Scan;
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus, order_with_hidden};
-pub use template::{Template, TemplateManager, Templates};
 use terminal::{QuietTerminal, TakenTerminal, push_keyboard_flags, restore_terminal};
 pub use unfinished::ExitSweep;
+pub use view::{SavedView, ViewManager, Views};
 use widgets::column_widths::WidthChoice;
 use widgets::controls::Controls;
 use widgets::datatable::{DataTableState, DatasetAtOpen, DrillRow, OpenFacts};
 use widgets::debug::DebugState;
-use widgets::template_modal::{FormFocus, TemplateModal, TemplateModalMode, ViewRow};
 use widgets::text_input::TextInput;
+use widgets::view_modal::{FormFocus, ViewModal, ViewModalMode, ViewRow};
 
 /// Application name used for cache directory and other app-specific paths
 pub const APP_NAME: &str = "datui";
@@ -430,9 +430,9 @@ pub enum AppEvent {
     Followed(crate::follow::News),
     Exit,
     Crash(String),
-    Search(String),
-    SqlSearch(String),
-    FuzzySearch(String),
+    QQuery(String),
+    SqlQuery(String),
+    TextQuery(String),
     Filter(Vec<FilterStatement>),
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
@@ -721,7 +721,7 @@ pub enum InputMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputType {
-    Search,
+    Query,
     GoToLine,
     Find,
 }
@@ -755,7 +755,7 @@ enum RunOrigin {
     /// why once its rows are in.
     View {
         previous: Option<String>,
-        matched: Option<(String, template::MatchReason)>,
+        matched: Option<(String, view::MatchReason)>,
     },
 }
 
@@ -831,7 +831,7 @@ struct AnalysisComputationState {
 }
 
 /// At most one query type can be active. Returns (query, sql_query, fuzzy_query) with only the
-/// active one set (SQL takes precedence over fuzzy over DSL query). Used when saving template settings.
+/// active one set (SQL takes precedence over fuzzy over DSL query). Used when saving view settings.
 fn active_query_settings(
     dsl_query: &str,
     sql_query: &str,
@@ -975,7 +975,7 @@ pub struct App {
     // One input per query mode, each with its own history. The history ids
     // ("query", "sql", "fuzzy") name files already on disk; they stay as they
     // are so no history is lost or read as another mode's.
-    query_input: TextInput, // q-style, history id "query"; also borrowed by go-to-line
+    query_input: TextInput, // q mode, history id "query"; also borrowed by go-to-line
     sql_input: TextInput,   // SQL, history id "sql"
     fuzzy_input: TextInput, // Search, history id "fuzzy"
     /// The find prompt (`f`) and the find `n` and `N` repeat; history id "find".
@@ -999,14 +999,14 @@ pub struct App {
     inline_failures: u64,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
-    pub template_modal: TemplateModal,
+    pub view_modal: ViewModal,
     /// Whether the open dataset was reached through the home screen. `q` pops
     /// the context: opened from home it returns there, launched straight onto
     /// a file it quits — the user's mental stack, not a mode.
     opened_from_home: bool,
     /// `--view NAME`, waiting for the dataset from the command line to land.
     /// Taken on the first install, so datasets opened later are not re-dressed.
-    startup_template: Option<String>,
+    startup_view: Option<String>,
     pub analysis_modal: AnalysisModal,
     /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
     quality_cache: Vec<QualityCacheEntry>,
@@ -1087,8 +1087,8 @@ pub struct App {
     /// What the mouse can land on in the last frame, and the last click.
     pointer: pointer::Pointing,
     cache: CacheManager,
-    template_manager: Templates,
-    active_template_id: Option<String>, // ID of currently applied template
+    view_manager: Views,
+    active_view_id: Option<String>, // ID of currently applied view
     /// An export under way, which the control bar reports.
     export_progress: Option<ExportProgress>,
     theme: Theme, // Color theme for UI rendering
@@ -1645,7 +1645,7 @@ impl App {
                 view.push(format!("SQL: {}", state.get_active_sql_query()));
             }
             if !state.get_active_fuzzy_query().is_empty() {
-                view.push(format!("search: {}", state.get_active_fuzzy_query()));
+                view.push(format!("text: {}", state.get_active_fuzzy_query()));
             }
             for (index, filter) in state.view_filters().iter().enumerate() {
                 let join = if index == 0 {
@@ -2548,13 +2548,13 @@ impl App {
     /// What views are matched against: the dataset's path and the table of its file it
     /// is. What was piped in, or a frame handed over (`datui.view(frame)`), is `-`,
     /// which no path criterion fits, so it matches by its columns alone.
-    fn view_dataset(&self) -> Option<template::Dataset<'_>> {
+    fn view_dataset(&self) -> Option<view::Dataset<'_>> {
         self.data_table_state.as_ref()?;
         let path = match self.path.as_deref() {
             Some(path) if !self.reads_stdin() => path,
             _ => Path::new(stdin::PATH),
         };
-        Some(template::Dataset {
+        Some(view::Dataset {
             path,
             table: self.view_table(),
         })
@@ -3878,11 +3878,11 @@ impl App {
     }
 
     /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
-    /// (template, analysis) drawn over it.
+    /// (view, analysis) drawn over it.
     pub fn in_normal_table_view(&self) -> bool {
         self.input_mode == InputMode::Normal
             && !self.show_help
-            && !self.template_modal.active
+            && !self.view_modal.active
             && !self.analysis_modal.active
             && !self.error_modal.active
             && !self.confirmation_modal.active
@@ -3940,10 +3940,10 @@ impl App {
                     || self.analysis_modal.quality_expected_typing()
                     || self.analysis_modal.intent_typing()
                     || self.analysis_modal.export_typing()
-                    || (self.template_modal.active
-                        && self.template_modal.mode != TemplateModalMode::List
+                    || (self.view_modal.active
+                        && self.view_modal.mode != ViewModalMode::List
                         && matches!(
-                            self.template_modal.form_focus,
+                            self.view_modal.form_focus,
                             FormFocus::Name
                                 | FormFocus::Description
                                 | FormFocus::ExactPath
@@ -4700,15 +4700,15 @@ impl App {
         self.pivot_melt_modal = PivotMeltModal::new();
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
 
-        // The dataset is installed and its schema known, so this is where a template
+        // The dataset is installed and its schema known, so this is where a view
         // meets it. `--view` names one and applies to this first open alone;
-        // `[views] auto_apply` dresses every open that has a matching template.
+        // `[views] auto_apply` dresses every open that has a matching view.
         // A fresh dataset starts with no view applied: the previous file's view
         // must not wear the check mark here, nor count as applied when edited.
-        self.active_template_id = None;
-        let (template, reason) = match self.startup_template.take() {
-            Some(name) => match self.template_manager.get_template_by_name(&name).cloned() {
-                Some(template) => (Some(template), None),
+        self.active_view_id = None;
+        let (view, reason) = match self.startup_view.take() {
+            Some(name) => match self.view_manager.get_view_by_name(&name).cloned() {
+                Some(view) => (Some(view), None),
                 None => {
                     self.error_modal.show(format!("No view named \"{name}\""));
                     (None, None)
@@ -4718,35 +4718,33 @@ impl App {
                 .view_dataset()
                 .zip(self.data_table_state.as_ref())
                 .and_then(|(dataset, state)| {
-                    self.template_manager
+                    self.view_manager
                         .get_most_relevant(dataset, state.source_schema())
                 })
-                .map_or((None, None), |(template, reason)| {
-                    (Some(template), Some(reason))
-                }),
+                .map_or((None, None), |(view, reason)| (Some(view), Some(reason))),
             None => (None, None),
         };
-        let Some(template) = template else {
+        let Some(view) = view else {
             return false;
         };
         let applied = match reason {
             // Applied unasked, it says which view and why.
-            Some(why) => self.apply_matched_view(&template, why),
-            None => self.apply_template(&template),
+            Some(why) => self.apply_matched_view(&view, why),
+            None => self.apply_view(&view),
         };
         match applied {
             // The view reads its own first rows, so the dataset's are never read.
             Ok(()) => true,
             Err(e) => {
                 self.error_modal
-                    .show(format!("Error applying view \"{}\": {e}", template.name));
+                    .show(format!("Error applying view \"{}\": {e}", view.name));
                 false
             }
         }
     }
 
     /// Say that the view `name` was applied because its criteria fit as `why` says.
-    fn flash_view_applied(&mut self, name: &str, why: template::MatchReason) {
+    fn flash_view_applied(&mut self, name: &str, why: view::MatchReason) {
         self.flash_note(format!("View \"{name}\" applied: {}", why.as_str()));
     }
 
@@ -5353,17 +5351,17 @@ impl App {
         theme: Theme,
         app_config: AppConfig,
     ) -> App {
-        let templates = TemplateManager::load_or_empty().into();
-        Self::new_with_templates(events, runtime, theme, app_config, templates)
+        let views = ViewManager::load_or_empty().into();
+        Self::new_with_views(events, runtime, theme, app_config, views)
     }
 
-    /// An app whose saved views may still be on their way ([`Templates`]).
-    pub fn new_with_templates(
+    /// An app whose saved views may still be on their way ([`Views`]).
+    pub fn new_with_views(
         events: Sender<AppEvent>,
         runtime: tokio::runtime::Handle,
         theme: Theme,
         app_config: AppConfig,
-        template_manager: Templates,
+        view_manager: Views,
     ) -> App {
         let cache = CacheManager::new(APP_NAME).unwrap_or_else(|_| CacheManager {
             cache_dir: std::env::temp_dir().join(APP_NAME),
@@ -5444,9 +5442,9 @@ impl App {
             inline_failures: 0,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
-            template_modal: TemplateModal::new(),
+            view_modal: ViewModal::new(),
             opened_from_home: false,
-            startup_template: None,
+            startup_view: None,
             analysis_modal: AnalysisModal::with_sample_rows(app_config.analysis.sample_rows),
             quality_cache: Vec::new(),
             quality_samples: Vec::new(),
@@ -5487,8 +5485,8 @@ impl App {
             help_scroll: 0,
             pointer: pointer::Pointing::default(),
             cache,
-            template_manager,
-            active_template_id: None,
+            view_manager,
+            active_view_id: None,
             export_progress: None,
             theme,
             pending_read_all: false,
@@ -6657,10 +6655,10 @@ impl App {
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
-        // The template modal keys and renders off its own `active`, not the input
+        // The view modal keys and renders off its own `active`, not the input
         // mode, so left open here it would come back as a zombie over the next
         // dataset opened.
-        self.template_modal.close();
+        self.view_modal.close();
         self.inspector_modal.close();
         self.stop_find();
         self.hex = None;
@@ -11540,14 +11538,14 @@ impl App {
     }
 
     /// Open the views list for the dataset on screen, scored against it.
-    fn open_template_list(&mut self) {
+    fn open_view_list(&mut self) {
         if self.view_dataset().is_none() {
             return;
         }
-        self.template_modal.table_state.select(Some(0));
+        self.view_modal.table_state.select(Some(0));
         self.refresh_view_list();
-        self.template_modal.active = true;
-        self.template_modal.mode = TemplateModalMode::List;
+        self.view_modal.active = true;
+        self.view_modal.mode = ViewModalMode::List;
     }
 
     /// Rebuild the list's rows from the store, scored and annotated against
@@ -11557,26 +11555,26 @@ impl App {
             return;
         };
         let rows: Vec<ViewRow> = self
-            .template_manager
-            .find_relevant_templates(dataset, state.source_schema())
+            .view_manager
+            .find_relevant_views(dataset, state.source_schema())
             .into_iter()
-            .map(|(template, score)| {
-                let reason = template::match_reason(&template, dataset, state.source_schema());
+            .map(|(view, score)| {
+                let reason = view::match_reason(&view, dataset, state.source_schema());
                 ViewRow {
-                    template,
+                    view,
                     score,
                     reason,
                 }
             })
             .collect();
-        self.template_modal.broken_templates = self.template_manager.broken_templates.clone();
-        let selected = self.template_modal.table_state.selected().unwrap_or(0);
-        self.template_modal.table_state.select(if rows.is_empty() {
+        self.view_modal.broken_views = self.view_manager.broken_views.clone();
+        let selected = self.view_modal.table_state.selected().unwrap_or(0);
+        self.view_modal.table_state.select(if rows.is_empty() {
             None
         } else {
             Some(selected.min(rows.len() - 1))
         });
-        self.template_modal.rows = rows;
+        self.view_modal.rows = rows;
     }
 
     /// Open the save-view form prefilled from the open dataset: a name the
@@ -11584,7 +11582,7 @@ impl App {
     /// schema match on — the criterion that carries the view to the next
     /// table shaped like this one.
     fn open_save_view_form(&mut self) {
-        self.template_modal
+        self.view_modal
             .enter_create_mode(self.history_limit, &self.theme);
 
         let query = self.data_table_state.as_ref().and_then(|state| {
@@ -11595,8 +11593,8 @@ impl App {
             );
             sql_query.or(fuzzy_query).or(query)
         });
-        self.template_modal.name_input.suggest(
-            self.template_manager
+        self.view_modal.name_input.suggest(
+            self.view_manager
                 .suggest_name(self.path.as_deref(), query.as_deref()),
         );
 
@@ -11604,12 +11602,12 @@ impl App {
         if let Some(path) = self.path.as_ref().filter(|_| !self.reads_stdin()) {
             // Pin this file: its absolute path or URL, its path relative to the
             // working directory when it is local and under it, and glob suggestions.
-            let absolute_path = template::exact_location(path);
-            self.template_modal
+            let absolute_path = view::exact_location(path);
+            self.view_modal
                 .exact_path_input
                 .suggest(absolute_path.to_string_lossy());
-            if let Some(relative) = template::relative_location(path) {
-                self.template_modal.relative_path_input.suggest(relative);
+            if let Some(relative) = view::relative_location(path) {
+                self.view_modal.relative_path_input.suggest(relative);
             }
 
             // Suggest a path pattern from the absolute path: the parent of a
@@ -11626,7 +11624,7 @@ impl App {
                 } else {
                     std::path::MAIN_SEPARATOR
                 };
-                self.template_modal.path_pattern_input.suggest(format!(
+                self.view_modal.path_pattern_input.suggest(format!(
                     "{}{separator}*.{}",
                     parent_str.trim_end_matches(separator),
                     ext.to_string_lossy()
@@ -11643,11 +11641,11 @@ impl App {
                     Ok(re) => re.replace_all(filename_str, "*").to_string(),
                     Err(_) => filename_str.to_string(),
                 };
-                self.template_modal.filename_pattern_input.suggest(pattern);
+                self.view_modal.filename_pattern_input.suggest(pattern);
             }
         }
 
-        self.template_modal.table = self.view_table().map(str::to_string);
+        self.view_modal.table = self.view_table().map(str::to_string);
 
         // Schema match starts on: "apply this to a similar table" is the
         // reason views exist, and the columns are the only criterion that
@@ -11655,7 +11653,7 @@ impl App {
         if let Some(ref state) = self.data_table_state
             && !state.source_schema().is_empty()
         {
-            self.template_modal.schema_match_enabled = true;
+            self.view_modal.schema_match_enabled = true;
         }
     }
 
@@ -11663,23 +11661,23 @@ impl App {
     /// settings are rebuilt from the table's applied state either way. A
     /// failed save keeps the form open.
     fn save_view_form(&mut self) {
-        self.template_modal.name_error = None;
-        let name = self.template_modal.name_input.value().trim().to_string();
+        self.view_modal.name_error = None;
+        let name = self.view_modal.name_input.value().trim().to_string();
         if name.is_empty() {
-            self.template_modal.name_error = Some("name is required".to_string());
-            self.template_modal.form_focus = FormFocus::Name;
+            self.view_modal.name_error = Some("name is required".to_string());
+            self.view_modal.form_focus = FormFocus::Name;
             return;
         }
-        let renaming_to_taken = match &self.template_modal.editing_template_id {
-            None => self.template_manager.template_exists(&name),
+        let renaming_to_taken = match &self.view_modal.editing_view_id {
+            None => self.view_manager.view_exists(&name),
             Some(id) => self
-                .template_manager
-                .get_template_by_name(&name)
+                .view_manager
+                .get_view_by_name(&name)
                 .is_some_and(|other| other.id != *id),
         };
         if renaming_to_taken {
-            self.template_modal.name_error = Some("name already exists".to_string());
-            self.template_modal.form_focus = FormFocus::Name;
+            self.view_modal.name_error = Some("name already exists".to_string());
+            self.view_modal.form_focus = FormFocus::Name;
             return;
         }
 
@@ -11687,15 +11685,14 @@ impl App {
             let value = input.value().trim();
             (!value.is_empty()).then(|| value.to_string())
         };
-        let match_criteria = template::MatchCriteria {
-            exact_path: non_empty(&self.template_modal.exact_path_input)
-                .map(std::path::PathBuf::from),
-            relative_path: non_empty(&self.template_modal.relative_path_input),
-            path_pattern: non_empty(&self.template_modal.path_pattern_input),
-            filename_pattern: non_empty(&self.template_modal.filename_pattern_input),
+        let match_criteria = view::MatchCriteria {
+            exact_path: non_empty(&self.view_modal.exact_path_input).map(std::path::PathBuf::from),
+            relative_path: non_empty(&self.view_modal.relative_path_input),
+            path_pattern: non_empty(&self.view_modal.path_pattern_input),
+            filename_pattern: non_empty(&self.view_modal.filename_pattern_input),
             // The columns the view's settings run on, not the query's output: the
             // next file is matched as loaded.
-            schema_columns: if self.template_modal.schema_match_enabled {
+            schema_columns: if self.view_modal.schema_match_enabled {
                 self.data_table_state.as_ref().map(|state| {
                     state
                         .source_schema()
@@ -11707,36 +11704,32 @@ impl App {
                 None
             },
             schema_types: None,
-            table: self.template_modal.table.clone(),
+            table: self.view_modal.table.clone(),
         };
         let description = {
-            let value = self.template_modal.description_input.value();
+            let value = self.view_modal.description_input.value();
             (!value.is_empty()).then(|| value.to_string())
         };
 
-        let saved = if let Some(editing_id) = self.template_modal.editing_template_id.clone() {
-            let Some(mut template) = self
-                .template_manager
-                .get_template_by_id(&editing_id)
-                .cloned()
-            else {
+        let saved = if let Some(editing_id) = self.view_modal.editing_view_id.clone() {
+            let Some(mut view) = self.view_manager.get_view_by_id(&editing_id).cloned() else {
                 return;
             };
-            template.name = name;
-            template.description = description;
-            let stored_schema = template.match_criteria.schema_columns.take();
-            template.match_criteria = match_criteria;
+            view.name = name;
+            view.description = description;
+            let stored_schema = view.match_criteria.schema_columns.take();
+            view.match_criteria = match_criteria;
             let editing_the_active_view =
-                self.active_template_id.as_deref() == Some(editing_id.as_str());
+                self.active_view_id.as_deref() == Some(editing_id.as_str());
             // The same principle as the settings below: editing an unapplied
             // view must not swap the columns it matches on for the columns of
             // whatever table happens to be open. The toggle still works — off
             // drops the criterion — and the active view follows its table.
             if !editing_the_active_view
-                && self.template_modal.schema_match_enabled
+                && self.view_modal.schema_match_enabled
                 && stored_schema.is_some()
             {
-                template.match_criteria.schema_columns = stored_schema;
+                view.match_criteria.schema_columns = stored_schema;
             }
             // The settings follow the table only while this view is the one
             // dressing it. Editing an unapplied view changes its name,
@@ -11748,7 +11741,7 @@ impl App {
                     state.get_active_sql_query(),
                     state.get_active_fuzzy_query(),
                 );
-                template.settings = template::TemplateSettings {
+                view.settings = view::ViewSettings {
                     query,
                     sql_query,
                     fuzzy_query,
@@ -11763,30 +11756,26 @@ impl App {
                     reshape_source: state.reshape_source().cloned(),
                 };
             }
-            match self.template_manager.update_template(&template) {
+            match self.view_manager.update_view(&view) {
                 Ok(()) => true,
                 Err(e) => {
                     // Deleted elsewhere, it has left the list too; otherwise the form
                     // stays, edits and all, to try again.
-                    if self
-                        .template_manager
-                        .get_template_by_id(&editing_id)
-                        .is_none()
-                    {
+                    if self.view_manager.get_view_by_id(&editing_id).is_none() {
                         self.refresh_view_list();
-                        self.template_modal.exit_form();
+                        self.view_modal.exit_form();
                     }
                     self.error_modal.show(format!("Error saving view: {e}"));
                     return;
                 }
             }
         } else {
-            self.create_template_from_current_state(name, description, match_criteria)
+            self.create_view_from_current_state(name, description, match_criteria)
                 .is_ok()
         };
         if saved {
             self.refresh_view_list();
-            self.template_modal.exit_form();
+            self.view_modal.exit_form();
         }
     }
 
@@ -11794,20 +11783,19 @@ impl App {
     fn view_score_details(&self) -> Option<(String, String)> {
         let state = self.data_table_state.as_ref()?;
         let path = self.view_dataset()?;
-        let idx = self.template_modal.table_state.selected()?;
-        let row = self.template_modal.rows.get(idx)?;
-        let template = &row.template;
+        let idx = self.view_modal.table_state.selected()?;
+        let row = self.view_modal.rows.get(idx)?;
+        let view = &row.view;
 
-        let exact_path_match = template::exact_path_matches(&template.match_criteria, path);
-        let relative_path_match = template::relative_path_matches(&template.match_criteria, path);
+        let exact_path_match = view::exact_path_matches(&view.match_criteria, path);
+        let relative_path_match = view::relative_path_matches(&view.match_criteria, path);
         let file_cols: std::collections::HashSet<&str> = state
             .source_schema()
             .iter_names()
             .map(|s| s.as_str())
             .collect();
         let exact_schema_match =
-            template
-                .match_criteria
+            view.match_criteria
                 .schema_columns
                 .as_ref()
                 .is_some_and(|required| {
@@ -11828,13 +11816,13 @@ impl App {
         } else if exact_schema_match {
             details.push_str("Exact schema: 900.0\n");
         } else {
-            if template::path_pattern_matches(&template.match_criteria, path) {
+            if view::path_pattern_matches(&view.match_criteria, path) {
                 details.push_str("Path pattern match: 50.0+\n");
             }
-            if template::filename_pattern_matches(&template.match_criteria, path) {
+            if view::filename_pattern_matches(&view.match_criteria, path) {
                 details.push_str("Filename pattern match: 30.0+\n");
             }
-            if let Some(required_cols) = &template.match_criteria.schema_columns {
+            if let Some(required_cols) = &view.match_criteria.schema_columns {
                 let matching_count = required_cols
                     .iter()
                     .filter(|col| file_cols.contains(col.as_str()))
@@ -11848,13 +11836,13 @@ impl App {
                 }
             }
         }
-        if template.usage_count > 0 {
+        if view.usage_count > 0 {
             details.push_str(&format!(
                 "Usage count: {:.1}\n",
-                (template.usage_count.min(10) as f64) * 1.0
+                (view.usage_count.min(10) as f64) * 1.0
             ));
         }
-        if let Some(last_used) = template.last_used
+        if let Some(last_used) = view.last_used
             && let Ok(duration) = std::time::SystemTime::now().duration_since(last_used)
         {
             let days_since = duration.as_secs() / 86400;
@@ -11864,21 +11852,21 @@ impl App {
                 details.push_str("Recent usage: 2.0\n");
             }
         }
-        Some((format!("Score: {}", template.name), details))
+        Some((format!("Score: {}", view.name), details))
     }
 
-    /// Set the appropriate help overlay visible (main, template, or analysis). No-op if already visible.
+    /// Set the appropriate help overlay visible (main, view, or analysis). No-op if already visible.
     fn open_help_overlay(&mut self) {
         let already = self.show_help
-            || (self.template_modal.active && self.template_modal.show_help)
+            || (self.view_modal.active && self.view_modal.show_help)
             || (self.analysis_modal.active && self.analysis_modal.show_help);
         if already {
             return;
         }
         if self.analysis_modal.active {
             self.analysis_modal.show_help = true;
-        } else if self.template_modal.active {
-            self.template_modal.show_help = true;
+        } else if self.view_modal.active {
+            self.view_modal.show_help = true;
         } else {
             self.show_help = true;
         }
@@ -12155,11 +12143,11 @@ impl App {
 
         // Main table: the column cursor keys (before help/mode blocks so they always work
         // in Normal). No is_press()/is_release() check: some terminals do not report key
-        // kind correctly. Exclude template/analysis modals so they can handle Left/Right
+        // kind correctly. Exclude view/analysis modals so they can handle Left/Right
         // themselves.
         let in_main_table = !(self.input_mode != InputMode::Normal
             || self.show_help
-            || self.template_modal.active
+            || self.view_modal.active
             || self.analysis_modal.active);
         if in_main_table
             && let Some(mv) = Self::column_cursor_key(event)
@@ -12173,15 +12161,15 @@ impl App {
         }
 
         if self.show_help
-            || (self.template_modal.active && self.template_modal.show_help)
+            || (self.view_modal.active && self.view_modal.show_help)
             || (self.analysis_modal.active && self.analysis_modal.show_help)
         {
             match event.code {
                 KeyCode::Esc => {
                     if self.analysis_modal.active && self.analysis_modal.show_help {
                         self.analysis_modal.show_help = false;
-                    } else if self.template_modal.active && self.template_modal.show_help {
-                        self.template_modal.show_help = false;
+                    } else if self.view_modal.active && self.view_modal.show_help {
+                        self.view_modal.show_help = false;
                     } else {
                         self.show_help = false;
                     }
@@ -12190,8 +12178,8 @@ impl App {
                 KeyCode::Char('?') => {
                     if self.analysis_modal.active && self.analysis_modal.show_help {
                         self.analysis_modal.show_help = false;
-                    } else if self.template_modal.active && self.template_modal.show_help {
-                        self.template_modal.show_help = false;
+                    } else if self.view_modal.active && self.view_modal.show_help {
+                        self.view_modal.show_help = false;
                     } else {
                         self.show_help = false;
                     }
@@ -12281,8 +12269,8 @@ impl App {
             return self.analysis_key(event);
         }
 
-        if self.template_modal.active {
-            return self.template_key(event);
+        if self.view_modal.active {
+            return self.view_key(event);
         }
 
         if self.input_mode == InputMode::Editing {
@@ -12655,7 +12643,7 @@ impl App {
             }
             KeyCode::Char('/') => {
                 self.input_mode = InputMode::Editing;
-                self.input_type = Some(InputType::Search);
+                self.input_type = Some(InputType::Query);
                 self.query_mode = self.opening_query_mode();
                 self.query_focus = QueryFocus::Input;
                 self.query_run_error = None;
@@ -12698,21 +12686,21 @@ impl App {
                     && let Some(dataset) = self.view_dataset()
                 {
                     match self
-                        .template_manager
+                        .view_manager
                         .get_most_relevant(dataset, state.source_schema())
                     {
-                        Some((template, why)) => {
-                            if let Err(e) = self.apply_matched_view(&template, why) {
+                        Some((view, why)) => {
+                            if let Err(e) = self.apply_matched_view(&view, why) {
                                 self.error_modal.show(format!("Error applying view: {}", e));
                             }
                         }
-                        None => self.open_template_list(),
+                        None => self.open_view_list(),
                     }
                 }
                 None
             }
             KeyCode::Char('v') => {
-                self.open_template_list();
+                self.open_view_list();
                 None
             }
             KeyCode::Char('s') => {
@@ -13526,7 +13514,7 @@ impl App {
                     let streaming = self.app_config.performance.streaming;
                     self.spawn_job(
                         Job::Analysis(jobs::AnalysisRun::default()),
-                        Some("Computing statistics..."),
+                        Some("Running analysis..."),
                         move |_| {
                             let results = source
                                 .cut(&sample.scope)
@@ -14124,16 +14112,16 @@ impl App {
                 self.job_progress(*ticket, progress);
                 None
             }
-            AppEvent::Search(query) => {
-                self.run_query(QueryMode::QStyle, query, "Applying query...");
+            AppEvent::QQuery(query) => {
+                self.run_query(QueryMode::Q, query, "Applying query...");
                 None
             }
-            AppEvent::SqlSearch(sql) => {
+            AppEvent::SqlQuery(sql) => {
                 self.run_query(QueryMode::Sql, sql, "Applying SQL query...");
                 None
             }
-            AppEvent::FuzzySearch(query) => {
-                self.run_query(QueryMode::Search, query, "Searching...");
+            AppEvent::TextQuery(query) => {
+                self.run_query(QueryMode::Text, query, "Applying Text query...");
                 None
             }
             AppEvent::Filter(statements) => {
@@ -14155,8 +14143,8 @@ impl App {
                     state.deferred(|s| s.reset());
                 }
                 self.spawn_async_collect(Self::LOADING_BUFFER);
-                // Clear active template when resetting
-                self.active_template_id = None;
+                // Clear active view when resetting
+                self.active_view_id = None;
                 None
             }
             AppEvent::ColumnOrder(order, locked_count) => {
@@ -14924,36 +14912,28 @@ impl App {
         (!hive && plain && one_file).then_some((format, facts))
     }
 
-    /// Start applying `template`. Its steps are planned here, which reads nothing; a
+    /// Start applying `view`. Its steps are planned here, which reads nothing; a
     /// step that cannot be planned fails here and changes nothing. The reads — a pivot,
     /// then the view's first rows — run in the background, and the view is installed
     /// when they are in. One that fails there puts the view before it back (#400).
-    fn apply_template(&mut self, template: &Template) -> Result<()> {
-        self.apply_view(template, None)
+    fn apply_view(&mut self, view: &SavedView) -> Result<()> {
+        self.apply_view_with(view, None)
     }
 
-    /// [`Self::apply_template`], for a view applied because its criteria fit as `why`
+    /// [`Self::apply_view`], for a view applied because its criteria fit as `why`
     /// says: once its rows are in, a flash names it and the reason.
-    fn apply_matched_view(
-        &mut self,
-        template: &Template,
-        why: template::MatchReason,
-    ) -> Result<()> {
-        self.apply_view(template, Some(why))
+    fn apply_matched_view(&mut self, view: &SavedView, why: view::MatchReason) -> Result<()> {
+        self.apply_view_with(view, Some(why))
     }
 
-    fn apply_view(
-        &mut self,
-        template: &Template,
-        why: Option<template::MatchReason>,
-    ) -> Result<()> {
+    fn apply_view_with(&mut self, view: &SavedView, why: Option<view::MatchReason>) -> Result<()> {
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
         let Some(state) = self.data_table_state.as_mut() else {
             return Ok(());
         };
-        match state.try_transition(|s| Self::replay_view(s, &template.settings, None))? {
+        match state.try_transition(|s| Self::replay_view(s, &view.settings, None))? {
             (Replayed::Planned, rollback) => {
-                self.view_planned(template, rollback, why);
+                self.view_planned(view, rollback, why);
                 Ok(())
             }
             (Replayed::Pivot(job), rollback) => {
@@ -14962,8 +14942,8 @@ impl App {
                 // Past any load-ahead for the view on screen, whose rows must not land
                 // in the one that replaces it.
                 self.jobs.try_advance();
-                let view = Job::ViewPivot(Box::new((template.clone(), why)));
-                self.spawn_job(view, Some(Self::APPLYING_VIEW), move |_| {
+                let pivot_view = Job::ViewPivot(Box::new((view.clone(), why)));
+                self.spawn_job(pivot_view, Some(Self::APPLYING_VIEW), move |_| {
                     let pivoted = job
                         .run()
                         .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
@@ -14979,24 +14959,24 @@ impl App {
     /// back and the view marked applied before it.
     fn view_planned(
         &mut self,
-        template: &Template,
+        view: &SavedView,
         rollback: crate::widgets::datatable::ViewRollback,
-        why: Option<template::MatchReason>,
+        why: Option<view::MatchReason>,
     ) {
         if let Some(path) = &self.path {
             use crate::logging::LogFailure;
-            self.template_manager
-                .record_use(&template.id, path)
+            self.view_manager
+                .record_use(&view.id, path)
                 .or_log("record a view's use");
         }
-        let previous = self.active_template_id.replace(template.id.clone());
+        let previous = self.active_view_id.replace(view.id.clone());
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
         self.query_running = Some(QueryRun {
             origin: RunOrigin::View {
                 previous,
-                matched: why.map(|why| (template.name.clone(), why)),
+                matched: why.map(|why| (view.name.clone(), why)),
             },
             frame: state.len_generation(),
             rollback,
@@ -15009,7 +14989,7 @@ impl App {
             // Nothing to read: the view has no rows. Applied on open, it was the
             // open's last step.
             if let Some(why) = why {
-                self.flash_view_applied(&template.name, why);
+                self.flash_view_applied(&view.name, why);
             }
             self.query_running = None;
             self.busy = false;
@@ -15374,10 +15354,10 @@ impl App {
             Answer::ViewPivoted(pivoted) => {
                 // Superseded means the view was cancelled or something replaced it, which
                 // owns the wait.
-                let Job::ViewPivot(view) = job else {
+                let Job::ViewPivot(pivot) = job else {
                     return None;
                 };
-                let (template, why) = *view;
+                let (view, why) = *pivot;
                 if !current {
                     return None;
                 }
@@ -15385,13 +15365,13 @@ impl App {
                     // Nothing changed while the pivot was read, so the steps before
                     // it plan as they did; this time the pivot is in hand.
                     state
-                        .try_transition(|s| Self::replay_view(s, &template.settings, Some(pivoted)))
+                        .try_transition(|s| Self::replay_view(s, &view.settings, Some(pivoted)))
                         .map(|(_, rollback)| rollback)
                         .map_err(|e| e.to_string())
                 });
                 match planned {
                     // The wait passes to the read of its rows.
-                    Some(Ok(rollback)) => self.view_planned(&template, rollback, why),
+                    Some(Ok(rollback)) => self.view_planned(&view, rollback, why),
                     Some(Err(message)) => self.view_pivot_failed(&message),
                     None => {}
                 }
@@ -15951,7 +15931,7 @@ impl App {
         self.count_after_paint = run.count_after_paint;
         self.len_count_failed = run.len_count_failed;
         if let RunOrigin::View { previous, .. } = &run.origin {
-            self.active_template_id = previous.clone();
+            self.active_view_id = previous.clone();
         }
         run.origin
     }
@@ -15972,7 +15952,7 @@ impl App {
     /// Stops at the first step that fails, and at a pivot unless `pivoted` holds it.
     fn replay_view(
         state: &mut DataTableState,
-        settings: &template::TemplateSettings,
+        settings: &view::ViewSettings,
         pivoted: Option<DataFrame>,
     ) -> Result<Replayed> {
         if settings.pivot.is_some() || settings.melt.is_some() {
@@ -16033,7 +16013,7 @@ impl App {
         })
     }
 
-    /// A view's query: SQL or q-style (at most one is stored), then a search.
+    /// A view's query: SQL or q (at most one is stored), then a Text query.
     fn replay_query(
         state: &mut DataTableState,
         sql: Option<&str>,
@@ -16778,7 +16758,7 @@ impl App {
             .map(|selected| state.start_row() + selected)
             .and_then(|index| Some((index, state.drill_row(index)?)));
         match drill {
-            None => self.flash_note("Nothing to drill into".to_string()),
+            None => self.flash_note("No group to drill down into".to_string()),
             Some((group_index, DrillRow::Buffered(row))) => self.drill_into(group_index, &row),
             Some((group_index, DrillRow::Read(lf))) => {
                 let streaming = state.polars_streaming();
@@ -17763,19 +17743,19 @@ impl App {
         self.clipboard = Some(destination);
     }
 
-    pub fn create_template_from_current_state(
+    pub fn create_view_from_current_state(
         &mut self,
         name: String,
         description: Option<String>,
-        match_criteria: template::MatchCriteria,
-    ) -> Result<template::Template> {
+        match_criteria: view::MatchCriteria,
+    ) -> Result<view::SavedView> {
         let settings = if let Some(state) = &self.data_table_state {
             let (query, sql_query, fuzzy_query) = active_query_settings(
                 state.get_active_query(),
                 state.get_active_sql_query(),
                 state.get_active_fuzzy_query(),
             );
-            template::TemplateSettings {
+            view::ViewSettings {
                 query,
                 sql_query,
                 fuzzy_query,
@@ -17790,7 +17770,7 @@ impl App {
                 reshape_source: state.reshape_source().cloned(),
             }
         } else {
-            template::TemplateSettings {
+            view::ViewSettings {
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -17806,13 +17786,13 @@ impl App {
             }
         };
 
-        self.template_manager
-            .create_template(name, description, match_criteria, settings)
+        self.view_manager
+            .create_view(name, description, match_criteria, settings)
     }
 
     /// The query prompt's mode while it is open.
     pub fn query_prompt_mode(&self) -> Option<QueryMode> {
-        (self.input_mode == InputMode::Editing && self.input_type == Some(InputType::Search))
+        (self.input_mode == InputMode::Editing && self.input_type == Some(InputType::Query))
             .then_some(self.query_mode)
     }
 
@@ -17823,9 +17803,9 @@ impl App {
             if !state.get_active_sql_query().trim().is_empty() {
                 Some(QueryMode::Sql)
             } else if !state.get_active_fuzzy_query().trim().is_empty() {
-                Some(QueryMode::Search)
+                Some(QueryMode::Text)
             } else if !state.get_active_query().trim().is_empty() {
-                Some(QueryMode::QStyle)
+                Some(QueryMode::Q)
             } else {
                 None
             }
@@ -17891,8 +17871,8 @@ impl App {
     pub fn query_prompt_text(&self) -> Option<&str> {
         Some(match self.query_prompt_mode()? {
             QueryMode::Sql => self.sql_input.value(),
-            QueryMode::Search => self.fuzzy_input.value(),
-            QueryMode::QStyle => self.query_input.value(),
+            QueryMode::Text => self.fuzzy_input.value(),
+            QueryMode::Q => self.query_input.value(),
         })
     }
 
@@ -17930,8 +17910,8 @@ impl App {
         // A query that cannot be planned changes nothing and leaves its error showing.
         state.deferred(|s| match mode {
             QueryMode::Sql => s.sql_query(text.to_string()),
-            QueryMode::QStyle => s.query(text.to_string()),
-            QueryMode::Search => s.fuzzy_search(text.to_string()),
+            QueryMode::Q => s.query(text.to_string()),
+            QueryMode::Text => s.fuzzy_search(text.to_string()),
         });
         if state.error().is_some() {
             return;
@@ -17982,9 +17962,8 @@ impl App {
         let mode = self.query_mode;
         self.sql_input.set_focused(input && mode == QueryMode::Sql);
         self.fuzzy_input
-            .set_focused(input && mode == QueryMode::Search);
-        self.query_input
-            .set_focused(input && mode == QueryMode::QStyle);
+            .set_focused(input && mode == QueryMode::Text);
+        self.query_input.set_focused(input && mode == QueryMode::Q);
     }
 
     /// Esc from anywhere in the prompt: nothing runs and nothing typed survives.
@@ -18024,9 +18003,9 @@ impl App {
         let (title, content) = match self.input_mode {
             InputMode::Normal => ("Table Help", help_strings::main_view()),
             InputMode::Editing => match self.input_type {
-                Some(InputType::Search) => ("Query Help", help_strings::query()),
+                Some(InputType::Query) => ("Query Help", help_strings::query()),
                 Some(InputType::Find) => ("Find Help", help_strings::find()),
-                _ => ("Go to Line", help_strings::go_to_line()),
+                _ => ("Go to Row", help_strings::go_to_line()),
             },
             InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
             InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),
@@ -18093,13 +18072,13 @@ impl Widget for &mut App {
             crate::render::overlays::render_error_modal(area, buf, &mut self.error_modal, &ctx);
         }
         if self.show_help
-            || (self.template_modal.active && self.template_modal.show_help)
+            || (self.view_modal.active && self.view_modal.show_help)
             || (self.analysis_modal.active && self.analysis_modal.show_help)
         {
             let (title, text): (String, String) =
                 if self.analysis_modal.active && self.analysis_modal.show_help {
                     crate::render::analysis_view::help_title_and_text(&self.analysis_modal)
-                } else if self.template_modal.active {
+                } else if self.view_modal.active {
                     ("Views Help".to_string(), help_strings::views().to_string())
                 } else {
                     let (t, txt) = self.get_help_info();
@@ -18705,7 +18684,7 @@ fn run_impl(
 
     // The saved views are read on a worker from here; the first thing that needs them
     // waits for the rest of the read, if any.
-    let templates = Templates::read_in_background();
+    let views = Views::read_in_background();
 
     // Install color_eyre at most once per process (e.g. first datui.view() in Python).
     // Subsequent run() calls skip install and reuse the result; no error-message detection.
@@ -18896,11 +18875,11 @@ fn run_impl(
         let _ = crossterm::execute!(std::io::stdout(), pointer::EnableMouse);
     }
 
-    let mut app = App::new_with_templates(tx.clone(), rt_handle, theme, config, templates);
+    let mut app = App::new_with_views(tx.clone(), rt_handle, theme, config, views);
     if let Some(out) = passed {
         app.pass_stdout_to(out);
     }
-    app.startup_template = opts.template.clone();
+    app.startup_view = opts.view.clone();
     // A developer's overlay: an environment variable, not a flag.
     let debug_env = std::env::var_os("DATUI_DEBUG").is_some_and(|v| !v.is_empty() && v != "0");
     if opts.debug || debug_env {

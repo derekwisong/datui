@@ -7,8 +7,8 @@ Navigation:
   Ctrl+↑ / Ctrl+↓:  Previous or next section
   PgUp/PgDn:        Move a screenful, stopping at the first and last
   Home / End:       The first or last row
-  ← / →:            Fold or unfold a section; → on a directory, a file of
-                    tables or a file of spec variants goes inside it
+  ← / →:            Fold or unfold a section; → on a directory or a file of
+                    tables goes inside it
   Enter:            What the control bar says on this row: "Open all" reads a
                     whole directory as one table, "Inside" steps into it,
                     "Open" loads a file, "Look" finds out first. On a section
@@ -28,7 +28,7 @@ Navigation:
   Wheel:            Move the selection three rows, stopping at the ends
 
 Finding:
-  (type):           Filter by name or column; fuzzy, so "sal" finds "sales".
+  (type):           Narrow by name or column; fuzzy, so "sal" finds "sales".
                     What you open often ranks first. Typing also searches
                     below the directory you are inside and the listed bucket
                     names; matches appear under "Found"
@@ -89,10 +89,10 @@ Reading a row:
   binary, and Enter on one of those shows its bytes in the hex view. A SQLite
   database's label counts its tables ("3 tables"); one of several lists
   them inside, a row each, and Enter opens one. A workbook, an NMEA log
-  or an ELF file opens its first sheet, fixes or symbols on Enter; →
-  lists them all ("2 sheets"). A Hugging Face cache lists its splits
-  inside it, above its files. A file a spec reads as
-  several variants opens whole on Enter; → lists its variants, and Enter
+  or an ELF file opens its first worksheet, fixes or symbols on Enter; →
+  lists them all ("2 tables"). A Hugging Face cache lists its splits, as
+  tables, inside it, above its files. A file a spec reads as
+  several tables opens whole on Enter; → lists its tables, and Enter
   on one opens it alone. The Notes tab says what a
   read had to decide. In a collection, "dataset" marks a remote directory
   not listed until you enter it, and "missing" a local path with nothing

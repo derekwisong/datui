@@ -1,6 +1,6 @@
 # Query Syntax
 
-The grammar of the q-style mode of the query prompt: a subset of the q
+The grammar of the q mode of the query prompt: a subset of the q
 language, evaluated right to left. For a walkthrough with
 examples, see [Querying Data](../user-guide/querying-data.md).
 
@@ -87,7 +87,7 @@ See [Where clause](#where-clause--and-).
 
 - `by col1, col2` — group by those columns; non-group columns become list columns, and the UI supports drill-down
 - `by region, total: sales + tax` — group by a column and a computed expression
-- `select avg salary, min id by department` — aggregations per group; <kbd>Enter</kbd> on a row drills into the rows behind it
+- `select avg salary, min id by department` — aggregations per group; <kbd>Enter</kbd> on a row drills down to the rows behind it
 
 By uses the same comma-separated list and `name : expression` rules as
 select. Aggregation functions (`avg`, `min`, `max`, `count`, `sum`, `std`,

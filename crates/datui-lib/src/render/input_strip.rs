@@ -12,8 +12,8 @@ use ratatui::widgets::{Paragraph, Tabs, Widget};
 fn mode_hint(mode: QueryMode) -> &'static str {
     match mode {
         QueryMode::Sql => "Table: df; Alt+Enter for a new line",
-        QueryMode::Search => "Every word's letters in order, in any text column",
-        QueryMode::QStyle => "Subset of q, evaluated right to left; F1 syntax",
+        QueryMode::Text => "Every word's letters in order, in any text column",
+        QueryMode::Q => "Subset of q, evaluated right to left; F1 syntax",
     }
 }
 
@@ -107,8 +107,8 @@ pub fn render(
     ctx: &RenderContext,
 ) {
     let title = match app.input_type {
-        Some(crate::InputType::Search) => "Query",
-        Some(crate::InputType::GoToLine) => "Go to line",
+        Some(crate::InputType::Query) => "Query",
+        Some(crate::InputType::GoToLine) => "Go to row",
         Some(crate::InputType::Find) => "Find",
         None => "Input",
     };
@@ -135,7 +135,7 @@ pub fn render(
         return;
     }
 
-    if app.input_type != Some(crate::InputType::Search) {
+    if app.input_type != Some(crate::InputType::Query) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -200,7 +200,7 @@ pub fn render(
             .render(tab_row[1], buf);
     }
 
-    let count = (mode == QueryMode::Search)
+    let count = (mode == QueryMode::Text)
         .then(|| app.search_match_count())
         .flatten()
         .map(|n| match n {
@@ -211,8 +211,8 @@ pub fn render(
 
     let input = match mode {
         QueryMode::Sql => &app.sql_input,
-        QueryMode::Search => &app.fuzzy_input,
-        QueryMode::QStyle => &app.query_input,
+        QueryMode::Text => &app.fuzzy_input,
+        QueryMode::Q => &app.query_input,
     };
     input.render(rows[2], buf);
     if mode == QueryMode::Sql && input.is_empty() {
@@ -533,7 +533,7 @@ mod tests {
     fn prompt() -> crate::App {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
-        app.input_type = Some(crate::InputType::Search);
+        app.input_type = Some(crate::InputType::Query);
         app
     }
 
@@ -554,7 +554,7 @@ mod tests {
         }
         // At 40 columns the hint has no room and is dropped whole, never
         // clipped mid-sentence.
-        app.query_mode = QueryMode::QStyle;
+        app.query_mode = QueryMode::Q;
         assert!(!draw(&mut app, 40).concat().contains("right to left"));
         assert!(draw(&mut app, 80).concat().contains("right to left"));
     }
@@ -562,13 +562,13 @@ mod tests {
     /// SQL comes first, and the tabs read in the documented order.
     #[cfg(feature = "sql")]
     #[test]
-    fn the_modes_read_sql_search_q_style() {
+    fn the_modes_read_sql_text_q() {
         let mut app = prompt();
         let tab_row = &draw(&mut app, 80)[1];
         let sql = tab_row.find("SQL").unwrap();
-        let search = tab_row.find("Search").unwrap();
-        let q = tab_row.find("q-style").unwrap();
-        assert!(sql < search && search < q, "{tab_row:?}");
+        let text = tab_row.find("Text").unwrap();
+        let q = tab_row.find(" q ").unwrap();
+        assert!(sql < text && text < q, "{tab_row:?}");
     }
 
     /// One border: the Surface's frame, nothing box-drawn inside it.

@@ -12,10 +12,10 @@ files and cloud storage, and works with Polars frames in Python.
 |---|---|
 | Open a file, a directory, or a compressed export | [Loading data](user-guide/loading-data.md) |
 | Connect to S3, GCS, Azure or an HTTP URL | [Remote data](user-guide/remote-data.md) |
-| Find recent files or browse buckets | [Home screen](user-guide/home-screen.md) · [Cloud browser](user-guide/cloud-browser.md) |
+| Find recent files or browse buckets | [Home screen](user-guide/home-screen.md) · [Cloud sources](user-guide/cloud-browser.md) |
 | Filter rows or write SQL | [Querying](user-guide/querying-data.md) · [Sort and filter](user-guide/filtering-sorting.md) |
 | Make a chart or reshape a table | [Charting](user-guide/charting.md) · [Pivot and melt](user-guide/reshaping.md) |
-| Check missing values or schema changes | [Data quality](user-guide/data-quality.md) · [Dataset info](user-guide/dataset-info.md) |
+| Check missing values or schema changes | [Data quality](user-guide/data-quality.md) · [Info panel](user-guide/dataset-info.md) |
 | Copy, export, or reuse a result | [Clipboard](user-guide/copying.md) · [Export](user-guide/exporting-data.md) · [Views](user-guide/views.md) |
 | Explore a DataFrame in Python | [Python module](user-guide/python-module.md) |
 | Change defaults or colors | [Configure datui](user-guide/configuration.md) · [Settings reference](reference/settings.md) |

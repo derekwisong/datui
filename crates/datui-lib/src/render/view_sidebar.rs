@@ -4,8 +4,8 @@
 
 use crate::render::context::RenderContext;
 use crate::render::layout::centered_rect_fixed;
-use crate::widgets::template_modal::{FormFocus, TemplateModal, TemplateModalMode};
 use crate::widgets::ui::{FormRow, FormValue, HintBar, SectionRule, Surface};
+use crate::widgets::view_modal::{FormFocus, ViewModal, ViewModalMode};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -26,13 +26,13 @@ const REASON_WIDTH: usize = 14;
 pub fn render(
     area: Rect,
     buf: &mut Buffer,
-    modal: &mut TemplateModal,
-    active_template_id: Option<&str>,
+    modal: &mut ViewModal,
+    active_view_id: Option<&str>,
     ctx: &RenderContext,
 ) {
     match modal.mode {
-        TemplateModalMode::List => render_list(area, buf, modal, active_template_id, ctx),
-        TemplateModalMode::Create | TemplateModalMode::Edit => render_form(area, buf, modal, ctx),
+        ViewModalMode::List => render_list(area, buf, modal, active_view_id, ctx),
+        ViewModalMode::Create | ViewModalMode::Edit => render_form(area, buf, modal, ctx),
     }
 
     if modal.delete_confirm {
@@ -90,8 +90,8 @@ fn fit(text: &str, width: usize) -> String {
 fn render_list(
     area: Rect,
     buf: &mut Buffer,
-    modal: &mut TemplateModal,
-    active_template_id: Option<&str>,
+    modal: &mut ViewModal,
+    active_view_id: Option<&str>,
     ctx: &RenderContext,
 ) {
     let g = crate::glyphs::get();
@@ -122,7 +122,7 @@ fn render_list(
             );
     }
 
-    if modal.rows.is_empty() && modal.broken_templates.is_empty() {
+    if modal.rows.is_empty() && modal.broken_views.is_empty() {
         Paragraph::new("No saved views. s saves what the table shows now.")
             .style(Style::default().fg(ctx.dimmed))
             .render(
@@ -160,7 +160,7 @@ fn render_list(
         ..content
     };
     let max_score = modal.rows.iter().map(|row| row.score).fold(0.0, f64::max);
-    let total = modal.rows.len() + modal.broken_templates.len();
+    let total = modal.rows.len() + modal.broken_views.len();
     let selected = modal.table_state.selected().unwrap_or(0);
     let height = list_area.height as usize;
     let offset = selected.saturating_sub(height.saturating_sub(1));
@@ -182,7 +182,7 @@ fn render_list(
         }
 
         if let Some(row) = modal.rows.get(i) {
-            let is_active = active_template_id.is_some_and(|id| id == row.template.id);
+            let is_active = active_view_id.is_some_and(|id| id == row.view.id);
             let (mark, mark_style) = score_mark(row.score, max_score, ctx);
             let check = if is_active { g.check } else { " " };
             let name_style = if is_cursor {
@@ -199,7 +199,7 @@ fn render_list(
                 None => Span::raw(" ".repeat(REASON_WIDTH)),
             };
             let description = row
-                .template
+                .view
                 .description
                 .as_deref()
                 .unwrap_or("")
@@ -214,7 +214,7 @@ fn render_list(
                 Span::raw(" "),
                 Span::styled(check, Style::default().fg(ctx.accent)),
                 Span::raw(" "),
-                Span::styled(fit(&row.template.name, NAME_WIDTH), name_style),
+                Span::styled(fit(&row.view.name, NAME_WIDTH), name_style),
                 Span::raw(" "),
                 reason_span,
                 Span::raw(" "),
@@ -227,7 +227,7 @@ fn render_list(
                     Style::default()
                 })
                 .render(row_area, buf);
-        } else if let Some(broken) = modal.broken_templates.get(i - modal.rows.len()) {
+        } else if let Some(broken) = modal.broken_views.get(i - modal.rows.len()) {
             let line = Line::from(vec![
                 Span::raw(" "),
                 Span::styled(g.warning, Style::default().fg(ctx.warning)),
@@ -244,8 +244,8 @@ fn render_list(
     }
 }
 
-fn render_form(area: Rect, buf: &mut Buffer, modal: &mut TemplateModal, ctx: &RenderContext) {
-    let title = if modal.mode == TemplateModalMode::Edit {
+fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &RenderContext) {
+    let title = if modal.mode == ViewModalMode::Edit {
         "Edit View"
     } else {
         "Save View"
@@ -419,16 +419,11 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut TemplateModal, ctx: &Re
     }
 }
 
-fn render_delete_confirm(
-    area: Rect,
-    buf: &mut Buffer,
-    modal: &mut TemplateModal,
-    ctx: &RenderContext,
-) {
-    let Some(template) = modal.selected_template() else {
+fn render_delete_confirm(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &RenderContext) {
+    let Some(view) = modal.selected_view() else {
         return;
     };
-    let message = format!("Delete \"{}\"? This cannot be undone.", template.name);
+    let message = format!("Delete \"{}\"? This cannot be undone.", view.name);
     const WIDTH: u16 = 52;
     const HEIGHT: u16 = 6;
     let confirm_area = centered_rect_fixed(area, WIDTH, HEIGHT);
@@ -443,12 +438,7 @@ fn render_delete_confirm(
         .render(content, buf);
 }
 
-fn render_score_details(
-    area: Rect,
-    buf: &mut Buffer,
-    modal: &mut TemplateModal,
-    ctx: &RenderContext,
-) {
+fn render_score_details(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &RenderContext) {
     let Some((title, body)) = &modal.score_details else {
         return;
     };
@@ -468,12 +458,12 @@ fn render_score_details(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::template::{MatchCriteria, MatchReason, Template, TemplateSettings};
-    use crate::widgets::template_modal::ViewRow;
+    use crate::view::{MatchCriteria, MatchReason, SavedView, ViewSettings};
+    use crate::widgets::view_modal::ViewRow;
     use std::time::SystemTime;
 
-    fn a_template(name: &str, description: Option<&str>) -> Template {
-        Template {
+    fn a_view(name: &str, description: Option<&str>) -> SavedView {
+        SavedView {
             id: name.to_string(),
             name: name.to_string(),
             description: description.map(str::to_string),
@@ -490,7 +480,7 @@ mod tests {
                 schema_types: None,
                 table: None,
             },
-            settings: TemplateSettings {
+            settings: ViewSettings {
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -507,17 +497,17 @@ mod tests {
         }
     }
 
-    fn list_modal() -> TemplateModal {
-        let mut modal = TemplateModal::new();
+    fn list_modal() -> ViewModal {
+        let mut modal = ViewModal::new();
         modal.active = true;
         modal.rows = vec![
             ViewRow {
-                template: a_template("salary review", Some("Sorted by salary")),
+                view: a_view("salary review", Some("Sorted by salary")),
                 score: 2000.0,
                 reason: Some(MatchReason::SameFile),
             },
             ViewRow {
-                template: a_template("quarterly report", None),
+                view: a_view("quarterly report", None),
                 score: 40.0,
                 reason: None,
             },
@@ -526,7 +516,7 @@ mod tests {
         modal
     }
 
-    fn render_to_rows(modal: &mut TemplateModal, width: u16, height: u16) -> Vec<String> {
+    fn render_to_rows(modal: &mut ViewModal, width: u16, height: u16) -> Vec<String> {
         let ctx = RenderContext::for_test();
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
@@ -594,7 +584,7 @@ mod tests {
     #[test]
     fn the_form_collapses_the_matching_section() {
         let mut modal = list_modal();
-        modal.mode = TemplateModalMode::Create;
+        modal.mode = ViewModalMode::Create;
         modal.name_input.set_value("salaries");
         modal.schema_match_enabled = true;
 
@@ -650,7 +640,7 @@ mod tests {
         for (w, h) in [(0, 0), (5, 3), (12, 4), (30, 6)] {
             let mut modal = list_modal();
             render_to_rows(&mut modal, w, h);
-            modal.mode = TemplateModalMode::Create;
+            modal.mode = ViewModalMode::Create;
             modal.matching_expanded = true;
             render_to_rows(&mut modal, w, h);
         }

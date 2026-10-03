@@ -367,7 +367,7 @@ fn table_picks_an_array_stored_or_compressed() {
     );
     let message = app.error_message().expect("refused");
     assert!(
-        message.contains("its arrays: prices, grid, trades"),
+        message.contains("its tables: prices, grid, trades"),
         "{message}"
     );
 }

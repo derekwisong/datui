@@ -38,7 +38,7 @@ Rows:
   columns the ASCII column is left out. A fixed size wider than the screen
   shows the part of the row the cursor is in.
 
-The inspector:
+The byte inspector:
   i / Enter:        Show or hide it. Beside the bytes when there is room for
                     it and 16 bytes a row, over them when there is not
   v:                Mark from the cursor; move to mark a range, and the

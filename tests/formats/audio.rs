@@ -264,7 +264,7 @@ fn audio_with_no_extension_is_known_by_its_first_bytes() {
 #[test]
 fn a_query_reads_the_samples_it_needs() {
     let (mut app, rx) = open("tone.wav");
-    app.event(&AppEvent::Search(
+    app.event(&AppEvent::QQuery(
         "select ch2 where ch2 = 32767".to_string(),
     ));
     drain_events(&mut app, &rx);

@@ -1,7 +1,7 @@
 //! Display-time number formatting: digit grouping (thousands separators),
 //! decimal separator choice, and optional fixed float precision.
 //!
-//! **This is display-only.** Exports, queries, filter values, templates, and
+//! **This is display-only.** Exports, queries, filter values, views, and
 //! group-by key strings always use raw values — see [`format_any_value`] call
 //! sites. Nothing here is ever fed back into Polars.
 //!

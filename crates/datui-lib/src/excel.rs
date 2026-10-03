@@ -58,7 +58,7 @@ pub fn sheets(path: &Path) -> Result<Vec<Table>> {
         .filter_map(|attrs| {
             Some(Table {
                 name: attr(&attrs, "name")?,
-                kind: "sheet".to_string(),
+                kind: "worksheet".to_string(),
                 internal: attr(&attrs, "state").is_some_and(|s| s != "visible"),
                 columns: Vec::new(),
             })
@@ -203,7 +203,7 @@ pub fn detail<RS: std::io::Read + std::io::Seek>(
         }
         list.push((sheet.name.clone(), MetaValue::Text(said.join(", "))));
     }
-    let mut first = count(meta.len() as u64, "sheet", "sheets");
+    let mut first = count(meta.len() as u64, "worksheet", "worksheets");
     let middot = crate::glyphs::get().middot;
     if hidden > 0 {
         first.push_str(&format!(" {middot} {hidden} hidden"));
@@ -217,7 +217,7 @@ pub fn detail<RS: std::io::Read + std::io::Seek>(
     Detail {
         tab: crate::text_formats::tab(FileFormat::Excel),
         lines: vec![first, format!("Opened: {opened}")],
-        list_title: "Sheets",
+        list_title: "Worksheets",
         list,
         ..Default::default()
     }

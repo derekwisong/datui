@@ -2077,7 +2077,7 @@ fn a_cancelled_read_waits_out_its_worker_and_a_replaced_one_does_not() {
 
     let run = app.job_for_tests(
         Job::Analysis(crate::jobs::AnalysisRun::default()),
-        Some("Computing statistics..."),
+        Some("Running analysis..."),
     );
     app.jobs.advance();
     assert!(
@@ -2222,7 +2222,7 @@ fn stale_analysis_answers_are_ignored() {
         .map(|_| {
             app.job_for_tests(
                 Job::Analysis(crate::jobs::AnalysisRun::default()),
-                Some("Computing statistics..."),
+                Some("Running analysis..."),
             )
         })
         .collect();
@@ -2251,7 +2251,7 @@ fn a_cancelled_job_does_not_hold_the_generation() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     let old = app.job_for_tests(
         Job::Analysis(crate::jobs::AnalysisRun::default()),
-        Some("Computing statistics..."),
+        Some("Running analysis..."),
     );
     app.jobs.advance();
     assert!(
@@ -2262,7 +2262,7 @@ fn a_cancelled_job_does_not_hold_the_generation() {
 
     let current = app.job_for_tests(
         Job::Analysis(crate::jobs::AnalysisRun::default()),
-        Some("Computing statistics..."),
+        Some("Running analysis..."),
     );
     assert!(app.work_a_bump_would_strand());
 
@@ -2446,8 +2446,8 @@ fn a_failure_leaves_other_work_alone() {
 
     // An analysis is computing; a load-ahead beside it, on the same generation,
     // dies. Its own record goes, and nothing else.
-    let running = app.job_for_tests(analysis(), Some("Computing statistics..."));
-    app.analysis_modal.computing = Some(AnalysisProgress::new("Computing statistics"));
+    let running = app.job_for_tests(analysis(), Some("Running analysis..."));
+    app.analysis_modal.computing = Some(AnalysisProgress::new("Running analysis"));
     let ahead = app.job_for_tests(Job::Rows(InflightCollect::for_tests(0, 100)), None);
     fail(&mut app, ahead);
     untouched(&app, "a load-ahead");
@@ -3970,7 +3970,7 @@ fn a_staged_open_joins_what_its_footers_found() {
     );
 }
 
-/// Only one query type is returned; SQL overrides fuzzy over DSL. Used when saving templates.
+/// Only one query type is returned; SQL overrides fuzzy over DSL. Used when saving views.
 #[test]
 fn test_active_query_settings_only_one_set() {
     use super::active_query_settings;
@@ -4007,7 +4007,7 @@ mod quality_sample_tests;
 
 mod chart_prepare_tests;
 
-mod template_rollback_tests;
+mod view_rollback_tests;
 
 #[cfg(feature = "sql")]
 mod view_matching_tests;

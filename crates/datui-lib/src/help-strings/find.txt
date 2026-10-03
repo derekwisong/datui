@@ -10,9 +10,9 @@ Find a cell in the view.
   Esc:              Cancel
   F1:               Show this help
 
-Case is ignored until the pattern has a capital letter. The view is
-searched as it stands — query, filters, sort, the columns shown — and is
-never changed; each value is matched as text. Binary and nested columns
+Case is ignored until the pattern has a capital letter. Find reads the
+view as it stands — query, filters, sort, the columns shown — and never
+changes it; each value is matched as text. Binary and nested columns
 are skipped.
 
 At the table:

@@ -358,9 +358,7 @@ impl Entry {
             }
             EntryKind::File if self.cost.tables.is_some() => {
                 let n = self.cost.tables.unwrap_or_default();
-                let (one, many) =
-                    data_format(&self.path).map_or(("table", "tables"), crate::members::noun);
-                format!("{n} {}", if n == 1 { one } else { many }).into()
+                format!("{n} {}", if n == 1 { "table" } else { "tables" }).into()
             }
             // A file named for what it holds rather than by its file name, as a
             // collection names one: its format, which the name no longer says.

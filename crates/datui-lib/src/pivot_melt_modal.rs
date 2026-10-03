@@ -136,7 +136,7 @@ pub struct PivotSpec {
     pub pivot_column: String,
     pub value_column: String,
     pub aggregation: PivotAggregation,
-    /// Deprecated: new columns are always sorted alphabetically. Kept for template deserialization.
+    /// Deprecated: new columns are always sorted alphabetically. Kept for view deserialization.
     #[serde(default)]
     #[serde(skip_serializing)]
     #[allow(dead_code)]

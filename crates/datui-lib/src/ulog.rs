@@ -756,7 +756,6 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
         tables.clone(),
         wanted,
         path,
-        crate::FileFormat::Ulog,
         " The log has no data messages.",
     )? {
         crate::sqlite::Pick::One(table) => table.name,

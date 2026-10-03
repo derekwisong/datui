@@ -464,7 +464,7 @@ cache directory and makes every pass over that copy:
 
 | Condition | Why |
 |---|---|
-| The scope is the whole source, or a view with no filter, query, search, reshape or drill that shows every column | A narrower scope's passes may read less than the whole objects |
+| The scope is the whole source, or a view with no filter, query, reshape or drill-down that shows every column | A narrower scope's passes may read less than the whole objects |
 | No binary column | Binary columns are never read, and a copy would fetch them |
 | Every object's size is known from the listing or the footer read that opened it | The budget is checked before Run, with no request |
 | The total fits `[analysis] quality_local_copy` (`"2GiB"` by default; 0 never copies) and the free disk in the cache directory | The copy never takes more than either |
@@ -558,7 +558,7 @@ changed in meaning is a new version.
 | `format`, `version` | `datui-data-quality-report`, `1` |
 | `datui_version` | The datui that wrote it |
 | `exported_at` | When the file was written, RFC 3339 in UTC; not when the data was read |
-| `source` | `location` (the URL as opened, or the local path made absolute), `remote`, `format`, `files` and up to 100 `file_names` for a dataset of several files, `bytes` and `modified` (RFC 3339, UTC) of a local file as the run that read the rows began (a report remade from rows a run kept keeps that run's), and `view`: the query, SQL, search, filters and reshape a view scope measured. No content hash: that would be a read. `null` for a report no run labeled |
+| `source` | `location` (the URL as opened, or the local path made absolute), `remote`, `format`, `files` and up to 100 `file_names` for a dataset of several files, `bytes` and `modified` (RFC 3339, UTC) of a local file as the run that read the rows began (a report remade from rows a run kept keeps that run's), and `view`: the query (q, SQL or Text), filters and reshape a view scope measured. No content hash: that would be a read. `null` for a report no run labeled |
 | `setup` | `scope`, `values` (`sample`, `full` or `metadata`), `sample` (`method`, `rows`, `seed`), `grain`, `comparison`, `baseline_segment`, `time_formats` (`column`, `kind`, `format`), `time_roles` (`role`, `column`), `intervals`, `window_by`, `latency_threshold_seconds`, `intent` (`key`, and per column `column`, `required`, `allowed`, `min`, `max`, `read_as`), and `expected` (`weekdays`, `from`, `before`, as typed), `null` when no windows are stated |
 | `run` | `precision` (`exact`, `sampled` or `metadata`), `total_rows`, `evaluated_rows`, `per_value`, `source_files`, `footers_read`, and `reads` (`source_reads`, `counted`, `rows_traversed`, and `local_copy` (`bytes`, `objects`, `fetched_by_this_run`) when a full scan's passes read one) when the run's reads were watched |
 | `verdict` | The headline, as on screen |
@@ -584,13 +584,13 @@ data that has not changed.
 | Empty / whitespace rate | Exact empty or trim-to-empty strings ÷ evaluated rows; reads string values |
 | NaN / infinity | Separate counts for NaN, positive infinity and negative infinity; reads floating-point values |
 | Distinct | Distinct non-null values observed in the evaluated rows; sampled runs do not claim dataset-wide uniqueness |
-| Dominant share | Most frequent non-null value count ÷ evaluated non-null rows |
+| Dominant share | Count of the most frequent non-null value ÷ evaluated non-null rows |
 | Range / length | Minimum and maximum value, character length for text, or element count for lists |
 | Parse share | Values accepted by the named integer, decimal, ISO-date or ISO-datetime parser ÷ evaluated non-null text values; a text column is reported at 95% or more, once, as its most specific reading |
 | Shared missing rows | For columns with the same null count, the rows null in all of them; equal to the count means the same rows |
 | Duplicate groups | Groups of identical complete evaluated rows; extra rows is Σ(group size − 1), rows involved is Σ(group size) |
 | Category variants | Original text values that become equal after outer-whitespace removal and lowercase normalization |
-| Nearly unique | Non-null rows − distinct values, on exact profiles of whole-number and text columns only, reported when distinct values are at least 95% of non-null rows and at least one value repeats. That counts rows beyond one per value; the drill-in opens every row that shares one, which is always more |
+| Nearly unique | Non-null rows − distinct values, on exact profiles of whole-number and text columns only, reported when distinct values are at least 95% of non-null rows and at least one value repeats. That counts rows beyond one per value; the drill-down opens every row that shares one, which is always more |
 | Absent values | Rows held by files whose footer has no such column ÷ rows in the loaded source; read from footers, not values |
 | Type conflicts | Rows held by files that store the column in a type the scan cannot read ÷ rows in the loaded source; read from footers, not values |
 | Clipping, runs of zeros, DC offset | Audio files only, on a full run over the whole source or an untouched view: one more pass reads every sample of the file. A run at full scale is 3 or more samples at the most positive or negative value the valid bits allow, or at ±1.0 for float; a run of zeros is 10 ms or longer and at least 16 samples; the offset is the channel's mean ÷ full scale |
@@ -626,5 +626,5 @@ them, and <kbd>Enter</kbd> opens the rows those files contributed. Where footers
 fact says how many footers were read. A full scan also reads the first five
 values each conflicting file holds at the type it wrote; the access plan's
 Conflict values row states how many extra reads that costs. The
-[Dataset Info](../user-guide/dataset-info.md#notes) notes report the same facts at open time
+[Info panel](../user-guide/dataset-info.md#notes) notes report the same facts at open time
 and offer to read a conflicting column as text.

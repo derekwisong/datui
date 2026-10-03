@@ -18143,7 +18143,7 @@ fn test_info_panel_arrows_switch_tabs_from_the_body() {
     assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
 }
 
-/// The Info panel's file size and Parquet footer are read on a worker after `i`, and
+/// The Info panel's file size and Parquet tab are read on a worker after `i`, and
 /// drawn once they land; a file gone since it was opened says so instead (#457).
 #[test]
 fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
@@ -18179,12 +18179,18 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     app.render(area, &mut buf);
     let text = rendered_text(&buf);
     assert!(
+        text.contains("50 rows in 1 row group") && text.contains("Format version:"),
+        "the Parquet tab says what its footer says; got:\n{text}"
+    );
+    if let Some(next) = app.event(&key(KeyCode::Right)) {
+        let _ = tx.send(next);
+    }
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(
         text.contains(&datui::widgets::info::format_bytes(size)),
         "the Resources tab shows the file's size; got:\n{text}"
-    );
-    assert!(
-        text.contains("Row groups:") && text.contains("Parquet version:"),
-        "and what its footer says; got:\n{text}"
     );
 
     // The same file, gone before the panel asks: the next open's read fails, once.
@@ -18193,7 +18199,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
     let _ = painted(&mut app, &rx, &tx, area);
     std::fs::remove_file(&path).unwrap();
-    for k in [KeyCode::Char('i'), KeyCode::Right] {
+    for k in [KeyCode::Char('i'), KeyCode::Right, KeyCode::Right] {
         if let Some(next) = app.event(&key(k)) {
             let _ = tx.send(next);
         }
@@ -22187,6 +22193,68 @@ fn a_directory_of_arrow_ipc_stream_shards_opens_as_one_table() {
     assert_eq!(state.num_rows(), 1000);
     assert!(state.headers().contains(&"first_name".to_string()));
     assert_eq!(files_in(scratch.path()), 1, "one copy of all three");
+}
+
+/// The home screen lists a Hugging Face cache's splits inside it, above its files, and
+/// a split's place (`hf_cache/test`) opens that split as `--table` would.
+#[test]
+fn a_hugging_face_cache_lists_its_splits_on_home() {
+    common::ensure_sample_data();
+    let cache = PathBuf::from("tests/sample-data/hf_cache");
+    let mut home = datui::home::HomeState {
+        browsing: Some(cache.clone()),
+        ..datui::home::HomeState::default()
+    };
+    home.rebuild(&[], &[]);
+    let names: Vec<String> = home
+        .visible()
+        .iter()
+        .filter_map(|r| match r {
+            datui::home::Row::Entry { entry, .. } => Some(entry.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names[..3], ["train", "validation", "test"], "{names:?}");
+    assert!(
+        names.contains(&"people-test.arrow".to_string()),
+        "{names:?}"
+    );
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let options = OpenOptions {
+        temp_dir: Some(scratch.path().to_path_buf()),
+        ..OpenOptions::default()
+    };
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![cache.join("test")], options),
+    );
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("the test split opens");
+    assert_eq!(state.other_tables(), ["train", "validation"]);
+    // A directory has no footer of its own: no Arrow tab, once its facts are read.
+    if let Some(next) = app.event(&key(KeyCode::Char('i'))) {
+        let _ = tx.send(next);
+    }
+    pump_until(&mut app, &rx, &tx, |app| {
+        !matches!(
+            app.file_facts(),
+            Some(datui::widgets::info::FileFacts::Reading)
+        )
+    });
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(
+        text.contains("Resources") && !text.contains("Arrow"),
+        "{text}"
+    );
+    assert!(datui::discover::split_row(&cache.join("test")).is_some());
+    assert!(datui::discover::split_row(&cache.join("dev")).is_none());
 }
 
 /// A Hugging Face cache opens its train split, both shards, and names the other

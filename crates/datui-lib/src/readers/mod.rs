@@ -11,6 +11,11 @@
 //! the formats Polars reads in [`polars`]. [`of`] maps every format to its reader,
 //! exhaustively, so a format without one does not compile.
 //!
+//! The descriptor says whether a format has a tab of its own on the Info panel and
+//! whether a file of it holds tables; the reader fills the tab, from what its scan
+//! read or, for a format Polars opens, from what [`Reader::facts`] reads of the file's
+//! footer when the panel first opens, and lists the tables.
+//!
 //! Adding a format is its variant and descriptor in datui-cli, its parser and reader
 //! in a module of its own, and a line in [`of`].
 //!
@@ -27,9 +32,6 @@
 //!   left out.
 //! - SafeTensors and GGUF: a directory of weights is the model, and a remote model is
 //!   read by its headers ([`crate::remote_model`]).
-//! - SQLite, NumPy and ELF on the home screen: a `.db` file that is not SQLite cannot
-//!   open, a database's tables sort by name, a database table or NumPy array previews
-//!   its schema, and an ELF file opens its symbols, so its sections are not counted.
 //! - CSV: the reader a delimited spec reads through.
 //! - Text: what text with nothing else to say is read as ([`FileFormat::TEXT`],
 //!   [`crate::lines::guess`]); a name that says text is still asked its bytes, and a
@@ -51,10 +53,36 @@ use crate::text_formats::Detail;
 use crate::unfinished::Writer;
 use crate::{FileFormat, OpenOptions, ReadReport};
 
+pub(crate) mod facts;
 pub(crate) mod polars;
 
 /// Lists the tables of a file of a format.
 pub(crate) type ListTables = fn(&Path) -> Result<Vec<Table>>;
+
+/// What the Info panel's worker reads of one local file of a format besides its size,
+/// where the open left it to Polars: a Parquet footer.
+pub(crate) type FactsFn = fn(&Path) -> Result<FormatFacts>;
+
+/// A format's facts read. See [`Reader::facts`].
+#[derive(Clone, Copy)]
+pub(crate) struct Facts {
+    pub read: FactsFn,
+    /// Whether it reads a footer that gives the Schema tab's Compression column, which
+    /// keeps its room while the read is out.
+    pub footer: bool,
+}
+
+/// What a [`FactsFn`] read: the format's tab of the Info panel, and the footer the
+/// Schema tab's Compression column is drawn from.
+#[derive(Debug, Clone, Default)]
+pub struct FormatFacts {
+    pub detail: Option<Arc<Detail>>,
+    pub footer: Option<crate::parquet_footer::Footer>,
+}
+
+/// The columns one table of a file of a format opens with, for the home screen's
+/// preview: the one named, or the one the file opens when none is.
+pub(crate) type TableSchema = fn(&Path, Option<&str>) -> Option<crate::discover::SchemaPreview>;
 
 /// What a scan is given: the files to open as `format`, one unless the format reads
 /// many as one table, and where to report what it found besides the frame.
@@ -132,6 +160,16 @@ pub(crate) struct Reader {
     /// schema, an archive's directory. Only for a format whose descriptor says it holds
     /// tables that are listed.
     pub tables: Option<ListTables>,
+    /// What the Info panel reads of one local file of it when it first opens, for a
+    /// format whose scan leaves what the file says besides its rows to Polars. Its
+    /// tab is offered from the open on, and filled when the read lands.
+    pub facts: Option<Facts>,
+    /// The columns of one of its tables, read cheaply for the home screen's preview,
+    /// where a table's columns are not in its listing.
+    pub table_schema: Option<TableSchema>,
+    /// Whether a file named as it whose first bytes do not say it cannot open: a `.db`
+    /// file that is not SQLite. The home screen lists such a file as no data.
+    pub bytes_decide: bool,
     /// How the home screen's preview reads a file of it before it is opened, where its
     /// first rows are cheap.
     pub preview: Option<Preview>,
@@ -165,6 +203,9 @@ pub(crate) const BASE: Reader = Reader {
     signatures: &[],
     refines: &[],
     tables: None,
+    facts: None,
+    table_schema: None,
+    bytes_decide: false,
     preview: None,
     python: None,
     export: None,
@@ -670,6 +711,10 @@ mod tests {
             // A format read into files of its own has a conversion to do it.
             if format.reads_into() {
                 assert!(reader.convert.is_some(), "{}", format.name());
+            }
+            // A tab the facts fill is one the descriptor names.
+            if reader.facts.is_some() {
+                assert!(format.summary_tab().is_some(), "{}", format.name());
             }
             #[cfg(feature = "cloud")]
             if reader.bucket_scan.is_some() {

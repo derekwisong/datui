@@ -29,7 +29,7 @@ pub const MAX_DETAIL_ROWS: usize = 10_000;
 /// markers. Every format's tab is one of these, made by its reader when it opens.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Detail {
-    /// The tab's name: `VCD`, `Model`, `Audio`.
+    /// The tab's name: `VCD`, `Model`, `Audio`, as [`tab`] gives it.
     pub tab: &'static str,
     /// The lines above the list.
     pub lines: Vec<String>,
@@ -45,6 +45,16 @@ pub struct Detail {
     /// Whether the columns are datui's own rather than the file's, as the Schema tab
     /// says of where they came from.
     pub own_columns: bool,
+}
+
+/// The name of `format`'s tab of the Info panel, as its descriptor says it: a reader
+/// names its [`Detail`] by this, so the descriptor is the one place that says it.
+pub const fn tab(format: crate::FileFormat) -> &'static str {
+    match format.descriptor().summary {
+        crate::Summary::Tab(tab) => tab,
+        // A format said to have no tab has none to name; its title stands in.
+        crate::Summary::None(_) => format.descriptor().title,
+    }
 }
 
 /// Read the one file of `input` a piece at a time with `read`, a text format's reader,

@@ -21,17 +21,19 @@ fn gated(app: &mut App) -> Gate {
     let answers = Mutex::new(answers);
     let ui = std::thread::current().id();
     let (counted, misplaced) = (calls.clone(), on_ui_thread.clone());
-    app.file_facts_reader = Some(Arc::new(move |_path: &Path, _parquet: bool| {
-        counted.fetch_add(1, Ordering::SeqCst);
-        if std::thread::current().id() == ui {
-            misplaced.fetch_add(1, Ordering::SeqCst);
-        }
-        answers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .recv()
-            .unwrap_or_else(|_| Err("the test ended".to_string()))
-    }));
+    app.file_facts_reader = Some(Arc::new(
+        move |_path: &Path, _facts: Option<crate::readers::Facts>| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            if std::thread::current().id() == ui {
+                misplaced.fetch_add(1, Ordering::SeqCst);
+            }
+            answers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv()
+                .unwrap_or_else(|_| Err("the test ended".to_string()))
+        },
+    ));
     Gate {
         calls,
         on_ui_thread,
@@ -64,11 +66,16 @@ fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Option<AppEve
     app.event(&AppEvent::Key(KeyEvent::new(code, modifiers)))
 }
 
-/// `i`, then → to the Resources tab, where the file size is.
+/// `i`, then → to the Resources tab, where the file size is: past a Parquet tab.
 fn open_resources(app: &mut App) {
     press(app, KeyCode::Char('i'), KeyModifiers::NONE);
     assert_eq!(app.input_mode, InputMode::Info);
-    press(app, KeyCode::Right, KeyModifiers::NONE);
+    for _ in 0..3 {
+        press(app, KeyCode::Right, KeyModifiers::NONE);
+        if app.info_modal.active_tab == crate::widgets::info::InfoTab::Resources {
+            break;
+        }
+    }
 }
 
 /// A frame at 80×24, as text.
@@ -99,7 +106,8 @@ fn reading(app: &App) -> bool {
 fn read(size: u64) -> Answer {
     Ok(FileFacts::Read {
         size: Some(size),
-        parquet: None,
+        footer: None,
+        detail: None,
     })
 }
 
@@ -246,7 +254,8 @@ fn an_answer_for_a_replaced_dataset_is_dropped() {
         Job::FileFacts { dataset: old },
         crate::Answer::FileFacts(FileFacts::Read {
             size: Some(1),
-            parquet: None,
+            footer: None,
+            detail: None,
         }),
     );
     let late = app.job_for_tests(Job::FileFacts { dataset: old }, None);
@@ -319,8 +328,8 @@ fn a_glob_or_several_files_read_nothing() {
     assert_eq!(gate.calls.load(Ordering::SeqCst), 0);
 }
 
-/// The footer's rows and the Compression column have their room before the footer
-/// lands, so nothing on either tab moves when it does.
+/// The Parquet tab and the Compression column have their room before the footer
+/// lands, so nothing on the tab bar or the Schema tab moves when it does.
 #[test]
 fn nothing_moves_when_the_footer_lands() {
     let dir = tempfile::tempdir().unwrap();
@@ -343,18 +352,23 @@ fn nothing_moves_when_the_footer_lands() {
     // The Compression column is up before there is anything to put in it.
     let header = schema.lines().nth(row_of(&schema, "Compression")).unwrap();
     let header = header.to_string();
+    // The footer's own tab is on the bar, named, before the footer is.
+    let bar = row_of(&schema, "Resources");
+    assert!(
+        schema.lines().nth(bar).unwrap().contains("Parquet"),
+        "{schema}"
+    );
     press(&mut app, KeyCode::Right, KeyModifiers::NONE);
     let waiting = screen(&mut app);
-    let groups = row_of(&waiting, "Row groups:");
+    assert_eq!(row_of(&waiting, "Resources"), bar, "{waiting}");
+    assert!(waiting.contains("reading..."), "{waiting}");
 
-    gate.answer.send(FileFacts::read(&file, true)).unwrap();
+    let facts = crate::readers::of(crate::FileFormat::Parquet).facts;
+    gate.answer.send(FileFacts::read(&file, facts)).unwrap();
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
     let landed = screen(&mut app);
-    assert_eq!(row_of(&landed, "Row groups:"), groups, "{landed}");
-    assert!(
-        landed.lines().nth(groups).unwrap().contains('1'),
-        "{landed}"
-    );
+    assert_eq!(row_of(&landed, "Resources"), bar, "{landed}");
+    assert!(landed.contains("3 rows in 1 row group"), "{landed}");
     press(&mut app, KeyCode::Left, KeyModifiers::NONE);
     let schema = screen(&mut app);
     assert_eq!(

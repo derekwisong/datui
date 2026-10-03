@@ -3863,6 +3863,7 @@ fn test_measuring_a_row_keeps_what_the_footer_said_beyond_the_row_count() {
             more: false,
         }),
         tables: None,
+        opens_one: false,
         ipc_stream: false,
     };
     let original = datui::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");

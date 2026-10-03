@@ -36,9 +36,9 @@ use crate::{CompressionFormat, FileFormat, OpenOptions};
 
 /// What datui does with an NMEA log: see [`crate::readers`].
 pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
-    // Several logs are one table, and say nothing besides their rows.
+    // Several logs are one table.
     convert: Some(|input| {
-        let converted = convert(
+        let (converted, detail) = convert(
             input.files,
             input.display,
             input.format,
@@ -46,7 +46,7 @@ pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
             input.writer,
             input.read,
         )?;
-        Ok((converted, None))
+        Ok((converted, Some(std::sync::Arc::new(detail))))
     }),
     scan: crate::readers::read_into,
     signatures: &[crate::readers::Signature {
@@ -54,17 +54,38 @@ pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
         kind: crate::readers::Kind::Text,
         trusted: crate::readers::Trusted {
             listing: false,
+            tables: true,
             ..crate::readers::EVERYWHERE
         },
     }],
+    // The tables are the sentence types read, whichever the log holds: listing them
+    // reads nothing.
+    tables: Some(|_| Ok(nmea_tables())),
     ..crate::readers::BASE
 };
 
+/// The tables of an NMEA log, as the home screen lists them and `--table` names them.
+fn nmea_tables() -> Vec<crate::sqlite::Table> {
+    nmea::Table::ALL
+        .into_iter()
+        .map(|t| crate::sqlite::Table {
+            name: t.name().to_string(),
+            kind: "table".to_string(),
+            internal: false,
+            columns: t
+                .columns()
+                .into_iter()
+                .map(|(name, _)| (name.to_string(), String::new()))
+                .collect(),
+        })
+        .collect()
+}
+
 /// What datui does with a GPX file: see [`crate::readers`].
 pub(crate) const GPX: crate::readers::Reader = crate::readers::Reader {
-    // Several logs are one table, and say nothing besides their rows.
+    // Several logs are one table.
     convert: Some(|input| {
-        let converted = convert(
+        let (converted, detail) = convert(
             input.files,
             input.display,
             input.format,
@@ -72,7 +93,7 @@ pub(crate) const GPX: crate::readers::Reader = crate::readers::Reader {
             input.writer,
             input.read,
         )?;
-        Ok((converted, None))
+        Ok((converted, Some(std::sync::Arc::new(detail))))
     }),
     scan: crate::readers::read_into,
     signatures: &[crate::readers::Signature {
@@ -131,7 +152,8 @@ pub(crate) fn open_reader<'a>(
 /// Read `files` (named `display` to the user when there is one) as `format` into
 /// temporary IPC files, written through `writer`, counting the bytes of the files read
 /// in `read`. Several files are one table with a `file` column first, each file's
-/// columns its own and the others null; what the reads noticed is counted across them.
+/// columns its own and the others null; what the reads noticed is counted across them,
+/// and is the GPS tab of the Info panel.
 pub(crate) fn convert(
     files: &[PathBuf],
     display: &Path,
@@ -139,18 +161,22 @@ pub(crate) fn convert(
     options: &OpenOptions,
     writer: &Writer,
     read: &AtomicU64,
-) -> Result<Converted> {
+) -> Result<(Converted, crate::text_formats::Detail)> {
     let [file] = files else {
         return convert_many(files, format, options, writer, read);
     };
     let one = convert_one(file, display, format, options, writer, read)?;
     let (notes, other_tables) = one.stats.notes(None, options)?;
-    Ok(Converted {
-        lf: one.lf,
-        files: one.files,
-        notes,
-        other_tables,
-    })
+    let detail = one.stats.detail(None, &one.extent, options)?;
+    Ok((
+        Converted {
+            lf: one.lf,
+            files: one.files,
+            notes,
+            other_tables,
+        },
+        detail,
+    ))
 }
 
 /// Each of `files` read as [`convert_one`] reads it, then stacked under a `file`
@@ -162,10 +188,11 @@ fn convert_many(
     options: &OpenOptions,
     writer: &Writer,
     read: &AtomicU64,
-) -> Result<Converted> {
+) -> Result<(Converted, crate::text_formats::Detail)> {
     let mut frames = Vec::with_capacity(files.len());
     let mut written = Vec::new();
     let mut stats: Option<Stats> = None;
+    let mut extent = Extent::default();
     for file in files {
         let one = convert_one(file, file, format, options, writer, read)
             .map_err(|e| crate::error_display::in_file(file, e))?;
@@ -175,6 +202,7 @@ fn convert_many(
             .unwrap_or_else(|| file.display().to_string());
         frames.push(one.lf.select([lit(name).alias("file"), all().as_expr()]));
         written.extend(one.files);
+        extent.merge(&one.extent);
         match &mut stats {
             None => stats = Some(one.stats),
             Some(stats) => stats.absorb(one.stats),
@@ -190,12 +218,16 @@ fn convert_many(
         },
     )?;
     let (notes, other_tables) = stats.notes(Some(files.len()), options)?;
-    Ok(Converted {
-        lf,
-        files: written,
-        notes,
-        other_tables,
-    })
+    let detail = stats.detail(Some(files.len()), &extent, options)?;
+    Ok((
+        Converted {
+            lf,
+            files: written,
+            notes,
+            other_tables,
+        },
+        detail,
+    ))
 }
 
 /// What one log's read noticed, of either format.
@@ -263,6 +295,139 @@ impl Stats {
     }
 }
 
+impl Stats {
+    /// The GPS tab of the Info panel, for `of` files (`None` for one) whose rows
+    /// covered `extent`.
+    fn detail(
+        &self,
+        of: Option<usize>,
+        extent: &Extent,
+        options: &OpenOptions,
+    ) -> Result<crate::text_formats::Detail> {
+        use crate::model_files::MetaValue;
+        let middot = crate::glyphs::get().middot;
+        let mut lines = Vec::new();
+        let (list_title, list) = match self {
+            Stats::Gpx { stats, .. } => {
+                lines.push(
+                    [
+                        count(stats.points, "point", "points"),
+                        count(stats.tracks, "track", "tracks"),
+                        count(stats.routes, "route", "routes"),
+                        count(stats.waypoints, "waypoint", "waypoints"),
+                    ]
+                    .join(&format!(" {middot} ")),
+                );
+                ("", Vec::new())
+            }
+            Stats::Nmea { stats, .. } => {
+                let table = nmea_table(options)?;
+                lines.push(format!(
+                    "{} of {} {middot} {} of {}",
+                    count(stats.rows, "row", "rows"),
+                    table.name(),
+                    count(stats.sentences, "sentence", "sentences"),
+                    count(stats.lines, "line", "lines"),
+                ));
+                let mut list: Vec<(String, MetaValue)> = stats
+                    .types
+                    .iter()
+                    .map(|(t, n)| (t.clone(), MetaValue::Text(group_chrome(*n as usize))))
+                    .collect();
+                if stats.other_types > 0 {
+                    list.push((
+                        "other".to_string(),
+                        MetaValue::Text(group_chrome(stats.other_types as usize)),
+                    ));
+                }
+                ("Sentences", list)
+            }
+        };
+        if let Some(n) = of {
+            lines.push(count(n as u64, "file", "files"));
+        }
+        lines.extend(extent.lines());
+        Ok(crate::text_formats::Detail {
+            tab: crate::text_formats::tab(FileFormat::Nmea),
+            lines,
+            list_title,
+            list,
+            ..Default::default()
+        })
+    }
+}
+
+/// When and where a log's rows are: the least and most of their `time`, `lat` and
+/// `lon`, taken from each batch as it is written, so nothing is read twice.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Extent {
+    /// Milliseconds since the epoch, UTC.
+    time: Option<(i64, i64)>,
+    lat: Option<(f64, f64)>,
+    lon: Option<(f64, f64)>,
+}
+
+impl Extent {
+    fn absorb(&mut self, df: &DataFrame) {
+        let time = df
+            .column("time")
+            .ok()
+            .and_then(|c| c.as_materialized_series().datetime().ok().cloned())
+            .and_then(|t| Some((t.physical().min()?, t.physical().max()?)));
+        let span = |name: &str| {
+            let c = df.column(name).ok()?;
+            let v = c.as_materialized_series().f64().ok()?;
+            Some((v.min()?, v.max()?))
+        };
+        self.merge(&Extent {
+            time,
+            lat: span("lat"),
+            lon: span("lon"),
+        });
+    }
+
+    fn merge(&mut self, other: &Extent) {
+        fn wider<T: PartialOrd + Copy>(a: Option<(T, T)>, b: Option<(T, T)>) -> Option<(T, T)> {
+            match (a, b) {
+                (Some((a0, a1)), Some((b0, b1))) => {
+                    Some((if b0 < a0 { b0 } else { a0 }, if b1 > a1 { b1 } else { a1 }))
+                }
+                (a, b) => a.or(b),
+            }
+        }
+        self.time = wider(self.time, other.time);
+        self.lat = wider(self.lat, other.lat);
+        self.lon = wider(self.lon, other.lon);
+    }
+
+    /// `Time: 2024-05-01 12:00:00 to 13:05:12 UTC (1:05:12.000)` and
+    /// `Bounds: 51.40000 to 51.60000 N, -0.20000 to 0.10000 E`.
+    fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some((first, last)) = self.time {
+            let at = |ms: i64| chrono::DateTime::from_timestamp_millis(ms);
+            if let (Some(a), Some(b)) = (at(first), at(last)) {
+                let end = if a.date_naive() == b.date_naive() {
+                    b.format("%H:%M:%S").to_string()
+                } else {
+                    b.format("%Y-%m-%d %H:%M:%S").to_string()
+                };
+                lines.push(format!(
+                    "Time: {} to {end} UTC ({})",
+                    a.format("%Y-%m-%d %H:%M:%S"),
+                    crate::widgets::info::clock((last - first) as f64 / 1000.0)
+                ));
+            }
+        }
+        if let (Some((lat0, lat1)), Some((lon0, lon1))) = (self.lat, self.lon) {
+            lines.push(format!(
+                "Bounds: latitude {lat0:.5} to {lat1:.5}, longitude {lon0:.5} to {lon1:.5}"
+            ));
+        }
+        lines
+    }
+}
+
 /// The NMEA table `--table` names, the fixes when it names none.
 fn nmea_table(options: &OpenOptions) -> Result<nmea::Table> {
     match options.table.as_deref() {
@@ -281,6 +446,7 @@ struct One {
     lf: LazyFrame,
     files: Vec<TempDownload>,
     stats: Stats,
+    extent: Extent,
 }
 
 /// Read `file` (named `display` to the user) as `format` into temporary IPC files.
@@ -294,6 +460,7 @@ fn convert_one(
 ) -> Result<One> {
     let mut reader = open_reader(file, options, read)?;
     let mut segments = Segments::new(options, writer);
+    let mut extent = Extent::default();
     let mut chunk = vec![0u8; CHUNK];
     let mut next = |chunk: &mut [u8]| -> Result<usize> {
         if writer.stopped() {
@@ -317,16 +484,19 @@ fn convert_one(
                 }
                 gpx.push(&chunk[..n]).map_err(|e| eyre!(e))?;
                 if let Some(df) = gpx.take_batch()? {
+                    extent.absorb(&df);
                     segments.write(&df)?;
                 }
             }
             let last = gpx.finish().map_err(|e| eyre!(e))?;
+            extent.absorb(&last);
             segments.write(&last)?;
             let (lf, files) = segments.finish()?;
             let stats = gpx.stats().clone();
             Ok(One {
                 lf: type_gpx_fields(lf, gpx.fields()),
                 files,
+                extent,
                 stats: Stats::Gpx {
                     truncated: usize::from(stats.truncated),
                     stats,
@@ -343,6 +513,7 @@ fn convert_one(
                 }
                 log.push(&chunk[..n]);
                 if let Some(df) = log.take_batch()? {
+                    extent.absorb(&df);
                     segments.write(&df)?;
                 }
             }
@@ -354,12 +525,14 @@ fn convert_one(
                 )
                 .into());
             }
+            extent.absorb(&last);
             segments.write(&last)?;
             let (lf, files) = segments.finish()?;
             let stats = log.stats().clone();
             Ok(One {
                 lf,
                 files,
+                extent,
                 stats: Stats::Nmea {
                     undated: usize::from(!stats.dated && stats.rows > 0),
                     stats,
@@ -605,7 +778,7 @@ mod tests {
         std::fs::write(&path, text).unwrap();
         let out_dir = tempfile::tempdir().unwrap();
         let writer = Writer::default();
-        let converted = convert(
+        let (converted, _) = convert(
             std::slice::from_ref(&path),
             &path,
             FileFormat::Gpx,
@@ -638,7 +811,7 @@ mod tests {
         let temp = dir.path().join("t[1]");
         std::fs::create_dir(&temp).unwrap();
         std::fs::create_dir(dir.path().join("t1")).unwrap();
-        let converted = convert(
+        let (converted, _) = convert(
             std::slice::from_ref(&path),
             &path,
             FileFormat::Nmea,
@@ -661,7 +834,7 @@ mod tests {
         std::fs::write(&path, enc.finish().unwrap()).unwrap();
         let writer = Writer::default();
         let read = AtomicU64::default();
-        let converted = convert(
+        let (converted, _) = convert(
             std::slice::from_ref(&path),
             &path,
             FileFormat::Nmea,
@@ -687,7 +860,7 @@ mod tests {
             ["RMC 1", "GSV 1", "sentences"],
             "a GSV the fixes do not show"
         );
-        let gsv = convert(
+        let (gsv, _) = convert(
             std::slice::from_ref(&path),
             &path,
             FileFormat::Nmea,
@@ -755,7 +928,7 @@ mod tests {
         );
         let out = tempfile::tempdir().unwrap();
         let read = AtomicU64::default();
-        let converted = convert(
+        let (converted, _) = convert(
             &[a.clone(), b.clone()],
             dir.path(),
             FileFormat::Gpx,
@@ -811,7 +984,7 @@ mod tests {
             "$GPGGA,120001,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,\n$GPGSV,1,1,01,07,40,083,46\n",
         )
         .unwrap();
-        let converted = convert(
+        let (converted, _) = convert(
             &[dated, undated],
             dir.path(),
             FileFormat::Nmea,
@@ -831,6 +1004,81 @@ mod tests {
         assert_eq!(
             converted.other_tables,
             ["GGA 1", "RMC 1", "GSV 1", "sentences"]
+        );
+    }
+
+    /// The GPS tab: what was read, when and where, from the rows as they were written;
+    /// several files' extents are one.
+    #[test]
+    fn the_tab_says_when_and_where() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nmea");
+        std::fs::write(
+            &path,
+            "$GPRMC,120000,A,4807.038,N,01131.000,E,1.0,0.0,010124,,,A\n\
+             $GPRMC,121005,A,4808.000,N,01130.000,E,1.0,0.0,010124,,,A\n\
+             $GPGSV,1,1,01,07,40,083,46\n",
+        )
+        .unwrap();
+        let (_, detail) = convert(
+            std::slice::from_ref(&path),
+            &path,
+            FileFormat::Nmea,
+            &options(dir.path()),
+            &Writer::default(),
+            &AtomicU64::default(),
+        )
+        .unwrap();
+        assert_eq!(detail.tab, "GPS");
+        assert_eq!(
+            detail.lines[0],
+            format!(
+                "2 rows of fixes {} 3 sentences of 3 lines",
+                crate::glyphs::get().middot
+            )
+        );
+        assert_eq!(
+            detail.lines[1],
+            "Time: 2024-01-01 12:00:00 to 12:10:05 UTC (10:05.000)"
+        );
+        assert!(
+            detail.lines[2].starts_with(
+                "Bounds: latitude 48.11730 to 48.13333, longitude 11.50000 to 11.51667"
+            ),
+            "{:?}",
+            detail.lines
+        );
+        assert_eq!(detail.list_title, "Sentences");
+        assert_eq!(detail.list.len(), 2);
+
+        let gpx = dir.path().join("t.gpx");
+        std::fs::write(
+            &gpx,
+            "<gpx><wpt lat=\"1\" lon=\"2\"/><trk><trkseg><trkpt lat=\"-3\" lon=\"4\"><time>2024-01-01T00:00:00Z</time></trkpt></trkseg></trk></gpx>",
+        )
+        .unwrap();
+        let (_, detail) = convert(
+            &[gpx.clone(), gpx],
+            dir.path(),
+            FileFormat::Gpx,
+            &options(dir.path()),
+            &Writer::default(),
+            &AtomicU64::default(),
+        )
+        .unwrap();
+        let middot = crate::glyphs::get().middot;
+        assert_eq!(
+            detail.lines[0],
+            format!("4 points {middot} 2 tracks {middot} 0 routes {middot} 2 waypoints")
+        );
+        assert_eq!(detail.lines[1], "2 files");
+        assert!(
+            detail
+                .lines
+                .iter()
+                .any(|l| l == "Bounds: latitude -3.00000 to 1.00000, longitude 2.00000 to 4.00000"),
+            "{:?}",
+            detail.lines
         );
     }
 }

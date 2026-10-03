@@ -1475,7 +1475,7 @@ pub fn detail(audio: &AudioSource) -> crate::text_formats::Detail {
         metadata.push((format!("marker {}", marker.id), MetaValue::Text(value)));
     }
     crate::text_formats::Detail {
-        tab: "Audio",
+        tab: crate::text_formats::tab(crate::FileFormat::Audio),
         lines,
         warnings,
         list_title: "Metadata",

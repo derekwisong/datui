@@ -76,6 +76,7 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
         },
     ],
     tables: Some(tables),
+    table_schema: Some(schema_preview),
     ..crate::readers::BASE
 };
 
@@ -1098,7 +1099,7 @@ pub fn detail(header: &Header, archive: Option<(&Path, usize)>, compressed: bool
         list = crate::text_formats::capped_list(rows, fields.len());
     }
     Detail {
-        tab: "NumPy",
+        tab: crate::text_formats::tab(crate::FileFormat::Numpy),
         lines,
         list_title: "Fields",
         list,

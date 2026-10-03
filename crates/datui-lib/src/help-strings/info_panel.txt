@@ -57,6 +57,18 @@ Tabs:
   CAN:         A candump log's frames and interfaces, the DBC files read
                with it, and each message's id, frames and signals. Only for
                CAN logs
+  Parquet:     A Parquet file's row groups, compression and writer, and each
+               column's least and greatest value and nulls from its footer.
+               Read when the panel first opens. Only for one Parquet file
+  Arrow, Avro, ORC:
+               The record batches, record or stripes, codec and metadata at
+               an end of the file. Read when the panel first opens
+  Excel:       A workbook's sheets, each with its range and size, and which
+               one is open. Only for Excel files
+  SQLite:      A database's page size, versions and tables, with their
+               columns and the rows ANALYZE stored. Only for SQLite tables
+  GPS:         What an NMEA log or GPX file holds: rows, sentences or points,
+               the time span and the bounds. Only for GPS logs
   Resources:   What the data costs to hold and to read, and how it is read:
                lazy, converted once, or in memory
   Partitions:  The layout of a partitioned dataset. Only when it has one

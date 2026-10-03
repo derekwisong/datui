@@ -283,6 +283,7 @@ pub fn ensure_sample_data() {
             "hf_cache/people-test.arrow",
             "arrow_mixed/b.arrow",
             "hf_dict/dataset_dict.json",
+            "sheets.xlsx",
         ];
 
         let needs_generation = !sample_data_dir.exists()

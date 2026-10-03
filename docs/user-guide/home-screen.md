@@ -189,7 +189,8 @@ spaces, then the label: `data/  3 dirs`, `events/  hive`, `Palmer penguins  csv`
 | `delta`, `iceberg`, `hudi` | A lake-table marker |
 | `12 parquet`, `3 csv` | Direct data files of one format |
 | `3 safetensors`, `2 gguf` | A model: weight files of one format, with only JSON (config, tokenizer) beside them. Opens as one table |
-| `3 tables` | A SQLite database or a NumPy `.npz` archive (a file, not a directory). One table opens; several are listed, a row each, when <kbd>Enter</kbd> or <kbd>→</kbd> goes inside |
+| `3 tables` | A file of tables (a file, not a directory): a SQLite database, a NumPy `.npz` archive, a flight or CAN log. One table opens; several are listed, a row each, when <kbd>Enter</kbd> or <kbd>→</kbd> goes inside |
+| `3 sheets` | A file that opens one of its tables: an Excel workbook's first sheet, an NMEA log's fixes, an ELF file's symbols. <kbd>Enter</kbd> opens it; <kbd>→</kbd> lists them all |
 | `mixed` | Several formats |
 | `3 dirs` | Only directories: how many there are to go into |
 | `dir` | No direct data files and no directories; `dir+` means the listing was cut short |

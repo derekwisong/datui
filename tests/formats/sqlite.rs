@@ -437,3 +437,23 @@ fn copy_as_python_reads_the_table_on_screen() {
         assert_eq!(rows, crate::view_csv(&app), "{file}:\n{script}");
     }
 }
+
+/// An open table's SQLite tab: the database's pages and each table of its own, from the
+/// schema the open read.
+#[test]
+fn the_sqlite_tab_lists_the_databases_tables() {
+    let (app, _rx) = open_with(sqlite().join("shop.db"), table("orders"));
+    let detail = app
+        .data_table_state
+        .as_ref()
+        .and_then(|s| s.format_detail())
+        .expect("the SQLite tab");
+    assert_eq!(detail.tab, "SQLite");
+    assert!(
+        detail.lines[0].starts_with("Page size: "),
+        "{:?}",
+        detail.lines
+    );
+    let names: Vec<&str> = detail.list.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(names, ["customers", "orders", "big_orders"]);
+}

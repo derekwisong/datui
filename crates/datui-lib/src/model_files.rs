@@ -1403,7 +1403,7 @@ pub fn detail(model: &ModelSummary) -> crate::text_formats::Detail {
         lines.push(format!("Types: {}", type_mix(&model.types, &sep)));
     }
     crate::text_formats::Detail {
-        tab: "Model",
+        tab: crate::text_formats::tab(crate::FileFormat::Safetensors),
         lines,
         list_title: "Metadata",
         list: model.metadata.clone(),

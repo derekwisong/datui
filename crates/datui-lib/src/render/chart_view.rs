@@ -23,6 +23,11 @@ pub fn render(
     ctx: &RenderContext,
 ) {
     Clear.render(chart_area, buf);
+    app.chart_modal.units = app
+        .data_table_state
+        .as_ref()
+        .map(|state| state.units())
+        .unwrap_or_default();
 
     let outcome = ChartRequest::from_modal(&app.chart_modal)
         .and_then(|request| app.chart_cache.get(&request));

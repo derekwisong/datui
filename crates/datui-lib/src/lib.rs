@@ -67,6 +67,7 @@ pub mod config;
 pub mod copy_modal;
 pub mod csv_dialect;
 pub mod data_quality;
+pub mod delimited_spec;
 pub mod discover;
 pub mod distribution_fit;
 pub mod download;
@@ -8558,6 +8559,9 @@ pub struct OpenOptions {
     pub midi: Option<Arc<crate::midi::MidiSummary>>,
     /// A SQLite table opened in place, carried from the scan to the dataset.
     pub sqlite: Option<Arc<SqliteOpen>>,
+    /// The delimited spec the file is read through, once chosen: its dialect is in
+    /// these options, and the read's units and metadata ride with it to the dataset.
+    pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
 }
 
 impl OpenOptions {
@@ -8616,6 +8620,7 @@ impl OpenOptions {
             sqlite: None,
             splits: None,
             arrow_parts: None,
+            delimited: None,
         }
     }
 }
@@ -9274,6 +9279,8 @@ pub struct ReadReport {
     pub sqlite: Option<Arc<SqliteOpen>>,
     /// The split a Hugging Face cache directory was read as. See `OpenOptions::splits`.
     pub splits: Option<Arc<crate::hf_splits::Splits>>,
+    /// What a read through a delimited spec found. See `OpenOptions::delimited`.
+    pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
 }
 
 /// A SQLite table opened in place, carried from the scan to the dataset.
@@ -16576,6 +16583,39 @@ impl App {
             })
     }
 
+    /// `options` for the compressed delimited file `file`, in the dialect of the
+    /// delimited spec it matches, or as they are when it matches none. The loader sends
+    /// such a file straight to be decompressed, past the scan that matches the others.
+    fn with_delimited_spec(
+        file: &Path,
+        mut options: OpenOptions,
+        formats: &crate::formats::Registry,
+    ) -> Result<OpenOptions> {
+        if options.delimited.is_some() {
+            return Ok(options);
+        }
+        let asked = crate::formats::Asked {
+            spec_file: options.spec_file.clone(),
+            spec_name: options.spec_name.clone(),
+            compression: options.compression,
+            ..Default::default()
+        };
+        let crate::formats::Route::Delimited(choice) =
+            crate::formats::route(file, &asked, formats).map_err(|e| color_eyre::eyre::eyre!(e))?
+        else {
+            return Ok(options);
+        };
+        let Some(delimited) = choice.spec.delimited.clone() else {
+            return Ok(options);
+        };
+        delimited.apply(&mut options);
+        let chosen =
+            crate::delimited_spec::DelimitedRead::chosen(choice.spec, choice.by, choice.also);
+        let read = crate::delimited_spec::read_facts(&chosen, &[file.to_path_buf()], &options)?;
+        options.delimited = Some(Arc::new(read));
+        Ok(options)
+    }
+
     /// Read a compressed CSV, TSV or PSV into a table state, split on its format's
     /// separator.
     ///
@@ -17092,13 +17132,23 @@ impl App {
                     format: options.format.or(Some(FileFormat::Csv)),
                     ..options
                 };
+                let formats = self.formats.clone();
                 self.spawn_job(job, Some("Decompressing..."), move |_| {
+                    let failed = |e: color_eyre::Report| {
+                        crate::error_display::user_message_from_report(&e, Some(path.as_path()))
+                    };
+                    let options =
+                        Self::with_delimited_spec(&file, options, &formats).map_err(failed)?;
                     let state = Self::decompressed_delimited_state(&file, &options, &writer)
-                        .map_err(|e| {
-                            crate::error_display::user_message_from_report(&e, Some(path.as_path()))
-                        })?
+                        .map_err(failed)?
                         .with_open(OpenFacts {
                             download,
+                            open_notes: options
+                                .delimited
+                                .as_ref()
+                                .map(|read| read.notes())
+                                .unwrap_or_default(),
+                            delimited: options.delimited.clone(),
                             ..Default::default()
                         });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
@@ -17221,6 +17271,7 @@ impl App {
                         midi: None,
                         sqlite: None,
                         splits: options.splits.clone(),
+                        delimited: None,
                     };
                     let scan = Self::build_lazyframe_from_paths_with(
                         &cloud,
@@ -17242,7 +17293,7 @@ impl App {
                         Scan::DecompressSpec { .. } => None,
                         Scan::Tables { .. } => Some(FileFormat::Sqlite),
                     };
-                    let options = OpenOptions {
+                    let mut options = OpenOptions {
                         left_out: report.left_out,
                         files_disagree: report.files_disagree,
                         format,
@@ -17256,6 +17307,12 @@ impl App {
                         midi: report.midi,
                         ..options
                     };
+                    // The spec's dialect stays with the dataset, so a read again (`H`,
+                    // a decompressed copy) reads as this one did.
+                    if let Some(read) = report.delimited {
+                        read.delimited().apply(&mut options);
+                        options.delimited = Some(read);
+                    }
                     Ok(Answer::Load(Box::new(match scan {
                         Scan::Frame(lf) => LoadAnswer::Scanned { lf, path, options },
                         Scan::Decompress { file, .. } => LoadAnswer::Compressed {
@@ -18298,6 +18355,10 @@ impl App {
             facts.hold = sqlite.hold.lock().ok().and_then(|mut hold| hold.take());
             facts.other_tables = sqlite.other_tables.clone();
         }
+        if let Some(read) = &options.delimited {
+            facts.open_notes.extend(read.notes());
+            facts.delimited = Some(read.clone());
+        }
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         // Arrow in a store reads its IPC files in place, and its streams from their
@@ -18310,7 +18371,10 @@ impl App {
         };
         // The cheap footer-sum row count, for a local Parquet hive directory. Asked
         // here because a stat on a mount that has stopped answering hangs its thread.
+        // A directory read as another format counts its rows by a scan: its footers
+        // are not Parquet's.
         if options.hive
+            && options.format.is_none_or(|f| f == FileFormat::Parquet)
             && let Some(dir) = path.filter(|p| !source::is_remote_url(p) && p.is_dir())
         {
             facts.parquet_count_dir = Some(dir.to_path_buf());
@@ -19082,6 +19146,82 @@ impl App {
         }
     }
 
+    /// The files a directory holds, read as `found`: through the delimited spec the
+    /// first of them matches, when one does, else as the format says.
+    fn read_directory_files(
+        files: &[PathBuf],
+        options: &OpenOptions,
+        found: FileFormat,
+        report: &mut ReadReport,
+        formats: &crate::formats::Registry,
+    ) -> Result<Scan> {
+        if options.delimited.is_none()
+            && options.format.is_none()
+            && found.separator().is_some()
+            && let Some(first) = files.first()
+            && let Some(choice) = Self::delimited_spec_of(first, options, formats)?
+        {
+            let nested = OpenOptions {
+                hive: false,
+                format: Some(found),
+                splits: report.splits.clone(),
+                ..options.clone()
+            };
+            return Self::read_with_delimited_spec(files, &nested, report, formats, choice);
+        }
+        let nested = OpenOptions {
+            hive: false,
+            format: Some(options.format.unwrap_or(found)),
+            splits: report.splits.clone(),
+            ..options.clone()
+        };
+        Self::build_local_lazyframe(files, &nested, report, formats)
+    }
+
+    /// The delimited spec whose glob or magic `file` matches, if one does.
+    fn delimited_spec_of(
+        file: &Path,
+        options: &OpenOptions,
+        formats: &crate::formats::Registry,
+    ) -> Result<Option<crate::formats::Choice>> {
+        let asked = crate::formats::Asked {
+            compression: options.compression,
+            text_only: true,
+            ..Default::default()
+        };
+        match crate::formats::route(file, &asked, formats)
+            .map_err(|e| color_eyre::eyre::eyre!(e))?
+        {
+            crate::formats::Route::Delimited(choice) => Ok(Some(choice)),
+            _ => Ok(None),
+        }
+    }
+
+    /// `paths` read with the CSV reader in the dialect of the delimited spec `choice`
+    /// holds.
+    fn read_with_delimited_spec(
+        paths: &[PathBuf],
+        options: &OpenOptions,
+        report: &mut ReadReport,
+        formats: &crate::formats::Registry,
+        choice: crate::formats::Choice,
+    ) -> Result<Scan> {
+        let mut nested = options.clone();
+        let Some(delimited) = choice.spec.delimited.clone() else {
+            return Err(color_eyre::eyre::eyre!(
+                "{} is not a delimited spec",
+                choice.spec.name
+            ));
+        };
+        delimited.apply(&mut nested);
+        nested.delimited = Some(Arc::new(crate::delimited_spec::DelimitedRead::chosen(
+            choice.spec,
+            choice.by,
+            choice.also,
+        )));
+        Self::build_local_lazyframe(paths, &nested, report, formats)
+    }
+
     /// The local half of `build_lazyframe_from_paths_with`. A directory resolves to
     /// local files, so the recursion stays here and needs no cloud settings.
     fn build_local_lazyframe(
@@ -19093,21 +19233,25 @@ impl App {
         let path = &paths[0];
 
         // A format spec: one asked for, or one whose glob or magic the path matches. A
-        // path whose name or bytes already say what it is opens as it always has.
-        if let [one] = paths
-            && !options.hive
-        {
+        // path whose name or bytes already say what it is opens as it always has, but
+        // for a delimited spec's text. Several files are matched by the first, and
+        // only to a delimited spec.
+        if !options.hive && options.delimited.is_none() {
             let asked = crate::formats::Asked {
                 spec_file: options.spec_file.clone(),
                 spec_name: options.spec_name.clone(),
                 spec: None,
                 builtin: options.format.is_some(),
                 compression: options.compression,
+                text_only: paths.len() > 1,
             };
-            match crate::formats::route(one, &asked, formats)
+            match crate::formats::route(path, &asked, formats)
                 .map_err(|e| color_eyre::eyre::eyre!(e))?
             {
                 crate::formats::Route::Elsewhere => {}
+                crate::formats::Route::Delimited(choice) => {
+                    return Self::read_with_delimited_spec(paths, options, report, formats, choice);
+                }
                 crate::formats::Route::Read(read) => {
                     let lf = read.records.clone().into_lazy()?;
                     report.format_read = Some(Arc::new(*read));
@@ -19115,15 +19259,25 @@ impl App {
                 }
                 crate::formats::Route::Decompress(choice) => {
                     return Ok(Scan::DecompressSpec {
-                        file: one.clone(),
+                        file: path.clone(),
                         choice,
                     });
                 }
             }
-        } else if options.spec_file.is_some() || options.spec_name.is_some() {
+        } else if options.hive && (options.spec_file.is_some() || options.spec_name.is_some()) {
             return Err(color_eyre::eyre::eyre!(
                 "a format spec reads one file, or one directory of column files"
             ));
+        }
+
+        // The header lines of a delimited spec's first file: its units and metadata.
+        if let Some(read) = &options.delimited
+            && report.delimited.is_none()
+            && path.is_file()
+        {
+            report.delimited = Some(Arc::new(crate::delimited_spec::read_facts(
+                read, paths, options,
+            )?));
         }
 
         // One path that is a directory, whether or not `--hive` said so: naming a
@@ -19185,13 +19339,9 @@ impl App {
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
                             report.files_disagree = Self::files_disagree(&files, options, found);
-                            let nested = OpenOptions {
-                                hive: false,
-                                format: Some(format),
-                                splits: report.splits.clone(),
-                                ..options.clone()
-                            };
-                            return Self::build_local_lazyframe(&files, &nested, report, formats);
+                            return Self::read_directory_files(
+                                &files, options, found, report, formats,
+                            );
                         }
                         crate::discover::DirectoryFormat::Mixed {
                             format: found,
@@ -19207,13 +19357,9 @@ impl App {
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
                             report.files_disagree = Self::files_disagree(&files, options, found);
-                            let nested = OpenOptions {
-                                hive: false,
-                                format: Some(format),
-                                splits: report.splits.clone(),
-                                ..options.clone()
-                            };
-                            let lf = Self::build_local_lazyframe(&files, &nested, report, formats)?;
+                            let lf = Self::read_directory_files(
+                                &files, options, found, report, formats,
+                            )?;
                             // After the call, which reads a flat directory of one format
                             // and leaves nothing out of its own. A model's config and
                             // tokenizer JSON are not data the read passed over, and the
@@ -21000,10 +21146,10 @@ impl App {
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
-            // The Model, Audio and MIDI tabs scroll their lists the same way.
+            // The Model, Audio, MIDI and Metadata tabs scroll their lists the same way.
             let detail_tab = matches!(
                 self.info_modal.active_tab,
-                InfoTab::Model | InfoTab::Audio | InfoTab::Midi
+                InfoTab::Model | InfoTab::Audio | InfoTab::Midi | InfoTab::Metadata
             );
             let notes = self
                 .data_table_state
@@ -26814,7 +26960,10 @@ impl App {
         let mut names = vec![read.spec.name.clone()];
         names.extend(read.also.iter().cloned());
         for found in &self.formats.specs {
-            if found.spec.layout == read.spec.layout && !names.contains(&found.spec.name) {
+            if found.spec.layout == read.spec.layout
+                && !found.spec.is_delimited()
+                && !names.contains(&found.spec.name)
+            {
                 names.push(found.spec.name.clone());
             }
         }

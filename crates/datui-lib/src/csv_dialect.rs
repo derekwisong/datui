@@ -30,12 +30,37 @@ const MAX_HEADER_LINE: u64 = 16 << 20;
 /// is a header line all the same, since the user named it, and loses the prefix. A
 /// file that ends before the last line named is an error: it has no header there.
 pub fn header_names(
-    mut source: impl BufRead,
+    source: impl BufRead,
     rows: &[usize],
     join: &str,
     separator: u8,
     comment: Option<&str>,
 ) -> color_eyre::Result<Vec<String>> {
+    let lines = named_lines(source, rows)?;
+    let mut columns: Vec<Vec<String>> = Vec::new();
+    for (&row, line) in rows.iter().zip(&lines) {
+        for (i, field) in header_fields(line, row, separator, comment)
+            .into_iter()
+            .enumerate()
+        {
+            if columns.len() <= i {
+                columns.resize_with(i + 1, Vec::new);
+            }
+            if !field.is_empty() {
+                columns[i].push(field);
+            }
+        }
+    }
+    Ok(columns
+        .into_iter()
+        .map(|pieces| pieces.join(join))
+        .collect())
+}
+
+/// The lines `rows` names (1-based, from the top of the file), in the order `rows`
+/// gives them, each with its line break. Only those lines are held, each up to a
+/// bound; a file that ends before the last of them is an error.
+pub fn named_lines(mut source: impl BufRead, rows: &[usize]) -> color_eyre::Result<Vec<Vec<u8>>> {
     use std::io::Read;
     let last = rows.iter().copied().max().unwrap_or(0);
     // Only the named lines are kept; the others are passed over without being held.
@@ -51,7 +76,7 @@ pub fn header_names(
         };
         if read == 0 {
             return Err(color_eyre::eyre::eyre!(
-                "--header-rows names line {last}, past the end of the file"
+                "header line {last} is past the end of the file"
             ));
         }
         if line.len() as u64 > MAX_HEADER_LINE {
@@ -61,34 +86,33 @@ pub fn header_names(
             ));
         }
     }
-    let mut columns: Vec<Vec<String>> = Vec::new();
-    for &row in rows {
-        let Some(line) = row.checked_sub(1).and_then(|i| lines.get(i)) else {
-            continue;
-        };
-        let mut line = line.as_slice();
-        if row == 1 {
-            line = line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line);
-        }
-        line = line.strip_suffix(b"\n").unwrap_or(line);
-        line = line.strip_suffix(b"\r").unwrap_or(line);
-        if let Some(prefix) = comment.filter(|c| !c.is_empty()) {
-            line = line.strip_prefix(prefix.as_bytes()).unwrap_or(line);
-        }
-        for (i, field) in split_fields(line, separator).into_iter().enumerate() {
-            if columns.len() <= i {
-                columns.resize_with(i + 1, Vec::new);
-            }
-            let field = field.trim();
-            if !field.is_empty() {
-                columns[i].push(field.to_string());
-            }
-        }
-    }
-    Ok(columns
-        .into_iter()
-        .map(|pieces| pieces.join(join))
+    Ok(rows
+        .iter()
+        .map(|&row| {
+            row.checked_sub(1)
+                .and_then(|i| lines.get(i))
+                .cloned()
+                .unwrap_or_default()
+        })
         .collect())
+}
+
+/// Header line `row`'s fields, trimmed: without a byte-order mark on line 1, its line
+/// break, or `comment`'s prefix, split on `separator`.
+pub fn header_fields(line: &[u8], row: usize, separator: u8, comment: Option<&str>) -> Vec<String> {
+    let mut line = line;
+    if row == 1 {
+        line = line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line);
+    }
+    line = line.strip_suffix(b"\n").unwrap_or(line);
+    line = line.strip_suffix(b"\r").unwrap_or(line);
+    if let Some(prefix) = comment.filter(|c| !c.is_empty()) {
+        line = line.strip_prefix(prefix.as_bytes()).unwrap_or(line);
+    }
+    split_fields(line, separator)
+        .into_iter()
+        .map(|f| f.trim().to_string())
+        .collect()
 }
 
 /// One line's fields, split on `separator` outside double quotes, with the quotes

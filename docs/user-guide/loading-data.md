@@ -472,6 +472,10 @@ top; `--skip-rows` counts data rows after the header. <kbd>H</kbd> reads the
 named lines as data. A file with nothing after its header lines opens with its
 columns and no rows.
 
+A [delimited format spec](binary-formats.md#delimited-text) holds these options
+for a family of files, with their units and metadata line, so they open with no
+flags.
+
 Padded numbers become numbers with or without `--skip-initial-space`, as long
 as string parsing is on (the default). With the flag, cells of spaces are null
 in text columns too, and `--null-value` matches the value without its padding.

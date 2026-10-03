@@ -11,6 +11,7 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 | **Model** | A SafeTensors or GGUF model's totals and header metadata; appears for model files |
 | **Audio** | An audio file's format, length, metadata and markers; appears for audio files |
 | **MIDI** | A MIDI file's format, timing, length, tempo and tracks; appears for MIDI files |
+| **Metadata** | The metadata line a [delimited format spec](binary-formats.md#delimited-text) names, as key and value; appears for files read through one |
 | **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
@@ -26,8 +27,8 @@ directories, globs and datasets of several files have no file size.
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Switch tabs |
 | <kbd>Tab</kbd> | Move between the Schema tab bar and its column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, the model's or audio file's metadata, or the MIDI tracks |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's or audio file's metadata or the MIDI tracks |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the focused column table, the notes, the model's, audio file's or delimited file's metadata, or the MIDI tracks |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Page through the model's, audio file's or delimited file's metadata or the MIDI tracks |
 | <kbd>Enter</kbd> | Apply a note's offered action, when available |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |

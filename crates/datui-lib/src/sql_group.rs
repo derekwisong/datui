@@ -11,7 +11,8 @@ use std::ops::ControlFlow;
 
 use sqlparser::ast::{
     Distinct, Expr, FunctionArguments, GroupByExpr, Ident, ObjectNamePart, Query, Select,
-    SelectItem, SetExpr, Statement, TableFactor, Visit, Visitor, visit_expressions_mut,
+    SelectItem, SetExpr, Statement, TableFactor, Visit, Visitor, WildcardAdditionalOptions,
+    visit_expressions_mut,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::{Parser, ParserOptions};
@@ -145,6 +146,80 @@ pub fn plan(sql: &str, columns: &[&str], result_width: usize) -> Option<GroupPla
         keys,
         ordered,
     })
+}
+
+/// The columns of `sql`'s result, named in `result`, that are columns of the table it
+/// reads (named in `columns`) unchanged, renamed or not: each result name with the
+/// column's. Only a plain statement's select list is read: `*`, a column, or a column
+/// `AS` a name. Anything else, or a statement that is not plain, gives none.
+pub fn passed_through(sql: &str, columns: &[&str], result: &[&str]) -> Vec<(String, String)> {
+    let Some(statements) = Parser::new(&GenericDialect)
+        .with_options(ParserOptions {
+            trailing_commas: true,
+            ..Default::default()
+        })
+        .try_with_sql(sql)
+        .and_then(|mut parser| parser.parse_statements())
+        .ok()
+    else {
+        return Vec::new();
+    };
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return Vec::new();
+    };
+    if !plain_query(query) || !Plain::check(query) {
+        return Vec::new();
+    }
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return Vec::new();
+    };
+    if !plain_select(select) {
+        return Vec::new();
+    }
+    let [from] = select.from.as_slice() else {
+        return Vec::new();
+    };
+    let TableFactor::Table { name, alias, .. } = &from.relation else {
+        return Vec::new();
+    };
+    let qualifiers: Vec<&str> = name
+        .0
+        .last()
+        .and_then(|p| p.as_ident())
+        .into_iter()
+        .chain(alias.as_ref().map(|a| &a.name))
+        .map(|ident| ident.value.as_str())
+        .collect();
+    let column = |e: &Expr| match normalized(e, &qualifiers) {
+        Expr::Identifier(ident) if columns.contains(&ident.value.as_str()) => Some(ident.value),
+        _ => None,
+    };
+    let plain = |options: &WildcardAdditionalOptions| {
+        options.opt_ilike.is_none()
+            && options.opt_exclude.is_none()
+            && options.opt_except.is_none()
+            && options.opt_replace.is_none()
+            && options.opt_rename.is_none()
+    };
+    // A name given twice is an error in Polars, so a computed column never shares a
+    // name with one kept here.
+    let mut kept: Vec<(String, String)> = Vec::new();
+    for item in &select.projection {
+        match item {
+            SelectItem::UnnamedExpr(e) => kept.extend(column(e).map(|c| (c.clone(), c))),
+            SelectItem::ExprWithAlias { expr, alias } => {
+                kept.extend(column(expr).map(|c| (alias.value.clone(), c)));
+            }
+            SelectItem::Wildcard(options) | SelectItem::QualifiedWildcard(_, options)
+                if plain(options) =>
+            {
+                kept.extend(columns.iter().map(|c| (c.to_string(), c.to_string())));
+            }
+            _ => {}
+        }
+    }
+    kept.retain(|(shown, _)| result.contains(&shown.as_str()));
+    kept
 }
 
 /// The select item a `GROUP BY` entry names, as Polars resolves it: an ordinal, then a
@@ -446,5 +521,30 @@ mod tests {
             plan("SELECT dept, COUNT(*) FROM df GROUP BY dept", COLUMNS, 3),
             None
         );
+    }
+
+    #[test]
+    fn passed_through_names_the_columns_a_statement_keeps() {
+        let columns = ["a", "b", "c d"];
+        let kept = |sql: &str, result: &[&str]| super::passed_through(sql, &columns, result);
+        let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+            p.iter()
+                .map(|(s, f)| (s.to_string(), f.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            kept("SELECT * FROM df WHERE a > 1", &["a", "b", "c d"]),
+            pairs(&[("a", "a"), ("b", "b"), ("c d", "c d")])
+        );
+        assert_eq!(
+            kept(
+                r#"SELECT b * 2 AS b, df.a AS x, "c d", COUNT(*) AS a FROM df GROUP BY 1, 2, 3"#,
+                &["b", "x", "c d", "a"]
+            ),
+            pairs(&[("x", "a"), ("c d", "c d")])
+        );
+        assert!(kept("SELECT * EXCLUDE (a) FROM df", &["b", "c d"]).is_empty());
+        assert!(kept("SELECT a FROM df JOIN df AS e ON true", &["a"]).is_empty());
+        assert!(kept("not sql", &["a"]).is_empty());
     }
 }

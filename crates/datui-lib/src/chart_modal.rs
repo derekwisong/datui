@@ -201,9 +201,20 @@ pub struct ChartModal {
     /// The dataset the choices were made on (`App::dataset_generation`). Reopening the
     /// chart on the same dataset — after a sort or a filter — keeps them.
     pub dataset: Option<u64>,
+    /// Each column's unit, from a delimited spec's unit row: the axis titles name
+    /// them. Set as the chart is drawn.
+    pub units: Vec<(String, String)>,
 }
 
 impl ChartModal {
+    /// An axis title for `column`: its name, and its unit when it has one.
+    pub fn axis_title(&self, column: &str) -> String {
+        match self.units.iter().find(|(name, _)| name == column) {
+            Some((_, unit)) => format!("{column} ({unit})"),
+            None => column.to_string(),
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -799,6 +810,17 @@ impl ChartModal {
 
 #[cfg(test)]
 mod tests {
+
+    /// An axis is titled with its column's unit, when a delimited spec read one.
+    #[test]
+    fn an_axis_title_names_the_unit() {
+        let mut modal = ChartModal::default();
+        assert_eq!(modal.axis_title("cht1"), "cht1");
+        modal.units = vec![("cht1".to_string(), "deg F".to_string())];
+        assert_eq!(modal.axis_title("cht1"), "cht1 (deg F)");
+        assert_eq!(modal.axis_title("volts"), "volts");
+    }
+
     use super::{ChartColumns, ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
     use crate::chart_data::{BarOrder, BarValue};
 

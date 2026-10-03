@@ -4,8 +4,10 @@
 //! disk, so neither is trusted. The input is the spec's text, a NUL byte, then the
 //! file's bytes: a seed stays a spec someone can read. Parsing must give a spec or an
 //! error with a line and column; reading must give rows or an error; and the rows
-//! counted must decode, every one, in any window.
+//! counted must decode, every one, in any window. A delimited spec's header lines
+//! must read or fail, and its metadata line must parse or stay raw.
 
+use datui_lib::delimited_spec::parse_metadata;
 use datui_lib::fixed_records::Bytes;
 use datui_lib::formats::{Layout, Registry, Spec};
 use std::path::Path;
@@ -43,6 +45,17 @@ pub fn run(input: &[u8]) {
     let _ = registry.matching(Path::new("f.bin"), false, |reach| {
         Some(data[..data.len().min(reach as usize)].to_vec())
     });
+    if let Some(delimited) = spec.delimited.as_deref() {
+        // A delimited spec reads only its header lines apart from the CSV reader.
+        let _ = delimited.summary();
+        if let Ok(facts) = delimited.facts(data, b',', " ") {
+            assert!(facts.units.iter().all(|(_, unit)| !unit.is_empty()));
+        }
+        let first = data.split(|&b| b == b'\n').next().unwrap_or_default();
+        let metadata = parse_metadata(&String::from_utf8_lossy(first));
+        assert!(metadata.pairs.iter().all(|(key, _)| !key.is_empty()));
+        return;
+    }
     if spec.layout != Layout::Rows {
         return;
     }

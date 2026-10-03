@@ -548,6 +548,8 @@ pub enum InfoTab {
     Audio,
     /// A MIDI file's header, timing and tracks.
     Midi,
+    /// A delimited spec's metadata line, as key and value.
+    Metadata,
     Resources,
     Partitions,
     Notes,
@@ -562,6 +564,8 @@ pub struct TabsOffered {
     pub audio: bool,
     /// The dataset is a MIDI file's events.
     pub midi: bool,
+    /// A delimited spec read a metadata line.
+    pub metadata: bool,
     pub partitions: bool,
     pub notes: bool,
 }
@@ -573,6 +577,9 @@ impl TabsOffered {
             model: state.model().is_some(),
             audio: state.audio().is_some(),
             midi: state.midi().is_some(),
+            metadata: state
+                .delimited_read()
+                .is_some_and(|read| read.metadata.is_some()),
             partitions: state
                 .partition_columns()
                 .map(|v| !v.is_empty())
@@ -597,6 +604,9 @@ impl InfoTab {
         if offered.midi {
             tabs.push(InfoTab::Midi);
         }
+        if offered.metadata {
+            tabs.push(InfoTab::Metadata);
+        }
         tabs.push(InfoTab::Resources);
         if offered.partitions {
             tabs.push(InfoTab::Partitions);
@@ -613,6 +623,7 @@ impl InfoTab {
             InfoTab::Model => "Model",
             InfoTab::Audio => "Audio",
             InfoTab::Midi => "MIDI",
+            InfoTab::Metadata => "Metadata",
             InfoTab::Resources => "Resources",
             InfoTab::Partitions => "Partitions",
             InfoTab::Notes => "Notes",
@@ -1116,7 +1127,12 @@ impl<'a> DataTableInfo<'a> {
         // Kept for a Parquet file whose footer is still out, so the columns do not
         // re-proportion when it lands.
         let has_comp = self.ctx.parquet_file || compression.as_ref().is_some_and(|c| !c.is_empty());
+        // A delimited spec's unit row: each column's unit, beside its type.
+        let has_units = !self.state.units().is_empty();
         let mut header_cells = vec!["Column", "Type"];
+        if has_units {
+            header_cells.push("Unit");
+        }
         if has_files {
             header_cells.push("Files");
         }
@@ -1162,6 +1178,9 @@ impl<'a> DataTableInfo<'a> {
             }
             let name_str: &str = name.as_ref();
             let mut cells = vec![name.to_string(), dtype.to_string()];
+            if has_units {
+                cells.push(self.state.unit_of(name_str).unwrap_or_default().to_string());
+            }
             if let Some((readable, present_by_name)) = &presence {
                 // A column the footers never named — one built by a query or added
                 // from the file names — has no per-file fact to state.
@@ -1190,24 +1209,32 @@ impl<'a> DataTableInfo<'a> {
             rows.push(Row::new(cells));
         }
 
-        let widths: Vec<Constraint> = match (has_files, has_comp) {
-            (true, true) => vec![
-                Constraint::Percentage(25),
-                Constraint::Percentage(30),
-                Constraint::Percentage(20),
-                Constraint::Percentage(25),
-            ],
-            (true, false) => vec![
-                Constraint::Percentage(35),
-                Constraint::Percentage(40),
-                Constraint::Percentage(25),
-            ],
-            (false, true) => vec![
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
-            ],
-            (false, false) => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
+        let widths: Vec<Constraint> = if has_units {
+            // Name and type as wide as each other, the rest narrower.
+            let mut weights = vec![3, 3, 2];
+            weights.extend(has_files.then_some(2));
+            weights.extend(has_comp.then_some(3));
+            weights.into_iter().map(Constraint::Fill).collect()
+        } else {
+            match (has_files, has_comp) {
+                (true, true) => vec![
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(25),
+                ],
+                (true, false) => vec![
+                    Constraint::Percentage(35),
+                    Constraint::Percentage(40),
+                    Constraint::Percentage(25),
+                ],
+                (false, true) => vec![
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(40),
+                    Constraint::Percentage(30),
+                ],
+                (false, false) => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
+            }
         };
         // The rail and the tint while the table has focus; the accent alone when
         // it does not, so the cursor stays visible without claiming focus. The
@@ -1604,6 +1631,41 @@ impl<'a> DataTableInfo<'a> {
             ("Tracks", midi_track_rows(midi, &sep))
         };
         self.render_detail(area, buf, &lines, title, &rows);
+    }
+
+    /// A delimited spec's metadata line: its title, then each key and value. A line
+    /// that is not key=value pairs is shown as it is.
+    fn render_metadata_tab(&mut self, area: Rect, buf: &mut Buffer) {
+        let Some(read) = self.state.delimited_read().cloned() else {
+            return;
+        };
+        let Some(metadata) = &read.metadata else {
+            return;
+        };
+        if area.height == 0 || area.width < 8 {
+            return;
+        }
+        let mut lines = Vec::new();
+        if let Some(title) = &metadata.title {
+            lines.push((title.clone(), Style::default()));
+        }
+        if let Some(file) = &read.facts_from {
+            lines.push((format!("From {file}"), Style::default()));
+        }
+        let shown: Vec<(String, crate::model_files::MetaValue)> = if metadata.pairs.is_empty() {
+            let line = read.delimited().metadata_line.unwrap_or(1);
+            vec![(
+                format!("line {line}"),
+                crate::model_files::MetaValue::Text(metadata.raw.clone()),
+            )]
+        } else {
+            metadata
+                .pairs
+                .iter()
+                .map(|(k, v)| (k.clone(), crate::model_files::MetaValue::Text(v.clone())))
+                .collect()
+        };
+        self.render_detail(area, buf, &lines, "Metadata", &shown);
     }
 
     /// A detail tab's head lines, then a blank line, a rule titled `title` and the list
@@ -2023,6 +2085,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Model => offered.model,
             InfoTab::Audio => offered.audio,
             InfoTab::Midi => offered.midi,
+            InfoTab::Metadata => offered.metadata,
             _ => false,
         };
         let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
@@ -2094,6 +2157,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Model if offered.model => self.render_model_tab(body, buf),
             InfoTab::Audio if offered.audio => self.render_audio_tab(body, buf),
             InfoTab::Midi if offered.midi => self.render_midi_tab(body, buf),
+            InfoTab::Metadata if offered.metadata => self.render_metadata_tab(body, buf),
             InfoTab::Partitions if offered.partitions => {
                 self.render_partitioned_data_tab(body, buf)
             }
@@ -2101,6 +2165,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Model
             | InfoTab::Audio
             | InfoTab::Midi
+            | InfoTab::Metadata
             | InfoTab::Partitions
             | InfoTab::Notes => self.render_schema_tab(body, buf),
         }
@@ -2124,6 +2189,7 @@ mod tests {
             model: false,
             audio: false,
             midi: false,
+            metadata: false,
             partitions,
             notes,
         }
@@ -2703,6 +2769,7 @@ mod tests {
             model: true,
             audio: false,
             midi: false,
+            metadata: false,
             partitions: false,
             notes: true,
         };

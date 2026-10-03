@@ -22195,6 +22195,68 @@ fn a_directory_of_arrow_ipc_stream_shards_opens_as_one_table() {
     assert_eq!(files_in(scratch.path()), 1, "one copy of all three");
 }
 
+/// The home screen lists a Hugging Face cache's splits inside it, above its files, and
+/// a split's place (`hf_cache/test`) opens that split as `--table` would.
+#[test]
+fn a_hugging_face_cache_lists_its_splits_on_home() {
+    common::ensure_sample_data();
+    let cache = PathBuf::from("tests/sample-data/hf_cache");
+    let mut home = datui::home::HomeState {
+        browsing: Some(cache.clone()),
+        ..datui::home::HomeState::default()
+    };
+    home.rebuild(&[], &[]);
+    let names: Vec<String> = home
+        .visible()
+        .iter()
+        .filter_map(|r| match r {
+            datui::home::Row::Entry { entry, .. } => Some(entry.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names[..3], ["train", "validation", "test"], "{names:?}");
+    assert!(
+        names.contains(&"people-test.arrow".to_string()),
+        "{names:?}"
+    );
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let options = OpenOptions {
+        temp_dir: Some(scratch.path().to_path_buf()),
+        ..OpenOptions::default()
+    };
+    settle_from(
+        &mut app,
+        &rx,
+        AppEvent::Open(vec![cache.join("test")], options),
+    );
+    assert_eq!(app.error_message(), None);
+    let state = app.data_table_state.as_ref().expect("the test split opens");
+    assert_eq!(state.other_tables(), ["train", "validation"]);
+    // A directory has no footer of its own: no Arrow tab, once its facts are read.
+    if let Some(next) = app.event(&key(KeyCode::Char('i'))) {
+        let _ = tx.send(next);
+    }
+    pump_until(&mut app, &rx, &tx, |app| {
+        !matches!(
+            app.file_facts(),
+            Some(datui::widgets::info::FileFacts::Reading)
+        )
+    });
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(
+        text.contains("Resources") && !text.contains("Arrow"),
+        "{text}"
+    );
+    assert!(datui::discover::split_row(&cache.join("test")).is_some());
+    assert!(datui::discover::split_row(&cache.join("dev")).is_none());
+}
+
 /// A Hugging Face cache opens its train split, both shards, and names the other
 /// splits; `--table` opens another. The files `map()` wrote, with columns of their
 /// own, are left out and said to be. A split that is not there is refused by name.

@@ -32,9 +32,6 @@
 //!   left out.
 //! - SafeTensors and GGUF: a directory of weights is the model, and a remote model is
 //!   read by its headers ([`crate::remote_model`]).
-//! - SQLite, NumPy and ELF on the home screen: a `.db` file that is not SQLite cannot
-//!   open, a database's tables sort by name, a database table or NumPy array previews
-//!   its schema, and an ELF file opens its symbols, so its sections are not counted.
 //! - CSV: the reader a delimited spec reads through.
 //! - Text: what text with nothing else to say is read as ([`FileFormat::TEXT`],
 //!   [`crate::lines::guess`]); a name that says text is still asked its bytes, and a
@@ -82,6 +79,10 @@ pub struct FormatFacts {
     pub detail: Option<Arc<Detail>>,
     pub footer: Option<crate::parquet_footer::Footer>,
 }
+
+/// The columns one table of a file of a format opens with, for the home screen's
+/// preview: the one named, or the one the file opens when none is.
+pub(crate) type TableSchema = fn(&Path, Option<&str>) -> Option<crate::discover::SchemaPreview>;
 
 /// What a scan is given: the files to open as `format`, one unless the format reads
 /// many as one table, and where to report what it found besides the frame.
@@ -163,6 +164,12 @@ pub(crate) struct Reader {
     /// format whose scan leaves what the file says besides its rows to Polars. Its
     /// tab is offered from the open on, and filled when the read lands.
     pub facts: Option<Facts>,
+    /// The columns of one of its tables, read cheaply for the home screen's preview,
+    /// where a table's columns are not in its listing.
+    pub table_schema: Option<TableSchema>,
+    /// Whether a file named as it whose first bytes do not say it cannot open: a `.db`
+    /// file that is not SQLite. The home screen lists such a file as no data.
+    pub bytes_decide: bool,
     /// How the home screen's preview reads a file of it before it is opened, where its
     /// first rows are cheap.
     pub preview: Option<Preview>,
@@ -197,6 +204,8 @@ pub(crate) const BASE: Reader = Reader {
     refines: &[],
     tables: None,
     facts: None,
+    table_schema: None,
+    bytes_decide: false,
     preview: None,
     python: None,
     export: None,

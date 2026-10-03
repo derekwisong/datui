@@ -54,11 +54,32 @@ pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
         kind: crate::readers::Kind::Text,
         trusted: crate::readers::Trusted {
             listing: false,
+            tables: true,
             ..crate::readers::EVERYWHERE
         },
     }],
+    // The tables are the sentence types read, whichever the log holds: listing them
+    // reads nothing.
+    tables: Some(|_| Ok(nmea_tables())),
     ..crate::readers::BASE
 };
+
+/// The tables of an NMEA log, as the home screen lists them and `--table` names them.
+fn nmea_tables() -> Vec<crate::sqlite::Table> {
+    nmea::Table::ALL
+        .into_iter()
+        .map(|t| crate::sqlite::Table {
+            name: t.name().to_string(),
+            kind: "table".to_string(),
+            internal: false,
+            columns: t
+                .columns()
+                .into_iter()
+                .map(|(name, _)| (name.to_string(), String::new()))
+                .collect(),
+        })
+        .collect()
+}
 
 /// What datui does with a GPX file: see [`crate::readers`].
 pub(crate) const GPX: crate::readers::Reader = crate::readers::Reader {

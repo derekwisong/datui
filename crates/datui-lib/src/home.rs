@@ -1750,7 +1750,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             (rows, false)
         } else {
             let scan = discover::scan_dir_bounded(&dir);
-            (scan.entries, scan.truncated)
+            // A Hugging Face cache's splits, before the files they are made of.
+            let mut rows = discover::split_rows(&dir);
+            rows.extend(scan.entries);
+            (rows, scan.truncated)
         };
         // A directory cut off at the cap otherwise looks exactly like one that happens
         // to hold that many things.
@@ -1844,6 +1847,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 || p.exists()
                 || crate::members::split(p).is_some()
                 || crate::members::split_variant(p, formats).is_some()
+                || crate::hf_splits::split_place(p).is_some()
         })
         // No display cap. The store already bounds this, the header states the
         // count, and the section folds — an invisible limit would just hide recents
@@ -1857,6 +1861,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             }
             if let Some(variant) = discover::variant_row(p, formats) {
                 return variant;
+            }
+            if !network_check(p)
+                && let Some(split) = discover::split_row(p)
+            {
+                return split;
             }
             let mut entry = entry_for_path(p, network_check(p));
             // A dataset opened from a collection comes back under the collection's name

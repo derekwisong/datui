@@ -413,6 +413,19 @@ pub(crate) const EXCEL: Reader = Reader {
         arguments: Some(py::excel_arguments),
     }),
     scan: scan_excel,
+    // A workbook whose sheets its directory lists: `.xlsx` and `.xlsm`, which are zip
+    // files. Never piped, and never asked of a listing, which would open every zip.
+    signatures: &[Signature {
+        says: crate::excel::is_listable,
+        kind: Kind::Magic,
+        trusted: Trusted {
+            pipe: false,
+            open: Unnamed::Any,
+            listing: false,
+            tables: true,
+        },
+    }],
+    tables: Some(crate::excel::sheets),
     ..BASE
 };
 

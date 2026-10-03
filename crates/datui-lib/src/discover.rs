@@ -323,11 +323,13 @@ impl Holds {
 
 impl Entry {
     /// Whether Enter on this row lists the tables inside it: a file of several that is
-    /// no table itself. A file a spec reads as several variants is one table too (each
-    /// row a variant, with a `type` column), which Enter opens; → lists its variants.
+    /// no table itself. A file that opens one of its tables (a workbook's first sheet)
+    /// opens it, and a file a spec reads as several variants is one table too (each row
+    /// a variant, with a `type` column), which Enter opens; → lists them.
     pub fn enter_lists_tables(&self) -> bool {
         self.kind == EntryKind::File
             && self.cost.tables.is_some_and(|n| n > 1)
+            && !self.cost.opens_one
             && self.format_spec.is_none()
     }
 
@@ -356,7 +358,9 @@ impl Entry {
             }
             EntryKind::File if self.cost.tables.is_some() => {
                 let n = self.cost.tables.unwrap_or_default();
-                format!("{n} {}", if n == 1 { "table" } else { "tables" }).into()
+                let (one, many) =
+                    data_format(&self.path).map_or(("table", "tables"), crate::members::noun);
+                format!("{n} {}", if n == 1 { one } else { many }).into()
             }
             // A file named for what it holds rather than by its file name, as a
             // collection names one: its format, which the name no longer says.
@@ -464,9 +468,13 @@ pub struct Cost {
     /// Partition layout, for a hive dataset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partitions: Option<Partitions>,
-    /// Tables of its own, for a SQLite database: one opens, several are listed.
+    /// Tables of its own, for a file of tables: one opens, several are listed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tables: Option<usize>,
+    /// Whether a file of several tables opens one of them (a workbook's first sheet),
+    /// so Enter opens it and → lists them, rather than Enter listing them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub opens_one: bool,
     /// An Arrow file that is an IPC stream, which is converted before it is scanned,
     /// rather than an IPC file, which is scanned where it is. From its first bytes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -2067,8 +2075,9 @@ pub fn enrich_parquet(entry: &mut Entry) {
 }
 
 /// A file of tables' tables (a SQLite database's schema, a NumPy archive's directory):
-/// how many of its own, and the columns of the one when there is one. A `.db` file that
-/// is not a SQLite database is one datui cannot open.
+/// how many of its own, whether Enter opens one of them, and the columns of the one when
+/// there is one. A file whose name says a format its bytes must say (a `.db` file that
+/// is not SQLite) is one datui cannot open.
 pub fn enrich_tables(entry: &mut Entry) {
     if entry.kind != EntryKind::File || entry.table.is_some() {
         return;
@@ -2078,21 +2087,20 @@ pub fn enrich_tables(entry: &mut Entry) {
         return;
     }
     let Some(format) = crate::members::holder(&entry.path) else {
-        if named == Some(crate::FileFormat::Sqlite) {
+        if named.is_some_and(|f| f.holds_tables() && crate::readers::of(f).bytes_decide) {
             entry.kind = EntryKind::Other;
         }
         return;
     };
-    // An ELF file opens its symbols; its sections are a --table away.
-    if format == crate::FileFormat::Elf {
-        return;
-    }
     let Ok(tables) = crate::members::tables(&entry.path, format) else {
         return;
     };
     let own: Vec<&crate::sqlite::Table> = tables.iter().filter(|t| !t.internal).collect();
     entry.cost.tables = Some(own.len());
-    if let [one] = own.as_slice() {
+    entry.cost.opens_one = format.opens_one_table();
+    if let [one] = own.as_slice()
+        && !one.columns.is_empty()
+    {
         entry.columns = one.columns.iter().map(|(name, _)| name.clone()).collect();
         entry.cols = Some(entry.columns.len());
     }
@@ -2109,7 +2117,12 @@ pub fn database_rows(file: &Path) -> Vec<Entry> {
         return Vec::new();
     };
     // A database's tables by name; an archive's arrays in the order they were saved.
-    if format == crate::FileFormat::Sqlite {
+    if format
+        .descriptor()
+        .tables
+        .as_ref()
+        .is_some_and(|t| t.by_name)
+    {
         tables.sort_by_cached_key(|t| t.name.to_lowercase());
     }
     let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok();
@@ -2117,6 +2130,38 @@ pub fn database_rows(file: &Path) -> Vec<Entry> {
         .into_iter()
         .map(|table| table_entry(file, format, table, modified))
         .collect()
+}
+
+/// The rows of a Hugging Face cache directory's splits, each at its path inside the
+/// directory (`cache/test`): opened, it is the directory read with `--table`. Empty
+/// for any other directory, and for a cache of one split, which its door opens.
+pub fn split_rows(dir: &Path) -> Vec<Entry> {
+    let splits = crate::hf_splits::cache_splits(dir);
+    if splits.len() < 2 {
+        return Vec::new();
+    }
+    splits
+        .into_iter()
+        .map(|split| split_entry(dir, split))
+        .collect()
+}
+
+/// The row of a split named by its path inside its cache directory, as a recent is
+/// listed: `None` when the path names no split of one.
+pub fn split_row(path: &Path) -> Option<Entry> {
+    let (dir, split) = crate::hf_splits::split_place(path)?;
+    Some(split_entry(&dir, split))
+}
+
+fn split_entry(dir: &Path, split: String) -> Entry {
+    let mut entry = Entry::new(dir.join(&split), EntryKind::File);
+    entry.name = split;
+    entry.table = Some(TableOf {
+        format: Some(crate::FileFormat::Arrow),
+        kind: "split".to_string(),
+        internal: false,
+    });
+    entry
 }
 
 /// The rows of a file a format spec reads as several variants, one a variant, each at
@@ -2409,9 +2454,9 @@ pub fn format_age(t: std::time::SystemTime) -> String {
 /// Column name and type, for the home screen's preview pane.
 pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 
-/// The preview of a table of a file of tables: a row inside a database or an archive, a
-/// database or archive of one table, or a NumPy array file. `None` when the entry is
-/// none of these, `Some(None)` when it is and has nothing to show.
+/// The preview of a table of a file of tables: a row inside a database or an archive, or
+/// a file of tables (or a NumPy array file) as it opens. `None` when the entry is none of
+/// these, `Some(None)` when it is and has nothing to show.
 fn table_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
     let (file, format, name) = match &entry.table {
         Some(table) => match (crate::members::split(&entry.path), table.format) {
@@ -2420,24 +2465,18 @@ fn table_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
         },
         None if is_regular_file(&entry.path) => {
             let format = crate::members::holder(&entry.path).or_else(|| {
-                (data_format(&entry.path) == Some(crate::FileFormat::Numpy))
-                    .then_some(crate::FileFormat::Numpy)
+                data_format(&entry.path)
+                    .filter(|f| f.holds_tables() && crate::readers::of(*f).table_schema.is_some())
             })?;
             (entry.path.clone(), format, None)
         }
         None => return None,
     };
-    if format == crate::FileFormat::Numpy {
-        return Some(crate::numpy::schema_preview(&file, name));
-    }
-    let preview = crate::sqlite::tables(&file)
-        .ok()
-        .and_then(|tables| crate::sqlite::pick(tables, name, &file).ok())
-        .and_then(|pick| match pick {
-            crate::sqlite::Pick::One(table) => crate::sqlite::schema_preview(&file, &table),
-            crate::sqlite::Pick::Several(_) => None,
-        });
-    Some(preview)
+    Some(
+        crate::readers::of(format)
+            .table_schema
+            .and_then(|schema| schema(&file, name)),
+    )
 }
 
 /// Find the first Parquet file at or under `dir`, without walking the whole tree.

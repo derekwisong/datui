@@ -194,11 +194,28 @@ impl OpenRequest {
             options.table = Some(name);
             paths = vec![db];
         } else if local
-            && let Some(name) = options.table.as_deref()
             && first.is_file()
+            && let Some(name) = options.table.as_deref()
             && crate::members::holder(&first).is_some()
         {
             table = Some(crate::members::place(&first, name));
+        } else if local
+            && paths.len() == 1
+            && options.table.is_none()
+            && let Some((dir, split)) = crate::hf_splits::split_place(&first)
+        {
+            // A split of a Hugging Face cache, as the home screen lists it.
+            table = Some(first.clone());
+            options.table = Some(split);
+            paths = vec![dir];
+        } else if local
+            && first.is_dir()
+            && let Some(split) = options.table.as_deref()
+            && crate::hf_splits::cache_splits(&first)
+                .iter()
+                .any(|s| s == split)
+        {
+            table = Some(first.join(split));
         } else if local
             && paths.len() == 1
             && options.table.is_none()

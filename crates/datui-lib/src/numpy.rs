@@ -76,6 +76,7 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
         },
     ],
     tables: Some(tables),
+    table_schema: Some(schema_preview),
     ..crate::readers::BASE
 };
 

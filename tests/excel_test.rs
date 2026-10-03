@@ -183,3 +183,106 @@ fn a_bad_sheet_error_names_the_sheets_that_exist() {
     assert!(msg.contains("'Nope'"), "names the sheet asked for: {msg}");
     assert!(msg.contains("0 'Sheet'"), "lists what exists: {msg}");
 }
+
+fn sheets_xlsx() -> PathBuf {
+    common::ensure_sample_data();
+    PathBuf::from("tests/sample-data/sheets.xlsx")
+}
+
+/// A sheet named like an index is found by its name; an index still picks one.
+#[test]
+fn a_sheet_name_comes_before_an_index() {
+    let named = open_excel(
+        "sheets.xlsx",
+        OpenOptions {
+            table: Some("2023".to_string()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(named.height(), 12, "the sheet called 2023");
+    let indexed = open_excel(
+        "sheets.xlsx",
+        OpenOptions {
+            table: Some("1".to_string()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(indexed.height(), 12, "the second sheet");
+}
+
+/// The Excel tab names every sheet with its range and size, from what the open read.
+#[test]
+fn the_excel_tab_lists_the_sheets() {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![sheets_xlsx()], OpenOptions::default());
+    let state = app.data_table_state.as_ref().expect("loaded");
+    let detail = state.format_detail().expect("an Excel tab");
+    assert_eq!(detail.tab, "Excel");
+    assert!(
+        detail.lines[0].starts_with("3 sheets"),
+        "{:?}",
+        detail.lines
+    );
+    assert!(detail.lines[0].contains("1 hidden"), "{:?}", detail.lines);
+    assert_eq!(detail.lines[1], "Opened: Orders");
+    let said: Vec<(String, String)> = detail
+        .list
+        .iter()
+        .map(|(k, v)| match v {
+            datui::model_files::MetaValue::Text(t) => (k.clone(), t.clone()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let times = datui::glyphs::get().times;
+    assert_eq!(
+        said[0],
+        ("Orders".into(), format!("A1:B4, 4 {times} 2, opened"))
+    );
+    assert_eq!(said[1], ("2023".into(), format!("A1:C13, 13 {times} 3")));
+    assert_eq!(said[2].0, "Lookup");
+    assert!(said[2].1.ends_with("hidden"), "{said:?}");
+}
+
+/// The home screen counts a workbook's sheets from its directory, Enter opens the
+/// first and → lists them; a sheet's place opens that sheet.
+#[test]
+fn the_home_screen_lists_a_workbooks_sheets() {
+    use datui::discover;
+    let path = sheets_xlsx();
+    let mut entry = discover::Entry::for_test(&path, "sheets.xlsx");
+    discover::enrich(&mut entry);
+    assert_eq!(
+        entry.cost.tables,
+        Some(2),
+        "the hidden sheet is the workbook's own"
+    );
+    assert!(entry.cost.opens_one && !entry.enter_lists_tables());
+    let rows = discover::database_rows(&path);
+    let names: Vec<(&str, bool)> = rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.hidden_by_default()))
+        .collect();
+    assert_eq!(
+        names,
+        [("Orders", false), ("2023", false), ("Lookup", true)]
+    );
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![rows[1].path.clone()],
+        OpenOptions::default(),
+    );
+    let df = app
+        .data_table_state
+        .as_ref()
+        .expect("the sheet opened")
+        .lf()
+        .clone()
+        .collect()
+        .unwrap();
+    assert_eq!(df.height(), 12, "2023, not the first sheet");
+}

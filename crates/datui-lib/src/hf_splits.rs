@@ -93,6 +93,59 @@ pub fn choose(names: &[&str], table: Option<&str>) -> Result<(Vec<usize>, Splits
     Ok((files, picked))
 }
 
+/// The files `datasets` writes beside a cache's Arrow files, which mark the directory.
+const CACHE_MARKERS: [&str; 2] = ["dataset_info.json", "state.json"];
+
+/// Whether `dir` is a `datasets` cache directory: its metadata beside Arrow files.
+pub fn is_cache_dir(dir: &Path) -> bool {
+    CACHE_MARKERS.iter().any(|name| dir.join(name).is_file())
+}
+
+/// The splits a cache directory's Arrow files name, in the order an open offers them,
+/// as the home screen lists them inside it. Empty for any other directory, and for one
+/// whose files name no splits. Its listing is all that is read.
+pub fn cache_splits(dir: &Path) -> Vec<String> {
+    if !is_cache_dir(dir) {
+        return Vec::new();
+    }
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let names: Vec<String> = read
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.to_ascii_lowercase().ends_with(".arrow") && !is_cache(n))
+        .collect();
+    let mut splits: Vec<&str> = Vec::new();
+    for name in &names {
+        match split_of(name) {
+            Some(split) if !splits.contains(&split) => splits.push(split),
+            Some(_) => {}
+            // A file that names no split makes the directory one table.
+            None => return Vec::new(),
+        }
+    }
+    splits.sort();
+    pick(&splits, None).map_or_else(
+        |_| Vec::new(),
+        |picked| picked.split.into_iter().chain(picked.others).collect(),
+    )
+}
+
+/// The cache directory and the split a path inside one names (`cache/test`), as the
+/// home screen lists it and recents record it. `None` for a path that is there.
+pub fn split_place(path: &Path) -> Option<(std::path::PathBuf, String)> {
+    if path.exists() {
+        return None;
+    }
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty())?;
+    let name = path.file_name()?.to_str()?;
+    cache_splits(dir)
+        .into_iter()
+        .find(|split| split == name)
+        .map(|split| (dir.to_path_buf(), split))
+}
+
 /// The split of `listed` an open reads, `table` if given, else the first in offered
 /// order, and the others in that order: `train`, `validation` and `test`, then the
 /// rest as listed.

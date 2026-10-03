@@ -40,6 +40,13 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
         },
     }],
     tables: Some(tables),
+    table_schema: Some(
+        |file, name| match pick(tables(file).ok()?, name, file).ok()? {
+            Pick::One(table) => schema_preview(file, &table),
+            Pick::Several(_) => None,
+        },
+    ),
+    bytes_decide: true,
     ..crate::readers::BASE
 };
 

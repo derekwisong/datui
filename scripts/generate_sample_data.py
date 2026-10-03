@@ -828,6 +828,31 @@ def save_avro(df, filename):
     print(f"Generated: {filepath}")
 
 
+def save_workbook_of_sheets(filename):
+    """A workbook of several sheets: one named like an index, one hidden, one of
+    different size, for the sheet listing and the Excel tab."""
+    if openpyxl is None:
+        print("Skipping Excel (openpyxl not installed):", filename)
+        return
+    filepath = OUTPUT_DIR / filename
+    wb = openpyxl.Workbook()
+    first = wb.active
+    first.title = "Orders"
+    first.append(["id", "item"])
+    for i in range(1, 4):
+        first.append([i, f"item {i}"])
+    year = wb.create_sheet("2023")
+    year.append(["month", "total", "note"])
+    for m in range(1, 13):
+        year.append([m, m * 10.5, "ok"])
+    hidden = wb.create_sheet("Lookup")
+    hidden.append(["key"])
+    hidden.append(["a"])
+    hidden.sheet_state = "hidden"
+    wb.save(filepath)
+    print(f"Generated: {filepath}")
+
+
 def save_excel(df, filename):
     """Save DataFrame as Excel .xlsx (requires openpyxl)."""
     if openpyxl is None:
@@ -1850,6 +1875,7 @@ def main():
     save_ipc(single_df, "single_row.arrow")
     save_avro(single_df, "single_row.avro")
     save_excel(single_df, "single_row.xlsx")
+    save_workbook_of_sheets("sheets.xlsx")
 
     # Large dataset
     print("\n7. Generating large dataset...")

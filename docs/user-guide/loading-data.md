@@ -330,6 +330,7 @@ datui --table test my_dataset_dict/   # save_to_disk of a DatasetDict: one split
 | IPC files among the streams | Scanned in place, not copied, and stacked with the streams in name order |
 | A `datasets` cache directory (`name-train.arrow`, `name-test-00000-of-00002.arrow`, ...) | One split: the one `--table` names, else `train`, `validation`, `test`, then the first by name. The Schema tab lists the others |
 | A DatasetDict saved with `save_to_disk` (`dataset_dict.json` and a directory per split) | One split's directory, chosen the same way |
+| A cache directory on the home screen | Its splits listed inside it (`abc123/test`), above its files; <kbd>Enter</kbd> on one opens that split |
 | `cache-*.arrow` files `map()` wrote in a cache directory | Left out; a note on the Notes tab counts them |
 | `dataset_info.json`, `state.json` beside `.arrow` files | Left aside as the dataset's metadata; either one marks a cache directory |
 | LZ4 or ZSTD buffers | Read; written out uncompressed, so the copy can be larger than the stream |
@@ -343,8 +344,14 @@ than the temp directory's free space is refused before it is written.
 
 Read: [in memory](#how-each-format-is-read).
 
-Excel opens the first sheet unless `--table` names another, by index
-(`--table 0`) or name (`--table Sales`).
+Excel opens the first sheet unless `--table` names another, by name
+(`--table Sales`) or, when no sheet is so named, by index (`--table 0`).
+
+On the [home screen](home-screen.md), Enter on an `.xlsx` or `.xlsm` workbook opens
+its first sheet and <kbd>→</kbd> lists its sheets (`book.xlsx/Sales`), read from the
+workbook's directory without its cells; a hidden sheet shows with <kbd>Ctrl</kbd>+<kbd>A</kbd>.
+An `.xls` or `.xlsb` workbook opens its first sheet. The Info panel's
+[Excel tab](dataset-info.md#file-format-tabs) gives each sheet's range and size.
 
 ### Model files
 
@@ -437,6 +444,9 @@ GLL sentences:
 `--table` opens one sentence type instead, with all its fields: `GGA`, `RMC`,
 `VTG`, `GSA`, `GSV` (a row per satellite), `GLL`, `ZDA`, or `sentences` (every
 sentence as written, with its line number, vendor sentences included).
+On the home screen, <kbd>Enter</kbd> on a log opens its fixes and <kbd>→</kbd> lists
+these tables (`drive.nmea/GSV`). The Info panel's [GPS tab](dataset-info.md#file-format-tabs)
+gives the time span, the bounds and the count of each sentence type.
 Lines that are not NMEA are skipped; the Info panel's Notes tab counts them,
 and the sentences that fail their checksum. When the log has sentence types the
 table on screen does not show, such as GSV beside the fixes, the Schema tab
@@ -603,6 +613,10 @@ tables, a full-text index's shadow tables) are hidden until
 its first bytes whatever it is called. The home screen labels a database with
 its tables (`3 tables`).
 
+The Info panel's [SQLite tab](dataset-info.md#file-format-tabs) gives the page size,
+the schema and user versions, and each table with its columns and, where `ANALYZE`
+stored them, its rows. It counts no table: that would read the whole database.
+
 A table is read in place; nothing is copied.
 
 | | How |
@@ -715,6 +729,9 @@ datui firmware.elf                    # one row per symbol
 datui firmware.elf --table sections   # one row per section
 datui firmware.elf/sections           # the same
 ```
+
+On the home screen, <kbd>Enter</kbd> on an ELF file opens its symbols and <kbd>→</kbd>
+lists both tables.
 
 | Column | Holds |
 |---|---|

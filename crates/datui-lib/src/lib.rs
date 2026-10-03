@@ -7293,6 +7293,7 @@ impl App {
             && crate::members::split(&path).is_none()
             && crate::members::holder(&path).is_none()
             && crate::members::split_variant(&path, &self.formats).is_none()
+            && crate::hf_splits::split_place(&path).is_none()
         {
             self.home.status = Some(discover::NO_READER.to_string());
             return None;

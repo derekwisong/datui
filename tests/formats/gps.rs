@@ -348,3 +348,47 @@ fn a_directory_of_activities_is_one_table() {
     assert_eq!(app.error_message(), None);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 310);
 }
+
+/// The home screen counts an NMEA log's tables; Enter opens its fixes, → lists them,
+/// and a table's place opens it. The open's GPS tab says what the read found.
+#[test]
+fn an_nmea_log_lists_its_tables_and_sums_itself_up() {
+    let log = gps().join("drive.nmea");
+    let mut entry = datui::discover::Entry::for_test(&log, "drive.nmea");
+    datui::discover::enrich(&mut entry);
+    assert_eq!(entry.cost.tables, Some(9));
+    assert!(entry.cost.opens_one && !entry.enter_lists_tables());
+    let rows = datui::discover::database_rows(&log);
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names[0], "fixes");
+    assert!(names.contains(&"GSV"), "{names:?}");
+
+    let (options, _) = scratch();
+    let (app, _rx) = open_with(log.join("GSV"), options);
+    let state = app.data_table_state.as_ref().expect("GSV opened");
+    assert!(state.schema().contains("prn"), "the GSV table");
+    let detail = state.format_detail().expect("the GPS tab");
+    assert_eq!(detail.tab, "GPS");
+    assert!(detail.lines[0].contains("of GSV"), "{:?}", detail.lines);
+    assert_eq!(detail.list_title, "Sentences");
+    assert!(detail.list.iter().any(|(k, _)| k == "GSV"));
+}
+
+/// A GPX file holds one table: its tab says what it holds, when and where.
+#[test]
+fn a_gpx_file_sums_itself_up() {
+    let (options, _) = scratch();
+    let (app, _rx) = open_with(gps().join("ride.gpx"), options);
+    let detail = app
+        .data_table_state
+        .as_ref()
+        .and_then(|s| s.format_detail())
+        .expect("the GPS tab");
+    assert_eq!(detail.tab, "GPS");
+    assert!(detail.lines[0].contains("points"), "{:?}", detail.lines);
+    assert!(
+        detail.lines.iter().any(|l| l.starts_with("Bounds: ")),
+        "{:?}",
+        detail.lines
+    );
+}

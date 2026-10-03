@@ -2200,10 +2200,12 @@ fn preview_head_keyed(
         None => {}
     }
     if let Some(n) = entry.cost.tables {
+        let (one, many) = crate::discover::data_format(&entry.path)
+            .map_or(("table", "tables"), crate::members::noun);
         let what = match (entry.format_spec.is_some(), n == 1) {
             (true, _) => "variants",
-            (false, true) => "table",
-            (false, false) => "tables",
+            (false, true) => one,
+            (false, false) => many,
         };
         facts.push(("contains", format!("{n} {what}"), plain));
     }
@@ -2515,6 +2517,21 @@ fn render_preview(
                 "Enter opens every record; {} lists its variants.",
                 glyphs::get().arrow_right
             );
+            // A file of tables that opens one of them, as its format's descriptor says.
+            let format = discover::data_format(&entry.path);
+            let opens_note = format
+                .and_then(|f| f.descriptor().tables.as_ref())
+                .and_then(|t| t.opens.map(|opens| (opens, t.noun.1)))
+                .map_or_else(String::new, |(opens, many)| {
+                    format!(
+                        "Enter opens {opens}; {} lists its {many}.",
+                        glyphs::get().arrow_right
+                    )
+                });
+            let lists_note = format!(
+                "Enter lists its {}.",
+                format.map_or("tables", |f| crate::members::noun(f).1)
+            );
             let note = match entry.kind {
                 // The door itself. It is the row the other notes point at, so it says
                 // what it does rather than where to find it.
@@ -2535,7 +2552,14 @@ fn render_preview(
                 EntryKind::Unknown if app.home.missing.contains(&entry.path) => "",
                 EntryKind::Unknown => "Not read yet.",
                 EntryKind::Other => "No reader or spec takes it; Enter shows its bytes.",
-                EntryKind::File if entry.enter_lists_tables() => "Enter lists its tables.",
+                EntryKind::File if entry.enter_lists_tables() => &lists_note,
+                EntryKind::File
+                    if entry.cost.opens_one
+                        && entry.cost.tables.is_some_and(|n| n > 1)
+                        && !opens_note.is_empty() =>
+                {
+                    &opens_note
+                }
                 EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => &variants_note,
                 // The log says which files are live, and datui does not read it.
                 k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
@@ -4299,6 +4323,7 @@ mod tests {
                     more: true,
                 }),
                 tables: None,
+                opens_one: false,
                 ipc_stream: false,
             },
             Some(400_000_000),

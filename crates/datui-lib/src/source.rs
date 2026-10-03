@@ -284,7 +284,11 @@ mod tests {
         assert!(escaped.as_str().ends_with("d[[]1[]].csv"), "{escaped:?}");
         let pattern = dir.path().join("d[2].csv");
         let kept = polars_literal_path(&pattern).unwrap();
-        assert_eq!(kept.as_str(), pattern.to_str().unwrap());
+        // Polars writes a Windows path with forward slashes.
+        assert_eq!(
+            kept.as_str().replace('\\', "/"),
+            pattern.to_str().unwrap().replace('\\', "/")
+        );
     }
 
     /// The escaped name reads that one file through the NDJSON scan, which always

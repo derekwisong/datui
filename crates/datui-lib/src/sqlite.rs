@@ -61,7 +61,9 @@ pub fn table_path(path: &Path) -> Option<(PathBuf, String)> {
         .ancestors()
         .skip(1)
         .take_while(|p| !p.as_os_str().is_empty())
-        .find(|p| p.is_file())?;
+        // Windows resolves `..` before it looks, so `app.db/a/..` would be the
+        // database itself and the table `b` rather than `a/../b`.
+        .find(|p| p.file_name().is_some() && p.is_file())?;
     if !is_sqlite_file(db) {
         return None;
     }

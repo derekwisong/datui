@@ -1630,7 +1630,14 @@ mod tests {
         let (file, source) = open(&bytes, false);
         let source = Arc::new(source);
         assert!(source.window(4000, 10, None).is_ok());
-        file.as_file().set_len(64).unwrap();
+        let cut = file.as_file().set_len(64);
+        // Windows refuses to cut a file it has mapped; the rows still read.
+        if cfg!(windows) {
+            assert_eq!(cut.unwrap_err().raw_os_error(), Some(1224));
+            assert!(source.window(4000, 10, None).is_ok());
+            return;
+        }
+        cut.unwrap();
         let err = source.window(4000, 10, None).unwrap_err().to_string();
         assert!(err.contains("open it again"), "{err}");
         assert!(source.lazy().collect().is_err());

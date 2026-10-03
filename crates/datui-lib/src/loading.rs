@@ -1627,6 +1627,9 @@ mod tests {
             "db",
             "vcd",
             "sdf",
+            "npy",
+            "elf",
+            "ulg",
         ] {
             let format = FileFormat::from_extension(ext).expect(ext);
             seen.push(format);
@@ -1655,6 +1658,13 @@ mod tests {
             RemoteRead::Downloaded
         );
         seen.push(FileFormat::Fix);
+        // A DataFlash log is a `.bin`, found by its first bytes, as a FIX log is.
+        assert_eq!(FileFormat::Dataflash.http_file(), RemoteRead::Downloaded);
+        assert_eq!(
+            FileFormat::Dataflash.bucket_object(Stored::Plain),
+            RemoteRead::Downloaded
+        );
+        seen.push(FileFormat::Dataflash);
         for f in FileFormat::ALL {
             assert!(seen.contains(&f), "{} is checked", f.name());
         }

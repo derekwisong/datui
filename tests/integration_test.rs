@@ -13070,9 +13070,10 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
     assert_eq!(app.home.status, None, "gone at the next key");
 }
 
-/// The bar's count is of what is listed, which the header and the `more` row agree on.
+/// The count is of what is listed, which the header and the `more` row agree on. It
+/// sits on the section's rule; the bar keeps only the order (#547 D11).
 #[test]
-fn test_the_bar_counts_datasets_past_the_cap() {
+fn test_the_rule_counts_datasets_past_the_cap() {
     common::isolate_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let recents: Vec<PathBuf> = (0..12)
@@ -13099,7 +13100,9 @@ fn test_the_bar_counts_datasets_past_the_cap() {
     let bar: String = (0..area.width)
         .map(|x| buf[(x, area.height - 1)].symbol().to_string())
         .collect();
-    assert!(bar.contains("12 datasets"), "{bar:?}");
+    assert!(screen.contains("RECENT  12 "), "{screen:?}");
+    assert!(bar.contains("by recent"), "{bar:?}");
+    assert!(!bar.contains("datasets"), "{bar:?}");
 }
 
 /// The rendered list, one string per screen row, without the control bar.
@@ -14626,13 +14629,12 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
     );
 }
 
-/// The `N datasets` caption counts what is listed, not the way out of the directory.
+/// The section's count is of what is listed, not the way out of the directory.
 ///
 /// The door's kind is the directory's, so it counts as a dataset — and it is the same
-/// dataset as the directory it opens, counted a second time, in the figure whose own
-/// comment says counting a place-to-look makes it a lie.
+/// dataset as the directory it opens, counted a second time.
 #[test]
-fn test_the_caption_does_not_count_the_door_as_a_dataset() {
+fn test_the_count_does_not_include_the_door() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let parts = tmp.path().join("parts");
     std::fs::create_dir_all(&parts).unwrap();
@@ -14658,12 +14660,10 @@ fn test_the_caption_does_not_count_the_door_as_a_dataset() {
     let area = Rect::new(0, 0, 200, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let bar: String = (0..area.width)
-        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
-        .collect();
+    let screen = rendered_text(&buf);
     assert!(
-        bar.contains("3 datasets"),
-        "three files, and the door is not a fourth: {bar:?}"
+        screen.contains("parts  3 "),
+        "three files, and the door is not a fourth: {screen:?}"
     );
 }
 

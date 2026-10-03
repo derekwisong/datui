@@ -29728,29 +29728,12 @@ impl Widget for &mut App {
             );
         }
 
-        // The trailing figure belongs to whatever view is showing. On the home screen
-        // that is how many datasets are listed, not the table's row count.
+        // The trailing figure belongs to whatever view is showing. On the home screen it
+        // is the order the rows are in: each section's rule already counts its rows, and
+        // a total across sections counted things no one listed together (#547 D11). It
+        // yields to every chip at a narrow width.
         if main_view_content == MainViewContent::Home {
-            // Only things that can actually be opened. A directory is somewhere to
-            // look, not a dataset, and counting it makes the figure a lie — and so
-            // does counting a directory nothing has looked into yet, which in a fresh
-            // listing is every directory in it.
-            // Past the cap on RECENT: a dataset the `more` row stands for is listed,
-            // and the header above it counts it.
-            let datasets = self
-                .home
-                .listed()
-                .iter()
-                .filter(|r| {
-                    // The door is not among these: its kind is the directory's, so it
-                    // would count as a dataset and be the same dataset as the directory —
-                    // the figure this comment calls a lie, counted twice. It is a
-                    // `Row::Door` and not an entry, so nothing here has to exclude it.
-                    matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset())
-                })
-                .count();
-            // State, not actions: how many datasets are listed and what order they
-            // are in. The Tab key that changes it lives with the other keys.
+            // State, not actions. The Tab key that changes it lives with the other keys.
             let in_recents = self
                 .home
                 .selected_section()
@@ -29759,15 +29742,14 @@ impl Widget for &mut App {
                 .unwrap_or(false);
             let order = self.home.sort.label_in(in_recents);
             let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();
-            let dot = crate::glyphs::get().middot;
-            let caption = if waiting && datasets == 0 {
+            let caption = if waiting && self.home.visible().is_empty() {
                 "Looking...".to_string()
-            } else if datasets == 1 {
-                format!("by {order}  {dot}  1 dataset")
             } else {
-                format!("by {order}  {dot}  {datasets} datasets")
+                format!("by {order}")
             };
-            controls = controls.with_caption(Some(caption));
+            controls = controls
+                .with_caption(Some(caption))
+                .with_caption_yielding(true);
         }
 
         // Chart preparation spins the throbber without setting `busy`, so the chart

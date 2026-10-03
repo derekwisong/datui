@@ -18,6 +18,15 @@ directory is browsed, as <kbd>→</kbd> does.
 <kbd>Ctrl</kbd>+<kbd>D</kbd> remembers a directory as its own section.
 <kbd>Ctrl</kbd>+<kbd>O</kbd> returns home from an open table.
 
+## The control bar
+
+The bar leads with what a first session needs: <kbd>Enter</kbd> (named for what
+it does on the selected row), `type Filter`, `~ Path`, <kbd>Esc</kbd> (named for
+where it goes: `Clear`, `Up`, `Back`, or `Table` when a dataset is open), `?`
+and <kbd>Ctrl</kbd>+<kbd>C</kbd>. Moves and conveniences follow and are the
+first cut on a narrow terminal. The sort order (`by name`) shows at the far
+right when every key fits; each section's rule counts its rows.
+
 ## Sections
 
 | Section | Contents |

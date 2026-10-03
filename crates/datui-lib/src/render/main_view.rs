@@ -860,18 +860,29 @@ pub fn home_control_keys(
         crate::WhatEnter::Explains => "About",
         crate::WhatEnter::Nothing => "",
     };
-    let mut keys = vec![("Enter", enter_says), (g.updown, "Move")];
+    // What a first session needs leads, the way out with it, so 80 columns show all of
+    // it: Enter, that typing filters, `~` for a path, Esc, help and quit. The moves and
+    // conveniences follow, and the bar is cut from the right (#547 M2).
+    let mut keys = vec![("Enter", enter_says)];
     if enter_says.is_empty() {
-        keys.remove(0);
+        keys.clear();
     }
 
     if path_input_active {
         keys.push(("Esc", "Cancel"));
         keys.push(("Tab", "Complete"));
+        keys.push((g.updown, "Move"));
     } else {
+        keys.push(("type", "Filter"));
+        // `~` opens the path prompt only on an empty filter; with one typed it
+        // is an ordinary filter character, and the chip must not say otherwise.
+        if !has_filter {
+            keys.push(("~", "Path"));
+        }
         // Esc peels off one layer of context at a time, so label it with what it will
         // actually do next rather than a generic "Back". At the top level it does
-        // nothing, and is not offered.
+        // nothing, and is not offered. Back to the open data, it names where the next
+        // keys will land: a reflexive Esc too many puts them on the table (#547 D14).
         if has_filter {
             keys.push(("Esc", "Clear"));
         } else if browsing == Browse::BelowStart {
@@ -879,51 +890,38 @@ pub fn home_control_keys(
         } else if browsing == Browse::AtStart {
             keys.push(("Esc", "Back"));
         } else if has_data {
-            keys.push(("Esc", "Back to data"));
-        } else {
-            // The way out takes Esc's place, so a narrow bar still shows it.
-            keys.push(("^C", "Quit"));
+            keys.push(("Esc", "Table"));
         }
-        keys.push(("type", "Filter"));
-        // `~` opens the path prompt only on an empty filter; with one typed it
-        // is an ordinary filter character, and the chip must not say otherwise.
-        if !has_filter {
-            keys.push(("~", "Path"));
-        }
-        if browsing != Browse::Listing {
-            keys.push(("Bksp", "Up"));
-        }
-        // → does not fold on a directory row, it goes inside — and nothing else on screen
-        // says that door exists. One chip, not two beside it: the bar is cut from the
-        // right and this hint is already near that end, so `← Fold` alongside would
-        // cost eleven more columns and be the first thing lost. ← still folds, and says
-        // so on every other row.
-        //
-        // Not when Enter goes inside as well. Two chips for one outcome is the bar
-        // implying a choice that is not there, and the column it costs is better spent
-        // on a key that does something else.
-        if on_a_directory && enter != crate::WhatEnter::GoesInside {
-            keys.push((g.arrow_right, "Inside"));
-        } else if !on_a_directory && browsing == Browse::Listing {
-            // Only the root listing has sections to fold. The listing browsed into is
-            // the whole screen, never folds, and a chip saying otherwise is a promise
-            // the keys do not keep.
-            keys.push((g.updown_lr, "Fold"));
-        }
-        keys.push((g.ctrl_updown, "Section"));
-        // The key is an action; which order is currently in effect is state, and it
-        // belongs with the other state at the far end of the bar rather than dressed
-        // up as something to press.
-        keys.push(("Tab", "Sort"));
         // `?` is the one printable that does not type into the filter — but only
         // while the filter is empty, so it is only promised then.
         if !has_filter {
             keys.push(("?", "Help"));
         }
+        keys.push(("^C", "Quit"));
+        keys.push((g.updown, "Move"));
+        if browsing != Browse::Listing {
+            keys.push(("Bksp", "Up"));
+        }
+        // → does not fold on a directory row, it goes inside — and nothing else on screen
+        // says that door exists. One chip, not two beside it: ← still folds, and says so
+        // on every other row.
+        //
+        // Not when Enter goes inside as well. Two chips for one outcome is the bar
+        // implying a choice that is not there.
+        if on_a_directory && enter != crate::WhatEnter::GoesInside {
+            keys.push((g.arrow_right, "Inside"));
+        } else if !on_a_directory && browsing == Browse::Listing {
+            // Only the root listing has sections to fold. The listing browsed into is
+            // the whole screen and never folds.
+            keys.push((g.updown_lr, "Fold"));
+        }
+        keys.push((g.ctrl_updown, "Section"));
+        // The key is an action; which order is currently in effect is state, and it
+        // belongs at the far end of the bar rather than dressed up as something to press.
+        keys.push(("Tab", "Sort"));
     }
 
-    // Esc already reads "Quit" when there is nothing left to back out of; saying it
-    // twice is noise.
+    // Ctrl+C quits from the path prompt too.
     if !keys.iter().any(|(_, label)| *label == "Quit") {
         keys.push(("^C", "Quit"));
     }
@@ -1073,7 +1071,7 @@ mod tests {
                 .position(|(key, _)| *key == "Esc" || *key == "^C")
                 .expect("a way out is always offered");
             assert!(
-                way_out < 3,
+                way_out < 5,
                 "the way out is {way_out} deep in state (path={p}, browsing={b:?}, filter={f}, data={d}, directory={n}); \
                  a narrow bar would cut it"
             );
@@ -1092,10 +1090,7 @@ mod tests {
         assert_eq!(esc(false, Browse::Listing, true, false), Some("Clear"));
         assert_eq!(esc(false, Browse::BelowStart, false, false), Some("Up"));
         assert_eq!(esc(false, Browse::AtStart, false, false), Some("Back"));
-        assert_eq!(
-            esc(false, Browse::Listing, false, true),
-            Some("Back to data")
-        );
+        assert_eq!(esc(false, Browse::Listing, false, true), Some("Table"));
         // Nothing to back out of: Esc does nothing and is not offered.
         assert_eq!(esc(false, Browse::Listing, false, false), None);
         assert_eq!(esc(true, Browse::Listing, false, false), Some("Cancel"));
@@ -1195,6 +1190,69 @@ mod tests {
         assert!(has_fold(Browse::Listing));
         assert!(!has_fold(Browse::AtStart));
         assert!(!has_fold(Browse::BelowStart));
+    }
+
+    /// At 80 columns every home state shows that typing filters, `~` where it opens the
+    /// path prompt, help where `?` asks for it, and a way out; the caption yields first
+    /// (#547 M2).
+    #[test]
+    fn home_bar_at_80_columns_keeps_what_a_first_session_needs() {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        let enters = [
+            crate::WhatEnter::OpensFile,
+            crate::WhatEnter::OpensDirectory,
+            crate::WhatEnter::ShowsMore,
+            crate::WhatEnter::GoesInside,
+        ];
+        for (p, b, f, d, n) in all_states() {
+            for enter in enters {
+                let keys = home_control_keys(p, b, f, d, n, enter);
+                let controls = crate::widgets::controls::Controls::from_context(
+                    0,
+                    &crate::render::context::RenderContext::for_test(),
+                )
+                .with_custom_controls(keys)
+                .with_caption(Some("by recent".to_string()))
+                .with_caption_yielding(true);
+                let area = Rect::new(0, 0, 80, 1);
+                let mut buf = Buffer::empty(area);
+                controls.render(area, &mut buf);
+                let bar: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+                let state =
+                    format!("path={p}, browsing={b:?}, filter={f}, data={d}, enter={enter:?}");
+                if p {
+                    assert!(bar.contains("Cancel"), "{state}: {bar:?}");
+                    continue;
+                }
+                assert!(bar.contains("type  Filter"), "{state}: {bar:?}");
+                assert!(bar.contains("Quit"), "{state}: {bar:?}");
+                if !f {
+                    assert!(bar.contains("~  Path"), "{state}: {bar:?}");
+                    assert!(bar.contains("?  Help"), "{state}: {bar:?}");
+                }
+                if f || b != Browse::Listing || d {
+                    assert!(bar.contains("Esc"), "{state}: {bar:?}");
+                }
+                assert!(
+                    !bar.contains("by recent"),
+                    "the caption went first: {bar:?}"
+                );
+            }
+        }
+        // With room for every chip, the caption is there too.
+        let keys = home_control_keys(false, Browse::Listing, false, false, false, OPENS);
+        let controls = crate::widgets::controls::Controls::from_context(
+            0,
+            &crate::render::context::RenderContext::for_test(),
+        )
+        .with_custom_controls(keys)
+        .with_caption(Some("by recent".to_string()))
+        .with_caption_yielding(true);
+        let area = Rect::new(0, 0, 200, 1);
+        let mut buf = Buffer::empty(area);
+        controls.render(area, &mut buf);
+        let bar: String = (0..200).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(bar.contains("Sort") && bar.contains("by recent"), "{bar:?}");
     }
 
     #[test]

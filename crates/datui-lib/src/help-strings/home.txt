@@ -20,9 +20,10 @@ Navigation:
                     level (from a bucket, back to its cloud source; from
                     the top of a collection's remote dataset, back here)
   Tab:              Cycle the sort; the control bar names the order in effect
+                    when it has room
   Esc:              Back out one layer: the path prompt, the filter, the
                     directory (back to the row it was entered from), then
-                    to the open data
+                    to the open table, which the control bar's chip names
   Click:            Select the row; double-click is Enter
   Wheel:            Move the selection three rows, stopping at the ends
 

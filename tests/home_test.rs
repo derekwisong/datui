@@ -6372,6 +6372,19 @@ mod cloud_level_paging {
             subtitle(&app).as_deref(),
             Some("first 5,000 + 10 STATION=P509*")
         );
+        // An answer for a key typed since, landing late, does not put the shorter
+        // prefix back.
+        let rows = app.home.narrowed.clone().expect("narrowed").rows;
+        app.event(&AppEvent::HomeNarrowed {
+            dir: level.clone(),
+            prefix: "STATION=P50".to_string(),
+            listed: Some((rows, false)),
+        });
+        settle(&mut app, &rx, |_| true);
+        assert_eq!(
+            subtitle(&app).as_deref(),
+            Some("first 5,000 + 10 STATION=P509*")
+        );
         // Emptied, the filter lets go of them.
         for _ in 0..4 {
             press(&mut app, KeyCode::Backspace);

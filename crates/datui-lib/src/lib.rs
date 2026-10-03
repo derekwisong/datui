@@ -1256,6 +1256,35 @@ mod home_worker_panic_tests {
         }
     }
 
+    /// A listing for somewhere the user has left lands without saying nothing is in
+    /// flight: the listing for where they are still runs.
+    #[test]
+    fn a_stale_listing_leaves_the_current_one_in_flight() {
+        let (mut app, _rx, _dir) = app();
+        app.home_refresh();
+        let stale = app.home_generation;
+        app.home_refresh();
+        assert!(app.home.listing_in_flight);
+        app.event(&AppEvent::HomeListingReady {
+            generation: stale,
+            listing: Box::default(),
+            known: Default::default(),
+            folds: None,
+            visits: Default::default(),
+            newest: None,
+        });
+        assert!(app.home.listing_in_flight, "the current listing still runs");
+        app.event(&AppEvent::HomeListingReady {
+            generation: app.home_generation,
+            listing: Box::default(),
+            known: Default::default(),
+            folds: None,
+            visits: Default::default(),
+            newest: None,
+        });
+        assert!(!app.home.listing_in_flight);
+    }
+
     #[test]
     fn a_listing_whose_worker_dies_stops_looking_and_the_next_one_lists() {
         let (mut app, rx, _dir) = app();
@@ -25472,10 +25501,12 @@ impl App {
                 newest,
                 folds,
             } => {
-                // Clear the flag first, whatever the generation: a stale result that
-                // returned early while still marked in flight would wedge the pipeline
-                // permanently, and nothing would ever be listed again.
-                self.home.listing_in_flight = false;
+                // Only the current listing's answer clears the flag: a stale one landing
+                // first said nothing was in flight while the listing for where the user
+                // is still ran. Every refresh asks again, so the newest always answers.
+                if *generation == self.home_generation {
+                    self.home.listing_in_flight = false;
+                }
                 // Read fresh from the cache, so true whichever listing carried them:
                 // the facts fill in rows the recursive search finds the same way, and
                 // only the first listing after entering home carries the folds.

@@ -7122,19 +7122,20 @@ impl DataTableState {
 
     /// Record the rows in each row group of each file of a remote dataset: the total,
     /// the row groups a buffer is planned in, and which files hold which rows.
+    ///
+    /// A local dataset has no files to window over, and takes the total and the groups.
     fn record_file_row_groups(&mut self, groups: &[Vec<usize>]) {
-        let Some(files) = self.remote_files.as_mut() else {
-            return;
-        };
-        if groups.len() != files.urls.len() {
-            return;
+        if let Some(files) = self.remote_files.as_mut() {
+            if groups.len() != files.urls.len() {
+                return;
+            }
+            let mut offsets = Vec::with_capacity(groups.len() + 1);
+            offsets.push(0);
+            for file in groups {
+                offsets.push(offsets.last().unwrap_or(&0) + file.iter().sum::<usize>());
+            }
+            files.offsets = Some(offsets);
         }
-        let mut offsets = Vec::with_capacity(groups.len() + 1);
-        offsets.push(0);
-        for file in groups {
-            offsets.push(offsets.last().unwrap_or(&0) + file.iter().sum::<usize>());
-        }
-        files.offsets = Some(offsets);
         let flat: Vec<usize> = groups.iter().flatten().copied().collect();
         if self.is_pristine() {
             self.record_row_groups(&flat);

@@ -1099,6 +1099,69 @@ impl DatasetSchema {
 /// A dataset of more files than this opens from its ends and reads the rest behind.
 pub const FOOTERS_AT_ONCE: usize = 64;
 
+/// Local footers in the form the shape cache keeps them, the schemas gathered into a
+/// table as the cloud ones are. A file's rows are kept as one group: the local scan
+/// reads by file, so its row groups are never planned against.
+pub fn footers_to_cache(
+    footers: &[Option<FileSchema>],
+) -> (
+    Vec<crate::cache::CachedFooter>,
+    Vec<Vec<(String, DataType)>>,
+) {
+    let mut schemas = Vec::new();
+    let cached = footers
+        .iter()
+        .map(|footer| match footer {
+            None => crate::cache::CachedFooter::default(),
+            Some(f) => crate::cache::CachedFooter {
+                schema: Some(crate::cache::DatasetShape::intern_schema(
+                    &mut schemas,
+                    &f.schema,
+                )),
+                row_group_rows: vec![f.rows],
+                row_group_bytes: f.row_group_bytes.clone(),
+                column_bytes: f.column_bytes.iter().map(|(_, bytes)| *bytes).collect(),
+            },
+        })
+        .collect();
+    (cached, schemas)
+}
+
+/// The local footers a cache kept, as a fresh pass would have read them. `file_bytes`
+/// is each file's size from the listing, which the cache does not hold. `None` when
+/// the entry disagrees with itself or with the listing, and is then refused whole.
+pub fn footers_from_cache(
+    cached: &[crate::cache::CachedFooter],
+    schemas: &[Vec<(String, DataType)>],
+    file_bytes: &[u64],
+) -> Option<Vec<Option<FileSchema>>> {
+    if cached.len() != file_bytes.len() {
+        return None;
+    }
+    cached
+        .iter()
+        .zip(file_bytes)
+        .map(|(f, &bytes)| {
+            let Some(at) = f.schema else {
+                return Some(None);
+            };
+            let schema = crate::cache::DatasetShape::schema_at(schemas, at)?;
+            let column_bytes = schema
+                .iter_names()
+                .zip(&f.column_bytes)
+                .map(|(name, bytes)| (name.to_string(), *bytes))
+                .collect();
+            Some(Some(FileSchema {
+                schema: Arc::new(schema),
+                rows: f.row_group_rows.iter().sum(),
+                file_bytes: bytes as usize,
+                row_group_bytes: f.row_group_bytes.clone(),
+                column_bytes,
+            }))
+        })
+        .collect()
+}
+
 /// Something a test runs before each local footer read under a directory.
 type FooterHook = Arc<dyn Fn(&std::path::Path) + Send + Sync>;
 

@@ -15706,20 +15706,30 @@ fn test_delimiter_flag_splits_the_columns() {
         argv.extend_from_slice(extra);
         options_as_the_binary_does(&argv, "")
     };
-    for (what, paths, opts) in [
-        ("one file", vec![one.clone()], with_flag(&[])),
-        ("two files", vec![one.clone(), two.clone()], with_flag(&[])),
-        ("gzip, lazily", vec![gz.clone()], with_flag(&[])),
+    use datui::ReadMode::{Converted, InMemory, Lazy};
+    for (what, paths, opts, read) in [
+        ("one file", vec![one.clone()], with_flag(&[]), Lazy),
+        (
+            "two files",
+            vec![one.clone(), two.clone()],
+            with_flag(&[]),
+            Lazy,
+        ),
+        ("gzip, lazily", vec![gz.clone()], with_flag(&[]), Converted),
         (
             "gzip, in memory",
             vec![gz.clone()],
             with_flag(&["--decompress-in-memory"]),
+            InMemory,
         ),
     ] {
         let rows = 2 * paths.len();
-        let (_, df) = open_and_collect(paths, opts);
+        let (app, df) = open_and_collect(paths, opts);
         assert_eq!(names(&df), ["id", "name", "city"], "{what}");
         assert_eq!(df.height(), rows, "{what}");
+        // How the Info panel says it is read.
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.read_mode(), Some(read), "{what}");
     }
 }
 
@@ -16350,6 +16360,8 @@ fn an_arrow_stream_over_http_is_converted_and_named_by_its_url() {
     assert_eq!(state.num_rows(), 1000);
     assert_eq!(app.open_path(), Some(Path::new(&url)));
     assert_eq!(files_in(scratch.path()), 1, "the converted copy alone");
+    assert_eq!(state.read_mode(), Some(datui::ReadMode::Converted));
+    assert!(state.fetched(), "downloaded, then converted");
 
     settle_from(
         &mut app,
@@ -21150,6 +21162,13 @@ fn arrow_ipc_streams_open() {
         assert_eq!(state.num_rows(), people.height(), "{name}");
         assert_eq!(state.headers(), columns, "{name}");
         assert_eq!(files_in(scratch.path()), 1, "{name}: the converted copy");
+        // Scanned again as the copy, it is still read converted, and not downloaded.
+        assert_eq!(
+            state.read_mode(),
+            Some(datui::ReadMode::Converted),
+            "{name}"
+        );
+        assert!(!state.fetched(), "{name}");
         assert_eq!(
             app.open_path(),
             Some(sample.join(name).as_path()),

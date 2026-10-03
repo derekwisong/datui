@@ -1069,7 +1069,7 @@ pub struct DataTableInfo<'a> {
 /// file was downloaded first. `None` for a frame no open found, such as Python's.
 fn read_line(state: &DataTableState) -> Option<String> {
     let mode = state.read_mode()?.label();
-    Some(if state.scans_a_download() {
+    Some(if state.fetched() {
         format!("downloaded, then {mode}")
     } else {
         mode.to_string()

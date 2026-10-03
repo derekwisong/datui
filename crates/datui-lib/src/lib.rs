@@ -9334,6 +9334,15 @@ pub(crate) enum Scan {
     },
 }
 
+impl App {
+    /// Whether a dataset held `download` because it came from a remote `path` (the
+    /// URL it is shown by): a local stream's conversion and standard input's spool are
+    /// held the same way.
+    fn fetched(download: Option<&crate::download::TempDownload>, path: Option<&Path>) -> bool {
+        download.is_some() && path.is_some_and(source::is_remote_url)
+    }
+}
+
 impl Scan {
     /// The reader the scan chose: `found` (what the read reported, else what was
     /// asked for) for a frame, else the format of what is to be converted.
@@ -9350,19 +9359,27 @@ impl Scan {
     /// How the open reads what this scan found, as [`FileFormat::read_mode`] says for
     /// its format and how it is stored. `format` is the reader the scan chose; a frame
     /// with none is a Parquet scan of a directory, a glob or a bucket.
+    /// A frame of converted Arrow streams (`options.arrow_parts`) is the IPC file they
+    /// were converted to, scanned again.
     fn read_mode(
         &self,
         format: Option<FileFormat>,
         spec: bool,
-        decompress_in_memory: bool,
+        options: &OpenOptions,
     ) -> Option<crate::ReadMode> {
         use crate::{ReadMode, Stored};
         let spec_read = |stored| cli::FormatChoice::Spec(String::new()).read_mode(stored);
+        let converted = options.arrow_parts.as_ref().is_some_and(|parts| {
+            parts
+                .iter()
+                .any(|part| matches!(part, crate::ipc_stream::Part::Converted { .. }))
+        });
         match self {
             Scan::Frame(_) if spec => spec_read(Stored::Plain),
+            Scan::Frame(_) if converted => FileFormat::Arrow.read_mode(Stored::Stream),
             Scan::Frame(_) => format.map_or(Some(ReadMode::Lazy), |f| f.read_mode(Stored::Plain)),
             Scan::Decompress { format, .. } => format.read_mode(Stored::Compressed {
-                in_memory: decompress_in_memory,
+                in_memory: options.decompress_in_memory,
             }),
             Scan::Streams(_) => FileFormat::Arrow.read_mode(Stored::Stream),
             Scan::ReadInto { format, .. } => format.read_mode(Stored::Plain),
@@ -17144,9 +17161,12 @@ impl App {
                                 )
                             })?;
                     let state = state.with_open(OpenFacts {
+                        fetched: Self::fetched(download.as_ref(), Some(&path)),
                         download,
                         open_notes: read.notes(),
                         format_read: Some(read.clone()),
+                        read_mode: cli::FormatChoice::Spec(String::new())
+                            .read_mode(crate::Stored::Compressed { in_memory: false }),
                         ..Default::default()
                     });
                     let options = OpenOptions {
@@ -17185,6 +17205,7 @@ impl App {
                     let state = Self::decompressed_delimited_state(&file, &options, &writer)
                         .map_err(failed)?
                         .with_open(OpenFacts {
+                            fetched: Self::fetched(download.as_ref(), Some(&path)),
                             download,
                             open_notes: options
                                 .delimited
@@ -17192,6 +17213,12 @@ impl App {
                                 .map(|read| read.notes())
                                 .unwrap_or_default(),
                             delimited: options.delimited.clone(),
+                            // The loader sends a compressed file here without a scan.
+                            read_mode: options.format.and_then(|f| {
+                                f.read_mode(crate::Stored::Compressed {
+                                    in_memory: options.decompress_in_memory,
+                                })
+                            }),
                             ..Default::default()
                         });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
@@ -17270,6 +17297,7 @@ impl App {
                     let mut open_notes = facts.open_notes;
                     open_notes.extend(converted.notes);
                     let state = state.with_open(OpenFacts {
+                        fetched: Self::fetched(download.as_ref(), Some(&path)),
                         download,
                         converted: converted.files,
                         other_tables: converted.other_tables,
@@ -17328,11 +17356,7 @@ impl App {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
                     })?;
                     let format = scan.format(report.format.or(options.format));
-                    let read_mode = scan.read_mode(
-                        format,
-                        report.format_read.is_some(),
-                        options.decompress_in_memory,
-                    );
+                    let read_mode = scan.read_mode(format, report.format_read.is_some(), &options);
                     let mut options = OpenOptions {
                         left_out: report.left_out,
                         files_disagree: report.files_disagree,
@@ -17417,7 +17441,11 @@ impl App {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
                     })?;
                     // Everything the open found, given to the dataset as it is built.
-                    let state = state.with_open(OpenFacts { download, ..facts });
+                    let state = state.with_open(OpenFacts {
+                        fetched: Self::fetched(download.as_ref(), path.as_deref()),
+                        download,
+                        ..facts
+                    });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
                         state: Box::new(state),
                         path,
@@ -29251,7 +29279,7 @@ mod read_mode_tests {
         )
         .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let format = scan.format(report.format.or(options.format));
-        let mode = scan.read_mode(format, report.format_read.is_some(), false);
+        let mode = scan.read_mode(format, report.format_read.is_some(), &options);
         // A frame of rows already in memory is a `DF` node in the plan. Audio's frame
         // is one too: an empty frame of its row count, mapped to the file's samples.
         let in_memory = match &scan {
@@ -29261,6 +29289,36 @@ mod read_mode_tests {
             _ => None,
         };
         (mode, in_memory)
+    }
+
+    /// Streams, once converted, are scanned again as the IPC file they became; the open
+    /// still reads them converted. IPC files read in place beside nothing else are lazy.
+    #[test]
+    fn a_converted_stream_scanned_again_is_converted() {
+        use crate::ipc_stream::Part;
+        let scan = Scan::from(df!("a" => [1i64]).unwrap().lazy());
+        let with = |parts: Vec<Part>| OpenOptions {
+            arrow_parts: Some(Arc::new(parts)),
+            ..OpenOptions::default()
+        };
+        let converted = with(vec![
+            Part::InPlace(PathBuf::from("a.arrow")),
+            Part::Converted {
+                source: PathBuf::from("s.arrow"),
+                offset: 0,
+                rows: 1,
+            },
+        ]);
+        let arrow = Some(FileFormat::Arrow);
+        assert_eq!(
+            scan.read_mode(arrow, false, &converted),
+            Some(crate::ReadMode::Converted)
+        );
+        let in_place = with(vec![Part::InPlace(PathBuf::from("s3://b/a.arrow"))]);
+        assert_eq!(
+            scan.read_mode(arrow, false, &in_place),
+            Some(crate::ReadMode::Lazy)
+        );
     }
 
     /// Each reader does what `FileFormat::read_mode` says of its format: a frame of

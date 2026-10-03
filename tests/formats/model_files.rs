@@ -334,6 +334,7 @@ mod remote {
     use super::{frame, models, strings};
     use crate::common::{next_event, pump_open_until_loaded};
     use crate::fake_s3::FakeS3;
+    use datui::model_files::FIRST_SAFETENSORS_RANGE;
     use datui::{App, AppConfig, AppEvent, OpenOptions};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -385,8 +386,9 @@ mod remote {
         u64::from_le_bytes(bytes[..8].try_into().unwrap())
     }
 
-    /// From S3, a SafeTensors file costs two ranged GETs: its length, then its JSON.
-    /// Not a byte of tensor data crosses the wire, and the table is the local one's.
+    /// From S3, a SafeTensors file costs one ranged GET of its first 64 KiB, which holds
+    /// its length and its JSON; the rest of the file is not asked for, and the table is
+    /// the local one's.
     #[test]
     fn an_s3_safetensors_file_is_read_by_its_header_alone() {
         let bytes = padded("tiny.safetensors");
@@ -394,8 +396,9 @@ mod remote {
         let app = open(&s3, "s3://lake/models/tiny.safetensors");
         assert_eq!(app.error_message(), None);
         let wire = s3.wire.count();
-        assert_eq!(wire.gets, 2, "{wire:?}");
-        assert_eq!(wire.bytes, 8 + header_len(&bytes), "{wire:?}");
+        assert!(8 + header_len(&bytes) < FIRST_SAFETENSORS_RANGE);
+        assert_eq!(wire.gets, 1, "{wire:?}");
+        assert_eq!(wire.bytes, FIRST_SAFETENSORS_RANGE, "{wire:?}");
         assert_eq!(frame(&app).height(), 4);
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.model().unwrap().tensors, 4);
@@ -459,8 +462,8 @@ mod remote {
         assert!(model.metadata.iter().any(|(k, _)| k == "total_size"));
     }
 
-    /// A remote index names its shards beside its own URL: they are read there, by
-    /// their headers, not beside a downloaded copy.
+    /// A remote index names its shards beside its own URL: they are read there, by the
+    /// first 64 KiB that holds each one's header, not beside a downloaded copy.
     #[cfg(feature = "http")]
     #[test]
     fn a_remote_index_reads_its_shards_beside_it() {
@@ -475,7 +478,10 @@ mod remote {
         let headers: u64 = objects
             .iter()
             .filter(|(k, _)| k.ends_with(".safetensors"))
-            .map(|(_, bytes)| 8 + header_len(bytes))
+            .map(|(_, bytes)| {
+                assert!(8 + header_len(bytes) < FIRST_SAFETENSORS_RANGE);
+                FIRST_SAFETENSORS_RANGE.min(bytes.len() as u64)
+            })
             .sum();
         let index = objects
             .iter()

@@ -16984,7 +16984,7 @@ impl App {
                     let read = crate::remote_model::read(&url, format, &cloud, &runtime, &|| {
                         writer.stopped()
                     });
-                    let (lf, summary) = match read {
+                    let crate::remote_model::Read { lf, summary, notes } = match read {
                         Ok(read) => read,
                         Err(crate::model_files::RangeError::NoRanges) => {
                             return Ok(Answer::Load(Box::new(LoadAnswer::NoRanges { options })));
@@ -17012,6 +17012,7 @@ impl App {
                     .map_err(|e| crate::error_display::user_message_from_report(&e, Some(&url)))?
                     .with_open(OpenFacts {
                         model,
+                        open_notes: notes,
                         ..Default::default()
                     });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {

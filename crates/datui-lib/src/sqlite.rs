@@ -1695,10 +1695,22 @@ mod read {
         table: &Table,
         others: &[Table],
     ) -> Result<Opened> {
+        open_table_with(file, display, table, others, true)
+    }
+
+    /// As [`open_table`], with or without the census behind it: a test that takes the
+    /// census itself must not race one already running.
+    pub(super) fn open_table_with(
+        file: &Path,
+        display: &Path,
+        table: &Table,
+        others: &[Table],
+        census: bool,
+    ) -> Result<Opened> {
         let source = Arc::new(Source::open(file, display, table)?);
         let hold = Hold(source.stop.clone());
         // The census, in the background: a pass over the table, stopped with it.
-        {
+        if census {
             let source = source.clone();
             std::thread::Builder::new()
                 .name("sqlite-census".to_string())

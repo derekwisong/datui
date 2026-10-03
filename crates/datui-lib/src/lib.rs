@@ -243,7 +243,7 @@ pub(crate) const UNSUPPORTED: &str =
     "Unsupported file type. --format names the format to read it as.";
 
 /// Re-export compression format and file format from CLI module
-pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored};
+pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored, Summary};
 
 #[cfg(test)]
 mod text_input_flows;

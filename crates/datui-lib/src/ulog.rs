@@ -676,7 +676,7 @@ pub fn detail(index: &Index) -> Detail {
     }
     let total = list.len();
     Detail {
-        tab: "ULog",
+        tab: crate::text_formats::tab(crate::FileFormat::Ulog),
         lines,
         list_title: "Info and parameters",
         list: crate::text_formats::capped_list(list.into_iter(), total),

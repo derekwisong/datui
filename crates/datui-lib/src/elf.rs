@@ -321,7 +321,7 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
         symbols,
         sections,
         detail: Detail {
-            tab: "ELF",
+            tab: crate::text_formats::tab(crate::FileFormat::Elf),
             lines,
             list_title: "Sections",
             list,

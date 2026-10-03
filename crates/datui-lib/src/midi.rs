@@ -1183,7 +1183,7 @@ pub fn detail(midi: &MidiSummary) -> crate::text_formats::Detail {
         ("Tracks", track_rows(midi, &sep))
     };
     crate::text_formats::Detail {
-        tab: "MIDI",
+        tab: crate::text_formats::tab(crate::FileFormat::Midi),
         lines: facts(midi, &sep),
         list_title,
         list,

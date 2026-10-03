@@ -1075,7 +1075,7 @@ mod tests {
 
 #[cfg(test)]
 mod format_tests {
-    use super::{FileFormat, FormatChoice, ReadMode, RemoteRead, Stored};
+    use super::{FileFormat, FormatChoice, ReadMode, RemoteRead, Stored, Summary};
 
     /// `ALL` is the list `from_name` searches, so a format missing from it cannot be
     /// read back from a stored name. The match below is exhaustive, so a new variant
@@ -1343,5 +1343,52 @@ mod format_tests {
             assert!(seen.contains(&f), "{} has a row", f.name());
         }
         assert!(stream_row && spec_row, "streams and specs have rows");
+    }
+    /// The dataset-info page's table of tabs says what each descriptor says: the
+    /// format's tab of the Info panel, and what the home screen lists inside a file of
+    /// it. Every format has a row, matched by its title.
+    #[test]
+    fn the_docs_tab_table_agrees_with_the_descriptors() {
+        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/user-guide/dataset-info.md");
+        let text = std::fs::read_to_string(&page).expect("the dataset-info page");
+        let header = "| Format | Tab | Lists inside the file |";
+        let start = text.find(header).expect("the table of tabs");
+        let mut seen: Vec<FileFormat> = Vec::new();
+        for line in text[start..]
+            .lines()
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+        {
+            let cells: Vec<&str> = line.trim_matches('|').split(" | ").map(str::trim).collect();
+            let [formats, tab, tables] = cells[..] else {
+                panic!("three cells: {line}");
+            };
+            for title in formats.split(", ") {
+                let title = title.trim_matches('*');
+                let format = FileFormat::ALL
+                    .into_iter()
+                    .find(|f| f.title().eq_ignore_ascii_case(title))
+                    .unwrap_or_else(|| panic!("{title} is a format's title"));
+                seen.push(format);
+                let said = match format.descriptor().summary {
+                    Summary::Tab(tab) => format!("**{tab}**"),
+                    Summary::None(why) => {
+                        assert!(text.contains(why), "{title}: the page says why: {why}");
+                        "none".to_string()
+                    }
+                };
+                assert_eq!(tab, said, "{title}: Tab");
+                let listed = format
+                    .descriptor()
+                    .tables
+                    .as_ref()
+                    .map_or("no", |t| t.noun.1);
+                assert_eq!(tables, listed, "{title}: Lists inside the file");
+            }
+        }
+        for f in FileFormat::ALL {
+            assert!(seen.contains(&f), "{} has a row", f.title());
+        }
     }
 }

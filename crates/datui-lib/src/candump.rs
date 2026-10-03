@@ -852,7 +852,7 @@ fn detail(index: &Index, listing: &Listing) -> Detail {
         )
     });
     Detail {
-        tab: "CAN",
+        tab: crate::text_formats::tab(crate::FileFormat::Candump),
         lines,
         list_title: "Messages",
         list: crate::text_formats::capped_list(list, listing.messages.len()),

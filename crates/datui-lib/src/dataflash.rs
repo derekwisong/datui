@@ -460,7 +460,7 @@ pub fn detail(index: &Index) -> Detail {
         )
     });
     Detail {
-        tab: "DataFlash",
+        tab: crate::text_formats::tab(crate::FileFormat::Dataflash),
         lines,
         list_title: "Messages",
         list: crate::text_formats::capped_list(list, names.len()),

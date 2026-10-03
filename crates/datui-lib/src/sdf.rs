@@ -593,7 +593,7 @@ pub fn detail(reader: &SdfReader) -> Detail {
         reader.fields().len(),
     );
     Detail {
-        tab: "SDF",
+        tab: crate::text_formats::tab(crate::FileFormat::Sdf),
         lines: vec![head],
         list_title: "Fields",
         list,

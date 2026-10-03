@@ -1098,7 +1098,7 @@ pub fn detail(header: &Header, archive: Option<(&Path, usize)>, compressed: bool
         list = crate::text_formats::capped_list(rows, fields.len());
     }
     Detail {
-        tab: "NumPy",
+        tab: crate::text_formats::tab(crate::FileFormat::Numpy),
         lines,
         list_title: "Fields",
         list,

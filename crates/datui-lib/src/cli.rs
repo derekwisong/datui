@@ -2,8 +2,8 @@
 
 pub use datui_cli::{
     Args, CacheAction, Command, CompressionFormat, ConfigAction, FileFormat, FormatChoice,
-    FormatsAction, InferTypes, Lines, ReadMode, RemoteRead, Stored, ViewsAction, completions,
-    one_table, settings,
+    FormatsAction, InferTypes, Lines, ReadMode, RemoteRead, Stored, Summary, ViewsAction,
+    completions, one_table, settings,
 };
 
 /// `argv` read as the command line is, for a host such as the Python binding that

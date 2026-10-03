@@ -82,8 +82,15 @@ pub struct Descriptor {
     /// How a line of it is read, for text read a line at a time: what `--follow` reads
     /// as it grows.
     pub lines: Option<Lines>,
-    /// The tables a file of it can hold, and how one is picked.
+    /// The tables a file of it can hold, and how one is picked. The home screen lists
+    /// them as places inside the file (`shop.db/orders`, `run.npz/weights`) that
+    /// recents record and `--table` names.
     pub tables: Option<Tables>,
+    /// What the Info panel shows of a file of it besides the Schema tab.
+    pub summary: Summary,
+    /// Whether a file of it declares its columns' types, which the Schema tab then
+    /// calls known rather than inferred.
+    pub declares_types: bool,
     /// What the loading screen and the control bar say while a file of it is read into
     /// files of its own before it is scanned.
     pub conversion: Option<Conversion>,
@@ -111,12 +118,28 @@ pub enum Compressed {
     ReadThrough,
 }
 
+/// What the Info panel shows of a file of a format besides its Schema tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Summary {
+    /// A tab of its own, so named (`SQLite`, `Model`), which the format's reader fills
+    /// from what the open read.
+    Tab(&'static str),
+    /// No tab, and why: the Schema tab is all the file says.
+    None(&'static str),
+}
+
+/// Why a text format has no tab of its own.
+const TEXT_ONLY: Summary = Summary::None("text holds its rows and nothing else");
+
 /// The tables in a file of a format.
 #[derive(Debug)]
 pub struct Tables {
-    /// Whether the home screen lists them as places inside the file
-    /// (`shop.db/orders`, `run.npz/weights`) that recents record and `--table` names.
-    pub listed: bool,
+    /// The table a file of several opens when none is named, as the home screen says
+    /// it (`its symbols`, `its first sheet`): Enter there opens it and → lists them
+    /// all. `None`: Enter lists them.
+    pub opens: Option<&'static str>,
+    /// Whether the home screen lists them by name rather than in the file's order.
+    pub by_name: bool,
     /// What one is called, singular and plural.
     pub noun: (&'static str, &'static str),
     /// What the flag takes for this format, for its help: `a table or view by name`.
@@ -148,6 +171,8 @@ const BASE: Descriptor = Descriptor {
     many_files: false,
     lines: None,
     tables: None,
+    summary: TEXT_ONLY,
+    declares_types: false,
     conversion: None,
 };
 
@@ -187,6 +212,8 @@ const PARQUET: Descriptor = Descriptor {
     bucket_object: RemoteRead::InPlace,
     bucket_prefix: Some(RemoteRead::InPlace),
     many_files: true,
+    declares_types: true,
+    summary: Summary::Tab("Parquet"),
     ..BASE
 };
 
@@ -244,6 +271,8 @@ const ARROW: Descriptor = Descriptor {
     bucket_object: RemoteRead::InPlace,
     bucket_prefix: Some(RemoteRead::InPlace),
     many_files: true,
+    declares_types: true,
+    summary: Summary::Tab("Arrow"),
     ..BASE
 };
 
@@ -252,6 +281,8 @@ const AVRO: Descriptor = Descriptor {
     title: "Avro",
     extensions: &["avro"],
     many_files: true,
+    declares_types: true,
+    summary: Summary::Tab("Avro"),
     ..BASE
 };
 
@@ -260,6 +291,8 @@ const ORC: Descriptor = Descriptor {
     title: "ORC",
     extensions: &["orc"],
     many_files: true,
+    declares_types: true,
+    summary: Summary::Tab("ORC"),
     ..BASE
 };
 
@@ -269,10 +302,12 @@ const EXCEL: Descriptor = Descriptor {
     title: "Excel",
     extensions: &["xls", "xlsx", "xlsm", "xlsb"],
     tables: Some(Tables {
-        listed: false,
+        opens: Some("its first sheet"),
+        by_name: false,
         noun: ("sheet", "sheets"),
-        help: "a sheet by 0-based index or name",
+        help: "a sheet by name, or by 0-based index when no sheet is so named",
     }),
+    summary: Summary::Tab("Excel"),
     ..BASE
 };
 
@@ -281,6 +316,7 @@ const SAFETENSORS: Descriptor = Descriptor {
     title: "SafeTensors",
     extensions: &["safetensors"],
     name_endings: &[".safetensors.index.json"],
+    summary: Summary::Tab("Model"),
     ..MODEL
 };
 
@@ -288,6 +324,7 @@ const GGUF: Descriptor = Descriptor {
     name: "gguf",
     title: "GGUF",
     extensions: &["gguf"],
+    summary: Summary::Tab("Model"),
     ..MODEL
 };
 
@@ -297,7 +334,8 @@ const NMEA: Descriptor = Descriptor {
     extensions: &["nmea"],
     many_files: true,
     tables: Some(Tables {
-        listed: false,
+        opens: Some("its fixes"),
+        by_name: false,
         noun: ("table", "tables"),
         help: "fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences",
     }),
@@ -305,6 +343,7 @@ const NMEA: Descriptor = Descriptor {
         label: "Reading NMEA log",
         status: "Reading NMEA...",
     }),
+    summary: Summary::Tab("GPS"),
     ..READ_INTO
 };
 
@@ -317,6 +356,7 @@ const GPX: Descriptor = Descriptor {
         label: "Reading GPX file",
         status: "Reading GPX...",
     }),
+    summary: Summary::Tab("GPS"),
     ..READ_INTO
 };
 
@@ -327,6 +367,7 @@ const AUDIO: Descriptor = Descriptor {
     title: "audio",
     extensions: &["wav", "wave", "bwf", "rf64", "aif", "aiff", "aifc"],
     read: ReadMode::Lazy,
+    summary: Summary::Tab("Audio"),
     ..BASE
 };
 
@@ -336,6 +377,7 @@ const MIDI: Descriptor = Descriptor {
     title: "MIDI",
     extensions: &["mid", "midi", "smf", "kar", "rmi"],
     many_files: true,
+    summary: Summary::Tab("MIDI"),
     ..BASE
 };
 
@@ -346,10 +388,12 @@ const SQLITE: Descriptor = Descriptor {
     extensions: &["db", "db3", "sqlite", "sqlite3"],
     read: ReadMode::Lazy,
     tables: Some(Tables {
-        listed: true,
+        opens: None,
+        by_name: true,
         noun: ("table", "tables"),
         help: "a table or view by name",
     }),
+    summary: Summary::Tab("SQLite"),
     ..BASE
 };
 
@@ -361,6 +405,7 @@ const VCD: Descriptor = Descriptor {
         label: "Reading value change dump",
         status: "Reading VCD...",
     }),
+    summary: Summary::Tab("VCD"),
     ..READ_INTO
 };
 
@@ -372,6 +417,7 @@ const FIX: Descriptor = Descriptor {
         label: "Reading FIX log",
         status: "Reading FIX log...",
     }),
+    summary: Summary::Tab("FIX"),
     ..READ_INTO
 };
 
@@ -383,6 +429,7 @@ const SDF: Descriptor = Descriptor {
         label: "Reading SDF records",
         status: "Reading SDF...",
     }),
+    summary: Summary::Tab("SDF"),
     ..READ_INTO
 };
 
@@ -394,7 +441,8 @@ const NUMPY: Descriptor = Descriptor {
     extensions: &["npy", "npz"],
     read: ReadMode::Lazy,
     tables: Some(Tables {
-        listed: true,
+        opens: None,
+        by_name: false,
         noun: ("array", "arrays"),
         help: "an array of an archive (.npz) by name",
     }),
@@ -402,6 +450,7 @@ const NUMPY: Descriptor = Descriptor {
         label: "Decompressing NumPy array",
         status: "Decompressing...",
     }),
+    summary: Summary::Tab("NumPy"),
     ..BASE
 };
 
@@ -411,10 +460,12 @@ const ELF: Descriptor = Descriptor {
     title: "ELF",
     extensions: &["elf", "axf"],
     tables: Some(Tables {
-        listed: true,
+        opens: Some("its symbols"),
+        by_name: false,
         noun: ("table", "tables"),
         help: "symbols (default) or sections",
     }),
+    summary: Summary::Tab("ELF"),
     ..BASE
 };
 
@@ -426,10 +477,12 @@ const ULOG: Descriptor = Descriptor {
     extensions: &["ulg"],
     read: ReadMode::Lazy,
     tables: Some(Tables {
-        listed: true,
+        opens: None,
+        by_name: false,
         noun: ("table", "tables"),
         help: "a topic",
     }),
+    summary: Summary::Tab("ULog"),
     ..BASE
 };
 
@@ -439,10 +492,12 @@ const DATAFLASH: Descriptor = Descriptor {
     title: "DataFlash",
     read: ReadMode::Lazy,
     tables: Some(Tables {
-        listed: true,
+        opens: None,
+        by_name: false,
         noun: ("table", "tables"),
         help: "a message type",
     }),
+    summary: Summary::Tab("DataFlash"),
     ..BASE
 };
 
@@ -452,10 +507,12 @@ const CANDUMP: Descriptor = Descriptor {
     title: "candump",
     read: ReadMode::Lazy,
     tables: Some(Tables {
-        listed: true,
+        opens: None,
+        by_name: false,
         noun: ("table", "tables"),
         help: "frames (default), signals, or a message a DBC file names",
     }),
+    summary: Summary::Tab("CAN"),
     ..BASE
 };
 
@@ -479,6 +536,7 @@ const JOURNAL: Descriptor = Descriptor {
     title: "systemd journal",
     many_files: true,
     lines: Some(Lines::Json),
+    summary: Summary::Tab("Journal"),
     ..BASE
 };
 
@@ -614,7 +672,24 @@ impl FileFormat {
     /// it (`shop.db/orders`, `run.npz/weights`) that the home screen lists like a
     /// directory's files and `--table` names.
     pub fn holds_tables(self) -> bool {
-        self.descriptor().tables.as_ref().is_some_and(|t| t.listed)
+        self.descriptor().tables.is_some()
+    }
+
+    /// Whether a file of this format holding several tables opens one when none is
+    /// named. See [`Tables::opens`].
+    pub fn opens_one_table(self) -> bool {
+        self.descriptor()
+            .tables
+            .as_ref()
+            .is_some_and(|t| t.opens.is_some())
+    }
+
+    /// The name of the format's tab of the Info panel, when it has one.
+    pub fn summary_tab(self) -> Option<&'static str> {
+        match self.descriptor().summary {
+            Summary::Tab(tab) => Some(tab),
+            Summary::None(_) => None,
+        }
     }
 
     /// Whether `--table` picks one of the tables of a file of this format.

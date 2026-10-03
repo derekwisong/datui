@@ -823,7 +823,7 @@ pub fn detail(reader: &VcdReader) -> Detail {
         header.vars.len(),
     );
     Detail {
-        tab: "VCD",
+        tab: crate::text_formats::tab(crate::FileFormat::Vcd),
         lines,
         list_title: "Signals",
         list,

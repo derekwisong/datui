@@ -981,7 +981,7 @@ pub fn detail(reader: &FixReader) -> Detail {
         reader.tags.len(),
     );
     Detail {
-        tab: "FIX",
+        tab: crate::text_formats::tab(crate::FileFormat::Fix),
         lines,
         list_title: "Tags",
         list,

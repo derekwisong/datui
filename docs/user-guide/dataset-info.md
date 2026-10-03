@@ -7,20 +7,59 @@ Press <kbd>i</kbd> or <kbd>Esc</kbd> to close the panel.
 
 | Tab | Shows |
 |---|---|
-| **Schema** | Row and column counts, column types, schema source, file coverage, and Parquet codecs/compression |
-| **Model** | A SafeTensors or GGUF model's totals and header metadata; appears for model files |
-| **Audio** | An audio file's format, length, metadata and markers; appears for audio files |
-| **MIDI** | A MIDI file's format, timing, length, tempo and tracks; appears for MIDI files |
+| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression |
+| Format's own | What the file says besides its rows, named for its format; see [the table below](#tabs-by-format) |
 | **Metadata** | The metadata line a [delimited format spec](binary-formats.md#delimited-text) names, as key and value; appears for files read through one |
-| **VCD**, **FIX**, **SDF**, **NumPy**, **ELF**, **ULog**, **DataFlash**, **CAN** | A value change dump's header and signals, a FIX log's versions, dictionaries and tags, an SDF file's fields, a NumPy array's shape and fields, an ELF file's flash and RAM and sections, a flight log's messages, info and parameters, or a CAN log's DBC files and messages; appears for those files |
-| **Resources** | File size, buffered memory, Parquet metadata, and loading measurements |
+| **Resources** | File size, how the file is read, buffered memory, and loading measurements |
 | **Partitions** | Partition columns for a hive-partitioned dataset |
 | **Notes** | Schema differences, skipped files and other findings; appears when there are notes |
 
-The file size and Parquet metadata are read in the background the first time
-the panel opens for a dataset. Until they arrive the size reads `reading...`;
-a file that cannot be read shows why in its place. Remote sources,
-directories, globs and datasets of several files have no file size.
+The file size, and a Parquet, Arrow IPC, Avro or ORC file's tab, are read in the
+background the first time the panel opens for a dataset: the few KB at an end of the
+file the open read too, and none of its rows. Until they arrive the size and the tab
+read `reading...`; a file that cannot be read shows why in their place. Remote
+sources, directories, globs, datasets of several files, and compressed or streamed
+copies have no file size and no such tab.
+
+## Tabs by format
+
+Each format has its own tab beside Schema, or none, and a file that holds several
+tables lists them on the [home screen](home-screen.md) as places inside it
+(`shop.db/orders`, `book.xlsx/Sales`) that recents record and Enter opens.
+
+| Format | Tab | Lists inside the file |
+|---|---|---|
+| Parquet | **Parquet** | no |
+| Arrow IPC | **Arrow** | no |
+| Avro | **Avro** | no |
+| ORC | **ORC** | no |
+| Excel | **Excel** | sheets |
+| SQLite | **SQLite** | tables |
+| CSV, TSV, PSV, JSON, NDJSON | none | no |
+| SafeTensors, GGUF | **Model** | no |
+| NMEA | **GPS** | tables |
+| GPX | **GPS** | no |
+| audio | **Audio** | no |
+| MIDI | **MIDI** | no |
+| VCD | **VCD** | no |
+| FIX | **FIX** | no |
+| SDF | **SDF** | no |
+| NumPy | **NumPy** | arrays |
+| ELF | **ELF** | tables |
+| ULog | **ULog** | tables |
+| DataFlash | **DataFlash** | tables |
+| candump | **CAN** | tables |
+| systemd journal | **Journal** | no |
+| text | none | no |
+
+CSV, TSV, PSV, JSON, NDJSON and plain text have no tab of their own: text holds its rows and nothing else.
+An `.xlsx` or `.xlsm` workbook lists its sheets
+from its directory, without reading them; an `.xls` or `.xlsb` file keeps its sheet
+names where only reading the workbook finds them, so it opens its first sheet and
+`--table` names another.
+
+A [Hugging Face](loading-data.md#arrow-ipc-streams) cache directory lists its
+splits inside it the same way (`cache/test`), above the files they are made of.
 
 ## Keys
 
@@ -91,15 +130,17 @@ list is the files that could not be read, with why.
 ## File format tabs
 
 For a [VCD dump](loading-data.md#vcd-value-change-dumps), <kbd>i</kbd> opens on the
-VCD tab; for a [FIX log](loading-data.md#fix-logs), an
-[SDF file](loading-data.md#sdf-compound-files), a
-[NumPy array](loading-data.md#numpy-arrays), an
-[ELF file](loading-data.md#elf-symbol-tables), a
-[flight log](loading-data.md#flight-logs) or a [CAN log](loading-data.md#can-logs)
-the tab sits beside Schema.
+VCD tab; for every other format the tab sits beside Schema.
 
 | Tab | Lines | List |
 |---|---|---|
+| Parquet | Rows and row groups, the rows in each; compressed and uncompressed size and the codecs; format version and writer; the footer's metadata keys | Columns: each one's least and greatest value and its nulls, from the row groups' statistics, where every group has them |
+| Arrow | Record batches and dictionaries; columns and byte order | Metadata: the schema's and the footer's key and value |
+| Avro | The record's name, fields and codec; its documentation | Field docs: each field's documentation, where it has one |
+| ORC | Rows and stripes, the rows per stripe; format version and compression | Metadata: what the writer kept, key and value |
+| Excel | Sheets, how many are hidden or hold no cells; the sheet opened | Sheets: each one's range and size (`A1:D100, 100 × 4`), as the opened sheet's cells or the other sheets' declarations give it |
+| SQLite | Page size and pages; schema version, user version and text encoding; tables and views; whether row counts are stored | Tables: each one's kind, columns and the rows `ANALYZE` stored for it. No table is counted to fill it |
+| GPS | NMEA: rows of the table opened, sentences and lines. GPX: points, tracks, routes and waypoints. Both: the time span and the latitude and longitude bounds of the rows | Sentences (NMEA): each type and how many |
 | VCD | Timescale, signal and scope counts; value changes and their time span; `$date`, `$version`, `$comment` | Signals: each path with its type, width and identifier |
 | FIX | Messages per BeginString; the dictionaries read with the log, each with what it matches and how many messages | Tags: each column with its tag number and the names the dictionaries give it, each dictionary's when they differ |
 | SDF | Records, fields, and how many records are V3000 | Fields: each one's type and how many records hold it |

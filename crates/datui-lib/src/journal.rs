@@ -390,7 +390,7 @@ fn summary(lf: &LazyFrame) -> PolarsResult<Detail> {
             .collect();
     }
     let detail = Detail {
-        tab: "Journal",
+        tab: crate::text_formats::tab(crate::FileFormat::Journal),
         lines,
         list_title: "Units",
         list: crate::text_formats::capped_list(list.into_iter(), units),

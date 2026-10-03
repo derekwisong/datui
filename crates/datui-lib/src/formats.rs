@@ -4498,7 +4498,7 @@ pub struct Matched {
 }
 
 /// The directories and files searched for specs, in order: the config directory's
-/// `formats`, then `$DATUI_FORMATS_PATH`, then `formats_path` from the config.
+/// `formats`, then `$DATUI_FORMATS_PATH`, then `[formats] path` from the config.
 pub fn search_path(
     config_dir: Option<&Path>,
     env: Option<std::ffi::OsString>,
@@ -4521,7 +4521,7 @@ pub fn search_path(
 }
 
 /// The search path `config` asks for: the config directory's `formats`, then
-/// `$DATUI_FORMATS_PATH`, then its `formats_path`.
+/// `$DATUI_FORMATS_PATH`, then its `[formats] path`.
 pub fn search_path_for(config: &crate::config::AppConfig) -> Vec<PathBuf> {
     let config_dir = crate::config::ConfigManager::new(crate::APP_NAME)
         .ok()
@@ -4529,7 +4529,7 @@ pub fn search_path_for(config: &crate::config::AppConfig) -> Vec<PathBuf> {
     search_path(
         config_dir.as_deref(),
         std::env::var_os(PATH_VAR),
-        &config.formats_path,
+        &config.formats.path,
     )
 }
 

@@ -160,7 +160,7 @@ pub(crate) struct OpenRequest {
     /// database.
     pub(crate) shown: Option<PathBuf>,
     /// Ask before reading more than this many bytes whole into memory
-    /// (`[file_loading] memory_warning_mb`); `None` never asks.
+    /// (`[read] memory_warning`); `None` never asks.
     pub(crate) warn_in_memory_above: Option<u64>,
 }
 

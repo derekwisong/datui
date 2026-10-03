@@ -37,8 +37,8 @@ pub(crate) mod stream;
 pub use stream::stream_messages;
 
 /// How often the watcher checks the file, or where it hears of changes (Linux) the least
-/// time between two reads, unless `[file_loading] follow_interval_ms` says otherwise. A
-/// burst of appends inside one interval is one refresh.
+/// time between two reads, unless `[read] follow_interval` says otherwise. A burst of
+/// appends inside one interval is one refresh.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Bytes read from the file per step while counting records.

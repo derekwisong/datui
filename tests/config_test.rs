@@ -1,5 +1,5 @@
 use datui::config::{
-    AppConfig, ConfigLayer, ConfigManager, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT,
+    AppConfig, ByteSize, ConfigLayer, ConfigManager, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT,
     NumberFormatConfig,
 };
 use datui::numfmt::{Grouping, NumberFormatSettings};
@@ -29,18 +29,15 @@ fn setup_test_config_dir() -> (TempDir, ConfigManager) {
 fn test_default_config() {
     let config = AppConfig::default();
 
-    // Check version
-    assert_eq!(config.version, "0.2");
-
     // Check display defaults
-    assert_eq!(config.display.pages_lookahead, 3);
-    assert_eq!(config.display.pages_lookback, 3);
+    assert_eq!(config.performance.pages_ahead, 3);
+    assert_eq!(config.performance.pages_behind, 3);
     assert!(!config.display.row_numbers);
-    assert_eq!(config.display.row_start_index, 1);
-    assert_eq!(config.display.table_cell_padding.cells(), 2);
+    assert_eq!(config.display.row_numbers_start, 1);
+    assert_eq!(config.display.cell_padding.cells(), 2);
 
     // Check performance defaults
-    assert_eq!(config.performance.analysis_sample_rows, 100_000);
+    assert_eq!(config.analysis.sample_rows, 100_000);
 
     // Check theme defaults
     assert_eq!(config.theme.colors.keybind_hints, "#7dcfff");
@@ -49,14 +46,14 @@ fn test_default_config() {
 
     // Check query defaults
     assert_eq!(config.query.history_limit, 1000);
-    assert!(config.query.enable_history);
+    assert!(config.query.history);
 
     // Check template defaults
-    assert!(!config.templates.auto_apply);
+    assert!(!config.views.auto_apply);
 
-    // Check debug defaults
-    assert!(!config.debug.enabled);
-    assert!(config.debug.show_performance);
+    // Check log defaults
+    assert_eq!(config.log.file, None);
+    assert_eq!(config.log.level, None);
 }
 
 #[test]
@@ -66,16 +63,21 @@ fn test_generate_default_config() {
     let template = config_manager.generate_default_config();
 
     // Check that template contains expected sections
-    assert!(template.contains("[file_loading]"));
-    assert!(template.contains("[display]"));
-    assert!(template.contains("[performance]"));
-    assert!(template.contains("[theme.colors]"));
-    assert!(template.contains("[query]"));
-    assert!(template.contains("[templates]"));
-    assert!(template.contains("[debug]"));
-
-    // Check that it contains version
-    assert!(template.contains("version = \"0.2\""));
+    for section in [
+        "[read]",
+        "[csv]",
+        "[display]",
+        "[performance]",
+        "[analysis]",
+        "[home]",
+        "[theme.colors]",
+        "[query]",
+        "[views]",
+        "[log]",
+    ] {
+        assert!(template.contains(section), "{section}");
+    }
+    assert!(!template.contains("version"));
 }
 
 #[test]
@@ -91,7 +93,6 @@ fn test_write_default_config() {
     // Read and verify content
     let content = fs::read_to_string(&config_path).expect("Failed to read config");
     assert!(content.contains("[display]"));
-    assert!(content.contains("version = \"0.2\""));
 }
 
 #[test]
@@ -135,8 +136,7 @@ fn test_load_config_with_no_file() {
         .expect("Should load default config");
 
     // Should return default config
-    assert_eq!(config.version, "0.2");
-    assert_eq!(config.display.pages_lookahead, 3);
+    assert_eq!(config.performance.pages_ahead, 3);
 }
 
 #[test]
@@ -150,11 +150,9 @@ fn test_load_and_parse_minimal_config() {
         .expect("Failed to create config dir");
 
     let minimal_config = r#"
-version = "0.2"
-
 [display]
 row_numbers = true
-row_start_index = 0
+row_numbers_start = 0
 "#;
 
     fs::write(&config_path, minimal_config).expect("Failed to write minimal config");
@@ -164,13 +162,12 @@ row_start_index = 0
     let config: AppConfig = toml::from_str(&content).expect("Failed to parse config");
 
     // Check that custom values are loaded
-    assert_eq!(config.version, "0.2");
     assert!(config.display.row_numbers);
-    assert_eq!(config.display.row_start_index, 0);
+    assert_eq!(config.display.row_numbers_start, 0);
 
     // Check that defaults are still present for unspecified values
-    assert_eq!(config.display.pages_lookahead, 3); // Default
-    assert_eq!(config.performance.analysis_sample_rows, 100_000); // Default
+    assert_eq!(config.performance.pages_ahead, 3); // Default
+    assert_eq!(config.analysis.sample_rows, 100_000); // Default
 }
 
 #[test]
@@ -178,22 +175,24 @@ fn test_merge_configs() {
     let base = layered(&[r#"
 [display]
 row_numbers = true
-pages_lookahead = 5
 
 [performance]
-analysis_sample_rows = 50000
+pages_ahead = 5
+
+[analysis]
+sample_rows = 50000
 
 [theme.colors]
 keybind_hints = "blue"
 "#]);
 
     assert!(base.display.row_numbers);
-    assert_eq!(base.display.pages_lookahead, 5);
-    assert_eq!(base.performance.analysis_sample_rows, 50000);
+    assert_eq!(base.performance.pages_ahead, 5);
+    assert_eq!(base.analysis.sample_rows, 50000);
     assert_eq!(base.theme.colors.keybind_hints, "blue");
 
     // Unwritten keys take the defaults.
-    assert_eq!(base.display.pages_lookback, 3);
+    assert_eq!(base.performance.pages_behind, 3);
     assert_eq!(base.query.history_limit, 1000);
 }
 
@@ -204,60 +203,22 @@ fn test_validate_config_valid() {
 }
 
 #[test]
-fn test_validate_config_invalid_version() {
-    let config = AppConfig {
-        version: "1.0".to_string(),
-        ..Default::default()
-    };
-
-    let result = config.validate();
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Unsupported config version")
-    );
-}
-
-#[test]
 fn test_validate_config_zero_sample_rows_reads_every_row() {
     let mut config = AppConfig::default();
-    config.performance.analysis_sample_rows = 0;
+    config.analysis.sample_rows = 0;
     assert!(config.validate().is_ok());
 }
 
 #[test]
 fn test_chart_config_default_and_validation() {
     let config = AppConfig::default();
-    assert_eq!(config.chart.row_limit, Some(DEFAULT_CHART_ROW_LIMIT));
+    assert_eq!(config.analysis.chart_rows, DEFAULT_CHART_ROW_LIMIT);
 
     let mut invalid = AppConfig::default();
-    invalid.chart.row_limit = Some(0);
+    invalid.analysis.chart_rows = 0;
     assert!(invalid.validate().is_err());
-    invalid.chart.row_limit = Some(MAX_CHART_ROW_LIMIT + 1);
+    invalid.analysis.chart_rows = MAX_CHART_ROW_LIMIT + 1;
     assert!(invalid.validate().is_err());
-
-    let mut unlimited = AppConfig::default();
-    unlimited.chart.row_limit = None;
-    assert!(unlimited.validate().is_ok());
-}
-
-/// The run loop no longer polls, so `event_poll_interval_ms` is gone; a config written
-/// for an earlier release that still sets it loads, and the setting means nothing.
-#[test]
-fn test_retired_event_poll_interval_still_loads() {
-    let old =
-        "version = \"0.2\"\n[performance]\nanalysis_sample_rows = 7\nevent_poll_interval_ms = 0\n";
-    let config = layered(&["[performance]\nevent_poll_interval_ms = 50\n", old]);
-    assert_eq!(config.performance.analysis_sample_rows, 7);
-    assert!(config.validate().is_ok());
-
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("config.toml");
-    std::fs::write(&path, old).unwrap();
-    let loaded = AppConfig::load_from_file(&path).expect("an old config file loads");
-    assert_eq!(loaded.performance.analysis_sample_rows, 7);
 }
 
 #[test]
@@ -268,20 +229,22 @@ fn test_parse_full_config() {
     unsafe { std::env::remove_var("NO_COLOR") };
 
     let full_config = r##"
-version = "0.2"
+[read]
+infer_types = false
 
-[file_loading]
-parse_dates = false
-infer_schema_length = 5000
+[csv]
+infer_rows = 5000
 
 [display]
-pages_lookahead = 5
-pages_lookback = 5
 row_numbers = true
-row_start_index = 0
+row_numbers_start = 0
 
 [performance]
-analysis_sample_rows = 50000
+pages_ahead = 5
+pages_behind = 5
+
+[analysis]
+sample_rows = 50000
 
 [theme.colors]
 keybind_hints = "blue"
@@ -310,30 +273,30 @@ outlier_marker = "red"
 
 [query]
 history_limit = 500
-enable_history = true
+history = true
 
-[templates]
+[views]
 auto_apply = true
 
-[debug]
-enabled = false
-show_performance = true
-show_query = true
-show_transformations = true
+[log]
+level = "info"
 "##;
 
     let config: AppConfig = toml::from_str(full_config).expect("Failed to parse full config");
 
     // Verify all sections
-    assert_eq!(config.version, "0.2");
-    assert_eq!(config.file_loading.parse_dates, Some(false));
-    assert_eq!(config.file_loading.infer_schema_length, Some(5000));
-    assert_eq!(config.display.pages_lookahead, 5);
+    assert_eq!(
+        config.read.infer_types,
+        datui::config::InferTypes::Switch(false)
+    );
+    assert_eq!(config.csv.infer_rows, 5000);
+    assert_eq!(config.log.level.as_deref(), Some("info"));
+    assert_eq!(config.performance.pages_ahead, 5);
     assert!(config.display.row_numbers);
-    assert_eq!(config.performance.analysis_sample_rows, 50000);
+    assert_eq!(config.analysis.sample_rows, 50000);
     assert_eq!(config.theme.colors.keybind_hints, "blue");
     assert_eq!(config.query.history_limit, 500);
-    assert!(config.templates.auto_apply);
+    assert!(config.views.auto_apply);
 
     // Validate
     assert!(config.validate().is_ok());
@@ -342,26 +305,19 @@ show_transformations = true
 #[test]
 fn test_merge_option_fields() {
     let config = layered(&[
-        "[file_loading]\ninfer_schema_length = 5000\nignore_errors = true\nnull_values = [\"NA\"]\n",
-        "[file_loading]\nignore_errors = false\nnull_values = []\n",
+        "[csv]\ninfer_rows = 5000\nignore_errors = true\nnull_values = [\"NA\"]\ncomment = \"#\"\n",
+        "[csv]\nignore_errors = false\nnull_values = []\n",
     ]);
-    assert_eq!(
-        config.file_loading.infer_schema_length,
-        Some(5000),
-        "unwritten keeps"
-    );
-    assert_eq!(
-        config.file_loading.ignore_errors,
-        Some(false),
-        "written wins"
-    );
-    assert_eq!(
-        config.file_loading.null_values,
-        Some(Vec::new()),
+    assert_eq!(config.csv.infer_rows, 5000, "unwritten keeps");
+    assert!(!config.csv.ignore_errors, "written wins");
+    assert!(
+        config.csv.null_values.is_empty(),
         "an explicit empty list replaces the import's"
     );
+    assert_eq!(config.csv.comment.as_deref(), Some("#"), "unwritten keeps");
     assert_eq!(
-        config.file_loading.parse_dates, None,
+        layered(&["[csv]\nignore_errors = true\n"]).csv.comment,
+        None,
         "never written stays unset"
     );
 }
@@ -408,28 +364,27 @@ fn test_query_default_mode() {
 
 #[test]
 fn test_log_file_parses_defaults_and_merges() {
-    use datui::config::DebugConfig;
+    use datui::config::LogConfig;
 
-    assert_eq!(DebugConfig::default().log_file, None);
-    let omitted: AppConfig = toml::from_str("[debug]\nenabled = true\n").unwrap();
-    assert_eq!(omitted.debug.log_file, None);
+    assert_eq!(LogConfig::default().file, None);
+    let omitted: AppConfig = toml::from_str("[log]\nlevel = \"info\"\n").unwrap();
+    assert_eq!(omitted.log.file, None);
 
-    let set: AppConfig = toml::from_str("[debug]\nlog_file = \"~/datui.log\"\n").unwrap();
-    assert_eq!(set.debug.log_file.as_deref(), Some("~/datui.log"));
+    let set: AppConfig = toml::from_str("[log]\nfile = \"~/datui.log\"\n").unwrap();
+    assert_eq!(set.log.file.as_deref(), Some("~/datui.log"));
 
-    let first = "[debug]\nlog_file = \"/first.log\"\n";
-    let kept = layered(&[first, "[debug]\nenabled = true\n"]);
+    let first = "[log]\nfile = \"/first.log\"\n";
+    let kept = layered(&[first, "[log]\nlevel = \"info\"\n"]);
+    assert_eq!(kept.log.file.as_deref(), Some("/first.log"), "unset keeps");
+    let replaced = layered(&[first, "[log]\nfile = \"/second.log\"\n"]);
     assert_eq!(
-        kept.debug.log_file.as_deref(),
-        Some("/first.log"),
-        "unset keeps"
-    );
-    let replaced = layered(&[first, "[debug]\nlog_file = \"/second.log\"\n"]);
-    assert_eq!(
-        replaced.debug.log_file.as_deref(),
+        replaced.log.file.as_deref(),
         Some("/second.log"),
         "set wins"
     );
+    let mut bad = AppConfig::default();
+    bad.log.level = Some("loud".into());
+    assert!(bad.validate().is_err());
 }
 
 #[test]
@@ -486,60 +441,62 @@ fn test_explicit_defaults_override_and_omitted_keys_keep() {
     let import = r#"
 [display]
 unicode = "never"
-pages_lookahead = 5
 row_numbers = true
-align_numeric_right = false
+right_align_numbers = false
 sidebar_width = 50
 number_format = "thousands"
 
 [performance]
-polars_streaming = false
-quality_local_copy_mb = 512
+pages_ahead = 5
+streaming = false
+
+[analysis]
+quality_local_copy = "512MiB"
 
 [query]
 default_mode = "search"
-enable_history = false
+history = false
 
-[templates]
+[views]
 auto_apply = true
 
 [clipboard]
 backend = "osc52"
 
-[data]
+[home]
 directories = ["/mnt/data"]
-use_desktop_recents = false
+desktop_recents = false
 builtin_catalog = false
-preview_max_mb = 0
+preview_max = 0
 
-[data.search]
+[home.search]
 skip = ["only-this"]
 cross_filesystems = true
 "#;
 
     // A file that says nothing keeps every one of them.
-    let kept = layered(&[import, "version = \"0.2\"\n"]);
+    let kept = layered(&[import, "[display]\n"]);
     assert_eq!(kept.display.unicode, UnicodeMode::Never);
-    assert_eq!(kept.display.pages_lookahead, 5);
+    assert_eq!(kept.performance.pages_ahead, 5);
     assert!(kept.display.row_numbers);
-    assert!(!kept.display.align_numeric_right);
+    assert!(!kept.display.right_align_numbers);
     assert_eq!(kept.display.sidebar_width, Some(50));
     assert_eq!(
         kept.display.number_format,
         NumberFormatConfig::Preset("thousands".to_string())
     );
-    assert!(!kept.performance.polars_streaming);
-    assert_eq!(kept.performance.quality_local_copy_mb, 512);
+    assert!(!kept.performance.streaming);
+    assert_eq!(kept.analysis.quality_local_copy, ByteSize::mib(512));
     assert_eq!(kept.query.default_mode, QueryMode::Search);
-    assert!(!kept.query.enable_history);
-    assert!(kept.templates.auto_apply);
+    assert!(!kept.query.history);
+    assert!(kept.views.auto_apply);
     assert_eq!(kept.clipboard.backend, "osc52");
-    assert_eq!(kept.data.directories, ["/mnt/data"]);
-    assert!(!kept.data.use_desktop_recents);
-    assert!(!kept.data.builtin_catalog);
-    assert_eq!(kept.data.preview_max_mb, 0);
-    assert_eq!(kept.data.search.skip, ["only-this"]);
-    assert!(kept.data.search.cross_filesystems);
+    assert_eq!(kept.home.directories, ["/mnt/data"]);
+    assert!(!kept.home.desktop_recents);
+    assert!(!kept.home.builtin_catalog);
+    assert_eq!(kept.home.preview_max, ByteSize(0));
+    assert_eq!(kept.home.search.skip, ["only-this"]);
+    assert!(kept.home.search.cross_filesystems);
 
     // A file that writes each default puts it back, whatever the import said.
     let defaults = AppConfig::default();
@@ -548,40 +505,42 @@ cross_filesystems = true
         r#"
 [display]
 unicode = "auto"
-pages_lookahead = 3
 row_numbers = false
-align_numeric_right = true
+right_align_numbers = true
 number_format = "none"
 
 [performance]
-polars_streaming = true
-quality_local_copy_mb = 2048
+pages_ahead = 3
+streaming = true
+
+[analysis]
+quality_local_copy = "2GiB"
 
 [query]
 default_mode = "sql"
-enable_history = true
+history = true
 
-[templates]
+[views]
 auto_apply = false
 
 [clipboard]
 backend = "auto"
 
-[data]
+[home]
 directories = []
-use_desktop_recents = true
+desktop_recents = true
 builtin_catalog = true
-preview_max_mb = 64
+preview_max = "64MiB"
 
-[data.search]
+[home.search]
 skip = ["node_modules", "target", "build", "dist", "vendor", "site-packages", "__pycache__", "venv", "env"]
 cross_filesystems = false
 "#,
     ]);
     assert_eq!(restored.display.unicode, UnicodeMode::Auto);
-    assert_eq!(restored.display.pages_lookahead, 3);
+    assert_eq!(restored.performance.pages_ahead, 3);
     assert!(!restored.display.row_numbers);
-    assert!(restored.display.align_numeric_right);
+    assert!(restored.display.right_align_numbers);
     assert_eq!(
         restored.display.number_format,
         defaults.display.number_format
@@ -591,50 +550,46 @@ cross_filesystems = false
         Some(50),
         "TOML cannot unset a key, so an import's optional value stays"
     );
-    assert!(restored.performance.polars_streaming);
+    assert!(restored.performance.streaming);
     assert_eq!(
-        restored.performance.quality_local_copy_mb,
-        defaults.performance.quality_local_copy_mb
+        restored.analysis.quality_local_copy,
+        defaults.analysis.quality_local_copy
     );
     assert_eq!(restored.query.default_mode, QueryMode::Sql);
-    assert!(restored.query.enable_history);
-    assert!(!restored.templates.auto_apply);
+    assert!(restored.query.history);
+    assert!(!restored.views.auto_apply);
     assert_eq!(restored.clipboard.backend, "auto");
     assert!(
-        restored.data.directories.is_empty(),
+        restored.home.directories.is_empty(),
         "an empty list is a value"
     );
-    assert!(restored.data.use_desktop_recents);
-    assert!(restored.data.builtin_catalog);
-    assert_eq!(restored.data.preview_max_mb, defaults.data.preview_max_mb);
-    assert_eq!(restored.data.search.skip, defaults.data.search.skip);
-    assert!(!restored.data.search.cross_filesystems);
+    assert!(restored.home.desktop_recents);
+    assert!(restored.home.builtin_catalog);
+    assert_eq!(restored.home.preview_max, defaults.home.preview_max);
+    assert_eq!(restored.home.search.skip, defaults.home.search.skip);
+    assert!(!restored.home.search.cross_filesystems);
     assert_eq!(restored.collections().len(), 1, "the catalog is back");
 }
 
 #[test]
 fn test_lists_that_add_up_across_files() {
     let config = layered(&[
-        "[data]\nhide_sources = [\"public\"]\n[cloud]\nhide = [\"a\"]\nenv_files = [\".env\"]\n",
-        "[data]\nhide_sources = [\"mine\", \"public\"]\n[cloud]\nhide = []\nenv_files = [\"cloud.env\"]\n",
+        "[home]\nhide = [\"public\"]\n[cloud]\nhide = [\"a\"]\nenv_files = [\".env\"]\n",
+        "[home]\nhide = [\"mine\", \"public\"]\n[cloud]\nhide = []\nenv_files = [\"cloud.env\"]\n",
     ]);
-    assert_eq!(config.data.hide_sources, ["public", "mine"]);
+    assert_eq!(config.home.hide, ["public", "mine"]);
     assert_eq!(config.cloud.hide, ["a"], "an empty list adds nothing");
     assert_eq!(config.cloud.env_files, [".env", "cloud.env"]);
 }
 
+/// The S3 keys are not config: a secret in a file is refused with the way out, as
+/// any unknown key would be named.
 #[test]
-fn test_a_blank_cloud_setting_does_not_erase_an_import() {
-    let config = layered(&[
-        "[cloud]\ns3_region = \"eu-west-1\"\ns3_endpoint_url = \" http://minio:9000 \"\n",
-        "[cloud]\ns3_region = \"  \"\n",
-    ]);
-    assert_eq!(config.cloud.s3_region.as_deref(), Some("eu-west-1"));
-    assert_eq!(
-        config.cloud.s3_endpoint_url.as_deref(),
-        Some("http://minio:9000"),
-        "trimmed, as the environment's are"
-    );
+fn test_s3_keys_are_not_config_keys() {
+    let config = layered(&["[cloud]\ns3_region = \"eu-west-1\"\n"]);
+    assert_eq!(config.cloud.s3_region, None, "the environment's alone");
+    let refused = "cloud.s3_region=x".parse::<datui_cli::settings::Override>();
+    assert!(refused.is_err());
 }
 
 #[test]
@@ -799,8 +754,8 @@ fn test_template_analysis_sample_rows_matches_the_default() {
         toml::from_str(&template_str).expect("Template should be valid TOML");
 
     assert_eq!(
-        template_config.performance.analysis_sample_rows,
-        AppConfig::default().performance.analysis_sample_rows,
+        template_config.analysis.sample_rows,
+        AppConfig::default().analysis.sample_rows,
         "the template and the Rust default agree"
     );
 }
@@ -821,7 +776,7 @@ fn test_number_format_defaults_are_inert() {
     let settings = config
         .display
         .number_format
-        .resolve(config.display.align_numeric_right)
+        .resolve(config.display.right_align_numbers)
         .expect("default config must resolve");
     // Inert because formatting starts off -- not because there is nothing to
     // apply. Every column resolves to Passthrough while disabled.
@@ -846,7 +801,7 @@ fn test_number_format_defaults_are_inert() {
 
     // Alignment, unlike grouping, is on by default: it changes neither the
     // characters of a value nor a column's width.
-    assert!(config.display.align_numeric_right);
+    assert!(config.display.right_align_numbers);
     assert!(settings.align_numeric_right);
 }
 
@@ -865,7 +820,6 @@ fn test_toggle_target_keeps_user_settings_when_grouping_is_none() {
     // Grouping off but min_digits and excludes configured: pressing F must
     // honour those, not reset to a bare preset.
     let toml_str = r#"
-version = "0.2"
 
 [display.number_format]
 grouping = "none"
@@ -886,7 +840,6 @@ fn test_non_grouping_format_still_starts_enabled() {
     // Decimal separator alone is a real change, so it applies immediately
     // rather than being treated as "nothing configured".
     let toml_str = r#"
-version = "0.2"
 
 [display.number_format]
 grouping = "none"
@@ -904,7 +857,6 @@ decimal_separator = ","
 #[test]
 fn test_number_format_preset_shorthand() {
     let toml_str = r#"
-version = "0.2"
 
 [display]
 number_format = "thousands"
@@ -923,7 +875,6 @@ number_format = "thousands"
 #[test]
 fn test_number_format_table_form() {
     let toml_str = r#"
-version = "0.2"
 
 [display.number_format]
 grouping = "thousands"
@@ -974,7 +925,6 @@ fn test_number_format_unknown_preset_is_rejected() {
 #[test]
 fn test_number_format_separator_conflict_is_rejected() {
     let toml_str = r#"
-version = "0.2"
 
 [display.number_format]
 grouping = "thousands"
@@ -989,7 +939,6 @@ decimal_separator = "."
 #[test]
 fn test_number_format_multichar_separator_is_rejected() {
     let toml_str = r#"
-version = "0.2"
 
 [display.number_format]
 group_separator = ", "
@@ -1005,7 +954,6 @@ fn test_number_format_bad_value_fails_validation_not_parsing() {
     // validate() (which reports the config file path) rather than silently
     // falling back at render time.
     let toml_str = r#"
-version = "0.2"
 
 [display]
 number_format = "nonsense"
@@ -1017,27 +965,23 @@ number_format = "nonsense"
 #[test]
 fn test_number_format_merge_overrides_default() {
     let config = layered(&[r#"
-version = "0.2"
 
 [display]
 number_format = "indian"
-align_numeric_right = false
+right_align_numbers = false
 "#]);
 
     assert_eq!(
         config.display.number_format,
         NumberFormatConfig::Preset("indian".to_string())
     );
-    assert!(!config.display.align_numeric_right);
+    assert!(!config.display.right_align_numbers);
 }
 
 #[test]
 fn test_number_format_merge_keeps_existing_when_user_omits() {
     // A user config that says nothing about number_format must not reset it.
-    let config = layered(&[
-        "[display]\nnumber_format = \"european\"\n",
-        "version = \"0.2\"\n",
-    ]);
+    let config = layered(&["[display]\nnumber_format = \"european\"\n", "[display]\n"]);
     assert_eq!(
         config.display.number_format,
         NumberFormatConfig::Preset("european".to_string())
@@ -1065,7 +1009,7 @@ fn test_generated_config_documents_number_format() {
     // shorthand, the long form, and the runtime toggle.
     assert!(template.contains("number_format = \"none\""));
     assert!(template.contains("[display.number_format]"));
-    assert!(template.contains("align_numeric_right = true"));
+    assert!(template.contains("right_align_numbers = true"));
     assert!(!template.contains("min_digits"));
 
     // Generated configs must not carry trailing whitespace.
@@ -1089,7 +1033,6 @@ fn test_number_format_unknown_key_is_reported() {
     // so an ignored typo would resolve to "no formatting" -- identical to the
     // default config, leaving the user no way to tell the difference.
     let toml_str = r#"
-version = "0.2"
 
 [display.number_format]
 groupng = "thousands"
@@ -1105,7 +1048,6 @@ groupng = "thousands"
 #[test]
 fn test_number_format_reports_every_unknown_key() {
     let toml_str = r#"
-version = "0.2"
 
 [display.number_format]
 groupng = "thousands"
@@ -1122,7 +1064,6 @@ floatz = true
 fn test_number_format_known_keys_are_not_flagged_as_unknown() {
     // Guard against the unknown-key capture swallowing real fields.
     let toml_str = r#"
-version = "0.2"
 
 [display.number_format]
 grouping = "thousands"
@@ -1149,8 +1090,7 @@ fn test_number_format_wrong_types_still_fail_at_parse_time() {
         "[display.number_format]\nfloats = \"yes\"\n",
         "[display]\nnumber_format = 7\n",
     ] {
-        let src = format!("version = \"0.2\"\n{bad}");
-        let parsed = toml::from_str::<AppConfig>(&src);
+        let parsed = toml::from_str::<AppConfig>(bad);
         assert!(parsed.is_err(), "should fail to parse: {bad}");
     }
 }
@@ -1439,7 +1379,10 @@ fn test_load_from_missing_config_file_yields_defaults() {
 
     let config = AppConfig::load_from_file(&root).expect("Missing config is not an error");
 
-    assert_eq!(config.version, AppConfig::default().version);
+    assert_eq!(
+        config.query.history_limit,
+        AppConfig::default().query.history_limit
+    );
     assert!(config.import.is_empty());
 }
 
@@ -1490,7 +1433,7 @@ fn test_unparseable_root_config_is_an_error_naming_it() {
     let root = write_config(
         &temp_dir,
         "config.toml",
-        "[display]\nrow_numbers = true\nrow_start_index = \"one\"\n",
+        "[display]\nrow_numbers = true\nrow_numbers_start = \"one\"\n",
     );
 
     let msg = AppConfig::load_from_file(&root)
@@ -1728,15 +1671,9 @@ fn test_an_explicit_auto_mode_beats_an_imported_one() {
 }
 
 #[test]
-fn test_cloud_settings_run_file_then_environment_then_command_line() {
-    use datui::config::{CloudConfig, CloudDiscover};
-    let mut cloud = layered(&[
-        "[cloud]\ns3_region = \"import-region\"\ns3_endpoint_url = \"http://import:9000\"\n",
-        "[cloud]\ns3_region = \"file-region\"\ndiscover = [\"s3\"]\n",
-    ])
-    .cloud;
-    assert_eq!(cloud.s3_region.as_deref(), Some("file-region"));
-
+fn test_cloud_s3_settings_come_from_the_environment() {
+    use datui::config::CloudConfig;
+    let mut cloud = CloudConfig::default();
     let env = |key: &str| match key {
         "AWS_REGION" => Some("env-region".to_string()),
         "AWS_ENDPOINT_URL" => Some("  ".to_string()),
@@ -1744,19 +1681,7 @@ fn test_cloud_settings_run_file_then_environment_then_command_line() {
     };
     cloud.overlay(CloudConfig::from_env(&env));
     assert_eq!(cloud.s3_region.as_deref(), Some("env-region"));
-    assert_eq!(
-        cloud.s3_endpoint_url.as_deref(),
-        Some("http://import:9000"),
-        "a blank variable says nothing"
-    );
-
-    cloud.overlay(CloudConfig {
-        s3_region: Some("flag-region".to_string()),
-        discover: Some(CloudDiscover::None),
-        ..CloudConfig::default()
-    });
-    assert_eq!(cloud.s3_region.as_deref(), Some("flag-region"));
-    assert_eq!(cloud.discover, Some(CloudDiscover::None));
+    assert_eq!(cloud.s3_endpoint_url, None, "a blank variable says nothing");
 }
 
 #[test]
@@ -2162,16 +2087,17 @@ fn test_the_generated_config_shows_every_documented_setting() {
     );
 
     for path in [
-        "file_loading.parse_dates",
-        "file_loading.null_values",
-        "file_loading.temp_dir",
-        "file_loading.ignore_errors",
+        "read.infer_types",
+        "csv.null_values",
+        "read.temp_dir",
+        "csv.ignore_errors",
         "display.sidebar_width",
         "theme.mode",
-        "debug.log_file",
+        "log.file",
+        "log.level",
         "cloud.discover",
         "cloud.env_files",
-        "chart.row_limit",
+        "analysis.chart_rows",
         "query.default_mode",
     ] {
         assert!(shown(path), "{path} is missing from the generated config");
@@ -2213,40 +2139,40 @@ fn test_a_multi_line_array_default_is_fully_commented() {
 #[test]
 fn test_search_settings_round_trip_through_toml() {
     let toml = r#"
-[data.search]
+[home.search]
 enabled = false
 max_depth = 3
 skip_extra = ["archive"]
 extensions = ["parquet"]
 "#;
     let config: AppConfig = toml::from_str(toml).unwrap();
-    assert!(!config.data.search.enabled);
-    assert_eq!(config.data.search.max_depth, 3);
-    assert_eq!(config.data.search.skip_extra, vec!["archive".to_string()]);
-    assert_eq!(config.data.search.extensions, vec!["parquet".to_string()]);
+    assert!(!config.home.search.enabled);
+    assert_eq!(config.home.search.max_depth, 3);
+    assert_eq!(config.home.search.skip_extra, vec!["archive".to_string()]);
+    assert_eq!(config.home.search.extensions, vec!["parquet".to_string()]);
     // Untouched fields keep their defaults, and skip_extra adds to skip rather than
     // replacing it.
-    assert!(!config.data.search.cross_filesystems);
+    assert!(!config.home.search.cross_filesystems);
     assert!(
         config
-            .data
+            .home
             .search
             .skipped_dirs()
             .contains(&"node_modules".to_string())
     );
     assert!(
         config
-            .data
+            .home
             .search
             .skipped_dirs()
             .contains(&"archive".to_string())
     );
 }
 
-/// The generated config invites an S3 access key and secret in its `[cloud]`
-/// section. datui creates that file, so datui decides who can read it: a plain
-/// write lands at 0644 under a typical umask, which hands the user's
-/// credentials to every other account on the machine.
+/// A config file can name credentials (a connection's command, a dataset URL's
+/// token). datui creates that file, so datui decides who can read it: a plain write
+/// lands at 0644 under a typical umask, which hands it to every other account on
+/// the machine.
 #[cfg(unix)]
 #[test]
 fn generated_config_is_not_readable_by_other_users() {
@@ -2301,28 +2227,8 @@ fn regenerating_over_a_world_readable_config_tightens_it() {
     );
 }
 
-/// The template is what steers people toward putting a secret in this file at
-/// all, so it should say where the secret is better kept.
-#[test]
-fn cloud_secret_comment_points_at_the_environment() {
-    let (_temp_dir, config_manager) = setup_test_config_dir();
-    let template = config_manager.generate_default_config();
-
-    assert!(
-        template.contains("s3_secret_access_key"),
-        "template should carry the cloud credential fields"
-    );
-    assert!(
-        template.contains("AWS_SECRET_ACCESS_KEY"),
-        "template should name the environment variable as the better home for a secret"
-    );
-}
-
 fn cloud_config(toml_text: &str) -> AppConfig {
-    let mut config: AppConfig =
-        toml::from_str(&format!("version = \"0.2\"\n{toml_text}")).expect("Failed to parse config");
-    config.version = AppConfig::default().version;
-    config
+    toml::from_str(toml_text).expect("Failed to parse config")
 }
 
 fn cloud_error(toml_text: &str) -> String {
@@ -2639,10 +2545,7 @@ fn collection_mistakes_are_named() {
             "[[sources]]\nname = \"my-datasets\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
             "\"my-datasets\" is used twice",
         ),
-        (
-            "[data]\nhide_sources = [\"My datasets\"]\n",
-            "Use the name, not",
-        ),
+        ("[home]\nhide = [\"My datasets\"]\n", "Use the name, not"),
     ] {
         let message = error(body);
         assert!(message.contains(expected), "{body:?}: {message}");
@@ -2784,21 +2687,21 @@ fn the_builtin_catalog_is_replaced_dropped_or_hidden() {
     );
 
     // Dropping the built-in leaves a configured `public` alone; hiding hides it.
-    let drop = "[data]\nbuiltin_catalog = false\n";
+    let drop = "[home]\nbuiltin_catalog = false\n";
     let dropped = layered(&[replacing, drop]);
     assert_eq!(names(&dropped, true).len(), 2);
     let off = layered(&[drop]);
     assert!(off.collections().is_empty());
     assert!(off.cloud.dataset_access.is_empty());
-    let back = layered(&[drop, "[data]\nbuiltin_catalog = true\n"]);
+    let back = layered(&[drop, "[home]\nbuiltin_catalog = true\n"]);
     assert_eq!(back.collections().len(), 1, "a later file turns it back on");
 
     let hidden = layered(&[
         replacing,
-        "[data]\nhide_sources = [\"public\"]\n",
-        "[data]\nhide_sources = [\"mine\"]\n",
+        "[home]\nhide = [\"public\"]\n",
+        "[home]\nhide = [\"mine\"]\n",
     ]);
-    assert_eq!(hidden.data.hide_sources, ["public", "mine"], "hides add up");
+    assert_eq!(hidden.home.hide, ["public", "mine"], "hides add up");
     assert!(names(&hidden, true).is_empty());
     assert_eq!(names(&hidden, false).len(), 2, "hidden, not gone");
 }
@@ -2879,7 +2782,7 @@ fn the_generated_config_materializes_the_builtin_catalog() {
     assert!(text.contains("snapshot"), "{text}");
     assert!(text.contains("[[sources.datasets]]"), "{text}");
     assert!(text.contains("# builtin_catalog = true"), "{text}");
-    assert!(text.contains("# hide_sources = []"), "{text}");
+    assert!(text.contains("# hide = []"), "{text}");
     assert!(!text.contains("\nhide ="), "{text}");
 }
 
@@ -2979,16 +2882,16 @@ fn cloud_discover_takes_a_switch_a_word_or_a_list_of_kinds() {
 fn cloud_discover_and_list_on_start_merge_only_when_set() {
     use datui::config::CloudDiscover;
     let set = "[cloud]\ndiscover = [\"s3\"]\nlist_on_start = true\n";
-    let base = layered(&[set, "version = \"0.2\"\n"]);
+    let base = layered(&[set, "[display]\n"]);
     assert_eq!(
         base.cloud.discover,
         Some(CloudDiscover::Kinds(vec!["s3".to_string()]))
     );
-    assert_eq!(base.cloud.list_on_start, Some(true));
+    assert!(base.cloud.list_on_start);
 
     let changed = layered(&[set, "[cloud]\ndiscover = false\nlist_on_start = false\n"]);
     assert_eq!(changed.cloud.discover, Some(CloudDiscover::None));
-    assert_eq!(changed.cloud.list_on_start, Some(false));
+    assert!(!changed.cloud.list_on_start);
 }
 
 /// `[cloud] discover` is config only; `-c` sets it for one run, over the file.
@@ -3026,7 +2929,6 @@ fn cloud_discover_is_set_for_a_run_with_dash_c() {
 fn glyph_overrides_parse_validate_and_merge() {
     let config: AppConfig = toml::from_str(
         r#"
-version = "0.2"
 
 [glyphs]
 in_object_store = "☁"
@@ -3121,12 +3023,16 @@ fn cursor_text_auto_contrast_picks_by_luminance() {
 fn clipboard_config_defaults_merge_and_validate() {
     let config = AppConfig::default();
     assert_eq!(config.clipboard.backend, "auto");
-    assert_eq!(config.clipboard.osc52_limit_kb, 100);
+    assert_eq!(config.clipboard.osc52_limit, ByteSize::kib(100));
     config.validate().expect("defaults validate");
 
-    let base = layered(&["[clipboard]\nbackend = \"osc52\"\nosc52_limit_kb = 512"]);
+    let base = layered(&["[clipboard]\nbackend = \"osc52\"\nosc52_limit = \"512KiB\""]);
     assert_eq!(base.clipboard.backend, "osc52");
-    assert_eq!(base.clipboard.osc52_limit_kb, 512);
+    assert_eq!(base.clipboard.osc52_limit, ByteSize::kib(512));
+    assert!(
+        ConfigLayer::parse("[clipboard]\nosc52_limit = 512\n").is_err(),
+        "a size needs its unit"
+    );
     base.validate().expect("a named backend validates");
 
     let mut bad = AppConfig::default();
@@ -3139,55 +3045,60 @@ fn clipboard_config_defaults_merge_and_validate() {
     assert!(template.contains("# [clipboard]"), "{template}");
 }
 
-/// `performance.quality_local_copy_mb`: 2 GiB when omitted, read when set, 0 kept as
+/// `analysis.quality_local_copy`: 2 GiB when omitted, read when set, 0 kept as
 /// "never copy", merged over an earlier layer, and the same in the template.
 #[test]
-fn test_quality_local_copy_mb() {
-    assert_eq!(AppConfig::default().performance.quality_local_copy_mb, 2048);
-    let omitted: AppConfig = toml::from_str("[performance]\n").unwrap();
-    assert_eq!(omitted.performance.quality_local_copy_mb, 2048);
-    let off: AppConfig = toml::from_str("[performance]\nquality_local_copy_mb = 0\n").unwrap();
-    assert_eq!(off.performance.quality_local_copy_mb, 0);
+fn test_quality_local_copy() {
+    let two = ByteSize::mib(2048);
+    assert_eq!(AppConfig::default().analysis.quality_local_copy, two);
+    let omitted: AppConfig = toml::from_str("[analysis]\n").unwrap();
+    assert_eq!(omitted.analysis.quality_local_copy, two);
+    let off: AppConfig = toml::from_str("[analysis]\nquality_local_copy = 0\n").unwrap();
+    assert_eq!(off.analysis.quality_local_copy, ByteSize(0));
 
-    let set = "[performance]\nquality_local_copy_mb = 512\n";
-    let never = "[performance]\nquality_local_copy_mb = 0\n";
-    let silent = "[performance]\npolars_streaming = true\n";
-    assert_eq!(layered(&[set]).performance.quality_local_copy_mb, 512);
-    assert_eq!(layered(&[set, never]).performance.quality_local_copy_mb, 0);
+    let set = "[analysis]\nquality_local_copy = \"512MiB\"\n";
+    let never = "[analysis]\nquality_local_copy = \"0\"\n";
+    let silent = "[analysis]\nsample_rows = 10\n";
     assert_eq!(
-        layered(&[set, never, silent])
-            .performance
-            .quality_local_copy_mb,
-        0,
+        layered(&[set]).analysis.quality_local_copy,
+        ByteSize::mib(512)
+    );
+    assert_eq!(
+        layered(&[set, never]).analysis.quality_local_copy,
+        ByteSize(0)
+    );
+    assert_eq!(
+        layered(&[set, never, silent]).analysis.quality_local_copy,
+        ByteSize(0),
         "a layer that leaves it out changes nothing"
     );
     assert_eq!(
-        layered(&[never, "[performance]\nquality_local_copy_mb = 2048\n"])
-            .performance
-            .quality_local_copy_mb,
-        2048,
+        layered(&[never, "[analysis]\nquality_local_copy = \"2GiB\"\n"])
+            .analysis
+            .quality_local_copy,
+        two,
         "the default written explicitly overrides an import"
     );
 
     let (_temp_dir, config_manager) = setup_test_config_dir();
     let template: AppConfig = toml::from_str(&config_manager.generate_default_config()).unwrap();
-    assert_eq!(template.performance.quality_local_copy_mb, 2048);
+    assert_eq!(template.analysis.quality_local_copy, two);
 }
 
-/// `table_cell_padding` takes a density by name or a count of cells, keeps the
+/// `cell_padding` takes a density by name or a count of cells, keeps the
 /// comfortable two cells when omitted, follows the last file that writes it, and
 /// says what it takes when given anything else.
 #[test]
 fn cell_padding_takes_a_density_or_a_count() {
-    let cells = |layers: &[&str]| layered(layers).display.table_cell_padding.cells();
-    let compact = "[display]\ntable_cell_padding = \"compact\"\n";
-    let comfortable = "[display]\ntable_cell_padding = \"comfortable\"\n";
+    let cells = |layers: &[&str]| layered(layers).display.cell_padding.cells();
+    let compact = "[display]\ncell_padding = \"compact\"\n";
+    let comfortable = "[display]\ncell_padding = \"comfortable\"\n";
     let silent = "[display]\nrow_numbers = true\n";
     assert_eq!(cells(&[silent]), 2, "comfortable unless asked otherwise");
     assert_eq!(cells(&[compact]), 1);
     assert_eq!(cells(&[comfortable]), 2);
-    assert_eq!(cells(&["[display]\ntable_cell_padding = 0\n"]), 0);
-    assert_eq!(cells(&["[display]\ntable_cell_padding = 3\n"]), 3);
+    assert_eq!(cells(&["[display]\ncell_padding = 0\n"]), 0);
+    assert_eq!(cells(&["[display]\ncell_padding = 3\n"]), 3);
     assert_eq!(cells(&[compact, silent]), 1);
     assert_eq!(
         cells(&[compact, comfortable]),
@@ -3195,88 +3106,85 @@ fn cell_padding_takes_a_density_or_a_count() {
         "an explicit default undoes an imported compact"
     );
 
-    let err = ConfigLayer::parse("[display]\ntable_cell_padding = \"dense\"\n")
+    let err = ConfigLayer::parse("[display]\ncell_padding = \"dense\"\n")
         .and_then(|layer| AppConfig::from_layers([layer]))
         .unwrap_err();
     let err = format!("{err:#}");
     assert!(err.contains("compact") && err.contains("dense"), "{err}");
     assert!(
-        ConfigLayer::parse("[display]\ntable_cell_padding = -1\n")
+        ConfigLayer::parse("[display]\ncell_padding = -1\n")
             .and_then(|layer| AppConfig::from_layers([layer]))
             .is_err()
     );
 }
 
-/// The CSV dialect keys: unset by default, layered by presence, and a comment marker
-/// that could not mark a line is refused at load time.
+/// The CSV dialect keys: defaults, layered by presence, and a comment marker that
+/// could not mark a line is refused at load time.
 #[test]
 fn test_csv_dialect_keys() {
     let config = layered(&[]);
-    assert_eq!(config.file_loading.comment_char, None);
-    assert_eq!(config.file_loading.header_join, None);
-    assert_eq!(config.file_loading.skip_initial_space, None);
+    assert_eq!(config.csv.comment, None);
+    assert_eq!(config.csv.header_join, " ");
+    assert!(!config.csv.skip_initial_space);
 
     let config = layered(&[
-        "[file_loading]\ncomment_char = \"#\"\nheader_join = \"_\"\nskip_initial_space = true\n",
-        "[file_loading]\nskip_initial_space = false\n",
+        "[csv]\ncomment = \"#\"\nheader_join = \"_\"\nskip_initial_space = true\n",
+        "[csv]\nskip_initial_space = false\n",
     ]);
-    assert_eq!(config.file_loading.comment_char.as_deref(), Some("#"));
-    assert_eq!(config.file_loading.header_join.as_deref(), Some("_"));
-    assert_eq!(
-        config.file_loading.skip_initial_space,
-        Some(false),
+    assert_eq!(config.csv.comment.as_deref(), Some("#"));
+    assert_eq!(config.csv.header_join, "_");
+    assert!(
+        !config.csv.skip_initial_space,
         "an explicit default over an import wins"
     );
     assert!(config.validate().is_ok());
 
     for bad in ["\"\"", "\"#\\n\""] {
-        let config = layered(&[&format!("[file_loading]\ncomment_char = {bad}\n")]);
+        let config = layered(&[&format!("[csv]\ncomment = {bad}\n")]);
         let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("comment_char"), "{bad}: {err}");
+        assert!(err.contains("csv.comment"), "{bad}: {err}");
     }
 }
 
-/// How often a followed file is checked: 250 ms unless set, layered by presence, and
-/// refused outside 10 ms to a minute.
+/// How often a followed file is checked: 250ms unless set, layered by presence,
+/// written with its unit, and refused outside 10ms to a minute.
 #[test]
 fn test_follow_interval() {
-    let config = layered(&[]);
-    assert_eq!(config.file_loading.follow_interval_ms, None);
+    let interval = |layers: &[&str]| layered(layers).read.follow_interval.duration();
+    let ms = std::time::Duration::from_millis;
+    assert_eq!(interval(&[]), ms(250));
     assert_eq!(
-        config.file_loading.follow_interval(),
-        std::time::Duration::from_millis(250)
-    );
-    let config = layered(&[
-        "[file_loading]\nfollow_interval_ms = 1000\n",
-        "[file_loading]\nfollow_interval_ms = 250\n",
-    ]);
-    assert_eq!(
-        config.file_loading.follow_interval_ms,
-        Some(250),
+        interval(&[
+            "[read]\nfollow_interval = \"1s\"\n",
+            "[read]\nfollow_interval = \"250ms\"\n",
+        ]),
+        ms(250),
         "an explicit default over an import wins"
     );
-    let config = layered(&["[file_loading]\nfollow_interval_ms = 100\n"]);
     assert_eq!(
-        config.file_loading.follow_interval(),
-        std::time::Duration::from_millis(100)
+        interval(&["[read]\nfollow_interval = \"100ms\"\n"]),
+        ms(100)
     );
-    assert!(config.validate().is_ok());
-    for bad in [0, 9, 60_001] {
-        let config = layered(&[&format!("[file_loading]\nfollow_interval_ms = {bad}\n")]);
+    for bad in ["\"9ms\"", "\"61s\"", "0"] {
+        let config = layered(&[&format!("[read]\nfollow_interval = {bad}\n")]);
         let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("follow_interval_ms"), "{bad}: {err}");
+        assert!(err.contains("read.follow_interval"), "{bad}: {err}");
     }
-    for good in [10, 60_000] {
-        let config = layered(&[&format!("[file_loading]\nfollow_interval_ms = {good}\n")]);
+    for good in ["\"10ms\"", "\"1m\""] {
+        let config = layered(&[&format!("[read]\nfollow_interval = {good}\n")]);
         assert!(config.validate().is_ok(), "{good}");
     }
+    assert!(
+        ConfigLayer::parse("[read]\nfollow_interval = 250\n").is_err(),
+        "a duration needs its unit"
+    );
 }
 
-/// `formats_path` adds up across imports, each entry relative to the file that names
+/// `[formats] path` adds up across imports, each entry relative to the file that names
 /// it, and is empty when no file names one.
 #[test]
 fn test_formats_path_adds_up_and_is_anchored_to_its_file() {
-    assert!(layered(&[""]).formats_path.is_empty());
+    assert!(layered(&[""]).formats.path.is_empty());
     // Absolute on this platform, so it is kept as written.
     let shared = if cfg!(windows) {
         "C:/shared/formats"
@@ -3288,17 +3196,17 @@ fn test_formats_path_adds_up_and_is_anchored_to_its_file() {
     write_config(
         &temp_dir,
         "org/org.toml",
-        &format!("formats_path = [\"specs\", \"{shared}\"]\n"),
+        &format!("[formats]\npath = [\"specs\", \"{shared}\"]\n"),
     );
     let root = write_config(
         &temp_dir,
         "config.toml",
-        &format!("import = [\"org/org.toml\"]\nformats_path = [\"mine\", \"{shared}\"]\n"),
+        &format!("import = [\"org/org.toml\"]\n[formats]\npath = [\"mine\", \"{shared}\"]\n"),
     );
     let config = AppConfig::load_from_file(&root).expect("Config should load");
     let anchored = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
     assert_eq!(
-        config.formats_path,
+        config.formats.path,
         [
             anchored(temp_dir.path().join("org").join("specs")),
             shared.to_string(),
@@ -3312,22 +3220,19 @@ fn test_formats_path_adds_up_and_is_anchored_to_its_file() {
 #[test]
 fn test_memory_warning() {
     let config = layered(&[]);
-    assert_eq!(config.file_loading.memory_warning_mb, None);
-    assert_eq!(
-        config.file_loading.memory_warning(),
-        Some(1024 * 1024 * 1024)
-    );
+    assert_eq!(config.read.memory_warning, ByteSize::mib(1024));
+    assert_eq!(config.read.memory_warning(), Some(1024 * 1024 * 1024));
     let config = layered(&[
-        "[file_loading]\nmemory_warning_mb = 0\n",
-        "[file_loading]\nmemory_warning_mb = 1024\n",
+        "[read]\nmemory_warning = 0\n",
+        "[read]\nmemory_warning = \"1GiB\"\n",
     ]);
     assert_eq!(
-        config.file_loading.memory_warning_mb,
-        Some(1024),
+        config.read.memory_warning,
+        ByteSize::mib(1024),
         "an explicit default over an import wins"
     );
-    let config = layered(&["[file_loading]\nmemory_warning_mb = 0\n"]);
-    assert_eq!(config.file_loading.memory_warning(), None);
-    let config = layered(&["[file_loading]\nmemory_warning_mb = 5\n"]);
-    assert_eq!(config.file_loading.memory_warning(), Some(5 * 1024 * 1024));
+    let config = layered(&["[read]\nmemory_warning = 0\n"]);
+    assert_eq!(config.read.memory_warning(), None);
+    let config = layered(&["[read]\nmemory_warning = \"5MiB\"\n"]);
+    assert_eq!(config.read.memory_warning(), Some(5 * 1024 * 1024));
 }

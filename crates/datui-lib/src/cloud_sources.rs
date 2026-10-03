@@ -996,7 +996,7 @@ pub fn resolve_for_open(url: &str, config: &CloudConfig) -> Result<Resolved, Str
 /// data role: checked with one listing request, once per account, and read with the
 /// account's key from then on, when the fallback is on.
 fn with_azure_key_if_refused(resolved: Resolved, config: &CloudConfig) -> Resolved {
-    let enabled = config.azure_account_keys != Some(false);
+    let enabled = config.use_azure_account_keys;
     if resolved.kind != ProviderKind::Azure
         || resolved.signing == Signing::Unsigned
         || resolved.azure.identity.is_none()
@@ -1644,7 +1644,7 @@ mod tests {
             let beside = resolve_with("s3://noaa-ghcn-pds/csv/", &config, env).unwrap();
             assert_eq!(beside.signing, Signing::Try);
 
-            let off = with_collections("[data]\nbuiltin_catalog = false\n", env);
+            let off = with_collections("[home]\nbuiltin_catalog = false\n", env);
             let resolved = resolve_with("s3://noaa-ghcn-pds/parquet/", &off, env).unwrap();
             assert_eq!(resolved.signing, Signing::Try, "no catalog, no claim on it");
             // No home-screen row stands for a collection: they are sections.
@@ -2133,7 +2133,7 @@ connection = "lab"
             "nothing asks a metadata service"
         );
         let opted_in = CloudConfig {
-            instance_identity: Some(true),
+            instance_identity: true,
             ..Default::default()
         };
         let found = ids(&opted_in, &[]);

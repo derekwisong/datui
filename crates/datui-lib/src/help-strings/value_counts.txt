@@ -30,7 +30,7 @@ What is read:
   100 times the sample size (10,000,000 rows at the default), held in one
   Parquet or IPC file is sampled first instead, and the header says so:
   sample of 100,000 of 36,839,175 rows. a then counts every row. The
-  sample size is [performance] analysis_sample_rows; 0 always counts
+  sample size is [analysis] sample_rows; 0 always counts
   every row.
 
 The listing:

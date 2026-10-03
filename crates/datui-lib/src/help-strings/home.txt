@@ -64,7 +64,7 @@ Sections, in order:
   Collections:        Each [[sources]] collection under its label: named
                       datasets, local or remote. Enter opens a file and
                       steps into a directory or a bucket prefix
-  Configured:         Directories from [data] directories in the config,
+  Configured:         Directories from [home] directories in the config,
                       then those remembered with Ctrl+D
   Public datasets:    The built-in collection, after your own. Its data stays
                       with the publisher until you open it; a web file under
@@ -100,7 +100,7 @@ Reading a row:
   The details pane shows a local file's first rows under ROWS, read when
   the row is selected; Enter opens the file on those same rows, so they
   are read once. Without the pane, they take the free lines at the bottom
-  of the screen. [data] preview_max_mb sets the largest file read.
+  of the screen. [home] preview_max sets the largest file read.
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)

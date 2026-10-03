@@ -275,7 +275,7 @@ wins, as with `PATH`.
 |---|---|
 | `~/.config/datui/formats/` | Your own specs |
 | `$DATUI_FORMATS_PATH` | Directories separated by `:` (`;` on Windows), such as a checked-out repository of a team's specs |
-| `formats_path` in [config](../reference/settings.md#top-level) | More directories. Lists add up across imported config files |
+| `[formats] path` in [config](../reference/settings.md#formats) | More directories. Lists add up across imported config files |
 
 `datui formats` lists each spec, what it matches, the file it came from, any copy
 of the same name it overrides, and the files that could not be read, with the
@@ -480,7 +480,7 @@ file opens. That pass keeps where each record starts (5 bytes a record, up to
 records again, and a file opened again with the same spec is not walked again.
 Scrolling to the last row of a gigabyte file reads only the rows shown. A sort,
 filter, query, chart or analysis reads every row of the columns it uses, a batch
-at a time on the streaming engine (`[performance] polars_streaming`, on by
+at a time on the streaming engine (`[performance] streaming`, on by
 default).
 A table holds at most 4,294,967,295 rows; records past that are not shown, and
 the dataset's notes say so.

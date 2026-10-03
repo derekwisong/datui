@@ -142,7 +142,7 @@ impl LocalCopy {
 fn unwritable(error: std::io::Error) -> color_eyre::Report {
     eyre!(
         "Could not write the local copy: {error}. \
-         quality_local_copy_mb = 0 reads the source instead"
+         quality_local_copy = 0 reads the source instead"
     )
 }
 
@@ -557,7 +557,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            error.to_string().contains("quality_local_copy_mb = 0"),
+            error.to_string().contains("quality_local_copy = 0"),
             "{error}"
         );
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);

@@ -647,7 +647,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
             Line::from(vec![
                 Span::styled("     ", Style::default()),
                 Span::styled(
-                    "or set [data] directories in your config",
+                    "or set [home] directories in your config",
                     Style::default().fg(ctx.dimmed),
                 ),
             ]),

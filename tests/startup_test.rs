@@ -344,8 +344,7 @@ fn keys_typed_while_the_settings_are_read_reach_the_app() {
     // Let the settings through: a configuration whose one setting shows on screen.
     let writer = std::thread::spawn(move || {
         let mut fifo = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
-        fifo.write_all(b"version = \"0.2\"\n[display]\nunicode = \"never\"\n")
-            .unwrap();
+        fifo.write_all(b"[display]\nunicode = \"never\"\n").unwrap();
     });
     session.wait_for_screen("zqx");
     writer.join().unwrap();
@@ -378,7 +377,7 @@ fn a_missing_path_ends_the_run_with_its_name() {
 fn an_unusable_config_is_reported_without_a_terminal() {
     use std::os::unix::process::CommandExt;
     let dirs = Dirs::new();
-    std::fs::write(dirs.config_file(), "version = \"9.9\"\n").unwrap();
+    std::fs::write(dirs.config_file(), "[analysis]\nchart_rows = 0\n").unwrap();
     let csv = dirs.csv();
     let root = dirs.root.path();
     let mut command = Command::new(env!("CARGO_BIN_EXE_datui"));
@@ -400,7 +399,7 @@ fn an_unusable_config_is_reported_without_a_terminal() {
     let out = command.output().expect("the binary runs");
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Unsupported config version"), "{stderr}");
+    assert!(stderr.contains("analysis.chart_rows"), "{stderr}");
 }
 
 /// A configuration the app cannot use ends the run with its error and a failing
@@ -408,13 +407,13 @@ fn an_unusable_config_is_reported_without_a_terminal() {
 #[test]
 fn an_unusable_config_ends_the_run_with_its_error() {
     let dirs = Dirs::new();
-    std::fs::write(dirs.config_file(), "version = \"9.9\"\n").unwrap();
+    std::fs::write(dirs.config_file(), "[analysis]\nchart_rows = 0\n").unwrap();
     let csv = dirs.csv();
     let mut session = dirs.spawn(&[&csv]);
     let status = session.wait_exit();
     assert_eq!(status.code(), Some(1));
     let out = String::from_utf8_lossy(&session.out);
-    assert!(out.contains("Unsupported config version"), "{out}");
+    assert!(out.contains("analysis.chart_rows"), "{out}");
     assert!(out.contains("Fix the configuration"), "{out}");
 }
 

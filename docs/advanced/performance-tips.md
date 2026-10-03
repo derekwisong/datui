@@ -37,7 +37,7 @@ aggregate the period first to chart every step of it.
 
 - Parquet, CSV and Arrow IPC use scans. JSON arrays, NDJSON, Avro, Excel and
   ORC are loaded in full; a bucket prefix of NDJSON, and a followed NDJSON file,
-  are scanned. Past `memory_warning_mb` in `[file_loading]` (1024 MB by
+  are scanned. Past `memory_warning` in `[read]` (`"1GiB"` by
   default), datui asks before loading a file in full. NMEA and GPX logs, VCD dumps, FIX logs and SDF files are
   read once into a temporary Arrow file, then scanned. SQLite tables are read in
   place, a page at a time, with the sidebar's sort and filters run in SQLite; an
@@ -51,7 +51,7 @@ aggregate the period first to chart every step of it.
   directories scan in place; HTTP and other download routes fetch the file
   first. See [remote data](../user-guide/remote-data.md).
 
-Leave `[performance] polars_streaming` on unless you are diagnosing a problem. It lets
+Leave `[performance] streaming` on unless you are diagnosing a problem. It lets
 supported operations process data in batches; it is not a memory bound on
 all queries.
 

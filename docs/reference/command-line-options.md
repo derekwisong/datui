@@ -23,26 +23,26 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--hex` | Open in the hex view, whatever the file holds |
 | `--hex-width <N>` | Bytes a row of the hex view holds, so records line up (default: 8, 16, 32 or 64, as many as fit) |
 | `--view <NAME>` | Apply a saved view by name once the data is on screen |
-| `--temp-dir <DIR>` | Directory for decompression temp files. Unset: the system's. [config: file_loading.temp_dir] |
+| `--temp-dir <DIR>` | Directory for decompression temp files. Unset: the system's. [config: read.temp_dir] |
 | `--delimiter <C>` | Column separator: one character, tab, \t or a code such as 0x1f (default: , for .csv, tab for .tsv, \| for .psv) |
 | `--no-header` | Read the first row as data; columns are named column_1, column_2, ... |
-| `--header-rows <N[,M...]>` | The line, or comma-separated lines, holding the header, counted from 1 before anything is skipped. Several are joined per column (header_join in [file_loading]); the data starts after the last |
+| `--header-rows <N[,M...]>` | The line, or comma-separated lines, holding the header, counted from 1 before anything is skipped. Several are joined per column ([csv] header_join); the data starts after the last |
 | `--footer-rows <N>` | Skip this many rows at the end, such as a footer. Reads the whole file to count rows |
 | `--skip-rows <N>` | Skip this many rows at the start; the header is read after them. Quote-aware, unlike --skip-lines |
 | `--skip-lines <N>` | Skip this many raw lines at the start, split on newlines alone: a newline inside quotes counts |
-| `--comment <PREFIX>` | CSV lines starting with this are comments, before the header and among the data. [config: file_loading.comment_char] |
-| `--skip-initial-space[=<BOOL>]` | Ignore the spaces after a CSV delimiter, so padded numbers are numbers (default false). [config: file_loading.skip_initial_space] |
-| `--null <VAL>` | Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list. [config: file_loading.null_values] |
-| `--infer-types[=<COLS|off>]` | Trim string columns and read them as dates, times, durations or numbers where they all parse (default true). --infer-types=off turns it off, --infer-types=a,b limits it to those columns. [config: file_loading.parse_strings] |
-| `--infer-rows <N>` | Rows read to infer a CSV's column types (default 1000). [config: file_loading.infer_schema_length] |
-| `--ignore-errors[=<BOOL>]` | Skip CSV rows that do not parse instead of failing (default false). [config: file_loading.ignore_errors] |
+| `--comment <PREFIX>` | Lines starting with this are comments, before the header and among the data. [config: csv.comment] |
+| `--skip-initial-space[=<BOOL>]` | Ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null. [config: csv.skip_initial_space] |
+| `--null <VAL>` | Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list. [config: csv.null_values] |
+| `--infer-types[=<COLS|off>]` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. [config: read.infer_types] |
+| `--infer-rows <N>` | Rows read to infer column types. [config: csv.infer_rows] |
+| `--ignore-errors[=<BOOL>]` | Skip rows that do not parse instead of failing. [config: csv.ignore_errors] |
 | `--row-numbers[=<BOOL>]` | Show row numbers on the left (# toggles). [config: display.row_numbers] |
 | `--number-format <F>` | Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles). [config: display.number_format] |
 | `--mouse[=<BOOL>]` | Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal. [config: display.mouse] |
-| `--sample-rows <N>` | Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. [config: performance.analysis_sample_rows] |
+| `--sample-rows <N>` | Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. [config: analysis.sample_rows] |
 | `-c, --config <KEY=VALUE>` | Set a config key for this run, as in the file: -c display.row_numbers=true. Repeatable; a flag of the key's own still wins. `datui config keys` lists them |
-| `--log-file <PATH>` | Where the log goes. Unset: datui.log in the cache directory. [config: debug.log_file] |
-| `--log-level <LEVEL>` | How much the log says: error, warn (default), info, debug, trace or off. Beats DATUI_LOG |
+| `--log-file <PATH>` | Where the log goes. Unset: datui.log in the cache directory. [config: log.file] |
+| `--log-level <LEVEL>` | How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG. [config: log.level] |
 
 ## Commands
 

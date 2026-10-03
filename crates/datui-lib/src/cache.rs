@@ -1078,7 +1078,7 @@ impl CacheManager {
 
     /// Directories kept on the home screen with Ctrl+D, in the order they were added.
     ///
-    /// The one-keystroke twin of `[data] directories`. Kept here rather than written
+    /// The one-keystroke twin of `[home] directories`. Kept here rather than written
     /// into the config: that file is the user's, comments and all, and may be one of
     /// several merged together.
     pub fn load_remembered_places(&self) -> Vec<PathBuf> {

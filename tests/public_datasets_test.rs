@@ -76,7 +76,7 @@ fn a_web_file_in_a_collection_is_fetched_only_when_opened() {
         }
     });
     let config = common::layered_config(&[
-        "[data]\nuse_desktop_recents = false\n[cloud]\ndiscover = false\n",
+        "[home]\ndesktop_recents = false\n[cloud]\ndiscover = false\n",
         &format!(
             "[[sources]]\nname = \"public\"\n[[sources.datasets]]\nname = \"Foods\"\nurl = {url:?}\n"
         ),
@@ -161,7 +161,7 @@ fn a_downloaded_dataset_comes_back_named_and_measured() {
         }
     });
     let config = common::layered_config(&[
-        "[data]\nuse_desktop_recents = false\n[cloud]\ndiscover = false\n",
+        "[home]\ndesktop_recents = false\n[cloud]\ndiscover = false\n",
         &format!(
             "[[sources]]\nname = \"birds\"\n[[sources.datasets]]\nname = \"Palmer penguins\"\nurl = {url:?}\n"
         ),

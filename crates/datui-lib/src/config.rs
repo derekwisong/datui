@@ -1,6 +1,7 @@
 use crate::numfmt::{self, Glob, Grouping, NumberFormat, NumberFormatSettings};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+pub use datui_cli::units::{ByteSize, Interval};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -124,8 +125,8 @@ impl ConfigManager {
              # ============================================================================\n\
              # Named collections of datasets, local (path) or remote (url), each listed under\n\
              # its label on the home screen. A collection named \"public\" replaces the\n\
-             # built-in catalog below; [data] builtin_catalog = false drops it, and\n\
-             # [data] hide_sources hides any collection by name.\n\
+             # built-in catalog below; [home] builtin_catalog = false drops it, and\n\
+             # [home] hide hides any collection by name.\n\
              #\n\
              # This active catalog is a snapshot. Delete or edit a dataset table to curate it;\n\
              # configs generated today do not automatically receive future catalog updates.\n",
@@ -162,68 +163,82 @@ impl ConfigManager {
 pub struct AppConfig {
     /// Additional config files merged in before this file's own values.
     pub import: Vec<String>,
-    /// Configuration format version (for future compatibility)
-    pub version: String,
-    /// Directories (or files) of binary format specs, searched after the config
-    /// directory's `formats` and `$DATUI_FORMATS_PATH`. Adds up across imports.
-    pub formats_path: Vec<String>,
     /// Named collections of datasets, `[[sources]]`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceConfig>,
-    pub cloud: CloudConfig,
-    pub file_loading: FileLoadingConfig,
+    pub read: ReadConfig,
+    pub csv: CsvConfig,
     pub display: DisplayConfig,
     pub performance: PerformanceConfig,
-    pub chart: ChartConfig,
+    pub analysis: AnalysisConfig,
+    pub home: HomeConfig,
+    pub cloud: CloudConfig,
+    pub query: QueryConfig,
+    pub views: ViewsConfig,
+    pub clipboard: ClipboardConfig,
+    pub formats: FormatsConfig,
+    pub log: LogConfig,
     pub theme: ThemeConfig,
     pub glyphs: GlyphsConfig,
-    pub clipboard: ClipboardConfig,
-    pub data: DataConfig,
-    pub query: QueryConfig,
-    pub templates: TemplateConfig,
-    pub debug: DebugConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CloudConfig {
-    /// Custom endpoint for S3-compatible storage (e.g. MinIO). Example: "http://localhost:9000"
+    /// The S3 endpoint, keys and region the environment gives (`AWS_*`): not keys of
+    /// the file, where a secret would sit in plain text. `[[cloud.connections]]` names
+    /// a store's variables instead.
+    #[serde(skip)]
     pub s3_endpoint_url: Option<String>,
-    /// Access key for S3-compatible backends when not using env / AWS config
+    #[serde(skip)]
     pub s3_access_key_id: Option<String>,
-    /// Secret key for S3-compatible backends when not using env / AWS config
+    #[serde(skip)]
     pub s3_secret_access_key: Option<String>,
-    /// Region (e.g. us-east-1). Often required when using a custom endpoint (MinIO uses us-east-1).
+    #[serde(skip)]
     pub s3_region: Option<String>,
     /// Stores named in `[[cloud.connections]]`, beside the ones found on the machine.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<CloudConnectionConfig>,
     /// Source IDs never shown on the home screen.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<String>,
     /// Read an Azure account with its access keys when a sign-in has no data role, as
-    /// the Portal does. On unless set to `false`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub azure_account_keys: Option<bool>,
+    /// the Portal does.
+    pub use_azure_account_keys: bool,
     /// Files to read cloud variables from, relative to the working directory: `.env`.
     /// Only known cloud variable names are taken, and nothing is exported.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub env_files: Vec<String>,
     /// Use the identity of the cloud VM datui runs on (EC2, GCE, Azure). Finding it is a
     /// request to a metadata service, so it is off unless the platform says so.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instance_identity: Option<bool>,
+    pub instance_identity: bool,
     /// Which logins found on this machine become home-screen sources. Unset means all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discover: Option<CloudDiscover>,
     /// List every source's buckets when the home screen opens. Off: a source is listed
     /// when it is entered or on Ctrl+R, and its credential command runs only then.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub list_on_start: Option<bool>,
+    pub list_on_start: bool,
     /// How the object-store datasets in `[[sources]]` are read. Not a key: derived from
     /// the collections by [`AppConfig`], so resolving a URL needs only this section.
     #[serde(skip)]
     pub dataset_access: Vec<DatasetAccess>,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            s3_endpoint_url: None,
+            s3_access_key_id: None,
+            s3_secret_access_key: None,
+            s3_region: None,
+            connections: Vec::new(),
+            hide: Vec::new(),
+            use_azure_account_keys: true,
+            env_files: Vec::new(),
+            instance_identity: false,
+            discover: None,
+            list_on_start: false,
+            dataset_access: Vec::new(),
+        }
+    }
 }
 
 /// How a `[[sources.datasets]]` URL in an object store is read, when it says.
@@ -647,7 +662,7 @@ fn check_source_names(sources: &[SourceConfig]) -> Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct SourceConfig {
-    /// The collection's ID: what `[data] hide_sources` names, and what a later file
+    /// The collection's ID: what `[home] hide` names, and what a later file
     /// uses to replace it.
     pub name: String,
     /// Shown instead of the name.
@@ -1035,10 +1050,8 @@ impl CloudConfig {
         }
     }
 
-    /// Lay the environment or the command line over the config file's settings: each
-    /// S3 setting and `discover` that `over` gives wins, and a blank value says
-    /// nothing. Nothing else in `over` is read; config files layer through
-    /// [`ConfigLayer`].
+    /// Lay the environment's S3 settings over these: each one `over` gives wins, and a
+    /// blank value says nothing. Nothing else in `over` is read.
     pub fn overlay(&mut self, over: Self) {
         for (slot, value) in [
             (&mut self.s3_endpoint_url, over.s3_endpoint_url),
@@ -1049,9 +1062,6 @@ impl CloudConfig {
             if let Some(value) = value.and_then(non_blank) {
                 *slot = Some(value);
             }
-        }
-        if over.discover.is_some() {
-            self.discover = over.discover;
         }
     }
 
@@ -1073,85 +1083,106 @@ impl CloudConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// `[read]`: how files are read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct FileLoadingConfig {
-    /// When true, CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime. Default: true.
-    pub parse_dates: Option<bool>,
-    /// When true, decompress a compressed CSV, TSV or PSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
-    pub decompress_in_memory: Option<bool>,
-    /// Directory for decompression temp files. Unset = system default (e.g. TMPDIR).
+pub struct ReadConfig {
+    /// Which string columns are typed: all, none, or those named.
+    pub infer_types: InferTypes,
+    /// How a partitioned Parquet dataset's schema is found.
+    pub parquet_schema: ParquetSchema,
+    /// Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file.
+    pub decompress_in_memory: bool,
+    /// Directory for decompression temp files. Unset: the system's (e.g. TMPDIR).
     pub temp_dir: Option<String>,
-    /// When true (default), infer Hive/partitioned Parquet schema from one file (single-spine) for faster "Reading schema". When false, use Polars collect_schema() over all files.
-    pub single_spine_schema: Option<bool>,
-    /// CSV null values: list of strings. Plain string = treat as null in all columns; "COL=VAL" = treat VAL as null only in column COL (first "=" separates). Example: ["NA", "amount="].
-    pub null_values: Option<Vec<String>>,
-    /// When false, disable parse-strings for CSV. When true or unset, trim and parse all CSV string columns (default). Use CLI --infer-types=COL for specific columns, --infer-types=off to disable.
-    pub parse_strings: Option<bool>,
-    /// Number of rows to sample for parse_strings type inference (single file or multiple/partitioned). Default 1000.
-    pub parse_strings_sample_rows: Option<usize>,
-    /// Number of rows to use when inferring CSV schema. Unset = use default (1000 in datui). Larger values reduce risk of wrong type (e.g. int then N/A).
-    pub infer_schema_length: Option<usize>,
-    /// When true, CSV reader ignores parse errors and continues with the next batch. Default false.
-    pub ignore_errors: Option<bool>,
-    /// CSV: lines starting with this are comments, skipped before the header and in the data (Frictionless `commentChar`). Unset = none.
-    pub comment_char: Option<String>,
-    /// CSV: what joins a column's pieces when `--header-rows` names several lines (Frictionless `headerJoin`). Default " ".
-    pub header_join: Option<String>,
-    /// CSV: ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null (Frictionless `skipInitialSpace`). Default false.
-    pub skip_initial_space: Option<bool>,
-    /// `--follow`: in milliseconds, how often a followed file is checked for new rows; on Linux, where a change is heard of as it happens, the least time between two reads. A burst of appends within one interval is one refresh. Default 250.
-    pub follow_interval_ms: Option<u64>,
-    /// Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory). 0 never asks. Default 1024.
-    pub memory_warning_mb: Option<u64>,
-    /// Integer audio samples as float in [-1, 1]. Default false: the integers as stored.
-    pub audio_float: Option<bool>,
+    /// `--follow`: how often a followed file is checked; on Linux, where a change is
+    /// heard of as it happens, the least time between two reads. A burst of appends
+    /// within one interval is one refresh.
+    pub follow_interval: Interval,
+    /// Ask before reading more than this of a file whole into memory (JSON, Avro, ORC,
+    /// Excel and the other formats read in memory). 0 never asks.
+    pub memory_warning: ByteSize,
+    /// Integer audio samples as float in [-1, 1].
+    pub audio_float: bool,
 }
 
-/// `[file_loading] memory_warning_mb` when it is not set.
-const MEMORY_WARNING_MB: u64 = 1024;
-
-impl FileLoadingConfig {
-    /// The bytes past which a read into memory is asked about first: `memory_warning_mb`,
-    /// or 1 GiB; `None` when it is 0, which never asks.
+impl ReadConfig {
+    /// The bytes past which a read into memory is asked about first; `None` when
+    /// `memory_warning` is 0, which never asks.
     pub fn memory_warning(&self) -> Option<u64> {
-        let mb = self.memory_warning_mb.unwrap_or(MEMORY_WARNING_MB);
-        (mb > 0).then(|| mb.saturating_mul(1024 * 1024))
-    }
-
-    /// How often a followed file is checked: `follow_interval_ms`, or 250 ms.
-    pub fn follow_interval(&self) -> std::time::Duration {
-        self.follow_interval_ms
-            .map(std::time::Duration::from_millis)
-            .unwrap_or(crate::follow::DEFAULT_INTERVAL)
+        let bytes = self.memory_warning.bytes();
+        (bytes > 0).then_some(bytes)
     }
 }
 
-/// The bounds of `[file_loading] follow_interval_ms`: faster than ten checks a second
-/// redraws for nothing anyone can read, and slower than a minute is not following.
-const FOLLOW_INTERVAL_MS: std::ops::RangeInclusive<u64> = 10..=60_000;
+impl Default for ReadConfig {
+    fn default() -> Self {
+        Self {
+            infer_types: InferTypes::Switch(true),
+            parquet_schema: ParquetSchema::Union,
+            decompress_in_memory: false,
+            temp_dir: None,
+            follow_interval: Interval(crate::follow::DEFAULT_INTERVAL),
+            memory_warning: ByteSize::mib(1024),
+            audio_float: false,
+        }
+    }
+}
 
-/// `[file_loading]` keys that described one file's layout rather than a preference,
-/// and so mangled every other file they were applied to, each with the flag that
-/// says the same thing about the one file being opened.
-const REMOVED_FILE_LOADING_KEYS: [(&str, &str); 5] = [
-    ("delimiter", "--delimiter"),
-    ("has_header", "--no-header"),
-    ("skip_lines", "--skip-lines"),
-    ("skip_rows", "--skip-rows"),
-    ("skip_tail_rows", "--footer-rows"),
-];
+/// `[read] infer_types`: every string column, none, or the columns named.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InferTypes {
+    Switch(bool),
+    Columns(Vec<String>),
+}
 
-/// The removed layout keys a config file still sets, so loading can say they are
-/// ignored rather than dropping them without a word.
-fn removed_file_loading_keys(layer: &toml::Table) -> Vec<(&'static str, &'static str)> {
-    let Some(section) = layer.get("file_loading").and_then(|v| v.as_table()) else {
-        return Vec::new();
-    };
-    REMOVED_FILE_LOADING_KEYS
-        .into_iter()
-        .filter(|(k, _)| section.contains_key(*k))
-        .collect()
+/// `[read] parquet_schema`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParquetSchema {
+    /// Every column any file has, from their footers.
+    Union,
+    /// Polars' schema from one file.
+    First,
+}
+
+/// The bounds of `[read] follow_interval`: faster than ten checks a second redraws
+/// for nothing anyone can read, and slower than a minute is not following.
+const FOLLOW_INTERVAL: std::ops::RangeInclusive<std::time::Duration> =
+    std::time::Duration::from_millis(10)..=std::time::Duration::from_secs(60);
+
+/// `[csv]`: CSV, TSV and PSV, and the dialect a delimited spec writes with these keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CsvConfig {
+    /// Lines starting with this are comments, before the header and in the data
+    /// (Frictionless `commentChar`).
+    pub comment: Option<String>,
+    /// What joins a column's pieces when `--header-rows` names several lines
+    /// (Frictionless `headerJoin`).
+    pub header_join: String,
+    /// Ignore the spaces after a delimiter (Frictionless `skipInitialSpace`).
+    pub skip_initial_space: bool,
+    /// Read as null: `VAL` everywhere, `COL=VAL` in one column.
+    pub null_values: Vec<String>,
+    /// Rows read to infer column types, by Polars and by datui's string typing.
+    pub infer_rows: usize,
+    /// Skip rows that do not parse instead of failing.
+    pub ignore_errors: bool,
+}
+
+impl Default for CsvConfig {
+    fn default() -> Self {
+        Self {
+            comment: None,
+            header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
+            skip_initial_space: false,
+            null_values: Vec::new(),
+            infer_rows: 1000,
+            ignore_errors: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1159,39 +1190,29 @@ fn removed_file_loading_keys(layer: &toml::Table) -> Vec<(&'static str, &'static
 pub struct DisplayConfig {
     /// Whether to draw box-drawing and arrow characters, or fall back to ASCII.
     pub unicode: crate::glyphs::UnicodeMode,
-    pub pages_lookahead: usize,
-    pub pages_lookback: usize,
-    /// Max rows in scroll buffer (0 = no limit).
-    pub max_buffered_rows: usize,
-    /// Max buffer size in MB (0 = no limit): the rows the table holds between reads,
-    /// not a cap on the process.
-    pub max_buffered_mb: usize,
     pub row_numbers: bool,
-    pub row_start_index: usize,
+    /// The first row's number.
+    pub row_numbers_start: usize,
     /// Spacing between table columns: `"comfortable"`, `"compact"` or a count of cells.
-    pub table_cell_padding: CellPadding,
+    pub cell_padding: CellPadding,
     /// When true, colorize main table cells by column type (string, int, float, bool, temporal).
     pub column_colors: bool,
     /// Show a second header row naming each column's type. `D` toggles it for the session.
-    #[serde(default = "default_true")]
-    pub dtype_row: bool,
+    pub type_row: bool,
     /// Give the `i` key a quiet accent when datui has noticed something about the data
     /// and the Info panel has not been opened since. The notes are collected either
     /// way; this only decides whether the control bar points at them.
-    #[serde(default = "default_true")]
     pub notes_accent: bool,
     /// Take the mouse: the wheel scrolls and a click selects. The terminal's own text
     /// selection then needs its bypass modifier (Shift in most terminals).
-    #[serde(default = "default_true")]
     pub mouse: bool,
-    /// Optional fixed width for all sidebars (Info, Sort & Filter, Template, Pivot & Melt). When None, use built-in defaults per sidebar.
-    #[serde(default)]
+    /// A fixed width for every sidebar (Info, Sort & Filter, Views, Pivot & Melt). None:
+    /// each sidebar's own.
     pub sidebar_width: Option<u16>,
     /// Right-align numeric columns and their headers in the data table.
-    pub align_numeric_right: bool,
+    pub right_align_numbers: bool,
     /// How numbers are displayed. Either a preset name (`number_format = "thousands"`)
     /// or a `[display.number_format]` table for finer control.
-    #[serde(default)]
     pub number_format: NumberFormatConfig,
 }
 
@@ -1240,8 +1261,7 @@ impl<'de> Deserialize<'de> for CellPadding {
             Cells(usize),
             Name(String),
         }
-        const EXPECTED: &str =
-            "table_cell_padding is \"compact\", \"comfortable\" or a number of cells";
+        const EXPECTED: &str = "cell_padding is \"compact\", \"comfortable\" or a number of cells";
         match Raw::deserialize(deserializer).map_err(|_| D::Error::custom(EXPECTED))? {
             Raw::Cells(n) => Ok(Self::Cells(n)),
             Raw::Name(name) => match name.as_str() {
@@ -1448,41 +1468,59 @@ pub const DEFAULT_ANALYSIS_SAMPLE_ROWS: usize = 100_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerformanceConfig {
-    /// The analysis sample's starting size: the rows every tool (Describe,
-    /// Distribution, Correlation, Data Quality) reads from a table with more, spread
-    /// across all of it. 0 starts at every row.
-    pub analysis_sample_rows: usize,
-    /// When true (default), use Polars streaming engine for LazyFrame collect when the streaming feature is enabled (lower memory, batch processing).
-    pub polars_streaming: bool,
-    /// The most a Data Quality full scan of a remote dataset may copy into the cache
-    /// directory, in MiB, to read the objects once instead of once per pass. 0 never
-    /// copies.
-    pub quality_local_copy_mb: u64,
+    /// Pages of rows buffered ahead of and behind the screen.
+    pub pages_ahead: usize,
+    pub pages_behind: usize,
+    /// Most rows the table buffers between reads; 0 for no limit.
+    pub max_buffered_rows: usize,
+    /// Most memory the buffered rows may take, estimated from the schema; 0 for no
+    /// limit. A cap on the rows kept between reads, not on the process.
+    pub max_buffered: ByteSize,
+    /// Use the Polars streaming engine for collects where it applies.
+    pub streaming: bool,
 }
 
-/// Default for `performance.quality_local_copy_mb`: 2 GiB.
-pub const DEFAULT_QUALITY_LOCAL_COPY_MB: u64 = 2048;
+impl PerformanceConfig {
+    /// `max_buffered` in whole MiB, as the table counts it; a nonzero cap below one
+    /// MiB is one, not none.
+    pub fn max_buffered_mb(&self) -> usize {
+        usize::try_from(self.max_buffered.bytes().div_ceil(1 << 20)).unwrap_or(usize::MAX)
+    }
+}
+
+/// Default for `analysis.quality_local_copy`: 2 GiB.
+pub const DEFAULT_QUALITY_LOCAL_COPY: ByteSize = ByteSize::mib(2048);
 
 /// Default maximum rows used for chart data when not overridden by config or UI.
 pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
 /// Maximum chart row limit (Polars slice takes u32).
 pub const MAX_CHART_ROW_LIMIT: usize = u32::MAX as usize;
 
+/// `[analysis]`: Analysis, Data Quality and charts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ChartConfig {
-    /// Rows a chart reads: every row up to n, and a sample of n spread across the table past
-    /// it. None = every row. Default 10000.
-    pub row_limit: Option<usize>,
-    /// Whether a chart starts with its grid at the major ticks. Default false.
-    pub grid: bool,
+pub struct AnalysisConfig {
+    /// The analysis sample's starting size: the rows every tool (Describe,
+    /// Distribution, Correlation, Data Quality) reads from a table with more, spread
+    /// across all of it. 0 starts at every row.
+    pub sample_rows: usize,
+    /// Rows a chart reads: every row up to n, and a sample of n spread across the
+    /// table past it.
+    pub chart_rows: usize,
+    /// Whether a chart starts with its grid at the major ticks.
+    pub chart_grid: bool,
+    /// The most a Data Quality full scan of a remote dataset may copy into the cache
+    /// directory, to read the objects once instead of once per pass. 0 never copies.
+    pub quality_local_copy: ByteSize,
 }
 
-impl Default for ChartConfig {
+impl Default for AnalysisConfig {
     fn default() -> Self {
         Self {
-            row_limit: Some(DEFAULT_CHART_ROW_LIMIT),
-            grid: false,
+            sample_rows: DEFAULT_ANALYSIS_SAMPLE_ROWS,
+            chart_rows: DEFAULT_CHART_ROW_LIMIT,
+            chart_grid: false,
+            quality_local_copy: DEFAULT_QUALITY_LOCAL_COPY,
         }
     }
 }
@@ -1541,24 +1579,24 @@ fn detect_terminal_mode() -> ThemeMode {
 /// metadata. datui records nothing about the datasets it finds there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct DataConfig {
+pub struct HomeConfig {
     /// Directories to offer as roots on the home screen, in order.
     /// Supports `~` and `$VAR`.
     pub directories: Vec<String>,
     /// Whether to also offer directories the desktop records you opening data from.
     /// Only the directories are used, never the file names.
-    pub use_desktop_recents: bool,
+    pub desktop_recents: bool,
     /// Whether the home screen lists files datui has no reader for, dimmed, from the
     /// start. `Ctrl+A` flips it for the session either way.
-    pub show_unreadable_files: bool,
+    pub show_unreadable: bool,
     /// Whether the built-in `public` collection exists.
     pub builtin_catalog: bool,
     /// Collection names never shown on the home screen, built-in or configured.
-    pub hide_sources: Vec<String>,
-    /// The largest local file, in MB, whose first rows the home screen reads for its
-    /// preview (Parquet: its average row group). Those rows are the open's first page,
-    /// so opening the file reads them only once. 0 turns the preview off.
-    pub preview_max_mb: u64,
+    pub hide: Vec<String>,
+    /// The largest local file whose first rows the home screen reads for its preview
+    /// (Parquet: its average row group). Those rows are the open's first page, so
+    /// opening the file reads them only once. 0 turns the preview off.
+    pub preview_max: ByteSize,
     /// Recursive search of the working directory from the home screen's filter.
     pub search: SearchConfig,
 }
@@ -1582,7 +1620,7 @@ pub struct SearchConfig {
     pub max_results: usize,
     /// Give up walking after this long and keep what was found. A cold or enormous
     /// tree must degrade to partial results, never to a wait.
-    pub time_budget_ms: u64,
+    pub time_budget: Interval,
     /// Descend into directories on a different filesystem than the one started in.
     ///
     /// Off by default, and the most important limit here: it is what stops a walk
@@ -1632,7 +1670,7 @@ impl Default for SearchConfig {
             enabled: true,
             max_depth: 8,
             max_results: 1_000,
-            time_budget_ms: 1_500,
+            time_budget: Interval::ms(1_500),
             cross_filesystems: false,
             follow_gitignore: false,
             skip: DEFAULT_SEARCH_SKIP.iter().map(|s| s.to_string()).collect(),
@@ -1651,23 +1689,23 @@ impl SearchConfig {
     }
 }
 
-impl Default for DataConfig {
+impl Default for HomeConfig {
     fn default() -> Self {
         Self {
             directories: Vec::new(),
             // On by default: it only ever contributes *places*, and it is the one
             // thing that gives a fresh install somewhere to point you.
-            use_desktop_recents: true,
-            show_unreadable_files: false,
+            desktop_recents: true,
+            show_unreadable: false,
             builtin_catalog: true,
-            hide_sources: Vec::new(),
-            preview_max_mb: 64,
+            hide: Vec::new(),
+            preview_max: ByteSize::mib(64),
             search: SearchConfig::default(),
         }
     }
 }
 
-impl DataConfig {
+impl HomeConfig {
     /// Configured directories with `~`/`$VAR` expanded. Non-existent paths are kept:
     /// the home screen shows an unavailable root rather than hiding it, because
     /// "the mount is down" is information.
@@ -1837,10 +1875,6 @@ pub struct ColorConfig {
     pub hex_ff: String,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_cursor_text() -> String {
     ColorConfig::default().cursor_text
 }
@@ -1891,7 +1925,8 @@ fn default_hex_ff() -> String {
 #[serde(default)]
 pub struct QueryConfig {
     pub history_limit: usize,
-    pub enable_history: bool,
+    /// Remember queries.
+    pub history: bool,
     pub default_mode: QueryMode,
 }
 
@@ -1957,21 +1992,30 @@ impl QueryMode {
     }
 }
 
+/// `[views]`: saved views.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct TemplateConfig {
+pub struct ViewsConfig {
     pub auto_apply: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `[log]`: the log file and how much it says.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct DebugConfig {
-    pub enabled: bool,
-    pub show_performance: bool,
-    pub show_query: bool,
-    pub show_transformations: bool,
+pub struct LogConfig {
     /// Where the log goes. Unset: `datui.log` in the cache directory.
-    pub log_file: Option<String>,
+    pub file: Option<String>,
+    /// error, warn, info, debug, trace or off. Unset: `DATUI_LOG`, else warn.
+    pub level: Option<String>,
+}
+
+/// `[formats]`: where format specs and dictionaries are found.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FormatsConfig {
+    /// Directories (or files) of specs and dictionaries, searched after the config
+    /// directory's `formats` and `$DATUI_FORMATS_PATH`. Adds up across imports.
+    pub path: Vec<String>,
 }
 
 // Default implementations
@@ -1982,16 +2026,16 @@ pub struct ClipboardConfig {
     /// "auto", "native" (display server through arboard) or "osc52" (an
     /// escape sequence the terminal applies; what works over SSH).
     pub backend: String,
-    /// Longest OSC 52 payload to attempt, in KB of base64. Terminals cap the
-    /// sequences they accept; a generous terminal's user can raise this.
-    pub osc52_limit_kb: usize,
+    /// Longest OSC 52 payload to attempt, as base64. Terminals cap the sequences
+    /// they accept; a generous terminal's user can raise this.
+    pub osc52_limit: ByteSize,
 }
 
 impl Default for ClipboardConfig {
     fn default() -> Self {
         Self {
             backend: "auto".to_string(),
-            osc52_limit_kb: 100,
+            osc52_limit: ByteSize::kib(100),
         }
     }
 }
@@ -2013,21 +2057,21 @@ impl Default for AppConfig {
     fn default() -> Self {
         let mut config = Self {
             import: Vec::new(),
-            version: "0.2".to_string(),
-            formats_path: Vec::new(),
             sources: Vec::new(),
-            cloud: CloudConfig::default(),
-            file_loading: FileLoadingConfig::default(),
+            read: ReadConfig::default(),
+            csv: CsvConfig::default(),
             display: DisplayConfig::default(),
             performance: PerformanceConfig::default(),
-            chart: ChartConfig::default(),
+            analysis: AnalysisConfig::default(),
+            home: HomeConfig::default(),
+            cloud: CloudConfig::default(),
+            query: QueryConfig::default(),
+            views: ViewsConfig::default(),
+            clipboard: ClipboardConfig::default(),
+            formats: FormatsConfig::default(),
+            log: LogConfig::default(),
             theme: ThemeConfig::default(),
             glyphs: GlyphsConfig::default(),
-            clipboard: ClipboardConfig::default(),
-            data: DataConfig::default(),
-            query: QueryConfig::default(),
-            templates: TemplateConfig::default(),
-            debug: DebugConfig::default(),
         };
         config.sync_dataset_access();
         config
@@ -2038,19 +2082,15 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             unicode: crate::glyphs::UnicodeMode::default(),
-            pages_lookahead: 3,
-            pages_lookback: 3,
-            max_buffered_rows: crate::widgets::datatable::DEFAULT_MAX_BUFFERED_ROWS,
-            max_buffered_mb: 512,
             row_numbers: false,
-            row_start_index: 1,
-            table_cell_padding: CellPadding::default(),
+            row_numbers_start: 1,
+            cell_padding: CellPadding::default(),
             column_colors: true,
-            dtype_row: true,
+            type_row: true,
             notes_accent: true,
             mouse: true,
             sidebar_width: None,
-            align_numeric_right: true,
+            right_align_numbers: true,
             number_format: NumberFormatConfig::default(),
         }
     }
@@ -2059,9 +2099,11 @@ impl Default for DisplayConfig {
 impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
-            analysis_sample_rows: DEFAULT_ANALYSIS_SAMPLE_ROWS,
-            polars_streaming: true,
-            quality_local_copy_mb: DEFAULT_QUALITY_LOCAL_COPY_MB,
+            pages_ahead: 3,
+            pages_behind: 3,
+            max_buffered_rows: crate::widgets::datatable::DEFAULT_MAX_BUFFERED_ROWS,
+            max_buffered: ByteSize::mib(512),
+            streaming: true,
         }
     }
 }
@@ -2237,20 +2279,8 @@ impl Default for QueryConfig {
     fn default() -> Self {
         Self {
             history_limit: 1000,
-            enable_history: true,
+            history: true,
             default_mode: QueryMode::default(),
-        }
-    }
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            show_performance: true,
-            show_query: true,
-            show_transformations: true,
-            log_file: None,
         }
     }
 }
@@ -2414,21 +2444,12 @@ enum Combine {
 /// The keys that do not follow "a later layer's value replaces the earlier one".
 /// Tables merge key by key; everything else not listed here is replaced whole.
 const COMBINED_KEYS: &[(&str, Combine)] = &[
-    ("formats_path", Combine::Union),
+    ("formats.path", Combine::Union),
     ("sources", Combine::ByName),
     ("cloud.connections", Combine::ByName),
     ("cloud.hide", Combine::Union),
     ("cloud.env_files", Combine::Union),
-    ("data.hide_sources", Combine::Union),
-];
-
-/// `[cloud]` keys where a blank value says nothing, so `s3_region = ""` cannot erase
-/// an imported region. The same rule as for the environment and the command line.
-const CLOUD_BLANK_IS_UNSET: [&str; 4] = [
-    "s3_endpoint_url",
-    "s3_access_key_id",
-    "s3_secret_access_key",
-    "s3_region",
+    ("home.hide", Combine::Union),
 ];
 
 impl ConfigLayer {
@@ -2468,16 +2489,6 @@ impl ConfigLayer {
 
     fn from_table(mut table: toml::Table, imports: Vec<String>) -> Self {
         table.remove("import");
-        if let Some(cloud) = table.get_mut("cloud").and_then(toml::Value::as_table_mut) {
-            for key in CLOUD_BLANK_IS_UNSET {
-                if let Some(value) = cloud.get(key).and_then(toml::Value::as_str) {
-                    match non_blank(value.to_string()) {
-                        Some(trimmed) => cloud.insert(key.to_string(), trimmed.into()),
-                        None => cloud.remove(key),
-                    };
-                }
-            }
-        }
         Self { table, imports }
     }
 
@@ -2501,12 +2512,10 @@ impl ConfigLayer {
                 parse_reason(&e)
             )
         })?;
-        for (key, flag) in removed_file_loading_keys(&layer.table) {
-            eprintln!(
-                "datui: warning: {}: file_loading.{key} is no longer read; \
-                 pass {flag} when opening the file it describes",
-                path.display(),
-            );
+        // Serde passes over a key it does not know; a renamed or misspelled one would
+        // otherwise change nothing without a word.
+        for unknown in unknown_keys_in(&layer.table) {
+            eprintln!("datui: warning: {}: {unknown}", path.display());
         }
         layer.anchor_paths(path.parent().unwrap_or_else(|| Path::new(".")));
         Ok(Some(layer))
@@ -2515,7 +2524,11 @@ impl ConfigLayer {
     /// Resolve relative dataset `path`s against `dir`, the directory of the file that
     /// named them, before a layer from another directory can be merged with them.
     fn anchor_paths(&mut self, dir: &Path) {
-        if let Some(toml::Value::Array(entries)) = self.table.get_mut("formats_path") {
+        if let Some(toml::Value::Array(entries)) = self
+            .table
+            .get_mut("formats")
+            .and_then(|f| f.get_mut("path"))
+        {
             for entry in entries {
                 if let toml::Value::String(path) = entry
                     && !path.trim().is_empty()
@@ -2559,6 +2572,41 @@ impl ConfigLayer {
     pub fn merge(&mut self, upper: ConfigLayer) {
         merge_tables(&mut self.table, upper.table, "");
     }
+}
+
+/// The keys `table` writes that the option registry does not know, each with the
+/// nearest known keys, sorted. A registered key's value is not looked into: a table
+/// such as `[display.number_format]` or `[[sources]]` is that key's business.
+fn unknown_keys_in(table: &toml::Table) -> Vec<String> {
+    fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
+        for (key, value) in table {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if datui_cli::settings::find(&path).is_some() {
+                continue;
+            }
+            match value {
+                // A section, known or not: its keys are named one by one, so a renamed
+                // section's keys each find their new place.
+                toml::Value::Table(inner) => walk(inner, &path, out),
+                _ => {
+                    let near = datui_cli::settings::suggestions(&path);
+                    let mut said = format!("{path} is not a config key, and is not read");
+                    if !near.is_empty() {
+                        said.push_str(&format!("; did you mean {}?", near.join(" or ")));
+                    }
+                    out.push(said);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(table, "", &mut out);
+    out.sort();
+    out
 }
 
 /// A TOML error with its reason and place on the first line, then the excerpt of the
@@ -2851,26 +2899,26 @@ impl AppConfig {
 
     /// Every collection: the configured ones in the order defined, imports first, then
     /// the built-in catalog, unless a configured collection named `public` replaces it
-    /// or `[data] builtin_catalog = false` drops it. Hidden ones included.
+    /// or `[home] builtin_catalog = false` drops it. Hidden ones included.
     pub fn collections(&self) -> Vec<SourceConfig> {
         let mut all = self.sources.clone();
-        if self.data.builtin_catalog && !all.iter().any(|s| s.name == BUILTIN_CATALOG) {
+        if self.home.builtin_catalog && !all.iter().any(|s| s.name == BUILTIN_CATALOG) {
             all.push(builtin_catalog());
         }
         all
     }
 
     /// The collections the home screen shows: [`Self::collections`] less
-    /// `[data] hide_sources`.
+    /// `[home] hide`.
     pub fn shown_collections(&self) -> Vec<SourceConfig> {
         self.collections()
             .into_iter()
-            .filter(|s| !self.data.hide_sources.contains(&s.name))
+            .filter(|s| !self.home.hide.contains(&s.name))
             .collect()
     }
 
     /// Derive `[cloud]`'s view of how collection URLs are read. Called by
-    /// `from_layers` and `default`; call it after changing `sources` or `data` by hand.
+    /// `from_layers` and `default`; call it after changing `sources` or `home` by hand.
     pub fn sync_dataset_access(&mut self) {
         self.cloud.dataset_access = self
             .collections()
@@ -2898,21 +2946,10 @@ impl AppConfig {
 
     /// Validate configuration values
     pub fn validate(&self) -> Result<()> {
-        // Validate version compatibility
-        if !self.version.starts_with("0.2") {
+        let rows = self.analysis.chart_rows;
+        if rows == 0 || rows > MAX_CHART_ROW_LIMIT {
             return Err(eyre!(
-                "Unsupported config version: {}. Expected 0.2.x",
-                self.version
-            ));
-        }
-
-        if let Some(n) = self.chart.row_limit
-            && (n == 0 || n > MAX_CHART_ROW_LIMIT)
-        {
-            return Err(eyre!(
-                "chart.row_limit must be between 1 and {} when set, got {}",
-                MAX_CHART_ROW_LIMIT,
-                n
+                "analysis.chart_rows must be between 1 and {MAX_CHART_ROW_LIMIT}, got {rows}"
             ));
         }
 
@@ -2920,21 +2957,26 @@ impl AppConfig {
         // are reported at load time rather than silently ignored at render time.
         self.display
             .number_format
-            .resolve(self.display.align_numeric_right)?;
+            .resolve(self.display.right_align_numbers)?;
 
-        if let Some(ms) = self.file_loading.follow_interval_ms
-            && !FOLLOW_INTERVAL_MS.contains(&ms)
-        {
+        let interval = self.read.follow_interval;
+        if !FOLLOW_INTERVAL.contains(&interval.duration()) {
             return Err(eyre!(
-                "file_loading.follow_interval_ms must be between {} and {}, got {ms}",
-                FOLLOW_INTERVAL_MS.start(),
-                FOLLOW_INTERVAL_MS.end()
+                "read.follow_interval must be between 10ms and 1m, got {interval}"
             ));
         }
 
-        if let Some(c) = &self.file_loading.comment_char {
-            crate::csv_dialect::check_comment_char(c)
-                .map_err(|e| eyre!("file_loading.comment_char: {e}"))?;
+        if let Some(c) = &self.csv.comment {
+            crate::csv_dialect::check_comment_char(c).map_err(|e| eyre!("csv.comment: {e}"))?;
+        }
+
+        if let Some(level) = &self.log.level
+            && !datui_cli::LOG_LEVELS.contains(&level.as_str())
+        {
+            return Err(eyre!(
+                "log.level must be one of {}, got {level:?}",
+                datui_cli::LOG_LEVELS.join(", ")
+            ));
         }
 
         self.cloud.validate()?;
@@ -2942,15 +2984,9 @@ impl AppConfig {
         for source in &self.sources {
             source.validate(&self.cloud.connections)?;
         }
-        if let Some(name) = self
-            .data
-            .hide_sources
-            .iter()
-            .find(|name| !is_valid_source_id(name))
-        {
+        if let Some(name) = self.home.hide.iter().find(|name| !is_valid_source_id(name)) {
             return Err(eyre!(
-                "data.hide_sources: \"{name}\" is not a collection name. Use the name, not \
-                 the label"
+                "home.hide: \"{name}\" is not a collection name. Use the name, not the label"
             ));
         }
 
@@ -2967,8 +3003,8 @@ impl AppConfig {
                 self.clipboard.backend
             ));
         }
-        if self.clipboard.osc52_limit_kb == 0 {
-            return Err(eyre!("[clipboard] osc52_limit_kb must be greater than 0"));
+        if self.clipboard.osc52_limit.bytes() == 0 {
+            return Err(eyre!("[clipboard] osc52_limit must be greater than 0"));
         }
 
         Ok(())
@@ -3778,13 +3814,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_config_that_still_sets_a_layout_key_is_told_so() {
-        let found = |text: &str| removed_file_loading_keys(&toml::from_str(text).unwrap());
-        assert_eq!(
-            found("[file_loading]\nskip_rows = 2\nhas_header = false\nparse_dates = true\n"),
-            [("has_header", "--no-header"), ("skip_rows", "--skip-rows")]
+    fn a_key_the_registry_does_not_know_is_named_with_the_nearest() {
+        let found = |text: &str| unknown_keys_in(&toml::from_str(text).unwrap());
+        let unknown = found(
+            "[file_loading]\ncomment_char = \"#\"\n[display]\nmouse = false\nrow_numbr = true\n\
+             number_format = { grouping = \"thousands\" }\n[glyphs]\nspinner = [\"a\"]\n\
+             [theme.colors]\naccent = \"red\"\n[[sources]]\nname = \"x\"\n",
         );
-        assert!(found("[display]\nskip_rows = 2\n").is_empty());
+        assert_eq!(unknown.len(), 2, "{unknown:?}");
+        assert!(
+            unknown[0].starts_with("display.row_numbr")
+                && unknown[0].contains("display.row_numbers")
+        );
+        assert!(
+            unknown[1].starts_with("file_loading.comment_char")
+                && unknown[1].contains("csv.comment")
+        );
     }
 
     #[test]
@@ -3969,10 +4014,7 @@ mod tests {
         let mut moved = Vec::new();
         for (path, value) in &defaults {
             // These follow their own rules, tested on their own.
-            let blank_is_unset = path
-                .strip_prefix("cloud.")
-                .is_some_and(|key| CLOUD_BLANK_IS_UNSET.contains(&key));
-            if path == "import" || blank_is_unset || COMBINED_KEYS.iter().any(|(p, _)| p == path) {
+            if path == "import" || COMBINED_KEYS.iter().any(|(p, _)| p == path) {
                 continue;
             }
             let other = match value {

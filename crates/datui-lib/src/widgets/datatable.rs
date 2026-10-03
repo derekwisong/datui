@@ -1078,7 +1078,7 @@ impl CollectResult {
     }
 }
 
-/// Rows the display buffer may hold when `display.max_buffered_rows` is not set. Also
+/// Rows the display buffer may hold when `performance.max_buffered_rows` is not set. Also
 /// the window a remote scan buffers when the cap is switched off.
 pub const DEFAULT_MAX_BUFFERED_ROWS: usize = 100_000;
 
@@ -4766,7 +4766,7 @@ impl DataTableState {
     }
 
     /// A compressed file read as lines: decompressed once to a file in `--temp-dir`, or
-    /// into memory with `[file_loading] decompress_in_memory`, then indexed.
+    /// into memory with `[read] decompress_in_memory`, then indexed.
     pub(crate) fn from_lines_decompressed(
         path: &Path,
         options: &OpenOptions,

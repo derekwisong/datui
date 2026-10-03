@@ -2,7 +2,7 @@
 
 A collection is a named list of datasets, local or remote, that the home screen
 shows as one section. For credentials, see [Cloud sources](cloud-sources.md); for
-directories to browse, see [Data](settings.md#data).
+directories to browse, see [Home](settings.md#home).
 
 `[[sources]]` names a collection of datasets. The home screen lists each
 collection under its label, one row per dataset, wherever the data lives:
@@ -79,8 +79,8 @@ after everything else:
 | To | Do |
 |---|---|
 | Replace it | Define a collection named `public`. It replaces the whole catalog; nothing built in is merged in |
-| Drop it | `[data] builtin_catalog = false`. A configured `public` still shows |
-| Hide a collection, `public` or yours | `[data] hide_sources = ["public", "my-datasets"]` |
+| Drop it | `[home] builtin_catalog = false`. A configured `public` still shows |
+| Hide a collection, `public` or yours | `[home] hide = ["public", "my-datasets"]` |
 
 `datui config init` writes the catalog as an active `public` collection to
 edit. It is a snapshot: later datui releases do not change it. Run
@@ -93,7 +93,7 @@ the earlier one whole; datasets are never merged. `hide_sources` adds up across
 files, and the last file that sets `builtin_catalog` decides it. Two
 collections with one name in one file are an error.
 
-Collections are apart from `[data] directories`, remembered directories and
+Collections are apart from `[home] directories`, remembered directories and
 `RECENT`. A directory there is a place to look through, and whatever you open goes
 into `RECENT` whether or not a collection names it.
 
@@ -104,5 +104,5 @@ are no longer read:
 |---|---|
 | `[[cloud.sources]]` | `[[cloud.connections]]`, the same fields less `public` and `datasets` |
 | `public = true` with `buckets` or `[[cloud.sources.datasets]]` | `[[sources]]` with `[[sources.datasets]]` and `auth = "anonymous"` |
-| `[cloud] public_datasets = false` | `[data] builtin_catalog = false` |
-| `[cloud] hide = ["public"]` | `[data] hide_sources = ["public"]` |
+| `[cloud] public_datasets = false` | `[home] builtin_catalog = false` |
+| `[cloud] hide = ["public"]` | `[home] hide = ["public"]` |

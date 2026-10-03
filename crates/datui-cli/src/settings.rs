@@ -76,6 +76,10 @@ pub struct Setting {
     pub doc: &'static str,
     /// The flag that sets it for one run, without `--`.
     pub flag: Option<&'static str>,
+    /// The keyword argument of Python's `datui.view()` and `DatuiOptions`.
+    pub kwarg: Option<&'static str>,
+    /// The key a delimited format spec writes it as.
+    pub spec: Option<&'static str>,
 }
 
 const fn s(key: &'static str, kind: Kind, default: DefaultValue, doc: &'static str) -> Setting {
@@ -85,12 +89,24 @@ const fn s(key: &'static str, kind: Kind, default: DefaultValue, doc: &'static s
         default,
         doc,
         flag: None,
+        kwarg: None,
+        spec: None,
     }
 }
 
 impl Setting {
     const fn flag(mut self, flag: &'static str) -> Self {
         self.flag = Some(flag);
+        self
+    }
+
+    const fn kwarg(mut self, kwarg: &'static str) -> Self {
+        self.kwarg = Some(kwarg);
+        self
+    }
+
+    const fn spec(mut self, key: &'static str) -> Self {
+        self.spec = Some(key);
         self
     }
 
@@ -145,9 +161,14 @@ pub const SECTIONS: &[Section] = &[
         intro: "",
     },
     Section {
-        name: "file_loading",
-        title: "File loading",
-        intro: "Defaults for reading files. A file's layout (delimiter, header, rows to skip) is a flag for the one file, not a setting.",
+        name: "read",
+        title: "Read",
+        intro: "How files are read. A file's own layout (delimiter, header, rows to skip) is a flag for that file, not a setting.",
+    },
+    Section {
+        name: "csv",
+        title: "CSV",
+        intro: "CSV, TSV and PSV. A [delimited format spec](../user-guide/binary-formats.md#delimited-text) takes these keys too.",
     },
     Section {
         name: "display",
@@ -157,21 +178,21 @@ pub const SECTIONS: &[Section] = &[
     Section {
         name: "performance",
         title: "Performance",
-        intro: "",
+        intro: "The rows the table buffers between reads, and the engine.",
     },
     Section {
-        name: "chart",
-        title: "Charts",
-        intro: "",
+        name: "analysis",
+        title: "Analysis",
+        intro: "Analysis, Data Quality and charts.",
     },
     Section {
-        name: "data",
-        title: "Data",
+        name: "home",
+        title: "Home",
         intro: "The home screen.",
     },
     Section {
-        name: "data.search",
-        title: "Data search",
+        name: "home.search",
+        title: "Home search",
         intro: "Searching below the working directory as you type on the home screen.",
     },
     Section {
@@ -185,7 +206,7 @@ pub const SECTIONS: &[Section] = &[
         intro: "",
     },
     Section {
-        name: "templates",
+        name: "views",
         title: "Views",
         intro: "",
     },
@@ -195,8 +216,13 @@ pub const SECTIONS: &[Section] = &[
         intro: "How the copy dialog (`y`) reaches the system clipboard.",
     },
     Section {
-        name: "debug",
-        title: "Debug",
+        name: "formats",
+        title: "Formats",
+        intro: "Where [format specs](../user-guide/binary-formats.md) and dictionaries are found.",
+    },
+    Section {
+        name: "log",
+        title: "Log",
         intro: "",
     },
     Section {
@@ -220,91 +246,83 @@ pub const SECTIONS: &[Section] = &[
 pub const SETTINGS: &[Setting] = &[
     // Top level
     s("import", List, Value("[]"), "Config files merged in before this one, in order; this file's own values win. Paths may be relative to this file, or use ~ and $VAR."),
-    s("version", Text, Value("\"0.2\""), "Configuration format version."),
-    s("formats_path", List, Value("[]"), "Directories of format specs, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports."),
     s("sources", Tables, Unset("[]"), "Named collections of datasets on the home screen; see Dataset collections."),
-    // [file_loading]
-    s("file_loading.parse_dates", Bool, Unset("true"), "Read CSV and JSON strings that look like dates or ISO 8601 timestamps as Date or Datetime (default true)."),
-    s("file_loading.decompress_in_memory", Bool, Unset("false"), "Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file (default false)."),
-    s("file_loading.temp_dir", Path, Unset("\"/tmp\""), "Directory for decompression temp files. Unset: the system's.").flag("temp-dir"),
-    s("file_loading.single_spine_schema", Bool, Unset("true"), "A partitioned Parquet dataset's schema is every column any of its files has, from their footers; false lets Polars take one file's (default true)."),
-    s("file_loading.null_values", List, Unset("[\"NA\", \"amount=\"]"), "Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list.").flag("null"),
-    s("file_loading.parse_strings", Bool, Unset("true"), "Trim string columns and read them as dates, times, durations or numbers where they all parse (default true). --infer-types=off turns it off, --infer-types=a,b limits it to those columns.").flag("infer-types"),
-    s("file_loading.parse_strings_sample_rows", Count, Unset("1000"), "Rows sampled to infer string column types (default 1000)."),
-    s("file_loading.infer_schema_length", Count, Unset("1000"), "Rows read to infer a CSV's column types (default 1000).").flag("infer-rows"),
-    s("file_loading.ignore_errors", Bool, Unset("false"), "Skip CSV rows that do not parse instead of failing (default false).").flag("ignore-errors"),
-    s("file_loading.comment_char", Text, Unset("\"#\""), "CSV lines starting with this are comments, before the header and among the data.").flag("comment"),
-    s("file_loading.header_join", Text, Unset("\" \""), "Joins a column's names when --header-rows names several lines (default \" \")."),
-    s("file_loading.skip_initial_space", Bool, Unset("false"), "Ignore the spaces after a CSV delimiter, so padded numbers are numbers (default false).").flag("skip-initial-space"),
-    s("file_loading.audio_float", Bool, Unset("false"), "Show integer audio samples as float in [-1, 1] (default false: the integers as stored)."),
-    s("file_loading.follow_interval_ms", Count, Unset("250"), "--follow: milliseconds between checks for new rows, or on Linux the least time between two reads, 10 to 60000 (default 250)."),
-    s("file_loading.memory_warning_mb", Count, Unset("1024"), "Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks (default 1024)."),
+    // [read]
+    s("read.infer_types", Toml("bool \\| list of columns"), Value("true"), "Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON.").flag("infer-types").kwarg("infer_types"),
+    s("read.parquet_schema", Choice(&["union", "first"]), Value("\"union\""), "A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's.").kwarg("parquet_schema"),
+    s("read.decompress_in_memory", Bool, Value("false"), "Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file.").kwarg("decompress_in_memory"),
+    s("read.temp_dir", Path, Unset("\"/tmp\""), "Directory for decompression temp files. Unset: the system's.").flag("temp-dir").kwarg("temp_dir"),
+    s("read.follow_interval", Duration, Value("\"250ms\""), "With --follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh."),
+    s("read.memory_warning", Size, Value("\"1GiB\""), "Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks."),
+    s("read.audio_float", Bool, Value("false"), "Show integer audio samples as float in [-1, 1].").kwarg("audio_float"),
+    // [csv]
+    s("csv.comment", Text, Unset("\"#\""), "Lines starting with this are comments, before the header and among the data.").flag("comment").kwarg("comment").spec("comment"),
+    s("csv.header_join", Text, Value("\" \""), "Joins a column's names when --header-rows names several lines.").kwarg("header_join").spec("header_join"),
+    s("csv.skip_initial_space", Bool, Value("false"), "Ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null.").flag("skip-initial-space").kwarg("skip_initial_space").spec("skip_initial_space"),
+    s("csv.null_values", List, Value("[]"), "Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list.").flag("null").kwarg("null_values").spec("null_values"),
+    s("csv.infer_rows", Count, Value("1000"), "Rows read to infer column types.").flag("infer-rows").kwarg("infer_rows"),
+    s("csv.ignore_errors", Bool, Value("false"), "Skip rows that do not parse instead of failing.").flag("ignore-errors").kwarg("ignore_errors"),
     // [display]
     s("display.unicode", Choice(&["auto", "always", "never"]), Value("\"auto\""), "Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8."),
-    s("display.pages_lookahead", Count, Value("3"), "Pages of rows buffered ahead of the screen."),
-    s("display.pages_lookback", Count, Value("3"), "Pages of rows buffered behind the screen."),
-    s("display.max_buffered_rows", Count, Value("100000"), "Most rows the table buffers; 0 for no limit."),
-    s("display.max_buffered_mb", Count, Value("512"), "Most MiB of rows the table buffers between reads; 0 for no limit."),
-    s("display.row_numbers", Bool, Value("false"), "Show row numbers on the left (# toggles).").flag("row-numbers"),
-    s("display.row_start_index", Count, Value("1"), "The first row's number."),
-    s("display.table_cell_padding", Toml("\"comfortable\" \\| \"compact\" \\| integer"), Value("\"comfortable\""), "Space between columns: comfortable (2 cells), compact (1) or a number of cells."),
-    s("display.column_colors", Bool, Value("true"), "Color cells by column type."),
-    s("display.dtype_row", Bool, Value("true"), "A second header row naming each column's type (D toggles)."),
+    s("display.row_numbers", Bool, Value("false"), "Show row numbers on the left (# toggles).").flag("row-numbers").kwarg("row_numbers"),
+    s("display.row_numbers_start", Count, Value("1"), "The first row's number.").kwarg("row_numbers_start"),
+    s("display.cell_padding", Toml("\"comfortable\" \\| \"compact\" \\| integer"), Value("\"comfortable\""), "Space between columns: comfortable (2 cells), compact (1) or a number of cells."),
+    s("display.column_colors", Bool, Value("true"), "Color cells by column type.").kwarg("column_colors"),
+    s("display.type_row", Bool, Value("true"), "A second header row naming each column's type (D toggles)."),
     s("display.notes_accent", Bool, Value("true"), "Accent the i key when datui has noticed something about the data."),
     s("display.mouse", Bool, Value("true"), "Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal.").flag("mouse"),
     s("display.sidebar_width", Count, Unset("70"), "Width of every sidebar, in cells. Unset: each sidebar's own."),
-    s("display.align_numeric_right", Bool, Value("true"), "Right-align numeric columns and their headers."),
-    s("display.number_format", Toml("preset \\| table"), Value("\"none\""), "Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles).").flag("number-format"),
+    s("display.right_align_numbers", Bool, Value("true"), "Right-align numeric columns and their headers.").kwarg("right_align_numbers"),
+    s("display.number_format", Toml("preset \\| table"), Value("\"none\""), "Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles).").flag("number-format").kwarg("number_format"),
     // [performance]
-    s("performance.analysis_sample_rows", Count, Value("100000"), "Rows an analysis samples from a larger table, spread across all of it; 0 reads every row.").flag("sample-rows"),
-    s("performance.polars_streaming", Bool, Value("true"), "Use the Polars streaming engine where it applies."),
-    s("performance.quality_local_copy_mb", Count, Value("2048"), "Most MiB a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies."),
-    // [chart]
-    s("chart.row_limit", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across all of it."),
-    s("chart.grid", Bool, Value("false"), "Start charts with a grid at the major ticks (g toggles)."),
-    // [data]
-    s("data.directories", List, Value("[]"), "Directories the home screen always lists. ~ and $VAR expand."),
-    s("data.use_desktop_recents", Bool, Value("true"), "Also list directories from the desktop's recently-used files; never the file names."),
-    s("data.show_unreadable_files", Bool, Value("false"), "List files datui cannot read, dimmed (Ctrl+A toggles)."),
-    s("data.builtin_catalog", Bool, Value("true"), "Offer the built-in public collection of datasets."),
-    s("data.hide_sources", List, Value("[]"), "Collections not shown, by name. Adds up across imports."),
-    s("data.preview_max_mb", Count, Value("64"), "Largest local file, in MB, whose first rows the home screen previews; 0 turns the preview off."),
-    s("data.search.enabled", Bool, Value("true"), "Search below the working directory as you type."),
-    s("data.search.max_depth", Count, Value("8"), "How many directories deep the search goes."),
-    s("data.search.max_results", Count, Value("1000"), "Matches listed; the rest are counted."),
-    s("data.search.time_budget_ms", Count, Value("1500"), "Milliseconds the search walks before keeping what it found."),
-    s("data.search.cross_filesystems", Bool, Value("false"), "Descend into other filesystems, network mounts included."),
-    s("data.search.follow_gitignore", Bool, Value("false"), "Skip what .gitignore ignores."),
-    s("data.search.skip", List, Value("[\"node_modules\", \"target\", \"build\", \"dist\", \"vendor\", \"site-packages\", \"__pycache__\", \"venv\", \"env\"]"), "Directory names never searched. Replaces the defaults; skip_extra adds to them."),
-    s("data.search.skip_extra", List, Value("[]"), "Directory names never searched, besides skip."),
-    s("data.search.extensions", List, Value("[]"), "Extensions searched for; empty means every format datui opens."),
+    s("performance.pages_ahead", Count, Value("3"), "Pages of rows buffered ahead of the screen.").kwarg("pages_ahead"),
+    s("performance.pages_behind", Count, Value("3"), "Pages of rows buffered behind the screen.").kwarg("pages_behind"),
+    s("performance.max_buffered_rows", Count, Value("100000"), "Most rows the table buffers between reads; 0 for no limit.").kwarg("max_buffered_rows"),
+    s("performance.max_buffered", Size, Value("\"512MiB\""), "Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB.").kwarg("max_buffered"),
+    s("performance.streaming", Bool, Value("true"), "Use the Polars streaming engine where it applies.").kwarg("streaming"),
+    // [analysis]
+    s("analysis.sample_rows", Count, Value("100000"), "Rows an analysis samples from a larger table, spread across all of it; 0 reads every row.").flag("sample-rows").kwarg("sample_rows"),
+    s("analysis.chart_rows", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across all of it."),
+    s("analysis.chart_grid", Bool, Value("false"), "Start charts with a grid at the major ticks (g toggles)."),
+    s("analysis.quality_local_copy", Size, Value("\"2GiB\""), "Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies."),
+    // [home]
+    s("home.directories", List, Value("[]"), "Directories the home screen always lists. ~ and $VAR expand."),
+    s("home.desktop_recents", Bool, Value("true"), "Also list directories from the desktop's recently-used files; never the file names."),
+    s("home.show_unreadable", Bool, Value("false"), "List files datui cannot read, dimmed (Ctrl+A toggles)."),
+    s("home.builtin_catalog", Bool, Value("true"), "Offer the built-in public collection of datasets."),
+    s("home.hide", List, Value("[]"), "Collections not shown, by name. Adds up across imports."),
+    s("home.preview_max", Size, Value("\"64MiB\""), "Largest local file whose first rows the home screen previews; 0 turns the preview off."),
+    s("home.search.enabled", Bool, Value("true"), "Search below the working directory as you type."),
+    s("home.search.max_depth", Count, Value("8"), "How many directories deep the search goes."),
+    s("home.search.max_results", Count, Value("1000"), "Matches listed; the rest are counted."),
+    s("home.search.time_budget", Duration, Value("\"1500ms\""), "How long the search walks before keeping what it found."),
+    s("home.search.cross_filesystems", Bool, Value("false"), "Descend into other filesystems, network mounts included."),
+    s("home.search.follow_gitignore", Bool, Value("false"), "Skip what .gitignore ignores."),
+    s("home.search.skip", List, Value("[\"node_modules\", \"target\", \"build\", \"dist\", \"vendor\", \"site-packages\", \"__pycache__\", \"venv\", \"env\"]"), "Directory names never searched. Replaces the defaults; skip_extra adds to them."),
+    s("home.search.skip_extra", List, Value("[]"), "Directory names never searched, besides skip."),
+    s("home.search.extensions", List, Value("[]"), "Extensions searched for; empty means every format datui opens."),
     // [cloud]
-    s("cloud.s3_endpoint_url", Text, Unset("\"http://localhost:9000\""), "Endpoint for S3-compatible storage such as MinIO."),
-    s("cloud.s3_access_key_id", Text, Unset("\"\""), "S3 access key."),
-    s("cloud.s3_secret_access_key", Text, Unset("\"\""), "S3 secret key. Prefer AWS_SECRET_ACCESS_KEY."),
-    s("cloud.s3_region", Text, Unset("\"us-east-1\""), "S3 region."),
     s("cloud.connections", Tables, Unset("[]"), "Cloud stores to list on the home screen; see Cloud sources."),
-    s("cloud.hide", List, Unset("[]"), "Cloud source IDs not shown on the home screen. Adds up across imports."),
-    s("cloud.azure_account_keys", Bool, Unset("true"), "Read an Azure account with its access keys when a sign-in has no data role (default true)."),
-    s("cloud.env_files", List, Unset("[\".env\"]"), "Files to read cloud variables from, relative to the working directory. Adds up across imports."),
-    s("cloud.instance_identity", Bool, Unset("false"), "Use the identity of the cloud VM datui runs on (default false)."),
-    s("cloud.discover", Toml("bool \\| \"all\" \\| \"none\" \\| list"), Unset("true"), "Logins found on this machine that become home-screen sources: all, none, or kinds from s3, gcs, azure."),
-    s("cloud.list_on_start", Bool, Unset("false"), "List every source's buckets when the home screen opens, not when one is entered (default false)."),
+    s("cloud.hide", List, Value("[]"), "Cloud source IDs not shown on the home screen. Adds up across imports."),
+    s("cloud.use_azure_account_keys", Bool, Value("true"), "Read an Azure account with its access keys when a sign-in has no data role, as the Portal does."),
+    s("cloud.env_files", List, Value("[]"), "Files to read cloud variables from, relative to the working directory, such as .env. Adds up across imports."),
+    s("cloud.instance_identity", Bool, Value("false"), "Use the identity of the cloud VM datui runs on (EC2, GCE, Azure)."),
+    s("cloud.discover", Toml("bool \\| \"all\" \\| \"none\" \\| list"), Unset("true"), "Logins found on this machine that become home-screen sources: all (unset), none, or kinds from s3, gcs, azure."),
+    s("cloud.list_on_start", Bool, Value("false"), "List every source's buckets when the home screen opens, not when one is entered."),
     // [query]
     s("query.history_limit", Count, Value("1000"), "Queries remembered."),
-    s("query.enable_history", Bool, Value("true"), "Remember queries."),
+    s("query.history", Bool, Value("true"), "Remember queries."),
     s("query.default_mode", Choice(&["sql", "search", "q-style"]), Value("\"sql\""), "The mode / opens on when no query is active."),
-    // [templates]
-    s("templates.auto_apply", Bool, Value("false"), "Apply the best-matching view when a file opens."),
+    // [views]
+    s("views.auto_apply", Bool, Value("false"), "Apply the best-matching view when a file opens."),
     // [clipboard]
     s("clipboard.backend", Choice(&["auto", "native", "osc52"]), Value("\"auto\""), "auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies."),
-    s("clipboard.osc52_limit_kb", Count, Value("100"), "Longest osc52 copy to attempt, in KB of base64."),
-    // [debug]
-    s("debug.enabled", Bool, Value("false"), "Show the debug overlay."),
-    s("debug.show_performance", Bool, Value("true"), "Unused."),
-    s("debug.show_query", Bool, Value("true"), "Unused."),
-    s("debug.show_transformations", Bool, Value("true"), "Unused."),
-    s("debug.log_file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
+    s("clipboard.osc52_limit", Size, Value("\"100KiB\""), "Longest osc52 copy to attempt, as base64. Terminals cap what they accept."),
+    // [formats]
+    s("formats.path", List, Value("[]"), "Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports."),
+    // [log]
+    s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
+    s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]
     s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which built-in palette to start from. auto reads COLORFGBG and falls back to dark."),
     color("theme.colors.keybind_hints", "#7dcfff", "#2e7de9", "Keys in the control bar and dialogs."),
@@ -369,6 +387,86 @@ pub const SETTINGS: &[Setting] = &[
     s("glyphs.*", Toml("string \\| list"), Unset("in_object_store = \"☁\""), "A glyph slot from glyphs.rs, replaced when the Unicode set is active. Keeps the width of the glyph it replaces."),
 ];
 
+/// An option of one open, with no config key: it says how to read one file (#289),
+/// so it is a flag, a Python keyword and, for delimited text, a spec key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenOption {
+    /// The flag, without `--`.
+    pub flag: &'static str,
+    pub kwarg: &'static str,
+    pub kind: Kind,
+    /// The key a delimited format spec writes it as.
+    pub spec: Option<&'static str>,
+}
+
+const fn open(flag: &'static str, kwarg: &'static str, kind: Kind) -> OpenOption {
+    OpenOption {
+        flag,
+        kwarg,
+        kind,
+        spec: None,
+    }
+}
+
+const fn open_spec(
+    flag: &'static str,
+    kwarg: &'static str,
+    kind: Kind,
+    spec: &'static str,
+) -> OpenOption {
+    OpenOption {
+        flag,
+        kwarg,
+        kind,
+        spec: Some(spec),
+    }
+}
+
+/// The open's own options that Python takes as keywords, beside the config keys'.
+pub const OPEN: &[OpenOption] = &[
+    open("format", "format", Text),
+    open("table", "table", Text),
+    open("hive", "hive", Bool),
+    open(
+        "compression",
+        "compression",
+        Choice(&["gzip", "zstd", "bzip2", "xz"]),
+    ),
+    open("dict", "dict", List),
+    open("view", "view", Text),
+    open_spec("delimiter", "delimiter", Text, "delimiter"),
+    open("no-header", "no_header", Bool),
+    open_spec("header-rows", "header_rows", List, "header_rows"),
+    open("footer-rows", "footer_rows", Count),
+    open("skip-rows", "skip_rows", Count),
+    open_spec("skip-lines", "skip_lines", Count, "skip_lines"),
+];
+
+/// The environment variables datui reads, for the reference.
+pub const ENVIRONMENT: &[(&str, &str)] = &[
+    (
+        "DATUI_CONFIG_DIR",
+        "The config directory, in place of the platform's (`~/.config/datui` on Linux). Saved views live there too",
+    ),
+    (
+        "DATUI_CACHE_DIR",
+        "The cache directory, in place of the platform's (`~/.cache/datui` on Linux)",
+    ),
+    (
+        "DATUI_FORMATS_PATH",
+        "Directories of format specs and dictionaries, separated as `PATH` is, searched before `[formats] path`",
+    ),
+    (
+        "DATUI_LOG",
+        "The log level: `error`, `warn`, `info`, `debug`, `trace` or `off`. Beats `log.level` in a file; `-c` and `--log-level` beat it",
+    ),
+    ("DATUI_DEBUG", "`1` shows the debug overlay"),
+    (
+        "DATUI_GCP_PROJECT",
+        "The Google Cloud project to list when projects cannot be searched, as `GOOGLE_CLOUD_PROJECT`",
+    ),
+];
+
 /// The setting `key` names, if any.
 pub fn find(key: &str) -> Option<&'static Setting> {
     SETTINGS.iter().find(|s| s.matches(key))
@@ -379,6 +477,11 @@ pub fn find(key: &str) -> Option<&'static Setting> {
 pub fn flag_help(flag: &str) -> String {
     let setting = by_flag(flag).unwrap_or_else(|| panic!("--{flag} sets no registered key"));
     format!("{} [config: {}]", setting.doc, setting.key)
+}
+
+/// The setting a Python keyword sets, if one does.
+pub fn by_kwarg(kwarg: &str) -> Option<&'static Setting> {
+    SETTINGS.iter().find(|s| s.kwarg == Some(kwarg))
 }
 
 /// The setting a flag sets, if one does.
@@ -459,6 +562,14 @@ pub fn render_settings_markdown() -> String {
             }
         }
     }
+    out.push_str("\n## Environment variables\n\n| Variable | What it does |\n|---|---|\n");
+    for (name, what) in ENVIRONMENT {
+        out.push_str(&format!("| `{name}` | {} |\n", cell(what)));
+    }
+    out.push_str(
+        "\nCloud logins read their own variables (`AWS_*`, `GOOGLE_*`, `AZURE_*`); see\n\
+         [Connect to cloud storage](../user-guide/remote-data.md).\n",
+    );
     out
 }
 
@@ -573,7 +684,8 @@ fn unknown_key(key: &str) -> String {
     message
 }
 
-/// Keys close to `key`: a few edits away, or the same name in another section.
+/// Keys close to `key`: a few edits away, or a name in another section that one of
+/// them holds (`comment_char` and `comment`, so a renamed key finds its new name).
 pub fn suggestions(key: &str) -> Vec<&'static str> {
     let name = key.rsplit_once('.').map_or(key, |(_, n)| n);
     let mut scored: Vec<(usize, &'static str)> = SETTINGS
@@ -582,7 +694,11 @@ pub fn suggestions(key: &str) -> Vec<&'static str> {
         .filter_map(|s| {
             let distance = edit_distance(key, s.key);
             let close = distance <= (key.len() / 4).max(2);
-            (close || s.name() == name).then_some((distance, s.key))
+            let other = s.name();
+            let alike = other == name
+                || (other.len() >= 4 && name.contains(other))
+                || (name.len() >= 4 && other.contains(name));
+            (close || alike).then_some((distance, s.key))
         })
         .collect();
     scored.sort();
@@ -615,11 +731,11 @@ mod tests {
     fn an_override_reads_its_value_for_the_key() {
         let o: Override = "display.row_numbers=yes".parse().unwrap();
         assert_eq!(o.value, toml::Value::Boolean(true));
-        let o: Override = "file_loading.comment_char=#".parse().unwrap();
+        let o: Override = "csv.comment=#".parse().unwrap();
         assert_eq!(o.value, toml::Value::String("#".into()));
-        let o: Override = "data.directories=~/a, /b".parse().unwrap();
+        let o: Override = "home.directories=~/a, /b".parse().unwrap();
         assert_eq!(o.value.as_array().map(Vec::len), Some(2));
-        let o: Override = "data.directories=[\"x\"]".parse().unwrap();
+        let o: Override = "home.directories=[\"x\"]".parse().unwrap();
         assert_eq!(o.value.as_array().map(Vec::len), Some(1));
         let o: Override = "cloud.discover=s3,gcs".parse().unwrap();
         assert_eq!(o.value, toml::Value::String("s3,gcs".into()));
@@ -628,17 +744,39 @@ mod tests {
         let o: Override = "glyphs.spinner=[\"a\", \"b\"]".parse().unwrap();
         assert!(o.value.is_array());
         // Only the first `=` splits.
-        let o: Override = "file_loading.null_values=amount=".parse().unwrap();
+        let o: Override = "csv.null_values=amount=".parse().unwrap();
         assert_eq!(o.value.as_array().unwrap()[0].as_str(), Some("amount="));
     }
 
     #[test]
+    fn sizes_and_durations_take_their_unit() {
+        let o: Override = "performance.max_buffered=1GiB".parse().unwrap();
+        assert_eq!(o.value, toml::Value::String("1GiB".into()));
+        let e = "performance.max_buffered=512"
+            .parse::<Override>()
+            .unwrap_err();
+        assert!(e.contains("needs a unit"), "{e}");
+        let o: Override = "read.follow_interval=1s".parse().unwrap();
+        assert_eq!(o.value, toml::Value::String("1s".into()));
+        let e = "read.follow_interval=fast".parse::<Override>().unwrap_err();
+        assert!(e.contains("duration"), "{e}");
+    }
+
+    #[test]
     fn an_override_refuses_with_the_way_out() {
+        let e = "file_loading.comment_char=#"
+            .parse::<Override>()
+            .unwrap_err();
+        assert!(e.contains("did you mean csv.comment"), "{e}");
+        let e = "performance.polars_streaming=false"
+            .parse::<Override>()
+            .unwrap_err();
+        assert!(e.contains("performance.streaming"), "{e}");
         let e = "display.row_number=true".parse::<Override>().unwrap_err();
         assert!(e.contains("did you mean display.row_numbers"), "{e}");
         let e = "row_numbers=true".parse::<Override>().unwrap_err();
         assert!(e.contains("display.row_numbers"), "{e}");
-        let e = "display.row_start_index=one"
+        let e = "display.row_numbers_start=one"
             .parse::<Override>()
             .unwrap_err();
         assert!(

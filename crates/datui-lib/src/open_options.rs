@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::config::{InferTypes, ParquetSchema};
 use crate::{AppConfig, CompressionFormat, FileFormat, cli};
 
 /// Which CSV string columns to trim and parse (date/datetime/time/duration/int/float). Default: all. None = disabled (e.g. --infer-types=off).
@@ -87,7 +88,7 @@ pub struct OpenOptions {
     pub single_spine_schema: bool,
     /// `--view NAME`: the view to apply to the dataset named on the command
     /// line, once it is on screen. Applied to that open only; what later opens get
-    /// is `[templates] auto_apply`'s business.
+    /// is `[views] auto_apply`'s business.
     pub template: Option<String>,
     /// When true, CSV and JSON string columns that look like dates or ISO 8601 timestamps become Date or Datetime.
     pub parse_dates: bool,
@@ -148,7 +149,7 @@ pub struct OpenOptions {
     /// columns typed — as Python method calls for Copy as Python. Found by the scan,
     /// carried to the dataset as `left_out` is. Empty for every other open.
     pub read_python: Vec<String>,
-    /// `[file_loading] audio_float`: integer audio samples as float in [-1, 1].
+    /// `[read] audio_float`: integer audio samples as float in [-1, 1].
     pub normalize: bool,
     /// A SQLite table opened in place, carried from the scan to the dataset.
     pub sqlite: Option<Arc<SqliteOpen>>,
@@ -348,7 +349,6 @@ impl OpenOptions {
     /// `-c` laid over it; a flag here beats both.
     pub fn from_args_and_config(args: &cli::Args, config: &AppConfig) -> Self {
         let mut opts = OpenOptions::new();
-        let loading = &config.file_loading;
 
         // A file's layout: command line only. Set in config, these applied to every
         // file opened and silently cut rows from the ones they did not describe (#289).
@@ -381,72 +381,52 @@ impl OpenOptions {
         opts.tee_raw = args.tee_raw;
         opts.force = args.force;
 
-        opts.pages_lookahead = Some(config.display.pages_lookahead);
-        opts.pages_lookback = Some(config.display.pages_lookback);
-        opts.max_buffered_rows = Some(config.display.max_buffered_rows);
-        opts.max_buffered_mb = Some(config.display.max_buffered_mb);
+        opts.pages_lookahead = Some(config.performance.pages_ahead);
+        opts.pages_lookback = Some(config.performance.pages_behind);
+        opts.max_buffered_rows = Some(config.performance.max_buffered_rows);
+        opts.max_buffered_mb = Some(config.performance.max_buffered_mb());
         opts.row_numbers = args.row_numbers.unwrap_or(config.display.row_numbers);
-        opts.row_start_index = config.display.row_start_index;
-        opts.single_spine_schema = loading.single_spine_schema.unwrap_or(true);
-        opts.decompress_in_memory = loading.decompress_in_memory.unwrap_or(false);
-        opts.normalize = loading.audio_float.unwrap_or(false);
-        opts.polars_streaming = config.performance.polars_streaming;
-        opts.debug = config.debug.enabled;
+        opts.row_start_index = config.display.row_numbers_start;
+        opts.single_spine_schema = config.read.parquet_schema == ParquetSchema::Union;
+        opts.decompress_in_memory = config.read.decompress_in_memory;
+        opts.normalize = config.read.audio_float;
+        opts.polars_streaming = config.performance.streaming;
 
-        // Typing string columns: the flag, else the config's two keys.
-        match &args.infer_types {
-            Some(cli::InferTypes::Off) => {
-                opts.parse_strings = None;
-                opts.parse_dates = false;
-            }
-            Some(cli::InferTypes::All) => {
-                opts.parse_strings = Some(ParseStringsTarget::All);
-                opts.parse_dates = true;
-            }
-            Some(cli::InferTypes::Columns(cols)) => {
-                opts.parse_strings = Some(ParseStringsTarget::Columns(cols.clone()));
-                opts.parse_dates = true;
-            }
-            None => {
-                opts.parse_strings =
-                    (loading.parse_strings != Some(false)).then_some(ParseStringsTarget::All);
-                opts.parse_dates = loading.parse_dates.unwrap_or(true);
-            }
-        }
+        // Typing string columns, dates among them: the flag, else `read.infer_types`.
+        let infer = match &args.infer_types {
+            Some(cli::InferTypes::All) => InferTypes::Switch(true),
+            Some(cli::InferTypes::Off) => InferTypes::Switch(false),
+            Some(cli::InferTypes::Columns(cols)) => InferTypes::Columns(cols.clone()),
+            None => config.read.infer_types.clone(),
+        };
+        (opts.parse_strings, opts.parse_dates) = match infer {
+            InferTypes::Switch(false) => (None, false),
+            InferTypes::Switch(true) => (Some(ParseStringsTarget::All), true),
+            InferTypes::Columns(cols) => (Some(ParseStringsTarget::Columns(cols)), true),
+        };
 
         // CSV dialect: a flag beats the config.
-        opts.comment_char = args
-            .comment
-            .clone()
-            .or_else(|| loading.comment_char.clone());
-        if let Some(join) = &loading.header_join {
-            opts.header_join = join.clone();
-        }
-        opts.skip_initial_space = args
-            .skip_initial_space
-            .or(loading.skip_initial_space)
-            .unwrap_or(false);
+        let csv = &config.csv;
+        opts.comment_char = args.comment.clone().or_else(|| csv.comment.clone());
+        opts.header_join = csv.header_join.clone();
+        opts.skip_initial_space = args.skip_initial_space.unwrap_or(csv.skip_initial_space);
         opts.typed_dialect = TypedDialect::from_args(args);
-        opts.ignore_errors = args
-            .ignore_errors
-            .or(loading.ignore_errors)
-            .unwrap_or(false);
+        opts.ignore_errors = args.ignore_errors.unwrap_or(csv.ignore_errors);
         // `--null` replaces the config's list, as every flag replaces its key.
         let nulls = if args.null.is_empty() {
-            loading.null_values.clone().unwrap_or_default()
+            csv.null_values.clone()
         } else {
             args.null.clone()
         };
         opts.null_values = (!nulls.is_empty()).then_some(nulls);
-        // One row count for one guess; Polars' own default is 100.
-        let infer_rows = args.infer_rows.or(loading.infer_schema_length);
-        opts.infer_schema_length = infer_rows.or(Some(1000));
-        opts.parse_strings_sample_rows = infer_rows
-            .or(loading.parse_strings_sample_rows)
-            .unwrap_or(1000);
+        // One row count for one guess, Polars' and datui's alike.
+        let infer_rows = args.infer_rows.unwrap_or(csv.infer_rows);
+        opts.infer_schema_length = Some(infer_rows);
+        opts.parse_strings_sample_rows = infer_rows;
 
         opts.temp_dir = args.temp_dir.clone().or_else(|| {
-            loading
+            config
+                .read
                 .temp_dir
                 .as_deref()
                 .map(crate::config::expand_config_path)

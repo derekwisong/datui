@@ -13,7 +13,7 @@ use color_eyre::eyre::Report;
 use polars::prelude::*;
 use std::collections::HashMap;
 
-/// The default sample size, before `[performance] analysis_sample_rows` says otherwise.
+/// The default sample size, before `[analysis] sample_rows` says otherwise.
 pub const DEFAULT_SAMPLE_ROWS: usize = 100_000;
 
 /// The sizes the Sample form steps through with ←/→.

@@ -35,9 +35,16 @@ pub struct Settings {
 /// Read the settings: the configuration (unless one was given), the command line over
 /// it, `[cloud] env_files`, the log.
 pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Settings> {
-    // `--log-level` beats `DATUI_LOG`.
+    // `--log-level`, then `-c log.level`, then `DATUI_LOG`; the files' `log.level` is
+    // read below, under all three.
     let log_level = match &input {
-        RunInput::Cli(args) => args.log_level.clone(),
+        RunInput::Cli(args) => args.log_level.clone().or_else(|| {
+            args.config
+                .iter()
+                .rev()
+                .find(|o| o.key == "log.level")
+                .and_then(|o| o.value.as_str().map(str::to_string))
+        }),
         _ => None,
     }
     .or_else(|| std::env::var("DATUI_LOG").ok());
@@ -97,8 +104,8 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
 
     let cache_dir = crate::cache::CacheManager::new(APP_NAME).ok();
     notes.extend(logging::init(&logging::LogSettings::resolve(
-        config.debug.log_file.as_deref(),
-        log_level.as_deref(),
+        config.log.file.as_deref(),
+        log_level.as_deref().or(config.log.level.as_deref()),
         cache_dir.as_ref().map(|c| c.cache_dir()),
     )));
     for secret in [
@@ -156,7 +163,7 @@ pub(crate) fn load_config(input: &RunInput) -> Result<AppConfig> {
 
 /// `input` with a leading `~` expanded in the paths its command line names: the
 /// datasets, `--format FILE`, `--dict` and `--temp-dir`. `--log-file` expands with
-/// `[debug] log_file`.
+/// `[log] file`.
 pub(crate) fn expand_home(input: RunInput) -> RunInput {
     match input {
         RunInput::Cli(mut args) => {
@@ -192,10 +199,10 @@ fn apply_args(config: &mut AppConfig, args: &Args) {
         config.display.mouse = mouse;
     }
     if let Some(rows) = args.sample_rows {
-        config.performance.analysis_sample_rows = rows;
+        config.analysis.sample_rows = rows;
     }
     if let Some(path) = &args.log_file {
-        config.debug.log_file = Some(path.to_string_lossy().into_owned());
+        config.log.file = Some(path.to_string_lossy().into_owned());
     }
 }
 
@@ -267,7 +274,7 @@ mod tests {
         let file = dir.path().join("config.toml");
         std::fs::write(
             &file,
-            "[performance]\nanalysis_sample_rows = 10\n[display]\nrow_start_index = 5\n",
+            "[analysis]\nsample_rows = 10\n[display]\nrow_numbers_start = 5\n",
         )
         .unwrap();
         let effective = |flags: &[&str]| {
@@ -276,31 +283,23 @@ mod tests {
             let mut config = AppConfig::load_from_file_with(&file, &args.config).unwrap();
             apply_args(&mut config, &args);
             (
-                config.performance.analysis_sample_rows,
-                config.display.row_start_index,
+                config.analysis.sample_rows,
+                config.display.row_numbers_start,
             )
         };
         assert_eq!(effective(&[]), (10, 5));
+        assert_eq!(effective(&["-c", "analysis.sample_rows=20"]), (20, 5));
         assert_eq!(
-            effective(&["-c", "performance.analysis_sample_rows=20"]),
-            (20, 5)
-        );
-        assert_eq!(
-            effective(&[
-                "-c",
-                "performance.analysis_sample_rows=20",
-                "--sample-rows",
-                "30"
-            ]),
+            effective(&["-c", "analysis.sample_rows=20", "--sample-rows", "30"]),
             (30, 5)
         );
         // The last `-c` of a key wins, and keys it does not name keep the file's.
         assert_eq!(
             effective(&[
                 "-c",
-                "display.row_start_index=0",
+                "display.row_numbers_start=0",
                 "-c",
-                "display.row_start_index=2"
+                "display.row_numbers_start=2"
             ]),
             (10, 2)
         );

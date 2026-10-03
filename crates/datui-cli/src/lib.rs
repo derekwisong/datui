@@ -182,7 +182,7 @@ pub struct Args {
     #[arg(long = "no-header", action, help_heading = "Delimited text")]
     pub no_header: bool,
 
-    /// The line, or comma-separated lines, holding the header, counted from 1 before anything is skipped. Several are joined per column (header_join in [file_loading]); the data starts after the last
+    /// The line, or comma-separated lines, holding the header, counted from 1 before anything is skipped. Several are joined per column ([csv] header_join); the data starts after the last
     #[arg(
         long = "header-rows",
         value_name = "N[,M...]",
@@ -251,8 +251,7 @@ pub struct Args {
     #[arg(long = "log-file", value_name = "PATH", help = settings::flag_help("log-file"), help_heading = "Logging")]
     pub log_file: Option<std::path::PathBuf>,
 
-    /// How much the log says: error, warn (default), info, debug, trace or off. Beats DATUI_LOG
-    #[arg(long = "log-level", value_name = "LEVEL", value_parser = clap::builder::PossibleValuesParser::new(LOG_LEVELS), hide_possible_values = true, help_heading = "Logging")]
+    #[arg(long = "log-level", value_name = "LEVEL", value_parser = clap::builder::PossibleValuesParser::new(LOG_LEVELS), hide_possible_values = true, help = settings::flag_help("log-level"), help_heading = "Logging")]
     pub log_level: Option<String>,
 
     #[command(subcommand)]

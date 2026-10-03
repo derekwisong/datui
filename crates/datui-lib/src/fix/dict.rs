@@ -4,7 +4,7 @@
 //! The built-in dictionary is FIX 4.2, 4.4 and 5.0 SP2 merged, generated from
 //! QuickFIX's data dictionaries by `scripts/code/fix_dictionary.py`. Custom ones are
 //! found on the format spec search path (`~/.config/datui/formats/`,
-//! `$DATUI_FORMATS_PATH`, `formats_path`) or named by `--dict`, in two forms: a
+//! `$DATUI_FORMATS_PATH`, `[formats] path`) or named by `--dict`, in two forms: a
 //! QuickFIX XML data dictionary, read as it is, or a short TOML file of `kind = "fix"`.
 //! A custom dictionary may apply only to the messages of one counterparty (`match` on
 //! SenderCompID, TargetCompID or BeginString).

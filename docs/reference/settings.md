@@ -26,31 +26,34 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `import` | list | `[]` |  | Config files merged in before this one, in order; this file's own values win. Paths may be relative to this file, or use ~ and $VAR. |
-| `version` | string | `"0.2"` |  | Configuration format version. |
-| `formats_path` | list | `[]` |  | Directories of format specs, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports. |
 | `sources` | tables | unset |  | Named collections of datasets on the home screen; see Dataset collections. |
 
-## File loading
+## Read
 
-`[file_loading]` Defaults for reading files. A file's layout (delimiter, header, rows to skip) is a flag for the one file, not a setting.
+`[read]` How files are read. A file's own layout (delimiter, header, rows to skip) is a flag for that file, not a setting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `file_loading.parse_dates` | bool | unset |  | Read CSV and JSON strings that look like dates or ISO 8601 timestamps as Date or Datetime (default true). |
-| `file_loading.decompress_in_memory` | bool | unset |  | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file (default false). |
-| `file_loading.temp_dir` | path | unset | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |
-| `file_loading.single_spine_schema` | bool | unset |  | A partitioned Parquet dataset's schema is every column any of its files has, from their footers; false lets Polars take one file's (default true). |
-| `file_loading.null_values` | list | unset | `--null` | Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list. |
-| `file_loading.parse_strings` | bool | unset | `--infer-types` | Trim string columns and read them as dates, times, durations or numbers where they all parse (default true). --infer-types=off turns it off, --infer-types=a,b limits it to those columns. |
-| `file_loading.parse_strings_sample_rows` | integer | unset |  | Rows sampled to infer string column types (default 1000). |
-| `file_loading.infer_schema_length` | integer | unset | `--infer-rows` | Rows read to infer a CSV's column types (default 1000). |
-| `file_loading.ignore_errors` | bool | unset | `--ignore-errors` | Skip CSV rows that do not parse instead of failing (default false). |
-| `file_loading.comment_char` | string | unset | `--comment` | CSV lines starting with this are comments, before the header and among the data. |
-| `file_loading.header_join` | string | unset |  | Joins a column's names when --header-rows names several lines (default " "). |
-| `file_loading.skip_initial_space` | bool | unset | `--skip-initial-space` | Ignore the spaces after a CSV delimiter, so padded numbers are numbers (default false). |
-| `file_loading.audio_float` | bool | unset |  | Show integer audio samples as float in [-1, 1] (default false: the integers as stored). |
-| `file_loading.follow_interval_ms` | integer | unset |  | --follow: milliseconds between checks for new rows, or on Linux the least time between two reads, 10 to 60000 (default 250). |
-| `file_loading.memory_warning_mb` | integer | unset |  | Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks (default 1024). |
+| `read.infer_types` | bool \| list of columns | `true` | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. |
+| `read.parquet_schema` | union \| first | `"union"` |  | A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. |
+| `read.decompress_in_memory` | bool | `false` |  | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file. |
+| `read.temp_dir` | path | unset | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |
+| `read.follow_interval` | duration | `"250ms"` |  | With --follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh. |
+| `read.memory_warning` | size | `"1GiB"` |  | Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks. |
+| `read.audio_float` | bool | `false` |  | Show integer audio samples as float in [-1, 1]. |
+
+## CSV
+
+`[csv]` CSV, TSV and PSV. A [delimited format spec](../user-guide/binary-formats.md#delimited-text) takes these keys too.
+
+| Key | Type | Default | Flag | Description |
+|---|---|---|---|---|
+| `csv.comment` | string | unset | `--comment` | Lines starting with this are comments, before the header and among the data. |
+| `csv.header_join` | string | `" "` |  | Joins a column's names when --header-rows names several lines. |
+| `csv.skip_initial_space` | bool | `false` | `--skip-initial-space` | Ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null. |
+| `csv.null_values` | list | `[]` | `--null` | Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list. |
+| `csv.infer_rows` | integer | `1000` | `--infer-rows` | Rows read to infer column types. |
+| `csv.ignore_errors` | bool | `false` | `--ignore-errors` | Skip rows that do not parse instead of failing. |
 
 ## Display
 
@@ -59,68 +62,68 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `display.unicode` | auto \| always \| never | `"auto"` |  | Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8. |
-| `display.pages_lookahead` | integer | `3` |  | Pages of rows buffered ahead of the screen. |
-| `display.pages_lookback` | integer | `3` |  | Pages of rows buffered behind the screen. |
-| `display.max_buffered_rows` | integer | `100000` |  | Most rows the table buffers; 0 for no limit. |
-| `display.max_buffered_mb` | integer | `512` |  | Most MiB of rows the table buffers between reads; 0 for no limit. |
 | `display.row_numbers` | bool | `false` | `--row-numbers` | Show row numbers on the left (# toggles). |
-| `display.row_start_index` | integer | `1` |  | The first row's number. |
-| `display.table_cell_padding` | "comfortable" \| "compact" \| integer | `"comfortable"` |  | Space between columns: comfortable (2 cells), compact (1) or a number of cells. |
+| `display.row_numbers_start` | integer | `1` |  | The first row's number. |
+| `display.cell_padding` | "comfortable" \| "compact" \| integer | `"comfortable"` |  | Space between columns: comfortable (2 cells), compact (1) or a number of cells. |
 | `display.column_colors` | bool | `true` |  | Color cells by column type. |
-| `display.dtype_row` | bool | `true` |  | A second header row naming each column's type (D toggles). |
+| `display.type_row` | bool | `true` |  | A second header row naming each column's type (D toggles). |
 | `display.notes_accent` | bool | `true` |  | Accent the i key when datui has noticed something about the data. |
 | `display.mouse` | bool | `true` | `--mouse` | Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal. |
 | `display.sidebar_width` | integer | unset |  | Width of every sidebar, in cells. Unset: each sidebar's own. |
-| `display.align_numeric_right` | bool | `true` |  | Right-align numeric columns and their headers. |
+| `display.right_align_numbers` | bool | `true` |  | Right-align numeric columns and their headers. |
 | `display.number_format` | preset \| table | `"none"` | `--number-format` | Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles). |
 
 ## Performance
 
-`[performance]`
+`[performance]` The rows the table buffers between reads, and the engine.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `performance.analysis_sample_rows` | integer | `100000` | `--sample-rows` | Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. |
-| `performance.polars_streaming` | bool | `true` |  | Use the Polars streaming engine where it applies. |
-| `performance.quality_local_copy_mb` | integer | `2048` |  | Most MiB a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. |
+| `performance.pages_ahead` | integer | `3` |  | Pages of rows buffered ahead of the screen. |
+| `performance.pages_behind` | integer | `3` |  | Pages of rows buffered behind the screen. |
+| `performance.max_buffered_rows` | integer | `100000` |  | Most rows the table buffers between reads; 0 for no limit. |
+| `performance.max_buffered` | size | `"512MiB"` |  | Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB. |
+| `performance.streaming` | bool | `true` |  | Use the Polars streaming engine where it applies. |
 
-## Charts
+## Analysis
 
-`[chart]`
-
-| Key | Type | Default | Flag | Description |
-|---|---|---|---|---|
-| `chart.row_limit` | integer | `10000` |  | Rows a chart reads; a larger table is sampled across all of it. |
-| `chart.grid` | bool | `false` |  | Start charts with a grid at the major ticks (g toggles). |
-
-## Data
-
-`[data]` The home screen.
+`[analysis]` Analysis, Data Quality and charts.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `data.directories` | list | `[]` |  | Directories the home screen always lists. ~ and $VAR expand. |
-| `data.use_desktop_recents` | bool | `true` |  | Also list directories from the desktop's recently-used files; never the file names. |
-| `data.show_unreadable_files` | bool | `false` |  | List files datui cannot read, dimmed (Ctrl+A toggles). |
-| `data.builtin_catalog` | bool | `true` |  | Offer the built-in public collection of datasets. |
-| `data.hide_sources` | list | `[]` |  | Collections not shown, by name. Adds up across imports. |
-| `data.preview_max_mb` | integer | `64` |  | Largest local file, in MB, whose first rows the home screen previews; 0 turns the preview off. |
+| `analysis.sample_rows` | integer | `100000` | `--sample-rows` | Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. |
+| `analysis.chart_rows` | integer | `10000` |  | Rows a chart reads; a larger table is sampled across all of it. |
+| `analysis.chart_grid` | bool | `false` |  | Start charts with a grid at the major ticks (g toggles). |
+| `analysis.quality_local_copy` | size | `"2GiB"` |  | Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. |
 
-## Data search
+## Home
 
-`[data.search]` Searching below the working directory as you type on the home screen.
+`[home]` The home screen.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `data.search.enabled` | bool | `true` |  | Search below the working directory as you type. |
-| `data.search.max_depth` | integer | `8` |  | How many directories deep the search goes. |
-| `data.search.max_results` | integer | `1000` |  | Matches listed; the rest are counted. |
-| `data.search.time_budget_ms` | integer | `1500` |  | Milliseconds the search walks before keeping what it found. |
-| `data.search.cross_filesystems` | bool | `false` |  | Descend into other filesystems, network mounts included. |
-| `data.search.follow_gitignore` | bool | `false` |  | Skip what .gitignore ignores. |
-| `data.search.skip` | list | `["node_modules", "target", "build", "dist", "vendor", "site-packages", "__pycache__", "venv", "env"]` |  | Directory names never searched. Replaces the defaults; skip_extra adds to them. |
-| `data.search.skip_extra` | list | `[]` |  | Directory names never searched, besides skip. |
-| `data.search.extensions` | list | `[]` |  | Extensions searched for; empty means every format datui opens. |
+| `home.directories` | list | `[]` |  | Directories the home screen always lists. ~ and $VAR expand. |
+| `home.desktop_recents` | bool | `true` |  | Also list directories from the desktop's recently-used files; never the file names. |
+| `home.show_unreadable` | bool | `false` |  | List files datui cannot read, dimmed (Ctrl+A toggles). |
+| `home.builtin_catalog` | bool | `true` |  | Offer the built-in public collection of datasets. |
+| `home.hide` | list | `[]` |  | Collections not shown, by name. Adds up across imports. |
+| `home.preview_max` | size | `"64MiB"` |  | Largest local file whose first rows the home screen previews; 0 turns the preview off. |
+
+## Home search
+
+`[home.search]` Searching below the working directory as you type on the home screen.
+
+| Key | Type | Default | Flag | Description |
+|---|---|---|---|---|
+| `home.search.enabled` | bool | `true` |  | Search below the working directory as you type. |
+| `home.search.max_depth` | integer | `8` |  | How many directories deep the search goes. |
+| `home.search.max_results` | integer | `1000` |  | Matches listed; the rest are counted. |
+| `home.search.time_budget` | duration | `"1500ms"` |  | How long the search walks before keeping what it found. |
+| `home.search.cross_filesystems` | bool | `false` |  | Descend into other filesystems, network mounts included. |
+| `home.search.follow_gitignore` | bool | `false` |  | Skip what .gitignore ignores. |
+| `home.search.skip` | list | `["node_modules", "target", "build", "dist", "vendor", "site-packages", "__pycache__", "venv", "env"]` |  | Directory names never searched. Replaces the defaults; skip_extra adds to them. |
+| `home.search.skip_extra` | list | `[]` |  | Directory names never searched, besides skip. |
+| `home.search.extensions` | list | `[]` |  | Extensions searched for; empty means every format datui opens. |
 
 ## Cloud
 
@@ -128,17 +131,13 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `cloud.s3_endpoint_url` | string | unset |  | Endpoint for S3-compatible storage such as MinIO. |
-| `cloud.s3_access_key_id` | string | unset |  | S3 access key. |
-| `cloud.s3_secret_access_key` | string | unset |  | S3 secret key. Prefer AWS_SECRET_ACCESS_KEY. |
-| `cloud.s3_region` | string | unset |  | S3 region. |
 | `cloud.connections` | tables | unset |  | Cloud stores to list on the home screen; see Cloud sources. |
-| `cloud.hide` | list | unset |  | Cloud source IDs not shown on the home screen. Adds up across imports. |
-| `cloud.azure_account_keys` | bool | unset |  | Read an Azure account with its access keys when a sign-in has no data role (default true). |
-| `cloud.env_files` | list | unset |  | Files to read cloud variables from, relative to the working directory. Adds up across imports. |
-| `cloud.instance_identity` | bool | unset |  | Use the identity of the cloud VM datui runs on (default false). |
-| `cloud.discover` | bool \| "all" \| "none" \| list | unset |  | Logins found on this machine that become home-screen sources: all, none, or kinds from s3, gcs, azure. |
-| `cloud.list_on_start` | bool | unset |  | List every source's buckets when the home screen opens, not when one is entered (default false). |
+| `cloud.hide` | list | `[]` |  | Cloud source IDs not shown on the home screen. Adds up across imports. |
+| `cloud.use_azure_account_keys` | bool | `true` |  | Read an Azure account with its access keys when a sign-in has no data role, as the Portal does. |
+| `cloud.env_files` | list | `[]` |  | Files to read cloud variables from, relative to the working directory, such as .env. Adds up across imports. |
+| `cloud.instance_identity` | bool | `false` |  | Use the identity of the cloud VM datui runs on (EC2, GCE, Azure). |
+| `cloud.discover` | bool \| "all" \| "none" \| list | unset |  | Logins found on this machine that become home-screen sources: all (unset), none, or kinds from s3, gcs, azure. |
+| `cloud.list_on_start` | bool | `false` |  | List every source's buckets when the home screen opens, not when one is entered. |
 
 ## Query
 
@@ -147,16 +146,16 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `query.history_limit` | integer | `1000` |  | Queries remembered. |
-| `query.enable_history` | bool | `true` |  | Remember queries. |
+| `query.history` | bool | `true` |  | Remember queries. |
 | `query.default_mode` | sql \| search \| q-style | `"sql"` |  | The mode / opens on when no query is active. |
 
 ## Views
 
-`[templates]`
+`[views]`
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `templates.auto_apply` | bool | `false` |  | Apply the best-matching view when a file opens. |
+| `views.auto_apply` | bool | `false` |  | Apply the best-matching view when a file opens. |
 
 ## Clipboard
 
@@ -165,19 +164,24 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `clipboard.backend` | auto \| native \| osc52 | `"auto"` |  | auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies. |
-| `clipboard.osc52_limit_kb` | integer | `100` |  | Longest osc52 copy to attempt, in KB of base64. |
+| `clipboard.osc52_limit` | size | `"100KiB"` |  | Longest osc52 copy to attempt, as base64. Terminals cap what they accept. |
 
-## Debug
+## Formats
 
-`[debug]`
+`[formats]` Where [format specs](../user-guide/binary-formats.md) and dictionaries are found.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `debug.enabled` | bool | `false` |  | Show the debug overlay. |
-| `debug.show_performance` | bool | `true` |  | Unused. |
-| `debug.show_query` | bool | `true` |  | Unused. |
-| `debug.show_transformations` | bool | `true` |  | Unused. |
-| `debug.log_file` | path | unset | `--log-file` | Where the log goes. Unset: datui.log in the cache directory. |
+| `formats.path` | list | `[]` |  | Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports. |
+
+## Log
+
+`[log]`
+
+| Key | Type | Default | Flag | Description |
+|---|---|---|---|---|
+| `log.file` | path | unset | `--log-file` | Where the log goes. Unset: datui.log in the cache directory. |
+| `log.level` | error \| warn \| info \| debug \| trace \| off | unset | `--log-level` | How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG. |
 
 ## Theme
 
@@ -259,3 +263,17 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `glyphs.*` | string \| list | unset |  | A glyph slot from glyphs.rs, replaced when the Unicode set is active. Keeps the width of the glyph it replaces. |
+
+## Environment variables
+
+| Variable | What it does |
+|---|---|
+| `DATUI_CONFIG_DIR` | The config directory, in place of the platform's (`~/.config/datui` on Linux). Saved views live there too |
+| `DATUI_CACHE_DIR` | The cache directory, in place of the platform's (`~/.cache/datui` on Linux) |
+| `DATUI_FORMATS_PATH` | Directories of format specs and dictionaries, separated as `PATH` is, searched before `[formats] path` |
+| `DATUI_LOG` | The log level: `error`, `warn`, `info`, `debug`, `trace` or `off`. Beats `log.level` in a file; `-c` and `--log-level` beat it |
+| `DATUI_DEBUG` | `1` shows the debug overlay |
+| `DATUI_GCP_PROJECT` | The Google Cloud project to list when projects cannot be searched, as `GOOGLE_CLOUD_PROJECT` |
+
+Cloud logins read their own variables (`AWS_*`, `GOOGLE_*`, `AZURE_*`); see
+[Connect to cloud storage](../user-guide/remote-data.md).

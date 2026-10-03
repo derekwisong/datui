@@ -8057,7 +8057,7 @@ fn test_an_export_without_the_streaming_engine_writes_the_same_file() {
     let mut written = Vec::new();
     for streaming in [true, false] {
         let mut config = datui::AppConfig::default();
-        config.performance.polars_streaming = streaming;
+        config.performance.streaming = streaming;
         let (mut app, rx, tx) =
             open_query_filter_fixture_with(&format!("export_engine_{streaming}.csv"), config);
         app.data_table_state
@@ -8327,7 +8327,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
 
     let open = |streaming: bool| {
         let mut config = datui::AppConfig::default();
-        config.performance.polars_streaming = streaming;
+        config.performance.streaming = streaming;
         let (tx, rx) = mpsc::channel();
         let theme = datui::Theme::from_config(&config.theme).unwrap();
         let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
@@ -12793,7 +12793,7 @@ fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
 /// A dataset Polars opened shows no measurements, even though its rows are counted
 /// afterwards.
 ///
-/// `file_loading.single_spine_schema = false` turns off the footer pass and hands the directory
+/// `read.parquet_schema = "first"` turns off the footer pass and hands the directory
 /// straight to Polars, so there is nothing for datui to report. But the row count is
 /// still taken from the footers afterwards, against the same dataset — and that pass
 /// writing into the meter would raise a section out of nothing, headed by what opening
@@ -13219,7 +13219,7 @@ fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
     cache.remember_place(&kept);
 
     let mut config = datui::AppConfig::default();
-    config.data.directories = vec![configured.to_string_lossy().into_owned()];
+    config.home.directories = vec![configured.to_string_lossy().into_owned()];
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new_with_config(
         tx,
@@ -13280,7 +13280,7 @@ fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
         app.home
             .status
             .as_deref()
-            .is_some_and(|s| s.contains("[data] directories")),
+            .is_some_and(|s| s.contains("[home] directories")),
         "{:?}",
         app.home.status
     );
@@ -16271,7 +16271,7 @@ fn test_delimiter_flag_splits_the_columns() {
         (
             "gzip, in memory",
             vec![gz.clone()],
-            with_flag(&["-c", "file_loading.decompress_in_memory=true"]),
+            with_flag(&["-c", "read.decompress_in_memory=true"]),
             InMemory,
         ),
     ] {
@@ -16310,7 +16310,7 @@ fn test_every_delimited_format_opens_with_every_compression() {
             for in_memory in [false, true] {
                 let mut flagged = vec!["datui"];
                 if in_memory {
-                    flagged.extend(["-c", "file_loading.decompress_in_memory=true"]);
+                    flagged.extend(["-c", "read.decompress_in_memory=true"]);
                 }
                 for (what, path, extra) in [
                     ("by name", &named, vec![named_arg]),
@@ -16445,7 +16445,7 @@ fn test_delimiter_flag_overrides_the_format_and_reaches_export() {
     assert_eq!(export_default(&mut app), ";");
 }
 
-/// A file's layout in `[file_loading]` no longer reaches the open (#289). It used to
+/// A file's layout in `[csv]` does not reach the open (#289). It used to
 /// apply to every file, and `skip_rows = 2` turned this one's third row into its header.
 #[test]
 fn test_layout_keys_in_config_do_not_reach_the_open() {
@@ -16453,7 +16453,7 @@ fn test_layout_keys_in_config_do_not_reach_the_open() {
     let tmp = tempfile::TempDir::new().unwrap();
     let csv = tmp.path().join("plain.csv");
     std::fs::write(&csv, "id,name\n1,ann\n2,bob\n3,cid\n").unwrap();
-    let config = "[file_loading]\n\
+    let config = "[csv]\n\
                   delimiter = 59\n\
                   has_header = false\n\
                   skip_lines = 1\n\
@@ -17635,14 +17635,13 @@ fn a_change_of_view_relearns_widths() {
     assert_eq!(shown(&app, "id"), 10);
 }
 
-/// `table_cell_padding` names its densities: `"compact"` puts one cell between
+/// `cell_padding` names its densities: `"compact"` puts one cell between
 /// columns, `"comfortable"` (the default) two, and a number that many.
 #[test]
 fn named_padding_spaces_the_table() {
     use datui::config::{AppConfig, ConfigLayer};
     for (setting, gap) in [("\"compact\"", 1), ("\"comfortable\"", 2), ("3", 3)] {
-        let layer =
-            ConfigLayer::parse(&format!("[display]\ntable_cell_padding = {setting}\n")).unwrap();
+        let layer = ConfigLayer::parse(&format!("[display]\ncell_padding = {setting}\n")).unwrap();
         let config = AppConfig::from_layers([layer]).unwrap();
         let (mut app, _rx, _tx) =
             open_query_filter_fixture_with("named_padding_spaces_the_table.csv", config);
@@ -18958,7 +18957,7 @@ fn test_a_capped_destination_gets_text_within_its_cap() {
     copy_table(&mut app);
     let message = app.error_message().expect("refused out loud").to_string();
     assert!(
-        message.contains("over 4 KB of base64") && message.contains("osc52_limit_kb"),
+        message.contains("over 4 KB of base64") && message.contains("osc52_limit"),
         "{message}"
     );
     assert_eq!(copies.lock().unwrap().len(), 1, "the last copy stays");
@@ -20426,7 +20425,7 @@ fn test_inspector_refuses_a_field_over_the_terminal_cap_before_formatting_it() {
     assert!(!app.is_busy(), "refused before a worker formats it");
     let message = app.error_message().expect("refused out loud").to_string();
     assert!(
-        message.contains("over 100 KB of base64") && message.contains("osc52_limit_kb"),
+        message.contains("over 100 KB of base64") && message.contains("osc52_limit"),
         "{message}"
     );
     assert_eq!(copies.lock().unwrap().len(), 1, "the last copy stays");
@@ -21841,7 +21840,7 @@ fn test_value_counts_sample_first_then_every_row() {
         .finish(&mut df)
         .unwrap();
     let mut config = datui::AppConfig::default();
-    config.performance.analysis_sample_rows = 200;
+    config.analysis.sample_rows = 200;
     let (tx, rx) = mpsc::channel();
     let theme = datui::Theme::from_config(&config.theme).unwrap();
     let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
@@ -23261,7 +23260,7 @@ fn test_a_footer_count_says_so_on_screen() {
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 2);
 }
 
-/// A file read whole into memory past `[file_loading] memory_warning_mb` is put to
+/// A file read whole into memory past `[read] memory_warning` is put to
 /// the user before the read: Enter reads it, Esc goes home without reading, and 0
 /// never asks.
 #[test]
@@ -23276,7 +23275,7 @@ fn test_a_large_in_memory_read_asks_first() {
     assert!(std::fs::metadata(&path).unwrap().len() > 1024 * 1024);
     let app_with = |mb: u64| {
         let mut config = datui::AppConfig::default();
-        config.file_loading.memory_warning_mb = Some(mb);
+        config.read.memory_warning = datui::config::ByteSize::mib(mb);
         let theme = datui::Theme::from_config(&config.theme).unwrap();
         let (tx, rx) = mpsc::channel();
         let app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);

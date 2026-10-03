@@ -171,7 +171,7 @@ pub(crate) fn over_osc52_limit(encoded: Option<usize>, limit: usize) -> String {
     };
     format!(
         "the copy is {size} of base64 and the terminal path is capped at {} \
-         (raise [clipboard] osc52_limit_kb, or export to a file)",
+         (raise [clipboard] osc52_limit, or export to a file)",
         format_kb(limit),
     )
 }
@@ -971,7 +971,7 @@ mod tests {
             assert!(err.starts_with("the copy is over 64 KB of base64"), "{err}");
 
             let err = bounded_table_text(df.clone().lazy(), format, true, limit).unwrap_err();
-            assert!(err.contains("osc52_limit_kb"), "{err}");
+            assert!(err.contains("osc52_limit"), "{err}");
         }
     }
 
@@ -1006,7 +1006,7 @@ mod tests {
         let seq = osc52_sequence("hello", 1024).unwrap();
         assert_eq!(seq, "\x1b]52;c;aGVsbG8=\x07");
         let err = osc52_sequence("hello world, far too long", 8).unwrap_err();
-        assert!(err.contains("osc52_limit_kb"), "{err}");
+        assert!(err.contains("osc52_limit"), "{err}");
     }
 
     #[test]

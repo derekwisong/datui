@@ -46,7 +46,7 @@ right when every key fits; each section's rule counts its rows.
 | Current directory | Files where you launched datui |
 | `CLOUD` | Detected and configured cloud sources; open one to list its contents |
 | Collections | Each [`[[sources]]`](#collections) collection under its label, in configured order |
-| Configured directories | Paths from `[data] directories`, in configured order |
+| Configured directories | Paths from `[home] directories`, in configured order |
 | Remembered directories | Paths saved with <kbd>Ctrl</kbd>+<kbd>D</kbd> |
 | `PUBLIC DATASETS` | The built-in [public datasets](#public-datasets) |
 | `ELSEWHERE` | Directories from the desktop's recent-files list; folded initially |
@@ -78,10 +78,10 @@ The section count and filter include entries beyond that visible limit.
 Opening a dataset adds its parent to Recent. Press <kbd>Ctrl</kbd>+<kbd>D</kbd>
 to keep a directory in its own section; press it again to forget the directory.
 Remembered directories are stored in the cache. To keep one after clearing the
-cache, add it to your [config](../reference/settings.md#data):
+cache, add it to your [config](../reference/settings.md#home):
 
 ```toml
-[data]
+[home]
 directories = ["/mnt/data", "~/datasets", "$WORK/warehouse"]
 ```
 
@@ -98,8 +98,8 @@ GTK apps and file managers. Datui does not modify that file or list a place's
 contents until you enter it. Disable this with:
 
 ```toml
-[data]
-use_desktop_recents = false
+[home]
+desktop_recents = false
 ```
 
 ## Searching below the current directory
@@ -141,7 +141,7 @@ in every section. Column metadata is remembered between runs.
 ### Tuning
 
 Set search depth, time, result count and additional exclusions in
-[`[data.search]`](../reference/settings.md#data). `cross_filesystems = false` avoids
+[`[home.search]`](../reference/settings.md#home-search). `cross_filesystems = false` avoids
 crossing onto network shares or triggering automounts during a search.
 
 ## The details pane
@@ -167,7 +167,7 @@ background when the row is selected. The read is the open's own first page:
 
 | Setting | Effect |
 |---|---|
-| `[data] preview_max_mb = 64` | Largest file previewed; for Parquet, its average row group. `0` turns the preview off |
+| `[home] preview_max = "64MiB"` | Largest file previewed; for Parquet, its average row group. `0` turns the preview off |
 
 Files on network shares and in object stores are not read before they are
 opened. Below about 100 columns, where there is no pane, the rows show in a
@@ -219,7 +219,7 @@ Select the `… files with no reader` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>
 to reveal files no reader takes, such as `README.md`.
 They are dimmed; <kbd>Enter</kbd> on a local one shows its
 bytes in the [hex view](hex-view.md). <kbd>Ctrl</kbd>+<kbd>X</kbd> shows any
-local file's bytes there. Set `[data] show_unreadable_files = true`
+local file's bytes there. Set `[home] show_unreadable = true`
 to show them by default. Inside a SQLite database the same row and key show
 its internal tables (`sqlite_master`, `sqlite_sequence`), which open like the
 others. See [SQLite databases](loading-data.md#sqlite-databases).
@@ -356,8 +356,8 @@ the publisher's: check it before you use the data.
 | Aqueous solubility (SDF) | [SDF compound files](loading-data.md#sdf-compound-files) |
 
 A collection named `public` replaces this one,
-`[data] builtin_catalog = false` drops it, and
-`[data] hide_sources = ["public"]` hides it; see
+`[home] builtin_catalog = false` drops it, and
+`[home] hide = ["public"]` hides it; see
 [Dataset collections](../reference/sources.md).
 
 ## Cloud storage

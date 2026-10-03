@@ -202,7 +202,7 @@ mod tests {
     fn keys_say_what_set_each_value() {
         let (_dir, manager) =
             manager_with(Some("[display]\nrow_numbers = true\nrow_start_index = 0\n"));
-        let overrides = vec!["display.row_start_index=7".parse().unwrap()];
+        let overrides = vec!["display.row_numbers_start=7".parse().unwrap()];
         let (text, code) = command(&manager, &ConfigAction::Keys, &overrides);
         assert_eq!(code, 0, "{text}");
         let row = |key: &str| {
@@ -215,7 +215,7 @@ mod tests {
         let numbers = row("display.row_numbers");
         assert_eq!(numbers[3], "true");
         assert!(numbers[4].ends_with("config.toml"), "{numbers:?}");
-        assert_eq!(row("display.row_start_index")[3..], ["7", "-c"]);
+        assert_eq!(row("display.row_numbers_start")[3..], ["7", "-c"]);
         assert_eq!(row("display.mouse")[3..], ["true", "default"]);
         for setting in SETTINGS.iter().filter(|s| !s.key.ends_with(".*")) {
             assert!(text.contains(setting.key), "{} listed", setting.key);

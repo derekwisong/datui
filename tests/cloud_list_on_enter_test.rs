@@ -125,7 +125,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     };
 
     let mut config = datui::config::AppConfig::default();
-    config.data.use_desktop_recents = false;
+    config.home.desktop_recents = false;
     config.cloud.connections = vec![
         lab("lab", "DATUI_TEST_KEY"),
         // Hidden from elsewhere after its row is drawn.
@@ -154,10 +154,7 @@ fn a_source_is_listed_when_entered_not_when_the_home_screen_opens() {
     // Only the configured sources, whatever this machine is logged in to.
     config.cloud.discover = Some(datui::config::CloudDiscover::None);
     config.cloud.hide = vec!["public".to_string(), "hidden-old".to_string()];
-    assert_eq!(
-        config.cloud.list_on_start, None,
-        "the default is under test"
-    );
+    assert!(!config.cloud.list_on_start, "the default is under test");
 
     // What an earlier run listed for `cached` and `hidden-old`.
     let env = datui::cloud_browse::Environment::current();

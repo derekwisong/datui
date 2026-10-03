@@ -22,7 +22,7 @@ moves the directory.
 row_numbers = true
 number_format = "thousands"
 
-[data]
+[home]
 directories = ["~/datasets"]
 
 [theme]
@@ -41,10 +41,12 @@ Every key is in the [settings reference](../reference/settings.md), by section.
 
 | Change | Reference |
 |---|---|
-| CSV types, nulls and decompression | [File loading](../reference/settings.md#file-loading) |
-| Number formatting, columns and row buffers | [Display](../reference/settings.md#display) |
-| Analysis sample size or chart row limit | [Performance](../reference/settings.md#performance) · [Charts](../reference/settings.md#charts) |
-| Home directories and search | [Data](../reference/settings.md#data) |
+| Type inference, decompression, following | [Read](../reference/settings.md#read) |
+| CSV comments, nulls and inference rows | [CSV](../reference/settings.md#csv) |
+| Number formatting, columns and row numbers | [Display](../reference/settings.md#display) |
+| Row buffers and the streaming engine | [Performance](../reference/settings.md#performance) |
+| Analysis sample size or chart rows | [Analysis](../reference/settings.md#analysis) |
+| Home directories and search | [Home](../reference/settings.md#home) · [Home search](../reference/settings.md#home-search) |
 | Named datasets, local or remote, and the public catalog | [Dataset collections](../reference/sources.md) |
 | Cloud accounts and connections | [Cloud sources](../reference/cloud-sources.md) |
 | Clipboard over SSH | [Clipboard](../reference/settings.md#clipboard) |
@@ -59,7 +61,7 @@ override the config but not explicit command-line flags.
 
 ```bash
 datui -c display.row_numbers=true data.csv
-datui -c file_loading.comment_char='#' -c performance.polars_streaming=false data.csv
+datui -c csv.comment='#' -c performance.streaming=false data.csv
 datui data.csv --sample-rows 0
 ```
 
@@ -90,8 +92,8 @@ row_numbers = true
   default still overrides an import: `notes_accent = true` undoes an imported
   `false`. Tables such as `[theme.colors]` or `[display.number_format]` merge
   key by key.
-- These lists add up across files instead of replacing: `[data] hide_sources`,
-  `[cloud] hide` and `[cloud] env_files`. A `[[sources]]` collection or
+- These lists add up across files instead of replacing: `[home] hide`,
+  `[cloud] hide`, `[cloud] env_files` and `[formats] path`. A `[[sources]]` collection or
   `[[cloud.connections]]` entry replaces the earlier one of its name whole; two
   of one name in one file are an error.
 - TOML cannot unset a key, so a setting with no default value, such as
@@ -275,7 +277,8 @@ or run `datui --mouse=false`.
 **The file is ignored.** Check the path for your OS above. A file that does not
 parse stops datui with its path, line and the reason. Warnings go to stderr,
 which the UI hides; run `datui data.csv 2> /tmp/datui.log` and read the log
-after quitting. A `version` key, if present, must start with `0.2`.
+after quitting. A key datui does not know is named there, with the nearest
+ones: `datui config keys` lists them all.
 
 **Something failed and the screen said little.** Read the log: `datui.log` in
 the cache directory (`~/.cache/datui` on Linux, `~/Library/Caches/datui` on
@@ -287,8 +290,8 @@ previous file kept as `datui.log.1`; `datui cache clear` deletes both.
 
 | Set | How |
 |---|---|
-| Another file | `--log-file PATH`, or `log_file` under `[debug]` |
-| Level | `DATUI_LOG=error`, `warn` (default), `info`, `debug`, or `off` |
+| Another file | `--log-file PATH`, or `file` under `[log]` |
+| Level | `--log-level`, `DATUI_LOG` or `level` under `[log]`: `error`, `warn` (default), `info`, `debug`, `trace` or `off` |
 
 On Windows the log receives Polars warnings and datui's own messages, but not
 other stderr output.

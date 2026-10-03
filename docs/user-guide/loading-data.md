@@ -102,10 +102,10 @@ The control bar says `following` and how long ago rows last arrived, or
   its start, and the bar says so. A deleted file stops the follow; its rows
   stay readable.
 - On Linux, datui hears of an append as it lands and reads new rows at most
-  every 250 ms; elsewhere, and on a network file system, it checks the file's
-  size every 250 ms. A burst of appends is one refresh. Set
-  `follow_interval_ms` under [`[file_loading]`](../reference/settings.md#file-loading)
-  to change it.
+  every 250ms; elsewhere, and on a network file system, it checks the file's
+  size every 250ms. A burst of appends is one refresh. Set `follow_interval`
+  under [`[read]`](../reference/settings.md#read) to change it, as in
+  `-c read.follow_interval=1s`.
 - Standard input keeps being written to its temporary file after the first
   rows show, until it ends or <kbd>Esc</kbd>, <kbd>Ctrl</kbd>+<kbd>O</kbd> or
   quitting stops it. The bar says when it ends.
@@ -176,7 +176,7 @@ During loading, <kbd>Ctrl</kbd>+<kbd>O</kbd> cancels and returns home.
 
 Every option is listed in [Command Line Options](../reference/command-line-options.md).
 Defaults for most of them can be set once in the
-[configuration file](../reference/settings.md#file-loading).
+[configuration file](../reference/settings.md#csv).
 
 ## Formats
 
@@ -219,10 +219,10 @@ The format is taken from the extension, or from `--format` when there is none.
 |---|---|
 | lazy | Scanned where it is. Browsing reads a buffer of rows; queries, sorting and analysis may read the whole input |
 | converted once | Read through once into a temporary file in the temp directory (`--temp-dir`), which is then scanned lazily. The file is removed on quit ([temporary files](#temporary-files)) |
-| in memory | Read whole into memory before the table appears. Past `memory_warning_mb` in `[file_loading]` (1024 MB by default; 0 never asks), datui asks first: `big.json: JSON reads 2.10 GB into memory`. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB |
+| in memory | Read whole into memory before the table appears. Past `memory_warning` in `[read]` (`"1GiB"` by default; 0 never asks), datui asks first: `big.json: JSON reads 2.10 GB into memory`. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB |
 
 - **Compressed** is a `.gz`, `.zst`, `.bz2` or `.xz` file; `no` means it does not
-  open. `-c file_loading.decompress_in_memory=true` reads compressed CSV, TSV, PSV
+  open. `-c read.decompress_in_memory=true` reads compressed CSV, TSV, PSV
   and text in memory instead.
 - **HTTP(S)** is one file at an `http://` or `https://` URL. `downloaded` copies
   it to the temp directory first, then reads it as **Read** says. A model file's
@@ -495,7 +495,7 @@ Read: [lazy](#how-each-format-is-read).
 
 ```bash
 datui take.wav
-datui -c file_loading.audio_float=true take.wav   # integer samples as float in [-1, 1]
+datui -c read.audio_float=true take.wav   # integer samples as float in [-1, 1]
 ```
 
 An uncompressed audio file opens as a table with one row per sample frame:
@@ -512,7 +512,7 @@ first. The row count comes from the file's size.
 - Channels are `ch1`, `ch2`, ... An extensible file's channel mask names them
   instead: `L`, `R`, `C`, `LFE`, `BL`, `BR`, `SL`, `SR`, and so on.
 - Integer samples stay integer: 24-bit is `i32`, and 8-bit WAV, stored
-  unsigned, is shown signed. `[file_loading] audio_float` shows them as `f32` in [-1, 1];
+  unsigned, is shown signed. `[read] audio_float` shows them as `f32` in [-1, 1];
   float samples are never rescaled.
 - A data size of 0 or a placeholder, as a recorder writes until it stops, is
   read as everything to the end of the file. A size past the end of the file
@@ -823,7 +823,7 @@ Extended multiplexing (`SG_MUL_VAL_`) is not; the Notes tab says so.
 #### DBC files
 
 DBC files are found where [format specs](binary-formats.md) are: the `formats`
-directory of the config directory, `$DATUI_FORMATS_PATH`, and `formats_path`.
+directory of the config directory, `$DATUI_FORMATS_PATH`, and `[formats] path`.
 A `.dbc` file there applies to every interface. A TOML file names one for an
 interface:
 
@@ -1088,7 +1088,7 @@ Files ending in `.gz`, `.zst`, `.bz2` or `.xz` are decompressed before loading.
 Use `--compression gzip|zstd|bzip2|xz` when the extension is missing or wrong.
 
 Compressed CSV, TSV or PSV is decompressed to a temporary file so it can still
-be scanned lazily. `--temp-dir` chooses where; `-c file_loading.decompress_in_memory=true`
+be scanned lazily. `--temp-dir` chooses where; `-c read.decompress_in_memory=true`
 skips the file and reads the whole thing into memory instead.
 
 ### Temporary files
@@ -1191,7 +1191,7 @@ The Notes tab also flags storage layouts that may explain a slow open:
 | More than 10,000 files, median size below 1 MiB | Many metadata reads before data can be displayed |
 | Different partition keys, such as `date` and `dt` | Partition columns vary across the dataset; key order alone is fine |
 
-`-c file_loading.single_spine_schema=false` skips datui's footer union and uses
+`-c read.parquet_schema=false` skips datui's footer union and uses
 Polars' single-file schema inference. That route also omits the partition-key check.
 
 ### Opening it again

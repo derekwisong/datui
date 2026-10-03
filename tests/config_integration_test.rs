@@ -12,7 +12,7 @@ fn args(flags: &[&str]) -> Args {
 fn test_config_used_for_row_numbers() {
     let mut config = AppConfig::default();
     config.display.row_numbers = true;
-    config.display.row_start_index = 0;
+    config.display.row_numbers_start = 0;
 
     let opts = OpenOptions::from_args_and_config(&args(&["a.csv"]), &config);
 
@@ -35,8 +35,8 @@ fn test_row_numbers_flag_over_config() {
 #[test]
 fn test_config_display_settings() {
     let mut config = AppConfig::default();
-    config.display.pages_lookahead = 7;
-    config.display.pages_lookback = 8;
+    config.performance.pages_ahead = 7;
+    config.performance.pages_behind = 8;
     config.display.row_numbers = true;
 
     let opts = OpenOptions::from_args_and_config(&args(&[]), &config);
@@ -47,11 +47,11 @@ fn test_config_display_settings() {
 }
 
 #[test]
-fn test_config_file_loading_settings() {
+fn test_config_read_and_csv_settings() {
     let mut config = AppConfig::default();
-    config.file_loading.infer_schema_length = Some(5000);
-    config.file_loading.ignore_errors = Some(true);
-    config.file_loading.parse_dates = Some(false);
+    config.csv.infer_rows = 5000;
+    config.csv.ignore_errors = true;
+    config.read.infer_types = datui::config::InferTypes::Switch(false);
 
     let opts = OpenOptions::from_args_and_config(&args(&[]), &config);
 
@@ -72,7 +72,7 @@ fn test_config_file_loading_settings() {
 #[test]
 fn test_null_flag_replaces_the_config_list() {
     let mut config = AppConfig::default();
-    config.file_loading.null_values = Some(vec!["NA".to_string(), "N/A".to_string()]);
+    config.csv.null_values = vec!["NA".to_string(), "N/A".to_string()];
 
     let opts = OpenOptions::from_args_and_config(&args(&[]), &config);
     assert_eq!(opts.null_values.as_deref().unwrap(), ["NA", "N/A"]);
@@ -84,11 +84,11 @@ fn test_null_flag_replaces_the_config_list() {
 #[test]
 fn test_config_analysis_sample_rows() {
     let config = AppConfig::default();
-    assert_eq!(config.performance.analysis_sample_rows, 100_000);
+    assert_eq!(config.analysis.sample_rows, 100_000);
 
     // 0 reads every row, and is a valid setting rather than a mistake.
     let mut config = AppConfig::default();
-    config.performance.analysis_sample_rows = 0;
+    config.analysis.sample_rows = 0;
     assert!(config.validate().is_ok());
 }
 
@@ -111,14 +111,14 @@ fn test_infer_types_over_config() {
 
     // The config turns it off when no flag says otherwise; the flag turns it back on.
     let mut config_off = AppConfig::default();
-    config_off.file_loading.parse_strings = Some(false);
+    config_off.read.infer_types = datui::config::InferTypes::Switch(false);
     let opts = OpenOptions::from_args_and_config(&args(&[]), &config_off);
     assert!(opts.parse_strings.is_none());
     let opts = OpenOptions::from_args_and_config(&args(&["--infer-types"]), &config_off);
     assert!(matches!(opts.parse_strings, Some(ParseStringsTarget::All)));
 }
 
-/// The CSV dialect: the command line over `[file_loading]`; `--header-rows` is a
+/// The CSV dialect: the command line over `[csv]`; `--header-rows` is a
 /// file's layout and has no config key, as `--skip-lines` has none.
 #[test]
 fn test_csv_dialect_cli_over_config() {
@@ -129,9 +129,9 @@ fn test_csv_dialect_cli_over_config() {
     assert_eq!(opts.header_join, " ");
     assert!(!opts.skip_initial_space);
 
-    config.file_loading.comment_char = Some(";".into());
-    config.file_loading.header_join = Some("_".into());
-    config.file_loading.skip_initial_space = Some(true);
+    config.csv.comment = Some(";".into());
+    config.csv.header_join = "_".into();
+    config.csv.skip_initial_space = true;
     let opts = OpenOptions::from_args_and_config(&Args::parse_from(["datui", "a.csv"]), &config);
     assert_eq!(opts.comment_char.as_deref(), Some(";"));
     assert_eq!(opts.header_join, "_");

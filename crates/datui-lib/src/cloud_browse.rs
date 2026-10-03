@@ -201,7 +201,7 @@ pub struct InstanceIdentity {
 }
 
 pub fn instance_identity(config: &CloudConfig, env: &Environment<'_>) -> InstanceIdentity {
-    let opted_in = config.instance_identity == Some(true);
+    let opted_in = config.instance_identity;
     let set = |key: &str| (env.var)(key).is_some_and(|v| !v.trim().is_empty());
     InstanceIdentity {
         aws: opted_in,
@@ -1115,7 +1115,7 @@ pub async fn list_objects(
                 && crate::azure::is_permission_mismatch(&refusal)
                 && resolved.azure.identity.is_some() =>
         {
-            let enabled = config.azure_account_keys != Some(false);
+            let enabled = config.use_azure_account_keys;
             let keyed = {
                 let (resolved, refusal) = (resolved.clone(), refusal.clone());
                 tokio::task::spawn_blocking(move || {

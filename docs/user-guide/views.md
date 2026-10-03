@@ -112,7 +112,7 @@ overwrites what it carries.
 ## Applying on open
 
 ```toml
-[templates]
+[views]
 auto_apply = true   # apply the best match when a file opens
 ```
 

@@ -10,7 +10,6 @@ fn test_indexed_colors_end_to_end() {
 
     // Create config with indexed colors
     let config_toml = r#"
-version = "0.2"
 
 [theme.colors]
 keybind_hints = "cyan"

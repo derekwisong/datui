@@ -37,7 +37,7 @@ pub struct LogSettings {
 }
 
 impl LogSettings {
-    /// Resolve the file from `[debug] log_file` (which `--log-file` overrides) or the
+    /// Resolve the file from `[log] file` (which `--log-file` overrides) or the
     /// cache directory, and the level from `DATUI_LOG`.
     pub fn resolve(
         configured: Option<&str>,

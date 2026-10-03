@@ -275,7 +275,7 @@ fn minio_app(endpoint: &str) -> (datui::App, std::sync::mpsc::Receiver<datui::Ap
         ..Default::default()
     };
     // Nothing here should depend on what is in this checkout or on this desktop.
-    config.data.use_desktop_recents = false;
+    config.home.desktop_recents = false;
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(
@@ -729,7 +729,7 @@ fn two_servers_with_the_same_bucket_open_their_own_objects() {
             cloud: cloud.clone(),
             ..Default::default()
         };
-        config.data.use_desktop_recents = false;
+        config.home.desktop_recents = false;
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = datui::App::new_with_config(
             tx,
@@ -833,9 +833,9 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
         cloud: pair_config(&pair),
         ..Default::default()
     };
-    config.data.use_desktop_recents = false;
+    config.home.desktop_recents = false;
     // Both rows listed without entering either.
-    config.cloud.list_on_start = Some(true);
+    config.cloud.list_on_start = true;
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(
         tx,
@@ -955,7 +955,7 @@ fn open_through_home(
 fn live_app() -> (datui::App, std::sync::mpsc::Receiver<datui::AppEvent>) {
     common::isolate_cache();
     let mut config = datui::config::AppConfig::default();
-    config.data.use_desktop_recents = false;
+    config.home.desktop_recents = false;
     config.cloud = datui::OpenOptions::default().effective_cloud(&config.cloud);
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(

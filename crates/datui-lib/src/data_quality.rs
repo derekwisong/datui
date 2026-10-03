@@ -2477,7 +2477,7 @@ pub enum CopyPlan {
 /// Why a remote full scan reads the source in each pass instead of a local copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoCopy {
-    /// `performance.quality_local_copy_mb` is 0.
+    /// `analysis.quality_local_copy` is 0.
     Off,
     /// The open did not learn every object's size.
     SizeUnknown,
@@ -2486,7 +2486,7 @@ pub enum NoCopy {
     /// The scope reads only some of the rows or columns: its passes may read less
     /// than the whole objects a copy would fetch.
     PartOfTheSource,
-    /// Larger than `performance.quality_local_copy_mb`.
+    /// Larger than `analysis.quality_local_copy`.
     TooLarge { bytes: u64, limit: u64 },
     /// More than the cache directory has free, or its free space is unknown.
     NoRoom { bytes: u64, free: Option<u64> },

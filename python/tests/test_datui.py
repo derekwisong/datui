@@ -304,7 +304,7 @@ def test_a_saved_view_applies_to_a_frame_by_its_columns(tmp_path):
 
     config = tmp_path / "config"
     (config / "templates").mkdir(parents=True)
-    (config / "config.toml").write_text("[templates]\nauto_apply = true\n")
+    (config / "config.toml").write_text("[views]\nauto_apply = true\n")
     view = {
         "id": "0000000000000680",
         "name": "a descending",

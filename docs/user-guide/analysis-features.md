@@ -110,7 +110,7 @@ read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..202
 | Rows from | **All rows** (the table as shown, with its count), **The source, unfiltered** (only when a filter or query changes the rows), **Partitions**, **Files**, **Row range**, **Time range**; a choice appears only when the table has it |
 | Method | **Random** (default), **Equal per value**, **First rows**, **Every row** |
 | Per value of | For Equal per value: the column to split by; partition columns come first |
-| Sample size | 1,000 to 1,000,000 rows, or rows per value for Equal per value; the default is `[performance] analysis_sample_rows` |
+| Sample size | 1,000 to 1,000,000 rows, or rows per value for Equal per value; the default is `[analysis] sample_rows` |
 | Random seed | For Random and Equal per value: any whole number, typed over the one shown; the same seed reads the same rows, so `0` or `1` is a sample anyone can repeat. <kbd>r</kbd> draws a new one |
 
 Each kind of rows brings its own settings, with what it needs to know:
@@ -153,8 +153,8 @@ an analysis read: no statistic depends on it. While a cancelled run is still
 finishing, no tool starts another read: <kbd>a</kbd>, <kbd>r</kbd>, <kbd>v</kbd> and a new run wait.
 
 ```toml
-[performance]
-analysis_sample_rows = 100000   # the sample's starting size; 0 starts at Every row
+[analysis]
+sample_rows = 100000   # the sample's starting size; 0 starts at every row
 ```
 
 or `--sample-rows N` for one run. Data Quality reads the same sample, at the

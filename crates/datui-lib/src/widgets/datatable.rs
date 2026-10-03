@@ -864,6 +864,17 @@ pub struct RemoteRead {
     pub count: FileCounter,
 }
 
+impl From<RemoteRead> for RemoteFiles {
+    fn from(read: RemoteRead) -> Self {
+        RemoteFiles {
+            urls: Arc::new(read.urls),
+            scan: read.scan,
+            count: read.count,
+            offsets: None,
+        }
+    }
+}
+
 /// A compressed CSV's decompressed copy, then the open's claim on it: dropped in that
 /// order, so the claim goes only once the file has. See [`crate::unfinished`].
 struct Decompressed {
@@ -877,7 +888,8 @@ impl Decompressed {
     }
 }
 
-/// A remote dataset of many files, and how to read only some of them.
+/// A dataset of many files, and how to read only some of them: a remote one, or a
+/// local Hive directory once every footer is known.
 ///
 /// Polars reads a scan of many files in order: row 900,000 is reached by reading every
 /// file before it, and a count is a read of all of them. Once each file's rows are
@@ -6554,15 +6566,21 @@ impl DataTableState {
         // heard of the columns that just arrived. Left in place, the first windowed
         // page read asks it for a column it does not have and the table stops showing
         // rows at the moment it was supposed to show more of them.
-        if let (Some(found), Some(remote)) = (remote, self.remote_files.as_mut()) {
-            remote.urls = Arc::new(found.urls);
-            remote.scan = found.scan;
-            // The counter too, and for the same reason the scan is replaced: it answers
-            // one entry per file it was given, and the one the dataset opened with was
-            // given every file listed. Left beside a shorter `urls` its answer is
-            // dropped on a length check without a word, and the dataset spends the rest
-            // of the session re-counting itself and never reaching an end to jump to.
-            remote.count = found.count;
+        match (remote, self.remote_files.as_mut()) {
+            (Some(found), Some(remote)) => {
+                remote.urls = Arc::new(found.urls);
+                remote.scan = found.scan;
+                // The counter too, and for the same reason the scan is replaced: it
+                // answers one entry per file it was given, and the one the dataset
+                // opened with was given every file listed. Left beside a shorter `urls`
+                // its answer is dropped on a length check without a word, and the
+                // dataset spends the rest of the session re-counting itself and never
+                // reaching an end to jump to.
+                remote.count = found.count;
+            }
+            // A local directory reads by file only once every footer is known.
+            (Some(found), None) => self.remote_files = Some(found.into()),
+            (None, _) => {}
         }
         // Takes the notes, the drift groups and the row starts with it, and clears
         // `read_as_text` — sound only because the offer to read a column as text is
@@ -7194,11 +7212,7 @@ impl DataTableState {
     /// `None` is that second case — not zero, which would claim a page came from
     /// nowhere.
     pub fn files_a_page_reads(&self, start: usize, len: usize) -> Option<usize> {
-        let offsets = self
-            .remote_files
-            .as_ref()
-            .filter(|_| self.remote_window())
-            .and_then(|f| f.offsets.as_ref())?;
+        let offsets = self.files_window().and_then(|f| f.offsets.as_ref())?;
         let (first, last) = files_holding(offsets, start, len)?;
         Some(last - first + 1)
     }
@@ -7223,7 +7237,7 @@ impl DataTableState {
     ) -> PolarsResult<LazyFrame> {
         window_of(
             &self.lf,
-            self.remote_files.as_ref().filter(|_| self.remote_window()),
+            self.files_window(),
             self.window_now().as_deref(),
             &self.read_as_text,
             start,
@@ -7237,11 +7251,7 @@ impl DataTableState {
     pub(crate) fn view_rows(&self) -> ViewRows {
         ViewRows {
             lf: self.lf.clone(),
-            files: self
-                .remote_files
-                .as_ref()
-                .filter(|_| self.remote_window())
-                .cloned(),
+            files: self.files_window().cloned(),
             records: self.window_now(),
             read_as_text: self.read_as_text.clone(),
             buffer: self
@@ -7322,6 +7332,12 @@ impl DataTableState {
     /// so the page-based window costs a row group where the remote one would read forty.
     fn remote_window(&self) -> bool {
         self.remote_source && self.is_pristine()
+    }
+
+    /// The files a page reads by, while the frame is the scan as loaded: a filter or
+    /// sort reads every file before its window, so it goes through the whole scan.
+    fn files_window(&self) -> Option<&RemoteFiles> {
+        self.remote_files.as_ref().filter(|_| self.is_pristine())
     }
 
     /// Rows the buffer reaches past the view in one direction: `pages` of it for a local

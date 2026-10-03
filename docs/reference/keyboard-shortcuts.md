@@ -102,6 +102,33 @@ key, beyond the paging chords above.
 | <kbd>Enter</kbd> | Read the file again with that spec, clearing the query, filters and sort |
 | <kbd>Esc</kbd> | Close and keep the format |
 
+## Hex view
+
+A local file no reader and no spec takes opens here; so does any local file
+from <kbd>Ctrl</kbd>+<kbd>X</kbd> on the home screen, <kbd>x</kbd> in the Info
+panel, or `datui --hex FILE`. See [Hex view](../user-guide/hex-view.md).
+
+| Key | Action |
+|---|---|
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | A byte |
+| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | A row |
+| <kbd>w</kbd> <kbd>b</kbd> | The next group of four bytes, or back one |
+| <kbd>0</kbd> <kbd>$</kbd> | The start or end of the row |
+| <kbd>g</kbd> <kbd>G</kbd> or <kbd>Home</kbd> <kbd>End</kbd> | The start or end of the file |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> or <kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>Ctrl</kbd>+<kbd>F</kbd> | A page; <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> half a page |
+| <kbd>:</kbd> | Go to an offset: `4096`, `0x1000`, `+16`, `-16`, or `e-8` from the end |
+| <kbd>f</kbd> | Find text, `0x…`, or hex pairs with `??` for any byte; <kbd>Ctrl</kbd>+<kbd>U</kbd> in the prompt finds text as UTF-16 |
+| <kbd>n</kbd> <kbd>N</kbd> | Next and previous match, round the end of the file. <kbd>Esc</kbd> stops a find that is reading |
+| <kbd>R</kbd> | When the matches repeat at one distance, make it the bytes per row |
+| <kbd>r</kbd> | Bytes per row; empty for as many as fit |
+| <kbd>v</kbd> | Mark a range from the cursor; again, or <kbd>Esc</kbd>, unmarks |
+| <kbd>i</kbd> <kbd>Enter</kbd> | Show or hide the byte inspector |
+| <kbd>#</kbd> | Offsets in decimal or hex |
+| <kbd>B</kbd> | Read the file with a [format spec](../user-guide/binary-formats.md) |
+| <kbd>Esc</kbd> | Back to the table or the home screen it was opened from |
+| <kbd>q</kbd> | Home, when opened from there; otherwise quit |
+| <kbd>?</kbd> <kbd>F1</kbd> | Help |
+
 ## Home screen
 
 Letters type into the filter here, so none of them is a key.
@@ -122,7 +149,8 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Backspace</kbd> | Delete a filter character; on an empty filter, go up one level. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
-| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files datui cannot read, or a SQLite database's internal tables |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Show or hide files no reader takes (labeled `binary`; <kbd>Enter</kbd> on a local one shows its bytes), or a SQLite database's internal tables |
+| <kbd>Ctrl</kbd>+<kbd>X</kbd> | Show the local file under the cursor as bytes, in the [hex view](../user-guide/hex-view.md) |
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Remember the directory under the cursor so it stays listed, or forget it if remembered |
 | <kbd>Delete</kbd> | Forget the highlighted recent entry, or every recent under the highlighted place after confirming, or a remembered directory on its heading, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
@@ -385,6 +413,7 @@ pick Overwrite or No, <kbd>Enter</kbd> confirms the one picked, and
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Scroll the column table (when it is focused), move through the notes, or scroll the model's, audio file's or delimited file's metadata, the MIDI tracks, or the VCD, FIX or SDF list |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | On Model, Audio, MIDI, Metadata, VCD, FIX or SDF, page through the list |
 | <kbd>Enter</kbd> | On a note, take its offer, where it has one |
+| <kbd>x</kbd> | Show the dataset's file as bytes in the [hex view](../user-guide/hex-view.md), when it is one local file; <kbd>Esc</kbd> there comes back |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
 
 ## Views

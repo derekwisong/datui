@@ -1,0 +1,65 @@
+A file's bytes: the offset, the bytes in hex in groups of four, and the
+same bytes as ASCII. A file no reader and no format spec takes opens here;
+Ctrl+X on the home screen and x in the Info panel open any local file
+here, and so does datui --hex FILE. The file is never read whole: only
+the rows on screen are, and a find reads it on a worker.
+
+Moving:
+  ← / → (h/l):      A byte
+  ↑ / ↓ (j/k):      A row
+  w / b:            The next group of four, or back one
+  0 / $:            The start or end of the row
+  g / G:            The start or end of the file (Home and End too)
+  PgUp/PgDn:        A page (Ctrl+B/F too; Ctrl+U/D half a page)
+  ::                Go to an offset: 4096 or 0x1000; +16 or -16 from the
+                    cursor; e-8 for the eighth byte from the end
+
+Finding:
+  f:                Find bytes. Text is found as its UTF-8 bytes (Ctrl+U
+                    in the prompt: as UTF-16 little-endian). 0x1acffc1d, or
+                    two or more hex pairs (de ad be ef), is a byte pattern,
+                    where ?? matches any byte. Text in double quotes is
+                    text, even when it looks like hex. A match may span rows
+  n / N:            The next or previous match, round the end of the file
+  Esc:              Stop a find that is reading
+
+  Every match on screen is marked. When the matches after the one found
+  are all the same distance apart (a sync word, a record's magic), the
+  status line says so, and R makes that the bytes per row.
+
+Rows:
+  r:                Bytes per row, so that records line up; empty goes back
+                    to as many as fit. --record-size N sets it on the
+                    command line
+  #:                Offsets in decimal or hex
+
+  Without a fixed size a row holds 8, 16, 32 or 64 bytes, as many as fit:
+  8 at 60 columns, 16 at 80, 32 at about 150, 64 at about 300. Below 50
+  columns the ASCII column is left out. A fixed size wider than the screen
+  shows the part of the row the cursor is in.
+
+The inspector:
+  i / Enter:        Show or hide it. Beside the bytes when there is room for
+                    it and 16 bytes a row, over them when there is not
+  v:                Mark from the cursor; move to mark a range, and the
+                    status line counts it. v again, or Esc, unmarks
+
+  At the cursor: u8 to u64 and i8 to i64 (with the 3-, 5- and 6-byte
+  widths), f16, f32 and f64, little-endian and big-endian side by side;
+  the byte in binary; a LEB128 varint and its zigzag value; a Unix time
+  in s, ms, us or ns when it lands between 1980 and 2100; a YYYYMMDD
+  date; days since 1970 and since 2000; the text up to the first NUL; and
+  the null sentinels the bytes hold (an int's min, a uint's max, NaN).
+
+Colors:
+  0x00, printable ASCII, whitespace, other control bytes, 0x80 to 0xFE,
+  and 0xFF each have their own color: [theme.colors] hex_null,
+  hex_printable, hex_whitespace, hex_control, hex_high and hex_ff. In the
+  ASCII column a byte that is not printable is a dot.
+
+Leaving:
+  B:                Read the file with a format spec instead
+  Esc:              Back to the table, when opened from the Info panel;
+                    back home, when opened from there
+  q:                Home, when opened from there; otherwise quit
+  ? / F1:           Show this help

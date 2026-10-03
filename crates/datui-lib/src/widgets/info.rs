@@ -1072,6 +1072,8 @@ pub struct DataTableInfo<'a> {
     pub ctx: InfoContext<'a>,
     pub modal: &'a mut InfoModal,
     pub theme: &'a RenderContext,
+    /// The dataset is one local file, which `x` shows as hex.
+    pub hex: bool,
 }
 
 /// The Resources tab's `Read:` value: how the open reads the data, and that a remote
@@ -1115,6 +1117,7 @@ impl<'a> DataTableInfo<'a> {
             ctx,
             modal,
             theme,
+            hex: false,
         }
     }
 
@@ -2197,6 +2200,9 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         }
         if tab == InfoTab::Schema {
             footer = footer.hint_weighted("Tab", "Focus", 1);
+        }
+        if self.hex {
+            footer = footer.hint_weighted("x", "Hex", 0);
         }
         let footer = footer.hint_weighted("Esc", "Close", 4);
         // A frame of three rows has one inside it: the body's, so a panel too

@@ -162,9 +162,11 @@ beside its name. It gives way before the name is shortened.
 
 See [how each format is read](loading-data.md#how-each-format-is-read).
 
-Select the `… files datui can't open` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>,
-to reveal unreadable files such as `README.md`.
-They are dimmed and cannot be opened. Set `[data] show_unreadable_files = true`
+Select the `… files with no reader` row, or press <kbd>Ctrl</kbd>+<kbd>A</kbd>,
+to reveal files no reader takes, such as `README.md`.
+They are dimmed; <kbd>Enter</kbd> on a local one shows its
+bytes in the [hex view](hex-view.md). <kbd>Ctrl</kbd>+<kbd>X</kbd> shows any
+local file's bytes there. Set `[data] show_unreadable_files = true`
 to show them by default. Inside a SQLite database the same row and key show
 its internal tables (`sqlite_master`, `sqlite_sequence`), which open like the
 others. See [SQLite databases](loading-data.md#sqlite-databases).

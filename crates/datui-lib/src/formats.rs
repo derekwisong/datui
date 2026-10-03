@@ -10,7 +10,9 @@
 
 use crate::fixed_records::{Bytes, ColumnLayout, FixedRecords, Logical, Null, Physical};
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use polars::prelude::{AnyValue, PlSmallStr, TimeUnit};
+use polars::prelude::{
+    AnyValue, DataFrame, LazyFrame, PlSmallStr, PolarsResult, SchemaRef, TimeUnit,
+};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -74,18 +76,26 @@ pub enum Layout {
     /// One file, a record after another.
     Rows,
     /// A directory holding one file of fixed-width values per field, as kdb+ splays a
-    /// table.
+    /// table; or, when every field gives its `offset`, one file holding each column's
+    /// values in a run of their own.
     Columns,
 }
 
-/// How one record is told from the next. Only `fixed` is read so far; the spec keeps
-/// the name so the other framings arrive without changing it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How one record is told from the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Framing {
+    /// Each record takes the same bytes: `size`, or what its fields take.
+    #[default]
     Fixed,
+    /// A field of the record gives its size (`size = "len"`).
+    LengthPrefixed,
+    /// The variant the type field picks gives the record's size.
+    Variant,
+    /// Each record starts with the `sync` marker; bytes between records are skipped.
+    Sync,
 }
 
-/// A size or a count: written in the spec, or read from a header field.
+/// A size or a count: written in the spec, or read from a field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Amount {
     Given(u64),
@@ -94,6 +104,26 @@ pub enum Amount {
         field: String,
         adjust: i64,
     },
+    /// The value of footer field `field`, plus `adjust`.
+    Footer {
+        field: String,
+        adjust: i64,
+    },
+    /// The value of an earlier field of the same record (or block header, or group
+    /// item), plus `adjust`.
+    Record {
+        field: String,
+        adjust: i64,
+    },
+    /// What is left of the record: `size = "rest"`.
+    Rest,
+}
+
+impl Amount {
+    /// Whether the amount is known before a record is read.
+    pub fn is_fixed(&self) -> bool {
+        !matches!(self, Self::Record { .. } | Self::Rest)
+    }
 }
 
 /// What a field's bytes hold.
@@ -102,26 +132,45 @@ pub enum Type {
     /// 1 to 8 bytes.
     Unsigned(u8),
     Signed(u8),
-    /// 4 or 8 bytes.
+    /// 2 (half), 4 or 8 bytes.
     Float(u8),
+    /// bfloat16.
+    BFloat16,
     Bool,
     Str,
+    /// Text up to its NUL, within `size` when one is given.
+    Strz,
     Bytes,
     Pad,
+    /// LEB128: unsigned, and zigzag signed.
+    VarU,
+    VarS,
+    /// A counted run of items, each of the group's fields.
+    Group,
 }
 
 impl Type {
     /// Bytes one value of the type takes, when the type says.
     pub fn width(self) -> Option<u64> {
-        self.physical().width().map(|w| w as u64)
+        match self {
+            Self::Strz | Self::VarU | Self::VarS | Self::Group => None,
+            _ => self.physical().width().map(|w| w as u64),
+        }
     }
 
     fn is_integer(self) -> bool {
-        matches!(self, Self::Unsigned(_) | Self::Signed(_))
+        matches!(
+            self,
+            Self::Unsigned(_) | Self::Signed(_) | Self::VarU | Self::VarS
+        )
     }
 
     fn is_number(self) -> bool {
-        matches!(self, Self::Unsigned(_) | Self::Signed(_) | Self::Float(_))
+        self.is_integer() || matches!(self, Self::Float(_) | Self::BFloat16)
+    }
+
+    pub fn is_text(self) -> bool {
+        matches!(self, Self::Str | Self::Strz)
     }
 
     fn physical(self) -> Physical {
@@ -129,9 +178,145 @@ impl Type {
             Self::Unsigned(n) => Physical::Unsigned(n),
             Self::Signed(n) => Physical::Signed(n),
             Self::Float(n) => Physical::Float(n),
+            Self::BFloat16 => Physical::BFloat16,
             Self::Bool => Physical::Bool,
-            Self::Str => Physical::Text,
-            Self::Bytes | Self::Pad => Physical::Raw,
+            Self::Str | Self::Strz => Physical::Text,
+            // A varint is decoded to eight bytes before its meaning is applied.
+            Self::VarU => Physical::Unsigned(8),
+            Self::VarS => Physical::Signed(8),
+            Self::Bytes | Self::Pad | Self::Group => Physical::Raw,
+        }
+    }
+}
+
+/// How text is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Encoding {
+    #[default]
+    Utf8,
+    Latin1,
+    Utf16Le,
+    Utf16Be,
+}
+
+impl Encoding {
+    pub fn physical(self) -> Physical {
+        match self {
+            Self::Utf8 => Physical::Text,
+            Self::Latin1 => Physical::Latin1,
+            Self::Utf16Le => Physical::Utf16 { big_endian: false },
+            Self::Utf16Be => Physical::Utf16 { big_endian: true },
+        }
+    }
+
+    /// Bytes in one code unit: where a NUL is looked for.
+    pub fn unit(self) -> usize {
+        match self {
+            Self::Utf16Le | Self::Utf16Be => 2,
+            _ => 1,
+        }
+    }
+}
+
+/// A value stored as the change from the previous record's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Delta {
+    #[default]
+    None,
+    /// Summed from the first record.
+    All,
+    /// Summed from the first record of each block.
+    Block,
+}
+
+/// One bit field of an integer: its own column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BitField {
+    pub name: String,
+    /// The lowest bit, 0 the least significant.
+    pub bit: u32,
+    pub width: u32,
+    pub labels: Option<Arc<BTreeMap<i64, String>>>,
+}
+
+/// Where a symbol list is, for a field of indexes into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lookup {
+    /// Relative to the directory the data is in.
+    pub file: String,
+    pub format: LookupFormat,
+}
+
+/// How a symbol list's entries are told apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookupFormat {
+    /// One a line.
+    Lines,
+    /// Each ended by a NUL, as kdb+ writes its `sym` file.
+    Nul,
+    /// Each `n` bytes, padded.
+    Fixed(u64),
+}
+
+/// A checksum over part of each record, or of the file before its footer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checksum {
+    pub algo: ChecksumAlgo,
+    /// The field holding the stored checksum.
+    pub field: String,
+    /// The field the checksummed bytes start at; the record's start when `None`.
+    pub from: Option<String>,
+    /// The field they end before; the checksum field when `None`.
+    pub to: Option<String>,
+}
+
+/// The checksums a spec can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksumAlgo {
+    Crc16Ccitt,
+    Crc16Xmodem,
+    Crc16Modbus,
+    Crc16Arc,
+    Crc32,
+    Crc32c,
+    Sum8,
+    Xor8,
+}
+
+impl ChecksumAlgo {
+    const NAMES: &[(&str, Self)] = &[
+        ("crc16-ccitt", Self::Crc16Ccitt),
+        ("crc16-xmodem", Self::Crc16Xmodem),
+        ("crc16-modbus", Self::Crc16Modbus),
+        ("crc16-arc", Self::Crc16Arc),
+        ("crc32", Self::Crc32),
+        ("crc32c", Self::Crc32c),
+        ("sum8", Self::Sum8),
+        ("xor8", Self::Xor8),
+    ];
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, a)| *a)
+    }
+
+    /// The checksum of `bytes`.
+    pub fn compute(self, bytes: &[u8]) -> u64 {
+        use crc::{
+            CRC_16_ARC, CRC_16_IBM_3740, CRC_16_MODBUS, CRC_16_XMODEM, CRC_32_ISCSI,
+            CRC_32_ISO_HDLC, Crc,
+        };
+        match self {
+            Self::Crc16Ccitt => u64::from(Crc::<u16>::new(&CRC_16_IBM_3740).checksum(bytes)),
+            Self::Crc16Xmodem => u64::from(Crc::<u16>::new(&CRC_16_XMODEM).checksum(bytes)),
+            Self::Crc16Modbus => u64::from(Crc::<u16>::new(&CRC_16_MODBUS).checksum(bytes)),
+            Self::Crc16Arc => u64::from(Crc::<u16>::new(&CRC_16_ARC).checksum(bytes)),
+            Self::Crc32 => u64::from(Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(bytes)),
+            Self::Crc32c => u64::from(Crc::<u32>::new(&CRC_32_ISCSI).checksum(bytes)),
+            Self::Sum8 => u64::from(bytes.iter().fold(0u8, |a, b| a.wrapping_add(*b))),
+            Self::Xor8 => u64::from(bytes.iter().fold(0u8, |a, b| a ^ b)),
         }
     }
 }
@@ -206,6 +391,18 @@ pub struct Field {
     /// In the columns layout, the file in the directory that holds it; its name by
     /// default.
     pub file: Option<String>,
+    /// In the columns layout of one file, where the column's values start.
+    pub at: Option<Amount>,
+    /// For text.
+    pub encoding: Encoding,
+    pub delta: Delta,
+    /// Columns of their own from the integer's bits.
+    pub bits: Vec<BitField>,
+    /// The fields of each item of a group; its count is `count`.
+    pub group: Vec<Field>,
+    /// An offset into this section of the file, where NUL-terminated text is.
+    pub string_at: Option<String>,
+    pub lookup: Option<Lookup>,
 }
 
 /// A spec's header: its fields, and its size when that is more than they take.
@@ -216,14 +413,170 @@ pub struct Header {
 }
 
 /// A spec's records.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Records {
     pub framing: Framing,
+    /// Every record's fields; with variants, the common ones before the variant's.
     pub fields: Vec<Field>,
-    /// At least the fields' sizes; the rest of each record is skipped.
+    /// At least the fields' sizes; the rest of each record is skipped. Read from a
+    /// field of the record for `length_prefixed`.
     pub size: Option<Amount>,
     /// How many records there are, when the file says.
     pub count: Option<Amount>,
+    /// The size is written again after the record, as Fortran writes it.
+    pub length_suffix: bool,
+    /// Each record starts at a multiple of this, counted from the first.
+    pub align: u64,
+    /// The marker each record starts with, for `sync`.
+    pub sync: Vec<u8>,
+    /// The common field whose value picks the variant.
+    pub type_field: Option<String>,
+    pub variants: Vec<Variant>,
+    pub checksum: Option<Checksum>,
+    /// A ring buffer: the oldest record's index, from the header.
+    pub ring: Option<Amount>,
+}
+
+/// One layout a record can take, picked by the type field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variant {
+    pub name: String,
+    /// The type values that pick it.
+    pub when: Vec<Expected>,
+    /// The fields after the common ones.
+    pub fields: Vec<Field>,
+    /// The whole record's size, when more than its fields take.
+    pub size: Option<Amount>,
+}
+
+/// Fields at the end of the file.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Footer {
+    pub fields: Vec<Field>,
+    pub size: Option<u64>,
+    /// A checksum of the bytes before the footer.
+    pub checksum: Option<(ChecksumAlgo, String)>,
+}
+
+/// How a block's body is compressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compression {
+    None,
+    Gzip,
+    Deflate,
+    Zlib,
+    Zstd,
+    /// The LZ4 frame format.
+    Lz4,
+    /// A raw LZ4 block; its decompressed size comes from `uncompressed`.
+    Lz4Block,
+    /// Raw Snappy.
+    Snappy,
+    /// The Snappy frame format.
+    SnappyFramed,
+    Brotli,
+    Bzip2,
+    Xz,
+}
+
+impl Compression {
+    const NAMES: &[(&str, Self)] = &[
+        ("none", Self::None),
+        ("gzip", Self::Gzip),
+        ("deflate", Self::Deflate),
+        ("zlib", Self::Zlib),
+        ("zstd", Self::Zstd),
+        ("lz4", Self::Lz4),
+        ("lz4_block", Self::Lz4Block),
+        ("snappy", Self::Snappy),
+        ("snappy_framed", Self::SnappyFramed),
+        ("brotli", Self::Brotli),
+        ("bzip2", Self::Bzip2),
+        ("xz", Self::Xz),
+    ];
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, c)| *c)
+    }
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES
+            .iter()
+            .find(|(_, c)| *c == self)
+            .map_or("none", |(n, _)| n)
+    }
+}
+
+/// The codec of each block: one for all, or one a header field names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Codec {
+    Fixed(Compression),
+    ByField {
+        field: String,
+        values: BTreeMap<i64, Compression>,
+    },
+}
+
+/// Blocks listed in the file, so their headers are not walked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockIndex {
+    /// Where the index starts.
+    pub at: Amount,
+    /// How many entries it has.
+    pub count: Amount,
+    /// One entry's fields: `offset` is required; `rows` is the records in the block.
+    pub fields: Vec<Field>,
+}
+
+/// Records in blocks, each with a header and, often, compressed on its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Blocks {
+    pub header: Vec<Field>,
+    /// The body's bytes after the header.
+    pub size: Amount,
+    pub codec: Codec,
+    /// The header field counting the block's records.
+    pub records: Option<String>,
+    /// The header field giving the body's decompressed size.
+    pub uncompressed: Option<String>,
+    pub index: Option<BlockIndex>,
+}
+
+/// A packet capture whose payloads hold the records.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Capture {
+    /// Fields at the front of each payload, such as a MoldUDP64 header.
+    pub header: Vec<Field>,
+    /// The payload header field counting its records.
+    pub count: Option<String>,
+    /// The name of a column of each packet's capture time.
+    pub time: Option<String>,
+}
+
+/// A part of a file's path that becomes a column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathPart {
+    pub name: String,
+    /// A chrono format for a date, such as `%Y%m%d`; text when `None`.
+    pub date: Option<String>,
+}
+
+/// A directory of one spec's files: each file's path is read by `pattern`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Files {
+    pub pattern: String,
+    pub parts: Vec<PathPart>,
+}
+
+/// A named run of the file that fields point into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub name: String,
+    pub offset: Amount,
+    pub size: Amount,
 }
 
 /// A header value a file must hold to match: `match.where`.
@@ -247,12 +600,22 @@ pub struct Spec {
     /// Header fields and the values a file must hold in them to match.
     pub expect: Vec<(String, Expected)>,
     pub endian: Endian,
+    /// The byte order is the one the magic reads in: as written, little-endian, and
+    /// reversed, big-endian.
+    pub endian_auto: bool,
     pub layout: Layout,
     pub header: Header,
     pub records: Records,
     /// For `kind = "delimited"`: the reading options of a CSV-like file. A delimited
     /// spec has no header or record fields.
     pub delimited: Option<Arc<crate::delimited_spec::Delimited>>,
+    pub footer: Option<Footer>,
+    pub blocks: Option<Blocks>,
+    pub capture: Option<Capture>,
+    pub files: Option<Files>,
+    pub sections: Vec<Section>,
+    /// The variant read alone (`--variant`), when one is.
+    pub variant: Option<String>,
 }
 
 impl PartialEq for Spec {
@@ -266,9 +629,15 @@ impl PartialEq for Spec {
             && self.expect == other.expect
             && self.endian == other.endian
             && self.layout == other.layout
+            && self.endian_auto == other.endian_auto
             && self.header == other.header
             && self.records == other.records
             && self.delimited == other.delimited
+            && self.footer == other.footer
+            && self.blocks == other.blocks
+            && self.capture == other.capture
+            && self.files == other.files
+            && self.sections == other.sections
     }
 }
 
@@ -305,6 +674,9 @@ fn line_column(text: &str, offset: usize) -> (usize, usize) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Part {
     Header,
+    Footer,
+    /// A record, a block header, a payload header or a group item: read one at a
+    /// time, so a field may size a later one.
     Records,
 }
 
@@ -326,7 +698,20 @@ const FIELD_KEYS: &[&str] = &[
     "offset",
     "enum",
     "file",
+    "encoding",
+    "delta",
+    "bits",
+    "group",
+    "string_at",
+    "lookup",
 ];
+
+/// The parts a field can refer to by name: `header.NAME`, `footer.NAME`.
+#[derive(Clone, Copy, Default)]
+struct Scopes<'f> {
+    header: &'f [Field],
+    footer: &'f [Field],
+}
 
 /// Reads a spec's TOML, keeping where each value was so a problem can say.
 struct Reader<'a> {
@@ -423,61 +808,58 @@ impl Reader<'_> {
         }
     }
 
-    /// The earlier field `reference` names: `header.NAME`, or `NAME` for an earlier
-    /// field of the same part. A record's own fields cannot size it: that is
-    /// `length_prefixed` framing.
+    /// The earlier field `reference` names: `header.NAME`, `footer.NAME`, or `NAME`
+    /// for an earlier field of the same part.
     fn earlier<'f>(
         &self,
         value: &Value<'_>,
         reference: &str,
         what: &str,
-        part: Part,
         earlier: &'f [Field],
-        header: &'f [Field],
-    ) -> Result<&'f Field, SpecError> {
+        scopes: &Scopes<'f>,
+    ) -> Result<(&'f Field, Option<&'static str>), SpecError> {
         let (scope, field) = match reference.split_once('.') {
             Some((scope, field)) => (Some(scope), field),
             None => (None, reference),
         };
-        let fields = match (scope, part) {
-            (Some("header"), _) => header,
-            (None, Part::Header) => earlier,
-            (None, Part::Records) => {
-                let message = if earlier.iter().any(|f| f.name.as_deref() == Some(field)) {
-                    format!(
-                        "{what} = \"{field}\" reads from the record itself, which needs framing = \"length_prefixed\"; that framing is not yet supported"
-                    )
-                } else {
-                    format!(
-                        "{what}: no earlier field named `{field}`; a header field is named `header.{field}`"
-                    )
-                };
-                return Err(self.error(&value.span(), message));
-            }
-            (Some(other), _) => {
+        let (fields, scope) = match scope {
+            Some("header") => (scopes.header, Some("header")),
+            Some("footer") => (scopes.footer, Some("footer")),
+            None => (earlier, None),
+            Some(other) => {
                 return Err(self.error(
                     &value.span(),
-                    format!("{what}: `{other}.` is not a part; expected `header.NAME`"),
+                    format!(
+                        "{what}: `{other}.` is not a part; expected `header.NAME` or `footer.NAME`"
+                    ),
                 ));
             }
         };
         fields
             .iter()
             .find(|f| f.name.as_deref() == Some(field))
+            .map(|f| (f, scope))
             .ok_or_else(|| {
-                let part = match (scope, part) {
-                    (None, Part::Records) | (Some(_), _) => "header",
-                    (None, Part::Header) => "header",
+                let part = scope.unwrap_or("earlier");
+                let hint = if scope.is_none()
+                    && scopes
+                        .header
+                        .iter()
+                        .any(|f| f.name.as_deref() == Some(field))
+                {
+                    format!("; a header field is named `header.{field}`")
+                } else {
+                    String::new()
                 };
                 self.error(
                     &value.span(),
-                    format!("{what}: no earlier {part} field named `{field}`"),
+                    format!("{what}: no {part} field named `{field}`{hint}"),
                 )
             })
     }
 
-    /// A size or a count: a whole number, or the name of an earlier plain integer
-    /// field, with an optional `adjust`.
+    /// A size or a count: a whole number, `rest`, or the name of an earlier plain
+    /// integer field, with an optional `adjust`.
     fn amount(
         &self,
         value: &Value<'_>,
@@ -485,7 +867,7 @@ impl Reader<'_> {
         what: &str,
         part: Part,
         earlier: &[Field],
-        header: &[Field],
+        scopes: &Scopes<'_>,
     ) -> Result<Amount, SpecError> {
         let adjust = adjust
             .map(|a| self.integer(a, &format!("{what}_adjust")))
@@ -506,20 +888,40 @@ impl Reader<'_> {
                 }
                 Ok(Amount::Given(n as u64))
             }
+            DeValue::String(reference) if reference.as_ref() == "rest" && what == "size" => {
+                if part != Part::Records {
+                    return Err(
+                        self.error(&value.span(), "size = \"rest\" is for a field of a record")
+                    );
+                }
+                if adjust.is_some() {
+                    return Err(self.error(
+                        &value.span(),
+                        "size_adjust goes with a size read from a field",
+                    ));
+                }
+                Ok(Amount::Rest)
+            }
             DeValue::String(reference) => {
-                let target = self.earlier(value, reference, what, part, earlier, header)?;
-                if !target.ty.is_integer()
-                    || target.meaning != Meaning::Plain
+                let (target, scope) = self.earlier(value, reference, what, earlier, scopes)?;
+                if !matches!(
+                    target.ty,
+                    Type::Unsigned(_) | Type::Signed(_) | Type::VarU | Type::VarS
+                ) || target.meaning != Meaning::Plain
                     || target.count.is_some()
+                    || target.delta != Delta::None
                 {
                     return Err(self.error(
                         &value.span(),
                         format!("{what}: `{reference}` is not a plain integer field"),
                     ));
                 }
-                Ok(Amount::Header {
-                    field: target.name.clone().expect("a referenced field is named"),
-                    adjust: adjust.unwrap_or(0),
+                let field = target.name.clone().expect("a referenced field is named");
+                let adjust = adjust.unwrap_or(0);
+                Ok(match (scope, part) {
+                    (Some("footer"), _) | (None, Part::Footer) => Amount::Footer { field, adjust },
+                    (Some(_), _) | (None, Part::Header) => Amount::Header { field, adjust },
+                    (None, Part::Records) => Amount::Record { field, adjust },
                 })
             }
             _ => Err(self.error(
@@ -637,23 +1039,7 @@ impl Reader<'_> {
                         format!("where: no header field named `{field}`"),
                     ));
                 };
-                let wanted = match value.get_ref() {
-                    DeValue::Integer(_)
-                        if target.ty.is_integer() && target.meaning == Meaning::Plain =>
-                    {
-                        Expected::Int(i128::from(self.integer(value, "where")?))
-                    }
-                    DeValue::String(s) if target.ty == Type::Str => Expected::Text(s.to_string()),
-                    _ => {
-                        return Err(self.error(
-                            &value.span(),
-                            format!(
-                                "where: `{field}` is a {}; expected a value of that type",
-                                type_name(target.ty)
-                            ),
-                        ));
-                    }
-                };
+                let wanted = self.expected(value, target, "where")?;
                 expect.push((field.to_string(), wanted));
             }
         }
@@ -889,7 +1275,8 @@ impl Reader<'_> {
         value: &Value<'_>,
         part: Part,
         layout: Layout,
-        header: &[Field],
+        scopes: &Scopes<'_>,
+        prefix: &[Field],
     ) -> Result<Vec<Field>, SpecError> {
         let DeValue::Array(items) = value.get_ref() else {
             return Err(self.error(
@@ -897,10 +1284,11 @@ impl Reader<'_> {
                 "fields: expected an array of tables, such as [{ name = \"ts\", type = \"u8\" }]",
             ));
         };
-        let mut fields: Vec<Field> = Vec::new();
-        let mut names = std::collections::HashSet::new();
+        let mut fields: Vec<Field> = prefix.to_vec();
+        let mut names: std::collections::HashSet<String> =
+            prefix.iter().flat_map(output_names).collect();
         for item in items {
-            let field = self.field(item, part, layout, &fields, header)?;
+            let field = self.field(item, part, layout, &fields, scopes)?;
             for name in output_names(&field) {
                 if !names.insert(name.clone()) {
                     return Err(self.error(&item.span(), format!("a second field named `{name}`")));
@@ -908,7 +1296,7 @@ impl Reader<'_> {
             }
             fields.push(field);
         }
-        Ok(fields)
+        Ok(fields.split_off(prefix.len()))
     }
 
     fn field(
@@ -917,20 +1305,24 @@ impl Reader<'_> {
         part: Part,
         layout: Layout,
         earlier: &[Field],
-        header: &[Field],
+        scopes: &Scopes<'_>,
     ) -> Result<Field, SpecError> {
         let table = self.table(value, "field")?;
-        let keys = self.entries(table, "a field", FIELD_KEYS)?;
+        let mut keys = self.entries(table, "a field", FIELD_KEYS)?;
         let at = value.span();
-        let Some(ty_value) = keys.get("type") else {
-            return Err(self.error(&at, "field: missing `type`"));
+        let (ty, endian) = match (keys.get("type"), keys.get("group")) {
+            (Some(_), Some(g)) => {
+                return Err(self.error(&g.span(), "group: a group has no type of its own"));
+            }
+            (None, Some(_)) => (Type::Group, None),
+            (None, None) => return Err(self.error(&at, "field: missing `type`")),
+            (Some(ty_value), None) => parse_type(&self.string(ty_value, "type")?).ok_or_else(|| {
+                self.error(
+                    &ty_value.span(),
+                    "type: expected u1 to u8, s1 to s8, f2, f4, f8 (each with an optional le or be), bf2, vu, vs, bool, str, strz, bytes or pad",
+                )
+            })?,
         };
-        let (ty, endian) = parse_type(&self.string(ty_value, "type")?).ok_or_else(|| {
-            self.error(
-                &ty_value.span(),
-                "type: expected u1 to u8, s1 to s8, f4, f8 (each with an optional le or be), bool, str, bytes or pad",
-            )
-        })?;
         let name = keys
             .get("name")
             .map(|v| {
@@ -957,15 +1349,49 @@ impl Reader<'_> {
         } else if name.is_none() {
             return Err(self.error(&at, "field: missing `name` (only pad goes without)"));
         }
+        // A string offset is where a column starts (`offset = "header.px_off"`); a
+        // number is the linear conversion's.
+        let column_at = match keys.get("offset") {
+            Some(v)
+                if matches!(v.get_ref(), DeValue::String(_))
+                    && layout == Layout::Columns
+                    && part == Part::Records =>
+            {
+                let v = keys.remove("offset").expect("just read");
+                Some(self.amount(v, None, "offset", Part::Header, &[], scopes)?)
+            }
+            _ => None,
+        };
+        if part != Part::Records
+            && let Some(key) = ["delta", "bits", "group", "string_at", "lookup"]
+                .iter()
+                .find(|k| keys.contains_key(**k))
+        {
+            return Err(self.error(
+                &keys[*key].span(),
+                format!("{key}: is for a field of the records"),
+            ));
+        }
+        if part != Part::Records && matches!(ty, Type::VarU | Type::VarS | Type::Strz) {
+            return Err(self.error(
+                &at,
+                format!("{}: is for a field of the records", type_name(ty)),
+            ));
+        }
         let size = match (ty.width(), keys.get("size")) {
             (Some(width), Some(v)) => {
                 return Err(self.error(
                     &v.span(),
                     format!(
-                        "size: a {} is {width} bytes; size is for str, bytes and pad",
+                        "size: a {} is {width} bytes; size is for str, strz, bytes and pad",
                         type_name(ty)
                     ),
                 ));
+            }
+            (None, Some(v)) if matches!(ty, Type::VarU | Type::VarS | Type::Group) => {
+                return Err(
+                    self.error(&v.span(), format!("size: a {} sizes itself", type_name(ty)))
+                );
             }
             (Some(_), None) => None,
             (None, Some(v)) => Some(self.amount(
@@ -974,27 +1400,72 @@ impl Reader<'_> {
                 "size",
                 part,
                 earlier,
-                header,
+                scopes,
             )?),
+            (None, None) if matches!(ty, Type::Strz | Type::VarU | Type::VarS | Type::Group) => {
+                None
+            }
             (None, None) => {
                 return Err(self.error(&at, format!("{}: missing `size`", type_name(ty))));
             }
         };
-        if size.is_none()
-            && let Some(v) = keys.get("size_adjust")
+        if !size.as_ref().is_some_and(|s| {
+            matches!(
+                s,
+                Amount::Header { .. } | Amount::Footer { .. } | Amount::Record { .. }
+            )
+        }) && let Some(v) = keys.get("size_adjust")
         {
             return Err(self.error(&v.span(), "size_adjust goes with a size read from a field"));
         }
-        let count = keys
+        if layout == Layout::Columns
+            && part == Part::Records
+            && size.as_ref().is_some_and(|s| !s.is_fixed())
+        {
+            return Err(self.error(
+                &keys["size"].span(),
+                "size: a column file's values are all one size",
+            ));
+        }
+        let mut group = Vec::new();
+        let mut count = keys
             .get("count")
             .map(|v| {
-                let count = self.amount(v, None, "count", part, earlier, header)?;
+                if ty == Type::Group {
+                    return Err(self.error(
+                        &v.span(),
+                        "count: a group's count goes inside group = { count = ... }",
+                    ));
+                }
+                let count = self.amount(v, None, "count", part, earlier, scopes)?;
                 if count == Amount::Given(0) {
                     return Err(self.error(&v.span(), "count: expected at least 1"));
                 }
                 Ok(count)
             })
             .transpose()?;
+        if ty == Type::Group {
+            let v = keys["group"];
+            if layout == Layout::Columns {
+                return Err(self.error(&v.span(), "group: a column file holds one value a row"));
+            }
+            let table = self.table(v, "group")?;
+            let inner = self.entries(table, "group", &["count", "fields"])?;
+            let Some(c) = inner.get("count") else {
+                return Err(self.error(
+                    &v.span(),
+                    "group: missing `count`, such as count = \"n_levels\"",
+                ));
+            };
+            count = Some(self.amount(c, None, "count", part, earlier, scopes)?);
+            let Some(f) = inner.get("fields") else {
+                return Err(self.error(&v.span(), "group: missing `fields`"));
+            };
+            group = self.fields(f, Part::Records, Layout::Rows, scopes, &[])?;
+            if !group.iter().any(|f| f.name.is_some()) {
+                return Err(self.error(&f.span(), "fields: a group item needs a named field"));
+            }
+        }
         let flatten = keys
             .get("flatten")
             .map(|v| self.boolean(v, "flatten"))
@@ -1011,7 +1482,7 @@ impl Reader<'_> {
                         ),
                     ));
                 }
-                Some(Amount::Given(_)) => {}
+                Some(Amount::Given(_)) if ty != Type::Group => {}
                 _ => {
                     return Err(self.error(
                         &v.span(),
@@ -1020,60 +1491,64 @@ impl Reader<'_> {
                 }
             }
         }
+        if matches!(count, Some(Amount::Rest)) {
+            return Err(self.error(&keys["count"].span(), "count: expected a number or a field"));
+        }
 
-        let null =
-            keys.get("null")
-                .map(|v| {
-                    let null = match v.get_ref() {
-                        DeValue::String(s) => match s.as_ref() {
-                            "min" => Null::Min,
-                            "max" => Null::Max,
-                            "nan" => Null::NaN,
-                            _ => {
-                                return Err(self.error(
-                                    &v.span(),
-                                    "null: expected \"min\", \"max\", \"nan\" or an integer",
-                                ));
-                            }
-                        },
-                        DeValue::Integer(_) => Null::Value(i128::from(self.integer(v, "null")?)),
+        let null = keys
+            .get("null")
+            .map(|v| {
+                let null = match v.get_ref() {
+                    DeValue::String(s) => match s.as_ref() {
+                        "min" => Null::Min,
+                        "max" => Null::Max,
+                        "nan" => Null::NaN,
                         _ => {
                             return Err(self.error(
                                 &v.span(),
                                 "null: expected \"min\", \"max\", \"nan\" or an integer",
                             ));
                         }
-                    };
-                    let fits = match (null, ty) {
-                        (Null::Min | Null::Max, t) => t.is_integer(),
-                        (Null::NaN, t) => matches!(t, Type::Float(_)),
-                        (Null::Value(_), t) => t.is_number() || t == Type::Bool,
-                    };
-                    if !fits {
-                        return Err(self
-                            .error(&v.span(), format!("null: does not fit a {}", type_name(ty))));
-                    }
-                    // A sentinel the type cannot hold would never match.
-                    if let (Null::Value(value), Some((low, high))) = (null, integer_range(ty))
-                        && !(low..=high).contains(&value)
-                    {
+                    },
+                    DeValue::Integer(_) => Null::Value(i128::from(self.integer(v, "null")?)),
+                    _ => {
                         return Err(self.error(
                             &v.span(),
-                            format!(
-                                "null: a {} holds {low} to {high}, not {value}",
-                                type_name(ty)
-                            ),
+                            "null: expected \"min\", \"max\", \"nan\" or an integer",
                         ));
                     }
-                    Ok(null)
-                })
-                .transpose()?;
+                };
+                let fits = match (null, ty) {
+                    (Null::Min | Null::Max, t) => matches!(t, Type::Unsigned(_) | Type::Signed(_)),
+                    (Null::NaN, t) => matches!(t, Type::Float(_) | Type::BFloat16),
+                    (Null::Value(_), t) => t.is_number() || t == Type::Bool,
+                };
+                if !fits {
+                    return Err(
+                        self.error(&v.span(), format!("null: does not fit a {}", type_name(ty)))
+                    );
+                }
+                // A sentinel the type cannot hold would never match.
+                if let (Null::Value(value), Some((low, high))) = (null, integer_range(ty))
+                    && !(low..=high).contains(&value)
+                {
+                    return Err(self.error(
+                        &v.span(),
+                        format!(
+                            "null: a {} holds {low} to {high}, not {value}",
+                            type_name(ty)
+                        ),
+                    ));
+                }
+                Ok(null)
+            })
+            .transpose()?;
 
         let meaning = self.meaning(&keys, ty)?;
         let file = keys
             .get("file")
             .map(|v| {
-                if part == Part::Header || layout == Layout::Rows {
+                if part != Part::Records || layout == Layout::Rows {
                     return Err(self.error(
                         &v.span(),
                         "file: only a record field of layout = \"columns\" has a file of its own",
@@ -1089,16 +1564,126 @@ impl Reader<'_> {
                 Ok(file)
             })
             .transpose()?;
+        if let (Some(_), Some(v)) = (&column_at, keys.get("file")) {
+            return Err(self.error(&v.span(), "file: a column at an offset is in the one file"));
+        }
         // Its name names its file.
         if layout == Layout::Columns
             && part == Part::Records
             && file.is_none()
+            && column_at.is_none()
             && let Some(name) = &name
             && !is_file_name(name)
         {
             return Err(self.error(
                 &keys["name"].span(),
                 "name: names the column's file, so it cannot hold a path; give the file with file = \"...\"",
+            ));
+        }
+        let encoding = keys
+            .get("encoding")
+            .map(|v| {
+                if !ty.is_text() {
+                    return Err(self.error(&v.span(), "encoding: is for str and strz"));
+                }
+                match self.string(v, "encoding")?.as_str() {
+                    "utf8" | "utf-8" | "ascii" => Ok(Encoding::Utf8),
+                    "latin1" | "iso-8859-1" => Ok(Encoding::Latin1),
+                    "utf16le" | "utf-16le" => Ok(Encoding::Utf16Le),
+                    "utf16be" | "utf-16be" => Ok(Encoding::Utf16Be),
+                    _ => Err(self.error(
+                        &v.span(),
+                        "encoding: expected utf8, latin1, utf16le or utf16be",
+                    )),
+                }
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let delta = keys
+            .get("delta")
+            .map(|v| {
+                if !ty.is_integer() || count.is_some() {
+                    return Err(self.error(&v.span(), "delta: is for one integer a record"));
+                }
+                match v.get_ref() {
+                    DeValue::Boolean(true) => Ok(Delta::All),
+                    DeValue::Boolean(false) => Ok(Delta::None),
+                    DeValue::String(s) if s.as_ref() == "block" => Ok(Delta::Block),
+                    _ => Err(self.error(&v.span(), "delta: expected true or \"block\"")),
+                }
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if delta != Delta::None && layout == Layout::Columns {
+            return Err(self.error(
+                &keys["delta"].span(),
+                "delta: is for records, not column files",
+            ));
+        }
+        let bits = match keys.get("bits") {
+            None => Vec::new(),
+            Some(v) => self.bits(v, ty, count.is_some())?,
+        };
+        let string_at = keys
+            .get("string_at")
+            .map(|v| {
+                if !matches!(ty, Type::Unsigned(_)) || meaning != Meaning::Plain || count.is_some()
+                {
+                    return Err(self.error(
+                        &v.span(),
+                        "string_at: is for an unsigned offset, one a record",
+                    ));
+                }
+                self.string(v, "string_at")
+            })
+            .transpose()?;
+        let lookup = keys
+            .get("lookup")
+            .map(|v| {
+                if !matches!(ty, Type::Unsigned(_) | Type::Signed(_)) || meaning != Meaning::Plain {
+                    return Err(self.error(&v.span(), "lookup: is for a plain integer index"));
+                }
+                let table = self.table(v, "lookup")?;
+                let inner = self.entries(table, "lookup", &["file", "format"])?;
+                let Some(f) = inner.get("file") else {
+                    return Err(self.error(&v.span(), "lookup: missing `file`"));
+                };
+                let file = self.string(f, "file")?;
+                if file.trim().is_empty() || Path::new(&file).is_absolute() {
+                    return Err(self.error(
+                        &f.span(),
+                        "file: expected a path relative to the data, such as ../sym",
+                    ));
+                }
+                let format = match inner.get("format") {
+                    None => LookupFormat::Lines,
+                    Some(fv) => {
+                        let text = self.string(fv, "format")?;
+                        match text.as_str() {
+                            "lines" => LookupFormat::Lines,
+                            "nul" => LookupFormat::Nul,
+                            _ => match text
+                                .strip_prefix("str:")
+                                .and_then(|n| n.parse::<u64>().ok())
+                            {
+                                Some(n) if (1..=MAX_SIZE).contains(&n) => LookupFormat::Fixed(n),
+                                _ => {
+                                    return Err(self.error(
+                                        &fv.span(),
+                                        "format: expected lines, nul or str:N",
+                                    ));
+                                }
+                            },
+                        }
+                    }
+                };
+                Ok(Lookup { file, format })
+            })
+            .transpose()?;
+        if lookup.is_some() && string_at.is_some() {
+            return Err(self.error(
+                &keys["lookup"].span(),
+                "lookup: a field takes one of lookup and string_at",
             ));
         }
         Ok(Field {
@@ -1111,7 +1696,908 @@ impl Reader<'_> {
             count,
             flatten,
             file,
+            at: column_at,
+            encoding,
+            delta,
+            bits,
+            group,
+            string_at,
+            lookup,
         })
+    }
+
+    /// A value a field must hold: an integer for an integer field, text for text.
+    fn expected(
+        &self,
+        value: &Value<'_>,
+        target: &Field,
+        what: &str,
+    ) -> Result<Expected, SpecError> {
+        match value.get_ref() {
+            DeValue::Integer(_) if target.ty.is_integer() && target.meaning == Meaning::Plain => {
+                Ok(Expected::Int(i128::from(self.integer(value, what)?)))
+            }
+            DeValue::String(s) if target.ty.is_text() => Ok(Expected::Text(s.to_string())),
+            _ => Err(self.error(
+                &value.span(),
+                format!(
+                    "{what}: `{}` is a {}; expected a value of that type",
+                    target.name.as_deref().unwrap_or("pad"),
+                    type_name(target.ty)
+                ),
+            )),
+        }
+    }
+
+    /// Bytes written as hex (`"1ACFFC1D"`, `"0x1a cf"`) or as a list of bytes.
+    fn hex_bytes(&self, value: &Value<'_>, what: &str) -> Result<Vec<u8>, SpecError> {
+        let bad = || {
+            self.error(
+                &value.span(),
+                format!("{what}: expected hex such as \"1ACFFC1D\", or a list of bytes"),
+            )
+        };
+        let bytes = match value.get_ref() {
+            DeValue::String(s) => {
+                let digits: String = s
+                    .trim()
+                    .trim_start_matches("0x")
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                // Hex digits only, so every pair is two bytes of the string.
+                if digits.is_empty()
+                    || !digits.len().is_multiple_of(2)
+                    || !digits.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    return Err(bad());
+                }
+                (0..digits.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&digits[i..i + 2], 16).map_err(|_| bad()))
+                    .collect::<Result<Vec<u8>, _>>()?
+            }
+            DeValue::Array(items) => items
+                .iter()
+                .map(|item| {
+                    let byte = self.integer(item, what)?;
+                    u8::try_from(byte).map_err(|_| {
+                        self.error(&item.span(), format!("{what}: a byte is 0 to 255"))
+                    })
+                })
+                .collect::<Result<_, _>>()?,
+            _ => return Err(bad()),
+        };
+        if bytes.is_empty() || bytes.len() > 64 {
+            return Err(self.error(&value.span(), format!("{what}: expected 1 to 64 bytes")));
+        }
+        Ok(bytes)
+    }
+
+    fn footer(&self, value: &Value<'_>, header: &[Field]) -> Result<Footer, SpecError> {
+        let table = self.table(value, "[footer]")?;
+        let keys = self.entries(table, "[footer]", &["fields", "size", "checksum"])?;
+        let scopes = Scopes {
+            header,
+            footer: &[],
+        };
+        let fields = match keys.get("fields") {
+            Some(f) => self.fields(f, Part::Footer, Layout::Rows, &scopes, &[])?,
+            None => Vec::new(),
+        };
+        let width = given_width(&fields);
+        let size = match keys.get("size") {
+            None => None,
+            Some(v) => {
+                let n = self.integer(v, "size")?;
+                if n < 0 || n as u64 > MAX_SIZE {
+                    return Err(self.error(&v.span(), format!("size: expected 0 to {MAX_SIZE}")));
+                }
+                if width.is_some_and(|w| w > n as u64) {
+                    return Err(self.error(
+                        &v.span(),
+                        format!(
+                            "size: the fields take {} bytes, more than {n}",
+                            width.unwrap_or(0)
+                        ),
+                    ));
+                }
+                Some(n as u64)
+            }
+        };
+        if size.is_none() && width.is_none() {
+            return Err(self.error(
+                &value.span(),
+                "[footer]: read from the end of the file, so its fields' sizes are written in the spec, or give its size",
+            ));
+        }
+        let checksum = keys
+            .get("checksum")
+            .map(|v| {
+                let table = self.table(v, "checksum")?;
+                let inner = self.entries(table, "checksum", &["algo", "field"])?;
+                let algo = self.algo(inner.get("algo").copied(), v)?;
+                let Some(f) = inner.get("field") else {
+                    return Err(self.error(
+                        &v.span(),
+                        "checksum: missing `field`, the footer field holding it",
+                    ));
+                };
+                let field = self.string(f, "field")?;
+                let field = field.strip_prefix("footer.").unwrap_or(&field).to_string();
+                if !fields
+                    .iter()
+                    .any(|x| x.name.as_deref() == Some(field.as_str()) && x.ty.is_integer())
+                {
+                    return Err(self.error(
+                        &f.span(),
+                        format!("field: no integer footer field named `{field}`"),
+                    ));
+                }
+                Ok((algo, field))
+            })
+            .transpose()?;
+        Ok(Footer {
+            fields,
+            size,
+            checksum,
+        })
+    }
+
+    fn algo(&self, value: Option<&Value<'_>>, at: &Value<'_>) -> Result<ChecksumAlgo, SpecError> {
+        let Some(v) = value else {
+            return Err(self.error(&at.span(), "checksum: missing `algo`"));
+        };
+        ChecksumAlgo::parse(&self.string(v, "algo")?).ok_or_else(|| {
+            let names: Vec<&str> = ChecksumAlgo::NAMES.iter().map(|(n, _)| *n).collect();
+            self.error(
+                &v.span(),
+                format!("algo: expected one of {}", names.join(", ")),
+            )
+        })
+    }
+
+    fn sections(&self, value: &Value<'_>, scopes: &Scopes<'_>) -> Result<Vec<Section>, SpecError> {
+        let table = self.table(value, "[sections]")?;
+        let mut out = Vec::new();
+        for (key, v) in table {
+            let name: &str = key.get_ref();
+            let inner = self.table(v, "section")?;
+            let keys = self.entries(inner, "a section", &["offset", "size"])?;
+            let (Some(o), Some(s)) = (keys.get("offset"), keys.get("size")) else {
+                return Err(self.error(
+                    &v.span(),
+                    format!("[sections.{name}]: needs offset and size"),
+                ));
+            };
+            let offset = self.amount(o, None, "offset", Part::Header, &[], scopes)?;
+            let size = self.amount(s, None, "size", Part::Header, &[], scopes)?;
+            out.push(Section {
+                name: name.to_string(),
+                offset,
+                size,
+            });
+        }
+        Ok(out)
+    }
+
+    fn records(
+        &self,
+        value: &Value<'_>,
+        variants_value: Option<&Value<'_>>,
+        layout: Layout,
+        scopes: &Scopes<'_>,
+    ) -> Result<Records, SpecError> {
+        let table = self.table(value, "[records]")?;
+        let keys = self.entries(
+            table,
+            "[records]",
+            &[
+                "framing",
+                "fields",
+                "size",
+                "size_adjust",
+                "count",
+                "length_suffix",
+                "align",
+                "sync",
+                "type",
+                "checksum",
+                "ring",
+                "common",
+            ],
+        )?;
+        let framing = match keys.get("framing") {
+            None => Framing::Fixed,
+            Some(v) => match self.string(v, "framing")?.as_str() {
+                "fixed" => Framing::Fixed,
+                "length_prefixed" => Framing::LengthPrefixed,
+                "variant" => Framing::Variant,
+                "sync" => Framing::Sync,
+                "blocks" => {
+                    return Err(self.error(
+                        &v.span(),
+                        "framing: blocks are described under [blocks]; framing is how records sit inside each block",
+                    ));
+                }
+                _ => {
+                    return Err(self.error(
+                        &v.span(),
+                        "framing: expected fixed, length_prefixed, variant or sync",
+                    ));
+                }
+            },
+        };
+        let common_value = match (keys.get("fields"), keys.get("common")) {
+            (Some(_), Some(c)) => {
+                return Err(self.error(
+                    &c.span(),
+                    "[records.common]: give the shared fields here or as `fields`, not both",
+                ));
+            }
+            (Some(f), None) => Some(*f),
+            (None, Some(c)) => {
+                let t = self.table(c, "[records.common]")?;
+                let k = self.entries(t, "[records.common]", &["fields"])?;
+                k.get("fields").copied()
+            }
+            (None, None) => None,
+        };
+        let mut fields = match common_value {
+            Some(f) => self.fields(f, Part::Records, layout, scopes, &[])?,
+            None => Vec::new(),
+        };
+        let mut type_field = None;
+        if let Some(t) = keys.get("type") {
+            let name =
+                match t.get_ref() {
+                    DeValue::String(s) => s.to_string(),
+                    DeValue::Table(inner) => {
+                        let k = self.entries(inner, "type", &["field", "type"])?;
+                        let Some(f) = k.get("field") else {
+                            return Err(self.error(&t.span(), "type: missing `field`"));
+                        };
+                        let name = self.string(f, "field")?;
+                        if let Some(ty) = k.get("type") {
+                            if fields
+                                .iter()
+                                .any(|x| x.name.as_deref() == Some(name.as_str()))
+                            {
+                                return Err(self.error(
+                                    &ty.span(),
+                                    format!("type: `{name}` is already a field; name it alone"),
+                                ));
+                            }
+                            let (ty, endian) = parse_type(&self.string(ty, "type")?)
+                                .filter(|(t, _)| {
+                                    matches!(t, Type::Unsigned(_) | Type::Signed(_) | Type::Str)
+                                })
+                                .ok_or_else(|| {
+                                    self.error(
+                                        &ty.span(),
+                                        "type: a type field is an integer, or str with a size",
+                                    )
+                                })?;
+                            if ty == Type::Str {
+                                return Err(self.error(
+                                    &t.span(),
+                                    "type: a str type field goes in the fields, with its size",
+                                ));
+                            }
+                            fields.push(Field::plain(&name, ty, endian));
+                        }
+                        name
+                    }
+                    _ => return Err(self.error(
+                        &t.span(),
+                        "type: expected the name of a common field, or { field = ..., type = ... }",
+                    )),
+                };
+            let Some(target) = fields
+                .iter()
+                .find(|f| f.name.as_deref() == Some(name.as_str()))
+            else {
+                return Err(self.error(&t.span(), format!("type: no common field named `{name}`")));
+            };
+            if !(target.ty.is_integer() || target.ty.is_text()) || target.count.is_some() {
+                return Err(self.error(
+                    &t.span(),
+                    format!("type: `{name}` is not an integer or text field"),
+                ));
+            }
+            type_field = Some(name);
+        }
+        let mut variants = Vec::new();
+        if let Some(v) = variants_value {
+            let Some(type_name) = &type_field else {
+                return Err(self.error(
+                    &v.span(),
+                    "[[variants]]: needs [records] type, the field that picks one",
+                ));
+            };
+            let target = fields
+                .iter()
+                .find(|f| f.name.as_deref() == Some(type_name.as_str()))
+                .expect("checked above")
+                .clone();
+            let DeValue::Array(items) = v.get_ref() else {
+                return Err(self.error(&v.span(), "variants: expected [[variants]] tables"));
+            };
+            let mut seen = std::collections::HashSet::new();
+            for item in items {
+                let t = self.table(item, "variant")?;
+                let k = self.entries(
+                    t,
+                    "a variant",
+                    &["name", "when", "fields", "size", "size_adjust"],
+                )?;
+                let Some(n) = k.get("name") else {
+                    return Err(self.error(&item.span(), "variant: missing `name`"));
+                };
+                let name = self.string(n, "name")?;
+                if name.trim().is_empty() || !seen.insert(name.clone()) {
+                    return Err(self.error(
+                        &n.span(),
+                        format!("name: `{name}` is empty or a second variant's"),
+                    ));
+                }
+                let Some(w) = k.get("when") else {
+                    return Err(self.error(
+                        &item.span(),
+                        "variant: missing `when`, the type value that picks it",
+                    ));
+                };
+                let when = match w.get_ref() {
+                    DeValue::Array(values) => values
+                        .iter()
+                        .map(|x| self.expected(x, &target, "when"))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    _ => vec![self.expected(w, &target, "when")?],
+                };
+                let vfields = match k.get("fields") {
+                    Some(f) => self.fields(f, Part::Records, layout, scopes, &fields)?,
+                    None => Vec::new(),
+                };
+                let mut every = fields.clone();
+                every.extend(vfields.iter().cloned());
+                let size = k
+                    .get("size")
+                    .map(|s| {
+                        self.amount(
+                            s,
+                            k.get("size_adjust").copied(),
+                            "size",
+                            Part::Records,
+                            &every,
+                            scopes,
+                        )
+                    })
+                    .transpose()?;
+                if let (Some(Amount::Given(size)), Some(sum)) = (&size, given_width(&every))
+                    && *size < sum
+                {
+                    return Err(self.error(
+                        &k["size"].span(),
+                        format!("size: the fields take {sum} bytes, more than {size}"),
+                    ));
+                }
+                variants.push(Variant {
+                    name,
+                    when,
+                    fields: vfields,
+                    size,
+                });
+            }
+            // A name two variants share is one column, so it has one type.
+            let mut by_name: BTreeMap<String, &Field> = BTreeMap::new();
+            for variant in &variants {
+                for f in &variant.fields {
+                    let Some(n) = &f.name else { continue };
+                    if let Some(other) = by_name.get(n)
+                        && (other.ty != f.ty
+                            || other.meaning != f.meaning
+                            || other.count != f.count
+                            || other.flatten != f.flatten
+                            || other.bits != f.bits
+                            || other.group != f.group
+                            || other.encoding != f.encoding)
+                    {
+                        return Err(self.error(
+                            &v.span(),
+                            format!("variants: `{n}` is a different field in two variants; one column has one type, so name them apart"),
+                        ));
+                    }
+                    by_name.insert(n.clone(), f);
+                }
+            }
+            if fields
+                .iter()
+                .filter_map(|f| f.name.as_deref())
+                .any(|n| n == "type")
+                || by_name.contains_key("type")
+            {
+                return Err(self.error(&v.span(), "variants: the variant's name is shown in a column named `type`, so no field may be named that"));
+            }
+        } else if type_field.is_some() {
+            return Err(self.error(
+                &keys["type"].span(),
+                "type: picks one of the [[variants]], and there are none",
+            ));
+        }
+        if fields.is_empty() && variants.is_empty() {
+            return Err(self.error(&value.span(), "[records]: missing `fields`"));
+        }
+        if !fields.iter().any(|f| f.name.is_some()) && variants.is_empty() {
+            return Err(self.error(&value.span(), "fields: a record needs a named field"));
+        }
+        let size = keys
+            .get("size")
+            .map(|s| {
+                self.amount(
+                    s,
+                    keys.get("size_adjust").copied(),
+                    "size",
+                    Part::Records,
+                    &fields,
+                    scopes,
+                )
+            })
+            .transpose()?;
+        if matches!(size, Some(Amount::Rest)) {
+            return Err(self.error(&keys["size"].span(), "size: expected a number or a field"));
+        }
+        let count = keys
+            .get("count")
+            .map(|c| self.amount(c, None, "count", Part::Header, &[], scopes))
+            .transpose()?;
+        let length_suffix = keys
+            .get("length_suffix")
+            .map(|v| self.boolean(v, "length_suffix"))
+            .transpose()?
+            .unwrap_or(false);
+        let align = match keys.get("align") {
+            None => 1,
+            Some(v) => {
+                let n = self.integer(v, "align")?;
+                if !(1..=65536).contains(&n) {
+                    return Err(self.error(&v.span(), "align: expected 1 to 65536"));
+                }
+                n as u64
+            }
+        };
+        let sync = keys
+            .get("sync")
+            .map(|v| self.hex_bytes(v, "sync"))
+            .transpose()?
+            .unwrap_or_default();
+        let ring = keys
+            .get("ring")
+            .map(|v| self.amount(v, None, "ring", Part::Header, &[], scopes))
+            .transpose()?;
+        let record_size = matches!(size, Some(Amount::Record { .. }));
+        let at = |key: &str| keys.get(key).map_or(value.span(), |v| v.span());
+        match framing {
+            Framing::LengthPrefixed if !record_size => {
+                return Err(self.error(&at("size"), "framing = \"length_prefixed\": size names the field holding each record's length, such as size = \"len\""));
+            }
+            Framing::Variant if variants.is_empty() => {
+                return Err(self.error(
+                    &at("framing"),
+                    "framing = \"variant\": needs [[variants]] and a type field",
+                ));
+            }
+            Framing::Sync if sync.is_empty() => {
+                return Err(self.error(&at("framing"), "framing = \"sync\": needs sync, the marker each record starts with, such as sync = \"1ACFFC1D\""));
+            }
+            Framing::Fixed | Framing::Variant if record_size => {
+                return Err(self.error(&at("size"), "size: a record whose size is in its own field needs framing = \"length_prefixed\""));
+            }
+            _ => {}
+        }
+        if framing != Framing::Sync && !sync.is_empty() {
+            return Err(self.error(&at("sync"), "sync: goes with framing = \"sync\""));
+        }
+        if length_suffix && !record_size {
+            return Err(self.error(
+                &at("length_suffix"),
+                "length_suffix: repeats a length read from the record; give size = \"len\"",
+            ));
+        }
+        let checksum = keys
+            .get("checksum")
+            .map(|v| {
+                let table = self.table(v, "checksum")?;
+                let inner = self.entries(table, "checksum", &["algo", "field", "from", "to"])?;
+                let algo = self.algo(inner.get("algo").copied(), v)?;
+                let named = |key: &str| -> Result<Option<String>, SpecError> {
+                    let Some(x) = inner.get(key) else {
+                        return Ok(None);
+                    };
+                    let name = self.string(x, key)?;
+                    let known = fields
+                        .iter()
+                        .chain(variants.iter().flat_map(|v| &v.fields))
+                        .any(|f| f.name.as_deref() == Some(name.as_str()));
+                    if !known {
+                        return Err(
+                            self.error(&x.span(), format!("{key}: no record field named `{name}`"))
+                        );
+                    }
+                    Ok(Some(name))
+                };
+                let Some(field) = named("field")? else {
+                    return Err(
+                        self.error(&v.span(), "checksum: missing `field`, the field holding it")
+                    );
+                };
+                let holder = fields
+                    .iter()
+                    .chain(variants.iter().flat_map(|v| &v.fields))
+                    .find(|f| f.name.as_deref() == Some(field.as_str()))
+                    .expect("checked");
+                if !matches!(holder.ty, Type::Unsigned(_) | Type::Signed(_)) {
+                    return Err(self.error(&v.span(), "checksum: its field is an integer"));
+                }
+                Ok(Checksum {
+                    algo,
+                    field,
+                    from: named("from")?,
+                    to: named("to")?,
+                })
+            })
+            .transpose()?;
+        if checksum.is_some()
+            && fields
+                .iter()
+                .chain(variants.iter().flat_map(|v| &v.fields))
+                .any(|f| f.name.as_deref() == Some("checksum_ok"))
+        {
+            return Err(self.error(&value.span(), "checksum: its result is a column named `checksum_ok`, so no field may be named that"));
+        }
+        Ok(Records {
+            framing,
+            fields,
+            size,
+            count,
+            length_suffix,
+            align,
+            sync,
+            type_field,
+            variants,
+            checksum,
+            ring,
+        })
+    }
+
+    fn blocks(&self, value: &Value<'_>, scopes: &Scopes<'_>) -> Result<Blocks, SpecError> {
+        let table = self.table(value, "[blocks]")?;
+        let keys = self.entries(
+            table,
+            "[blocks]",
+            &[
+                "header",
+                "size",
+                "size_adjust",
+                "compression",
+                "records",
+                "uncompressed",
+                "index",
+            ],
+        )?;
+        let header = match keys.get("header") {
+            Some(h) => self.fields(h, Part::Header, Layout::Rows, scopes, &[])?,
+            None => Vec::new(),
+        };
+        let Some(s) = keys.get("size") else {
+            return Err(self.error(&value.span(), "[blocks]: missing `size`, the bytes after each block's header, such as size = \"clen\""));
+        };
+        let size = self.amount(
+            s,
+            keys.get("size_adjust").copied(),
+            "size",
+            Part::Records,
+            &header,
+            scopes,
+        )?;
+        if matches!(size, Amount::Rest) {
+            return Err(self.error(&s.span(), "size: expected a number or a block header field"));
+        }
+        let header_field = |key: &str| -> Result<Option<String>, SpecError> {
+            let Some(v) = keys.get(key) else {
+                return Ok(None);
+            };
+            let name = self.string(v, key)?;
+            if !header.iter().any(|f| {
+                f.name.as_deref() == Some(name.as_str())
+                    && f.ty.is_integer()
+                    && f.meaning == Meaning::Plain
+            }) {
+                return Err(self.error(
+                    &v.span(),
+                    format!("{key}: no plain integer block header field named `{name}`"),
+                ));
+            }
+            Ok(Some(name))
+        };
+        let records = header_field("records")?;
+        let uncompressed = header_field("uncompressed")?;
+        let codec = match keys.get("compression") {
+            None => Codec::Fixed(Compression::None),
+            Some(v) => match v.get_ref() {
+                DeValue::String(name) => Codec::Fixed(self.compression(v, name)?),
+                DeValue::Table(inner) => {
+                    let k = self.entries(inner, "compression", &["field", "values"])?;
+                    let (Some(f), Some(vals)) = (k.get("field"), k.get("values")) else {
+                        return Err(self.error(&v.span(), "compression: expected { field = \"codec\", values = { 0 = \"none\", 1 = \"zstd\" } }"));
+                    };
+                    let field = self.string(f, "field")?;
+                    if !header
+                        .iter()
+                        .any(|x| x.name.as_deref() == Some(field.as_str()) && x.ty.is_integer())
+                    {
+                        return Err(self.error(
+                            &f.span(),
+                            format!("field: no integer block header field named `{field}`"),
+                        ));
+                    }
+                    let mut values = BTreeMap::new();
+                    for (code, name) in self.table(vals, "values")? {
+                        let text: &str = code.get_ref();
+                        let code_value: i64 = text.parse().map_err(|_| {
+                            self.error(
+                                &code.span(),
+                                format!("values: `{text}` is not a whole number"),
+                            )
+                        })?;
+                        let DeValue::String(n) = name.get_ref() else {
+                            return Err(self.error(&name.span(), "values: expected a codec's name"));
+                        };
+                        values.insert(code_value, self.compression(name, n)?);
+                    }
+                    Codec::ByField { field, values }
+                }
+                _ => {
+                    return Err(self.error(
+                        &v.span(),
+                        "compression: expected a codec's name or { field, values }",
+                    ));
+                }
+            },
+        };
+        let lz4_block = match &codec {
+            Codec::Fixed(c) => *c == Compression::Lz4Block,
+            Codec::ByField { values, .. } => values.values().any(|c| *c == Compression::Lz4Block),
+        };
+        if lz4_block && uncompressed.is_none() {
+            return Err(self.error(&value.span(), "compression: lz4_block needs uncompressed, the header field with each block's decompressed size"));
+        }
+        let index = keys
+            .get("index")
+            .map(|v| {
+                let t = self.table(v, "index")?;
+                let k = self.entries(t, "index", &["at", "count", "fields"])?;
+                let (Some(a), Some(c), Some(f)) = (k.get("at"), k.get("count"), k.get("fields"))
+                else {
+                    return Err(self.error(&v.span(), "index: needs at, count and fields"));
+                };
+                let at = self.amount(a, None, "at", Part::Header, &[], scopes)?;
+                let count = self.amount(c, None, "count", Part::Header, &[], scopes)?;
+                let fields = self.fields(f, Part::Header, Layout::Rows, scopes, &[])?;
+                if given_width(&fields).is_none() {
+                    return Err(self.error(
+                        &f.span(),
+                        "fields: an index entry's sizes are written in the spec",
+                    ));
+                }
+                if !fields
+                    .iter()
+                    .any(|x| x.name.as_deref() == Some("offset") && x.ty.is_integer())
+                {
+                    return Err(self.error(
+                        &f.span(),
+                        "fields: an index entry needs an integer `offset`, where its block starts",
+                    ));
+                }
+                Ok(BlockIndex { at, count, fields })
+            })
+            .transpose()?;
+        Ok(Blocks {
+            header,
+            size,
+            codec,
+            records,
+            uncompressed,
+            index,
+        })
+    }
+
+    fn compression(&self, at: &Value<'_>, name: &str) -> Result<Compression, SpecError> {
+        Compression::parse(name).ok_or_else(|| {
+            let names: Vec<&str> = Compression::NAMES.iter().map(|(n, _)| *n).collect();
+            self.error(
+                &at.span(),
+                format!("compression: expected one of {}", names.join(", ")),
+            )
+        })
+    }
+
+    fn capture(&self, value: &Value<'_>) -> Result<Capture, SpecError> {
+        let table = self.table(value, "[capture]")?;
+        // pcap or pcapng is told by the file's magic, so there is no key for it.
+        let keys = self.entries(table, "[capture]", &["header", "count", "time"])?;
+        let header = match keys.get("header") {
+            Some(h) => self.fields(h, Part::Records, Layout::Rows, &Scopes::default(), &[])?,
+            None => Vec::new(),
+        };
+        let count = keys
+            .get("count")
+            .map(|v| {
+                let name = self.string(v, "count")?;
+                if !header
+                    .iter()
+                    .any(|f| f.name.as_deref() == Some(name.as_str()) && f.ty.is_integer())
+                {
+                    return Err(self.error(
+                        &v.span(),
+                        format!("count: no integer payload header field named `{name}`"),
+                    ));
+                }
+                Ok(name)
+            })
+            .transpose()?;
+        let time = keys
+            .get("time")
+            .map(|v| {
+                let name = self.string(v, "time")?;
+                if name.trim().is_empty() || name.contains('.') {
+                    return Err(self.error(&v.span(), "time: expected a column name"));
+                }
+                Ok(name)
+            })
+            .transpose()?;
+        Ok(Capture {
+            header,
+            count,
+            time,
+        })
+    }
+
+    fn files(&self, value: &Value<'_>) -> Result<Files, SpecError> {
+        let table = self.table(value, "[files]")?;
+        let keys = self.entries(table, "[files]", &["path"])?;
+        let Some(p) = keys.get("path") else {
+            return Err(self.error(
+                &value.span(),
+                "[files]: missing `path`, such as path = \"{date:%Y%m%d}/{venue}/trades.bin\"",
+            ));
+        };
+        let pattern = self.string(p, "path")?;
+        let parts =
+            path_parts(&pattern).map_err(|e| self.error(&p.span(), format!("path: {e}")))?;
+        Ok(Files { pattern, parts })
+    }
+
+    /// What the columns layout allows: fixed values, one file each or all at offsets in
+    /// one file.
+    fn check_columns(&self, value: &Value<'_>, records: &Records) -> Result<(), SpecError> {
+        if records.size.is_some() {
+            return Err(self.error(
+                &value.span(),
+                "size: each column holds one field, so layout = \"columns\" takes no record size",
+            ));
+        }
+        if records.framing != Framing::Fixed || records.checksum.is_some() || records.ring.is_some()
+        {
+            return Err(self.error(
+                &value.span(),
+                "layout = \"columns\": values are fixed, with no framing, checksum or ring",
+            ));
+        }
+        let at = records.fields.iter().filter(|f| f.at.is_some()).count();
+        if at != 0 && at != records.fields.len() {
+            return Err(self.error(
+                &value.span(),
+                "offset: in one file, every column gives where it starts",
+            ));
+        }
+        for field in &records.fields {
+            let said = if field.ty == Type::Pad {
+                Some("pad: layout = \"columns\" has no bytes between fields to skip")
+            } else if field.flatten {
+                Some("flatten: a column file holds one column; leave the values an Array")
+            } else if matches!(field.ty, Type::Strz | Type::VarU | Type::VarS | Type::Group)
+                || !field.bits.is_empty()
+                || field.string_at.is_some()
+            {
+                Some("layout = \"columns\": a column's values are fixed-width")
+            } else if field.size.as_ref().is_some_and(|s| !s.is_fixed())
+                || field.count.as_ref().is_some_and(|s| !s.is_fixed())
+            {
+                Some("layout = \"columns\": a column's values are all one size")
+            } else {
+                None
+            };
+            if let Some(said) = said {
+                return Err(self.error(&value.span(), said));
+            }
+        }
+        Ok(())
+    }
+
+    /// An integer's bit fields.
+    fn bits(&self, value: &Value<'_>, ty: Type, counted: bool) -> Result<Vec<BitField>, SpecError> {
+        let total = match ty {
+            Type::Unsigned(n) | Type::Signed(n) => u32::from(n) * 8,
+            Type::VarU | Type::VarS => 64,
+            _ => return Err(self.error(&value.span(), "bits: are for an integer field")),
+        };
+        if counted {
+            return Err(self.error(&value.span(), "bits: are for one integer a record"));
+        }
+        let DeValue::Array(items) = value.get_ref() else {
+            return Err(self.error(
+                &value.span(),
+                "bits: expected a list, such as [{ name = \"valid\", bit = 0 }]",
+            ));
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let table = self.table(item, "bit")?;
+            let keys = self.entries(table, "a bit field", &["name", "bit", "width", "enum"])?;
+            let Some(n) = keys.get("name") else {
+                return Err(self.error(&item.span(), "bit: missing `name`"));
+            };
+            let name = self.string(n, "name")?;
+            if name.trim().is_empty() || name.contains('.') {
+                return Err(self.error(&n.span(), "name: must not be empty or contain `.`"));
+            }
+            let Some(b) = keys.get("bit") else {
+                return Err(self.error(
+                    &item.span(),
+                    "bit: missing `bit`, the lowest bit, 0 the least significant",
+                ));
+            };
+            let bit = self.integer(b, "bit")?;
+            let width = keys
+                .get("width")
+                .map(|w| self.integer(w, "width"))
+                .transpose()?
+                .unwrap_or(1);
+            if bit < 0 || width < 1 || bit + width > i64::from(total) {
+                return Err(self.error(
+                    &item.span(),
+                    format!(
+                        "bit: bits {bit} to {} are outside the field's {total}",
+                        bit + width - 1
+                    ),
+                ));
+            }
+            let labels = keys
+                .get("enum")
+                .map(|e| {
+                    let table = self.table(e, "enum")?;
+                    let mut labels = BTreeMap::new();
+                    for (code, label) in table {
+                        let text: &str = code.get_ref();
+                        let code_value: i64 = text.parse().map_err(|_| {
+                            self.error(
+                                &code.span(),
+                                format!("enum: `{text}` is not a whole number"),
+                            )
+                        })?;
+                        labels.insert(code_value, self.string(label, "enum label")?);
+                    }
+                    Ok::<_, SpecError>(Arc::new(labels))
+                })
+                .transpose()?;
+            out.push(BitField {
+                name,
+                bit: bit as u32,
+                width: width as u32,
+                labels,
+            });
+        }
+        Ok(out)
     }
 
     /// What a field means: at most one of a time, a scale, a linear conversion and an
@@ -1312,15 +2798,109 @@ impl Reader<'_> {
     }
 }
 
+impl Field {
+    /// A named field of `ty`, as stored.
+    pub fn plain(name: &str, ty: Type, endian: Option<Endian>) -> Self {
+        Self {
+            name: Some(name.to_string()),
+            ty,
+            size: None,
+            endian,
+            meaning: Meaning::Plain,
+            null: None,
+            count: None,
+            flatten: false,
+            file: None,
+            at: None,
+            encoding: Encoding::Utf8,
+            delta: Delta::None,
+            bits: Vec::new(),
+            group: Vec::new(),
+            string_at: None,
+            lookup: None,
+        }
+    }
+
+    /// Whether the reader of fixed records reads it as it is: one value or an Array
+    /// of them, of a size known before a record is read, and nothing derived.
+    pub fn is_fixed_width(&self) -> bool {
+        self.ty.width().is_some() || matches!(self.ty, Type::Str | Type::Bytes | Type::Pad)
+    }
+}
+
+/// Every field of the records: the common ones, then each variant's.
+pub fn all_fields(records: &Records) -> impl Iterator<Item = &Field> {
+    records
+        .fields
+        .iter()
+        .chain(records.variants.iter().flat_map(|v| &v.fields))
+}
+
+/// The parts `{name}` and `{name:%Y%m%d}` of a `[files]` path, in order.
+pub fn path_parts(pattern: &str) -> Result<Vec<PathPart>, String> {
+    let mut parts: Vec<PathPart> = Vec::new();
+    let mut rest = pattern;
+    if pattern.trim().is_empty()
+        || Path::new(pattern).is_absolute()
+        || pattern.split('/').any(|c| c == ".." || c.is_empty())
+    {
+        return Err(
+            "expected a path relative to the directory, such as {date:%Y%m%d}/trades.bin".into(),
+        );
+    }
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let close = after.find('}').ok_or("a `{` without its `}`")?;
+        let inside = &after[..close];
+        let (name, date) = match inside.split_once(':') {
+            Some((name, format)) => (name, Some(format.to_string())),
+            None => (inside, None),
+        };
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!(
+                "`{{{inside}}}`: a part is named with letters, digits and `_`"
+            ));
+        }
+        if inside.contains('/') {
+            return Err(format!(
+                "`{{{inside}}}`: a part stays inside one directory's name"
+            ));
+        }
+        if let Some(format) = &date
+            && (format.is_empty()
+                || chrono::format::StrftimeItems::new(format)
+                    .any(|i| matches!(i, chrono::format::Item::Error)))
+        {
+            return Err(format!(
+                "`{{{inside}}}`: `{format}` is not a date format such as %Y%m%d"
+            ));
+        }
+        if parts.iter().any(|p| p.name == name) {
+            return Err(format!("`{name}` is named twice"));
+        }
+        parts.push(PathPart {
+            name: name.to_string(),
+            date,
+        });
+        rest = &after[close + 1..];
+    }
+    if rest.contains('}') {
+        return Err("a `}` without its `{`".into());
+    }
+    Ok(parts)
+}
+
 /// The columns a field shows as: none for `pad`, `name_0`... when flattened.
 fn output_names(field: &Field) -> Vec<String> {
     let Some(name) = &field.name else {
         return Vec::new();
     };
-    match (&field.count, field.flatten) {
+    let mut names = match (&field.count, field.flatten) {
         (Some(Amount::Given(n)), true) => (0..*n).map(|i| format!("{name}_{i}")).collect(),
         _ => vec![name.clone()],
-    }
+    };
+    names.extend(field.bits.iter().map(|b| b.name.clone()));
+    names
 }
 
 /// The smallest and largest value an integer (or bool) type holds.
@@ -1349,6 +2929,12 @@ fn is_file_name(name: &str) -> bool {
 fn parse_type(text: &str) -> Option<(Type, Option<Endian>)> {
     match text {
         "str" => return Some((Type::Str, None)),
+        "strz" => return Some((Type::Strz, None)),
+        "vu" => return Some((Type::VarU, None)),
+        "vs" => return Some((Type::VarS, None)),
+        "bf2" => return Some((Type::BFloat16, None)),
+        "bf2le" => return Some((Type::BFloat16, Some(Endian::Little))),
+        "bf2be" => return Some((Type::BFloat16, Some(Endian::Big))),
         "bytes" => return Some((Type::Bytes, None)),
         "pad" => return Some((Type::Pad, None)),
         "bool" => return Some((Type::Bool, None)),
@@ -1371,7 +2957,7 @@ fn parse_type(text: &str) -> Option<(Type, Option<Endian>)> {
     let ty = match (kind, width) {
         ('u', 1..=8) => Type::Unsigned(width),
         ('s', 1..=8) => Type::Signed(width),
-        ('f', 4 | 8) => Type::Float(width),
+        ('f', 2 | 4 | 8) => Type::Float(width),
         _ => return None,
     };
     Some((ty, endian))
@@ -1383,9 +2969,14 @@ fn type_name(ty: Type) -> String {
         Type::Signed(n) => format!("s{n}"),
         Type::Float(n) => format!("f{n}"),
         Type::Bool => "bool".into(),
+        Type::BFloat16 => "bf2".into(),
         Type::Str => "str".into(),
+        Type::Strz => "strz".into(),
         Type::Bytes => "bytes".into(),
         Type::Pad => "pad".into(),
+        Type::VarU => "vu".into(),
+        Type::VarS => "vs".into(),
+        Type::Group => "group".into(),
     }
 }
 
@@ -1462,25 +3053,25 @@ impl Spec {
                 "records",
                 "footer",
                 "variants",
+                "blocks",
+                "capture",
+                "files",
+                "sections",
             ],
         )?;
         let whole = 0..0;
-        for later in ["footer", "variants"] {
-            if let Some(v) = top.get(later) {
-                return Err(reader.error(&v.span(), format!("`{later}` is not yet supported")));
-            }
-        }
         let name = reader.spec_name(&top)?;
         let description = top
             .get("description")
             .map(|v| reader.string(v, "description"))
             .transpose()?;
-        let endian = match top.get("endian") {
-            None => Endian::Little,
+        let (endian, endian_auto) = match top.get("endian") {
+            None => (Endian::Little, false),
             Some(v) => match reader.string(v, "endian")?.as_str() {
-                "le" => Endian::Little,
-                "be" => Endian::Big,
-                _ => return Err(reader.error(&v.span(), "endian: expected le or be")),
+                "le" => (Endian::Little, false),
+                "be" => (Endian::Big, false),
+                "auto" => (Endian::Little, true),
+                _ => return Err(reader.error(&v.span(), "endian: expected le, be or auto")),
             },
         };
         let layout = match top.get("layout") {
@@ -1497,19 +3088,32 @@ impl Spec {
             let table = reader.table(v, "[header]")?;
             let keys = reader.entries(table, "[header]", &["fields", "size", "size_adjust"])?;
             if let Some(f) = keys.get("fields") {
-                header.fields = reader.fields(f, Part::Header, layout, &[])?;
+                header.fields = reader.fields(f, Part::Header, layout, &Scopes::default(), &[])?;
             }
             if let Some(s) = keys.get("size") {
+                let scopes = Scopes {
+                    header: &header.fields,
+                    footer: &[],
+                };
                 header.size = Some(reader.amount(
                     s,
                     keys.get("size_adjust").copied(),
                     "size",
                     Part::Header,
                     &header.fields,
-                    &header.fields,
+                    &scopes,
                 )?);
             }
         }
+        let footer = top
+            .get("footer")
+            .map(|v| reader.footer(v, &header.fields))
+            .transpose()?;
+        let footer_fields: &[Field] = footer.as_ref().map_or(&[], |f| &f.fields);
+        let scopes = Scopes {
+            header: &header.fields,
+            footer: footer_fields,
+        };
 
         let MatchRules {
             globs,
@@ -1522,85 +3126,106 @@ impl Spec {
             None => MatchRules::default(),
         };
 
+        if endian_auto && magic.len() < 2 {
+            return Err(reader.error(
+                &top["endian"].span(),
+                "endian = \"auto\" reads the byte order from the magic, so it needs a magic of at least two bytes",
+            ));
+        }
+
+        let sections = top
+            .get("sections")
+            .map(|v| reader.sections(v, &scopes))
+            .transpose()?
+            .unwrap_or_default();
+
         let Some(records_value) = top.get("records") else {
             return Err(reader.error(&whole, "missing [records], with the fields of one record"));
         };
-        let table = reader.table(records_value, "[records]")?;
-        let keys = reader.entries(
-            table,
-            "[records]",
-            &["framing", "fields", "size", "size_adjust", "count"],
-        )?;
-        let framing = match keys.get("framing") {
-            None => Framing::Fixed,
-            Some(v) => match reader.string(v, "framing")?.as_str() {
-                "fixed" => Framing::Fixed,
-                other @ ("length_prefixed" | "blocks" | "variant" | "sync") => {
-                    return Err(reader.error(
-                        &v.span(),
-                        format!("framing = \"{other}\" is not yet supported; expected fixed"),
-                    ));
-                }
-                _ => return Err(reader.error(&v.span(), "framing: expected fixed")),
-            },
-        };
-        let Some(fields_value) = keys.get("fields") else {
-            return Err(reader.error(&records_value.span(), "[records]: missing `fields`"));
-        };
-        let fields = reader.fields(fields_value, Part::Records, layout, &header.fields)?;
-        if !fields.iter().any(|f| f.name.is_some()) {
-            return Err(reader.error(&fields_value.span(), "fields: a record needs a named field"));
-        }
-        let size = keys
-            .get("size")
-            .map(|s| {
-                reader.amount(
-                    s,
-                    keys.get("size_adjust").copied(),
-                    "size",
-                    Part::Records,
-                    &[],
-                    &header.fields,
-                )
-            })
-            .transpose()?;
-        let count = keys
-            .get("count")
-            .map(|c| reader.amount(c, None, "count", Part::Records, &[], &header.fields))
-            .transpose()?;
-        if layout == Layout::Columns {
-            if let Some(s) = keys.get("size") {
+        let records =
+            reader.records(records_value, top.get("variants").copied(), layout, &scopes)?;
+        for field in all_fields(&records) {
+            if let Some(section) = &field.string_at
+                && !sections.iter().any(|s| &s.name == section)
+            {
                 return Err(reader.error(
-                    &s.span(),
-                    "size: each column file holds one field, so layout = \"columns\" takes no record size",
+                    &records_value.span(),
+                    format!("string_at: no section named `{section}` under [sections]"),
                 ));
             }
-            let DeValue::Array(items) = fields_value.get_ref() else {
-                unreachable!("read as an array above")
-            };
-            for (field, item) in fields.iter().zip(items) {
-                if field.ty == Type::Pad {
-                    return Err(reader.error(
-                        &item.span(),
-                        "pad: layout = \"columns\" has no bytes between fields to skip",
-                    ));
-                }
-                if field.flatten {
-                    return Err(reader.error(
-                        &item.span(),
-                        "flatten: a column file holds one column; leave the values an Array",
-                    ));
-                }
+        }
+        let blocks = top
+            .get("blocks")
+            .map(|v| reader.blocks(v, &scopes))
+            .transpose()?;
+        let capture = top.get("capture").map(|v| reader.capture(v)).transpose()?;
+        let files = top.get("files").map(|v| reader.files(v)).transpose()?;
+
+        if let Some(v) = top.get("capture")
+            && (blocks.is_some() || top.contains_key("header") || footer.is_some())
+        {
+            return Err(reader.error(
+                &v.span(),
+                "[capture]: the capture's own headers frame the payloads; leave out [header], [footer] and [blocks]",
+            ));
+        }
+        let framed = blocks.is_some() || capture.is_some();
+        if layout == Layout::Columns
+            && let Some(v) = top.get("blocks").or(top.get("files"))
+        {
+            return Err(reader.error(
+                &v.span(),
+                "layout = \"columns\" reads values, not blocks or a tree of files",
+            ));
+        }
+        if let Some(ring) = &records.ring {
+            let ring_ok = records.framing == Framing::Fixed
+                && !framed
+                && records.variants.is_empty()
+                && matches!(
+                    ring,
+                    Amount::Header { .. } | Amount::Footer { .. } | Amount::Given(_)
+                );
+            if !ring_ok {
+                return Err(reader.error(
+                    &records_value.span(),
+                    "ring: is for fixed records, the oldest's index read from the header",
+                ));
+            }
+        }
+        if let Some(files) = &files {
+            let columns: std::collections::HashSet<String> =
+                all_fields(&records).flat_map(output_names).collect();
+            if let Some(part) = files.parts.iter().find(|p| columns.contains(&p.name)) {
+                return Err(reader.error(
+                    &top["files"].span(),
+                    format!("path: `{}` is also a field's name", part.name),
+                ));
+            }
+        }
+
+        if layout == Layout::Columns {
+            reader.check_columns(records_value, &records)?;
+            if let Some(v) = top
+                .get("footer")
+                .or(top.get("variants"))
+                .or(top.get("capture"))
+            {
+                return Err(reader.error(
+                    &v.span(),
+                    "layout = \"columns\" holds fixed values: no footer, variants or capture",
+                ));
             }
         }
         // Sizes written down are checked now; one that comes from the file is checked
         // when the file is read.
-        if let (Some(Amount::Given(size)), Some(sum)) = (&size, given_width(&fields))
+        if let (Some(Amount::Given(size)), Some(sum)) =
+            (&records.size, given_width(&records.fields))
             && *size < sum
+            && records.variants.is_empty()
         {
-            let s = keys.get("size").expect("size was read");
             return Err(reader.error(
-                &s.span(),
+                &records_value.span(),
                 format!("size: the fields take {sum} bytes, more than {size}"),
             ));
         }
@@ -1612,13 +3237,13 @@ impl Spec {
                 format!("[header] size: the fields take {sum} bytes, more than {size}"),
             ));
         }
-        if let Some(sum) = given_width(&fields) {
-            if sum == 0 {
-                return Err(reader.error(&fields_value.span(), "fields: a record takes no bytes"));
+        if let Some(sum) = given_width(&records.fields) {
+            if sum == 0 && records.variants.is_empty() && records.sync.is_empty() {
+                return Err(reader.error(&records_value.span(), "fields: a record takes no bytes"));
             }
             if sum > MAX_SIZE {
                 return Err(reader.error(
-                    &fields_value.span(),
+                    &records_value.span(),
                     format!("fields: a record of {sum} bytes is more than {MAX_SIZE}"),
                 ));
             }
@@ -1633,15 +3258,17 @@ impl Spec {
             magic_offset,
             expect,
             endian,
+            endian_auto,
             layout,
             header,
-            records: Records {
-                framing,
-                fields,
-                size,
-                count,
-            },
+            records,
             delimited: None,
+            footer,
+            blocks,
+            capture,
+            files,
+            sections,
+            variant: None,
         })
     }
 
@@ -1697,15 +3324,17 @@ impl Spec {
             magic_offset,
             expect,
             endian: Endian::Little,
+            endian_auto: false,
             layout: Layout::Rows,
             header: Header::default(),
-            records: Records {
-                framing: Framing::Fixed,
-                fields: Vec::new(),
-                size: None,
-                count: None,
-            },
+            records: Records::default(),
             delimited: Some(Arc::new(delimited)),
+            footer: None,
+            blocks: None,
+            capture: None,
+            files: None,
+            sections: Vec::new(),
+            variant: None,
         })
     }
 
@@ -1744,7 +3373,11 @@ impl Spec {
             head
         };
         let start = self.magic_offset as usize;
-        !self.magic.is_empty() && head.get(start..start + self.magic.len()) == Some(&self.magic)
+        let found = head.get(start..start + self.magic.len());
+        !self.magic.is_empty()
+            && (found == Some(&self.magic)
+                || (self.endian_auto
+                    && found.is_some_and(|f| f.iter().eq(self.magic.iter().rev()))))
     }
 
     /// Whether `head` holds the header values `match.where` asks for.
@@ -1832,11 +3465,33 @@ fn given_width(fields: &[Field]) -> Option<u64> {
         .try_fold(0u64, |sum, f| sum.checked_add(field_width(f)?))
 }
 
-/// A header, read: each named field's value, and how many bytes the header takes.
-#[derive(Debug, Default)]
+/// The bytes `fields` take, when none of their sizes comes from the file.
+pub(crate) fn fields_width(fields: &[Field]) -> Option<u64> {
+    given_width(fields)
+}
+
+/// A header, read: each named field's value, and how many bytes the header takes;
+/// and the footer's values, and the symbol lists fields index into.
+#[derive(Debug, Default, Clone)]
 pub struct HeaderValues {
     pub values: Vec<(String, AnyValue<'static>)>,
     pub size: u64,
+    pub footer: Vec<(String, AnyValue<'static>)>,
+    pub lookups: BTreeMap<String, Arc<Vec<String>>>,
+}
+
+fn int_value(value: &AnyValue<'_>) -> Option<i128> {
+    match value {
+        AnyValue::UInt8(v) => Some(i128::from(*v)),
+        AnyValue::UInt16(v) => Some(i128::from(*v)),
+        AnyValue::UInt32(v) => Some(i128::from(*v)),
+        AnyValue::UInt64(v) => Some(i128::from(*v)),
+        AnyValue::Int8(v) => Some(i128::from(*v)),
+        AnyValue::Int16(v) => Some(i128::from(*v)),
+        AnyValue::Int32(v) => Some(i128::from(*v)),
+        AnyValue::Int64(v) => Some(i128::from(*v)),
+        _ => None,
+    }
 }
 
 impl HeaderValues {
@@ -1844,18 +3499,36 @@ impl HeaderValues {
         self.values.iter().find(|(n, _)| n == name).map(|(_, v)| v)
     }
 
+    fn footer_int(&self, name: &str) -> Option<i128> {
+        self.footer
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| int_value(v))
+    }
+
+    /// `amount`'s value with no bound but its sign: an offset or a count, which the
+    /// file's length bounds where it is used.
+    pub(crate) fn resolve_any(&self, amount: &Amount, what: &str) -> Result<u64, String> {
+        let (value, field) = match amount {
+            Amount::Given(n) => return Ok(*n),
+            Amount::Header { field, adjust } => (
+                self.int(field).map(|v| v + i128::from(*adjust)),
+                format!("header's `{field}`"),
+            ),
+            Amount::Footer { field, adjust } => (
+                self.footer_int(field).map(|v| v + i128::from(*adjust)),
+                format!("footer's `{field}`"),
+            ),
+            Amount::Record { .. } | Amount::Rest => {
+                return Err(format!("{what}: comes from each record"));
+            }
+        };
+        let value = value.ok_or_else(|| format!("{what}: the {field} has no value"))?;
+        u64::try_from(value).map_err(|_| format!("{what}: the {field} gives {value}, below 0"))
+    }
+
     fn int(&self, name: &str) -> Option<i128> {
-        match self.get(name)? {
-            AnyValue::UInt8(v) => Some(i128::from(*v)),
-            AnyValue::UInt16(v) => Some(i128::from(*v)),
-            AnyValue::UInt32(v) => Some(i128::from(*v)),
-            AnyValue::UInt64(v) => Some(i128::from(*v)),
-            AnyValue::Int8(v) => Some(i128::from(*v)),
-            AnyValue::Int16(v) => Some(i128::from(*v)),
-            AnyValue::Int32(v) => Some(i128::from(*v)),
-            AnyValue::Int64(v) => Some(i128::from(*v)),
-            _ => None,
-        }
+        int_value(self.get(name)?)
     }
 
     fn text(&self, name: &str) -> Option<String> {
@@ -1895,14 +3568,20 @@ impl HeaderValues {
         days.checked_mul(DAY_NS)
     }
 
-    /// `amount`'s value: given, or read from a header field and bounded.
-    fn resolve(&self, amount: &Amount, what: &str) -> Result<u64, String> {
+    /// `amount`'s value: given, or read from a header or footer field and bounded.
+    pub(crate) fn resolve(&self, amount: &Amount, what: &str) -> Result<u64, String> {
         match amount {
             Amount::Given(n) => Ok(*n),
-            Amount::Header { field, adjust } => {
-                let value = self
-                    .int(field)
-                    .ok_or_else(|| format!("{what}: the header has no value for `{field}`"))?
+            Amount::Record { .. } | Amount::Rest => Err(format!(
+                "{what}: comes from each record, which needs the records walked"
+            )),
+            Amount::Header { field, adjust } | Amount::Footer { field, adjust } => {
+                let (part, value) = match amount {
+                    Amount::Footer { .. } => ("footer", self.footer_int(field)),
+                    _ => ("header", self.int(field)),
+                };
+                let value = value
+                    .ok_or_else(|| format!("{what}: the {part} has no value for `{field}`"))?
                     + i128::from(*adjust);
                 // A record count is bounded by the file instead.
                 let bound = if what == "count" {
@@ -1924,15 +3603,15 @@ impl HeaderValues {
 /// Where a column's cells are: the first at `start`, `stride` apart (a cell's own
 /// width when `None`), each `count` values of `width` bytes.
 #[derive(Debug, Clone, Copy)]
-struct Place {
-    start: usize,
-    stride: Option<usize>,
-    width: usize,
-    count: usize,
+pub(crate) struct Place {
+    pub start: usize,
+    pub stride: Option<usize>,
+    pub width: usize,
+    pub count: usize,
 }
 
 /// The decoder's view of `field`, named `name`, its cells at `place`.
-fn layout_of(
+pub(crate) fn layout_of(
     spec: &Spec,
     field: &Field,
     name: &str,
@@ -1946,6 +3625,14 @@ fn layout_of(
         count,
     } = place;
     let logical = match &field.meaning {
+        Meaning::Plain if field.lookup.is_some() => Logical::Lookup(
+            field
+                .name
+                .as_ref()
+                .and_then(|n| header.lookups.get(n))
+                .cloned()
+                .ok_or_else(|| format!("{name}: its symbol list was not read"))?,
+        ),
         Meaning::Plain => Logical::Plain,
         Meaning::Scale(scale) => Logical::Decimal {
             scale: *scale as usize,
@@ -1998,7 +3685,11 @@ fn layout_of(
         stride: stride.unwrap_or(width * count),
         width,
         count,
-        physical: field.ty.physical(),
+        physical: if field.ty == Type::Str {
+            field.encoding.physical()
+        } else {
+            field.ty.physical()
+        },
         big_endian: field.endian.unwrap_or(spec.endian) == Endian::Big,
         null: field.null,
         logical,
@@ -2026,17 +3717,24 @@ fn sized(field: &Field, header: &HeaderValues) -> Result<(u64, u64), String> {
     Ok((width, count))
 }
 
-/// Read the header from the front of `bytes`, sizing each field as it goes.
-fn read_header(spec: &Spec, bytes: &[u8]) -> Result<HeaderValues, String> {
-    let mut read = HeaderValues::default();
-    let mut at = 0u64;
-    for field in &spec.header.fields {
-        let (width, count) = sized(field, &read)?;
+/// Read `fields` from `bytes` at `at`, sizing each as it goes, into `read`'s header
+/// values or (for `footer`) its footer values. Gives where they end.
+fn read_fields(
+    spec: &Spec,
+    fields: &[Field],
+    bytes: &[u8],
+    mut at: u64,
+    read: &mut HeaderValues,
+    footer: bool,
+) -> Result<u64, String> {
+    for field in fields {
+        let (width, count) = sized(field, read)?;
         let end = at + width * count;
         if end > bytes.len() as u64 {
             return Err(format!(
-                "the file is {} bytes, too short for its header (field `{}` ends at byte {end})",
+                "the file is {} bytes, too short for its {} (field `{}` ends at byte {end})",
                 bytes.len(),
+                if footer { "footer" } else { "header" },
                 field.name.as_deref().unwrap_or("pad")
             ));
         }
@@ -2049,14 +3747,25 @@ fn read_header(spec: &Spec, bytes: &[u8]) -> Result<HeaderValues, String> {
                 width: width as usize,
                 count: count as usize,
             };
-            let layout = layout_of(spec, field, name, place, &read)?;
+            let layout = layout_of(spec, field, name, place, read)?;
             let column =
                 crate::fixed_records::decode(bytes, &layout, 1).map_err(|e| e.to_string())?;
             let value = column.get(0).map_err(|e| e.to_string())?.into_static();
-            read.values.push((name.clone(), value));
+            if footer {
+                read.footer.push((name.clone(), value));
+            } else {
+                read.values.push((name.clone(), value));
+            }
         }
         at = end;
     }
+    Ok(at)
+}
+
+/// Read the header from the front of `bytes`, sizing each field as it goes.
+fn read_header(spec: &Spec, bytes: &[u8]) -> Result<HeaderValues, String> {
+    let mut read = HeaderValues::default();
+    let at = read_fields(spec, &spec.header.fields, bytes, 0, &mut read, false)?;
     read.size = match &spec.header.size {
         None => at,
         Some(amount) => {
@@ -2072,9 +3781,164 @@ fn read_header(spec: &Spec, bytes: &[u8]) -> Result<HeaderValues, String> {
     Ok(read)
 }
 
+/// Read the footer at the end of `bytes` into `read`: where it starts, and a note on
+/// its checksum.
+fn read_footer(
+    spec: &Spec,
+    bytes: &[u8],
+    read: &mut HeaderValues,
+) -> Result<(u64, Option<String>), String> {
+    let len = bytes.len() as u64;
+    let Some(footer) = &spec.footer else {
+        return Ok((len, None));
+    };
+    let size = footer
+        .size
+        .or_else(|| given_width(&footer.fields))
+        .unwrap_or(0);
+    let start = len
+        .checked_sub(size)
+        .filter(|s| *s >= read.size)
+        .ok_or_else(|| {
+            format!(
+                "the file is {len} bytes, too short for its {}-byte header and {size}-byte footer",
+                read.size
+            )
+        })?;
+    read_fields(spec, &footer.fields, bytes, start, read, true)?;
+    // Notes are warnings: a checksum that matches says nothing.
+    let note = footer.checksum.as_ref().and_then(|(algo, field)| {
+        let stored = read.footer_int(field);
+        let computed = algo.compute(&bytes[..start as usize]);
+        match stored {
+            Some(v) if v == i128::from(computed) => None,
+            Some(v) => Some(format!(
+                "the footer's checksum `{field}` is {v:#x}; the file's is {computed:#x}"
+            )),
+            None => Some(format!(
+                "the footer has no value for its checksum `{field}`"
+            )),
+        }
+    });
+    Ok((start, note))
+}
+
+/// The symbol lists `fields` index into, read from beside `dir`.
+fn read_lookups(
+    fields: &[Field],
+    dir: Option<&Path>,
+    read: &mut HeaderValues,
+) -> Result<(), String> {
+    for field in fields {
+        let (Some(name), Some(lookup)) = (&field.name, &field.lookup) else {
+            continue;
+        };
+        let dir = dir.ok_or_else(|| {
+            format!("{name}: its symbol list {} is beside the data, which was not opened from a directory", lookup.file)
+        })?;
+        let path = dir.join(&lookup.file);
+        let size = std::fs::metadata(&path)
+            .map_err(|e| format!("{name}: the symbol list {}: {e}", path.display()))?
+            .len();
+        if size > MAX_SIZE {
+            return Err(format!(
+                "{name}: the symbol list {} is {size} bytes, more than {MAX_SIZE}",
+                path.display()
+            ));
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("{name}: the symbol list {}: {e}", path.display()))?;
+        read.lookups
+            .insert(name.clone(), Arc::new(symbols(&bytes, lookup.format)));
+    }
+    Ok(())
+}
+
+/// The entries of a symbol list.
+pub fn symbols(bytes: &[u8], format: LookupFormat) -> Vec<String> {
+    match format {
+        LookupFormat::Lines => String::from_utf8_lossy(bytes)
+            .lines()
+            .map(|l| l.trim_end_matches('\r').to_string())
+            .collect(),
+        LookupFormat::Nul => {
+            let mut out: Vec<String> = bytes
+                .split(|b| *b == 0)
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+                .collect();
+            // The list ends with a NUL, which leaves an empty piece after it.
+            if bytes.last() == Some(&0) {
+                out.pop();
+            }
+            out
+        }
+        LookupFormat::Fixed(n) => bytes
+            .chunks(n as usize)
+            .map(crate::fixed_records::text)
+            .collect(),
+    }
+}
+
+/// The rows a spec reads, however they are framed: what the table, a window of it,
+/// `formats check` and the fuzz target read through.
+pub trait SpecRecords: crate::pushdown::Windowed + std::fmt::Debug {
+    fn rows(&self) -> usize;
+    fn schema(&self) -> SchemaRef;
+    /// The frame: a scan that decodes only what a query asks for.
+    fn into_lazy(self: Arc<Self>) -> PolarsResult<LazyFrame>;
+    /// The first `rows` rows, decoded now.
+    fn collect(&self, rows: usize) -> PolarsResult<DataFrame>;
+    /// The bytes the rows are read from, for a reader of the raw bytes.
+    fn sources(&self) -> &[Arc<Bytes>];
+}
+
+impl std::fmt::Debug for FixedRecords {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FixedRecords")
+            .field("rows", &self.rows())
+            .finish()
+    }
+}
+
+impl SpecRecords for FixedRecords {
+    fn rows(&self) -> usize {
+        FixedRecords::rows(self)
+    }
+    fn schema(&self) -> SchemaRef {
+        FixedRecords::schema(self)
+    }
+    fn into_lazy(self: Arc<Self>) -> PolarsResult<LazyFrame> {
+        Ok(FixedRecords::lazy(&self))
+    }
+    fn collect(&self, rows: usize) -> PolarsResult<DataFrame> {
+        FixedRecords::collect(self, rows)
+    }
+    fn sources(&self) -> &[Arc<Bytes>] {
+        FixedRecords::sources(self)
+    }
+}
+
+impl SpecRecords for crate::framed_records::FramedRecords {
+    fn rows(&self) -> usize {
+        crate::framed_records::FramedRecords::rows(self)
+    }
+    fn schema(&self) -> SchemaRef {
+        crate::framed_records::FramedRecords::schema(self)
+    }
+    fn into_lazy(self: Arc<Self>) -> PolarsResult<LazyFrame> {
+        Ok(crate::framed_records::FramedRecords::lazy(&self))
+    }
+    fn collect(&self, rows: usize) -> PolarsResult<DataFrame> {
+        crate::framed_records::FramedRecords::collect(self, rows)
+    }
+    fn sources(&self) -> &[Arc<Bytes>] {
+        crate::framed_records::FramedRecords::sources(self)
+    }
+}
+
 /// A file read through a spec: its columns, and what the read had to say.
 pub struct Opened {
-    pub records: Arc<FixedRecords>,
+    pub records: Arc<dyn SpecRecords>,
     /// Warnings for the dataset's notes, one sentence each.
     pub notes: Vec<String>,
     pub header: HeaderValues,
@@ -2093,7 +3957,7 @@ fn past_limit(notes: &mut Vec<String>, rows: u64, records: &FixedRecords) {
 /// Up to this many trailing bytes are shown in the warning about them.
 const TRAILING_SHOWN: usize = 32;
 
-fn trailing_note(what: &str, bytes: &[u8]) -> String {
+pub(crate) fn trailing_note(what: &str, bytes: &[u8]) -> String {
     let shown = &bytes[..bytes.len().min(TRAILING_SHOWN)];
     let more = if bytes.len() > shown.len() {
         " ..."
@@ -2194,26 +4058,124 @@ impl Spec {
                 self.name
             ));
         }
-        if self.layout == Layout::Columns {
+        self.open_rows_in(bytes, named, None)
+    }
+
+    /// The spec with its byte order settled by `head`, for `endian = "auto"`: as the
+    /// spec says when the magic reads as written, big-endian when it reads reversed.
+    pub fn for_file(&self, head: &[u8]) -> std::borrow::Cow<'_, Spec> {
+        if !self.endian_auto {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let reversed: Vec<u8> = self.magic.iter().rev().copied().collect();
+        let start = self.magic_offset as usize;
+        if reversed != self.magic && head.get(start..start + reversed.len()) == Some(&reversed[..])
+        {
+            let mut spec = self.clone();
+            spec.endian = Endian::Big;
+            spec.endian_auto = false;
+            spec.magic = reversed;
+            return std::borrow::Cow::Owned(spec);
+        }
+        std::borrow::Cow::Borrowed(self)
+    }
+
+    /// Whether the spec reads a directory: column files, or a tree of its files.
+    pub fn reads_directory(&self) -> bool {
+        self.files.is_some()
+            || (self.layout == Layout::Columns
+                && !self.records.fields.iter().any(|f| f.at.is_some()))
+    }
+
+    /// The spec reading the variant `name` alone: only its records, and only its columns.
+    pub fn with_variant(&self, name: &str) -> Result<Spec, String> {
+        if !self.records.variants.iter().any(|v| v.name == name) {
+            let names: Vec<&str> = self
+                .records
+                .variants
+                .iter()
+                .map(|v| v.name.as_str())
+                .collect();
+            return Err(if names.is_empty() {
+                format!("{} has no variants", self.name)
+            } else {
+                format!(
+                    "{} has no variant {name}; it has {}",
+                    self.name,
+                    names.join(", ")
+                )
+            });
+        }
+        let mut spec = self.clone();
+        spec.variant = Some(name.to_string());
+        Ok(spec)
+    }
+
+    /// Read `bytes`, one file, named `named` in what it says; a symbol list a field
+    /// names is looked for in `dir`.
+    pub fn open_rows_in(
+        &self,
+        bytes: Arc<Bytes>,
+        named: &str,
+        dir: Option<&Path>,
+    ) -> Result<Opened, String> {
+        if self.reads_directory() {
             return Err(format!(
-                "{} is a directory of column files (layout = \"columns\"); open the directory",
-                self.name
+                "{} reads a directory ({}); open the directory",
+                self.name,
+                if self.files.is_some() {
+                    "a tree of its files"
+                } else {
+                    "column files, layout = \"columns\""
+                }
             ));
         }
+        let spec = self.for_file(bytes.as_slice());
+        let spec = spec.as_ref();
+        if spec.layout == Layout::Columns {
+            return spec.open_columns_file(bytes, named, dir);
+        }
         let data = bytes.as_slice();
-        self.check_magic(data, named)?;
-        let header = read_header(self, data)?;
+        let mut header = if spec.capture.is_some() {
+            if !crate::framed_records::capture::is_capture(data) {
+                return Err(format!("{named} is not a pcap or pcapng capture"));
+            }
+            HeaderValues::default()
+        } else {
+            spec.check_magic(data, named)?;
+            read_header(spec, data)?
+        };
         let mut notes = Vec::new();
-        let len = data.len() as u64;
-        if header.size > len {
+        let full = data.len() as u64;
+        if header.size > full {
             return Err(format!(
-                "{named} is {len} bytes, shorter than its {}-byte header",
+                "{named} is {full} bytes, shorter than its {}-byte header",
                 header.size
             ));
         }
+        let (len, footer_note) = read_footer(spec, data, &mut header)?;
+        notes.extend(footer_note);
+        let fields: Vec<Field> = all_fields(&spec.records).cloned().collect();
+        read_lookups(&fields, dir, &mut header)?;
+        if crate::framed_records::needed(spec) {
+            let (records, more) = crate::framed_records::FramedRecords::open(
+                spec,
+                bytes.clone(),
+                &header,
+                header.size as usize..len as usize,
+                named,
+            )?;
+            notes.extend(more);
+            return Ok(Opened {
+                records: Arc::new(records),
+                notes,
+                header,
+            });
+        }
+        let data = &data[..len as usize];
         // The fields' own width first, to check the record size against it.
-        let (_, fields_width) = self.record_columns(&header, 0, Some(1))?;
-        let record = match &self.records.size {
+        let (_, fields_width) = spec.record_columns(&header, 0, Some(1))?;
+        let record = match &spec.records.size {
             None => fields_width,
             Some(amount) => {
                 let size = header.resolve(amount, "record size")?;
@@ -2232,7 +4194,7 @@ impl Spec {
         }
         let room = len - header.size;
         let whole = room / record;
-        let rows = match &self.records.count {
+        let rows = match &spec.records.count {
             None => {
                 let trailing = room % record;
                 if trailing > 0 {
@@ -2261,7 +4223,7 @@ impl Spec {
             }
         };
         let (columns, _) =
-            self.record_columns(&header, header.size as usize, Some(record as usize))?;
+            spec.record_columns(&header, header.size as usize, Some(record as usize))?;
         let records =
             FixedRecords::new(vec![bytes], columns, rows as usize).map_err(|e| e.to_string())?;
         past_limit(&mut notes, rows, &records);
@@ -2327,7 +4289,8 @@ impl Spec {
             }
             sources.push(Arc::new(bytes));
         }
-        let header = header.unwrap_or_default();
+        let mut header = header.unwrap_or_default();
+        read_lookups(&self.records.fields, Some(dir), &mut header)?;
         let fewest = counts.iter().map(|(_, n)| *n).min().unwrap_or(0);
         if counts.iter().any(|(_, n)| *n != fewest) {
             let said: Vec<String> = counts
@@ -2363,22 +4326,80 @@ impl Spec {
         })
     }
 
-    /// Open `path`: a file for the rows layout, a directory for the columns one.
-    pub fn open(&self, path: &Path, named: &str) -> Result<Opened, String> {
-        match self.layout {
-            Layout::Columns => self.open_columns(path),
-            Layout::Rows => {
-                if path.is_dir() {
-                    return Err(format!(
-                        "{} reads one file, and {} is a directory",
-                        self.name,
-                        path.display()
-                    ));
-                }
-                let bytes = Bytes::map(path).map_err(|e| format!("{}: {e}", path.display()))?;
-                self.open_rows(Arc::new(bytes), named)
+    /// Read `bytes`, one file holding each column's values in a run at its `offset`.
+    fn open_columns_file(
+        &self,
+        bytes: Arc<Bytes>,
+        named: &str,
+        dir: Option<&Path>,
+    ) -> Result<Opened, String> {
+        let data = bytes.as_slice();
+        self.check_magic(data, named)?;
+        let mut header = read_header(self, data)?;
+        let mut notes = Vec::new();
+        let (len, footer_note) = read_footer(self, data, &mut header)?;
+        notes.extend(footer_note);
+        read_lookups(&self.records.fields, dir, &mut header)?;
+        let (mut columns, _) = self.record_columns(&header, 0, None)?;
+        let mut rows = u64::MAX;
+        let mut starts = Vec::new();
+        for field in &self.records.fields {
+            let (width, count) = sized(field, &header)?;
+            let at = field.at.as_ref().expect("checked at parse");
+            let start = header.resolve_any(at, "offset")?;
+            if start < header.size || start > len {
+                return Err(format!(
+                    "column `{}` starts at byte {start}, outside the data from {} to {len}",
+                    field.name.as_deref().unwrap_or("pad"),
+                    header.size
+                ));
             }
+            rows = rows.min((len - start) / (width * count).max(1));
+            starts.push(start as usize);
         }
+        if let Some(amount) = &self.records.count {
+            let count = header.resolve_any(amount, "count")?;
+            if count > rows {
+                notes.push(format!(
+                    "the header says {count} records; the columns have room for {rows}, which are shown"
+                ));
+            }
+            rows = rows.min(count);
+        } else {
+            notes.push(format!(
+                "no count is given, so the rows are the {rows} the shortest column has room for"
+            ));
+        }
+        for column in &mut columns {
+            column.start = starts[column.source];
+        }
+        let sources = vec![bytes; self.records.fields.len()];
+        let records = FixedRecords::new(sources, columns, rows.min(usize::MAX as u64) as usize)
+            .map_err(|e| e.to_string())?;
+        Ok(Opened {
+            records: Arc::new(records),
+            notes,
+            header,
+        })
+    }
+
+    /// Open `path`: a file, or a directory of column files or of the spec's files.
+    pub fn open(&self, path: &Path, named: &str) -> Result<Opened, String> {
+        if self.files.is_some() {
+            return crate::formats::files::open(self, path);
+        }
+        if self.reads_directory() {
+            return self.open_columns(path);
+        }
+        if path.is_dir() {
+            return Err(format!(
+                "{} reads one file, and {} is a directory",
+                self.name,
+                path.display()
+            ));
+        }
+        let bytes = Bytes::map(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        self.open_rows_in(Arc::new(bytes), named, path.parent())
     }
 }
 
@@ -2585,7 +4606,7 @@ impl Registry {
         self.specs
             .iter()
             .map(|f| &f.spec)
-            .filter(|s| (s.layout == Layout::Columns) == is_dir && s.glob_matches(path))
+            .filter(|s| s.reads_directory() == is_dir && s.glob_matches(path))
             .cloned()
             .collect()
     }
@@ -2621,7 +4642,7 @@ impl Registry {
                 .specs
                 .iter()
                 .map(|f| &f.spec)
-                .filter(|s| s.layout == Layout::Rows && !s.magic.is_empty() && wanted(s))
+                .filter(|s| !s.reads_directory() && !s.magic.is_empty() && wanted(s))
                 .cloned()
                 .collect();
             (magic, Chosen::Magic)
@@ -2745,7 +4766,7 @@ pub struct Read {
     /// Warnings from the read: trailing bytes, a short count.
     pub notes: Vec<String>,
     pub header: HeaderValues,
-    pub records: Arc<FixedRecords>,
+    pub records: Arc<dyn SpecRecords>,
 }
 
 impl std::fmt::Debug for Read {
@@ -2768,6 +4789,8 @@ pub struct Asked {
     pub spec_name: Option<String>,
     /// A spec already chosen, for a file decompressed before it is read.
     pub spec: Option<Arc<Spec>>,
+    /// `--variant NAME`: one variant of the spec's records, read alone.
+    pub variant: Option<String>,
     /// A built-in format from `--format`, which no spec overrides.
     pub builtin: bool,
     pub compression: Option<crate::CompressionFormat>,
@@ -2845,7 +4868,7 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
         Some(choice) => choice,
         None => {
             if asked.builtin || registry.is_empty() {
-                return Ok(Route::Elsewhere);
+                return no_spec(asked);
             }
             let is_dir = path.is_dir();
             // What the name already says is read as it says, compressed or not: a
@@ -2884,7 +4907,7 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
                 head_of(path, compression, reach)
             });
             let Some(matched) = matched else {
-                return Ok(Route::Elsewhere);
+                return no_spec(asked);
             };
             let mut specs = matched.specs.into_iter();
             let spec = specs.next().expect("a match has a spec");
@@ -2899,10 +4922,27 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
     if choice.spec.is_delimited() {
         return Ok(Route::Delimited(choice));
     }
+    let choice = match &asked.variant {
+        Some(variant) => Choice {
+            spec: Arc::new(choice.spec.with_variant(variant)?),
+            ..choice
+        },
+        None => choice,
+    };
     if compression.is_some() && path.is_file() {
         return Ok(Route::Decompress(choice));
     }
     read(path, &named, choice).map(|r| Route::Read(Box::new(r)))
+}
+
+/// The route of a path no spec reads, unless `--variant` asked for one.
+fn no_spec(asked: &Asked) -> Result<Route, String> {
+    match &asked.variant {
+        Some(variant) => Err(format!(
+            "--variant {variant} picks a variant of a format spec's records, and no spec reads this file"
+        )),
+        None => Ok(Route::Elsewhere),
+    }
 }
 
 /// Read `path` with the spec `choice` holds, naming it `named` in what it says.
@@ -3230,6 +5270,306 @@ fn decompressed_copy(
     Ok(copy)
 }
 
+/// A directory of one spec's files, `{date}/{venue}/trades.bin`: one table, the parts
+/// of each file's path as columns.
+pub mod files {
+    use super::{Bytes, Opened, Spec, SpecRecords};
+    use polars::prelude::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    /// The most files one tree is read from.
+    const MAX_FILES: usize = 100_000;
+
+    /// Each file's records and the values of its path's parts.
+    pub struct SpecFiles {
+        parts: Vec<(Arc<dyn SpecRecords>, Vec<AnyValue<'static>>)>,
+        part_fields: Vec<(PlSmallStr, DataType)>,
+        /// The first row of each file.
+        starts: Vec<usize>,
+        rows: usize,
+        schema: SchemaRef,
+        sources: Vec<Arc<Bytes>>,
+    }
+
+    /// One part's pattern, compiled: its regex, and the part names it captures.
+    fn component_regex(component: &str) -> Result<(regex::Regex, Vec<String>), String> {
+        let mut out = String::from("^");
+        let mut names = Vec::new();
+        let mut rest = component;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&regex::escape(&rest[..open]));
+            let after = &rest[open + 1..];
+            let close = after.find('}').ok_or("a `{` without its `}`")?;
+            let inside = &after[..close];
+            let name = inside.split_once(':').map_or(inside, |(n, _)| n);
+            out.push_str("(.+?)");
+            names.push(name.to_string());
+            rest = &after[close + 1..];
+        }
+        out.push_str(&regex::escape(rest));
+        out.push('$');
+        Ok((regex::Regex::new(&out).map_err(|e| e.to_string())?, names))
+    }
+
+    /// A part's name and the text it matched in a path.
+    type PartText = (String, String);
+
+    /// The files under `dir` the pattern names, each with its parts' text.
+    fn matching(dir: &Path, pattern: &str) -> Result<Vec<(PathBuf, Vec<PartText>)>, String> {
+        let components: Vec<(regex::Regex, Vec<String>)> = pattern
+            .split('/')
+            .map(component_regex)
+            .collect::<Result<_, _>>()?;
+        let mut found = Vec::new();
+        let mut stack = vec![(dir.to_path_buf(), 0usize, Vec::<PartText>::new())];
+        while let Some((at, depth, parts)) = stack.pop() {
+            let Ok(listing) = std::fs::read_dir(&at) else {
+                continue;
+            };
+            let (re, names) = &components[depth];
+            let last = depth + 1 == components.len();
+            for entry in listing.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let Some(caps) = re.captures(&name) else {
+                    continue;
+                };
+                let mut parts = parts.clone();
+                for (i, part) in names.iter().enumerate() {
+                    parts.push((
+                        part.clone(),
+                        caps.get(i + 1).map_or("", |m| m.as_str()).to_string(),
+                    ));
+                }
+                let path = entry.path();
+                if last {
+                    if path.is_file() {
+                        found.push((path, parts));
+                        if found.len() > MAX_FILES {
+                            return Err(format!("more than {MAX_FILES} files match"));
+                        }
+                    }
+                } else if path.is_dir() {
+                    stack.push((path, depth + 1, parts));
+                }
+            }
+        }
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(found)
+    }
+
+    /// Open the tree of `spec`'s files under `dir`.
+    pub fn open(spec: &Spec, dir: &Path) -> Result<Opened, String> {
+        let files = spec.files.as_ref().expect("a spec of files");
+        if !dir.is_dir() {
+            return Err(format!(
+                "{} reads a directory of its files ({}), and {} is not one",
+                spec.name,
+                files.pattern,
+                dir.display()
+            ));
+        }
+        let mut one = spec.clone();
+        one.files = None;
+        let mut parts = Vec::new();
+        let mut notes = Vec::new();
+        let mut header = None;
+        let mut sources = Vec::new();
+        let mut schema: Option<SchemaRef> = None;
+        let found = matching(dir, &files.pattern)?;
+        if found.is_empty() {
+            return Err(format!(
+                "no files under {} match {}",
+                dir.display(),
+                files.pattern
+            ));
+        }
+        for (path, texts) in found {
+            let shown = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let mut values = Vec::new();
+            let mut ok = true;
+            for part in &files.parts {
+                let text = texts
+                    .iter()
+                    .find(|(n, _)| *n == part.name)
+                    .map_or("", |(_, t)| t.as_str());
+                match &part.date {
+                    Some(format) => match chrono::NaiveDate::parse_from_str(text, format) {
+                        Ok(date) => {
+                            let days = (date
+                                - chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("a date"))
+                            .num_days();
+                            values.push(AnyValue::Date(days as i32));
+                        }
+                        Err(_) => {
+                            notes.push(format!(
+                                "{shown}: `{text}` is not a date as {format}; left out"
+                            ));
+                            ok = false;
+                            break;
+                        }
+                    },
+                    None => values.push(AnyValue::StringOwned(text.into())),
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let opened = match one.open(&path, &shown) {
+                Ok(o) => o,
+                Err(e) => {
+                    notes.push(format!("{shown}: {e}; left out"));
+                    continue;
+                }
+            };
+            let theirs = opened.records.schema();
+            match &schema {
+                Some(s) if *s != theirs => {
+                    notes.push(format!(
+                        "{shown}: its columns differ from the first file's; left out"
+                    ));
+                    continue;
+                }
+                Some(_) => {}
+                None => schema = Some(theirs),
+            }
+            notes.extend(opened.notes.into_iter().map(|n| format!("{shown}: {n}")));
+            sources.extend(opened.records.sources().iter().cloned());
+            if header.is_none() {
+                header = Some(opened.header);
+            }
+            parts.push((opened.records, values));
+        }
+        let Some(record_schema) = schema else {
+            return Err(format!(
+                "none of the files under {} could be read",
+                dir.display()
+            ));
+        };
+        let part_fields: Vec<(PlSmallStr, DataType)> = files
+            .parts
+            .iter()
+            .map(|p| {
+                (
+                    PlSmallStr::from(p.name.as_str()),
+                    if p.date.is_some() {
+                        DataType::Date
+                    } else {
+                        DataType::String
+                    },
+                )
+            })
+            .collect();
+        let mut fields: Vec<Field> = part_fields
+            .iter()
+            .map(|(n, d)| Field::new(n.clone(), d.clone()))
+            .collect();
+        fields.extend(record_schema.iter_fields());
+        let mut starts = Vec::with_capacity(parts.len());
+        let mut rows = 0usize;
+        for (records, _) in &parts {
+            starts.push(rows);
+            rows = rows.saturating_add(records.rows());
+        }
+        let records = SpecFiles {
+            parts,
+            part_fields,
+            starts,
+            rows: rows.min(IdxSize::MAX as usize),
+            schema: Arc::new(Schema::from_iter(fields)),
+            sources,
+        };
+        Ok(Opened {
+            records: Arc::new(records),
+            notes,
+            header: header.unwrap_or_default(),
+        })
+    }
+
+    impl std::fmt::Debug for SpecFiles {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("SpecFiles")
+                .field("files", &self.parts.len())
+                .field("rows", &self.rows)
+                .finish()
+        }
+    }
+
+    impl SpecFiles {
+        /// `lf`, the rows of part `i`, with the part's path values in front.
+        fn dressed(&self, i: usize, lf: LazyFrame) -> LazyFrame {
+            let mut exprs: Vec<Expr> = self
+                .part_fields
+                .iter()
+                .zip(&self.parts[i].1)
+                .map(|((name, dtype), value)| {
+                    let value = match value {
+                        AnyValue::Date(d) => lit(*d).cast(DataType::Date),
+                        AnyValue::StringOwned(s) => lit(s.as_str()),
+                        _ => lit(NULL).cast(dtype.clone()),
+                    };
+                    value.alias(name.clone())
+                })
+                .collect();
+            exprs.push(all().as_expr());
+            lf.select(exprs)
+        }
+    }
+
+    impl crate::pushdown::Windowed for SpecFiles {
+        fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
+            let end = start.saturating_add(len).min(self.rows);
+            let mut frames = Vec::new();
+            let first = self
+                .starts
+                .partition_point(|s| *s <= start)
+                .saturating_sub(1);
+            for i in first..self.parts.len() {
+                let begin = self.starts[i];
+                if begin >= end {
+                    break;
+                }
+                let rows = self.parts[i].0.rows();
+                let from = start.saturating_sub(begin).min(rows);
+                let take = (end - begin).min(rows) - from;
+                if take == 0 {
+                    continue;
+                }
+                frames.push(self.dressed(i, self.parts[i].0.window(from, take)?));
+            }
+            if frames.is_empty() {
+                return Ok(DataFrame::empty_with_schema(&self.schema).lazy());
+            }
+            concat(frames, UnionArgs::default())
+        }
+    }
+
+    impl SpecRecords for SpecFiles {
+        fn rows(&self) -> usize {
+            self.rows
+        }
+        fn schema(&self) -> SchemaRef {
+            self.schema.clone()
+        }
+        fn into_lazy(self: Arc<Self>) -> PolarsResult<LazyFrame> {
+            let frames = (0..self.parts.len())
+                .map(|i| Ok(self.dressed(i, self.parts[i].0.clone().into_lazy()?)))
+                .collect::<PolarsResult<Vec<_>>>()?;
+            concat(frames, UnionArgs::default())
+        }
+        fn collect(&self, rows: usize) -> PolarsResult<DataFrame> {
+            crate::pushdown::Windowed::window(self, 0, rows)?.collect()
+        }
+        fn sources(&self) -> &[Arc<Bytes>] {
+            &self.sources
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3292,7 +5632,11 @@ fields = [
     }
 
     fn collect(opened: &Opened) -> DataFrame {
-        opened.records.lazy().collect().unwrap()
+        Arc::clone(&opened.records)
+            .into_lazy()
+            .unwrap()
+            .collect()
+            .unwrap()
     }
 
     fn cell(df: &DataFrame, column: &str, row: usize) -> String {
@@ -3344,12 +5688,15 @@ fields = [
     }
 
     #[test]
-    fn later_framings_and_bad_combinations_are_refused_by_name() {
+    fn bad_specs_are_refused_by_name() {
         let record = |fields: &str| format!("name = \"a.b\"\n[records]\nfields = [{fields}]");
         for (text, said) in [
-            ("name = \"a.b\"\n[records]\nframing = \"length_prefixed\"\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "not yet supported"),
-            ("name = \"a.b\"\n[footer]\nsize = 4\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "`footer` is not yet supported"),
-            (record("{ name = \"n\", type = \"u1\" }, { name = \"s\", type = \"str\", size = \"n\" }"), "length_prefixed"),
+            ("name = \"a.b\"\n[records]\nframing = \"length_prefixed\"\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "size names the field"),
+            ("name = \"a.b\"\n[records]\nframing = \"sync\"\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "needs sync"),
+            ("name = \"a.b\"\n[blocks]\nheader = [{ name = \"n\", type = \"u4\" }]\nsize = \"n\"\ncompression = \"lzma9\"\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "expected one of none"),
+            ("name = \"a.b\"\n[footer]\nfields = [{ name = \"n\", type = \"u4\" }]\n[records]\ncount = \"footer.m\"\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "no footer field named `m`"),
+            ("name = \"a.b\"\n[records]\ntype = \"k\"\nfields = [{ name = \"k\", type = \"u1\" }]\n[[variants]]\nname = \"a\"\nwhen = \"x\"\nfields = []".to_string(), "`k` is a u1"),
+            ("name = \"a.b\"\n[records]\nframing = \"sync\"\nsync = \"\u{1bb}a\"\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "expected hex"),
             ("name = \"ab\"\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "namespaced"),
             ("name = \"a.b\"\n[records]\nsize = 2\nfields = [{ name = \"x\", type = \"u4\" }]".to_string(), "more than 2"),
             (record("{ name = \"x\", type = \"f4\", scale = 2 }"), "integer types"),

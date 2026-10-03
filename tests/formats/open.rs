@@ -3,6 +3,7 @@
 
 use super::*;
 use datui::formats::{Registry, Spec};
+use std::sync::Arc;
 
 const L2: &str = r#"
 name = "acme.l2feed"
@@ -217,8 +218,8 @@ fn a_format_name_not_on_the_path_says_so() {
     );
 }
 
-/// A spec that would match everything takes nothing datui already reads, and a file no
-/// spec matches fails as it did before specs.
+/// spec and no reader takes opens in the hex view.
+/// spec matches opens in the hex view, as one did before specs.
 #[test]
 fn files_that_open_today_open_the_same_way() {
     let dir = common::fixture_dir();
@@ -237,9 +238,12 @@ fields = [{ name = "x", type = "u1" }]"#;
     let (mut app, rx, _tx) = app_with(vec![spec(L2)]);
     let unmatched = dir.join("unmatched_today.bin");
     std::fs::write(&unmatched, [0u8, 1, 2, 3]).unwrap();
-    let message =
-        pump_open_until_error(&mut app, &rx, vec![unmatched], OpenOptions::default()).unwrap();
-    assert!(message.contains("Unsupported file type"), "{message}");
+    // No reader and no spec: its bytes, in the hex view (#588), not an error.
+    pump_open_until_loaded(&mut app, &rx, vec![unmatched], OpenOptions::default());
+    drain_events(&mut app, &rx);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    assert_eq!(app.input_mode, InputMode::Hex);
+    assert!(app.hex_view().unwrap().fallback);
 }
 
 #[test]
@@ -325,19 +329,21 @@ fn time_a_large_file() {
         .records
         .clone();
     let started = std::time::Instant::now();
-    let window = records.window(rows - 50, 50).unwrap();
+    let window = records.window(rows - 50, 50).unwrap().collect().unwrap();
     let windowed = started.elapsed();
     let started = std::time::Instant::now();
-    let sliced = records
-        .lazy()
+    let sliced = Arc::clone(&records)
+        .into_lazy()
+        .unwrap()
         .slice((rows - 50) as i64, 50)
         .collect()
         .unwrap();
     let full = started.elapsed();
     assert!(window.equals_missing(&sliced));
     let started = std::time::Instant::now();
-    let price = records
-        .lazy()
+    let price = Arc::clone(&records)
+        .into_lazy()
+        .unwrap()
         .select([col("price").cast(DataType::Float64).sum()])
         .collect()
         .unwrap();
@@ -349,7 +355,7 @@ fn time_a_large_file() {
     );
     // Queries as the app runs them, streaming asked for: time and the most anonymous
     // memory held while each ran (the map's pages are the file's, not counted).
-    let lf = records.lazy();
+    let lf = Arc::clone(&records).into_lazy().unwrap();
     let queries: [(&str, LazyFrame); 5] = [
         (
             "filter and count",
@@ -423,4 +429,172 @@ fn with_peak_anon(f: impl FnOnce()) -> (std::time::Duration, u64) {
     let took = started.elapsed();
     done.store(true, std::sync::atomic::Ordering::Relaxed);
     (took, sampler.join().unwrap().saturating_sub(before))
+}
+
+/// Length-prefixed messages in big-endian, two variants picked by a one-byte type.
+const ITCH: &str = r#"
+name = "acme.itch"
+match = { glob = ["*.itch"], magic = "ITCH" }
+endian = "be"
+
+[header]
+fields = [{ name = "magic", type = "str", size = 4 }]
+
+[records]
+framing = "length_prefixed"
+size = "len"
+size_adjust = 2
+type = "kind"
+fields = [{ name = "len", type = "u2" }, { name = "kind", type = "str", size = 1 }]
+
+[[variants]]
+name = "add"
+when = "A"
+fields = [
+  { name = "ref", type = "u8" },
+  { name = "stock", type = "str", size = 8 },
+  { name = "price", type = "u4", scale = 4 },
+]
+
+[[variants]]
+name = "exec"
+when = ["E", "C"]
+fields = [{ name = "ref", type = "u8" }, { name = "shares", type = "u4" }]
+"#;
+
+/// `pairs` add/exec message pairs: stock `S{i}`, price `i` ten-thousandths, shares
+/// `i`; then `tail`, bytes that are not a whole message.
+fn itch_bytes(pairs: u64, tail: &[u8]) -> Vec<u8> {
+    let message = |kind: u8, body: Vec<u8>| {
+        let mut out = ((body.len() + 1) as u16).to_be_bytes().to_vec();
+        out.push(kind);
+        out.extend(body);
+        out
+    };
+    let mut out = b"ITCH".to_vec();
+    for i in 0..pairs {
+        let mut add = i.to_be_bytes().to_vec();
+        let mut stock = format!("S{i}").into_bytes();
+        stock.resize(8, b' ');
+        add.extend(stock);
+        add.extend((i as u32).to_be_bytes());
+        out.extend(message(b'A', add));
+        let mut exec = i.to_be_bytes().to_vec();
+        exec.extend((i as u32).to_be_bytes());
+        out.extend(message(if i % 2 == 0 { b'E' } else { b'C' }, exec));
+    }
+    out.extend(tail);
+    out
+}
+
+#[test]
+fn length_prefixed_variants_open_as_one_table_and_scroll_to_the_last_row() {
+    let dir = common::fixture_dir();
+    let data = dir.join("framed_feed.itch");
+    // A last message cut short: its length says 13 bytes, two follow.
+    std::fs::write(&data, itch_bytes(5_000, &[0, 13, b'E', 1])).unwrap();
+    let (mut app, rx, tx) = app_with(vec![spec(ITCH)]);
+    pump_open_until_loaded(&mut app, &rx, vec![data], OpenOptions::default());
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows(), 10_000);
+    assert!(
+        notes(&app).iter().any(|n| n.contains("not a whole record")),
+        "the cut-short message is said: {:?}",
+        notes(&app)
+    );
+    let first = screen(&mut app);
+    assert!(first.contains("add") && first.contains("exec"), "{first}");
+    assert!(first.contains("S0") && first.contains("0.0000"), "{first}");
+
+    press_and_send(&mut app, &tx, KeyCode::End);
+    pump_until_idle(&mut app, &rx, &tx);
+    let last = screen(&mut app);
+    assert!(last.contains("S4999"), "the last add is on screen: {last}");
+    assert!(last.contains("0.4999"), "{last}");
+    assert!(!last.contains(" S0 "), "{last}");
+}
+
+#[test]
+fn one_variant_opens_alone_with_only_its_columns() {
+    let dir = common::fixture_dir();
+    let data = dir.join("framed_variant.itch");
+    std::fs::write(&data, itch_bytes(300, &[])).unwrap();
+    let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);
+    let options = OpenOptions {
+        spec_variant: Some("exec".into()),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![data], options);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows(), 300);
+    let shown = screen(&mut app);
+    assert!(shown.contains("shares"), "{shown}");
+    assert!(
+        !shown.contains("stock"),
+        "the add columns are left out: {shown}"
+    );
+}
+
+#[test]
+fn a_framed_spec_with_a_bad_magic_fails_saying_what_it_found() {
+    let dir = common::fixture_dir();
+    let data = dir.join("framed_bad_magic.dat");
+    let mut bytes = itch_bytes(2, &[]);
+    bytes[..4].copy_from_slice(b"ITCX");
+    std::fs::write(&data, bytes).unwrap();
+    let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);
+    let options = OpenOptions {
+        spec_name: Some("acme.itch".into()),
+        ..OpenOptions::default()
+    };
+    let message = pump_open_until_error(&mut app, &rx, vec![data], options).unwrap();
+    assert!(message.contains("found 49 54 43 58"), "{message}");
+}
+
+/// Blocks of little-endian `u4` values, each compressed with zstd on its own, and a
+/// footer that counts the blocks.
+const BLOCKS: &str = r#"
+name = "acme.blocks"
+match = { glob = ["*.blk"] }
+
+[blocks]
+header = [{ name = "clen", type = "u4" }, { name = "rawlen", type = "u4" }]
+size = "clen"
+compression = "zstd"
+uncompressed = "rawlen"
+
+[records]
+fields = [{ name = "seq", type = "u4" }, { name = "v", type = "s2" }]
+"#;
+
+#[test]
+fn compressed_blocks_open_and_scroll_to_the_last_row() {
+    let dir = common::fixture_dir();
+    let data = dir.join("framed_blocks.blk");
+    let mut bytes = Vec::new();
+    for block in 0..20u32 {
+        let raw: Vec<u8> = (0..1_000u32)
+            .flat_map(|i| {
+                let seq = block * 1_000 + i;
+                let mut row = seq.to_le_bytes().to_vec();
+                row.extend((-(i as i16)).to_le_bytes());
+                row
+            })
+            .collect();
+        let packed = zstd::encode_all(&raw[..], 1).unwrap();
+        bytes.extend((packed.len() as u32).to_le_bytes());
+        bytes.extend((raw.len() as u32).to_le_bytes());
+        bytes.extend(packed);
+    }
+    std::fs::write(&data, bytes).unwrap();
+    let (mut app, rx, tx) = app_with(vec![spec(BLOCKS)]);
+    pump_open_until_loaded(&mut app, &rx, vec![data], OpenOptions::default());
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 20_000);
+    press_and_send(&mut app, &tx, KeyCode::End);
+    pump_until_idle(&mut app, &rx, &tx);
+    let last = screen(&mut app);
+    assert!(last.contains("19999") && last.contains("-999"), "{last}");
 }

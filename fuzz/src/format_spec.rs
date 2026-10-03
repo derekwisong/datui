@@ -63,8 +63,11 @@ pub fn run(input: &[u8]) {
         return;
     };
     let records = opened.records;
-    // Every record takes at least a byte, past the header.
-    assert!(records.rows() <= data.len());
+    // Every record takes at least a byte, past the header; a compressed block can
+    // hold more records than the file has bytes.
+    if spec.blocks.is_none() {
+        assert!(records.rows() <= data.len());
+    }
     let head = records
         .collect(MAX_ROWS)
         .expect("the rows the reader counted decode");
@@ -73,11 +76,13 @@ pub fn run(input: &[u8]) {
     if head.height() > 1 {
         let window = records
             .window(1, 1)
+            .and_then(|lf| lf.collect())
             .expect("a window of counted rows decodes");
         assert!(window.equals_missing(&head.slice(1, 1)));
         // The frame decodes the same rows over its row index.
-        let sliced = records
-            .lazy()
+        let sliced = Arc::clone(&records)
+            .into_lazy()
+            .expect("the frame builds")
             .slice(1, MAX_ROWS as u32 - 1)
             .collect()
             .expect("the frame decodes the counted rows");

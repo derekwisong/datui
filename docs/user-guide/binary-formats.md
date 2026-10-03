@@ -8,9 +8,11 @@ datui formats                          # list the specs datui finds
 datui formats check acme.l2feed day.l2 # check a spec and print a file's first rows
 ```
 
-A file of fixed-size records, such as a tick capture, a sensor log or a struct
-dump, opens as a table once a spec describes it. So does a family of CSV-like
-text files with lines above their header: see [delimited text](#delimited-text).
+A file of records, such as a tick capture, a sensor log or a struct dump, opens
+as a table once a spec describes it: fixed-size records, records that carry
+their length, several message types in one stream, or compressed blocks. So
+does a family of CSV-like text files with lines above their header: see
+[delimited text](#delimited-text).
 A spec is one TOML file per format. Specs are data: no scripts or expressions.
 Every size read from a file is bounded.
 
@@ -43,14 +45,22 @@ decimal with four places), one row per record.
 | `name` | The format's name, namespaced: `acme.l2feed`. `--format` takes it |
 | `description` | Shown by `datui formats` |
 | `match` | Which files are this format: `glob` (a pattern or a list), `magic` (a string or a list of bytes) at `magic_offset` (default 0), `where` (header values) |
-| `endian` | `le` (default) or `be`, for fields without their own suffix |
+| `endian` | `le` (default), `be`, or `auto`: big-endian when the magic (at least two bytes) reads reversed. For fields without their own suffix |
 | `layout` | `rows` (default): one file of records. `columns`: a directory with one file per field |
 | `[header] fields` | Fields read once from the start of the file. Later parts refer to them |
 | `[header] size` | The header's size when it is more than its fields; a number or a header field |
 | `[records] fields` | The fields of one record, in order |
 | `[records] size` | The record's size, at least the fields' sum (the default); the rest is skipped |
-| `[records] count` | How many records there are, such as `"header.count"` |
-| `[records] framing` | `fixed` (default). Other framings are not yet supported |
+| `[records] count` | How many records there are, such as `"header.count"` or `"footer.n"` |
+| `[records] framing` | `fixed` (default), `length_prefixed`, `variant` or `sync`: see [records of different sizes](#records-of-different-sizes) |
+| `[records] ring` | A ring buffer of fixed records: the oldest record's index, such as `"header.write_idx"`; rows start there and wrap |
+| `[records] checksum` | A checksum in each record: see [checks](#checks) |
+| `[[variants]]` | Record layouts a type field picks: see [variants](#variants) |
+| `[footer]` | Fields at the end of the file: see [footer](#footer) |
+| `[blocks]` | Records in blocks, each compressed on its own: see [blocks](#blocks) |
+| `[sections.NAME]` | A part of the file, `offset` and `size` from the header, that `string_at` fields point into |
+| `[capture]` | Records in the UDP payloads of a pcap or pcapng capture: see [captures](#captures) |
+| `[files]` | A directory tree of the format's files as one table: see [a tree of files](#a-tree-of-files) |
 
 ## Field types
 
@@ -59,21 +69,25 @@ Type names follow [Kaitai Struct](https://kaitai.io). Widths are in bytes.
 | Type | Value |
 |---|---|
 | `u1` to `u8`, `s1` to `s8` | Unsigned and signed integers of 1 to 8 bytes, `u3` and `s6` included |
-| `f4`, `f8` | Floats |
+| `f2`, `f4`, `f8` | Floats; `f2` is a half float |
+| `bf2` | A bfloat16 |
+| `vu`, `vs` | LEB128 varints, `vs` zigzag-encoded. Records only |
 | `bool` | One byte, nonzero is true |
 | `str` | Text of `size` bytes, its NUL and space padding trimmed |
+| `strz` | Text up to a NUL, at most `size` bytes when given. Records only |
 | `bytes` | Raw bytes of `size` |
 | `pad` | `size` bytes skipped, no column |
 
-A `le` or `be` suffix (`u4be`, `s2le`) overrides the spec's `endian`.
+A `le` or `be` suffix (`u4be`, `s2le`, `bf2be`) overrides the spec's `endian`.
 
 ## Field keys
 
 | Key | Example | What it does |
 |---|---|---|
 | `name` | `"price"` | The column's name. Every field but `pad` has one |
-| `size` | `8`, `"header.len"` | Bytes of a `str`, `bytes` or `pad`: a number or a header field |
+| `size` | `8`, `"header.len"`, `"len"`, `"rest"` | Bytes of a `str`, `strz`, `bytes` or `pad`: a number, a header or footer field, an earlier field of the record, or `rest`, what is left of the record |
 | `size_adjust` | `-4` | Added to a size read from a field |
+| `encoding` | `"latin1"` | Of a `str` or `strz`: `utf8` (default), `latin1`, `utf16le` or `utf16be` |
 | `count` | `10` | That many values side by side: one Array column |
 | `flatten` | `true` | With `count` (up to 1024), columns `name_0` to `name_9` instead of an Array |
 | `null` | `"min"`, `"max"`, `"nan"`, `-1` | A stored value that means no value: the type's smallest or largest value, a NaN, or this number, which the type must be able to hold |
@@ -86,13 +100,164 @@ A `le` or `be` suffix (`u4be`, `s2le`) overrides the spec's `endian`.
 | `of_day` | `true` | With `time`, a count since midnight: a time of day |
 | `date` with `of_day` | `"header.trade_date"` | The day those times are on, from a header field that reads as a date (`date = "yyyymmdd"`, `time = "days"`), a datetime, or text such as `2024-01-02`: a datetime |
 | `file` | `"px.dat"` | In the columns layout, the file in the directory holding the field. Default: its name |
+| `offset` | `"header.px_off"` | In the columns layout, where the column starts in one file: see [columns layout](#columns-layout) |
+| `lookup` | `{ file = "../sym", format = "lines" }` | An integer indexes a list of symbols in a file beside the data: a categorical. `format` is `lines` (default), `nul` or `str:N` |
+
+These keys are for record fields only:
+
+| Key | Example | What it does |
+|---|---|---|
+| `delta` | `true`, `"block"` | Each value is the change from the record before; the running sum is shown. `"block"` starts the sum again in each block |
+| `bits` | `[{ name = "valid", bit = 0 }, { name = "mode", bit = 4, width = 3, enum = { 0 = "IDLE" } }]` | Bit fields of an integer, each its own column. A width of 1 is a bool |
+| `group` | `{ count = "n_levels", fields = [...] }` | A counted run of items: a List of Structs. Takes no `type` |
+| `string_at` | `"strings"` | An unsigned offset into a `[sections.strings]` part of the file, where NUL-terminated text is |
 
 A field takes at most one of `time` (or `date`), `scale`, `factor` and `enum`.
 
 A field refers to an earlier one by name, never by an expression. In the header,
-`size = "len"` reads an earlier header field; anywhere, `header.NAME` does. A
-record's own fields cannot size it: that is `length_prefixed` framing, which is
-not yet supported.
+`size = "len"` reads an earlier header field; anywhere, `header.NAME` and
+`footer.NAME` do. In a record, `"len"` reads an earlier field of the same
+record. A record whose own field gives its size is `length_prefixed`.
+
+## Records of different sizes
+
+```toml
+[records]
+framing = "length_prefixed"
+size = "len"          # the field that holds each record's length
+size_adjust = 2       # the length leaves out its own two bytes
+fields = [{ name = "len", type = "u2" }, { name = "msg", type = "str", size = "rest" }]
+```
+
+| `framing` | How one record is told from the next |
+|---|---|
+| `fixed` | Every record takes `size`, or what its fields take |
+| `length_prefixed` | A field of the record gives its size: `size = "len"`, with `size_adjust` |
+| `variant` | The variant the type field picks gives the size: its `size`, or what its fields take |
+| `sync` | Each record starts with the `sync` marker (`"1ACFFC1D"`, `"0xEB90"` or a list of bytes); bytes between records are skipped and counted in a note |
+
+| Key | What it does |
+|---|---|
+| `length_suffix` | `true`: the length is written again after the record, as Fortran unformatted files do. Needs `size = "len"` |
+| `align` | Each record starts at a multiple of this (1 to 65536), counted from the first: `align = 2` for IFF and RIFF chunks |
+
+Records that are not all one size are walked once when the file opens, and the
+start of every 1024th is kept, so a scroll anywhere reads from the nearest one.
+
+### Variants
+
+```toml
+[records]
+framing = "length_prefixed"
+size = "len"
+size_adjust = 2
+fields = [{ name = "len", type = "u2" }, { name = "kind", type = "str", size = 1 }]
+type = "kind"
+
+[[variants]]
+name = "add"
+when = "A"
+fields = [{ name = "ref", type = "u8" }, { name = "shares", type = "u4" }, { name = "price", type = "u4", scale = 4 }]
+
+[[variants]]
+name = "exec"
+when = ["E", "C"]
+fields = [{ name = "ref", type = "u8" }, { name = "shares", type = "u4" }]
+```
+
+`fields` (or `[records.common] fields`) are the fields every record starts with.
+`type` names the common field that picks the variant: an integer, or text,
+compared with its padding trimmed. `type = { field = "kind", type = "u1" }`
+declares it in place.
+
+| Variant key | What it says |
+|---|---|
+| `name` | Shown in the `type` column |
+| `when` | The type value, or a list of them, that picks it |
+| `fields` | The fields after the common ones |
+| `size`, `size_adjust` | The whole record's size, when more than its fields take |
+
+All records make one table, with a `type` column naming each one's variant. A
+column of a field one variant lacks is null in that variant's rows; a field two
+variants share is one column, so it must be the same field in both. A record of
+a type no variant names shows as `?X` when its size is known
+(`length_prefixed`); otherwise the read stops there, with a note.
+
+`datui --variant add capture.bin` opens one variant as its own table: only its
+records and its columns.
+
+## Footer
+
+```toml
+[records]
+count = "footer.n"
+fields = [{ name = "v", type = "u2" }]
+
+[footer]
+fields = [{ name = "n", type = "u4" }, { name = "crc", type = "u4" }]
+checksum = { algo = "crc32", field = "crc" }
+```
+
+The footer is read from the end of the file, so its fields' sizes are written in
+the spec, or it gives `size`. Later parts refer to its fields as `footer.NAME`:
+a record count, or a block index's offset. `checksum` checks the bytes before
+the footer against a footer field; a mismatch is a note.
+
+## Blocks
+
+```toml
+[blocks]
+header = [{ name = "clen", type = "u4" }, { name = "rawlen", type = "u4" }]
+size = "clen"
+compression = "zstd"
+uncompressed = "rawlen"
+
+[records]
+fields = [{ name = "v", type = "u4", delta = "block" }]
+```
+
+The data after the file's header is a run of blocks: a block header, then
+`size` bytes of records. The records' framing applies inside each block.
+
+| Key | What it says |
+|---|---|
+| `header` | The fields at the start of each block |
+| `size`, `size_adjust` | The bytes after the block header: a number or a block header field |
+| `compression` | `none` (default), `gzip`, `deflate`, `zlib`, `zstd`, `lz4`, `lz4_block`, `snappy`, `snappy_framed`, `brotli`, `bzip2` or `xz`. Or a code in the block header: `{ field = "codec", values = { 0 = "none", 1 = "zstd" } }` |
+| `uncompressed` | The block header field with the decompressed size. Required for `lz4_block` |
+| `records` | The block header field counting its records; missing records are null |
+| `index` | `{ at = "footer.index_off", count = "footer.n_blocks", fields = [...] }`: a block index read instead of walking the blocks. Its entries need an integer `offset`, and may give `rows` |
+
+Only the block headers are read when the file opens. A block is decompressed
+when its rows are first read, up to 256 MiB each, and the last few are kept. A
+block that will not decompress is left out, with a note.
+
+## Captures
+
+```toml
+[capture]
+header = [{ name = "session", type = "str", size = 10 }, { name = "seq", type = "u8" }, { name = "count", type = "u2" }]
+count = "count"
+time = "captured"
+```
+
+The file is a pcap or pcapng capture, told apart by its magic. Each UDP
+payload holds the records, after the payload `header`; `count` names the
+header field counting them, and `time` adds a column with each packet's capture
+time. Packets that are not UDP are left out and counted in a note. A capture
+spec has no `[header]`, `[footer]` or `[blocks]`.
+
+## A tree of files
+
+```toml
+[files]
+path = "{date:%Y%m%d}/{venue}/trades.bin"
+```
+
+`datui --format acme.trades store/` reads every file under `store/` that the
+pattern matches as one table, with a column for each part: a date for a part
+with a format, text otherwise. A file whose part does not parse as its date is
+left out, with a note.
 
 ## Where specs live
 
@@ -136,7 +301,9 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 
 When two specs match the same way, the first on the search path reads the file.
 The bar shows `2 formats match`, and the Notes tab names the others. A file no
-spec matches opens as it does without specs.
+spec matches opens as it does without specs; a local file no reader takes
+either opens in the [hex view](hex-view.md), where <kbd>B</kbd> reads it with a
+spec and <kbd>r</kbd> lines the bytes up in records while you write one.
 
 <kbd>b</kbd> on the table picks another spec and reads the file again with it.
 The Notes tab of <kbd>i</kbd> says which spec read the file and why, the header's
@@ -245,7 +412,18 @@ without its derived columns.
 | The magic does not match | The open fails, showing the bytes found |
 | A file that ends partway through a record | The whole records open; a note shows the bytes left over |
 | A header count larger than the file | The whole records open, with a note |
+| A record whose length or type cannot be read | The records before it open; a note says where the rest was left out |
+| `checksum` in `[records]` | A `checksum_ok` column, true or false for each record, rather than an error |
 | `--spec` or `--format NAME` on an `s3://`, `gs://` or Azure path | Refused: specs read local files, so download it first |
+
+```toml
+checksum = { algo = "crc16-ccitt", field = "crc", from = "len", to = "crc" }
+```
+
+A record checksum covers the bytes from the `from` field (default: the record's
+start) up to the `to` field (default: the checksum's own field). `algo` is
+`crc16-ccitt`, `crc16-xmodem`, `crc16-modbus`, `crc16-arc`, `crc32`, `crc32c`,
+`sum8` or `xor8`; a footer checksum takes the same names.
 
 ## Columns layout
 
@@ -263,6 +441,18 @@ fields = [{ name = "price", type = "f8" }, { name = "size", type = "s8" }]
 `[header]` describes the start of each file. A glob in a columns spec matches
 the directory.
 
+When the header lists where each column starts in one file, every field gives
+`offset` and the spec reads that file:
+
+```toml
+layout = "columns"
+[header]
+fields = [{ name = "n", type = "u4" }, { name = "px_off", type = "u4" }]
+[records]
+count = "header.n"
+fields = [{ name = "px", type = "f8", offset = "header.px_off" }]
+```
+
 ## Compressed files
 
 `day.l2.zst`, `.gz`, `.bz2` and `.xz` are decompressed to a temporary file before
@@ -274,6 +464,8 @@ magic is read from the decompressed bytes.
 Read: [lazy, or converted once when compressed](loading-data.md#how-each-format-is-read).
 
 A file is memory-mapped, and only the columns and rows on screen are decoded.
+Records that are not all one size, and blocks, are indexed by one pass when the
+file opens.
 Scrolling to the last row of a gigabyte file reads only the rows shown. A sort,
 filter, query, chart or analysis reads every row of the columns it uses, a batch
 at a time on the streaming engine (`[performance] polars_streaming`, on by

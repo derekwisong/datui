@@ -36,6 +36,10 @@ pub fn go_to_column() -> &'static str {
     include_help!("go_to_column")
 }
 
+pub fn hex_view() -> &'static str {
+    include_help!("hex_view")
+}
+
 pub fn value_counts() -> &'static str {
     include_help!("value_counts")
 }

@@ -4800,7 +4800,7 @@ impl DataTableState {
             .map_err(|e| color_eyre::eyre::eyre!(e))?;
         let read = Arc::new(read);
         let mut state = Self::new(
-            read.records.lazy(),
+            Arc::clone(&read.records).into_lazy()?,
             options.pages_lookahead,
             options.pages_lookback,
             options.max_buffered_rows,

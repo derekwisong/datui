@@ -9,6 +9,8 @@ pub enum MainViewContent {
     Chart,
     /// Full-screen value counts of one column.
     ValueCounts,
+    /// Full-screen bytes of one file.
+    Hex,
     /// Full-screen home screen: pick a dataset.
     Home,
     /// Full-screen progress for a dataset that is still loading. Whatever table state
@@ -28,6 +30,8 @@ impl MainViewContent {
             MainViewContent::Home
         } else if app.awaiting_dataset() {
             MainViewContent::Loading
+        } else if app.input_mode == crate::InputMode::Hex && app.hex.is_some() {
+            MainViewContent::Hex
         } else if app.value_counts_shown() {
             MainViewContent::ValueCounts
         } else {
@@ -182,6 +186,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
         MainViewContent::Analysis => ControlBarSpec::Custom(analysis_control_keys(app)),
         MainViewContent::Chart => ControlBarSpec::Custom(chart_control_keys(app)),
         MainViewContent::ValueCounts => ControlBarSpec::Custom(value_counts_control_keys(app)),
+        MainViewContent::Hex => ControlBarSpec::Custom(hex_control_keys(app)),
         // Only the keys that survive the busy gate in `App::key`. Offering anything
         // else would be advertising something that does nothing.
         MainViewContent::Loading => ControlBarSpec::Custom(vec![
@@ -636,6 +641,78 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
 /// rest of the time the bar leads with the direct chart-type switch and names
 /// what the focused row itself takes.
 /// Control bar keys for Value Counts: only those that act on what is on screen.
+/// Control bar keys for the hex view: its prompt's while one is open, Esc while a
+/// find reads, and otherwise the view's own, most used first.
+fn hex_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+    use crate::hex_view::PromptKind;
+    let Some(view) = app.hex.as_ref() else {
+        return vec![("?", "Help")];
+    };
+    if view.picker.is_some() {
+        return vec![("^Q", "Quit"), ("Esc", "Cancel")];
+    }
+    match view.prompt {
+        Some(PromptKind::Find) => {
+            return vec![
+                ("Enter", "Find"),
+                ("^U", "UTF-16"),
+                ("F1", "Help"),
+                ("Esc", "Cancel"),
+            ];
+        }
+        Some(PromptKind::GoTo) => {
+            return vec![("Enter", "Go"), ("F1", "Help"), ("Esc", "Cancel")];
+        }
+        Some(PromptKind::RecordSize) => {
+            return vec![("Enter", "Set"), ("F1", "Help"), ("Esc", "Cancel")];
+        }
+        None => {}
+    }
+    if app.finding() {
+        return vec![("Esc", "Cancel"), ("^O", "Home"), ("?", "Help")];
+    }
+    let mut keys = vec![("f", "Find")];
+    if view.found.as_ref().is_some_and(|f| f.hit.is_some()) {
+        keys.push(("n", "Next"));
+        keys.push(("N", "Prev"));
+    }
+    if view
+        .found
+        .as_ref()
+        .and_then(|f| f.stride)
+        .is_some_and(|s| (1..=crate::hex_view::MAX_RECORD_SIZE as u64).contains(&s))
+        && view.record_size
+            != view
+                .found
+                .as_ref()
+                .and_then(|f| f.stride)
+                .map(|s| s as usize)
+    {
+        keys.push(("R", "Use stride"));
+    }
+    keys.push((":", "Offset"));
+    keys.push(("r", "Row size"));
+    keys.push((
+        "v",
+        if view.mark.is_some() {
+            "Unmark"
+        } else {
+            "Mark"
+        },
+    ));
+    keys.push(("i", "Inspector"));
+    keys.push(("#", if view.decimal { "Hex" } else { "Decimal" }));
+    if app.has_format_specs() {
+        keys.push(("B", "Format"));
+    }
+    keys.push(("?", "Help"));
+    if view.origin == crate::hex_view::Origin::Table {
+        keys.push(("Esc", "Back"));
+    }
+    keys.push(("q", app.hex_q_label()));
+    keys
+}
+
 fn value_counts_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     // The export dialog carries its own footer.
     if app.input_mode == crate::InputMode::Export {
@@ -777,6 +854,7 @@ pub fn home_control_keys(
         crate::WhatEnter::ShowsMore => "Show all",
         crate::WhatEnter::ShowsHidden => "Show",
         crate::WhatEnter::OpensFile => "Open",
+        crate::WhatEnter::OpensHex => "Hex",
         // The row only explains itself — an HTTP place has no listing to
         // browse — so the chip must not promise an Open it cannot do.
         crate::WhatEnter::Explains => "About",

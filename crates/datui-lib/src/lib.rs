@@ -83,12 +83,15 @@ mod first_rows_trace;
 pub mod fix;
 pub mod fixed_records;
 pub mod formats;
+pub mod framed_records;
 pub mod fuzzy;
 #[cfg(feature = "cloud")]
 pub mod gcloud;
 pub mod glyphs;
 pub mod gps;
 pub(crate) mod help_strings;
+mod hex_keys;
+pub mod hex_view;
 pub mod hf_splits;
 pub mod home;
 pub mod inspector_bytes;
@@ -8574,6 +8577,8 @@ pub struct OpenOptions {
     pub fix_dict: Option<PathBuf>,
     /// The format spec named by `--format NAME`, or picked with `b`.
     pub spec_name: Option<String>,
+    /// `--variant NAME`: one variant of the spec's records, read alone.
+    pub spec_variant: Option<String>,
     /// The spec a compressed file was matched to, read once the file is decompressed.
     pub spec_choice: Option<crate::formats::Choice>,
     /// What a read through a format spec found, carried from the scan to the dataset.
@@ -8599,6 +8604,10 @@ pub struct OpenOptions {
     /// How the scan found the data is read: lazily, through a copy, or into memory.
     /// Found by the scan and carried to the dataset for the Info panel's `Read:` line.
     pub read_mode: Option<crate::ReadMode>,
+    /// `--hex`: show the file's bytes in the hex view, whatever it holds.
+    pub hex: bool,
+    /// `--record-size N`: the bytes a row of the hex view holds.
+    pub record_size: Option<usize>,
 }
 
 impl OpenOptions {
@@ -8652,6 +8661,7 @@ impl OpenOptions {
             spec_file: None,
             fix_dict: None,
             spec_name: None,
+            spec_variant: None,
             spec_choice: None,
             format_read: None,
             normalize: false,
@@ -8661,6 +8671,8 @@ impl OpenOptions {
             arrow_parts: None,
             delimited: None,
             read_mode: None,
+            hex: false,
+            record_size: None,
         }
     }
 }
@@ -8773,6 +8785,9 @@ impl OpenOptions {
             .and_then(|f| f.spec().map(str::to_string));
         opts.spec_file = args.spec.clone();
         opts.fix_dict = args.fix_dict.clone();
+        opts.spec_variant = args.variant.clone();
+        opts.hex = args.hex;
+        opts.record_size = args.record_size.map(usize::from);
 
         // Display options: CLI args override config
         opts.pages_lookahead = args
@@ -9240,7 +9255,9 @@ pub enum WhatEnter {
     /// Nothing to open and nowhere to go: an HTTP place, which has no listing to
     /// browse and says so.
     Explains,
-    /// A file datui has no reader for. Enter says so, and the bar offers nothing.
+    /// A local file datui has no reader for: Enter shows its bytes in the hex view.
+    OpensHex,
+    /// A remote file datui has no reader for. Enter says so, and the bar offers nothing.
     Nothing,
 }
 
@@ -9278,6 +9295,14 @@ impl App {
                 WhatEnter::GoesInside
             }
             discover::EntryKind::File => WhatEnter::OpensFile,
+            discover::EntryKind::Other
+                if matches!(
+                    source::input_source(&entry.path),
+                    source::InputSource::Local(_)
+                ) =>
+            {
+                WhatEnter::OpensHex
+            }
             discover::EntryKind::Other => WhatEnter::Nothing,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile => WhatEnter::OpensDirectory,
             // A plain directory, and a lake table, whose files are not its rows.
@@ -9368,6 +9393,11 @@ pub(crate) enum Scan {
         file: PathBuf,
         tables: Vec<String>,
     },
+    /// A local file to show as bytes: no reader and no spec takes it, or `--hex` asked.
+    Hex {
+        file: PathBuf,
+        asked: bool,
+    },
 }
 
 impl App {
@@ -9389,6 +9419,7 @@ impl Scan {
             Scan::Streams(_) => Some(FileFormat::Arrow),
             Scan::DecompressSpec { .. } => None,
             Scan::Tables { .. } => Some(FileFormat::Sqlite),
+            Scan::Hex { .. } => None,
         }
     }
 
@@ -9421,6 +9452,7 @@ impl Scan {
             Scan::ReadInto { format, .. } => format.read_mode(Stored::Plain),
             Scan::DecompressSpec { .. } => spec_read(Stored::Compressed { in_memory: false }),
             Scan::Tables { .. } => FileFormat::Sqlite.read_mode(Stored::Plain),
+            Scan::Hex { .. } => None,
         }
     }
 }
@@ -9465,6 +9497,8 @@ pub enum InputMode {
     Chart,
     /// Value Counts: how often each value of one column occurs in the view.
     ValueCounts,
+    /// The hex view: a file's bytes.
+    Hex,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10695,6 +10729,10 @@ pub struct App {
     export_counts: Option<polars::prelude::DataFrame>,
     /// The specs `b` offers for the dataset on screen.
     pub format_picker: crate::widgets::ui::PickerState,
+    /// The hex view (`InputMode::Hex`), kept while it is up.
+    pub hex: Option<hex_view::HexView>,
+    /// Bumped per hex view opened, so a find's answer for another is dropped.
+    hex_serial: u64,
     /// Where copies go. Built at the first copy and kept for the run: on
     /// Wayland and X11 the clipboard offer dies with the process that owns it,
     /// so this handle must live as long as the copy should.
@@ -13207,6 +13245,11 @@ impl App {
                         ))
             }
             InputMode::Home | InputMode::Info | InputMode::ValueCounts => false,
+            // The prompt types, and so does the spec picker's filter.
+            InputMode::Hex => self
+                .hex
+                .as_ref()
+                .is_some_and(|view| view.prompt.is_some() || view.picker.is_some()),
         }
     }
 
@@ -13412,6 +13455,10 @@ impl App {
             }
             Step::Tables(tables) => {
                 self.land_on_tables(tables);
+                None
+            }
+            Step::Hex(hex) => {
+                self.land_on_hex(hex);
                 None
             }
             Step::Install(loaded) => {
@@ -14596,6 +14643,8 @@ impl App {
             open_dir: None,
             go_to_column: crate::widgets::ui::PickerState::default(),
             value_counts: value_counts_modal::ValueCountsModal::default(),
+            hex: None,
+            hex_serial: 0,
             export_counts: None,
             format_picker: crate::widgets::ui::PickerState::default(),
             clipboard: None,
@@ -15418,6 +15467,7 @@ impl App {
         self.template_modal.close();
         self.inspector_modal.close();
         self.stop_find();
+        self.hex = None;
         // A count of the dataset being left is read for nobody.
         self.stop_value_count();
         self.export_counts = None;
@@ -16150,8 +16200,12 @@ impl App {
             go_inside(self, path);
             return None;
         }
-        // Nothing: the row is dimmed and its details pane says why.
+        // No reader: a local file's bytes, in the hex view. A remote one is dimmed and
+        // its details pane says why.
         if kind == discover::EntryKind::Other {
+            if matches!(source::input_source(&path), source::InputSource::Local(_)) {
+                self.open_hex(path, crate::hex_view::Origin::Home, true, None);
+            }
             return None;
         }
         // A lake table's files are not its rows: the ones a delete or an update
@@ -16619,6 +16673,28 @@ impl App {
             KeyCode::Char('r') if ctrl => self.home_reload(),
             // A browser's bookmark key: keep this place on the home screen, or stop.
             KeyCode::Char('d') if ctrl => self.home_toggle_remembered(),
+            // Any local file's bytes, whatever datui would read it as.
+            KeyCode::Char('x') if ctrl => {
+                let local = |path: &Path| {
+                    matches!(source::input_source(path), source::InputSource::Local(_))
+                };
+                match self.home.selected_entry() {
+                    Some(entry)
+                        if !self.home.selection_is_the_door()
+                            && entry.table.is_none()
+                            && matches!(
+                                entry.kind,
+                                discover::EntryKind::File
+                                    | discover::EntryKind::Other
+                                    | discover::EntryKind::Unknown
+                            )
+                            && local(&entry.path) =>
+                    {
+                        self.open_hex(entry.path, crate::hex_view::Origin::Home, false, None);
+                    }
+                    _ => self.flash_note("Ctrl+X shows a local file's bytes".to_string()),
+                }
+            }
             KeyCode::Char('a') if ctrl => {
                 let on = self.home.selected_key();
                 self.home.hide_unreadable = !self.home.hide_unreadable;
@@ -16632,8 +16708,8 @@ impl App {
                     match (self.home.hide_unreadable, tables) {
                         (true, true) => "Hiding internal tables",
                         (false, true) => "Showing internal tables",
-                        (true, false) => "Hiding files datui can't open",
-                        (false, false) => "Showing files datui can't open",
+                        (true, false) => "Hiding files with no reader",
+                        (false, false) => "Showing files with no reader",
                     }
                     .to_string(),
                 );
@@ -17462,6 +17538,11 @@ impl App {
                             options,
                         },
                         Scan::Tables { file, tables } => LoadAnswer::Tables { file, tables, path },
+                        Scan::Hex { file, asked } => LoadAnswer::Hex {
+                            file,
+                            asked,
+                            record_size: options.record_size,
+                        },
                     })))
                 });
             }
@@ -17525,7 +17606,8 @@ impl App {
             | Step::Crash(_)
             | Step::Install(_)
             | Step::Failed(_)
-            | Step::Tables(_) => {
+            | Step::Tables(_)
+            | Step::Hex(_) => {
                 unreachable!("not a phase with a worker")
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
@@ -19583,6 +19665,17 @@ impl App {
     ) -> Result<Scan> {
         let path = &paths[0];
 
+        // `--hex`: the file's bytes, whatever it holds.
+        if options.hex
+            && let [one] = paths
+            && one.is_file()
+        {
+            return Ok(Scan::Hex {
+                file: one.clone(),
+                asked: true,
+            });
+        }
+
         // A format spec: one asked for, or one whose glob or magic the path matches. A
         // path whose name or bytes already say what it is opens as it always has, but
         // for a delimited spec's text. Several files are matched by the first, and
@@ -19591,6 +19684,7 @@ impl App {
             let asked = crate::formats::Asked {
                 spec_file: options.spec_file.clone(),
                 spec_name: options.spec_name.clone(),
+                variant: options.spec_variant.clone(),
                 spec: None,
                 builtin: options.format.is_some(),
                 compression: options.compression,
@@ -19604,7 +19698,7 @@ impl App {
                     return Self::read_with_delimited_spec(paths, options, report, formats, choice);
                 }
                 crate::formats::Route::Read(read) => {
-                    let lf = read.records.lazy();
+                    let lf = Arc::clone(&read.records).into_lazy()?;
                     report.format_read = Some(Arc::new(*read));
                     return Ok(lf.into());
                 }
@@ -20069,6 +20163,13 @@ impl App {
                             format!("File not found: {}", path.display()),
                         )
                         .into());
+                    }
+                    // A local file nothing reads is shown as its bytes (#588).
+                    if paths.len() == 1 && path.is_file() {
+                        return Ok(Scan::Hex {
+                            file: path.clone(),
+                            asked: false,
+                        });
                     }
                     return Err(color_eyre::eyre::eyre!("Unsupported file type"));
                 }
@@ -21271,6 +21372,10 @@ impl App {
             return self.value_counts_key(event);
         }
 
+        if self.input_mode == InputMode::Hex {
+            return self.hex_key(event);
+        }
+
         if self.input_mode == InputMode::GoToColumn {
             self.go_to_column_key(event);
             return None;
@@ -21545,6 +21650,14 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('i') if event.is_press() => {
                     self.info_modal.close();
                     self.input_mode = InputMode::Normal;
+                }
+                // The file's bytes, in the hex view; Esc there comes back to the table.
+                KeyCode::Char('x') if event.is_press() => {
+                    if let Some(path) = self.hex_target() {
+                        self.info_modal.close();
+                        self.input_mode = InputMode::Normal;
+                        self.open_hex(path, crate::hex_view::Origin::Table, false, None);
+                    }
                 }
                 KeyCode::Tab if event.is_press() && schema_tab => {
                     self.info_modal.next_focus();
@@ -25901,6 +26014,7 @@ impl App {
                 }
             }
             Progress::Finding { rows } => self.find_progress(*rows),
+            Progress::HexFinding { read, total } => self.hex_find_progress(*read, *total),
         }
     }
 
@@ -26273,6 +26387,14 @@ impl App {
                 }
                 None
             }
+            Answer::HexOpened(source) => {
+                self.hex_opened(job, current, *source);
+                None
+            }
+            Answer::HexFound(hit) => {
+                self.hex_found(job, current, hit);
+                None
+            }
             Answer::ValueCounts(counts) => {
                 // Superseded means the screen moved on: another column, a cancel, a
                 // trip away.
@@ -26414,6 +26536,17 @@ impl App {
                 }
             }
             Job::Find(_) => self.find_failed(current, message),
+            Job::HexOpen { .. } => {
+                if current {
+                    self.error_modal.show(message.to_string());
+                }
+            }
+            Job::HexFind(_) => {
+                if current {
+                    self.status_message = None;
+                    self.flash_note(message.to_string());
+                }
+            }
             Job::ValueCounts => {
                 // Said on the screen, in place of the counts.
                 if current && let Some(computing) = self.value_counts.computing.take() {
@@ -27419,6 +27552,7 @@ impl App {
                 let options = OpenOptions {
                     spec_name: Some(name),
                     spec_file: None,
+                    spec_variant: None,
                     spec_choice: None,
                     format_read: None,
                     sqlite: None,
@@ -28694,6 +28828,7 @@ impl App {
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
             InputMode::Home => ("Home Help", help_strings::home()),
+            InputMode::Hex => ("Hex View Help", help_strings::hex_view()),
             InputMode::ValueCounts => ("Value Counts Help", help_strings::value_counts()),
         };
         (title.to_string(), content.to_string())
@@ -28984,6 +29119,10 @@ impl Widget for &mut App {
         // Nothing is counted while a load waits on the download confirmation, and a
         // spinning count there would read as progress.
         if self.awaiting_download_confirmation() {
+            controls.row_count = None;
+        }
+        // The hex view has bytes, not rows: its status line says where the cursor is.
+        if main_view_content == MainViewContent::Hex {
             controls.row_count = None;
         }
         controls = controls

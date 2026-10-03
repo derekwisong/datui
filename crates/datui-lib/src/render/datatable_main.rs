@@ -76,6 +76,7 @@ pub fn render(
     // Asked before the table is borrowed: the job records are the app's.
     let facts_reading = app.file_facts_reading();
     let find_cell = app.find_hit();
+    let hex = app.hex_target().is_some();
     match &mut app.data_table_state {
         Some(state) => {
             let mut table_area = data_area;
@@ -165,6 +166,7 @@ pub fn render(
                         && app.original_file_format == Some(ExportFormat::Parquet),
                 };
                 let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
+                info_widget.hex = hex;
                 info_widget.render(sort_area, buf);
             }
         }
@@ -328,7 +330,7 @@ fn render_go_to_column(
 
 /// A short pick-one list over the table: `(title, what Enter does, what an empty
 /// narrowing says)`.
-fn render_picker(
+pub(crate) fn render_picker(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     picker: &crate::widgets::ui::PickerState,

@@ -5521,7 +5521,14 @@ mod coming_back {
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
-    /// The home screen over `config`, its first listing landed.
+    thread_local! {
+        /// Each test's private cache, removed when its thread ends.
+        static CACHES: std::cell::RefCell<Vec<TempDir>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// The home screen over `config`, its first listing landed. Its recents are its
+    /// own: other tests in this binary open datasets, and a recent landing in the
+    /// shared cache mid-test moved the rows a test was coming back to (#658).
     pub(super) fn home_app(mut config: datui::config::AppConfig) -> (App, Receiver<AppEvent>) {
         config.data.use_desktop_recents = false;
         config.data.hide_sources = vec!["public".to_string()];
@@ -5536,6 +5543,9 @@ mod coming_back {
             },
             config,
         );
+        let cache = TempDir::new().unwrap();
+        app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
+        CACHES.with(|caches| caches.borrow_mut().push(cache));
         app.enter_home();
         settle(&mut app, &rx, |_| true);
         (app, rx)

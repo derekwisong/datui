@@ -5756,6 +5756,77 @@ mod coming_back {
         go_back(&mut app, &rx, None);
     }
 
+    /// The pane's facts share one key column, the place's own details too, and a long
+    /// value wraps under itself rather than back to the pane's edge (#547 D6).
+    #[test]
+    fn the_details_pane_lines_its_facts_up_and_hangs_long_values() {
+        let tmp = TempDir::new().unwrap();
+        let file = touch(tmp.path(), "penguins.csv");
+        std::fs::write(&file, "species,mass\nAdelie,3750\n").unwrap();
+        let mut config = datui::config::AppConfig::default();
+        config.sources = vec![datui::config::SourceConfig {
+            name: "lab".to_string(),
+            label: Some("Lab".to_string()),
+            datasets: vec![datui::config::DatasetConfig {
+                name: "Palmer penguins".to_string(),
+                path: Some(file.to_string_lossy().into_owned()),
+                description: "Size measurements for three penguin species observed on \
+                              three islands in the Palmer Archipelago, Antarctica"
+                    .to_string(),
+                publisher: "Palmer Station LTER".to_string(),
+                homepage: "https://allisonhorst.github.io/palmerpenguins/articles/intro.html"
+                    .to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        let (mut app, _rx) = home_app(config);
+        select(&mut app, &file);
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<Vec<String>> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let text = |row: &[String]| row.concat();
+        // The column a fact's value starts at, from its key.
+        let value_at = |key: &str| {
+            rows.iter()
+                .find_map(|row| {
+                    let line = text(row);
+                    let at = line.find(&format!("│ {key} "))?;
+                    let start = line[..at].chars().count() + 2 + key.chars().count();
+                    (start..row.len()).find(|&x| row[x] != " ")
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no {key} line: {:#?}",
+                        rows.iter().map(|r| text(r)).collect::<Vec<_>>()
+                    )
+                })
+        };
+        let column = value_at("kind");
+        for key in ["storage", "about", "publisher", "homepage"] {
+            assert_eq!(value_at(key), column, "{key} lines up with kind");
+        }
+        // The line after `about` carries the rest of it, under the value.
+        let about = rows
+            .iter()
+            .position(|row| text(row).contains("│ about "))
+            .unwrap();
+        let next = &rows[about + 1];
+        let first = (0..next.len())
+            .skip_while(|&x| next[x] != "│")
+            .skip(1)
+            .find(|&x| next[x] != " ")
+            .expect("a continued value");
+        assert_eq!(first, column, "{:?}", text(next));
+    }
+
     #[test]
     fn esc_from_a_collection_dataset_puts_the_cursor_back_on_it() {
         let tmp = TempDir::new().unwrap();

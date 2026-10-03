@@ -1649,18 +1649,46 @@ fn schema_lines(
     (lines.len(), lines)
 }
 
-/// One `key   value` line, with the value carrying the emphasis.
-fn fact_line(
+/// One `key   value` fact, with the value carrying the emphasis. A value longer than the
+/// pane wraps under itself, not under the key: a URL or a description that ran back to
+/// column 0 read as a new fact (#547 D6).
+fn fact_lines(
     key: &str,
     value: String,
     key_w: usize,
+    width: usize,
     style: Style,
     ctx: &RenderContext,
-) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{key:<key_w$}  "), Style::default().fg(ctx.dimmed)),
-        Span::styled(value, style),
-    ])
+) -> Vec<Line<'static>> {
+    let indent = key_w + 2;
+    let room = width.saturating_sub(indent);
+    let key_span = Span::styled(format!("{key:<key_w$}  "), Style::default().fg(ctx.dimmed));
+    // Too narrow to hang anything under: the pane's own wrap does what it can.
+    if room < 12 || value.chars().count() <= room {
+        return vec![Line::from(vec![key_span, Span::styled(value, style)])];
+    }
+    let pieces = crate::render::overlays::wrap_help_line(&value, room);
+    pieces
+        .into_iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            let lead = if i == 0 {
+                key_span.clone()
+            } else {
+                Span::raw(" ".repeat(indent))
+            };
+            Line::from(vec![lead, Span::styled(piece, style)])
+        })
+        .collect()
+}
+
+/// The width of the key column for a pane's facts: one column for all of them, so the
+/// values line up down the pane.
+fn key_column<'a>(keys: impl IntoIterator<Item = &'a str>) -> usize {
+    keys.into_iter()
+        .map(|k| k.chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 /// A compression ratio, when it is worth stating.
@@ -1737,9 +1765,8 @@ fn kind_words(
     }
 }
 
-/// The name, the path, and everything known about the dataset.
-///
-/// Split out from the pane so it can be checked without an application behind it.
+/// [`preview_head_keyed`] with nothing below it to line up with, as the tests check it.
+#[cfg(test)]
 fn preview_head(
     entry: &Entry,
     place_kind: Option<&'static str>,
@@ -1747,6 +1774,21 @@ fn preview_head(
     width: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
+    preview_head_keyed(entry, place_kind, looking, width, 0, ctx).0
+}
+
+/// The name, the path, and everything known about the dataset, its key column at least
+/// `key_w` wide so facts drawn below it line up with its own; and the key column used.
+///
+/// Split out from the pane so it can be checked without an application behind it.
+fn preview_head_keyed(
+    entry: &Entry,
+    place_kind: Option<&'static str>,
+    looking: Option<crate::home::CloudLook>,
+    width: usize,
+    key_w: usize,
+    ctx: &RenderContext,
+) -> (Vec<Line<'static>>, usize) {
     let g = glyphs::get();
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
@@ -1898,16 +1940,16 @@ fn preview_head(
         }
     }
 
+    let key_w = key_column(facts.iter().map(|(k, _, _)| *k)).max(key_w);
     if !facts.is_empty() {
         lines.push(Line::from(""));
         lines.push(pane_heading("DETAILS", width, ctx));
-        let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
         for (key, value, style) in facts {
-            lines.push(fact_line(key, value, key_w, style, ctx));
+            lines.extend(fact_lines(key, value, key_w, width, style, ctx));
         }
     }
 
-    lines
+    (lines, key_w)
 }
 
 /// The details pane for a cloud source: what it points at, how it logs in, and when
@@ -1956,9 +1998,9 @@ fn source_details(
     }
     lines.push(Line::from(""));
     lines.push(pane_heading("DETAILS", width, ctx));
-    let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+    let key_w = key_column(facts.iter().map(|(k, _, _)| k.as_str()));
     for (key, value, style) in facts {
-        lines.push(fact_line(&key, value, key_w, style, ctx));
+        lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
     }
     if let crate::home::CloudStatus::Failed { short, detail } = &source.status {
         lines.push(Line::from(""));
@@ -2012,11 +2054,19 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         return;
     }
     let g = glyphs::get();
-    let mut lines = preview_head(
+    // What the source's listing said about this place: an Azure account's subscription,
+    // a collection dataset's publisher. Drawn below the facts, in their key column.
+    let place_details = app.home.place_details(&entry.path).map(<[_]>::to_vec);
+    let key_w = place_details
+        .as_ref()
+        .map(|details| key_column(details.iter().map(|(k, _)| k.as_str())))
+        .unwrap_or(0);
+    let (mut lines, key_w) = preview_head_keyed(
         &entry,
         app.home.place_kind(&entry.path),
         app.home.cloud_look(&entry),
         width,
+        key_w,
         ctx,
     );
     // Why the row that reads a bucket directory whole cannot, before Enter is pressed:
@@ -2030,17 +2080,14 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             Style::default().fg(ctx.warning),
         )));
     }
-    // What the source's listing said about this place: an Azure account's
-    // subscription, region and namespace.
-    if let Some(details) = app.home.place_details(&entry.path) {
-        let key_w = details.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    if let Some(details) = place_details {
         for (key, value) in details {
             let style = if key == "network" || key == "shared keys" || key == "access" {
                 Style::default().fg(ctx.warning)
             } else {
                 Style::default().fg(ctx.text_secondary)
             };
-            lines.push(fact_line(key, value.clone(), key_w.max(8), style, ctx));
+            lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
         }
     }
 
@@ -2272,9 +2319,9 @@ fn place_details(
         facts.push(("storage", source.label().to_string(), style));
     }
     facts.push(("opened here", held.to_string(), plain));
-    let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+    let key_w = key_column(facts.iter().map(|(k, _, _)| *k));
     for (key, value, style) in facts {
-        lines.push(fact_line(key, value, key_w, style, ctx));
+        lines.extend(fact_lines(key, value, key_w, width, style, ctx));
     }
     // Said before Enter is pressed rather than after: Enter does nothing here.
     if !crate::home::place_is_browsable(path) {

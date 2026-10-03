@@ -188,7 +188,7 @@ const MIN_HELP_MEASURE: usize = 16;
 /// they continue: a keyed row's under its description, a bullet's past its
 /// dash, any other line under its own indent, so a wrapped row still reads
 /// as one row of its table.
-fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_help_line(line: &str, width: usize) -> Vec<String> {
     use crate::glyphs::{display_width, take_columns};
     if width == 0 {
         return vec![String::new()];

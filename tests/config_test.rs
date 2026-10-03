@@ -1747,6 +1747,57 @@ fn test_omarchy_template_covers_every_color_slot() {
 // History files (query history, recents)
 // ============================================================================
 
+/// A byte that is not UTF-8 costs its own line, not the list: the other recents
+/// load, and the next open keeps them.
+#[test]
+fn a_bad_byte_in_recents_keeps_the_other_recents() {
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+    let [a, b, c] = ["a.csv", "b.csv", "c.csv"].map(|n| {
+        let path = temp_dir.path().join(n);
+        fs::write(&path, "x\n1\n").unwrap();
+        datui::canonical::canonicalize(&path).unwrap()
+    });
+    let mut bytes = format!("{}\n", a.display()).into_bytes();
+    bytes.extend_from_slice(b"/broken/\xff\xfe.csv\n");
+    bytes.extend_from_slice(format!("{}\n", b.display()).as_bytes());
+    fs::write(temp_dir.path().join("recents_history.txt"), bytes).unwrap();
+
+    assert_eq!(cache.load_recents(), vec![a.clone(), b.clone()]);
+    cache.push_recent(&c);
+    assert_eq!(cache.load_recents(), vec![c, a, b]);
+}
+
+/// A history that cannot be read is left alone: a push does not rewrite it with one
+/// entry.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_history_is_not_rewritten() {
+    use datui::CacheManager;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+    let history = temp_dir.path().join("query_history.txt");
+    fs::write(&history, "one\ntwo\n").unwrap();
+    fs::set_permissions(&history, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&history).is_ok() {
+        // Root reads it anyway; nothing to test.
+        return;
+    }
+
+    assert!(cache.load_history_file("query").is_err());
+    assert!(
+        cache
+            .update_history_file("query", |entries| entries.push("new".into()))
+            .is_err()
+    );
+    fs::set_permissions(&history, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(fs::read_to_string(&history).unwrap(), "one\ntwo\n");
+}
+
 #[test]
 fn test_history_write_is_atomic_and_exact() {
     // A truncate-then-write leaves the file readable half-finished, and two datui

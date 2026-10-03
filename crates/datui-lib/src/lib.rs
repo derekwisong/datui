@@ -198,7 +198,7 @@ pub use config::{
 };
 
 use analysis_modal::{AnalysisModal, AnalysisProgress};
-use background::{InflightCollect, LenCount, OwedAnswer, OwedCount};
+use background::{CacheWrites, InflightCollect, LenCount, OwedAnswer, OwedCount};
 use chart_export::{
     BoxPlotExportBounds, ChartExportBounds, ChartExportFormat, ChartExportRequest,
     ChartExportSeries,
@@ -1087,6 +1087,8 @@ pub struct App {
     /// What the mouse can land on in the last frame, and the last click.
     pointer: pointer::Pointing,
     cache: CacheManager,
+    /// The recent and the shape an open writes, which the home listing waits on.
+    cache_writes: CacheWrites,
     view_manager: Views,
     active_view_id: Option<String>, // ID of currently applied view
     /// An export under way, which the control bar reports.
@@ -4264,7 +4266,8 @@ impl App {
         };
         // Off the UI thread: the index takes a lock other instances may hold.
         let cache = self.cache.clone();
-        std::thread::spawn(move || cache.record_dataset_facts(&[(url, facts)]));
+        self.cache_writes
+            .spawn(move || cache.record_dataset_facts(&[(url, facts)]));
     }
 
     /// The first rows of an open are on screen, or will not be read: its wait is over.
@@ -4637,11 +4640,13 @@ impl App {
         // Recorded once the dataset is installed: a file that fails to load is not one
         // anybody wants to get back to.
         if let Some(path) = recent {
-            // Off the opening path. Recording a recent is a convenience that nothing
-            // waits on, and it takes a lock several instances may be contending for --
-            // opening a dataset must not queue behind another instance's bookkeeping.
+            // Off the opening path. It takes a lock several instances may be contending
+            // for -- opening a dataset must not queue behind another instance's
+            // bookkeeping. Only the next home listing waits on it, on its worker.
             let cache = self.cache.clone();
-            std::thread::spawn(move || cache.push_recent(&path));
+            self.cache_writes.spawn(move || {
+                cache.push_recent(&path);
+            });
         }
         self.forget_the_rows_read();
         self.file_facts = None;
@@ -5485,6 +5490,7 @@ impl App {
             help_scroll: 0,
             pointer: pointer::Pointing::default(),
             cache,
+            cache_writes: CacheWrites::default(),
             view_manager,
             active_view_id: None,
             export_progress: None,
@@ -6465,12 +6471,15 @@ impl App {
         let read_folds = std::mem::take(&mut self.home.folds_owed);
         let desktop = self.app_config.home.desktop_recents;
         let cache = self.cache.clone();
+        let writes = self.cache_writes.clone();
 
         self.home.listing_in_flight = true;
         let tx = self.events.clone();
         let owed = self.owed_answer(AppEvent::HomeListingFailed);
         self.runtime.spawn_blocking(move || {
             owed.run(move || {
+                // After the dataset just left is in the recents with its shape.
+                writes.settle();
                 // Ranked by frecency; the newest is where the cursor lands, so the
                 // last file is still one Enter away.
                 let (recents, visits) = cache.load_recents_with_visits();

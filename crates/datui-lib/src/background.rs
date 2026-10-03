@@ -298,3 +298,83 @@ impl Drop for OwedAnswer {
         }
     }
 }
+
+/// What an open writes to the cache for home to read back (the recent, the shape):
+/// written off the UI thread with nothing waiting on it, and counted here so the home
+/// listing reads after it.
+///
+/// Without the count a `q` straight after an open could list the cache before the
+/// recent was in it, and nothing lists it again until the user moves.
+#[derive(Clone, Default)]
+pub(crate) struct CacheWrites(Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>);
+
+impl CacheWrites {
+    /// The longest a listing waits: past the history lock's own timeout, so a write
+    /// that gives up has done so first.
+    const SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Write on a thread of its own, counted until it ends, panic or not.
+    pub(crate) fn spawn(&self, write: impl FnOnce() + Send + 'static) {
+        *self.0.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        let done = WriteDone(self.clone());
+        std::thread::spawn(move || {
+            let _done = done;
+            write();
+        });
+    }
+
+    /// Wait until no counted write is in flight, or [`Self::SETTLE`] passes. Called on a
+    /// worker, never the UI thread.
+    pub(crate) fn settle(&self) {
+        let (count, ended) = &*self.0;
+        let count = count.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = ended.wait_timeout_while(count, Self::SETTLE, |n| *n > 0);
+    }
+}
+
+struct WriteDone(CacheWrites);
+
+impl Drop for WriteDone {
+    fn drop(&mut self) {
+        let (count, ended) = &*(self.0).0;
+        *count.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        ended.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod cache_writes_tests {
+    use super::CacheWrites;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn settle_waits_for_a_write_in_flight() {
+        let writes = CacheWrites::default();
+        let (go, wait) = mpsc::channel::<()>();
+        let written = Arc::new(AtomicBool::new(false));
+        let flag = written.clone();
+        writes.spawn(move || {
+            let _ = wait.recv();
+            flag.store(true, Ordering::SeqCst);
+        });
+        let settled = {
+            let writes = writes.clone();
+            std::thread::spawn(move || writes.settle())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!settled.is_finished(), "settled while the write was held");
+        go.send(()).unwrap();
+        settled.join().unwrap();
+        assert!(written.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_write_that_panics_still_ends() {
+        let writes = CacheWrites::default();
+        writes.spawn(|| panic!("write died"));
+        let started = std::time::Instant::now();
+        writes.settle();
+        assert!(started.elapsed() < CacheWrites::SETTLE);
+    }
+}

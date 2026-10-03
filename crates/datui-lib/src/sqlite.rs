@@ -197,13 +197,13 @@ mod read {
     use std::time::{Duration, Instant};
 
     use color_eyre::Result;
-    use color_eyre::eyre::eyre;
     use polars::prelude::*;
     use rusqlite::config::DbConfig;
     use rusqlite::types::{Value, ValueRef};
     use rusqlite::{Connection, OpenFlags};
 
     use super::{Affinity, Hold, Opened, Table, is_internal};
+    use crate::error_display::{FileError, file_message};
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::notes::Note;
     use crate::numfmt::group_chrome;
@@ -232,7 +232,7 @@ mod read {
     fn open(path: &Path) -> Result<Connection> {
         let not_a_database = |e: rusqlite::Error| match e.sqlite_error_code() {
             Some(rusqlite::ErrorCode::NotADatabase) => {
-                eyre!("{} is not a SQLite database.", path.display())
+                FileError::new(path, "not a SQLite database").into()
             }
             _ => color_eyre::Report::new(e),
         };
@@ -243,19 +243,21 @@ mod read {
                 // not roll back: the file holds half a transaction, and read as it
                 // stands it would give rows that were never committed together.
                 Err(e) if cannot_open(&e) && beside(path, "-journal").exists() => {
-                    return Err(eyre!(
-                        "{} was left mid-write by a program that stopped: its -journal has to be rolled back first, which datui does not do. Opening it once with the sqlite3 tool rolls it back.",
-                        path.display()
-                    ));
+                    return Err(FileError::new(
+                        path,
+                        "the database was left mid-write by a program that stopped: its -journal has to be rolled back first, which datui does not do. Opening it once with the sqlite3 tool rolls it back.",
+                    )
+                    .into());
                 }
                 // A WAL whose index (`-shm`) is missing and cannot be made here (a
                 // read-only directory). Read without it, the database would lack what
                 // was committed to the WAL.
                 Err(e) if cannot_open(&e) && beside(path, "-wal").exists() => {
-                    return Err(eyre!(
-                        "{} has a -wal file that cannot be read from here without a -shm file beside it, and its directory is read only. Copy the database and its -wal to a writable directory.",
-                        path.display()
-                    ));
+                    return Err(FileError::new(
+                        path,
+                        "the database has a -wal file that cannot be read from here without a -shm file beside it, and its directory is read only. Copy the database and its -wal to a writable directory.",
+                    )
+                    .into());
                 }
                 // A file in a directory datui cannot write to, with nothing beside it.
                 Err(e) if cannot_open(&e) => {}
@@ -821,16 +823,18 @@ mod read {
 
         /// A connection for one statement, stopped with the source.
         fn connect(&self) -> PolarsResult<Connection> {
-            let conn = open(&self.file).map_err(|e| polars_err!(ComputeError: "{e:#}"))?;
+            let conn = open(&self.file).map_err(|e| {
+                polars_err!(ComputeError: "{}", crate::error_display::user_message_from_report(&e, Some(&self.display)))
+            })?;
             stoppable(&conn, self.stop.clone(), None).map_err(|e| self.failed(e))?;
             Ok(conn)
         }
 
         fn failed(&self, e: rusqlite::Error) -> PolarsError {
             if self.stop.load(Ordering::Relaxed) {
-                polars_err!(ComputeError: "Reading {} was stopped.", self.display.display())
+                polars_err!(ComputeError: "{}", file_message(&self.display, "reading was stopped"))
             } else {
-                polars_err!(ComputeError: "Could not read {}: {e}", self.display.display())
+                polars_err!(ComputeError: "{}", file_message(&self.display, &e.to_string()))
             }
         }
 
@@ -1738,7 +1742,7 @@ mod read {
         let table_source = InPlace(source);
         let whole = table_source
             .pushed(View::whole())
-            .ok_or_else(|| eyre!("Could not read {}", display.display()))?;
+            .ok_or_else(|| FileError::new(display, format!("could not read \"{}\"", table.name)))?;
         Ok(Opened {
             lf: whole.lf,
             pushdown: Arc::new(table_source),
@@ -1778,7 +1782,7 @@ mod read {
 
     /// An error from SQLite, said about the database by the name the user knows.
     fn named(e: color_eyre::Report, display: &Path) -> color_eyre::Report {
-        e.wrap_err(format!("Could not read {}", display.display()))
+        crate::error_display::in_file(display, e)
     }
 
     /// The database's other tables of its own, as `--table` names them.

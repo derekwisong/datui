@@ -921,6 +921,10 @@ pub struct App {
     /// True while a recursive search below the working directory is out. One at a
     /// time: the walk is bounded, and a second one would only compete for the disk.
     home_search_inflight: bool,
+    /// The home generation the walk out was started in. Its batches and its end are its
+    /// own, whatever refreshes the listing meanwhile; the root decides whether they
+    /// still describe where the user is.
+    home_search_generation: u64,
     /// Set while the confirmation modal is asking about forgetting every recent.
     pending_clear_recents: bool,
     /// The place whose recents the confirmation modal is asking about forgetting.
@@ -5389,6 +5393,7 @@ impl App {
             #[cfg(feature = "cloud")]
             cloud_discovery_started: false,
             home_search_inflight: false,
+            home_search_generation: 0,
             home_generation: 0,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
@@ -6358,6 +6363,7 @@ impl App {
         self.home_search_inflight = true;
 
         let generation = self.home_generation;
+        self.home_search_generation = generation;
         let tx = self.events.clone();
         // Ended, with what the batches already found kept.
         let owed = self.owed_answer(AppEvent::HomeSearchDone {
@@ -13189,8 +13195,9 @@ impl App {
             } => {
                 // Results from a walk that a later navigation superseded describe a
                 // place the user has left. The walk is abandoned, not cancelled, so
-                // late batches are expected rather than exceptional.
-                if *generation == self.home_generation {
+                // late batches are expected rather than exceptional. A refresh of the
+                // same place supersedes nothing: its end dropped kept it running.
+                if *generation == self.home_search_generation {
                     self.home.search_batch(root, found.clone(), *scanned);
                 }
                 None
@@ -13209,7 +13216,7 @@ impl App {
                 scanned,
                 limited,
             } => {
-                if *generation == self.home_generation {
+                if *generation == self.home_search_generation {
                     self.home.search_finished(root, *scanned, limited.clone());
                 }
                 self.home_search_inflight = false;

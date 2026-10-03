@@ -5620,9 +5620,11 @@ mod coming_back {
             }
             assert!(
                 Instant::now() < deadline,
-                "the home screen never settled: browsing {:?}, listing {}, rows {:?}",
+                "the home screen never settled: browsing {:?}, listing {}, search {:?} {:?}, rows {:?}",
                 app.home.browsing,
                 app.home.listing_in_flight,
+                app.home.search.done,
+                app.home.search.limited,
                 entries(app)
             );
             if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {

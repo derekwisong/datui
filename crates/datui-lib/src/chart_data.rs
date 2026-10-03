@@ -141,6 +141,10 @@ enum Notation {
     },
     /// The mantissa to `places` decimals: `1.23e-5`.
     Scientific { places: usize },
+    /// Each value in the largest of k, M, G and T it reaches, to the fewest places
+    /// up to two that write it exactly: `500`, `2k`, `10M`. A log axis's short form,
+    /// whose ticks run across many powers of ten.
+    Prefixed,
 }
 
 impl AxisFormat {
@@ -193,6 +197,33 @@ impl AxisFormat {
         }
     }
 
+    /// The format for a log axis ticked at `ticks`, values before the log: places
+    /// enough to write every tick exactly, the 0.1 and 0.25 of a short axis included,
+    /// rather than enough to tell the closest two apart, which on a log axis are the
+    /// small ones. A 1, 2 or 5 a power of ten up reads `1e18`; the short form names
+    /// each tick's own k, M, G or T: `1  10  100  1k  10k`.
+    pub fn log(ticks: &[f64], numbers: &AxisNumbers) -> Self {
+        let ticks: Vec<f64> = ticks.iter().copied().filter(|v| v.is_finite()).collect();
+        let top = ticks.iter().fold(0.0_f64, |top, v| top.max(v.abs()));
+        let full = if top >= SCIENTIFIC_FROM {
+            Notation::Scientific { places: 0 }
+        } else {
+            Notation::Fixed {
+                places: fewest_places(&ticks, 1.0, 0, MAX_AXIS_PLACES),
+                unit: 1.0,
+                suffix: "",
+            }
+        };
+        Self {
+            format: numbers.format.clone(),
+            full,
+            short: (1e3..SCIENTIFIC_FROM)
+                .contains(&top)
+                .then_some(Notation::Prefixed),
+            zero_below: 0.0,
+        }
+    }
+
     /// The format for an axis from `lo` to `hi` ticked at its ends and halfway, as
     /// [`crate::widgets::axes::AxisSpec::ends_and_middle`] ticks it.
     pub fn ends_and_middle([lo, hi]: [f64; 2], numbers: &AxisNumbers) -> Self {
@@ -216,7 +247,17 @@ impl AxisFormat {
                 let v = if v.abs() < self.zero_below { 0.0 } else { v };
                 return scientific(v, places, self.format.decimal_sep);
             }
-            Notation::Fixed { .. } if !v.is_finite() => return v.to_string(),
+            Notation::Fixed { .. } | Notation::Prefixed if !v.is_finite() => {
+                return v.to_string();
+            }
+            Notation::Prefixed => {
+                let (unit, suffix) = [(1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k")]
+                    .into_iter()
+                    .find(|(unit, _)| v.abs() >= *unit)
+                    .unwrap_or((1.0, ""));
+                let places = fewest_places(&[v], unit, 0, 2);
+                (places, unit, suffix)
+            }
             Notation::Fixed {
                 places,
                 unit,
@@ -1923,6 +1964,49 @@ mod tests {
             format: crate::numfmt::NumberFormat::preset(name).unwrap(),
             whole: false,
         }
+    }
+
+    /// A log axis writes every tick exactly in one form, whatever the closest two
+    /// are; its short form names each tick's own k, M or G.
+    #[test]
+    fn log_axis_labels_write_each_tick_exactly() {
+        let ticks = [0.0, 1.0, 10.0, 100.0, 1e3, 1e4, 2e5, 1e6, 5e9];
+        let labels = |numbers: &AxisNumbers, level| {
+            let format = AxisFormat::log(&ticks, numbers);
+            ticks
+                .iter()
+                .map(|&v| format.label(v, level).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            labels(&preset("thousands"), 0),
+            [
+                "0",
+                "1",
+                "10",
+                "100",
+                "1,000",
+                "10,000",
+                "200,000",
+                "1,000,000",
+                "5,000,000,000"
+            ]
+        );
+        assert_eq!(
+            labels(&AxisNumbers::default(), 1),
+            ["0", "1", "10", "100", "1k", "10k", "200k", "1M", "5G"]
+        );
+        let short = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let format = AxisFormat::log(&short, &AxisNumbers::default());
+        let written: Vec<_> = short.iter().map(|&v| format.label(v, 0).unwrap()).collect();
+        assert_eq!(written, ["0.00", "0.25", "0.50", "0.75", "1.00"]);
+        assert_eq!(
+            format.label(1.0, 1),
+            None,
+            "no shorter form under a thousand"
+        );
+        let huge = AxisFormat::log(&[1e15, 2e16, 1e18], &AxisNumbers::default());
+        assert_eq!(huge.label(2e16, 0).as_deref(), Some("2e16"));
     }
 
     /// Each form a narrow axis steps down to, the same for every tick on it.

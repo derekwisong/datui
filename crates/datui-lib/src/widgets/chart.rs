@@ -764,12 +764,7 @@ fn render_xy_chart(
             let y_bounds = [y_min_bounds, y_max_bounds];
             // On a log scale a tick stands for its value before the log.
             let y = if log_scale {
-                AxisSpec::numbers_as(
-                    y_bounds,
-                    &numbers.y.clone().fractional(),
-                    &y_axis_title,
-                    f64::exp_m1,
-                )
+                AxisSpec::y_log(y_bounds, &numbers.y.clone().fractional(), &y_axis_title)
             } else {
                 AxisSpec::y_numbers(y_bounds, &numbers.y, &y_axis_title)
             };
@@ -2406,6 +2401,70 @@ mod tests {
         (0..area.height)
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
             .collect()
+    }
+
+    /// A log scale ticks at the powers of ten, and 2 and 5 between when there is
+    /// room, every label in one format; the short form names each tick's own k or M.
+    #[test]
+    fn log_scale_ticks_fall_on_the_decades() {
+        let g = crate::glyphs::unicode();
+        let mut modal = open_modal();
+        modal.x_column = Some("x".to_string());
+        modal.y_columns = vec!["count".to_string()];
+        modal.log_scale = true;
+        // 0 to 300,000, as the view has it: ln(1 + y).
+        let linear: Vec<Vec<(f64, f64)>> = vec![
+            (0..=300)
+                .map(|i| (f64::from(i), f64::from(i).powi(2) * 3.333))
+                .collect(),
+        ];
+        let logged = crate::chart_jobs::log_series(&linear);
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let ctx = RenderContext::for_test();
+        let y_labels = |height: u16| {
+            let area = Rect::new(0, 0, 60, height);
+            let mut buf = Buffer::empty(area);
+            let data = ChartRenderData::XY {
+                series: Some(&logged),
+                breaks: None,
+                values: Some(&linear),
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+            };
+            render_plot(area, &mut buf, &modal, &theme, &ctx, data, g);
+            let rows = rows_of(&buf);
+            let labels: Vec<String> = rows
+                .iter()
+                .filter_map(|row| {
+                    let (label, _) = row.split_once(g.plot.tick_y)?;
+                    let label = label.trim();
+                    (!label.is_empty()).then(|| label.to_string())
+                })
+                .collect();
+            (labels, rows)
+        };
+        // Top down: falling, each a 1, 2 or 5 a power of ten up, or zero.
+        let nice = |labels: &[String]| {
+            let values: Vec<f64> = labels.iter().map(|l| l.parse().unwrap()).collect();
+            values.windows(2).all(|w| w[0] > w[1])
+                && values.iter().all(|&v| {
+                    let decade = 10f64.powf(v.log10().floor());
+                    v == 0.0 || [1.0, 2.0, 5.0].contains(&(v / decade))
+                })
+        };
+        let (tall, rows) = y_labels(40);
+        assert!(nice(&tall), "{rows:#?}");
+        // Every power of ten up to the top, which the axis widens to.
+        for decade in ["0", "10", "100", "1000", "10000", "100000", "1000000"] {
+            assert!(tall.contains(&decade.to_string()), "{decade}: {rows:#?}");
+        }
+        assert_eq!(tall[0], "1000000", "{rows:#?}");
+        assert_eq!(tall.last().unwrap(), "0", "{rows:#?}");
+        let (short, rows) = y_labels(12);
+        assert!(nice(&short), "{rows:#?}");
+        assert!(short.len() >= 3 && short.len() < tall.len(), "{rows:#?}");
     }
 
     /// With the plot focused the crosshair stands on a point: a line down its column

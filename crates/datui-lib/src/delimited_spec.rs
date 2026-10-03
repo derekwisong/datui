@@ -691,7 +691,8 @@ mod tests {
                 short,
                 "short.csv: header line 3 is past the end of the file",
             ),
-            (dir.path().join("none.csv"), "none.csv: No such file"),
+            // The reason is the OS's own words, which differ between platforms.
+            (dir.path().join("none.csv"), "none.csv: "),
         ] {
             let e = check(&spec, Some(&file), 5).unwrap_err();
             assert!(e.contains(said), "{e}");

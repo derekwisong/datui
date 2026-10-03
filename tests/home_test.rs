@@ -4432,6 +4432,7 @@ fn test_collections_are_sections_of_named_datasets() {
         name: name.to_string(),
         location: location.to_path_buf(),
         details: vec![("about".to_string(), format!("{name} data"))],
+        size: None,
     };
     let mut home = HomeState {
         collections: vec![
@@ -7069,4 +7070,726 @@ fn test_a_file_row_says_how_it_will_be_read() {
         "the pane's read line:\n{}",
         screen.join("\n")
     );
+}
+
+// ---------------------------------------------------------------------------
+// The ROWS preview: the first rows of the selected file, read once (#547 M4, M8)
+// ---------------------------------------------------------------------------
+
+mod first_rows {
+    use super::coming_back::{draw, go_into, home_app, press, select, settle};
+    use crossterm::event::KeyCode;
+    use datui::AppEvent;
+    use datui::home_preview::Stamp;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc::Receiver;
+    use tempfile::TempDir;
+
+    /// `people.csv` of `rows` rows, in a directory of its own under `dir`.
+    fn people(dir: &Path, rows: usize) -> PathBuf {
+        let mut text = String::from("id,name,score\n");
+        for i in 0..rows {
+            text.push_str(&format!("{i},person_{i:03},{}.5\n", i * 3));
+        }
+        let path = dir.join("small").join("people.csv");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn config(dir: &Path) -> datui::config::AppConfig {
+        let mut config = datui::config::AppConfig::default();
+        config.data.directories = vec![dir.to_string_lossy().into_owned()];
+        config
+    }
+
+    fn render(app: &mut datui::App, w: u16, h: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// Draw at `w`×`h` until the selected file's preview has landed.
+    fn wait_for_rows(app: &mut datui::App, rx: &Receiver<AppEvent>, w: u16, h: u16) {
+        let entry = app.home.selected_entry().expect("a row selected");
+        let stamp = Stamp::of_entry(&entry);
+        render(app, w, h);
+        settle(app, rx, |app| {
+            app.home_previews
+                .rows(&entry.path, stamp)
+                .is_some_and(|rows| rows.is_some())
+        });
+    }
+
+    /// Into `small/`, where the file is the only row and the list leaves rows free.
+    fn into_small(tmp: &Path) -> (datui::App, Receiver<AppEvent>, PathBuf) {
+        let file = people(tmp, 40);
+        let (mut app, rx) = home_app(config(tmp));
+        select(&mut app, &tmp.join("small"));
+        go_into(&mut app, &rx, KeyCode::Right, &tmp.join("small"));
+        select(&mut app, &file);
+        (app, rx, file)
+    }
+
+    fn open(app: &mut datui::App, rx: &Receiver<AppEvent>) -> bool {
+        let Some(AppEvent::Open(paths, options)) = press(app, KeyCode::Enter) else {
+            panic!("Enter on a file opens it");
+        };
+        let prepared = options.prepared.is_some();
+        crate::common::pump_open_until_loaded(app, rx, paths, options);
+        prepared
+    }
+
+    fn first_cell(app: &datui::App, column: &str) -> String {
+        let df = app
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.display_df())
+            .expect("rows on screen");
+        df.column(column).unwrap().get(0).unwrap().to_string()
+    }
+
+    /// The pane shows the file's first rows, and Enter opens the dataset that read
+    /// built: no scan and no page of its own. Read once, shown twice.
+    #[test]
+    fn a_previewed_file_opens_on_the_page_its_preview_read() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, rx, file) = into_small(tmp.path());
+        wait_for_rows(&mut app, &rx, 200, 50);
+        let screen = render(&mut app, 200, 50).join("\n");
+        assert!(screen.contains("ROWS"), "{screen}");
+        assert!(screen.contains("person_000"), "real values: {screen}");
+        assert_eq!(app.reads.previews, 1);
+        // Drawn again, at another size too, it is not read again.
+        render(&mut app, 80, 24);
+        render(&mut app, 200, 50);
+        assert_eq!(app.reads.previews, 1);
+
+        let read = app.reads;
+        assert!(open(&mut app, &rx), "the open takes what the preview built");
+        assert_eq!(app.reads, read, "the open read nothing of {file:?} again");
+        assert_eq!(first_cell(&app, "name"), "\"person_000\"");
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(40),
+            "the page held them all"
+        );
+    }
+
+    /// Without a preview, the same open scans and reads its page: the counter above
+    /// is one that moves.
+    #[test]
+    fn a_file_with_no_preview_is_read_by_its_open() {
+        let tmp = TempDir::new().unwrap();
+        let file = people(tmp.path(), 40);
+        let mut config = config(tmp.path());
+        config.data.preview_max_mb = 0;
+        let (mut app, rx) = home_app(config);
+        select(&mut app, &tmp.path().join("small"));
+        go_into(&mut app, &rx, KeyCode::Right, &tmp.path().join("small"));
+        select(&mut app, &file);
+        render(&mut app, 200, 50);
+        let before = app.reads;
+        assert!(!open(&mut app, &rx));
+        assert_eq!(app.reads.previews, before.previews, "nothing previewed");
+        assert_eq!(app.reads.scans, before.scans + 1);
+        assert!(app.reads.pages > before.pages);
+        assert_eq!(first_cell(&app, "name"), "\"person_000\"");
+    }
+
+    /// A file changed since its preview is opened as it is now, not as it was.
+    #[test]
+    fn a_file_changed_since_its_preview_is_read_again() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, rx, file) = into_small(tmp.path());
+        wait_for_rows(&mut app, &rx, 200, 50);
+        std::fs::write(&file, "id,name,score\n7,changed,1.0\n").unwrap();
+        let before = app.reads;
+        assert!(!open(&mut app, &rx), "the old page is not installed");
+        assert_eq!(app.reads.scans, before.scans + 1);
+        assert_eq!(first_cell(&app, "name"), "\"changed\"");
+    }
+
+    /// Parquet's first page too, and its columns in the pane from the same read.
+    #[test]
+    fn a_parquet_file_previews_its_first_page() {
+        let tmp = TempDir::new().unwrap();
+        crate::common::ensure_sample_data();
+        let dir = tmp.path().join("small");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("people.parquet");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/sample-data/people.parquet"),
+            &file,
+        )
+        .unwrap();
+        let (mut app, rx) = home_app(config(tmp.path()));
+        select(&mut app, &dir);
+        go_into(&mut app, &rx, KeyCode::Right, &dir);
+        select(&mut app, &file);
+        wait_for_rows(&mut app, &rx, 200, 50);
+        let screen = render(&mut app, 200, 50).join("\n");
+        assert!(screen.contains("ROWS"), "{screen}");
+        let read = app.reads;
+        assert!(open(&mut app, &rx));
+        assert_eq!(app.reads, read, "nothing read again");
+    }
+
+    /// Below the pane's width the rows take the lines the list leaves free, at the
+    /// bottom of the screen; a list with none free gets no strip, and nothing is read
+    /// for one.
+    #[test]
+    fn the_rows_strip_at_80_by_24() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, rx, _file) = into_small(tmp.path());
+        wait_for_rows(&mut app, &rx, 80, 24);
+        let screen = render(&mut app, 80, 24);
+        let heading = screen
+            .iter()
+            .position(|line| line.trim_start().starts_with("ROWS"))
+            .unwrap_or_else(|| panic!("a strip: {screen:#?}"));
+        assert!(screen[heading + 1].contains("id") && screen[heading + 1].contains("name"));
+        assert!(screen[heading + 2].contains("person_000"), "{screen:#?}");
+        // Its last row sits on the line above the control bar.
+        assert!(screen[22].contains("person_"), "{screen:#?}");
+        // The list is above it, whole.
+        assert!(screen[..heading].iter().any(|l| l.contains("people.csv")));
+
+        // A directory that fills the screen leaves no room: no strip, no read.
+        let full = TempDir::new().unwrap();
+        for i in 0..40 {
+            super::touch(full.path(), &format!("f{i:02}.csv"));
+        }
+        let (mut app, rx) = home_app(config(full.path()));
+        settle(&mut app, &rx, |_| true);
+        select(&mut app, &full.path().join("f00.csv"));
+        let before = app.reads;
+        let screen = render(&mut app, 80, 24);
+        assert!(!screen.iter().any(|l| l.contains("ROWS")), "{screen:#?}");
+        assert_eq!(app.reads.previews, before.previews);
+        draw(&mut app);
+    }
+
+    /// At 200×50 the list keeps a reading measure: a row's size sits near its name,
+    /// and the pane takes the rest of the width (#547 M8, D13).
+    #[test]
+    fn the_list_keeps_its_measure_at_200_by_50() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, rx, _file) = into_small(tmp.path());
+        wait_for_rows(&mut app, &rx, 200, 50);
+        let screen = render(&mut app, 200, 50);
+        let row = screen
+            .iter()
+            .find(|line| line.contains("people.csv") && line.contains(" now"))
+            .unwrap_or_else(|| panic!("the file's row: {screen:#?}"));
+        let chars: Vec<char> = row.chars().collect();
+        let name_end = row
+            .find("people.csv")
+            .map(|i| row[..i].chars().count() + 10)
+            .unwrap();
+        let size_at = row
+            .find(" B ")
+            .or_else(|| row.find(" KB "))
+            .map(|i| row[..i].chars().count())
+            .unwrap_or_else(|| panic!("the size on the row: {row:?}"));
+        assert!(
+            size_at - name_end <= 60,
+            "size {size_at} is {} columns from the name: {row:?}",
+            size_at - name_end
+        );
+        assert!(chars.len() == 200);
+        // The pane starts where the list ends and shows the rows.
+        let rows_at = screen
+            .iter()
+            .find_map(|line| line.find("ROWS").map(|i| line[..i].chars().count()))
+            .expect("ROWS in the pane");
+        assert!(rows_at < 100, "the pane takes the width: ROWS at {rows_at}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The public catalog: rows that say what they are, one key away (#547 M5, D12)
+// ---------------------------------------------------------------------------
+
+mod catalog {
+    use super::coming_back::{press, settle};
+    use crossterm::event::KeyCode;
+    use datui::home::Row;
+    use datui::{App, AppEvent, UnaskedDownload};
+    use std::sync::mpsc::Receiver;
+    use tempfile::TempDir;
+
+    fn app_with_catalog(config: datui::config::AppConfig) -> (App, Receiver<AppEvent>, TempDir) {
+        let mut config = config;
+        config.data.use_desktop_recents = false;
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        let cache = TempDir::new().unwrap();
+        app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
+        app.enter_home();
+        settle(&mut app, &rx, |_| true);
+        (app, rx, cache)
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let index = app
+            .home
+            .visible()
+            .iter()
+            .position(|row| matches!(row, Row::Entry { entry, .. } if entry.name == name))
+            .unwrap_or_else(|| panic!("a row named {name}"));
+        app.home.selected = index;
+    }
+
+    fn screen(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    /// A built-in web file's row says its format and what it weighs before anything is
+    /// fetched, at 80 and at 200 columns.
+    #[test]
+    fn catalog_rows_say_their_format_and_size() {
+        let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
+        for (w, h) in [(80, 24), (200, 50)] {
+            // Folded sections ahead of it would push it off a short screen.
+            select_named(&mut app, "Palmer penguins");
+            let lines = screen(&mut app, w, h);
+            let row = lines
+                .iter()
+                .find(|line| line.find("Palmer penguins").is_some_and(|at| at < 12))
+                .unwrap_or_else(|| panic!("{w}x{h}: {lines:#?}"));
+            assert!(row.contains("Palmer penguins  csv"), "{w}x{h}: {row:?}");
+            assert!(row.contains("16.1 KB"), "{w}x{h}: {row:?}");
+        }
+    }
+
+    /// Enter on a small built-in web file asks for its download without a question;
+    /// the same URL typed at `~` keeps the question.
+    #[test]
+    fn a_small_builtin_file_opens_without_a_question_and_a_typed_url_asks() {
+        let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
+        select_named(&mut app, "Palmer penguins");
+        let Some(AppEvent::Open(paths, options)) = press(&mut app, KeyCode::Enter) else {
+            panic!("Enter opens it");
+        };
+        let unasked = options.download_unasked.expect("downloaded unasked");
+        assert_eq!(unasked.limit, UnaskedDownload::LIMIT);
+        assert!(unasked.covers(None), "its listed size is under the limit");
+        let url = paths[0].to_string_lossy().into_owned();
+
+        let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
+        press(&mut app, KeyCode::Char('~'));
+        for c in url.chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        let Some(AppEvent::Open(_, options)) = press(&mut app, KeyCode::Enter) else {
+            panic!("Enter at ~ opens the URL");
+        };
+        assert_eq!(options.download_unasked, None, "a typed URL is asked about");
+    }
+
+    /// On screen, a local directory of directories, a hive table and a public dataset
+    /// directory read in one grammar: `name/  label` (#547 M7).
+    #[test]
+    fn rows_read_name_slash_two_spaces_label_on_screen() {
+        let tmp = TempDir::new().unwrap();
+        for sub in ["a", "b", "c"] {
+            super::touch(&tmp.path().join("data").join(sub), "x.csv");
+        }
+        super::touch(tmp.path(), "events/year=2024/part-0.parquet");
+        super::touch(tmp.path(), "events/year=2025/part-0.parquet");
+        let mut config = datui::config::AppConfig::default();
+        config.data.directories = vec![tmp.path().to_string_lossy().into_owned()];
+        let (mut app, rx, _cache) = app_with_catalog(config);
+        let data = tmp.path().join("data");
+        let labelled = |app: &App| {
+            app.home.visible().iter().any(|row| {
+                matches!(row, Row::Entry { entry, .. }
+                    if entry.path == data && entry.holds.directories == 3)
+            })
+        };
+        settle(&mut app, &rx, labelled);
+        for (w, h) in [(80, 24), (200, 50)] {
+            let lines = screen(&mut app, w, h).join("\n");
+            for expect in [
+                "data/  3 dirs",
+                "events/  hive",
+                "NOAA daily weather (GHCN-D)/  dataset",
+            ] {
+                assert!(lines.contains(expect), "{w}x{h}: {expect:?} in\n{lines}");
+            }
+        }
+    }
+
+    /// A recent opened from a collection is named as the collection names it, with the
+    /// format its name no longer says (#547 D12).
+    #[test]
+    fn a_recent_from_a_collection_keeps_its_name() {
+        use datui::home::{Collection, CollectionDataset, ListingRequest, build_listing};
+        let url = std::path::PathBuf::from("https://example.com/data/penguins.csv");
+        let listing = build_listing(&ListingRequest {
+            recents: vec![url.clone()],
+            collections: vec![Collection {
+                name: "public".to_string(),
+                label: "Public datasets".to_string(),
+                builtin: true,
+                datasets: vec![CollectionDataset {
+                    name: "Palmer penguins".to_string(),
+                    location: url.clone(),
+                    details: Vec::new(),
+                    size: Some(16_480),
+                }],
+            }],
+            config_dirs: Vec::new(),
+            remembered_dirs: Vec::new(),
+            desktop_dirs: Vec::new(),
+            browsing: None,
+            probed: Default::default(),
+            unreachable: Default::default(),
+            listing_so_far: Default::default(),
+            cut_short: Default::default(),
+            probe_errors: Default::default(),
+            network_check: |_| true,
+            cloud: Vec::new(),
+            known: Default::default(),
+        });
+        let recent = listing
+            .sections
+            .iter()
+            .find(|s| s.title == datui::home::HomeState::RECENT_SECTION)
+            .expect("a Recent section");
+        let row = recent.rows.iter().find(|r| r.path == url).unwrap();
+        assert_eq!(row.name, "Palmer penguins");
+        assert_eq!(row.label(), "csv");
+        assert_eq!(row.size, Some(16_480));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frecency: what is opened often comes first (#547 M9)
+// ---------------------------------------------------------------------------
+
+mod frecency {
+    use super::coming_back::settle;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use datui::home::Row;
+    use datui::{App, AppEvent, CacheManager};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Two sales files in a configured directory, `often` opened three times and
+    /// `last` once since, and the home screen over them with that history.
+    fn opened(
+        tmp: &TempDir,
+        often: &str,
+        last: &str,
+    ) -> (App, std::sync::mpsc::Receiver<AppEvent>, PathBuf, PathBuf) {
+        let dir = tmp.path().join("data");
+        let often = super::touch(&dir, often);
+        let last = super::touch(&dir, last);
+        let cache = CacheManager::with_dir(tmp.path().join("cache"));
+        for path in [&often, &often, &often, &last] {
+            assert_eq!(
+                cache.push_recent(path),
+                datui::cache::HistoryUpdate::Written
+            );
+        }
+        let mut config = datui::config::AppConfig::default();
+        config.data.directories = vec![dir.to_string_lossy().into_owned()];
+        config.data.use_desktop_recents = false;
+        config.data.hide_sources = vec!["public".to_string()];
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        app.use_cache(cache);
+        app.enter_home();
+        settle(&mut app, &rx, |app| !app.home.newest_recent.is_none());
+        let canonical = |p: &PathBuf| std::fs::canonicalize(p).unwrap();
+        (app, rx, canonical(&often), canonical(&last))
+    }
+
+    fn recent_order(app: &App) -> Vec<PathBuf> {
+        app.home
+            .visible()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Entry { section, entry, .. }
+                    if app.home.sections[*section].title
+                        == datui::home::HomeState::RECENT_SECTION =>
+                {
+                    Some(entry.path.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Recent is ranked by frecency, and the cursor still lands on the file opened
+    /// last, so it is one Enter away.
+    #[test]
+    fn recent_is_ranked_by_frecency_and_lands_on_the_newest() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, _rx, often, last) = opened(&tmp, "sales_q1.csv", "sales_q2.csv");
+        assert_eq!(recent_order(&app), [often, last.clone()]);
+        app.home.select_first_entry();
+        assert_eq!(app.home.selected_entry().map(|e| e.path), Some(last));
+    }
+
+    /// Of two files `sales` matches equally, the one opened most is first, in a
+    /// directory's section too, where the name would otherwise put the other first.
+    #[test]
+    fn a_match_opened_most_comes_first() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, _rx, often, last) = opened(&tmp, "sales_q2.csv", "sales_q1.csv");
+        for c in "sales".chars() {
+            app.event(&AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        let dir = often.parent().unwrap().to_path_buf();
+        let in_dir: Vec<PathBuf> = app
+            .home
+            .visible()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Entry { section, entry, .. }
+                    if app.home.sections[*section].root.as_deref() == Some(dir.as_path()) =>
+                {
+                    Some(entry.path.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(in_dir, [often, last]);
+    }
+
+    /// Visits are counted per open and kept only for what is still recent.
+    #[test]
+    fn visits_are_counted_and_follow_the_recents() {
+        let tmp = TempDir::new().unwrap();
+        let cache = CacheManager::with_dir(tmp.path().join("cache"));
+        let a = super::touch(tmp.path(), "a.csv");
+        let b = super::touch(tmp.path(), "b.csv");
+        for path in [&a, &b, &a] {
+            cache.push_recent(path);
+        }
+        let visits = cache.load_visits();
+        let a = std::fs::canonicalize(&a).unwrap();
+        let b = std::fs::canonicalize(&b).unwrap();
+        assert_eq!(visits[&a].count, 2);
+        assert_eq!(visits[&b].count, 1);
+        let ranked = datui::cache::by_frecency(cache.load_recents(), &visits);
+        assert_eq!(ranked, [a.clone(), b.clone()]);
+        cache.forget_recent(&b);
+        cache.push_recent(&a);
+        assert!(
+            !cache.load_visits().contains_key(&b),
+            "forgotten, then pruned"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The `~` prompt drives the list (#547 M6)
+// ---------------------------------------------------------------------------
+
+mod path_prompt {
+    use super::coming_back::{home_app, press};
+    use crossterm::event::KeyCode;
+    use datui::{App, AppEvent};
+    use std::sync::mpsc::Receiver;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    /// Handle events until the typed directory is listed under the prompt.
+    fn listed(app: &mut App, rx: &Receiver<AppEvent>) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let dir = datui::home::typed_dir(&app.home.path_input).to_string();
+            if app.home.path_listing.as_ref().is_some_and(|l| l.dir == dir) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{dir} was never listed");
+            if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
+                let mut next = Some(event);
+                while let Some(event) = next {
+                    next = app.event(&event);
+                }
+            }
+        }
+    }
+
+    fn screen(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn project() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        super::touch(tmp.path(), "summary.csv");
+        super::touch(tmp.path(), "src/main.py");
+        super::touch(tmp.path(), "data/a.csv");
+        tmp
+    }
+
+    /// While `~` is typed the list is the directory being typed, filtered by the last
+    /// segment; an ambiguous Tab completes nothing and leaves the candidates showing,
+    /// ↑↓ picks one, and Enter takes it.
+    #[test]
+    fn the_list_is_the_typed_directory_and_arrows_pick() {
+        let tmp = project();
+        let (mut app, rx) = home_app(datui::config::AppConfig::default());
+        press(&mut app, KeyCode::Char('~'));
+        let typed = format!("{}/s", tmp.path().display());
+        type_text(&mut app, &typed);
+        listed(&mut app, &rx);
+        let names: Vec<String> = app
+            .home
+            .path_candidates()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(names, ["src", "summary.csv"]);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.home.path_input, typed, "ambiguous: nothing added");
+        for (w, h) in [(80, 24), (200, 50)] {
+            let lines = screen(&mut app, w, h);
+            assert!(lines.iter().any(|l| l.contains("src/")), "{lines:#?}");
+            assert!(
+                lines.iter().any(|l| l.contains("summary.csv")),
+                "{lines:#?}"
+            );
+            let bar = &lines[h as usize - 1];
+            assert!(
+                bar.contains("Tab  Complete") && bar.contains("Pick"),
+                "{bar}"
+            );
+        }
+
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.home.path_pick, Some(1));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.home.picked_path(),
+            Some(format!("{}/src/", tmp.path().display()))
+        );
+        // Enter goes into the picked directory, as it does for one typed.
+        assert!(press(&mut app, KeyCode::Enter).is_none());
+        assert!(!app.home.path_input_active);
+        assert_eq!(
+            app.home.browsing.as_deref(),
+            Some(tmp.path().join("src").as_path())
+        );
+    }
+
+    /// One candidate left: Tab completes it whole, a directory with its separator, so
+    /// the next Tab is inside it.
+    #[test]
+    fn tab_completes_the_one_candidate() {
+        let tmp = project();
+        let (mut app, rx) = home_app(datui::config::AppConfig::default());
+        press(&mut app, KeyCode::Char('~'));
+        type_text(&mut app, &format!("{}/su", tmp.path().display()));
+        listed(&mut app, &rx);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.home.path_input,
+            format!("{}/summary.csv", tmp.path().display())
+        );
+        press(&mut app, KeyCode::Char('x'));
+        for _ in 0.."summary.csvx".len() {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_text(&mut app, "da");
+        listed(&mut app, &rx);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.home.path_input,
+            format!("{}/data/", tmp.path().display())
+        );
+        listed(&mut app, &rx);
+        assert_eq!(
+            app.home
+                .path_candidates()
+                .iter()
+                .map(|n| n.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a.csv"]
+        );
+    }
+
+    /// A bucket completes from what datui already knows of it, the public catalog
+    /// included, with nothing asked of the store: `s3://noaa` + Tab is the bucket.
+    #[test]
+    fn a_bucket_completes_from_what_is_known() {
+        let mut config = datui::config::AppConfig::default();
+        config.data.hide_sources = Vec::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        config.data.use_desktop_recents = false;
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        let cache = TempDir::new().unwrap();
+        app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
+        app.enter_home();
+        press(&mut app, KeyCode::Char('~'));
+        type_text(&mut app, "s3://noaa");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.home.path_input, "s3://noaa-ghcn-pds/");
+        let names: Vec<String> = app
+            .home
+            .path_candidates()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(names, ["parquet"]);
+    }
 }

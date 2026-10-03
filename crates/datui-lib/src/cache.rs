@@ -418,15 +418,90 @@ impl CacheManager {
         // file, so reading it cannot block on the filesystems it describes.
         let mounts = crate::locality::Mounts::current();
 
-        self.update_history_file("recents", |recents| {
-            recents.retain(|p| p != &entry);
-            recents.insert(0, entry.clone());
-            recents.retain(|p| Self::recent_is_worth_keeping(p, &mounts));
-            recents.truncate(MAX_RECENTS);
-        })
-        .inspect_err(|e| log::warn!(target: "datui", "record a recent: {e:#}"))
-        .unwrap_or(HistoryUpdate::SkippedBusy)
+        let mut kept = Vec::new();
+        let update = self
+            .update_history_file("recents", |recents| {
+                recents.retain(|p| p != &entry);
+                recents.insert(0, entry.clone());
+                recents.retain(|p| Self::recent_is_worth_keeping(p, &mounts));
+                recents.truncate(MAX_RECENTS);
+                kept = recents.clone();
+            })
+            .inspect_err(|e| log::warn!(target: "datui", "record a recent: {e:#}"))
+            .unwrap_or(HistoryUpdate::SkippedBusy);
+        if update == HistoryUpdate::Written {
+            self.record_visit(&entry, &kept);
+        }
+        update
     }
+
+    /// How often and how lately each recent was opened, by its path as recorded.
+    pub fn load_visits(&self) -> std::collections::HashMap<PathBuf, Visits> {
+        read_json_cache(&self.cache_file("visits.json"))
+    }
+
+    /// Count an open of `entry`, keeping visits only for the recents still listed.
+    fn record_visit(&self, entry: &str, recents: &[String]) {
+        let now = unix_now();
+        self.with_cache_lock("visits", || {
+            let mut visits = self.load_visits();
+            let visit = visits.entry(PathBuf::from(entry)).or_default();
+            visit.count = visit.count.saturating_add(1);
+            visit.last = now;
+            visits.retain(|path, _| recents.iter().any(|r| Path::new(r) == path));
+            let json = serde_json::to_string(&visits)?;
+            let temp = self.cache_file(&format!("visits.{}.tmp", std::process::id()));
+            fs::write(&temp, json)?;
+            fs::rename(&temp, self.cache_file("visits.json")).inspect_err(|_| {
+                let _ = fs::remove_file(&temp);
+            })?;
+            Ok(())
+        })
+        .or_log("record a visit");
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// How often and how lately a dataset was opened: zoxide's frecency, which ranks
+/// Recent and lifts often-opened matches (#547 M9).
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Visits {
+    pub count: u32,
+    /// Seconds since the epoch.
+    pub last: u64,
+}
+
+impl Visits {
+    /// Opens, weighted by how lately: four times within the hour, twice within the
+    /// day, half within the week, a quarter after.
+    pub fn frecency(&self, now: u64) -> f64 {
+        let age = now.saturating_sub(self.last);
+        let weight = match age {
+            a if a < 3_600 => 4.0,
+            a if a < 86_400 => 2.0,
+            a if a < 604_800 => 0.5,
+            _ => 0.25,
+        };
+        f64::from(self.count) * weight
+    }
+}
+
+/// `recents`, most recent first, reordered by frecency. Ties, and recents opened
+/// before visits were counted, keep the order they had.
+pub fn by_frecency(
+    mut recents: Vec<PathBuf>,
+    visits: &std::collections::HashMap<PathBuf, Visits>,
+) -> Vec<PathBuf> {
+    let now = unix_now();
+    let score = |p: &PathBuf| visits.get(p).map_or(0.0, |v| v.frecency(now));
+    recents.sort_by(|a, b| score(b).total_cmp(&score(a)));
+    recents
 }
 
 /// What datui remembers about a dataset it has already measured.

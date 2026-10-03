@@ -129,20 +129,194 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
 
     let show_preview = padded.width >= PREVIEW_MIN_WIDTH;
     if show_preview {
+        // The list keeps a reading measure on a wide screen, so a row's size and age sit
+        // near its name; the pane, which has rows to show, takes the rest (#547 M8).
+        let list_w = padded
+            .width
+            .saturating_sub(3 + PREVIEW_WIDTH)
+            .min(LIST_MAX_WIDTH);
         let body = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Fill(1),
+                Constraint::Length(list_w),
                 Constraint::Length(3), // the rule and its gutters
-                Constraint::Length(PREVIEW_WIDTH),
+                Constraint::Fill(1),
             ])
             .split(rows[2]);
         render_list(body[0], buf, app, ctx);
         render_rule(body[1], buf, ctx);
-        render_preview(body[2], buf, app, ctx);
+        render_preview(body[2], buf, app, ctx, area.height);
     } else {
-        render_list(rows[2], buf, app, ctx);
+        let used = render_list(rows[2], buf, app, ctx);
+        render_rows_strip(rows[2], used, buf, app, ctx, area.height);
     }
+}
+
+/// The widest the list gets. Past it the facts on the right of a row drift away from
+/// its name, and the pane has better use for the columns.
+const LIST_MAX_WIDTH: u16 = 84;
+
+/// The fewest rows the bottom strip is drawn in: its heading, the column names and
+/// two rows.
+const STRIP_MIN_HEIGHT: usize = 4;
+
+/// Below the pane's width, the selected file's first rows in the rows the list leaves
+/// free at the bottom of the screen. Never over the list: with no rows to spare there
+/// is no strip, and nothing is read for one.
+fn render_rows_strip(
+    area: Rect,
+    used: usize,
+    buf: &mut Buffer,
+    app: &mut crate::App,
+    ctx: &RenderContext,
+    screen_height: u16,
+) {
+    let free = (area.height as usize).saturating_sub(used);
+    if free < STRIP_MIN_HEIGHT || app.home.path_input_active {
+        return;
+    }
+    let Some(entry) = app.home.selected_entry() else {
+        return;
+    };
+    let Some(preview) = app.home_preview_rows(&entry, screen_height) else {
+        return;
+    };
+    // A blank line between the list and the strip when there is one to spare.
+    let room = free.saturating_sub(1).max(STRIP_MIN_HEIGHT);
+    let lines = rows_block(&preview, area.width as usize, room, ctx);
+    let height = lines.len() as u16;
+    let strip = Rect {
+        x: area.x,
+        y: area.y + area.height - height,
+        width: area.width,
+        height,
+    };
+    Paragraph::new(lines).render(strip, buf);
+}
+
+/// The `ROWS` block: a heading, the leading columns' names in their types' colors, and
+/// as many of the first rows as `room` lines leave, in columns as many as `width` fits.
+fn rows_block(
+    preview: &crate::home_preview::PreviewRows,
+    width: usize,
+    room: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    const CELL_W: usize = 20;
+    const GAP: usize = 2;
+    let g = glyphs::get();
+    let null_w = glyphs::display_width(g.null);
+    // Each column as wide as its name or its widest cell shown, up to a cap.
+    let widths: Vec<usize> = preview
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            preview
+                .rows
+                .iter()
+                .map(|row| match &row[i] {
+                    Some(text) => glyphs::display_width(text),
+                    None => null_w,
+                })
+                .chain([glyphs::display_width(name)])
+                .max()
+                .unwrap_or(1)
+                .clamp(1, CELL_W)
+        })
+        .collect();
+    let mut shown = 0;
+    let mut used = 0;
+    for w in &widths {
+        let need = if shown == 0 { *w } else { GAP + *w };
+        if used + need > width {
+            break;
+        }
+        used += need;
+        shown += 1;
+    }
+    // A first column wider than the space is cut to it rather than left out.
+    let widths: Vec<usize> = if shown == 0 {
+        vec![width.max(1)]
+    } else {
+        widths[..shown].to_vec()
+    };
+    let shown = widths.len().min(preview.columns.len());
+    let mut lines = vec![rows_heading(shown, preview.total_columns, width, ctx)];
+    let cell = |text: &str, w: usize, right: bool| -> String {
+        let text = if glyphs::display_width(text) > w {
+            let cut =
+                glyphs::take_columns(text, w.saturating_sub(glyphs::display_width(g.ellipsis)));
+            format!("{cut}{}", g.ellipsis)
+        } else {
+            text.to_string()
+        };
+        let pad = w.saturating_sub(glyphs::display_width(&text));
+        if right {
+            format!("{}{text}", " ".repeat(pad))
+        } else {
+            format!("{text}{}", " ".repeat(pad))
+        }
+    };
+    let numeric: Vec<bool> = preview.columns[..shown]
+        .iter()
+        .map(|(_, dtype)| crate::numfmt::is_numeric_dtype(dtype))
+        .collect();
+    let mut header = Vec::new();
+    for (i, (name, dtype)) in preview.columns[..shown].iter().enumerate() {
+        if i > 0 {
+            header.push(Span::raw(" ".repeat(GAP)));
+        }
+        header.push(Span::styled(
+            cell(name, widths[i], numeric[i]),
+            Style::default().fg(ctx.type_color(dtype)),
+        ));
+    }
+    lines.push(Line::from(header));
+    let rows_room = room.saturating_sub(lines.len());
+    for row in preview.rows.iter().take(rows_room) {
+        let mut spans = Vec::new();
+        for (i, value) in row[..shown].iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" ".repeat(GAP)));
+            }
+            spans.push(match value {
+                Some(text) => Span::styled(
+                    cell(text, widths[i], numeric[i]),
+                    Style::default().fg(ctx.text_primary),
+                ),
+                None => Span::styled(
+                    cell(g.null, widths[i], numeric[i]),
+                    Style::default().fg(ctx.dimmed),
+                ),
+            });
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// `ROWS` on a rule, and how many of the columns the block shows when not all of them.
+fn rows_heading(shown: usize, total: usize, width: usize, ctx: &RenderContext) -> Line<'static> {
+    if shown >= total {
+        return pane_heading("ROWS", width, ctx);
+    }
+    let note = format!("{shown} of {total} columns");
+    let g = glyphs::get();
+    let used = "ROWS".len() + 2 + note.chars().count() + 1;
+    Line::from(vec![
+        Span::styled(
+            "ROWS",
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(note, Style::default().fg(ctx.dimmed)),
+        Span::raw(" "),
+        Span::styled(
+            g.rule_h.repeat(width.saturating_sub(used)),
+            Style::default().fg(ctx.column_separator),
+        ),
+    ])
 }
 
 /// Below this many rows the wordmark gives way to the one-line title bar.
@@ -316,7 +490,12 @@ fn render_rule(area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
     }
 }
 
-fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
+/// Draw the list; returns how many of its lines it used, or all of them when it
+/// drew a message rather than rows.
+fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) -> usize {
+    if app.home.path_input_active {
+        return render_path_list(area, buf, app, ctx);
+    }
     // Where this frame starts and how many rows it has room for. Settled before
     // anything borrows the listing, because both the scroll below and the decision
     // about what is worth looking into are made from it.
@@ -414,7 +593,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
             ));
         }
         Paragraph::new(Line::from(spans)).render(area, buf);
-        return;
+        return area.height as usize;
     }
 
     if app.home.listing_in_flight && visible.is_empty() {
@@ -423,7 +602,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
             Style::default().fg(ctx.dimmed),
         )))
         .render(area, buf);
-        return;
+        return area.height as usize;
     }
 
     if visible.is_empty() && !app.home.filter.is_empty() {
@@ -439,7 +618,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
             Style::default().fg(ctx.dimmed),
         )))
         .render(area, buf);
-        return;
+        return area.height as usize;
     }
 
     // Guidance shows whenever there is nothing openable — not only when the list is
@@ -615,7 +794,115 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
 
     let mut body: Vec<Line> = lines;
     body.extend(guidance);
+    let used = body.len();
     Paragraph::new(body).render(area, buf);
+    used
+}
+
+/// While `~` is typed, the list is the directory being typed: its names that the last
+/// segment matches, best first, with the one ↑↓ picked on the rail (#547 M6).
+fn render_path_list(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &mut crate::App,
+    ctx: &RenderContext,
+) -> usize {
+    let g = glyphs::get();
+    let height = area.height as usize;
+    let width = area.width as usize;
+    // No row of the home list is under the pointer meanwhile.
+    app.pointer.home_list_drawn(area, vec![None; height]);
+    let home = &app.home;
+    let dir = crate::home::typed_dir(&home.path_input);
+    let segment = &home.path_input[dir.len()..];
+    let listing = home.path_listing.as_ref().filter(|l| l.dir == dir);
+    let candidates = home.path_candidates();
+    let shown_dir = if dir.is_empty() { "./" } else { dir };
+    let count = format!("{}", candidates.len());
+    let rule_w = width.saturating_sub(shown_dir.chars().count() + count.chars().count() + 6);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(g.expanded, Style::default().fg(ctx.accent)),
+        Span::styled(
+            truncate_start(shown_dir, width.saturating_sub(count.len() + 8)),
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  {count}  "), Style::default().fg(ctx.dimmed)),
+        Span::styled(
+            g.rule_h.repeat(rule_w),
+            Style::default().fg(ctx.column_separator),
+        ),
+    ])];
+    let note = match listing {
+        None => Some(format!("Listing {shown_dir}...")),
+        Some(l) if l.failed => Some(format!("Nothing to list at {shown_dir}")),
+        Some(_) if candidates.is_empty() && !segment.is_empty() => {
+            Some(format!("No name here starts like {segment}"))
+        }
+        Some(_) if candidates.is_empty() => Some("Nothing here".to_string()),
+        Some(_) => None,
+    };
+    if let Some(note) = note {
+        lines.push(Line::from(Span::styled(
+            format!("  {note}"),
+            Style::default().fg(ctx.dimmed),
+        )));
+    }
+    // The picked row stays on screen: the list scrolls under it.
+    let room = height.saturating_sub(lines.len());
+    let pick = home.path_pick;
+    let first = match pick {
+        Some(p) if p >= room.saturating_sub(1) => p + 2 - room.max(1),
+        _ => 0,
+    };
+    let hidden_after = candidates.len().saturating_sub(first + room);
+    let take = if hidden_after > 0 {
+        room.saturating_sub(1)
+    } else {
+        room
+    };
+    for (i, name) in candidates.iter().enumerate().skip(first).take(take) {
+        let selected = pick == Some(i);
+        let base = if selected {
+            ctx.highlight_style()
+        } else {
+            Style::default()
+        };
+        let marker = if selected {
+            g.selector
+        } else {
+            g.selector_blank
+        };
+        let mut text = name.name.clone();
+        if name.dir {
+            text.push('/');
+        }
+        let positions = crate::home::fuzzy_positions(segment, &name.name);
+        let name_style = if selected {
+            base.fg(ctx.text_primary).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ctx.text_primary)
+        };
+        let hit_style = base
+            .fg(ctx.keybind_hints)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        let mut spans = vec![Span::styled(
+            marker,
+            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(highlight_spans(&text, &positions, name_style, hit_style));
+        let used = glyphs::display_width(marker) + glyphs::display_width(&text);
+        spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), base));
+        lines.push(Line::from(spans));
+    }
+    if hidden_after > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  {} {hidden_after} more", g.ellipsis),
+            Style::default().fg(ctx.dimmed),
+        )));
+    }
+    let used = lines.len();
+    Paragraph::new(lines).render(area, buf);
+    used
 }
 
 /// How far a row under a place is drawn in. Two cells: enough to read as "under",
@@ -1216,7 +1503,9 @@ fn entry_line<'a>(
         // `shown_column` below may cut this; both are written from the same string.
         None if kind.is_empty() => String::new(),
         None if kind_is_chip => format!("  {kind} "),
-        None => format!(" {kind}"),
+        // Two cells between a name and what it is, on every row: a place row's
+        // label, a bucket's, a collection's and a file's read the same (#547 M7).
+        None => format!("  {kind}"),
     };
 
     // Where this row's data lives, immediately before its name. The detail pane has
@@ -1351,7 +1640,7 @@ fn entry_line<'a>(
     // name is cut at all: the pane beside it says the same.
     let kind_cell = match discover::how_read(entry).and_then(read_marker) {
         Some(marker) if matched_column.is_none() && kind_cell.is_empty() => {
-            let cell = format!(" {marker}");
+            let cell = format!("  {marker}");
             let room = name_width.saturating_sub(2 + place_cell.chars().count() + 1);
             if name.chars().count() + cell.chars().count() <= room {
                 cell
@@ -2027,8 +2316,19 @@ fn source_details(
     lines
 }
 
-fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
+fn render_preview(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &mut crate::App,
+    ctx: &RenderContext,
+    screen_height: u16,
+) {
     let width = area.width as usize;
+    // The list is the typed directory's meanwhile; a row's details would be about
+    // something not on screen.
+    if app.home.path_input_active {
+        return;
+    }
     if let Some(crate::home::Row::Place {
         path, source, held, ..
     }) = app.home.selected_row()
@@ -2105,6 +2405,20 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         }
     }
 
+    // ---- Rows --------------------------------------------------------------------
+    // Before the schema: a few real values say more about a file than its types. At
+    // most the block's own rows, so the columns below keep their room.
+    if let Some(preview) = app.home_preview_rows(&entry, screen_height) {
+        let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
+        let room = (area.height as usize)
+            .saturating_sub(drawn + 1)
+            .min(2 + crate::home_preview::PREVIEW_ROWS);
+        if room >= STRIP_MIN_HEIGHT {
+            lines.push(Line::from(""));
+            lines.extend(rows_block(&preview, width, room, ctx));
+        }
+    }
+
     // ---- Schema ------------------------------------------------------------------
     lines.push(Line::from(""));
     match app.home_schema(&entry) {
@@ -2140,7 +2454,8 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             // One fragment, or none. The details list above already says what this
             // is, and the control bar already says what Enter does; a sentence
             // repeating either is a sentence to read past on every row.
-            let reading = app.home_schema_pending(&entry.path);
+            let reading =
+                app.home_schema_pending(&entry.path) || app.home_preview_pending(&entry.path);
             // Whether there will actually be a door in there to point at. An empty
             // directory gets none, nor does one holding only a writer's own markers, and
             // promising a row that is not there is worse than saying nothing — it is
@@ -2378,7 +2693,13 @@ fn shows_as_a_place(entry: &Entry) -> bool {
     if entry.opens_whole_directory {
         return false;
     }
-    if entry.kind == EntryKind::Directory {
+    // A dataset that is a directory is still one: `events/  hive` reads as the place
+    // it is, the way `data/  3 dirs` does.
+    if matches!(
+        entry.kind,
+        EntryKind::Directory | EntryKind::Hive | EntryKind::MultiFile
+    ) || entry.kind.is_lake_table()
+    {
         return true;
     }
     if entry.kind != EntryKind::Unknown {
@@ -2574,6 +2895,49 @@ mod tests {
             EntryKind::Directory,
         );
         assert!(!drawn(&inside, None).contains("prefix"));
+    }
+
+    /// One grammar on every row: the name, a slash when it is a place to go into, two
+    /// cells, and what it is. Local, collection and bucket rows alike, a directory of
+    /// directories counting them (#547 M7).
+    #[test]
+    fn every_row_reads_name_slash_two_spaces_label() {
+        let ctx = RenderContext::for_test();
+        let drawn = |entry: &Entry, place_kind: Option<&'static str>| -> String {
+            entry_line(
+                entry, false, 60, true, None, "", None, place_kind, None, 0, &ctx,
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("")
+        };
+        let mut local = row("/data/project/data", EntryKind::Directory);
+        local.holds.directories = 3;
+        let mut hive = row("/data/project/events", EntryKind::Hive);
+        hive.holds.partitions = 2;
+        let mut parquet = row("/data/project/processed", EntryKind::MultiFile);
+        parquet.holds.formats = vec![("parquet".to_string(), 2)];
+        let mut prefix = row("s3://bucket/exports", EntryKind::Directory);
+        prefix.holds.formats = vec![("csv".to_string(), 12)];
+        let bucket = row("s3://noaa-ghcn-pds", EntryKind::Directory);
+        let mut noaa = row("s3://noaa-ghcn-pds/parquet/", EntryKind::Directory);
+        noaa.name = "NOAA daily weather".to_string();
+        let mut penguins = row("https://example.com/csv/penguins.csv", EntryKind::File);
+        penguins.name = "Palmer penguins".to_string();
+        for (entry, place_kind, expect) in [
+            (&local, None, "data/  3 dirs"),
+            (&hive, None, "events/  hive"),
+            (&parquet, None, "processed/  2 parquet"),
+            (&prefix, None, "exports/  12 csv"),
+            (&bucket, None, "noaa-ghcn-pds/  bucket"),
+            (&noaa, Some("dataset"), "NOAA daily weather/  dataset"),
+            (&penguins, None, "Palmer penguins  csv"),
+        ] {
+            let text = drawn(entry, place_kind);
+            assert!(text.contains(expect), "{expect:?} in {text:?}");
+        }
     }
 
     /// And the pane beside it says the same word. The two take the same order through
@@ -3496,7 +3860,7 @@ mod tests {
             .collect()
         };
         let lab = ["lab".to_string()];
-        assert!(text(Some(&lab)).contains("sales.parquet lab"));
+        assert!(text(Some(&lab)).contains("sales.parquet  lab"));
         assert!(text(Some(&[])).contains("source not found: lab"));
         // Inside a source the trail already says which, so nothing is added.
         assert!(!text(None).contains("lab"));

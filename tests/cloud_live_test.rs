@@ -1344,14 +1344,9 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
 
     assert!(pump_until(&mut app, &rx, 60, listed("Palmer penguins")));
     assert!(select_row(&mut app, "Palmer penguins"));
+    // A small built-in catalog file downloads without asking (#547 M5).
     assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
-    assert!(pump_until(
-        &mut app,
-        &rx,
-        60,
-        datui::App::awaiting_download_confirmation
-    ));
-    assert!(drive(&mut app, key(crossterm::event::KeyCode::Enter)).is_none());
+    assert!(!app.awaiting_download_confirmation());
     assert!(pump_until(&mut app, &rx, 120, |app| app
         .data_table_state
         .is_some()

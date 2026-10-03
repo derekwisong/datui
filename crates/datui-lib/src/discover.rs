@@ -246,6 +246,9 @@ impl Holds {
             // `dir` says there is no data file inside. A listing cut short cannot say
             // that — it found none among the entries it read, and more files can
             // unmake it, which is what separates this from `mixed`.
+            // A directory of directories counts them: `3 dirs` says where to go next.
+            [] if self.directories == 1 => format!("1 dir{more}"),
+            [] if self.directories > 1 => format!("{}{more} dirs", self.directories),
             [] => format!("dir{more}"),
             // The `+` hedges the whole claim, not only the number: past the cap a
             // second format may be among the entries that were not read, so `5000+
@@ -345,6 +348,17 @@ impl Entry {
             EntryKind::File if self.cost.tables.is_some() => {
                 let n = self.cost.tables.unwrap_or_default();
                 format!("{n} {}", if n == 1 { "table" } else { "tables" }).into()
+            }
+            // A file named for what it holds rather than by its file name, as a
+            // collection names one: its format, which the name no longer says.
+            EntryKind::File
+                if crate::FileFormat::from_path(Path::new(&self.name)).is_none()
+                    && crate::FileFormat::from_path(&self.path).is_some() =>
+            {
+                crate::FileFormat::from_path(&self.path)
+                    .map(crate::FileFormat::name)
+                    .unwrap_or_default()
+                    .into()
             }
             kind => kind.label().into(),
         }

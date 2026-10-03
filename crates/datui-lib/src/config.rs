@@ -1012,6 +1012,10 @@ pub struct DatasetConfig {
     pub license: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub homepage: String,
+    /// About how many bytes an HTTP(S) file is, for its row before anything is
+    /// downloaded. What the server says replaces it once the file is opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
     /// Keys that are not recognized, kept so validation can name them.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
@@ -1019,7 +1023,7 @@ pub struct DatasetConfig {
 
 const SOURCE_KEYS: &str = "name, label, datasets";
 const DATASET_KEYS: &str =
-    "name, path, url, auth, connection, description, publisher, license, homepage";
+    "name, path, url, auth, connection, description, publisher, license, homepage, size";
 const AUTH_VALUES: &str = "auto or anonymous";
 
 /// Where a dataset URL lives, as far as reading it is concerned.
@@ -2103,6 +2107,10 @@ pub struct DataConfig {
     pub builtin_catalog: bool,
     /// Collection names never shown on the home screen, built-in or configured.
     pub hide_sources: Vec<String>,
+    /// The largest local file, in MB, whose first rows the home screen reads for its
+    /// preview (Parquet: its average row group). Those rows are the open's first page,
+    /// so opening the file reads them only once. 0 turns the preview off.
+    pub preview_max_mb: u64,
     /// Recursive search of the working directory from the home screen's filter.
     pub search: SearchConfig,
 }
@@ -2205,6 +2213,7 @@ impl Default for DataConfig {
             show_unreadable_files: false,
             builtin_catalog: true,
             hide_sources: Vec::new(),
+            preview_max_mb: 64,
             search: SearchConfig::default(),
         }
     }
@@ -2256,6 +2265,13 @@ const DATA_COMMENTS: &[(&str, &str)] = &[
         "hide_sources",
         "[[sources]] collections not to show, by name, the built-in \"public\" included.\n\
          Names add up across imported files. Example: hide_sources = [\"public\"]",
+    ),
+    (
+        "preview_max_mb",
+        "Show the first rows of the selected local file on the home screen when it is at\n\
+         most this many MB (Parquet: its average row group). They are read the way the\n\
+         open reads them and become its first page, so nothing is read twice.\n\
+         Files on network shares are never previewed. 0 turns the preview off.",
     ),
 ];
 

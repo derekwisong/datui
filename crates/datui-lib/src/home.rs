@@ -875,6 +875,8 @@ pub struct CollectionDataset {
     pub location: PathBuf,
     /// `key  value` lines for the details pane.
     pub details: Vec<(String, String)>,
+    /// What the collection says a remote file weighs, before it is downloaded.
+    pub size: Option<u64>,
 }
 
 impl Collection {
@@ -922,6 +924,7 @@ impl Collection {
                         name: dataset.name.clone(),
                         location,
                         details,
+                        size: dataset.size,
                     }
                 })
                 .collect(),
@@ -984,6 +987,8 @@ fn collection_entry(
         entry
     };
     entry.name = dataset.name.clone();
+    // A remote file is named, not stat'ed: its size is the collection's word for it.
+    entry.size = entry.size.or(dataset.size);
     entry
 }
 
@@ -1232,6 +1237,10 @@ pub struct HomeState {
     /// True while the user is typing a path directly.
     pub path_input_active: bool,
     pub path_input: String,
+    /// What the `~` prompt lists: the directory being typed and the names in it.
+    pub path_listing: Option<PathListing>,
+    /// The name ↑↓ put the cursor on, among those the last segment matches.
+    pub path_pick: Option<usize>,
     /// Directory the user has descended into, if any. `None` means the root listing.
     pub browsing: Option<PathBuf>,
     /// Where the current browse began: the directory entered from the root listing or
@@ -1244,6 +1253,11 @@ pub struct HomeState {
     /// How a path is judged to be network-backed. Swappable so the "never touch a
     /// remote path on this thread" rule can be tested without a remote.
     pub network_check: fn(&Path) -> bool,
+    /// How often and how lately each recent was opened: ranks matches (#547 M9).
+    pub visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
+    /// The recent opened last. Recent is ranked by frecency, and the cursor lands here
+    /// so the last file is still one Enter away.
+    pub newest_recent: Option<PathBuf>,
     /// Network roots whose listing has come back, keyed by path.
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network roots that did not answer.
@@ -1387,6 +1401,10 @@ pub struct SearchState {
 /// a millisecond or two, and the list answers in the same frame as the key.
 const SCORE_INLINE_MAX: usize = 2_000;
 
+/// Match score a unit of frecency is worth, up to ten units: a file opened every day
+/// outranks one whose name matches a little better, never one that matches far better.
+const FRECENCY_LIFT: f64 = 3.0;
+
 /// What a worker needs to score the filter against a walk's files.
 #[derive(Debug, Clone)]
 pub struct ScoreJob {
@@ -1451,10 +1469,14 @@ impl Default for HomeState {
             view_height: 0,
             path_input_active: false,
             path_input: String::new(),
+            path_listing: None,
+            path_pick: None,
             browsing: None,
             browse_start: None,
             status: None,
             network_check: is_remote_path,
+            visits: Default::default(),
+            newest_recent: None,
             sort: SortMode::default(),
             listing_in_flight: false,
             measure_in_flight: false,
@@ -1818,7 +1840,18 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             if let Some(known) = probed_entry(probed, p) {
                 return known;
             }
-            entry_for_path(p, network_check(p))
+            let mut entry = entry_for_path(p, network_check(p));
+            // A dataset opened from a collection comes back under the collection's name
+            // for it, not its URL's last segment (#547 D12).
+            if let Some(dataset) = collections
+                .iter()
+                .flat_map(|c| &c.datasets)
+                .find(|d| d.location == *p)
+            {
+                entry.name = dataset.name.clone();
+                entry.size = entry.size.or(dataset.size);
+            }
+            entry
         })
         .collect();
 
@@ -3532,9 +3565,26 @@ impl HomeState {
             // equal and the curated order is preserved. Ties go to the shorter name,
             // which is fzf's default tiebreak and the reason `sales` prefers
             // `sales.csv` over `sales_by_region_and_quarter.csv`.
+            //
+            // An often-opened row is lifted by its frecency, up to a few characters'
+            // worth of match: of two files `sales` finds, the one opened most comes
+            // first (#547 M9).
             if !self.filter.is_empty() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                let lifted = |entry: &Entry, score: i32| {
+                    let frecency = self
+                        .visits
+                        .get(&entry.path)
+                        .map_or(0.0, |v| v.frecency(now));
+                    score.saturating_add((frecency.min(10.0) * FRECENCY_LIFT) as i32)
+                };
                 matched.sort_by(|(a, sa), (b, sb)| {
-                    sb.cmp(sa).then_with(|| a.name.len().cmp(&b.name.len()))
+                    lifted(b, *sb)
+                        .cmp(&lifted(a, *sa))
+                        .then_with(|| a.name.len().cmp(&b.name.len()))
                 });
             }
 
@@ -3689,6 +3739,115 @@ impl HomeState {
             });
         }
         out
+    }
+
+    /// The names the `~` prompt offers: those in the directory being typed that its
+    /// last segment matches, best first. Hidden names only when a dot is typed.
+    pub fn path_candidates(&self) -> Vec<&PathName> {
+        let Some(listing) = self
+            .path_listing
+            .as_ref()
+            .filter(|l| l.dir == typed_dir(&self.path_input))
+        else {
+            return Vec::new();
+        };
+        let segment = &self.path_input[listing.dir.len()..];
+        let mut matched: Vec<(&PathName, i32)> = listing
+            .names
+            .iter()
+            .filter(|n| !n.name.starts_with('.') || segment.starts_with('.'))
+            .filter_map(|n| {
+                if segment.is_empty() {
+                    return Some((n, 0));
+                }
+                // A name that starts with what is typed first, as a shell completes;
+                // then the rest the fuzzy match finds.
+                let prefix = n.name.starts_with(segment) as i32 * 1_000_000;
+                fuzzy_score(segment, &n.name).map(|score| (n, prefix + score))
+            })
+            .collect();
+        matched.sort_by(|(a, sa), (b, sb)| sb.cmp(sa).then_with(|| a.name.cmp(&b.name)));
+        matched.into_iter().map(|(n, _)| n).collect()
+    }
+
+    /// The path the picked candidate names, with its separator when it is a directory.
+    pub fn picked_path(&self) -> Option<String> {
+        let pick = self.path_pick?;
+        let name = *self.path_candidates().get(pick)?;
+        let dir = typed_dir(&self.path_input);
+        let mut path = format!("{dir}{}", name.name);
+        if name.dir {
+            path.push(separator_in(dir));
+        }
+        Some(path)
+    }
+
+    /// What Tab makes of the typed path: the one candidate whole, or the longest
+    /// start every candidate shares. `None` when it would add nothing.
+    pub fn path_completion(&self) -> Option<String> {
+        let dir = typed_dir(&self.path_input);
+        let segment = &self.path_input[dir.len()..];
+        let candidates = self.path_candidates();
+        match candidates.as_slice() {
+            [] => None,
+            [one] => {
+                let mut path = format!("{dir}{}", one.name);
+                if one.dir {
+                    path.push(separator_in(dir));
+                }
+                Some(path)
+            }
+            many => {
+                let starting: Vec<&str> = many
+                    .iter()
+                    .map(|n| n.name.as_str())
+                    .filter(|n| n.starts_with(segment))
+                    .collect();
+                let first = starting.first()?;
+                let shared = starting
+                    .iter()
+                    .skip(1)
+                    .fold(first.to_string(), |acc, n| common_prefix(&acc, n));
+                (shared.len() > segment.len()).then(|| format!("{dir}{shared}"))
+            }
+        }
+    }
+
+    /// Every URL the screen already knows: collections, buckets, what has been listed
+    /// and what the index remembers. What `s3://` completes from.
+    pub fn known_urls(&self) -> Vec<String> {
+        let mut urls: Vec<String> = Vec::new();
+        let mut add = |path: &Path| {
+            let text = path.to_string_lossy();
+            if text.contains("://") && !is_cloud_place(path) {
+                urls.push(text.into_owned());
+            }
+        };
+        for collection in &self.collections {
+            for dataset in &collection.datasets {
+                add(&dataset.location);
+            }
+        }
+        for source in &self.cloud {
+            for bucket in &source.buckets {
+                add(bucket);
+            }
+        }
+        for (root, rows) in &self.probed {
+            add(root);
+            for row in rows {
+                add(&row.path);
+            }
+        }
+        for path in self.known.keys() {
+            add(path);
+        }
+        for section in &self.sections {
+            for row in &section.rows {
+                add(&row.path);
+            }
+        }
+        urls
     }
 
     /// The highlighted row, whatever it is.
@@ -4130,6 +4289,17 @@ impl HomeState {
     /// Where [`HomeState::select_first_entry`] puts the cursor.
     fn landing_row(&self) -> usize {
         let rows = self.visible();
+        // Recent is ranked by frecency, and the last file opened is still one Enter away.
+        if self.filter.is_empty()
+            && let Some(newest) = self.newest_recent.as_ref()
+            && let Some(at) = rows.iter().position(|r| {
+                matches!(r, Row::Entry { section, entry, .. }
+                    if entry.path == *newest
+                        && self.sections[*section].title == Self::RECENT_SECTION)
+            })
+        {
+            return at;
+        }
         let first = rows
             .iter()
             .position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }));
@@ -4386,6 +4556,134 @@ pub fn complete_path(typed: &str) -> (String, usize) {
         completed.push(separator);
     }
     (completed, names.len())
+}
+
+/// One name in the directory the `~` prompt is typing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathName {
+    pub name: String,
+    /// A directory, prefix or bucket: completed with a separator, and gone into.
+    pub dir: bool,
+}
+
+/// What the `~` prompt lists: the directory part of what is typed, and what is in it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathListing {
+    /// The typed text up to and including its last separator, as typed.
+    pub dir: String,
+    pub names: Vec<PathName>,
+    /// Reading the directory failed: there is nothing to list, and the prompt says so.
+    pub failed: bool,
+}
+
+/// Names a typed directory lists at most. A prompt is for finding one name, and a
+/// directory of a hundred thousand is typed into, not scrolled.
+const PATH_LISTING_MAX: usize = 5_000;
+
+/// The directory part of a typed path: everything up to and including its last
+/// separator. For a URL, at least its scheme (`s3://`), so the buckets are what is
+/// listed under it.
+pub fn typed_dir(typed: &str) -> &str {
+    let is_separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let floor = typed.find("://").map_or(0, |at| at + 3);
+    match typed[floor..].rfind(is_separator) {
+        Some(at) => &typed[..floor + at + 1],
+        None => &typed[..floor],
+    }
+}
+
+/// The separator a directory completed under `dir` ends with: a URL's `/`, or the one
+/// the user has been typing, so `C:\Users\` does not become `C:\Users/`.
+fn separator_in(dir: &str) -> char {
+    if typed_dir_is_url(dir) {
+        return '/';
+    }
+    dir.chars()
+        .rev()
+        .find(|c| *c == '/' || (cfg!(windows) && *c == '\\'))
+        .unwrap_or(std::path::MAIN_SEPARATOR)
+}
+
+/// Whether a typed directory is a URL, listed from what datui already knows rather
+/// than read.
+pub fn typed_dir_is_url(dir: &str) -> bool {
+    dir.contains("://")
+}
+
+/// What a local directory typed at `~` holds, for the prompt's list. Reads the
+/// directory, so it runs on a worker. Nothing typed lists the working directory.
+pub fn list_typed_dir(dir: &str) -> PathListing {
+    let path = if dir.is_empty() {
+        PathBuf::from(".")
+    } else {
+        expand_user_path(dir)
+    };
+    let Ok(entries) = std::fs::read_dir(&path) else {
+        return PathListing {
+            dir: dir.to_string(),
+            names: Vec::new(),
+            failed: true,
+        };
+    };
+    let mut names: Vec<PathName> = entries
+        .flatten()
+        .take(PATH_LISTING_MAX)
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // A link to a directory is one to go into.
+            let dir = e.file_type().is_ok_and(|t| t.is_dir())
+                || (e.file_type().is_ok_and(|t| t.is_symlink()) && e.path().is_dir());
+            PathName { name, dir }
+        })
+        .collect();
+    names.sort_by(|a, b| a.name.cmp(&b.name));
+    PathListing {
+        dir: dir.to_string(),
+        names,
+        failed: false,
+    }
+}
+
+/// The names one level below `dir` among `urls`: how `s3://`, `gs://` and `az://`
+/// complete, from buckets, prefixes and datasets datui has already listed, opened or
+/// been given by a collection. Nothing is asked of the store.
+pub fn names_under(dir: &str, urls: impl IntoIterator<Item = String>) -> PathListing {
+    let mut names: Vec<PathName> = Vec::new();
+    for url in urls {
+        // An Azure URL is known in its full form; `az://container/` is how one is typed.
+        let forms = match crate::source::azure_parts(&url) {
+            Some((_, container, key)) => vec![url.clone(), format!("az://{container}/{key}")],
+            None => vec![url],
+        };
+        for form in forms {
+            let Some(rest) = form.strip_prefix(dir) else {
+                continue;
+            };
+            let (name, more) = match rest.split_once('/') {
+                Some((name, more)) => (name, Some(more)),
+                None => (rest, None),
+            };
+            if name.is_empty() {
+                continue;
+            }
+            // Something below it, or a trailing slash: a bucket or a prefix. A last
+            // segment with no extension is taken for one too, as a recent is.
+            let is_dir = more.is_some() || !names_a_file(Path::new(&form));
+            match names.iter_mut().find(|n| n.name == name) {
+                Some(known) => known.dir |= is_dir,
+                None => names.push(PathName {
+                    name: name.to_string(),
+                    dir: is_dir,
+                }),
+            }
+        }
+    }
+    names.sort_by(|a, b| a.name.cmp(&b.name));
+    PathListing {
+        dir: dir.to_string(),
+        names,
+        failed: false,
+    }
 }
 
 fn common_prefix(a: &str, b: &str) -> String {

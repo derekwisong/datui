@@ -245,6 +245,38 @@ fn a_pause_holds_the_view_and_a_resume_catches_up() {
     assert_eq!(app.follow().unwrap().standing(), &Standing::Following);
 }
 
+/// Blank lines between NDJSON records are not rows: every record shows, the last
+/// one included, at open and after an append (#672).
+#[test]
+fn blank_lines_in_ndjson_cost_no_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gaps.ndjson");
+    std::fs::write(&path, "{\"id\": 1}\n\n{\"id\": 2}\n\n\n{\"id\": 3}\n").unwrap();
+    let (mut app, rx) = app();
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
+    screen(&mut app);
+    let ids = |app: &App| -> Vec<i64> {
+        let df = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
+            .unwrap();
+        df.column("id")
+            .unwrap()
+            .i64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect()
+    };
+    assert_eq!(ids(&app), [1, 2, 3]);
+    append(&path, "\n{\"id\": 4}\n\n{\"id\": 5}\n");
+    until(&mut app, &rx, |app| rows(app) == 5);
+    assert_eq!(ids(&app), [1, 2, 3, 4, 5]);
+}
+
 /// A file whose footer is written last cannot be read as it grows: refused, saying so.
 #[test]
 fn a_parquet_file_is_not_followed() {

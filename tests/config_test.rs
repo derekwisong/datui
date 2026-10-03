@@ -510,6 +510,7 @@ backend = "osc52"
 directories = ["/mnt/data"]
 use_desktop_recents = false
 builtin_catalog = false
+preview_max_mb = 0
 
 [data.search]
 skip = ["only-this"]
@@ -536,6 +537,7 @@ cross_filesystems = true
     assert_eq!(kept.data.directories, ["/mnt/data"]);
     assert!(!kept.data.use_desktop_recents);
     assert!(!kept.data.builtin_catalog);
+    assert_eq!(kept.data.preview_max_mb, 0);
     assert_eq!(kept.data.search.skip, ["only-this"]);
     assert!(kept.data.search.cross_filesystems);
 
@@ -569,6 +571,7 @@ backend = "auto"
 directories = []
 use_desktop_recents = true
 builtin_catalog = true
+preview_max_mb = 64
 
 [data.search]
 skip = ["node_modules", "target", "build", "dist", "vendor", "site-packages", "__pycache__", "venv", "env"]
@@ -603,6 +606,7 @@ cross_filesystems = false
     );
     assert!(restored.data.use_desktop_recents);
     assert!(restored.data.builtin_catalog);
+    assert_eq!(restored.data.preview_max_mb, defaults.data.preview_max_mb);
     assert_eq!(restored.data.search.skip, defaults.data.search.skip);
     assert!(!restored.data.search.cross_filesystems);
     assert_eq!(restored.collections().len(), 1, "the catalog is back");

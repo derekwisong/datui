@@ -46,6 +46,7 @@ connection = "onprem"                 # a [[cloud.connections]] name
 | `auth` | Object-store `url` only: `auto` (the default) or `anonymous` |
 | `connection` | Object-store `url` only: the [`[[cloud.connections]]`](cloud-sources.md#connections) entry whose login reads it |
 | `description`, `publisher`, `license`, `homepage` | Shown in the details pane |
+| `size` | HTTP(S) `url` only: about how many bytes the file is, shown on its row before anything is downloaded |
 
 A dataset has exactly one of `path` and `url`. No two datasets in a collection
 share a name or a location.
@@ -56,7 +57,7 @@ share a name or a location.
 | Local directory | Steps inside | |
 | Object-store file | Opens it | `auth` or `connection` |
 | Object-store directory | Steps inside. <kbd>Backspace</kbd> at its top comes back to the list | `auth` or `connection` |
-| HTTP(S) file | Downloads it, after asking, and opens it | No login |
+| HTTP(S) file | Downloads it, after asking, and opens it; a built-in catalog file under 50 MB is downloaded without asking | No login |
 
 | Reading | Means |
 |---|---|

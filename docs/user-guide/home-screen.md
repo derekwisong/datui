@@ -2,7 +2,8 @@
 
 Run `datui` without a path, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>, to find and
 open a dataset. Type to filter the list; press <kbd>Enter</kbd> to open the
-selected row. The details pane previews its schema when available.
+selected row. The details pane shows the selected file's first rows and its
+schema when available.
 
 ## Open a file or directory
 
@@ -11,9 +12,19 @@ selected row. The details pane previews its schema when available.
    or double-click it. The wheel moves the selection; see [Mouse](../reference/keyboard-shortcuts.md#mouse).
 3. To browse inside a directory instead of combining its files, press <kbd>→</kbd>.
 
-To enter a path, clear the filter and press <kbd>~</kbd>. Type the path, use
-<kbd>Tab</kbd> to complete it, then press <kbd>Enter</kbd>. A file opens; a
-directory is browsed, as <kbd>→</kbd> does.
+To enter a path, clear the filter and press <kbd>~</kbd>. While you type, the
+list shows the directory being typed, narrowed by the name after the last `/`.
+
+| Key | At the `~` prompt |
+|---|---|
+| <kbd>Tab</kbd> | Complete the one name left, with a `/` for a directory, or what the names share |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Pick a name from the list |
+| <kbd>Enter</kbd> | Open the file, or browse the directory as <kbd>→</kbd> does |
+
+`s3://`, `gs://` and `az://` complete bucket and prefix names from what datui
+already knows: listed sources and prefixes, recents, the dataset index and the
+public catalog. Nothing is asked of the store, so `s3://noaa` + <kbd>Tab</kbd>
+gives `s3://noaa-ghcn-pds/`.
 
 <kbd>Ctrl</kbd>+<kbd>D</kbd> remembers a directory as its own section.
 <kbd>Ctrl</kbd>+<kbd>O</kbd> returns home from an open table.
@@ -52,8 +63,11 @@ empty current directory says `nothing to open here · ~ types a path`.
 A **place row** groups datasets by directory. Open the place to browse its
 contents, including files you have not opened individually. This is why a
 familiar directory can show more files than your recent individual opens.
-Places are ordered by recency; sorting changes the dataset order within each
-place.
+Recent is ranked by frecency, as zoxide ranks directories: each open counts four
+times within the hour, twice within the day, half within the week and a quarter
+after that. Places follow their highest-ranked dataset. The cursor starts on
+the dataset opened last, so <kbd>Enter</kbd> reopens it. Sorting changes the
+dataset order within each place.
 
 Initially, whole places fill up to a third of the list, with at least one
 place shown. Select `… more in … places` to expand the rest for this session.
@@ -110,7 +124,8 @@ of time`.
 Name matching uses fzf-style scoring: consecutive characters, word boundaries
 and filename matches rank higher. Matched characters are underlined.
 Known Parquet column names also match; name matches rank ahead of column
-matches. Column metadata is remembered between runs.
+matches. A dataset you open often ranks above one that matches about as well,
+in every section. Column metadata is remembered between runs.
 
 ### What is skipped
 
@@ -143,11 +158,30 @@ crossing onto network shares or triggering automounts during a search.
 | Partitions | Keys and values found in directory names |
 | Schema | Known columns and their types |
 
-Parquet previews read metadata, not data rows. Counts cover up to 64 files;
+### First rows
+
+For a local CSV, TSV, PSV, JSON Lines, Arrow IPC or Parquet file, the pane's
+`ROWS` block shows the first eight rows of the leading columns, read in the
+background when the row is selected. The read is the open's own first page:
+<kbd>Enter</kbd> installs it, so opening the file reads nothing again.
+
+| Setting | Effect |
+|---|---|
+| `[data] preview_max_mb = 64` | Largest file previewed; for Parquet, its average row group. `0` turns the preview off |
+
+Files on network shares and in object stores are not read before they are
+opened. Below about 100 columns, where there is no pane, the rows show in a
+strip at the bottom of the screen when the list leaves at least four lines
+free, as it does inside a small directory.
+
+Parquet facts read metadata, not data rows. Counts cover up to 64 files;
 for a larger dataset the pane shows an unknown row count and a sampled column
 count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts.
 
 ### What a row's label says
+
+Every row reads the same way: the name, a `/` when it is a directory, two
+spaces, then the label: `data/  3 dirs`, `events/  hive`, `Palmer penguins  csv`.
 
 | Label | Directory contents |
 |---|---|
@@ -157,7 +191,9 @@ count, such as `? × 39+`. CSV and other scan-to-count formats omit these counts
 | `3 safetensors`, `2 gguf` | A model: weight files of one format, with only JSON (config, tokenizer) beside them. Opens as one table |
 | `3 tables` | A SQLite database or a NumPy `.npz` archive (a file, not a directory). One table opens; several are listed, a row each, when <kbd>Enter</kbd> or <kbd>→</kbd> goes inside |
 | `mixed` | Several formats |
-| `dir` | No direct data files; `dir+` means the listing was cut short |
+| `3 dirs` | Only directories: how many there are to go into |
+| `dir` | No direct data files and no directories; `dir+` means the listing was cut short |
+| `csv`, `parquet` | A file whose row name does not say its format, such as a public dataset |
 | `bucket`, `container` | The top of an object store |
 | `…`, spinner, `?` | Not inspected yet, inspecting, or inspection failed |
 
@@ -265,7 +301,7 @@ alike, shown as a section under its label. See
 | Local directory | Steps inside | What is inside (`1 csv`, `hive`) |
 | Local path with nothing there | Says it does not exist | `missing` |
 | Directory in an object store | Steps inside; <kbd>Backspace</kbd> at its top comes back here | `dataset` |
-| File in an object store or on the web | Opens it; a web file is downloaded after asking | |
+| File in an object store or on the web | Opens it; a web file is downloaded after asking | Its format, such as `csv`, and its `size` when given |
 
 Nothing remote is asked for until you open or enter a dataset. Inside one, the
 title bar's trail starts with the collection and the dataset's name:
@@ -296,6 +332,11 @@ leaves out the rows it cannot open.
 | Aqueous solubility (SDF) | 1,025 molecules: measured solubility (log mol/L), a low, medium or high class, and SMILES | BSD-3-Clause (RDKit) |
 | Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
+
+Each web file's row gives its format and its size. One under 50 MB downloads
+without a question; the bottom bar says `Downloading 16.1 KB...` while it does.
+A URL typed at <kbd>~</kbd> is always asked about. Opened once, a dataset comes
+back under Recent by its catalog name, with the rows and columns its open counted.
 
 The details pane gives each one's publisher, license and homepage. The license is
 the publisher's: check it before you use the data.
@@ -344,8 +385,8 @@ cancel and return home. If a file cannot open, home shows the error and
 
 ## What datui remembers
 
-Datui caches recent paths and measured metadata: counts, column names, size
-and modification time. Clear them with:
+Datui caches recent paths, how often and how lately each was opened, and
+measured metadata: counts, column names, size and modification time. Clear them with:
 
 | Command | Removes |
 |---|---|
@@ -366,7 +407,7 @@ These commands do not delete data files.
 | <kbd>→</kbd> | Browse inside a directory, including a Hive dataset; unfold a section |
 | <kbd>←</kbd> | Fold a section |
 | type | Filter names and known column names |
-| <kbd>~</kbd> with an empty filter | Enter a path or URL; <kbd>Tab</kbd> completes paths. <kbd>Enter</kbd> opens a file and browses a directory |
+| <kbd>~</kbd> with an empty filter | Enter a path or URL; the list shows the directory being typed. <kbd>Tab</kbd> completes, <kbd>↑</kbd> <kbd>↓</kbd> pick a name. <kbd>Enter</kbd> opens a file and browses a directory |
 | <kbd>Tab</kbd> | Cycle sort: natural, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
@@ -404,7 +445,8 @@ beside its name, whether it is local or on a share.
 ## Narrow and plain terminals
 
 The details pane hides below roughly 100 columns; size and shape columns hide
-below roughly 56. Below 28 rows, the wordmark becomes a one-line title.
+below roughly 56. On a wide terminal the list stops at 84 columns, so a row's
+size and age stay near its name, and the pane takes the rest. Below 28 rows, the wordmark becomes a one-line title.
 Without UTF-8 ([detection](../reference/settings.md#glyphs-or-ascii)), markers
 and borders use ASCII. Override detection with:
 

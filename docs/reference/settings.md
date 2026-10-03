@@ -146,6 +146,7 @@ use_desktop_recents = true                  # Offer directories from the desktop
 show_unreadable_files = false               # List files datui cannot read, dimmed; Ctrl+A flips it
 builtin_catalog = true                      # Offer the built-in "public" collection
 hide_sources = []                           # Collections not to show, by name
+preview_max_mb = 64                         # Largest local file whose first rows home shows; 0 is off
 
 [data.search]                               # The recursive search typing starts
 enabled           = true

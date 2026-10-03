@@ -29,13 +29,18 @@ Navigation:
 
 Finding:
   (type):           Filter by name or column; fuzzy, so "sal" finds "sales".
-                    Typing also searches below the directory you are inside
-                    and the listed bucket names; matches appear under "Found"
+                    What you open often ranks first. Typing also searches
+                    below the directory you are inside and the listed bucket
+                    names; matches appear under "Found"
   ~:                While the filter is empty: type a path or URL by hand.
-                    The prompt is a plain editor: characters, Backspace,
-                    Ctrl+U clears, Tab completes, Enter opens a file or
-                    goes inside a directory, Esc closes. With a filter
-                    typed, ~ types into it
+                    The list shows the directory being typed, narrowed by
+                    the name after the last /. The prompt is a plain
+                    editor: characters, Backspace, Ctrl+U clears, Tab
+                    completes the one name left or what the names share,
+                    ↑ / ↓ pick a name, Enter opens a file or goes inside a
+                    directory, Esc closes. s3://, gs:// and az://
+                    complete from buckets and prefixes already known.
+                    With a filter typed, ~ types into it
   Ctrl+U:           Clear the filter or path input
   Ctrl+R:           List again what is on screen
   Ctrl+A:           Show or hide files datui cannot read; inside a SQLite
@@ -52,7 +57,8 @@ Finding:
 
 Sections, in order:
   Recent:             Datasets opened before, grouped under the directory each
-                      lives in, newest place first
+                      lives in, ranked by how often and how lately each was
+                      opened; the cursor starts on the one opened last
   Current directory:  Where datui was launched
   Cloud:              One row per cloud source; Enter lists its buckets
   Collections:        Each [[sources]] collection under its label: named
@@ -61,13 +67,16 @@ Sections, in order:
   Configured:         Directories from [data] directories in the config,
                       then those remembered with Ctrl+D
   Public datasets:    The built-in collection, after your own. Its data stays
-                      with the publisher until you open it
+                      with the publisher until you open it; a web file under
+                      50 MB downloads without a question
   Elsewhere:          Directories your desktop recorded; starts folded
   Found:              Search results, shown while typing
 
 Reading a row:
-  A directory's label says what is directly inside: a count and format
-  ("12 parquet"), hive, delta, iceberg, hudi, "mixed", or "dir". A label of
+  Every row reads name, then "/" for a directory, two spaces, and its
+  label. A directory's label says what is directly inside: a count and
+  format ("12 parquet"), hive, delta, iceberg, hudi, "mixed", "3 dirs" for
+  directories only, or "dir" for neither. A label of
   … has not been looked at yet; labels fill in as you scroll. Inside a
   directory with something openable, the first row reads the whole
   directory as one table, and says how: "(hive table: year, month)",
@@ -86,13 +95,17 @@ Reading a row:
   A file row that is not read lazily says how opening it reads it, dim
   beside its name: "converts" (read once into a temporary file), "in
   memory" (read whole), or "downloads" (a remote file copied first).
+  The details pane shows a local file's first rows under ROWS, read when
+  the row is selected; Enter opens the file on those same rows, so they
+  are read once. Without the pane, they take the free lines at the bottom
+  of the screen. [data] preview_max_mb sets the largest file read.
 
 Help and leaving:
   ? / F1:           This help (? before typing starts; F1 always)
   Ctrl+Q / Ctrl+C:  Quit
 
 What datui remembers, all under its cache directory and never the data
-itself: recent paths, the shapes and column names it measured (so this
-screen can say 1,000 × 11 without reading anything), query history, section
-folds, remembered directories, bucket listings and hidden cloud sources.
-datui --clear-cache removes all of it.
+itself: recent paths and how often each was opened, the shapes and column
+names it measured (so this screen can say 1,000 × 11 without reading
+anything), query history, section folds, remembered directories, bucket
+listings and hidden cloud sources. datui --clear-cache removes all of it.

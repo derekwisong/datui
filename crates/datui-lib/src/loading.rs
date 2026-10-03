@@ -908,12 +908,48 @@ impl Loader {
         } = request;
         // What an earlier load found of its Arrow is not this one's to read.
         options.arrow_parts = None;
+        let prepared = options
+            .prepared
+            .take()
+            .and_then(|handoff| handoff.lock().ok()?.take());
         let load = self.start(false);
         load.path = Some(shown.unwrap_or_else(|| stdin::named(&paths[0])));
         load.size = size;
         load.recent = recent;
         load.paths = Some(paths.clone());
-        self.first_step(paths, options)
+        match prepared {
+            Some(prepared) => self.install_prepared(*prepared),
+            None => self.first_step(paths, options),
+        }
+    }
+
+    /// Install the dataset the home screen's preview built: its scan, schema and first
+    /// page are read already, so the open goes straight to its first rows, which are
+    /// on hand.
+    fn install_prepared(&mut self, prepared: crate::home_preview::Prepared) -> Step {
+        let crate::home_preview::Prepared {
+            state,
+            options,
+            debug_label,
+            progress,
+        } = prepared;
+        let writer = self.unfinished.writer(progress.cancel_flag());
+        let load = self.load.as_mut().expect("started by the open");
+        load.phase = Phase::FirstRows;
+        // The dataset was built reporting to the preview's counter, which is the one
+        // its own footer pass goes on with.
+        load.progress = progress;
+        load.writer = writer;
+        Step::Install(Box::new(Loaded {
+            state: *state,
+            path: load.path.clone(),
+            options,
+            debug_label,
+            paths: load.paths.clone(),
+            recent: load.recent.clone(),
+            from_home: load.from_home,
+            footers: load.progress.clone(),
+        }))
     }
 
     /// Open a frame handed over (the Python binding's): only its schema is read.
@@ -1352,6 +1388,22 @@ impl Loader {
                         Step::Probe(pending)
                     }
                     None => self.failed(id, NO_RANGES),
+                }
+            }
+            // A small file of the built-in catalog: its row said what it is and what it
+            // weighs, so it is fetched without a question.
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            (LoadAnswer::Sized(pending), Phase::CheckingSize { note: None })
+                if pending
+                    .parts()
+                    .2
+                    .download_unasked
+                    .is_some_and(|unasked| unasked.covers(pending.parts().1)) =>
+            {
+                load.phase = Phase::Downloading;
+                Step::Download {
+                    pending,
+                    writer: load.writer.clone(),
                 }
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
@@ -2554,6 +2606,48 @@ mod tests {
             ),
             Step::Ask(PendingDownload::Arrow { .. })
         ));
+    }
+
+    /// A small file of the built-in catalog is downloaded as soon as its size is known,
+    /// with no question; a large one, one the server and the catalog say nothing of,
+    /// and any other URL are asked about (#547 M5).
+    #[cfg(feature = "http")]
+    #[test]
+    fn a_small_catalog_file_downloads_without_asking() {
+        let url = "https://example.com/penguins.csv";
+        let jobs = jobs();
+        let unasked = |listed| crate::UnaskedDownload {
+            limit: 1_000,
+            listed,
+        };
+        let ask = |options: Option<crate::UnaskedDownload>, size: Option<u64>| {
+            let mut loader = Loader::default();
+            let mut request = request(url);
+            request.options.download_unasked = options;
+            let Step::Probe(pending) = loader.open(request) else {
+                panic!("the size is asked first");
+            };
+            let id = loader.id().unwrap();
+            let step = loader.answered(id, LoadAnswer::Sized(pending.with_size(size)), &jobs);
+            (matches!(step, Step::Download { .. }), loader)
+        };
+        let (downloads, loader) = ask(Some(unasked(None)), Some(800));
+        assert!(downloads, "under the limit: no question");
+        assert!(!loader.asking());
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            ("Downloading", 20)
+        );
+        assert!(
+            ask(Some(unasked(Some(800))), None).0,
+            "the catalog's size stands in"
+        );
+        assert!(
+            !ask(Some(unasked(Some(800))), Some(5_000)).0,
+            "the server's size wins"
+        );
+        assert!(!ask(Some(unasked(None)), None).0, "nothing says how big");
+        assert!(!ask(None, Some(10)).0, "a URL from anywhere else asks");
     }
 
     /// A remote file is sized, put to the user, downloaded, then scanned under its URL;

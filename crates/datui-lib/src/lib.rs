@@ -99,6 +99,7 @@ mod hex_keys;
 pub mod hex_view;
 pub mod hf_splits;
 pub mod home;
+pub mod home_preview;
 pub mod indexed;
 pub mod inspector_bytes;
 pub mod inspector_drill;
@@ -1253,6 +1254,35 @@ mod home_worker_panic_tests {
                 app.event(&event);
             }
         }
+    }
+
+    /// A listing for somewhere the user has left lands without saying nothing is in
+    /// flight: the listing for where they are still runs.
+    #[test]
+    fn a_stale_listing_leaves_the_current_one_in_flight() {
+        let (mut app, _rx, _dir) = app();
+        app.home_refresh();
+        let stale = app.home_generation;
+        app.home_refresh();
+        assert!(app.home.listing_in_flight);
+        app.event(&AppEvent::HomeListingReady {
+            generation: stale,
+            listing: Box::default(),
+            known: Default::default(),
+            folds: None,
+            visits: Default::default(),
+            newest: None,
+        });
+        assert!(app.home.listing_in_flight, "the current listing still runs");
+        app.event(&AppEvent::HomeListingReady {
+            generation: app.home_generation,
+            listing: Box::default(),
+            known: Default::default(),
+            folds: None,
+            visits: Default::default(),
+            newest: None,
+        });
+        assert!(!app.home.listing_in_flight);
     }
 
     #[test]
@@ -8681,6 +8711,30 @@ pub struct OpenOptions {
     pub tee_raw: bool,
     /// `--force`: FILE may replace a file that is there.
     pub force: bool,
+    /// The dataset the home screen's preview built and read the first page of, for
+    /// this open to install rather than read again. Taken once.
+    pub prepared: Option<crate::home_preview::Handoff>,
+    /// A file of the built-in catalog: downloaded without asking when it is small.
+    pub download_unasked: Option<UnaskedDownload>,
+}
+
+/// A remote file downloaded without asking: one the built-in catalog lists, at most
+/// `limit` bytes by what the server says or, when it says nothing, by the catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnaskedDownload {
+    pub limit: u64,
+    pub listed: Option<u64>,
+}
+
+impl UnaskedDownload {
+    /// The largest built-in catalog file downloaded without asking.
+    pub const LIMIT: u64 = 50 * 1024 * 1024;
+
+    /// Whether a file of `size` bytes, if the server said, is downloaded unasked.
+    pub fn covers(&self, size: Option<u64>) -> bool {
+        size.or(self.listed)
+            .is_some_and(|bytes| bytes <= self.limit)
+    }
 }
 
 impl OpenOptions {
@@ -8754,6 +8808,8 @@ impl OpenOptions {
             tee: None,
             tee_raw: false,
             force: false,
+            prepared: None,
+            download_unasked: None,
         }
     }
 }
@@ -9057,12 +9113,20 @@ pub enum AppEvent {
         listing: Box<crate::home::Listing>,
         /// What earlier runs measured, read from the cache with the listing.
         known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+        /// How often and how lately each recent was opened.
+        visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
+        /// The recent opened last, where the cursor lands.
+        newest: Option<PathBuf>,
         /// The saved folds, when entering the home screen asked for them.
         folds: Option<std::collections::HashMap<String, bool>>,
     },
     /// The worker building a home listing panicked, so no listing is coming. The panic
     /// is flashed like any other raw worker's.
     HomeListingFailed,
+    /// The directory the `~` prompt is typing, read off-thread.
+    HomePathListed {
+        listing: Box<crate::home::PathListing>,
+    },
     /// A completed path, worked out off-thread.
     HomePathCompleted {
         generation: u64,
@@ -9071,6 +9135,17 @@ pub enum AppEvent {
         typed: String,
         completed: String,
         candidates: usize,
+    },
+    /// The first rows of the highlighted file, read off-thread the way its open reads
+    /// them, and the dataset that read built, for the open to install.
+    HomePreviewReady {
+        path: PathBuf,
+        /// The row's stamp when it was asked for: what the rows are kept under.
+        stamp: crate::home_preview::Stamp,
+        /// The file's stamp when it was read: what the dataset is installed under.
+        read_at: Option<crate::home_preview::Stamp>,
+        rows: Option<Arc<crate::home_preview::PreviewRows>>,
+        prepared: crate::home_preview::Handoff,
     },
     /// A schema read off-thread for the highlighted dataset.
     HomeSchemaReady {
@@ -10803,6 +10878,13 @@ pub struct App {
     /// Schema previews, memoised for the session only. Persisting these would be a
     /// catalogue by another name, and it would go stale.
     home_schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
+    /// The home screen's `ROWS` previews, and the dataset the newest one built.
+    pub home_previews: crate::home_preview::Previews,
+    /// The reads of data started this session, by kind.
+    pub reads: crate::home_preview::ReadCounts,
+    /// The dataset whose downloaded shape is kept already. See
+    /// [`Self::remember_a_downloads_shape`].
+    shape_remembered: Option<u64>,
     path: Option<PathBuf>,
     original_file_format: Option<ExportFormat>, // Track original file format for default export
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
@@ -13948,6 +14030,8 @@ impl App {
     /// was still reading for itself.
     fn begin_new_dataset(&mut self) {
         self.make_way_for_an_open();
+        // A preview's dataset this open did not take is a page nobody is opening.
+        self.home_previews.drop_prepared();
         self.reset_chart_state();
         self.jobs.advance();
         // The dataset's footer pass is no longer wanted, and unread, unpaid-for is better
@@ -14039,6 +14123,48 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Keep the shape of a downloaded dataset under the URL it was opened from, once its
+    /// rows are counted: nothing lists a web file, so this is the only way its recent,
+    /// and its catalog row, can say `344 × 9` (#547 D12). Once per dataset.
+    fn remember_a_downloads_shape(&mut self) {
+        if self.shape_remembered == Some(self.dataset_generation) {
+            return;
+        }
+        let Some(url) = self.path.clone().filter(|p| source::is_remote_url(p)) else {
+            return;
+        };
+        let Some(state) = self.data_table_state.as_ref().filter(|s| s.fetched()) else {
+            return;
+        };
+        let Some(rows) = state.num_rows_if_valid().filter(|_| !state.changes_rows()) else {
+            return;
+        };
+        self.shape_remembered = Some(self.dataset_generation);
+        let columns: Vec<String> = state
+            .source_schema()
+            .iter_names()
+            .map(|name| name.to_string())
+            .collect();
+        let facts = crate::cache::DatasetFacts {
+            mtime: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default(),
+            size: 0,
+            rows: Some(rows),
+            cols: Some(columns.len()),
+            cols_sampled: false,
+            columns,
+            kind: Some(discover::EntryKind::File),
+            classified_by: discover::CLASSIFIER_VERSION,
+            cost: Default::default(),
+            holds: Default::default(),
+        };
+        // Off the UI thread: the index takes a lock other instances may hold.
+        let cache = self.cache.clone();
+        std::thread::spawn(move || cache.record_dataset_facts(&[(url, facts)]));
     }
 
     /// The first rows of an open are on screen, or will not be read: its wait is over.
@@ -14403,6 +14529,7 @@ impl App {
                 sqlite: None,
                 // Counted afresh by the next read.
                 tail: None,
+                prepared: None,
                 ..options.clone()
             };
             (paths, options)
@@ -14624,6 +14751,7 @@ impl App {
             return true;
         }
         self.jobs.advance();
+        self.reads.pages += 1;
         let inflight = InflightCollect {
             began: std::time::Instant::now(),
             files: state.files_a_page_reads(
@@ -15148,6 +15276,9 @@ impl App {
             pending_clear_recents: false,
             pending_forget_place: None,
             home_schema_cache: HashMap::new(),
+            home_previews: crate::home_preview::Previews::default(),
+            reads: crate::home_preview::ReadCounts::default(),
+            shape_remembered: None,
             original_file_format: None,
             original_file_delimiter: None,
             stdin_reader: None,
@@ -15331,6 +15462,45 @@ impl App {
         }
     }
 
+    /// List the directory the `~` prompt is typing, when it is not the one listed. A
+    /// URL is listed from what the screen already knows; a local directory is read on
+    /// a worker.
+    fn list_the_typed_directory(&mut self) {
+        if !self.home.path_input_active {
+            return;
+        }
+        let dir = home::typed_dir(&self.home.path_input).to_string();
+        if self
+            .home
+            .path_listing
+            .as_ref()
+            .is_some_and(|l| l.dir == dir)
+        {
+            return;
+        }
+        if home::typed_dir_is_url(&dir) {
+            self.home.path_listing = Some(home::names_under(&dir, self.home.known_urls()));
+            return;
+        }
+        // Read off the UI thread: a typed path is where a dead mount gets named.
+        let tx = self.events.clone();
+        let owed = self.owed_answer(AppEvent::HomePathListed {
+            listing: Box::new(home::PathListing {
+                dir: dir.clone(),
+                names: Vec::new(),
+                failed: true,
+            }),
+        });
+        std::thread::spawn(move || {
+            owed.run(|| {
+                let listing = home::list_typed_dir(&dir);
+                let _ = tx.send(AppEvent::HomePathListed {
+                    listing: Box::new(listing),
+                });
+            })
+        });
+    }
+
     /// Complete the path being typed, on a worker.
     fn request_path_completion(&mut self) {
         let typed = self.home.path_input.clone();
@@ -15348,6 +15518,160 @@ impl App {
                 candidates,
             });
         });
+    }
+
+    /// The first rows of a home-screen file for its `ROWS` preview, read on a worker
+    /// the way its open reads them. `None` until they land, and for a row that is not
+    /// previewed. `screen_height` sizes the page to the one the table will ask for.
+    pub fn home_preview_rows(
+        &mut self,
+        entry: &discover::Entry,
+        screen_height: u16,
+    ) -> Option<Arc<crate::home_preview::PreviewRows>> {
+        let max = self
+            .app_config
+            .data
+            .preview_max_mb
+            .saturating_mul(1024 * 1024);
+        if !crate::home_preview::previewable(entry, max) {
+            return None;
+        }
+        let stamp = crate::home_preview::Stamp::of_entry(entry);
+        if let Some(known) = self.home_previews.rows(&entry.path, stamp) {
+            return known;
+        }
+        if self.home_previews.inflight.is_none() {
+            self.request_home_preview(entry.path.clone(), stamp, screen_height);
+        }
+        None
+    }
+
+    /// Whether `entry` is one the preview reads, before its rows are in.
+    pub fn home_preview_pending(&self, path: &Path) -> bool {
+        self.home_previews.reading(path)
+    }
+
+    /// Read a file's first page on a worker, through the open's own scan and schema
+    /// read, so the open can install what it built.
+    fn request_home_preview(
+        &mut self,
+        path: PathBuf,
+        stamp: crate::home_preview::Stamp,
+        screen_height: u16,
+    ) {
+        self.home_previews.inflight = Some(path.clone());
+        self.reads.previews += 1;
+        let tx = self.events.clone();
+        let cloud = self.app_config.cloud.clone();
+        let formats = self.formats.clone();
+        let runtime = self.runtime.clone();
+        let cache = self.cache.clone();
+        // The table's rows: the screen less the title, the header and the control bar.
+        let visible = (screen_height as usize).saturating_sub(3).max(1);
+        let owed = self.owed_answer(AppEvent::HomePreviewReady {
+            path: path.clone(),
+            stamp,
+            read_at: None,
+            rows: None,
+            prepared: crate::home_preview::Handoff::default(),
+        });
+        self.runtime.spawn_blocking(move || {
+            owed.run(|| {
+                let began = std::time::Instant::now();
+                let read_at = crate::home_preview::Stamp::of_file(&path);
+                let read =
+                    Self::read_home_preview(&path, &cloud, &formats, &runtime, cache, visible);
+                log::debug!(
+                    target: "datui",
+                    "home preview of {}: {:.1?}",
+                    path.display(),
+                    began.elapsed()
+                );
+                let (rows, prepared) = match read {
+                    Some((rows, prepared)) => (Some(Arc::new(rows)), Some(Box::new(prepared))),
+                    None => (None, None),
+                };
+                let _ = tx.send(AppEvent::HomePreviewReady {
+                    path,
+                    stamp,
+                    read_at,
+                    rows,
+                    prepared: Arc::new(Mutex::new(prepared)),
+                });
+            })
+        });
+    }
+
+    /// What the open of `path` from the home screen reads first: its scan, its schema
+    /// and the page the table asks for when `visible` rows show. Built by the open's
+    /// own steps with the options the home screen opens a file with, so the dataset is
+    /// the one the open would build.
+    fn read_home_preview(
+        path: &Path,
+        cloud: &crate::config::CloudConfig,
+        formats: &crate::formats::Registry,
+        runtime: &tokio::runtime::Handle,
+        cache: CacheManager,
+        visible: usize,
+    ) -> Option<(
+        crate::home_preview::PreviewRows,
+        crate::home_preview::Prepared,
+    )> {
+        let paths = [path.to_path_buf()];
+        let scanned = Self::scan_for_open(
+            cloud,
+            formats,
+            &paths,
+            OpenOptions::default(),
+            Some(path.to_path_buf()),
+        )
+        .ok()?;
+        let loading::LoadAnswer::Scanned { lf, path, options } = scanned else {
+            return None;
+        };
+        let progress = Arc::<crate::schema_union::FooterProgress>::default();
+        let report = crate::measurements::OpenReport {
+            progress: progress.clone(),
+            meter: Arc::new(crate::measurements::Meter::default()),
+            remembered: Some(cache),
+        };
+        let read = Self::read_schema_for_open(
+            *lf,
+            path,
+            options,
+            cloud,
+            runtime,
+            &report,
+            loading::Made::default(),
+        )
+        .ok()?;
+        let loading::LoadAnswer::SchemaRead {
+            mut state,
+            options,
+            debug_label,
+            ..
+        } = read
+        else {
+            return None;
+        };
+        // Planned as the table plans its first page, so the page is the one it wants.
+        state.visible_rows = visible;
+        let began = std::time::Instant::now();
+        let request = state.prepare_async_collect(None)?;
+        let df = crate::statistics::collect_lazy(request.lf, request.polars_streaming).ok()?;
+        let result = request.plan.fit(df);
+        let rows = crate::home_preview::PreviewRows::from_frame(result.rows());
+        state.measurements().read_page(began.elapsed(), Some(1));
+        state.apply_async_collect(result);
+        Some((
+            rows,
+            crate::home_preview::Prepared {
+                state,
+                options,
+                debug_label,
+                progress,
+            },
+        ))
     }
 
     /// Whether a schema read is currently out for this path.
@@ -15891,7 +16215,12 @@ impl App {
         let owed = self.owed_answer(AppEvent::HomeListingFailed);
         self.runtime.spawn_blocking(move || {
             owed.run(move || {
-                request.recents = cache.load_recents();
+                // Ranked by frecency; the newest is where the cursor lands, so the
+                // last file is still one Enter away.
+                let recents = cache.load_recents();
+                let visits = cache.load_visits();
+                let newest = recents.first().cloned();
+                request.recents = crate::cache::by_frecency(recents, &visits);
                 request.remembered_dirs = cache.load_remembered_places();
                 request.known = cache.load_dataset_facts();
                 if desktop {
@@ -15902,6 +16231,8 @@ impl App {
                     generation,
                     listing: Box::new(listing),
                     known: request.known,
+                    visits,
+                    newest,
                     folds: read_folds.then(|| cache.load_folds()),
                 });
             })
@@ -16869,7 +17200,33 @@ impl App {
             self.home.status = Some(discover::NO_READER.to_string());
             return None;
         }
-        Some(self.home_open_path(path, directory))
+        // The preview read this file's first page through the open's own steps: the
+        // open installs that dataset rather than reading it again.
+        let prepared = (!directory)
+            .then(|| self.home_previews.take_prepared(&path))
+            .flatten();
+        // A small file of the built-in catalog is fetched without a question: the row
+        // already said what it is and what it weighs. A URL the user typed still asks.
+        let unasked = self
+            .home
+            .collection_dataset(&path)
+            .filter(|(collection, _)| {
+                !jump
+                    && collection.builtin
+                    && matches!(source::input_source(&path), source::InputSource::Http(_))
+            })
+            .map(|(_, dataset)| UnaskedDownload {
+                limit: UnaskedDownload::LIMIT,
+                listed: dataset.size,
+            });
+        match self.home_open_path(path, directory) {
+            AppEvent::Open(paths, mut options) => {
+                options.prepared = prepared.map(|p| Arc::new(Mutex::new(Some(p))));
+                options.download_unasked = unasked;
+                Some(AppEvent::Open(paths, options))
+            }
+            event => Some(event),
+        }
     }
 
     /// What `datui <path>` does with a directory: the same rule as `Enter` on its row.
@@ -17166,9 +17523,28 @@ impl App {
                 KeyCode::Esc => {
                     self.home.path_input_active = false;
                     self.home.path_input.clear();
+                    self.home.path_listing = None;
+                    self.home.path_pick = None;
                     self.home.status = None;
                 }
+                // The list under the prompt is the directory being typed: ↑↓ pick a
+                // name in it, which Enter and Tab then take.
+                KeyCode::Up | KeyCode::Down => {
+                    let n = self.home.path_candidates().len();
+                    self.home.path_pick = match (event.code, self.home.path_pick) {
+                        _ if n == 0 => None,
+                        (KeyCode::Down, None) => Some(0),
+                        (KeyCode::Down, Some(i)) => Some((i + 1).min(n - 1)),
+                        (KeyCode::Up, Some(0)) | (KeyCode::Up, None) => None,
+                        (KeyCode::Up, Some(i)) => Some(i - 1),
+                        (_, pick) => pick,
+                    };
+                }
                 KeyCode::Enter => {
+                    if let Some(picked) = self.home.picked_path() {
+                        self.home.path_input = picked;
+                        self.home.path_pick = None;
+                    }
                     let raw = self.home.path_input.trim().to_string();
                     if raw.is_empty() {
                         self.home.path_input_active = false;
@@ -17224,15 +17600,36 @@ impl App {
                     self.home.status = None;
                 }
                 KeyCode::Char('u') if ctrl => self.home.path_input.clear(),
-                // Completion reads a directory, which can block, so it is worked out
-                // on a worker and applied when it comes back.
-                KeyCode::Tab => self.request_path_completion(),
+                // The picked name, or what the names listed agree on. Before the
+                // listing is in, completion reads the directory on a worker.
+                KeyCode::Tab => {
+                    let completed = self
+                        .home
+                        .picked_path()
+                        .or_else(|| self.home.path_completion());
+                    let listed = self
+                        .home
+                        .path_listing
+                        .as_ref()
+                        .is_some_and(|l| l.dir == home::typed_dir(&self.home.path_input));
+                    match completed {
+                        Some(completed) => self.home.path_input = completed,
+                        None if !listed => self.request_path_completion(),
+                        None => {}
+                    }
+                }
                 KeyCode::Char(c) if !ctrl => {
                     self.home.path_input.push(c);
                     self.home.status = None;
                 }
                 _ => {}
             }
+            // Whatever changed what is typed takes the pick away, and a new directory
+            // is listed.
+            if !matches!(event.code, KeyCode::Up | KeyCode::Down) {
+                self.home.path_pick = None;
+            }
+            self.list_the_typed_directory();
             return None;
         }
 
@@ -17367,6 +17764,9 @@ impl App {
             KeyCode::Char('~') if self.home.filter.is_empty() => {
                 self.home.path_input_active = true;
                 self.home.status = None;
+                self.home.path_listing = None;
+                self.home.path_pick = None;
+                self.list_the_typed_directory();
             }
             // The one printable that is a key, and only before typing starts: a
             // filter beginning with a literal `?` matches nothing anyway, and this
@@ -17728,6 +18128,207 @@ impl App {
     /// precisely where the user is most likely to want out. Scanning is where the
     /// wall-clock time goes — CSV schema inference, and hive directories with many files
     /// — and the schema read of a directory reads a footer from each file.
+    /// The open's scan of `paths`, named `path`: what the frame is, or what has to
+    /// happen before there is one. Run by the open's `Scan` phase, and by the home
+    /// screen's preview, which hands what it builds to the open.
+    pub(crate) fn scan_for_open(
+        cloud: &crate::config::CloudConfig,
+        formats: &crate::formats::Registry,
+        paths: &[PathBuf],
+        options: OpenOptions,
+        path: Option<PathBuf>,
+    ) -> std::result::Result<loading::LoadAnswer, String> {
+        use loading::LoadAnswer;
+        let bytes_of = |files: &[PathBuf]| -> u64 {
+            files
+                .iter()
+                .filter_map(|f| std::fs::metadata(f).ok())
+                .map(|m| m.len())
+                .sum()
+        };
+        // What the read passed over rides back with the options it was asked
+        // for, so the dataset can say what it left out. Seeded with what the
+        // caller already knows and overwritten by what the read finds: a
+        // directory on disk is the read's own answer, because it is the pass
+        // that decides, while for a prefix in an object store Polars does the
+        // listing and never sees the other formats — there the home screen's
+        // listing is the only witness.
+        let mut report = ReadReport {
+            left_out: options.left_out.clone(),
+            files_disagree: options.files_disagree,
+            format: None,
+            model: None,
+            format_read: None,
+            read_python: Vec::new(),
+            audio: None,
+            midi: None,
+            sqlite: None,
+            opened: None,
+            splits: options.splits.clone(),
+            delimited: None,
+        };
+        // A followed file reads every row it can and counts the rest: a row
+        // that does not fit the schema never stops the follow.
+        let options = OpenOptions {
+            ignore_errors: options.ignore_errors || options.follow,
+            ..options
+        };
+        let named = |e: color_eyre::Report| {
+            crate::error_display::user_message_from_report(&e, path.as_deref())
+        };
+        let followed_lines = options.follow
+            && crate::follow::format_of(&paths[0], options.format) == FileFormat::Jsonl;
+        let scan = if followed_lines {
+            crate::follow::scan_lines(&paths[0], &options, &mut report.read_python).map(Scan::from)
+        } else {
+            Self::build_lazyframe_from_paths_with(cloud, paths, &options, &mut report, formats)
+        }
+        // Named as the dataset is: a download by its URL, not its temp file.
+        .map_err(named)?;
+        let format = scan.format(report.format.or(options.format));
+        // Bounded to the complete records, and counted for the watcher. A
+        // recording that cannot be followed is read as it stands, and goes on.
+        let recording = options
+            .spool
+            .as_ref()
+            .is_some_and(|handle| handle.spool().tee().is_some());
+        let (scan, tail) = match scan {
+            Scan::Frame(lf) if options.follow => {
+                let format = crate::follow::format_of(&paths[0], format);
+                match crate::follow::refusal(Some(format), &options) {
+                    Some(_) if recording => (Scan::Frame(lf), None),
+                    Some(refusal) => return Err(refusal),
+                    None => {
+                        let (lf, tail) =
+                            crate::follow::bound_to_complete(*lf, &paths[0], format, &options)
+                                .map_err(named)?;
+                        (Scan::Frame(Box::new(lf)), Some(Arc::new(tail)))
+                    }
+                }
+            }
+            _ if options.follow && !recording => {
+                return Err(crate::follow::refusal(format, &options)
+                    .unwrap_or_else(|| "This file cannot be followed as it grows.".to_string()));
+            }
+            scan => (scan, None),
+        };
+        let read_mode = scan.read_mode(format, report.format_read.is_some(), &options);
+        let mut options = OpenOptions {
+            left_out: report.left_out,
+            files_disagree: report.files_disagree,
+            format,
+            model: report.model,
+            format_read: report.format_read,
+            sqlite: report.sqlite,
+            opened: report.opened,
+            splits: report.splits,
+            spec_choice: None,
+            read_python: report.read_python,
+            audio: report.audio,
+            midi: report.midi,
+            read_mode,
+            tail,
+            ..options
+        };
+        // The spec's dialect stays with the dataset, so a read again (`H`,
+        // a decompressed copy) reads as this one did.
+        if let Some(read) = report.delimited {
+            read.delimited().apply(&mut options);
+            options.delimited = Some(read);
+        }
+        Ok(match scan {
+            Scan::Frame(lf) => LoadAnswer::Scanned { lf, path, options },
+            Scan::Decompress { file, .. } => LoadAnswer::Compressed {
+                file,
+                path,
+                options,
+            },
+            Scan::Streams(files) => LoadAnswer::Convert {
+                what: loading::Conversion::Streams,
+                bytes: bytes_of(&files),
+                files,
+                path,
+                options,
+            },
+            Scan::DecompressSpec { file, choice } => LoadAnswer::Compressed {
+                file,
+                path,
+                options: OpenOptions {
+                    spec_choice: Some(choice),
+                    ..options
+                },
+            },
+            Scan::ReadInto { files, format } => LoadAnswer::Convert {
+                what: loading::Conversion::Text(format),
+                bytes: bytes_of(&files),
+                files,
+                path,
+                options,
+            },
+            Scan::Tables { file, tables, .. } => LoadAnswer::Tables { file, tables, path },
+            Scan::Unpack { file, member } => LoadAnswer::Convert {
+                what: loading::Conversion::Text(FileFormat::Numpy),
+                bytes: bytes_of(std::slice::from_ref(&file)),
+                files: vec![file],
+                path,
+                options: OpenOptions {
+                    table: Some(member),
+                    ..options
+                },
+            },
+            Scan::Hex { file, asked } => LoadAnswer::Hex {
+                file,
+                asked,
+                record_size: options.record_size,
+            },
+        })
+    }
+
+    /// The open's schema read of the scan's frame: the dataset, built with everything
+    /// the open `made`. Run by the open's `ReadSchema` phase, and by the home screen's
+    /// preview.
+    pub(crate) fn read_schema_for_open(
+        lf: LazyFrame,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+        report: &crate::measurements::OpenReport,
+        made: loading::Made,
+    ) -> std::result::Result<loading::LoadAnswer, String> {
+        use loading::LoadAnswer;
+        let (state, facts, debug_label) =
+            Self::build_schema_state(lf, path.as_deref(), &options, cloud, runtime, report)
+                .map_err(|e| crate::error_display::user_message_from_report(&e, path.as_deref()))?;
+        // Everything the open found, given to the dataset as it is built.
+        let loading::Made {
+            download,
+            converted,
+            notes,
+            other_tables,
+            detail,
+        } = made;
+        let mut open_notes = facts.open_notes;
+        open_notes.extend(notes);
+        let mut other_tables_found = facts.other_tables;
+        other_tables_found.extend(other_tables);
+        let state = state.with_open(OpenFacts {
+            fetched: Self::fetched(download.as_ref(), path.as_deref()),
+            download,
+            converted,
+            other_tables: other_tables_found,
+            open_notes,
+            detail: detail.or(facts.detail),
+            ..facts
+        });
+        Ok(LoadAnswer::SchemaRead {
+            state: Box::new(state),
+            path,
+            options,
+            debug_label: Some(debug_label),
+        })
+    }
+
     fn spawn_load_phase(&mut self, load: loading::LoadId, step: loading::Step) {
         use loading::{LoadAnswer, Step};
         let job = Job::Load(load);
@@ -17852,6 +18453,14 @@ impl App {
                         }
                     }
                 };
+                // How much, when the server said: a download nobody was asked about
+                // says what it is fetching.
+                let sized = pending
+                    .parts()
+                    .1
+                    .filter(|_| status == "Downloading...")
+                    .map(|size| format!("Downloading {}...", discover::format_size(size)));
+                let status = sized.as_deref().unwrap_or(status);
                 self.spawn_job(job, Some(status), move |_| {
                     let (url, _, options) = pending.parts();
                     let (download, options) = match &pending {
@@ -18084,161 +18693,10 @@ impl App {
                 // A download is scanned from a temp path the user never typed and would not
                 // recognise; the URL they did type is what names the dataset.
                 let path = display.or_else(|| paths.first().cloned());
-                let bytes_of = |files: &[PathBuf]| -> u64 {
-                    files
-                        .iter()
-                        .filter_map(|f| std::fs::metadata(f).ok())
-                        .map(|m| m.len())
-                        .sum()
-                };
+                self.reads.scans += 1;
                 self.spawn_job(job, Some(status), move |_| {
-                    // What the read passed over rides back with the options it was asked
-                    // for, so the dataset can say what it left out. Seeded with what the
-                    // caller already knows and overwritten by what the read finds: a
-                    // directory on disk is the read's own answer, because it is the pass
-                    // that decides, while for a prefix in an object store Polars does the
-                    // listing and never sees the other formats — there the home screen's
-                    // listing is the only witness.
-                    let mut report = ReadReport {
-                        left_out: options.left_out.clone(),
-                        files_disagree: options.files_disagree,
-                        format: None,
-                        model: None,
-                        format_read: None,
-                        read_python: Vec::new(),
-                        audio: None,
-                        midi: None,
-                        sqlite: None,
-                        opened: None,
-                        splits: options.splits.clone(),
-                        delimited: None,
-                    };
-                    // A followed file reads every row it can and counts the rest: a row
-                    // that does not fit the schema never stops the follow.
-                    let options = OpenOptions {
-                        ignore_errors: options.ignore_errors || options.follow,
-                        ..options
-                    };
-                    let named = |e: color_eyre::Report| {
-                        crate::error_display::user_message_from_report(&e, path.as_deref())
-                    };
-                    let followed_lines = options.follow
-                        && crate::follow::format_of(&paths[0], options.format) == FileFormat::Jsonl;
-                    let scan = if followed_lines {
-                        crate::follow::scan_lines(&paths[0], &options, &mut report.read_python)
-                            .map(Scan::from)
-                    } else {
-                        Self::build_lazyframe_from_paths_with(
-                            &cloud,
-                            &paths,
-                            &options,
-                            &mut report,
-                            &formats,
-                        )
-                    }
-                    // Named as the dataset is: a download by its URL, not its temp file.
-                    .map_err(named)?;
-                    let format = scan.format(report.format.or(options.format));
-                    // Bounded to the complete records, and counted for the watcher. A
-                    // recording that cannot be followed is read as it stands, and goes on.
-                    let recording = options
-                        .spool
-                        .as_ref()
-                        .is_some_and(|handle| handle.spool().tee().is_some());
-                    let (scan, tail) = match scan {
-                        Scan::Frame(lf) if options.follow => {
-                            let format = crate::follow::format_of(&paths[0], format);
-                            match crate::follow::refusal(Some(format), &options) {
-                                Some(_) if recording => (Scan::Frame(lf), None),
-                                Some(refusal) => return Err(refusal),
-                                None => {
-                                    let (lf, tail) = crate::follow::bound_to_complete(
-                                        *lf, &paths[0], format, &options,
-                                    )
-                                    .map_err(named)?;
-                                    (Scan::Frame(Box::new(lf)), Some(Arc::new(tail)))
-                                }
-                            }
-                        }
-                        _ if options.follow && !recording => {
-                            return Err(crate::follow::refusal(format, &options).unwrap_or_else(
-                                || "This file cannot be followed as it grows.".to_string(),
-                            ));
-                        }
-                        scan => (scan, None),
-                    };
-                    let read_mode = scan.read_mode(format, report.format_read.is_some(), &options);
-                    let mut options = OpenOptions {
-                        left_out: report.left_out,
-                        files_disagree: report.files_disagree,
-                        format,
-                        model: report.model,
-                        format_read: report.format_read,
-                        sqlite: report.sqlite,
-                        opened: report.opened,
-                        splits: report.splits,
-                        spec_choice: None,
-                        read_python: report.read_python,
-                        audio: report.audio,
-                        midi: report.midi,
-                        read_mode,
-                        tail,
-                        ..options
-                    };
-                    // The spec's dialect stays with the dataset, so a read again (`H`,
-                    // a decompressed copy) reads as this one did.
-                    if let Some(read) = report.delimited {
-                        read.delimited().apply(&mut options);
-                        options.delimited = Some(read);
-                    }
-                    Ok(Answer::Load(Box::new(match scan {
-                        Scan::Frame(lf) => LoadAnswer::Scanned { lf, path, options },
-                        Scan::Decompress { file, .. } => LoadAnswer::Compressed {
-                            file,
-                            path,
-                            options,
-                        },
-                        Scan::Streams(files) => LoadAnswer::Convert {
-                            what: loading::Conversion::Streams,
-                            bytes: bytes_of(&files),
-                            files,
-                            path,
-                            options,
-                        },
-                        Scan::DecompressSpec { file, choice } => LoadAnswer::Compressed {
-                            file,
-                            path,
-                            options: OpenOptions {
-                                spec_choice: Some(choice),
-                                ..options
-                            },
-                        },
-                        Scan::ReadInto { files, format } => LoadAnswer::Convert {
-                            what: loading::Conversion::Text(format),
-                            bytes: bytes_of(&files),
-                            files,
-                            path,
-                            options,
-                        },
-                        Scan::Tables { file, tables, .. } => {
-                            LoadAnswer::Tables { file, tables, path }
-                        }
-                        Scan::Unpack { file, member } => LoadAnswer::Convert {
-                            what: loading::Conversion::Text(FileFormat::Numpy),
-                            bytes: bytes_of(std::slice::from_ref(&file)),
-                            files: vec![file],
-                            path,
-                            options: OpenOptions {
-                                table: Some(member),
-                                ..options
-                            },
-                        },
-                        Scan::Hex { file, asked } => LoadAnswer::Hex {
-                            file,
-                            asked,
-                            record_size: options.record_size,
-                        },
-                    })))
+                    Self::scan_for_open(&cloud, &formats, &paths, options, path)
+                        .map(|answer| Answer::Load(Box::new(answer)))
                 });
             }
             Step::ReadSchema {
@@ -18257,44 +18715,8 @@ impl App {
                     remembered: Some(self.cache.clone()),
                 };
                 self.spawn_job(job, Some("Caching schema..."), move |_| {
-                    let (state, facts, debug_label) = Self::build_schema_state(
-                        *lf,
-                        path.as_deref(),
-                        &options,
-                        &cloud,
-                        &runtime,
-                        &report,
-                    )
-                    .map_err(|e| {
-                        crate::error_display::user_message_from_report(&e, path.as_deref())
-                    })?;
-                    // Everything the open found, given to the dataset as it is built.
-                    let loading::Made {
-                        download,
-                        converted,
-                        notes,
-                        other_tables,
-                        detail,
-                    } = made;
-                    let mut open_notes = facts.open_notes;
-                    open_notes.extend(notes);
-                    let mut other_tables_found = facts.other_tables;
-                    other_tables_found.extend(other_tables);
-                    let state = state.with_open(OpenFacts {
-                        fetched: Self::fetched(download.as_ref(), path.as_deref()),
-                        download,
-                        converted,
-                        other_tables: other_tables_found,
-                        open_notes,
-                        detail: detail.or(facts.detail),
-                        ..facts
-                    });
-                    Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
-                        state: Box::new(state),
-                        path,
-                        options,
-                        debug_label: Some(debug_label),
-                    })))
+                    Self::read_schema_for_open(*lf, path, options, &cloud, &runtime, &report, made)
+                        .map(|answer| Answer::Load(Box::new(answer)))
                 });
             }
             Step::Nothing
@@ -25075,16 +25497,22 @@ impl App {
                 generation,
                 listing,
                 known,
+                visits,
+                newest,
                 folds,
             } => {
-                // Clear the flag first, whatever the generation: a stale result that
-                // returned early while still marked in flight would wedge the pipeline
-                // permanently, and nothing would ever be listed again.
-                self.home.listing_in_flight = false;
+                // Only the current listing's answer clears the flag: a stale one landing
+                // first said nothing was in flight while the listing for where the user
+                // is still ran. Every refresh asks again, so the newest always answers.
+                if *generation == self.home_generation {
+                    self.home.listing_in_flight = false;
+                }
                 // Read fresh from the cache, so true whichever listing carried them:
                 // the facts fill in rows the recursive search finds the same way, and
                 // only the first listing after entering home carries the folds.
                 self.home.known = known.clone();
+                self.home.visits = visits.clone();
+                self.home.newest_recent = newest.clone();
                 if let Some(folds) = folds {
                     self.home.folds = folds.clone();
                 }
@@ -25142,6 +25570,16 @@ impl App {
                 }
                 None
             }
+            AppEvent::HomePathListed { listing } => {
+                // Kept only for the directory still being typed: a listing for one the
+                // user has typed past would offer names from somewhere else.
+                if self.home.path_input_active
+                    && home::typed_dir(&self.home.path_input) == listing.dir
+                {
+                    self.home.path_listing = Some((**listing).clone());
+                }
+                None
+            }
             AppEvent::HomePathCompleted {
                 generation,
                 typed,
@@ -25164,13 +25602,46 @@ impl App {
                 }
                 None
             }
+            AppEvent::HomePreviewReady {
+                path,
+                stamp,
+                read_at,
+                rows,
+                prepared,
+            } => {
+                let prepared = prepared.lock().ok().and_then(|mut p| p.take());
+                // The columns came with the rows: the pane lists them, for a CSV too.
+                if let Some(prepared) = &prepared {
+                    let schema = prepared
+                        .state
+                        .schema()
+                        .iter()
+                        .map(|(name, dtype)| (name.to_string(), dtype.clone()))
+                        .collect();
+                    self.home_schema_cache.insert(path.clone(), Some(schema));
+                }
+                let prepared = prepared.filter(|_| read_at.is_some());
+                self.home_previews.landed(
+                    path.clone(),
+                    *stamp,
+                    read_at.unwrap_or(*stamp),
+                    rows.clone(),
+                    prepared,
+                );
+                None
+            }
             AppEvent::HomeSchemaReady {
                 generation,
                 path,
                 preview,
             } => {
                 self.home_schema_inflight.retain(|p| p != path);
-                if *generation == self.home_generation {
+                // A preview's columns are not taken back by a metadata read that had none.
+                let known = self
+                    .home_schema_cache
+                    .get(path)
+                    .is_some_and(Option::is_some);
+                if *generation == self.home_generation && (preview.is_some() || !known) {
                     self.home_schema_cache.insert(path.clone(), preview.clone());
                 }
                 None
@@ -25732,6 +26203,7 @@ impl App {
                     // its own, in a directory they did not press it in, is not.
                     self.retire_the_end_that_was_waiting();
                 }
+                self.remember_a_downloads_shape();
                 None
             }
             AppEvent::FramePainted => {
@@ -27019,6 +27491,7 @@ impl App {
                         // A typo typed at `~` is worth another go without retyping it.
                         self.home.path_input = path.display().to_string();
                         self.home.path_input_active = true;
+                        self.list_the_typed_directory();
                     }
                     return None;
                 };
@@ -27050,6 +27523,7 @@ impl App {
                     state.apply_async_collect(result);
                 }
                 self.retire_a_count_the_rows_answered();
+                self.remember_a_downloads_shape();
                 // Rows a follow counted while these were read are shown next.
                 self.catch_up_follow();
                 // The query's first rows are in: it stands.

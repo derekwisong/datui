@@ -365,6 +365,8 @@ pub struct DataTableState {
     read_mode: Option<crate::ReadMode>,
     /// The data was downloaded from a remote source before it was read.
     fetched: bool,
+    /// What a VCD, FIX or SDF file said besides its rows. See [`OpenFacts::detail`].
+    detail: Option<Arc<crate::text_formats::Detail>>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_bytes: Vec<(String, usize)>,
@@ -941,6 +943,8 @@ pub struct OpenFacts {
     /// The data was downloaded from a remote source before it was read: not a local
     /// stream's conversion or standard input's spool, which are held as downloads are.
     pub fetched: bool,
+    /// What a VCD, FIX or SDF file said besides its rows, for the Info panel.
+    pub detail: Option<Arc<crate::text_formats::Detail>>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1910,6 +1914,7 @@ impl DataTableState {
             source_hold: None,
             read_mode: None,
             fetched: false,
+            detail: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2059,6 +2064,7 @@ impl DataTableState {
             source_hold: None,
             read_mode: None,
             fetched: false,
+            detail: None,
             notes_seen: false,
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
@@ -2124,6 +2130,7 @@ impl DataTableState {
             hold,
             read_mode,
             fetched,
+            detail,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2185,6 +2192,7 @@ impl DataTableState {
             self.audio = Some((audio, self.root_generation));
         }
         self.midi = midi;
+        self.detail = detail;
         self
     }
 
@@ -6714,6 +6722,11 @@ impl DataTableState {
             .iter_names()
             .filter_map(|name| Some((name.to_string(), self.unit_of(name)?.to_string())))
             .collect()
+    }
+
+    /// What a VCD, FIX or SDF file said besides its rows: its Info panel tab.
+    pub fn format_detail(&self) -> Option<&crate::text_formats::Detail> {
+        self.detail.as_deref()
     }
 
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked

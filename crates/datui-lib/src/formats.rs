@@ -2393,8 +2393,17 @@ pub struct Found {
 #[derive(Debug, Clone, Default)]
 pub struct Registry {
     pub specs: Vec<Found>,
+    /// FIX dictionaries: QuickFIX XML files and `kind = "fix"` TOML files.
+    pub fix: Vec<FixFound>,
     /// Spec files that could not be read, each with why.
     pub errors: Vec<SpecError>,
+}
+
+/// A FIX dictionary found on the search path, and the copies of the same name it hides.
+#[derive(Debug, Clone)]
+pub struct FixFound {
+    pub dict: Arc<crate::fix::dict::Dictionary>,
+    pub overrides: Vec<PathBuf>,
 }
 
 /// How a spec was chosen for a file.
@@ -2464,7 +2473,8 @@ pub fn search_path_for(config: &crate::config::AppConfig) -> Vec<PathBuf> {
 
 impl Registry {
     /// Read every spec on `path`. A directory gives its `*.toml` files in name order; a
-    /// file gives itself. What cannot be read is kept as an error, not fatal.
+    /// file gives itself. What cannot be read is kept as an error, not fatal. A TOML
+    /// file of `kind = "fix"`, or a QuickFIX XML file, is a FIX dictionary.
     pub fn load(path: &[PathBuf]) -> Self {
         let mut registry = Self::default();
         for entry in path {
@@ -2477,8 +2487,9 @@ impl Registry {
                     .map(|e| e.path())
                     .filter(|p| {
                         p.is_file()
-                            && p.extension()
-                                .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
+                            && p.extension().is_some_and(|e| {
+                                e.eq_ignore_ascii_case("toml") || e.eq_ignore_ascii_case("xml")
+                            })
                     })
                     .collect();
                 files.sort();
@@ -2489,6 +2500,25 @@ impl Registry {
                 continue;
             };
             for file in files {
+                match crate::fix::dict::Dictionary::load(&file) {
+                    Ok(Some(dict)) => {
+                        registry.add_fix(dict, file);
+                        continue;
+                    }
+                    Err(e) => {
+                        registry.errors.push(e);
+                        continue;
+                    }
+                    // An XML file that is not a FIX dictionary is not a spec either.
+                    Ok(None)
+                        if !file
+                            .extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("toml")) =>
+                    {
+                        continue;
+                    }
+                    Ok(None) => {}
+                }
                 match Spec::load(&file) {
                     Ok(spec) => registry.add(spec, file),
                     Err(e) => registry.errors.push(e),
@@ -2507,6 +2537,25 @@ impl Registry {
                 overrides: Vec::new(),
             });
         }
+    }
+
+    fn add_fix(&mut self, dict: crate::fix::dict::Dictionary, file: PathBuf) {
+        if let Some(found) = self.fix.iter_mut().find(|f| f.dict.name == dict.name) {
+            found.overrides.push(file);
+        } else {
+            self.fix.push(FixFound {
+                dict: Arc::new(dict),
+                overrides: Vec::new(),
+            });
+        }
+    }
+
+    /// The FIX dictionary named `name`.
+    pub fn fix_dict(&self, name: &str) -> Option<&Arc<crate::fix::dict::Dictionary>> {
+        self.fix
+            .iter()
+            .find(|f| f.dict.name == name)
+            .map(|f| &f.dict)
     }
 
     /// The registry of `specs`, for tests and hosts that have their specs in hand.
@@ -2626,6 +2675,24 @@ impl Registry {
                 out.push_str(&format!("  {description}\n"));
             }
             if let Some(file) = &spec.path {
+                out.push_str(&format!("  {}\n", file.display()));
+            }
+            for hidden in &found.overrides {
+                out.push_str(&format!("  overrides {}\n", hidden.display()));
+            }
+        }
+        if !self.fix.is_empty() {
+            out.push_str("\nFIX dictionaries:\n");
+        }
+        for found in &self.fix {
+            let dict = &found.dict;
+            out.push_str(&dict.name);
+            let summary = dict.matcher.summary();
+            if !summary.is_empty() {
+                out.push_str(&format!("  ({summary})"));
+            }
+            out.push('\n');
+            if let Some(file) = &dict.path {
                 out.push_str(&format!("  {}\n", file.display()));
             }
             for hidden in &found.overrides {
@@ -2932,6 +2999,9 @@ const CHECK_ROWS: usize = 10;
 /// read its first rows.
 fn check(named: &str, file: Option<&Path>, registry: &Registry) -> Result<String, String> {
     let as_file = Path::new(named);
+    if let Some(dict) = fix_dict_named(named, registry)? {
+        return check_fix(&dict, file);
+    }
     let spec = if as_file.is_file() {
         Arc::new(Spec::load(as_file).map_err(|e| format!("error: {e}\n"))?)
     } else if let Some(spec) = registry.get(named) {
@@ -3025,6 +3095,76 @@ fn check(named: &str, file: Option<&Path>, registry: &Registry) -> Result<String
         .collect(CHECK_ROWS)
         .map_err(|e| format!("{out}error: {e}\n"))?;
     out.push_str(&text_table(&df));
+    Ok(out)
+}
+
+/// The FIX dictionary `named` names: a dictionary file, or one on the search path.
+fn fix_dict_named(
+    named: &str,
+    registry: &Registry,
+) -> Result<Option<Arc<crate::fix::dict::Dictionary>>, String> {
+    let as_file = Path::new(named);
+    if as_file.is_file() {
+        return match crate::fix::dict::Dictionary::load(as_file) {
+            Ok(dict) => Ok(dict.map(Arc::new)),
+            Err(e) => Err(format!("error: {e}\n")),
+        };
+    }
+    Ok(registry.fix_dict(named).cloned())
+}
+
+/// `formats check` of a FIX dictionary: what it names and matches; with `file`, how
+/// many of the log's messages it applies to and the tags it names there.
+fn check_fix(
+    dict: &Arc<crate::fix::dict::Dictionary>,
+    file: Option<&Path>,
+) -> Result<String, String> {
+    use std::io::Read;
+    let mut out = format!("{}: ok\n", dict.name);
+    if let Some(from) = &dict.path {
+        out.push_str(&format!("  from {}\n", from.display()));
+    }
+    let summary = dict.matcher.summary();
+    if !summary.is_empty() {
+        out.push_str(&format!("  matches {summary}\n"));
+    }
+    let enums = dict.tags.values().filter(|t| !t.enums.is_empty()).count();
+    out.push_str(&format!("  {} tags, {enums} with enums\n", dict.tags.len()));
+    let Some(file) = file else {
+        return Ok(out);
+    };
+    let read = std::sync::atomic::AtomicU64::new(0);
+    let mut reader = crate::gps::open_reader(file, &crate::OpenOptions::default(), &read)
+        .map_err(|e| format!("{out}error: {}: {e}\n", file.display()))?;
+    let mut log = crate::fix::FixReader::new(crate::fix::dict::Layers::new(vec![dict.clone()]));
+    let mut chunk = vec![0u8; 1 << 16];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| format!("{out}error: {}: {e}\n", file.display()))?;
+        if n == 0 {
+            break;
+        }
+        log.push(&chunk[..n]);
+        let _ = log.take_batch();
+    }
+    let _ = log.finish();
+    let stats = log.stats();
+    out.push_str(&format!(
+        "{} messages, {} of them matched by {}\n",
+        stats.messages,
+        stats.applied.get(1).copied().unwrap_or(0),
+        dict.name
+    ));
+    let named: Vec<String> = log
+        .tag_names()
+        .into_iter()
+        .filter(|(_, _, by)| *by == 1)
+        .map(|(tag, name, _)| format!("{tag} {name}"))
+        .collect();
+    if !named.is_empty() {
+        out.push_str(&format!("names in the log: {}\n", named.join(", ")));
+    }
     Ok(out)
 }
 

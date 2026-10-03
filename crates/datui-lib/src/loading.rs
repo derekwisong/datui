@@ -1347,6 +1347,9 @@ impl Drop for Loader {
 fn reading(format: Option<FileFormat>) -> &'static str {
     match format {
         Some(FileFormat::Nmea | FileFormat::Gpx) => "Reading GPS log",
+        Some(FileFormat::Vcd) => "Reading value change dump",
+        Some(FileFormat::Fix) => "Reading FIX log",
+        Some(FileFormat::Sdf) => "Reading SDF records",
         _ => "Reading",
     }
 }

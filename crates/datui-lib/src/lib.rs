@@ -79,6 +79,7 @@ pub mod export_modal;
 pub mod filter_modal;
 pub mod find;
 mod first_rows_trace;
+pub mod fix;
 pub mod fixed_records;
 pub mod formats;
 pub mod fuzzy;
@@ -127,6 +128,7 @@ pub mod query;
 mod render;
 pub mod sanitize;
 pub mod schema_union;
+pub mod sdf;
 pub mod search;
 pub(crate) mod segments;
 pub mod sort_filter_modal;
@@ -143,9 +145,11 @@ pub mod statistics;
 pub mod stdin;
 pub mod template;
 pub mod terminal_input;
+pub mod text_formats;
 mod unfinished;
 pub mod value_counts;
 pub mod value_counts_modal;
+pub mod vcd;
 pub mod widgets;
 
 pub use cache::CacheManager;
@@ -205,7 +209,10 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
         | FileFormat::Gpx
         | FileFormat::Audio
         | FileFormat::Midi
-        | FileFormat::Sqlite => None,
+        | FileFormat::Sqlite
+        | FileFormat::Vcd
+        | FileFormat::Fix
+        | FileFormat::Sdf => None,
     }
 }
 
@@ -8539,6 +8546,8 @@ pub struct OpenOptions {
     pub arrow_parts: Option<Arc<Vec<crate::ipc_stream::Part>>>,
     /// `--spec FILE`: read the path through this format spec, whatever else matches it.
     pub spec_file: Option<PathBuf>,
+    /// `--fix-dict FILE`: a FIX dictionary over the built-in one and the search path's.
+    pub fix_dict: Option<PathBuf>,
     /// The format spec named by `--format NAME`, or picked with `b`.
     pub spec_name: Option<String>,
     /// The spec a compressed file was matched to, read once the file is decompressed.
@@ -8616,6 +8625,7 @@ impl OpenOptions {
             skip_initial_space: false,
             debug: false,
             spec_file: None,
+            fix_dict: None,
             spec_name: None,
             spec_choice: None,
             format_read: None,
@@ -8737,6 +8747,7 @@ impl OpenOptions {
             .as_ref()
             .and_then(|f| f.spec().map(str::to_string));
         opts.spec_file = args.spec.clone();
+        opts.fix_dict = args.fix_dict.clone();
 
         // Display options: CLI args override config
         opts.pages_lookahead = args
@@ -17274,16 +17285,21 @@ impl App {
                 };
                 let status = match options.format {
                     Some(FileFormat::Gpx) => "Reading GPX...",
+                    Some(FileFormat::Vcd) => "Reading VCD...",
+                    Some(FileFormat::Fix) => "Reading FIX log...",
+                    Some(FileFormat::Sdf) => "Reading SDF...",
                     _ => "Reading NMEA...",
                 };
+                let formats = self.formats.clone();
                 self.spawn_job(job, Some(status), move |_| {
                     let named = |e: color_eyre::Report| {
                         crate::error_display::user_message_from_report(&e, Some(path.as_path()))
                     };
                     let format = options.format.unwrap_or(FileFormat::Nmea);
-                    let converted =
-                        crate::gps::convert(&file, &path, format, &options, &writer, &read)
-                            .map_err(named)?;
+                    let (converted, detail) = crate::text_formats::convert(
+                        &file, &path, format, &options, &formats, &writer, &read,
+                    )
+                    .map_err(named)?;
                     // The converted file is an Arrow IPC file, scanned like one.
                     let (state, facts, debug_label) = Self::build_schema_state(
                         converted.lf,
@@ -17302,6 +17318,7 @@ impl App {
                         converted: converted.files,
                         other_tables: converted.other_tables,
                         open_notes,
+                        detail,
                         ..facts
                     });
                     Ok(Answer::Load(Box::new(LoadAnswer::SchemaRead {
@@ -19499,6 +19516,15 @@ impl App {
                 (path.is_file() && options.compression.is_none())
                     .then(|| crate::gps::sniff_path(path))
                     .flatten()
+            })
+            // A VCD dump or an SDF file by a name under compression, and a FIX log (which
+            // has no extension of its own) or any of them by its first bytes, read through
+            // its compression.
+            .or_else(|| crate::text_formats::format_by_name(path))
+            .or_else(|| {
+                path.is_file()
+                    .then(|| crate::text_formats::sniff_path(path, options.compression))
+                    .flatten()
             });
         report.format = effective_format;
 
@@ -19514,10 +19540,11 @@ impl App {
             return Err(Self::one_table(effective_format));
         }
 
-        // A GPS log is read into a file of its own first: the load converts it
-        // (`Step::ReadInto`) into a copy the dataset holds, as a compressed CSV is.
+        // A GPS log, a VCD dump, a FIX log or an SDF file is read into a file of its own
+        // first: the load converts it (`Step::ReadInto`) into a copy the dataset holds, as
+        // a compressed CSV is.
         if let [file] = paths
-            && let Some(format) = effective_format.filter(|f| crate::gps::is_gps(*f))
+            && let Some(format) = effective_format.filter(|f| crate::text_formats::reads_into(*f))
         {
             return Ok(Scan::ReadInto {
                 file: file.clone(),
@@ -19639,6 +19666,9 @@ impl App {
                 | Some(FileFormat::Gpx)
                 | Some(FileFormat::Audio)
                 | Some(FileFormat::Sqlite)
+                | Some(FileFormat::Vcd)
+                | Some(FileFormat::Fix)
+                | Some(FileFormat::Sdf)
                 | None => {
                     // The home screen asks `reads_many_files` before it offers a
                     // directory as one dataset, so a format that is refused here and
@@ -19659,7 +19689,7 @@ impl App {
                         .into());
                     }
                     return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only; open GPS logs and SQLite databases one at a time)"
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only; open GPS logs, SQLite databases, VCD dumps, FIX logs and SDF files one at a time)"
                     ));
                 }
             }
@@ -19733,7 +19763,13 @@ impl App {
                     report.model = Some(Arc::new(summary));
                     return Ok(lf.into());
                 }
-                Some(format @ (FileFormat::Nmea | FileFormat::Gpx)) => {
+                Some(
+                    format @ (FileFormat::Nmea
+                    | FileFormat::Gpx
+                    | FileFormat::Vcd
+                    | FileFormat::Fix
+                    | FileFormat::Sdf),
+                ) => {
                     // Settled above, before the compression check; here for the match.
                     return Ok(Scan::ReadInto {
                         file: path.clone(),
@@ -21221,10 +21257,14 @@ impl App {
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
             let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
-            // The Model, Audio, MIDI and Metadata tabs scroll their lists the same way.
+            // The Model, Audio, MIDI, Metadata and format tabs scroll their lists the same way.
             let detail_tab = matches!(
                 self.info_modal.active_tab,
-                InfoTab::Model | InfoTab::Audio | InfoTab::Midi | InfoTab::Metadata
+                InfoTab::Model
+                    | InfoTab::Audio
+                    | InfoTab::Midi
+                    | InfoTab::Metadata
+                    | InfoTab::Format
             );
             let notes = self
                 .data_table_state
@@ -23307,6 +23347,10 @@ impl App {
                     } else if state.midi().is_some() {
                         // So is a MIDI file's.
                         self.info_modal.open_on(crate::widgets::info::InfoTab::Midi);
+                    } else if state.format_detail().is_some_and(|d| d.first) {
+                        // And a VCD dump's: what is particular to it is its header.
+                        self.info_modal
+                            .open_on(crate::widgets::info::InfoTab::Format);
                     } else {
                         self.info_modal.open();
                     }

@@ -24,6 +24,7 @@ use std::path::Path;
 
 /// What datui does with a SQLite database: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like(head),
         kind: crate::readers::Kind::Magic,
@@ -1866,3 +1867,30 @@ mod read {
 
 #[cfg(all(test, feature = "sqlite"))]
 mod tests;
+
+/// The scan of a SQLite database: the table `--table` names, or the database's only
+/// table of its own, read in place; or none yet when it has several.
+fn scan(input: crate::readers::ScanIn<'_>) -> color_eyre::Result<crate::scan::Scan> {
+    let file = input.path();
+    let tables = tables(file)?;
+    match pick(tables.clone(), input.options.table.as_deref(), file)? {
+        Pick::One(table) => {
+            let opened = open_table(file, file, &table, &tables)?;
+            input.report.sqlite = Some(std::sync::Arc::new(crate::SqliteOpen {
+                pushdown: opened.pushdown,
+                hold: std::sync::Mutex::new(Some(opened.hold)),
+                other_tables: opened.other_tables,
+            }));
+            Ok(opened.lf.into())
+        }
+        Pick::Several(tables) => Ok(crate::scan::Scan::Tables {
+            file: file.to_path_buf(),
+            tables: tables
+                .into_iter()
+                .filter(|t| !t.internal)
+                .map(|t| t.name)
+                .collect(),
+            format: input.format,
+        }),
+    }
+}

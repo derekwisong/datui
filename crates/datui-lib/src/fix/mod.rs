@@ -32,6 +32,15 @@ use dict::{FixType, Layers, Resolved};
 
 /// What datui does with a FIX log: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    // The dictionaries are read before the file, so one that does not parse says so at
+    // once.
+    convert: Some(|input| {
+        let layers = layers(input.formats, input.options.fix_dict.as_deref())?;
+        crate::text_formats::read_one(input, |pieces| {
+            convert(input.display, input.options, layers, input.writer, pieces)
+        })
+    }),
+    scan: crate::readers::read_into,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like(head),
         kind: crate::readers::Kind::Text,

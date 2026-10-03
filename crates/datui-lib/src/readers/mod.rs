@@ -2,27 +2,79 @@
 //!
 //! A format's descriptor ([`crate::FileFormat::descriptor`], in datui-cli) says what is
 //! true of it without a file to read. Its [`Reader`] holds the code: the bytes that say
-//! it, the tables a file of it lists and the format a view of it exports to by default.
-//! Each format's reader
+//! it, the scan that opens it, the conversion of a format read into files of its own,
+//! the tables a file of it lists and the format a view of it exports to by default.
+//! What a file says besides its rows is the scan's to report, as the Info panel tab of
+//! [`crate::members::Opened::detail`]. Each format's reader
 //! lives beside its parser (`crate::sqlite::READER`), and those of the formats Polars
 //! reads in [`polars`]. [`of`] maps every format to its reader, exhaustively, so a
 //! format without one does not compile.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use color_eyre::Result;
+use color_eyre::eyre::eyre;
 
-use crate::FileFormat;
 use crate::export_modal::ExportFormat;
 use crate::members::Table;
+use crate::scan::Scan;
+use crate::segments::Converted;
+use crate::text_formats::Detail;
+use crate::unfinished::Writer;
+use crate::{FileFormat, OpenOptions, ReadReport};
 
 pub(crate) mod polars;
 
 /// Lists the tables of a file of a format.
 pub(crate) type ListTables = fn(&Path) -> Result<Vec<Table>>;
 
+/// What a scan is given: the files to open as `format`, one unless the format reads
+/// many as one table, and where to report what it found besides the frame.
+pub(crate) struct ScanIn<'a> {
+    pub format: FileFormat,
+    pub paths: &'a [PathBuf],
+    pub options: &'a OpenOptions,
+    pub report: &'a mut ReadReport,
+    pub formats: &'a crate::formats::Registry,
+}
+
+impl ScanIn<'_> {
+    /// The file a format read one file at a time opens.
+    pub fn path(&self) -> &Path {
+        &self.paths[0]
+    }
+}
+
+/// Opens files of a format: the frame, or what the load turns into one first.
+pub(crate) type ScanFn = fn(ScanIn<'_>) -> Result<Scan>;
+
+/// What a conversion is given: the files to read into files of their own, named
+/// `display` to the user, written through `writer`, counting the bytes read in `read`.
+pub(crate) struct ConvertIn<'a> {
+    pub files: &'a [PathBuf],
+    pub display: &'a Path,
+    pub format: FileFormat,
+    pub options: &'a OpenOptions,
+    pub formats: &'a crate::formats::Registry,
+    pub writer: &'a Writer,
+    pub read: &'a AtomicU64,
+}
+
+/// What a conversion wrote, and what the file said besides its rows.
+pub(crate) type ConvertOut = Result<(Converted, Option<Arc<Detail>>)>;
+
+/// Reads files of a format into files of their own, which the dataset scans.
+pub(crate) type ConvertFn = fn(&ConvertIn<'_>) -> ConvertOut;
+
 /// The code behind one format.
 pub(crate) struct Reader {
+    /// Opens a file of it, or several of a format that reads many as one table.
+    pub scan: ScanFn,
+    /// Reads a file of it into files of its own: a format the scan answers with
+    /// [`Scan::ReadInto`], or an archive's compressed member ([`Scan::Unpack`]).
+    pub convert: Option<ConvertFn>,
     /// The bytes at the start of a file that say it is this format, if any do.
     pub signatures: &'static [Signature],
     /// The tables a file of it lists on the home screen, read cheaply: a database's
@@ -36,6 +88,13 @@ pub(crate) struct Reader {
 
 /// The reader of a format nothing is written for: no tables, no export default.
 pub(crate) const BASE: Reader = Reader {
+    scan: |input| {
+        Err(eyre!(
+            "datui has no reader for {} files",
+            input.format.name()
+        ))
+    },
+    convert: None,
     signatures: &[],
     tables: None,
     export: None,
@@ -232,6 +291,45 @@ fn head_of(path: &Path) -> Option<Vec<u8>> {
         .read_to_end(&mut head)
         .ok()?;
     Some(head)
+}
+
+/// The scan of a format read into files of its own before it is scanned
+/// (`Step::Convert`), as a compressed CSV is.
+pub(crate) fn read_into(input: ScanIn<'_>) -> Result<Scan> {
+    Ok(Scan::ReadInto {
+        files: input.paths.to_vec(),
+        format: input.format,
+    })
+}
+
+/// Read `input`'s files into files of their own as their format's reader does.
+pub(crate) fn convert(input: &ConvertIn<'_>) -> ConvertOut {
+    match of(input.format).convert {
+        Some(convert) => convert(input),
+        None => Err(eyre!(
+            "{} files are not read into files of their own.",
+            input.format.name()
+        )),
+    }
+}
+
+/// Why several files of a format that reads one at a time are refused.
+pub(crate) fn many_files_refused() -> String {
+    let (many, one): (Vec<FileFormat>, Vec<FileFormat>) = FileFormat::ALL
+        .into_iter()
+        .partition(|f| f.reads_many_files());
+    let names = |formats: &[FileFormat]| {
+        formats
+            .iter()
+            .map(|f| f.title())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "Unsupported file type for multiple files: {} files are read as one table; open {} files one at a time.",
+        names(&many),
+        names(&one)
+    )
 }
 
 /// The format a view read as `format` is exported as by default.

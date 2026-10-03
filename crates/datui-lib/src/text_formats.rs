@@ -8,9 +8,7 @@
 //! dictionaries used, an SDF file's fields) is a [`Detail`] for the Info panel.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -18,9 +16,8 @@ use color_eyre::eyre::eyre;
 use crate::model_files::MetaValue;
 use crate::notes::Note;
 use crate::numfmt::group_chrome;
+use crate::readers::{ConvertIn, ConvertOut};
 use crate::segments::Converted;
-use crate::unfinished::Writer;
-use crate::{FileFormat, OpenOptions};
 
 /// How much of the file is read at a time.
 const CHUNK: usize = 1 << 16;
@@ -43,61 +40,17 @@ pub struct Detail {
     pub first: bool,
 }
 
-/// Whether `format` is one of the text formats read here.
-pub fn is_text_format(format: FileFormat) -> bool {
-    matches!(format, FileFormat::Vcd | FileFormat::Fix | FileFormat::Sdf)
-}
-
-/// Whether `format` is read into a table of its own before it is scanned.
-pub fn reads_into(format: FileFormat) -> bool {
-    is_text_format(format) || crate::gps::is_gps(format)
-}
-
-/// Read `files` (named `display` to the user) as `format` into temporary IPC files,
-/// written through `writer`, counting the bytes read in `read`. A FIX log is read with
-/// the dictionaries in `formats` and `--fix-dict`. GPS logs go to
-/// [`crate::gps::convert`], several as one table, and have no [`Detail`]; the others
-/// are one file.
-pub(crate) fn convert(
-    files: &[PathBuf],
-    display: &Path,
-    format: FileFormat,
-    options: &OpenOptions,
-    formats: &crate::formats::Registry,
-    writer: &Writer,
-    read: &AtomicU64,
-) -> Result<(Converted, Option<Arc<Detail>>)> {
-    if crate::gps::is_gps(format) {
-        return Ok((
-            crate::gps::convert(files, display, format, options, writer, read)?,
-            None,
-        ));
-    }
-    // A NumPy archive's compressed array, named by `--table` or found alone.
-    if format == FileFormat::Numpy {
-        let ([file], Some(name)) = (files, options.table.as_deref()) else {
-            return Err(eyre!("Open one array of an archive at a time."));
-        };
-        let (held, lf, opened) = crate::numpy::convert(file, name, options, writer, read)?;
-        return Ok((
-            Converted {
-                lf,
-                files: vec![held],
-                notes: opened.notes,
-                other_tables: opened.other_tables,
-            },
-            opened.detail,
-        ));
-    }
-    let [file] = files else {
-        return Err(eyre!("Open {} files one at a time.", format.name()));
+/// Read the one file of `input` a piece at a time with `read`, a text format's reader,
+/// through its compression: the conversion of a VCD dump, FIX log or SDF file.
+pub(crate) fn read_one(
+    input: &ConvertIn<'_>,
+    read: impl FnOnce(&mut Pieces<'_>) -> Result<(Converted, Detail)>,
+) -> ConvertOut {
+    let [file] = input.files else {
+        return Err(eyre!("Open {} files one at a time.", input.format.name()));
     };
-    // Read before the file, so a dictionary that does not parse says so at once.
-    let layers = match format {
-        FileFormat::Fix => Some(crate::fix::layers(formats, options.fix_dict.as_deref())?),
-        _ => None,
-    };
-    let mut reader = crate::gps::open_reader(file, options, read)?;
+    let writer = input.writer;
+    let mut reader = crate::gps::open_reader(file, input.options, input.read)?;
     let mut pieces = |each: &mut dyn FnMut(&[u8]) -> Result<()>| -> Result<()> {
         let mut chunk = vec![0u8; CHUNK];
         loop {
@@ -113,18 +66,7 @@ pub(crate) fn convert(
             each(&chunk[..n])?;
         }
     };
-    let (converted, detail) = match format {
-        FileFormat::Vcd => crate::vcd::convert(display, options, writer, &mut pieces)?,
-        FileFormat::Fix => crate::fix::convert(
-            display,
-            options,
-            layers.unwrap_or_default(),
-            writer,
-            &mut pieces,
-        )?,
-        FileFormat::Sdf => crate::sdf::convert(display, options, writer, &mut pieces)?,
-        other => return Err(eyre!("{} is not a text format.", other.name())),
-    };
+    let (converted, detail) = read(&mut pieces)?;
     Ok((converted, Some(Arc::new(detail))))
 }
 

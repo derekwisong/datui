@@ -23,6 +23,12 @@ use crate::unfinished::Writer;
 
 /// What datui does with an SDF file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    convert: Some(|input| {
+        crate::text_formats::read_one(input, |pieces| {
+            convert(input.display, input.options, input.writer, pieces)
+        })
+    }),
+    scan: crate::readers::read_into,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like(head),
         kind: crate::readers::Kind::Text,

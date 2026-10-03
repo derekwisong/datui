@@ -21,6 +21,7 @@ use crate::FileFormat;
 
 /// What datui does with a SafeTensors file: see [`crate::readers`].
 pub(crate) const SAFETENSORS: crate::readers::Reader = crate::readers::Reader {
+    scan,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like_safetensors(head),
         kind: crate::readers::Kind::Magic,
@@ -31,6 +32,7 @@ pub(crate) const SAFETENSORS: crate::readers::Reader = crate::readers::Reader {
 
 /// What datui does with a GGUF file: see [`crate::readers`].
 pub(crate) const GGUF: crate::readers::Reader = crate::readers::Reader {
+    scan,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like_gguf(head),
         kind: crate::readers::Kind::Magic,
@@ -1329,6 +1331,13 @@ pub fn build(
         metadata,
     };
     Ok((df.lazy(), summary))
+}
+
+/// The scan of model files: their tensors, with the header's totals and metadata.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let (lf, summary) = read_model(input.paths, input.format)?;
+    input.report.model = Some(std::sync::Arc::new(summary));
+    Ok(lf.into())
 }
 
 #[cfg(test)]

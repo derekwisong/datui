@@ -25,6 +25,7 @@ use polars::prelude::*;
 
 /// What datui does with an audio file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like_audio(head),
         kind: crate::readers::Kind::Magic,
@@ -1372,6 +1373,14 @@ enum Which {
     Frame,
     Seconds,
     Channel(usize),
+}
+
+/// The scan of an audio file: its frames, read from the file where they are shown.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let source = Arc::new(AudioSource::open(input.path(), input.options.normalize)?);
+    let lf = source.lazy();
+    input.report.audio = Some(source);
+    Ok(lf.into())
 }
 
 #[cfg(test)]

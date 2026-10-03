@@ -20,6 +20,7 @@ use polars::prelude::*;
 
 /// What datui does with a MIDI file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like_midi(head),
         kind: crate::readers::Kind::Magic,
@@ -1055,6 +1056,13 @@ pub fn notes(summary: &MidiSummary) -> Vec<crate::notes::Note> {
         });
     }
     out
+}
+
+/// The scan of MIDI files: their events, with the header, tracks and tempo.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let (lf, summary) = read_midi(input.paths)?;
+    input.report.midi = Some(Arc::new(summary));
+    Ok(lf.into())
 }
 
 #[cfg(test)]

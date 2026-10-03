@@ -24,6 +24,7 @@ use crate::text_formats::Detail;
 
 /// What datui does with an ELF file: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
     // Never in a listing, which would list every executable.
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like(head),
@@ -371,6 +372,13 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
             units: Vec::new(),
         },
     ))
+}
+
+/// The scan of an ELF file: the table `--table` names, its symbols by default.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let (lf, opened) = open(input.path(), input.options.table.as_deref())?;
+    input.report.opened = Some(Arc::new(opened));
+    Ok(lf.into())
 }
 
 #[cfg(test)]

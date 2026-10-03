@@ -28,6 +28,7 @@ use crate::text_formats::Detail;
 
 /// What datui does with a ULog flight log: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+    scan,
     signatures: &[crate::readers::Signature {
         says: |head, _| looks_like(head),
         kind: crate::readers::Kind::Magic,
@@ -813,6 +814,24 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
     Ok(Open::Table {
         lf: Box::new(lf),
         opened: Box::new(opened),
+    })
+}
+
+/// The scan of a ULog log: the table `--table` names, or its only one, decoded from
+/// the file where it is shown; or none yet when it has several. The pass that indexes
+/// the log is kept, so a table chosen from the list reads nothing again.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let file = input.path();
+    Ok(match open(file, input.options.table.as_deref())? {
+        Open::Table { lf, opened } => {
+            input.report.opened = Some(Arc::new(*opened));
+            (*lf).into()
+        }
+        Open::Several(tables) => crate::scan::Scan::Tables {
+            file: file.to_path_buf(),
+            tables,
+            format: input.format,
+        },
     })
 }
 

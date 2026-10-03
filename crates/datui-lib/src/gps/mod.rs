@@ -36,6 +36,19 @@ use crate::{CompressionFormat, FileFormat, OpenOptions};
 
 /// What datui does with an NMEA log: see [`crate::readers`].
 pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
+    // Several logs are one table, and say nothing besides their rows.
+    convert: Some(|input| {
+        let converted = convert(
+            input.files,
+            input.display,
+            input.format,
+            input.options,
+            input.writer,
+            input.read,
+        )?;
+        Ok((converted, None))
+    }),
+    scan: crate::readers::read_into,
     signatures: &[crate::readers::Signature {
         says: |head, _| nmea::looks_like(head),
         kind: crate::readers::Kind::Text,
@@ -49,6 +62,19 @@ pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
 
 /// What datui does with a GPX file: see [`crate::readers`].
 pub(crate) const GPX: crate::readers::Reader = crate::readers::Reader {
+    // Several logs are one table, and say nothing besides their rows.
+    convert: Some(|input| {
+        let converted = convert(
+            input.files,
+            input.display,
+            input.format,
+            input.options,
+            input.writer,
+            input.read,
+        )?;
+        Ok((converted, None))
+    }),
+    scan: crate::readers::read_into,
     signatures: &[crate::readers::Signature {
         says: |head, _| gpx::looks_like(head),
         kind: crate::readers::Kind::Text,
@@ -62,11 +88,6 @@ pub(crate) const GPX: crate::readers::Reader = crate::readers::Reader {
 
 /// How much of the file is read at a time.
 const CHUNK: usize = 1 << 16;
-
-/// Whether `format` is one of the GPS formats read here.
-pub fn is_gps(format: FileFormat) -> bool {
-    matches!(format, FileFormat::Nmea | FileFormat::Gpx)
-}
 
 /// A reader that counts the bytes read through it, for the loading screen.
 struct Counted<'a, R> {

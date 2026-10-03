@@ -215,6 +215,8 @@ work. The short version:
 - Do not downgrade a dependency without being asked. Do not add one for
   something the tree already has.
 - American English everywhere: code, UI strings, docs, notes.
+- One word per concept: `docs/reference/glossary.md`. `tests/wording_test.rs`
+  fails on a retired word in UI strings, help strings, docs or the manpage.
 - Docs: lead with the command or the key, then a table. No essays. Verify every
   claim against the code. Never link `plans/` or other unpublished paths.
 - Commit and PR text is terse. One idea per commit where practical.

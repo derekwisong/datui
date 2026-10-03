@@ -178,6 +178,7 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |
 | `tests/fuzz_corpus_test.rs` | Every committed fuzz corpus input through its target's body in `fuzz/src/`; see [Fuzzing](fuzzing.md) |
 | `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
+| `tests/wording_test.rs` | Retired words ([glossary](../reference/glossary.md)) and "opens anything" claims, in the UI strings, help strings, docs, `--help` and the manpage. A real use goes in its `ALLOWED` list |
 | `tests/common/` | Shared helpers |
 
 Unit tests live beside the code they test.

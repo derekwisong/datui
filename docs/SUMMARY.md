@@ -56,6 +56,7 @@
 - [Cloud sources](reference/cloud-sources.md)
 - [Data quality](reference/data-quality.md)
 - [Performance](reference/performance.md)
+- [Glossary](reference/glossary.md)
 
 # Contribute
 

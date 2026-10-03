@@ -2,7 +2,8 @@ Find a cell in the view.
 
   (text):           What to find. Plain text, or a regex with Ctrl+R
   Enter:            Find: the cursor, column cursor and all, goes to the
-                    first match at or after its row
+                    first match at or after its row. On an empty field,
+                    clear the find
   Ctrl+R:           Regex on or off
   Ctrl+L:           Only the column cursor's column, or every column shown
   ↑↓:               Earlier patterns (Ctrl+P / Ctrl+N too)
@@ -20,6 +21,7 @@ At the table:
                     and the bar says so. Each one typed while a find
                     reads runs in turn; Esc stops them all
   f:                Find again, the last pattern ready to edit
+  Esc:              Clear the find (or stop one still reading)
 
 The bar shows the pattern, and which match the cursor is on when the finds
 so far started from the top. Nothing counts every match. A find past the

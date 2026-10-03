@@ -23090,7 +23090,11 @@ impl App {
                 None
             }
             KeyCode::Esc => {
-                // First check if we're in drill-down mode
+                // The find is the nearest layer: its mark goes first, then a drill.
+                if self.find_shown() {
+                    self.find.active = None;
+                    return None;
+                }
                 let mut from_counts = false;
                 let drilled_up = if let Some(ref mut state) = self.data_table_state {
                     if state.is_drilled_down() {

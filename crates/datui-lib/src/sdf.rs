@@ -42,8 +42,12 @@ pub const CORE: [&str; 3] = ["name", "atoms", "bonds"];
 pub fn looks_like(head: &[u8]) -> bool {
     let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
     let mut lines = text.split(|&b| b == b'\n');
-    let counts = lines.nth(3).unwrap_or_default();
-    let counts_line = counts.windows(5).any(|w| w == b"V2000" || w == b"V3000");
+    // A counts line: numbers in fixed columns, ending in its version.
+    let counts = lines.nth(3).unwrap_or_default().trim_ascii();
+    let counts_line = (counts.ends_with(b"V2000") || counts.ends_with(b"V3000"))
+        && counts[..counts.len() - 5]
+            .iter()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_whitespace());
     let has = |needle: &[u8]| text.windows(needle.len()).any(|w| w == needle);
     counts_line || (has(b"M  END") && (has(b"$$$$") || has(b"> <")))
 }
@@ -754,5 +758,9 @@ $$$$
         assert!(looks_like(SAMPLE.as_bytes()));
         assert!(looks_like(b"\n\n\nM  END\n> <A>\n1\n\n$$$$\n"));
         assert!(!looks_like(b"a,b\n1,2\n"));
+        assert!(
+            !looks_like(b"model,code\nx,1\ny,2\nz,V2000\n"),
+            "a word, not a counts line"
+        );
     }
 }

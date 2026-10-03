@@ -93,7 +93,7 @@ impl<R: Read> Read for Counted<'_, R> {
 
 /// The file, decompressed as it is read when its name or `--compression` says so;
 /// `read` counts the bytes of the file as stored.
-fn open_reader<'a>(
+pub(crate) fn open_reader<'a>(
     file: &Path,
     options: &OpenOptions,
     read: &'a AtomicU64,

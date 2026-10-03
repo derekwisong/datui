@@ -111,7 +111,7 @@ pub fn parse_timestamp(text: &str) -> Option<i64> {
         (a.is_ascii_digit() && b.is_ascii_digit()).then(|| i64::from((a - b'0') * 10 + (b - b'0')))
     };
     let (h, m, s) = (two(0)?, two(3)?, two(6)?);
-    if h > 23 || m > 59 || s > 60 {
+    if h > 23 || m > 59 || s > 59 {
         return None;
     }
     let nanos = match fraction {
@@ -121,7 +121,9 @@ pub fn parse_timestamp(text: &str) -> Option<i64> {
         }
         Some(_) => return None,
     };
-    Some(days * 86_400_000_000_000 + (h * 3600 + m * 60 + s) * 1_000_000_000 + nanos)
+    // Out of a nanosecond Datetime's range (1677 to 2262) is not a time datui types.
+    days.checked_mul(86_400_000_000_000)?
+        .checked_add((h * 3600 + m * 60 + s) * 1_000_000_000 + nanos)
 }
 
 /// A `YYYYMMDD` date as days since the epoch.
@@ -814,6 +816,8 @@ mod tests {
         assert_eq!(parse_timestamp("19700101-00:00:00."), None);
         assert_eq!(parse_timestamp("19701301-00:00:00"), None);
         assert_eq!(parse_date("19700201"), Some(31));
+        assert_eq!(parse_timestamp("99991231-23:59:59"), None, "past 2262");
+        assert_eq!(parse_timestamp("00010101-00:00:00"), None, "before 1677");
     }
 
     const TOML: &str = r#"

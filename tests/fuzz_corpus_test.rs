@@ -11,6 +11,8 @@ extern crate datui as datui_lib;
 
 #[path = "../fuzz/src/audio_header.rs"]
 mod audio_header;
+#[path = "../fuzz/src/can_parse.rs"]
+mod can_parse;
 #[path = "../fuzz/src/config_parse.rs"]
 mod config_parse;
 #[path = "../fuzz/src/elf_symbols.rs"]
@@ -149,6 +151,7 @@ fn every_corpus_input_passes_its_target() {
     replay("numpy_header", &mut failures, numpy_header::run);
     replay("elf_symbols", &mut failures, elf_symbols::run);
     replay("flight_log", &mut failures, flight_log::run);
+    replay("can_parse", &mut failures, can_parse::run);
     replay("number_format", &mut failures, |b| {
         fuzz::<number_format::Input>(b, number_format::run)
     });
@@ -180,6 +183,7 @@ fn every_corpus_has_a_replay() {
         .collect();
     let replayed: BTreeSet<String> = [
         "audio_header",
+        "can_parse",
         "config_parse",
         "elf_symbols",
         "fix_dict",

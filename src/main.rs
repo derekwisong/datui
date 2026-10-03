@@ -195,6 +195,7 @@ mod tests {
             cloud_discover: None,
             spec: None,
             fix_dict: None,
+            dbc: None,
             variant: None,
             hex: false,
             record_size: None,

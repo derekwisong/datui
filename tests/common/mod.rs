@@ -279,6 +279,7 @@ pub fn ensure_sample_data() {
             "numpy/packed.npz",
             "elf/tiny.elf",
             "flight/00000042.BIN",
+            "can/dbc/body.toml",
             "hf_cache/people-test.arrow",
             "arrow_mixed/b.arrow",
             "hf_dict/dataset_dict.json",

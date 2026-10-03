@@ -1,0 +1,32 @@
+VERSION ""
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	VAL_
+
+BS_:
+
+BU_: ECU GW BODY
+
+BO_ 291 ENGINE: 8 ECU
+ SG_ Speed : 0|16@1+ (0.125,0) [0|8191.875] "rpm" GW
+ SG_ Temp : 16|8@1- (1,-40) [-168|87] "degC" GW
+ SG_ Gear : 24|4@1+ (1,0) [0|15] "" GW
+ SG_ Throttle : 32|8@1+ (0.4,0) [0|102] "%" GW
+
+BO_ 2566844926 BRAKES: 8 GW
+ SG_ Pressure : 7|16@0+ (0.1,0) [0|6553.5] "kPa" ECU
+ SG_ Balance : 23|12@0- (1,0) [-2048|2047] "" ECU
+
+BO_ 512 BATTERY: 8 ECU
+ SG_ Page M : 0|8@1+ (1,0) [0|255] "" GW
+ SG_ Volts m1 : 8|16@1+ (0.01,0) [0|655.35] "V" GW
+ SG_ Amps m2 : 8|16@1- (0.1,0) [-3276.8|3276.7] "A" GW
+ SG_ Ratio : 24|32@1- (1,0) [0|0] "" GW
+
+CM_ BO_ 291 "Engine status, every 10 ms";
+CM_ SG_ 291 Speed "Crankshaft speed";
+VAL_ 291 Gear 0 "Neutral" 1 "First" 2 "Second" 3 "Third" ;
+SIG_VALTYPE_ 512 Ratio : 1;

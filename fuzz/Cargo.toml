@@ -181,6 +181,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "can_parse"
+path = "fuzz_targets/can_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "hex_input"
 path = "fuzz_targets/hex_input.rs"
 test = false

@@ -11,6 +11,8 @@ use std::sync::mpsc;
 
 #[path = "formats/audio.rs"]
 mod audio;
+#[path = "formats/can.rs"]
+mod can;
 #[cfg(feature = "cloud")]
 #[path = "cloud/download.rs"]
 mod cloud_download;

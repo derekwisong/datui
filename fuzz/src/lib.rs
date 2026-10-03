@@ -5,6 +5,7 @@
 //! and replays every committed corpus input through them as an ordinary test, so a
 //! check added to `run` reaches both.
 pub mod audio_header;
+pub mod can_parse;
 pub mod config_parse;
 pub mod elf_symbols;
 pub mod fix_dict;

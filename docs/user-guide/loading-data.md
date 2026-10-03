@@ -184,6 +184,7 @@ The format is taken from the extension, or from `--format` when there is none.
 | [ELF](#elf-symbol-tables) | `.elf`, `.axf` | in memory | no | downloaded | downloaded | no |
 | [ULog](#flight-logs) | `.ulg` | lazy | no | downloaded | downloaded | no |
 | [DataFlash](#flight-logs) | any, by content, or `--format dataflash` | lazy | no | downloaded | downloaded | no |
+| [candump](#can-logs) | any, by content, or `--format candump` | lazy | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
 | Read | What it means |
@@ -690,6 +691,65 @@ tables; `--table` picks one.
   says how many bytes were passed over.
 - ULog appended data (written after a crash) is read with the rest.
 - At most 67,108,864 messages are indexed in one log.
+
+### CAN logs
+
+Read: [lazy](#how-each-format-is-read): one pass indexes the log, then each
+frame is read from its line where it is shown.
+
+```bash
+datui candump-2024-01-31_081500.log                # the frames
+datui candump.log --dbc vehicle.dbc                # a table per message
+datui candump.log --dbc vehicle.dbc --table EEC1   # one message
+```
+
+A `candump` log opens by its content, whatever it is called:
+`(1706689000.123456) can0 123#DEADBEEF` as `candump -l` and `-L` write it (`##`
+for CAN FD, `#R` for a remote request), or `can0  123   [4]  DE AD BE EF` as
+`candump` prints it, with or without a timestamp in front.
+
+| `frames` | |
+|---|---|
+| `ts` | The timestamp: a datetime for wall-clock time (`-l`, `-ta`), a duration for time since the start; null when the line has none |
+| `iface` | The interface: `can0`, `vcan0` |
+| `id` | The id in hex: three digits standard, eight extended |
+| `ext` | Whether the id is extended |
+| `dlc` | The data length code |
+| `data` | The data bytes |
+| `fd`, `flags` | Whether it is a CAN FD frame, and its flags (BRS, ESI) |
+| `kind` | `data`, `remote` or `error` |
+
+With a DBC file that names the log's messages, the log opens the home screen
+inside it, like a directory: a table per message with frames, `frames`, and
+`signals`.
+
+| Table | Columns |
+|---|---|
+| A message, by its DBC name | `ts` and a column per signal: factor and offset applied, an integer while they keep it one; value names (`VAL_`) as text; a multiplexed signal null in the frames its multiplexer does not select. Units are on the Info panel's Schema tab |
+| `signals` | One row per decoded value: `ts`, `message`, `signal`, `value` (a float) and `unit`, in time order |
+
+Signals in Intel and Motorola byte order, signed and unsigned, and floats
+(`SIG_VALTYPE_`) are read; a signal past the end of a short frame is null.
+Extended multiplexing (`SG_MUL_VAL_`) is not; the Notes tab says so.
+
+#### DBC files
+
+DBC files are found where [format specs](binary-formats.md) are: the `formats`
+directory of the config directory, `$DATUI_FORMATS_PATH`, and `formats_path`.
+A `.dbc` file there applies to every interface. A TOML file names one for an
+interface:
+
+```toml
+kind = "dbc"
+file = "powertrain.dbc"     # beside this file, or a full path
+[match]
+interface = "can1"
+```
+
+They are read in that order, then `--dbc FILE`; where two name a message of the
+same id, the later one is read. Press <kbd>i</kbd> for the CAN tab: frames,
+interfaces, the DBC files read and the frames none of them names, and each
+message's id, frames, signals and comment.
 
 ### VCD value change dumps
 

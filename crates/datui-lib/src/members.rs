@@ -12,7 +12,7 @@ use crate::FileFormat;
 pub use crate::sqlite::{Pick, Table};
 
 /// Bytes looked at to tell a file by its first bytes.
-const HEAD: usize = 64;
+const HEAD: usize = 512;
 
 /// The format of a file that can hold several tables, by its first bytes (and, for a
 /// NumPy archive, its name: a zip file is many things).
@@ -38,6 +38,9 @@ pub fn holder_of(path: &Path, head: &[u8]) -> Option<FileFormat> {
     }
     if crate::dataflash::looks_like(head) {
         return Some(FileFormat::Dataflash);
+    }
+    if crate::candump::looks_like(head) {
+        return Some(FileFormat::Candump);
     }
     None
 }
@@ -107,6 +110,8 @@ pub fn tables(file: &Path, format: FileFormat) -> color_eyre::Result<Vec<Table>>
             .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables.")),
         FileFormat::Dataflash => crate::indexed::peek::<crate::dataflash::Index>(file)
             .map(|index| crate::dataflash::tables(&index))
+            .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables.")),
+        FileFormat::Candump => crate::candump::listed(file)
             .ok_or_else(|| color_eyre::eyre::eyre!("Open the log to list its tables.")),
         other => Err(color_eyre::eyre::eyre!(
             "A {} file holds one table.",

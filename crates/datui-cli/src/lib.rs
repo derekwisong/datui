@@ -58,6 +58,8 @@ pub enum FileFormat {
     Ulog,
     /// ArduPilot DataFlash log (.bin, by its first bytes): one table per message type, picked with --table
     Dataflash,
+    /// candump CAN log (by its lines): the frames, or one message per table with --dbc
+    Candump,
 }
 
 impl FileFormat {
@@ -109,6 +111,7 @@ impl FileFormat {
             Self::Elf => "elf",
             Self::Ulog => "ulog",
             Self::Dataflash => "dataflash",
+            Self::Candump => "candump",
         }
     }
 
@@ -121,7 +124,7 @@ impl FileFormat {
     /// bounded: `from_name` answers `None` for the new format, and every caller reads
     /// `None` as "not Parquet", which is the direction that leaves counts off a directory
     /// rather than giving it another format's.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Parquet,
         Self::Csv,
         Self::Tsv,
@@ -146,6 +149,7 @@ impl FileFormat {
         Self::Elf,
         Self::Ulog,
         Self::Dataflash,
+        Self::Candump,
     ];
 
     /// The format a [`FileFormat::name`] names, for a name that was stored rather than
@@ -183,6 +187,7 @@ impl FileFormat {
                 | Self::Elf
                 | Self::Ulog
                 | Self::Dataflash
+                | Self::Candump
         )
     }
 
@@ -192,7 +197,7 @@ impl FileFormat {
     pub fn holds_tables(self) -> bool {
         matches!(
             self,
-            Self::Sqlite | Self::Numpy | Self::Elf | Self::Ulog | Self::Dataflash
+            Self::Sqlite | Self::Numpy | Self::Elf | Self::Ulog | Self::Dataflash | Self::Candump
         )
     }
 
@@ -225,7 +230,8 @@ impl FileFormat {
             | Self::Sqlite
             | Self::Numpy
             | Self::Ulog
-            | Self::Dataflash => ReadMode::Lazy,
+            | Self::Dataflash
+            | Self::Candump => ReadMode::Lazy,
             Self::Nmea | Self::Gpx | Self::Vcd | Self::Fix | Self::Sdf => ReadMode::Converted,
             Self::Json
             | Self::Jsonl
@@ -609,6 +615,10 @@ pub struct Args {
     #[arg(long = "spec", value_name = "FILE", help_heading = "Reading")]
     pub spec: Option<std::path::PathBuf>,
 
+    /// Decode a candump log's frames with this DBC file too, over those on the format search path: a .dbc file, or TOML with kind = "dbc"
+    #[arg(long = "dbc", value_name = "FILE", help_heading = "Reading")]
+    pub dbc: Option<std::path::PathBuf>,
+
     /// Read a FIX log with this dictionary too, over the built-in one and those on the format search path: a QuickFIX XML data dictionary, or TOML with kind = "fix"
     #[arg(long = "fix-dict", value_name = "FILE", help_heading = "Reading")]
     pub fix_dict: Option<std::path::PathBuf>,
@@ -670,7 +680,7 @@ pub struct Args {
     /// Table to open from a file that holds several. SQLite: a table or view by name.
     /// NMEA logs: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences.
     /// Hugging Face cache and DatasetDict directories: a split (default train).
-    /// NumPy archives (.npz): an array by name. ELF files: symbols (default) or sections. ULog and DataFlash logs: a topic or message type
+    /// NumPy archives (.npz): an array by name. ELF files: symbols (default) or sections. ULog and DataFlash logs: a topic or message type. candump logs: frames (default), signals, or a message a DBC file names
     #[arg(long = "table", value_name = "TABLE", help_heading = "Reading")]
     pub table: Option<String>,
     /// Show integer audio samples as float in [-1, 1] (default: the integers as stored)
@@ -1273,7 +1283,8 @@ mod format_tests {
                 | FileFormat::Numpy
                 | FileFormat::Elf
                 | FileFormat::Ulog
-                | FileFormat::Dataflash => FileFormat::ALL.contains(&f),
+                | FileFormat::Dataflash
+                | FileFormat::Candump => FileFormat::ALL.contains(&f),
             }
         }
         for format in FileFormat::ALL {
@@ -1313,7 +1324,8 @@ mod format_tests {
                 "numpy",
                 "elf",
                 "ulog",
-                "dataflash"
+                "dataflash",
+                "candump"
             ]
         );
     }

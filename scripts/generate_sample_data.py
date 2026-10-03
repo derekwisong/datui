@@ -20,6 +20,7 @@ This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - NumPy arrays and archives: each dtype, structured, 2-D in both orders, .npz
 - A tiny ELF executable, written by hand with struct
 - Flight logs: a PX4 ULog and an ArduPilot DataFlash log, written by hand with struct
+- CAN logs as candump writes them, and DBC files with Motorola, signed and multiplexed signals
 
 Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
@@ -1597,6 +1598,92 @@ def generate_flight_logs():
     print(f"Generated: {out}")
 
 
+CAN_DBC = """VERSION ""
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	VAL_
+
+BS_:
+
+BU_: ECU GW BODY
+
+BO_ 291 ENGINE: 8 ECU
+ SG_ Speed : 0|16@1+ (0.125,0) [0|8191.875] "rpm" GW
+ SG_ Temp : 16|8@1- (1,-40) [-168|87] "degC" GW
+ SG_ Gear : 24|4@1+ (1,0) [0|15] "" GW
+ SG_ Throttle : 32|8@1+ (0.4,0) [0|102] "%" GW
+
+BO_ 2566844926 BRAKES: 8 GW
+ SG_ Pressure : 7|16@0+ (0.1,0) [0|6553.5] "kPa" ECU
+ SG_ Balance : 23|12@0- (1,0) [-2048|2047] "" ECU
+
+BO_ 512 BATTERY: 8 ECU
+ SG_ Page M : 0|8@1+ (1,0) [0|255] "" GW
+ SG_ Volts m1 : 8|16@1+ (0.01,0) [0|655.35] "V" GW
+ SG_ Amps m2 : 8|16@1- (0.1,0) [-3276.8|3276.7] "A" GW
+ SG_ Ratio : 24|32@1- (1,0) [0|0] "" GW
+
+CM_ BO_ 291 "Engine status, every 10 ms";
+CM_ SG_ 291 Speed "Crankshaft speed";
+VAL_ 291 Gear 0 "Neutral" 1 "First" 2 "Second" 3 "Third" ;
+SIG_VALTYPE_ 512 Ratio : 1;
+"""
+
+BODY_DBC = """BO_ 1024 DOORS: 1 BODY
+ SG_ Open : 0|4@1+ (1,0) [0|15] "" GW
+"""
+
+
+def generate_can():
+    """A candump log of 300 frames on two interfaces, with classic, extended, CAN FD,
+    remote and error frames and a comment line; the same frames as candump prints
+    them; and DBC files: one for every interface, and one a TOML file names for can1."""
+    out = OUTPUT_DIR / "can"
+    out.mkdir(exist_ok=True)
+    lines = []
+    printed = []
+    t0 = 1_706_689_000.0
+    for i in range(300):
+        ts = f"({t0 + i * 0.01:.6f})"
+        kind = i % 6
+        if kind == 0:
+            data = struct.pack("<HbBB", 8000 + i, -10 + i % 20, i % 4, 100) + bytes(3)
+            frame = ("can0", "123", data)
+        elif kind == 1:
+            data = struct.pack(">HH", 4660 + i, 0xFFF0) + bytes(4)
+            frame = ("can0", "18FEF1FE", data)
+        elif kind == 2:
+            data = bytes([1]) + struct.pack("<H", 10000 + i) + struct.pack("<f", 1.5) + bytes(1)
+            frame = ("can0", "200", data)
+        elif kind == 3:
+            data = bytes([2]) + struct.pack("<h", -10 - i) + struct.pack("<f", -0.5) + bytes(1)
+            frame = ("can0", "200", data)
+        elif kind == 4:
+            frame = ("can1", "400", bytes([i % 16]))
+        else:
+            frame = ("can1", "7DF", b"\x02\x01\x0c")
+        iface, cid, data = frame
+        lines.append(f"{ts} {iface} {cid}#{data.hex().upper()}")
+        printed.append(f" {ts}  {iface}  {cid:>8}   [{len(data)}]  " + " ".join(f"{b:02X}" for b in data))
+        if i == 100:
+            lines.append("# a comment")
+            lines.append(f"{ts} can0 123##1" + (bytes(range(12)).hex().upper()))
+            lines.append(f"{ts} can1 7DF#R")
+            lines.append(f"{ts} can0 20000080#0000000000000000")
+    (out / "candump-2024-01-31_081640.log").write_text("\n".join(lines) + "\n")
+    (out / "printed.txt").write_text("\n".join(printed) + "\n")
+    dbc = out / "dbc"
+    dbc.mkdir(exist_ok=True)
+    (dbc / "car.dbc").write_text(CAN_DBC)
+    (dbc / "body").mkdir(exist_ok=True)
+    (dbc / "body" / "body.dbc").write_text(BODY_DBC)
+    (dbc / "body.toml").write_text('kind = "dbc"\nfile = "body/body.dbc"\n[match]\ninterface = "can1"\n')
+    print(f"Generated: {out}")
+
+
 def _vlq(n):
     """A MIDI variable-length quantity: seven bits a byte, high bit on all but the last."""
     out = [n & 0x7F]
@@ -1842,6 +1929,9 @@ def main():
 
     print("\n21. Generating flight logs...")
     generate_flight_logs()
+
+    print("\n22. Generating CAN logs...")
+    generate_can()
 
     print("\nSample data generation complete!")
 

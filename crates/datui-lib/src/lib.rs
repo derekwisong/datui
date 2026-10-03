@@ -10567,13 +10567,11 @@ impl App {
         if source::is_remote_url(path)
             && (options.spec_file.is_some() || options.spec_name.is_some())
         {
-            return Err(color_eyre::eyre::eyre!(
-                "{}",
-                crate::error_display::file_message(
-                    path,
-                    "format specs read local files; download it first"
-                )
-            ));
+            return Err(crate::error_display::FileError::new(
+                path,
+                "format specs read local files; download it first",
+            )
+            .into());
         }
         Ok(())
     }

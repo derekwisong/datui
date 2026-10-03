@@ -26,7 +26,7 @@ fn a_spec_on_a_remote_path_is_refused() {
             .err()
             .unwrap_or_else(|| panic!("{url} opened"));
             assert!(
-                e.to_string().contains("format specs read local files"),
+                e.to_string().contains("Format specs read local files"),
                 "{url}: {e}"
             );
         }

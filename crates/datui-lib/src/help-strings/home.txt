@@ -29,8 +29,9 @@ Navigation:
 
 Finding:
   (type):           Filter by name or column; fuzzy, so "sal" finds "sales".
-                    Typing also searches below the directory you are inside
-                    and the listed bucket names; matches appear under "Found"
+                    What you open often ranks first. Typing also searches
+                    below the directory you are inside and the listed bucket
+                    names; matches appear under "Found"
   ~:                While the filter is empty: type a path or URL by hand.
                     The prompt is a plain editor: characters, Backspace,
                     Ctrl+U clears, Tab completes, Enter opens a file or
@@ -52,7 +53,8 @@ Finding:
 
 Sections, in order:
   Recent:             Datasets opened before, grouped under the directory each
-                      lives in, newest place first
+                      lives in, ranked by how often and how lately each was
+                      opened; the cursor starts on the one opened last
   Current directory:  Where datui was launched
   Cloud:              One row per cloud source; Enter lists its buckets
   Collections:        Each [[sources]] collection under its label: named
@@ -97,7 +99,7 @@ Help and leaving:
   Ctrl+Q / Ctrl+C:  Quit
 
 What datui remembers, all under its cache directory and never the data
-itself: recent paths, the shapes and column names it measured (so this
-screen can say 1,000 × 11 without reading anything), query history, section
-folds, remembered directories, bucket listings and hidden cloud sources.
-datui --clear-cache removes all of it.
+itself: recent paths and how often each was opened, the shapes and column
+names it measured (so this screen can say 1,000 × 11 without reading
+anything), query history, section folds, remembered directories, bucket
+listings and hidden cloud sources. datui --clear-cache removes all of it.

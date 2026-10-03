@@ -53,8 +53,11 @@ empty current directory says `nothing to open here · ~ types a path`.
 A **place row** groups datasets by directory. Open the place to browse its
 contents, including files you have not opened individually. This is why a
 familiar directory can show more files than your recent individual opens.
-Places are ordered by recency; sorting changes the dataset order within each
-place.
+Recent is ranked by frecency, as zoxide ranks directories: each open counts four
+times within the hour, twice within the day, half within the week and a quarter
+after that. Places follow their highest-ranked dataset. The cursor starts on
+the dataset opened last, so <kbd>Enter</kbd> reopens it. Sorting changes the
+dataset order within each place.
 
 Initially, whole places fill up to a third of the list, with at least one
 place shown. Select `… more in … places` to expand the rest for this session.
@@ -111,7 +114,8 @@ of time`.
 Name matching uses fzf-style scoring: consecutive characters, word boundaries
 and filename matches rank higher. Matched characters are underlined.
 Known Parquet column names also match; name matches rank ahead of column
-matches. Column metadata is remembered between runs.
+matches. A dataset you open often ranks above one that matches about as well,
+in every section. Column metadata is remembered between runs.
 
 ### What is skipped
 
@@ -366,8 +370,8 @@ cancel and return home. If a file cannot open, home shows the error and
 
 ## What datui remembers
 
-Datui caches recent paths and measured metadata: counts, column names, size
-and modification time. Clear them with:
+Datui caches recent paths, how often and how lately each was opened, and
+measured metadata: counts, column names, size and modification time. Clear them with:
 
 | Command | Removes |
 |---|---|

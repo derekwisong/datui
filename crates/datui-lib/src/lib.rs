@@ -9084,6 +9084,10 @@ pub enum AppEvent {
         listing: Box<crate::home::Listing>,
         /// What earlier runs measured, read from the cache with the listing.
         known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+        /// How often and how lately each recent was opened.
+        visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
+        /// The recent opened last, where the cursor lands.
+        newest: Option<PathBuf>,
         /// The saved folds, when entering the home screen asked for them.
         folds: Option<std::collections::HashMap<String, bool>>,
     },
@@ -16139,7 +16143,12 @@ impl App {
         let owed = self.owed_answer(AppEvent::HomeListingFailed);
         self.runtime.spawn_blocking(move || {
             owed.run(move || {
-                request.recents = cache.load_recents();
+                // Ranked by frecency; the newest is where the cursor lands, so the
+                // last file is still one Enter away.
+                let recents = cache.load_recents();
+                let visits = cache.load_visits();
+                let newest = recents.first().cloned();
+                request.recents = crate::cache::by_frecency(recents, &visits);
                 request.remembered_dirs = cache.load_remembered_places();
                 request.known = cache.load_dataset_facts();
                 if desktop {
@@ -16150,6 +16159,8 @@ impl App {
                     generation,
                     listing: Box::new(listing),
                     known: request.known,
+                    visits,
+                    newest,
                     folds: read_folds.then(|| cache.load_folds()),
                 });
             })
@@ -25371,6 +25382,8 @@ impl App {
                 generation,
                 listing,
                 known,
+                visits,
+                newest,
                 folds,
             } => {
                 // Clear the flag first, whatever the generation: a stale result that
@@ -25381,6 +25394,8 @@ impl App {
                 // the facts fill in rows the recursive search finds the same way, and
                 // only the first listing after entering home carries the folds.
                 self.home.known = known.clone();
+                self.home.visits = visits.clone();
+                self.home.newest_recent = newest.clone();
                 if let Some(folds) = folds {
                     self.home.folds = folds.clone();
                 }

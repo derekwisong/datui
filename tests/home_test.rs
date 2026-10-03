@@ -7452,3 +7452,135 @@ mod catalog {
         assert_eq!(row.size, Some(16_480));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Frecency: what is opened often comes first (#547 M9)
+// ---------------------------------------------------------------------------
+
+mod frecency {
+    use super::coming_back::settle;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use datui::home::Row;
+    use datui::{App, AppEvent, CacheManager};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Two sales files in a configured directory, `often` opened three times and
+    /// `last` once since, and the home screen over them with that history.
+    fn opened(
+        tmp: &TempDir,
+        often: &str,
+        last: &str,
+    ) -> (App, std::sync::mpsc::Receiver<AppEvent>, PathBuf, PathBuf) {
+        let dir = tmp.path().join("data");
+        let often = super::touch(&dir, often);
+        let last = super::touch(&dir, last);
+        let cache = CacheManager::with_dir(tmp.path().join("cache"));
+        for path in [&often, &often, &often, &last] {
+            assert_eq!(
+                cache.push_recent(path),
+                datui::cache::HistoryUpdate::Written
+            );
+        }
+        let mut config = datui::config::AppConfig::default();
+        config.data.directories = vec![dir.to_string_lossy().into_owned()];
+        config.data.use_desktop_recents = false;
+        config.data.hide_sources = vec!["public".to_string()];
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        app.use_cache(cache);
+        app.enter_home();
+        settle(&mut app, &rx, |app| !app.home.newest_recent.is_none());
+        let canonical = |p: &PathBuf| std::fs::canonicalize(p).unwrap();
+        (app, rx, canonical(&often), canonical(&last))
+    }
+
+    fn recent_order(app: &App) -> Vec<PathBuf> {
+        app.home
+            .visible()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Entry { section, entry, .. }
+                    if app.home.sections[*section].title
+                        == datui::home::HomeState::RECENT_SECTION =>
+                {
+                    Some(entry.path.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Recent is ranked by frecency, and the cursor still lands on the file opened
+    /// last, so it is one Enter away.
+    #[test]
+    fn recent_is_ranked_by_frecency_and_lands_on_the_newest() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, _rx, often, last) = opened(&tmp, "sales_q1.csv", "sales_q2.csv");
+        assert_eq!(recent_order(&app), [often, last.clone()]);
+        app.home.select_first_entry();
+        assert_eq!(app.home.selected_entry().map(|e| e.path), Some(last));
+    }
+
+    /// Of two files `sales` matches equally, the one opened most is first, in a
+    /// directory's section too, where the name would otherwise put the other first.
+    #[test]
+    fn a_match_opened_most_comes_first() {
+        let tmp = TempDir::new().unwrap();
+        let (mut app, _rx, often, last) = opened(&tmp, "sales_q2.csv", "sales_q1.csv");
+        for c in "sales".chars() {
+            app.event(&AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        let dir = often.parent().unwrap().to_path_buf();
+        let in_dir: Vec<PathBuf> = app
+            .home
+            .visible()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Entry { section, entry, .. }
+                    if app.home.sections[*section].root.as_deref() == Some(dir.as_path()) =>
+                {
+                    Some(entry.path.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(in_dir, [often, last]);
+    }
+
+    /// Visits are counted per open and kept only for what is still recent.
+    #[test]
+    fn visits_are_counted_and_follow_the_recents() {
+        let tmp = TempDir::new().unwrap();
+        let cache = CacheManager::with_dir(tmp.path().join("cache"));
+        let a = super::touch(tmp.path(), "a.csv");
+        let b = super::touch(tmp.path(), "b.csv");
+        for path in [&a, &b, &a] {
+            cache.push_recent(path);
+        }
+        let visits = cache.load_visits();
+        let a = std::fs::canonicalize(&a).unwrap();
+        let b = std::fs::canonicalize(&b).unwrap();
+        assert_eq!(visits[&a].count, 2);
+        assert_eq!(visits[&b].count, 1);
+        let ranked = datui::cache::by_frecency(cache.load_recents(), &visits);
+        assert_eq!(ranked, [a.clone(), b.clone()]);
+        cache.forget_recent(&b);
+        cache.push_recent(&a);
+        assert!(
+            !cache.load_visits().contains_key(&b),
+            "forgotten, then pruned"
+        );
+    }
+}

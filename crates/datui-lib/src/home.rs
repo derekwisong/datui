@@ -1249,6 +1249,11 @@ pub struct HomeState {
     /// How a path is judged to be network-backed. Swappable so the "never touch a
     /// remote path on this thread" rule can be tested without a remote.
     pub network_check: fn(&Path) -> bool,
+    /// How often and how lately each recent was opened: ranks matches (#547 M9).
+    pub visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
+    /// The recent opened last. Recent is ranked by frecency, and the cursor lands here
+    /// so the last file is still one Enter away.
+    pub newest_recent: Option<PathBuf>,
     /// Network roots whose listing has come back, keyed by path.
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network roots that did not answer.
@@ -1392,6 +1397,10 @@ pub struct SearchState {
 /// a millisecond or two, and the list answers in the same frame as the key.
 const SCORE_INLINE_MAX: usize = 2_000;
 
+/// Match score a unit of frecency is worth, up to ten units: a file opened every day
+/// outranks one whose name matches a little better, never one that matches far better.
+const FRECENCY_LIFT: f64 = 3.0;
+
 /// What a worker needs to score the filter against a walk's files.
 #[derive(Debug, Clone)]
 pub struct ScoreJob {
@@ -1460,6 +1469,8 @@ impl Default for HomeState {
             browse_start: None,
             status: None,
             network_check: is_remote_path,
+            visits: Default::default(),
+            newest_recent: None,
             sort: SortMode::default(),
             listing_in_flight: false,
             measure_in_flight: false,
@@ -3548,9 +3559,26 @@ impl HomeState {
             // equal and the curated order is preserved. Ties go to the shorter name,
             // which is fzf's default tiebreak and the reason `sales` prefers
             // `sales.csv` over `sales_by_region_and_quarter.csv`.
+            //
+            // An often-opened row is lifted by its frecency, up to a few characters'
+            // worth of match: of two files `sales` finds, the one opened most comes
+            // first (#547 M9).
             if !self.filter.is_empty() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                let lifted = |entry: &Entry, score: i32| {
+                    let frecency = self
+                        .visits
+                        .get(&entry.path)
+                        .map_or(0.0, |v| v.frecency(now));
+                    score.saturating_add((frecency.min(10.0) * FRECENCY_LIFT) as i32)
+                };
                 matched.sort_by(|(a, sa), (b, sb)| {
-                    sb.cmp(sa).then_with(|| a.name.len().cmp(&b.name.len()))
+                    lifted(b, *sb)
+                        .cmp(&lifted(a, *sa))
+                        .then_with(|| a.name.len().cmp(&b.name.len()))
                 });
             }
 
@@ -4146,6 +4174,17 @@ impl HomeState {
     /// Where [`HomeState::select_first_entry`] puts the cursor.
     fn landing_row(&self) -> usize {
         let rows = self.visible();
+        // Recent is ranked by frecency, and the last file opened is still one Enter away.
+        if self.filter.is_empty()
+            && let Some(newest) = self.newest_recent.as_ref()
+            && let Some(at) = rows.iter().position(|r| {
+                matches!(r, Row::Entry { section, entry, .. }
+                    if entry.path == *newest
+                        && self.sections[*section].title == Self::RECENT_SECTION)
+            })
+        {
+            return at;
+        }
         let first = rows
             .iter()
             .position(|r| matches!(r, Row::Entry { .. } | Row::Door { .. }));

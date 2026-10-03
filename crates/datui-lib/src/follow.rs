@@ -1258,16 +1258,56 @@ struct Watcher {
     marks: Arc<Marks>,
 }
 
-/// Which file a path names, so a replaced file is told from a grown one.
+/// Which file this is, so a replaced file is told from a grown one: (device, inode) on
+/// Unix, (volume serial, file index) on Windows.
+type Identity = (u64, u64);
+
 #[cfg(unix)]
-fn identity(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+fn identity_of(file: &File) -> Option<Identity> {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().ok().map(|meta| (meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn identity_of(file: &File) -> Option<Identity> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    // SAFETY: the handle is `file`'s, open while this runs, and `info` is plain data
+    // the call fills in; zeroed is a valid value of it.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+    (ok != 0).then(|| {
+        (
+            u64::from(info.dwVolumeSerialNumber),
+            u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow),
+        )
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_of(_file: &File) -> Option<Identity> {
+    None
+}
+
+/// Which file `path` names now, `meta` its metadata. Unix reads it from the metadata;
+/// Windows has to open the file to ask.
+#[cfg(unix)]
+fn identity_at(_path: &Path, meta: &std::fs::Metadata) -> Option<Identity> {
     use std::os::unix::fs::MetadataExt;
     Some((meta.dev(), meta.ino()))
 }
 
 #[cfg(not(unix))]
-fn identity(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
-    None
+fn identity_at(path: &Path, _meta: &std::fs::Metadata) -> Option<Identity> {
+    File::open(path).ok().as_ref().and_then(identity_of)
+}
+
+/// Whether the file a path names is another one than the file followed. Unknown on
+/// either side is not a replacement: a shrink still tells a truncation.
+fn replaced(known: Option<Identity>, now: Option<Identity>) -> bool {
+    matches!((known, now), (Some(known), Some(now)) if known != now)
 }
 
 impl Watcher {
@@ -1279,7 +1319,7 @@ impl Watcher {
                 return;
             }
         };
-        let mut known = file.metadata().ok().and_then(|m| identity(&m));
+        let mut known = identity_of(&file);
         let mut sent = (self.tail.rows(), 0usize);
         while self.shared.wait(self.interval) {
             // Read before the file, so nothing the spool wrote before it ended is missed.
@@ -1297,10 +1337,9 @@ impl Watcher {
                     return;
                 }
             };
-            let now = identity(&meta);
+            let now = identity_at(&self.path, &meta);
             let len = meta.len();
-            let replaced = now.is_some() && known.is_some() && now != known;
-            if replaced || len < self.tail.complete() {
+            if replaced(known, now) || len < self.tail.complete() {
                 match File::open(&self.path) {
                     Ok(reopened) => file = reopened,
                     Err(e) => {
@@ -1308,7 +1347,7 @@ impl Watcher {
                         return;
                     }
                 }
-                known = now;
+                known = identity_of(&file);
                 self.tail.restart();
                 self.marks.clear();
                 if let Err(e) = self.tail.read_on(&mut file, len, false) {
@@ -1980,6 +2019,37 @@ mod tests {
                 "{start}"
             );
         }
+    }
+
+    /// A file put in place of the followed one, as big or bigger, is another file;
+    /// the file grown in place is the same one. Windows reads this from the volume and
+    /// file index, Unix from the device and inode.
+    #[test]
+    fn a_replaced_file_is_told_from_a_grown_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.csv");
+        std::fs::write(&path, "t\n1\n").unwrap();
+        let held = File::open(&path).unwrap();
+        let known = identity_of(&held);
+        assert!(cfg!(not(any(unix, windows))) || known.is_some());
+        let now = |path: &Path| identity_at(path, &std::fs::metadata(path).unwrap());
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"2\n")
+            .unwrap();
+        assert!(!replaced(known, now(&path)), "grown in place");
+        let other = dir.path().join("next.csv");
+        std::fs::write(&other, "t\n1\n2\n3\n").unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        assert_eq!(
+            replaced(known, now(&path)),
+            known.is_some(),
+            "renamed over it"
+        );
+        assert!(!replaced(None, now(&path)), "unknown is no replacement");
+        drop(held);
     }
 
     /// A deleted file is read through the handle held on it.

@@ -227,6 +227,32 @@ fn a_truncated_file_is_read_again_from_the_start() {
     assert_eq!(t, vec![Some(9)]);
 }
 
+/// A file put in place of the followed one, as big or bigger, is read from its start
+/// too: its size alone would pass for a file that grew.
+#[test]
+fn a_replaced_file_of_the_same_or_larger_size_is_read_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rotated.csv");
+    std::fs::write(&path, "t,n\n1,10\n2,20\n").unwrap();
+    let (mut app, rx) = app();
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
+    screen(&mut app);
+    assert_eq!(rows(&app), 2);
+    let next = dir.path().join("next.csv");
+    std::fs::write(&next, "t,n\n7,70\n8,80\n9,90\n").unwrap();
+    std::fs::rename(&next, &path).unwrap();
+    until(&mut app, &rx, |app| {
+        app.flash_message()
+            .is_some_and(|m| m.contains("from the start"))
+            && app.follow_settled()
+    });
+    assert_eq!(rows(&app), 3);
+    app.event(&key(KeyCode::Home));
+    drain_events(&mut app, &rx);
+    let t = visible(&app).column("t").unwrap().i64().unwrap().to_vec();
+    assert_eq!(t, vec![Some(7), Some(8), Some(9)]);
+}
+
 /// Standard input goes on arriving after the first rows show, until it ends.
 #[test]
 fn standard_input_keeps_arriving() {

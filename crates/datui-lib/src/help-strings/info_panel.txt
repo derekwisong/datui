@@ -35,7 +35,8 @@ Tabs:
   Metadata:    The key="value" pairs of the metadata line a delimited format
                spec names; a line that is not pairs is shown as it is. Only
                for files read through such a spec
-  Resources:   What the data costs to hold and to read
+  Resources:   What the data costs to hold and to read, and how it is read:
+               lazy, converted once, or in memory
   Partitions:  The layout of a partitioned dataset. Only when it has one
   Notes:       What datui noticed about the data while reading it. Only when
                there is something to say

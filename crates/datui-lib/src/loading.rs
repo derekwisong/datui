@@ -1455,6 +1455,74 @@ mod tests {
     use super::*;
     use polars::prelude::IntoLazy;
 
+    /// An open routes a remote file as `FileFormat::bucket_object` and `http_file` say,
+    /// which the loading-data page's table and the home screen's marker read: read in
+    /// place, or downloaded first. A bucket's Arrow is listed first, and read in place
+    /// unless the listing finds a stream; a compressed object is downloaded.
+    #[cfg(all(feature = "http", feature = "cloud"))]
+    #[test]
+    fn remote_files_are_routed_as_their_format_says() {
+        use crate::{FileFormat, RemoteRead, Stored};
+        let in_place = |url: &str, stream: bool| {
+            let path = Path::new(url);
+            crate::remote_model::model_format(path, None).is_some()
+                || match remote_download(&source::input_source(path), &OpenOptions::default()) {
+                    None => true,
+                    Some(PendingDownload::Arrow { .. }) => {
+                        let object = crate::cloud_arrow::Object {
+                            url: url.to_string(),
+                            size: 10,
+                            stream,
+                        };
+                        crate::cloud_arrow::in_place(&[object]).is_some()
+                    }
+                    Some(_) => false,
+                }
+        };
+        let mut seen = Vec::new();
+        for ext in [
+            "parquet",
+            "csv",
+            "tsv",
+            "psv",
+            "json",
+            "jsonl",
+            "arrow",
+            "avro",
+            "orc",
+            "xlsx",
+            "safetensors",
+            "gguf",
+            "nmea",
+            "gpx",
+            "wav",
+            "mid",
+            "db",
+        ] {
+            let format = FileFormat::from_extension(ext).expect(ext);
+            seen.push(format);
+            let https = format!("https://example.com/d/x.{ext}");
+            assert_eq!(
+                in_place(&https, false),
+                format.http_file() == RemoteRead::InPlace,
+                "{https}"
+            );
+            for url in [format!("s3://b/d/x.{ext}"), format!("gs://b/d/x.{ext}")] {
+                let said = |stored| format.bucket_object(stored) == RemoteRead::InPlace;
+                assert_eq!(in_place(&url, false), said(Stored::Plain), "{url}");
+                if format == FileFormat::Arrow {
+                    assert_eq!(in_place(&url, true), said(Stored::Stream), "{url}: stream");
+                }
+                let gz = format!("{url}.gz");
+                let compressed = Stored::Compressed { in_memory: false };
+                assert_eq!(in_place(&gz, false), said(compressed), "{gz}");
+            }
+        }
+        for f in FileFormat::ALL {
+            assert!(seen.contains(&f), "{} is checked", f.name());
+        }
+    }
+
     fn frame() -> LazyFrame {
         polars::df!("a" => [1i32, 2, 3]).unwrap().lazy()
     }

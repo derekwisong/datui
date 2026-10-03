@@ -432,6 +432,51 @@ pub struct Cost {
     /// Tables of its own, for a SQLite database: one opens, several are listed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tables: Option<usize>,
+    /// An Arrow file that is an IPC stream, which is converted before it is scanned,
+    /// rather than an IPC file, which is scanned where it is. From its first bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ipc_stream: bool,
+}
+
+/// How opening a file row will read it. See [`how_read`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HowRead {
+    pub mode: crate::ReadMode,
+    /// A remote file that is downloaded whole before it is read.
+    pub download: bool,
+}
+
+/// How opening `entry` will read it, as [`crate::FileFormat::read_mode`] says for its
+/// format and how it is stored, and whether a remote one is downloaded first. `None`
+/// for anything but a file whose name says its format.
+pub fn how_read(entry: &Entry) -> Option<HowRead> {
+    use crate::Stored;
+    if entry.kind != EntryKind::File {
+        return None;
+    }
+    let stored = if crate::CompressionFormat::from_extension(&entry.path).is_some() {
+        Stored::Compressed { in_memory: false }
+    } else if entry.cost.ipc_stream {
+        Stored::Stream
+    } else {
+        Stored::Plain
+    };
+    let choice = match &entry.format_spec {
+        Some(name) => crate::cli::FormatChoice::Spec(name.clone()),
+        // A table inside a database, at its path inside it (`shop.db/orders`).
+        None if entry.table.is_some() => {
+            crate::cli::FormatChoice::Builtin(crate::FileFormat::Sqlite)
+        }
+        None => crate::cli::FormatChoice::Builtin(data_format(&entry.path)?),
+    };
+    let mode = choice.read_mode(stored)?;
+    let download = match crate::source::input_source(&entry.path) {
+        crate::source::InputSource::Local(_) => false,
+        crate::source::InputSource::Http(_) => choice.http_file() == crate::RemoteRead::Downloaded,
+        // A remote Arrow file is not peeked at here, so it is taken for an IPC file.
+        _ => choice.bucket_object(stored) == crate::RemoteRead::Downloaded,
+    };
+    Some(HowRead { mode, download })
 }
 
 /// How a hive dataset is laid out on disk.
@@ -1535,6 +1580,7 @@ pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
         EntryKind::File => {
             enrich_parquet(entry);
             enrich_sqlite(entry);
+            enrich_arrow(entry);
         }
         EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry, as_read),
         // Nothing to read for a plain directory, and nothing that *may* be read for
@@ -2105,6 +2151,22 @@ fn table_entry(
     entry
 }
 
+/// Whether an Arrow file is an IPC stream: an IPC file starts `ARROW1`, a stream with
+/// its schema message. Eight bytes, so a listing can say which will be converted.
+fn enrich_arrow(entry: &mut Entry) {
+    if entry.kind != EntryKind::File
+        || data_format(&entry.path) != Some(crate::FileFormat::Arrow)
+        || crate::CompressionFormat::from_extension(&entry.path).is_some()
+        || !is_regular_file(&entry.path)
+    {
+        return;
+    }
+    let mut head = [0u8; 8];
+    if let Some(head) = read_head(&entry.path, &mut head) {
+        entry.cost.ipc_stream = !head.starts_with(b"ARROW1");
+    }
+}
+
 /// Pull layout and compression out of a footer that has already been read.
 ///
 /// Every one of these was being parsed and thrown away. They are the difference
@@ -2418,6 +2480,62 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
 mod classification_tests {
     use super::*;
     use polars::prelude::*;
+
+    /// A file row's read follows its format and how it is stored, and a remote file
+    /// other than a Parquet object or a model file is downloaded first. Directories say nothing.
+    #[test]
+    fn how_a_row_is_read() {
+        use crate::ReadMode::*;
+        let how = |path: &str| how_read(&Entry::for_test(Path::new(path), path));
+        let at = |path: &str, mode, download| {
+            assert_eq!(how(path), Some(HowRead { mode, download }), "{path}");
+        };
+        at("/d/a.parquet", Lazy, false);
+        at("/d/a.csv", Lazy, false);
+        at("/d/a.csv.gz", Converted, false);
+        at("/d/a.json", InMemory, false);
+        at("/d/a.gpx", Converted, false);
+        at("/d/a.arrow", Lazy, false);
+        at("s3://b/a.parquet", Lazy, false);
+        at("s3://b/a.csv", Lazy, true);
+        at("gs://b/a.json", InMemory, true);
+        at("https://example.com/a.parquet", Lazy, true);
+        at("s3://b/m.safetensors", InMemory, false);
+        at("https://example.com/m.gguf", InMemory, false);
+        assert_eq!(how("/d/a.parquet.gz"), None, "does not open");
+        assert_eq!(how("/d/README"), None);
+
+        let mut stream = Entry::for_test(Path::new("/d/x.arrow"), "x.arrow");
+        stream.cost.ipc_stream = true;
+        assert_eq!(how_read(&stream).map(|h| h.mode), Some(Converted));
+        let mut spec = Entry::for_test(Path::new("/d/day.l2.zst"), "day.l2.zst");
+        spec.format_spec = Some("acme.l2feed".into());
+        assert_eq!(how_read(&spec).map(|h| h.mode), Some(Converted));
+        at("/d/shop.db", Lazy, false);
+        at("s3://b/shop.sqlite", Lazy, true);
+        let mut table = Entry::for_test(Path::new("/d/shop.db/orders"), "orders");
+        table.table = Some(TableOf {
+            kind: "table".into(),
+            internal: false,
+        });
+        assert_eq!(how_read(&table).map(|h| h.mode), Some(Lazy));
+        assert_eq!(how_read(&Entry::directory(Path::new("/d/x"))), None);
+    }
+
+    /// An Arrow file is told a stream by its first bytes when it is measured.
+    #[test]
+    fn measuring_an_arrow_file_tells_a_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.arrow");
+        std::fs::write(&file, b"ARROW1\0\0rest").unwrap();
+        let stream = dir.path().join("stream.arrow");
+        std::fs::write(&stream, b"\xff\xff\xff\xff\x10\x01\0\0").unwrap();
+        for (path, is_stream) in [(file, false), (stream, true)] {
+            let mut entry = Entry::for_test(&path, "x.arrow");
+            enrich(&mut entry);
+            assert_eq!(entry.cost.ipc_stream, is_stream, "{}", path.display());
+        }
+    }
 
     /// Every extension the home screen offers has a reader behind it, and every
     /// extension a reader knows is offered. The two lists had drifted: `.psv` and

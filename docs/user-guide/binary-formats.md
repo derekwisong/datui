@@ -263,6 +263,8 @@ magic is read from the decompressed bytes.
 
 ## Large files
 
+Read: [lazy, or converted once when compressed](loading-data.md#how-each-format-is-read).
+
 A file is memory-mapped, and only the columns and rows on screen are decoded.
 Scrolling to the last row of a gigabyte file reads only the rows shown. A sort,
 filter, query, chart or analysis reads every row of the columns it uses, a batch

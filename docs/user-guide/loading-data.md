@@ -79,31 +79,64 @@ Defaults for most of them can be set once in the
 
 The format is taken from the extension, or from `--format` when there is none.
 
-| Format | Extensions | Lazy | Hive partitions |
-|---|---|---|---|
-| Parquet | `.parquet` | yes | yes |
-| CSV and other delimited text | `.csv`, `.tsv`, `.psv` | yes | |
-| Arrow IPC, Feather v2 | `.arrow`, `.arrows`, `.ipc`, `.feather` | yes | |
-| NDJSON | `.jsonl` | | |
-| JSON | `.json` | | |
-| Avro | `.avro` | | |
-| Excel | `.xlsx`, `.xlsm`, `.xlsb`, `.xls` | | |
-| ORC | `.orc` | | |
-| SafeTensors | `.safetensors`, `model.safetensors.index.json` | header only | |
-| GGUF | `.gguf` | header only | |
-| NMEA 0183 | `.nmea` | read once to a temporary file | |
-| GPX | `.gpx` | read once to a temporary file | |
-| WAV, BWF, RF64, AIFF | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | yes | |
-| MIDI | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | | |
-| [Binary records](binary-formats.md) | any, through a format spec | yes | |
-| SQLite | `.db`, `.sqlite`, `.sqlite3`, `.db3` | read in place; sort and filter run in SQLite | |
+### How each format is read
 
-**Lazy** formats are scanned as needed. Browsing reads a buffer of rows;
-queries, sorting and analysis may read the full input. The other formats are
-loaded in full before the table appears, except a directory of NDJSON files in
-a bucket, which is scanned.
+| Format | Extensions | Read | Compressed | HTTP(S) | In a bucket | Bucket prefix |
+|---|---|---|---|---|---|---|
+| Parquet | `.parquet` | lazy | no | downloaded | in place | in place |
+| CSV | `.csv` | lazy | converted once | downloaded | downloaded | in place |
+| TSV, PSV | `.tsv`, `.psv` | lazy | converted once | downloaded | downloaded | no |
+| Arrow IPC file, Feather v2 | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy | no | downloaded | in place | in place |
+| [Arrow IPC stream](#arrow-ipc-streams) | `.arrow`, `.arrows`, `.ipc`, `.feather` | converted once | no | downloaded | downloaded | downloaded |
+| NDJSON | `.jsonl`, `.ndjson` | in memory | no | downloaded | downloaded | in place |
+| JSON | `.json` | in memory | no | downloaded | downloaded | no |
+| Avro | `.avro` | in memory | no | downloaded | downloaded | no |
+| Excel | `.xlsx`, `.xlsm`, `.xlsb`, `.xls` | in memory | no | downloaded | downloaded | no |
+| ORC | `.orc` | in memory | no | downloaded | downloaded | no |
+| [SafeTensors](#model-files) | `.safetensors`, `model.safetensors.index.json` | in memory | no | in place | in place | in place |
+| [GGUF](#model-files) | `.gguf` | in memory | no | in place | in place | in place |
+| [NMEA 0183](#gps-logs) | `.nmea` | converted once | converted once | downloaded | downloaded | no |
+| [GPX](#gps-logs) | `.gpx` | converted once | converted once | downloaded | downloaded | no |
+| [WAV, BWF, RF64, AIFF](#audio-files) | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy | no | downloaded | downloaded | no |
+| [MIDI](#midi-files) | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | in memory | no | downloaded | downloaded | no |
+| [SQLite](#sqlite-databases) | `.db`, `.sqlite`, `.sqlite3`, `.db3` | lazy | no | downloaded | downloaded | no |
+| [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
-**Arrow IPC streams**, the format of a Hugging Face `datasets` cache, are told
+| Read | What it means |
+|---|---|
+| lazy | Scanned where it is. Browsing reads a buffer of rows; queries, sorting and analysis may read the whole input |
+| converted once | Read through once into a temporary file in the temp directory (`--temp-dir`), which is then scanned lazily. The file is removed on quit ([temporary files](#temporary-files)) |
+| in memory | Read whole into memory before the table appears. A model file's table is one row per tensor, from the header, so it is small however large the model; a MIDI file is at most 64 MiB |
+
+- **Compressed** is a `.gz`, `.zst`, `.bz2` or `.xz` file; `no` means it does not
+  open. `--decompress-in-memory` reads compressed CSV, TSV and PSV in memory instead.
+- **HTTP(S)** is one file at an `http://` or `https://` URL. `downloaded` copies
+  it to the temp directory first, then reads it as **Read** says. A model file's
+  header is fetched by range; a server that sends no ranges gets the download
+  question.
+- **In a bucket** is one S3, GCS or Azure object. `in place` reads only what is
+  needed with ranged requests: a Parquet or Arrow IPC file's footer and the rows
+  shown, or a model file's header. `downloaded` copies the object to the temp
+  directory first, after asking, then reads it as **Read** says; an Arrow stream
+  is converted as it downloads, with no copy of the stream kept.
+- **Bucket prefix** is a prefix or glob read as one table. Only Parquet reads
+  hive partitions; the model files directly under a prefix are read by their
+  headers. An Arrow prefix scans its IPC files in place and downloads its
+  streams, one split of a Hugging Face cache as on disk; a glob of Arrow reads
+  IPC files only. A prefix marked `no` opens one object at a time from the
+  [cloud browser](cloud-browser.md).
+- [Standard input](#standard-input) is written to a temporary file first, then
+  read as **Read** says.
+
+The home screen marks a file row that is not read lazily where it is:
+`converts`, `in memory` or `downloads`. The details pane and the Info panel's
+Resources tab say how it is read.
+
+### Arrow IPC streams
+
+Read: [converted once](#how-each-format-is-read).
+
+Arrow IPC streams, the format of a Hugging Face `datasets` cache, are told
 from IPC files by their first bytes: a `.arrow`, `.arrows`, `.ipc` or `.feather`
 file, one with no extension, or one read with `--format arrow`. A stream has no
 index of its rows, so it is converted once to an IPC file in the temp directory,
@@ -133,10 +166,16 @@ The loading screen shows how far the conversion has got;
 chooses where the copy goes, and it is removed with the dataset. A stream larger
 than the temp directory's free space is refused before it is written.
 
-**Excel** opens the first sheet unless `--sheet` names another, by index
+### Excel
+
+Read: [in memory](#how-each-format-is-read).
+
+Excel opens the first sheet unless `--sheet` names another, by index
 (`--sheet 0`) or name (`--sheet Sales`).
 
 ### Model files
+
+Read: [in memory](#how-each-format-is-read), from the header.
 
 ```bash
 datui model.safetensors
@@ -190,6 +229,8 @@ cannot be downloaded this way, and the open says so.
 
 ### GPS logs
 
+Read: [converted once](#how-each-format-is-read).
+
 ```bash
 datui drive.nmea
 datui --table GSV drive.nmea         # one row per satellite in view
@@ -232,7 +273,7 @@ has no dates, and `time` is null throughout.
 
 `--table` is for any file that holds several tables: an NMEA log's sentence
 types, a [SQLite database](#sqlite-databases)'s tables, or a Hugging Face cache
-directory's splits ([Arrow IPC streams](#formats)). Any other file opened with
+directory's splits ([Arrow IPC streams](#arrow-ipc-streams)). Any other file opened with
 it is refused.
 Excel workbooks take `--sheet`.
 
@@ -274,6 +315,8 @@ To look at a track:
 
 ### Audio files
 
+Read: [lazy](#how-each-format-is-read).
+
 ```bash
 datui take.wav
 datui take.wav --normalize      # integer samples as float in [-1, 1]
@@ -313,6 +356,8 @@ A line chart of a long recording draws each step's lowest and highest sample
 offset.
 
 ### MIDI files
+
+Read: [in memory](#how-each-format-is-read).
 
 ```bash
 datui song.mid
@@ -359,6 +404,9 @@ length, tempo, meter, key and each track's name, events, notes and channels.
 Notes that never end are counted on the Notes tab.
 
 ### SQLite databases
+
+Read: [lazy, in place](#how-each-format-is-read); a database in a bucket or over
+HTTP(S) is downloaded first.
 
 ```bash
 datui shop.db                        # its one table, or the list of its tables
@@ -426,6 +474,8 @@ The database is only read:
 A compressed database (`shop.db.gz`) is not read; decompress it first.
 
 ### CSV options
+
+Read: [lazy, or converted once when compressed](#how-each-format-is-read).
 
 They apply to `.tsv` and `.psv` files too. A directory of CSVs in a bucket takes
 all of them except `--parse-strings`, `--parse-dates` and `--header-rows`, and

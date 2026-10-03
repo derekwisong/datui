@@ -334,6 +334,9 @@ exits, including a quit mid-download; see
 | Cloud Arrow streams, one or a prefix | Asks, then converts each stream to one temporary IPC file as it downloads; IPC files beside them are scanned in place. A Hugging Face cache reads one split, as on disk |
 | HTTP(S), or other download routes | Downloads the file before opening |
 
+[How each format is read](loading-data.md#how-each-format-is-read) lists, per
+format, which are read in place and which are downloaded.
+
 Paging reuses buffered rows and reads ahead. Leaving the buffer can require
 another read; queries, sorting and analysis may scan the full input.
 See [large datasets](../advanced/performance-tips.md) for buffering and sampling.

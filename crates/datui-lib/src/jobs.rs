@@ -805,6 +805,16 @@ impl Jobs {
         self.records.iter().any(|r| r.keys.is_some())
     }
 
+    /// Whether the user waits on some job, and on none but those `which` picks.
+    pub(crate) fn keys_held_only_by(&self, which: impl Fn(&Job) -> bool) -> bool {
+        self.holds_keys()
+            && self
+                .records
+                .iter()
+                .filter(|r| r.keys.is_some())
+                .all(|r| which(&r.job))
+    }
+
     /// Whether the user waits on the newest current job `which` picks.
     pub(crate) fn waited_on(&self, which: impl Fn(&Job) -> bool) -> bool {
         self.records

@@ -1746,6 +1746,43 @@ mod tests {
         assert!(!p.app.is_busy(), "with the keyboard back");
     }
 
+    /// While rows are being read, keys that only redraw the table act at once (#646):
+    /// `#` toggles row numbers and `j` moves inside the rows held. Busy with anything
+    /// else, `j` waits in the order typed.
+    #[test]
+    fn view_keys_act_while_rows_load() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.owe_rows_for_tests("Loading buffer...");
+        assert!(p.app.is_busy());
+        let numbered = p.app.data_table_state.as_ref().unwrap().row_numbers();
+
+        p.terminal_key(plain(KeyCode::Char('#'))).unwrap();
+        assert_ne!(
+            p.app.data_table_state.as_ref().unwrap().row_numbers(),
+            numbered,
+            "# toggles at once"
+        );
+        let row = p.app.data_table_state.as_ref().unwrap().cursor_row();
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        assert_eq!(
+            p.app.data_table_state.as_ref().unwrap().cursor_row(),
+            row + 1,
+            "j inside the rows held moves at once"
+        );
+        assert!(p.held.is_empty(), "nothing waits");
+
+        // Busy with more than rows, a key waits, and the j typed after it waits
+        // behind it.
+        p.app.busy = true;
+        p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        assert_eq!(p.held.len(), 2);
+        assert_eq!(
+            p.app.data_table_state.as_ref().unwrap().cursor_row(),
+            row + 1
+        );
+    }
+
     /// The app hands a key it cannot act on back to the caller rather than dropping
     /// it; `event()`, for callers with nowhere to hold one, drops it as before.
     #[test]

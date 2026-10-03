@@ -407,7 +407,9 @@ The bar at the bottom of the screen shows the ones that matter
 most. A spinner in that bar means datui is busy. While it is, at the plain
 table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
 <kbd>l</kbd>), <kbd>[</kbd> <kbd>]</kbd>, <kbd>{</kbd> <kbd>}</kbd>,
-<kbd>?</kbd> and <kbd>F1</kbd> act at once, and
+<kbd>#</kbd>, <kbd>,</kbd>, <kbd>D</kbd>, <kbd>?</kbd> and <kbd>F1</kbd> act
+at once, as do <kbd>↑</kbd> <kbd>↓</kbd> (<kbd>j</kbd> <kbd>k</kbd>) inside
+the rows already read while all that is awaited is more rows; and
 <kbd>Ctrl</kbd>+<kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> and
 <kbd>Ctrl</kbd>+<kbd>O</kbd> act from anywhere. Other keys are queued and
 replayed in order once the work is done — except a bare <kbd>Esc</kbd>, or

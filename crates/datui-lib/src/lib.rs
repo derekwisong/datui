@@ -4887,7 +4887,7 @@ pub mod tests {
             .map(|c| KeyCode::Char(c as char))
             .collect();
         candidates.extend((1..=12).map(KeyCode::F));
-        candidates.extend("[]{}".chars().map(KeyCode::Char));
+        candidates.extend("[]{}#,".chars().map(KeyCode::Char));
         candidates.extend([
             KeyCode::Left,
             KeyCode::Right,
@@ -13053,11 +13053,36 @@ impl App {
         if self.hard_escape_while_busy(key) {
             return true;
         }
-        self.in_normal_table_view()
-            && matches!(
-                key.code,
-                KeyCode::Char('q')
+        if !self.in_normal_table_view() {
+            return false;
+        }
+        // One row up or down inside the rows held, while all that is awaited is more
+        // rows (#646): the table on screen is the one they are for.
+        let step = match key.code {
+            KeyCode::Down | KeyCode::Char('j') => Some(1),
+            KeyCode::Up | KeyCode::Char('k') => Some(-1),
+            _ => None,
+        };
+        if let Some(step) = step {
+            return !self.busy
+                && !self.loading.waits()
+                && self
+                    .jobs
+                    .keys_held_only_by(|job| matches!(job, Job::Rows(_) | Job::OwedRows { .. }))
+                && self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|s| !s.scroll_would_trigger_collect(step));
+        }
+        matches!(
+            key.code,
+            KeyCode::Char('q')
                     | KeyCode::Char('Q')
+                    // Drawn from what the table holds: row numbers, digit grouping, the
+                    // type row (#646).
+                    | KeyCode::Char('#')
+                    | KeyCode::Char(',')
+                    | KeyCode::Char('D')
                     | KeyCode::Left
                     | KeyCode::Right
                     | KeyCode::Char('h')
@@ -13068,7 +13093,7 @@ impl App {
                     | KeyCode::Char('}')
                     | KeyCode::F(1)
                     | KeyCode::Char('?')
-            )
+        )
     }
 
     /// The plain table view: Normal mode with no help overlay, modal, or in-view modal

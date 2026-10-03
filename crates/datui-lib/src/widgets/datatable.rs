@@ -1660,19 +1660,35 @@ fn limit_files(
     ) else {
         return (start, end);
     };
-    if last - first < max_files {
+    // An empty file is not opened (see `window_of`), so it costs nothing to reach past.
+    let opened = |from: usize, to: usize| (from..=to).filter(|&i| holds_rows(offsets, i)).count();
+    if opened(first, last) <= max_files {
         return (start, end);
     }
     let (mut lo, mut hi) = (view_first.max(first), view_last.min(last));
-    while hi - lo + 1 < max_files && (hi < last || lo > first) {
+    let mut files = opened(lo, hi);
+    while files < max_files && (hi < last || lo > first) {
         if hi < last {
             hi += 1;
+            files += usize::from(holds_rows(offsets, hi));
         }
-        if hi - lo + 1 < max_files && lo > first {
+        if files < max_files && lo > first {
             lo -= 1;
+            files += usize::from(holds_rows(offsets, lo));
         }
     }
     (start.max(offsets[lo]), end.min(offsets[hi + 1]))
+}
+
+/// Whether file `i` has any rows, given where each file's rows start.
+fn holds_rows(offsets: &[usize], i: usize) -> bool {
+    offsets[i + 1] > offsets[i]
+}
+
+/// The files from `first` to `last` that hold rows: a window reads these and passes
+/// over the empty ones, which a dataset written a file a day can be mostly made of.
+fn files_with_rows(offsets: &[usize], first: usize, last: usize) -> Vec<usize> {
+    (first..=last).filter(|&i| holds_rows(offsets, i)).collect()
 }
 
 /// Each directory a walk read, with its entries in the order `read_dir` gave them and
@@ -1801,7 +1817,13 @@ fn window_of(
     if let Some((files, offsets)) = files.and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
         && let Some((first, last)) = files_holding(offsets, start, len)
     {
-        let lf = (files.scan)(&files.urls[first..=last], read_as_text)?;
+        // The window's first file holds its first row, so leaving out the empty files
+        // after it does not move the slice.
+        let urls: Vec<String> = files_with_rows(offsets, first, last)
+            .into_iter()
+            .map(|i| files.urls[i].clone())
+            .collect();
+        let lf = (files.scan)(&urls, read_as_text)?;
         return Ok(lf
             .select(all_columns)
             .slice((start - offsets[first]) as i64, len as u32));
@@ -7214,7 +7236,7 @@ impl DataTableState {
     pub fn files_a_page_reads(&self, start: usize, len: usize) -> Option<usize> {
         let offsets = self.files_window().and_then(|f| f.offsets.as_ref())?;
         let (first, last) = files_holding(offsets, start, len)?;
-        Some(last - first + 1)
+        Some(files_with_rows(offsets, first, last).len())
     }
 
     /// The frame for buffer rows `[start, start + len)`, columns in display order. For a
@@ -16164,6 +16186,24 @@ mod tests {
         assert_eq!((start, end), (0, 400));
         // Few files: unchanged.
         assert_eq!(limit_files(&offsets, 0, 40, 0, 100, 16), (0, 100));
+    }
+
+    /// A dataset written a file a day is mostly empty files in its quiet years; a window
+    /// opens only the files with rows, and the limit counts only those (#659).
+    #[test]
+    fn a_window_passes_over_empty_files() {
+        // Every other file empty: file 2i holds rows 10i..10i+10.
+        let offsets: Vec<usize> = (0..=1000_usize).map(|i| i.div_ceil(2) * 10).collect();
+        let (first, last) = files_holding(&offsets, 0, 40).unwrap();
+        assert_eq!((first, last), (0, 6));
+        assert_eq!(files_with_rows(&offsets, first, last), vec![0, 2, 4, 6]);
+        let (start, end) = limit_files(&offsets, 0, 40, 0, 2_000, 16);
+        let (first, last) = files_holding(&offsets, start, end - start).unwrap();
+        assert_eq!(
+            files_with_rows(&offsets, first, last).len(),
+            16,
+            "sixteen files with rows, not eight and the empty ones between"
+        );
     }
 
     /// The two checks that read footers rather than values: a column a file never had,

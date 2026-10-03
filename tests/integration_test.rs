@@ -5473,7 +5473,7 @@ impl Drop for OpenWatch {
 /// A local Hive directory reopened from its remembered footers reads its first page
 /// from the files holding those rows and no others (#659). Every eighth file stores
 /// `v` as text, which splits the scan into runs, and a scan of the whole dataset reads
-/// ahead into them.
+/// ahead into them; every eighth file but one is empty, which a window passes over.
 #[cfg(target_os = "linux")]
 #[test]
 fn test_a_local_hive_reopened_unchanged_pages_from_only_the_files_holding_its_rows() {
@@ -5482,10 +5482,10 @@ fn test_a_local_hive_reopened_unchanged_pages_from_only_the_files_holding_its_ro
     let mut files = Vec::new();
     for day in 0..days {
         let v: Vec<i64> = (0..rows).map(|r| (day * rows + r) as i64).collect();
-        let df = if day % 8 == 1 {
-            df!("v" => v.iter().map(i64::to_string).collect::<Vec<_>>()).unwrap()
-        } else {
-            df!("v" => &v).unwrap()
+        let df = match day % 8 {
+            1 => df!("v" => v.iter().map(i64::to_string).collect::<Vec<_>>()).unwrap(),
+            2 => df!("v" => Vec::<i64>::new()).unwrap(),
+            _ => df!("v" => &v).unwrap(),
         };
         let sub = format!("day={day:03}");
         write_parquet(dir.path(), &sub, df);
@@ -5502,7 +5502,8 @@ fn test_a_local_hive_reopened_unchanged_pages_from_only_the_files_holding_its_ro
     pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts);
     let screen = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 30));
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.num_rows_if_valid(), Some(days * rows));
+    let total = (0..days).filter(|day| day % 8 != 2).count() * rows;
+    assert_eq!(state.num_rows_if_valid(), Some(total));
     let df = state
         .display_slice_df()
         .unwrap_or_else(|| panic!("rows on screen: {screen}"));
@@ -5520,8 +5521,10 @@ fn test_a_local_hive_reopened_unchanged_pages_from_only_the_files_holding_its_ro
     let buffered = state.buffered_rows();
     let holding: std::collections::BTreeSet<PathBuf> = files
         .iter()
+        .enumerate()
+        .filter(|(day, _)| day % 8 != 2)
         .take(buffered.div_ceil(rows))
-        .cloned()
+        .map(|(_, file)| file.clone())
         .collect();
     let opened = watch.opened();
     assert!(!opened.is_empty(), "the page was read from the files");

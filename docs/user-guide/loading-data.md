@@ -87,6 +87,9 @@ The control bar says `following` and how long ago rows last arrived, or
   that does not fit (a field too many, a word in a number column) is counted on
   the bar in the warning color and its values are read as null; it never stops
   the follow.
+- A refresh reads only the rows on screen, from a mark near them, so it costs
+  the same on a 10 MB file as on a 10 GB one. Under a filter, only the new rows
+  are counted.
 - A file that shrinks or is replaced (truncation, rotation) is read again from
   its start, and the bar says so. A deleted file stops the follow; its rows
   stay readable.

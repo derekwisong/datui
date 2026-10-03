@@ -418,6 +418,11 @@ pub struct DataTableState {
     pub needs_recollect: bool,
     /// The watcher of the file this dataset follows (`--follow`), while it does.
     follow: Option<crate::follow::Follow>,
+    /// For a followed view that filters or sorts the file's rows: points where the
+    /// view's rows before a file row are known (view rows, file row), ascending, for
+    /// the count generation they hold for. The next count reads on from the last; a
+    /// filtered window from the one before it.
+    follow_known: Option<(u64, Vec<(usize, usize)>)>,
 }
 
 /// What string-column inference may turn a column into, besides Time.
@@ -2072,6 +2077,7 @@ impl DataTableState {
             defer_collect: false,
             needs_recollect: false,
             follow: None,
+            follow_known: None,
         })
     }
 
@@ -2221,6 +2227,7 @@ impl DataTableState {
             defer_collect: false,
             needs_recollect: false,
             follow: None,
+            follow_known: None,
         })
     }
 
@@ -6456,6 +6463,9 @@ impl DataTableState {
     /// The source a window of the view is read straight from, when there is one: the
     /// records or audio frames of the data as loaded, or the view a source runs itself.
     fn window_now(&self) -> Option<Arc<dyn crate::pushdown::Windowed>> {
+        if let Some(window) = self.follow_window() {
+            return Some(Arc::new(window));
+        }
         if let Some(records) = self.fixed_window.as_ref().filter(|_| self.is_pristine()) {
             return Some(records.clone());
         }
@@ -6479,9 +6489,58 @@ impl DataTableState {
         pushdown.view(&self.filters, &sort, !self.sort_ascending)
     }
 
-    /// The view's own count, from a source that runs the view.
+    /// The view's own count, from a source that runs the view, or for a followed file
+    /// whose view is known up to a row, that count and the rows after it.
     pub(crate) fn source_counter(&self) -> Option<crate::pushdown::Counter> {
+        if let Some(counter) = self.follow_counter() {
+            return Some(counter);
+        }
         self.pushed_view().map(|view| view.counter)
+    }
+
+    /// The points where a followed view's rows are known, when they hold for the view
+    /// on screen.
+    fn follow_known(&self) -> Option<&[(usize, usize)]> {
+        self.follow_known
+            .as_ref()
+            .filter(|(generation, _)| *generation == self.len_generation)
+            .map(|(_, known)| known.as_slice())
+    }
+
+    /// A followed file's windows, read from the mark before each: the rows as they are,
+    /// or filtered with no sort, read on from where the view's rows are known.
+    fn follow_window(&self) -> Option<crate::follow::Window> {
+        let follow = self.follow.as_ref()?;
+        let known = if self.is_pristine() {
+            None
+        } else if self.scan_is_the_root() && self.sort_columns.is_empty() && self.sort_ascending {
+            Some(self.follow_known()?.to_vec())
+        } else {
+            return None;
+        };
+        Some(crate::follow::Window {
+            lf: self.lf.clone(),
+            path: follow.path().to_path_buf(),
+            marks: follow.marks().clone(),
+            known,
+        })
+    }
+
+    /// The count of a followed view known up to a file row: what was known, and the
+    /// rows of the view among those after it, read from the mark before them.
+    fn follow_counter(&self) -> Option<crate::pushdown::Counter> {
+        let follow = self.follow.as_ref()?;
+        let &(before, row) = self.follow_known()?.last()?;
+        let rest = crate::follow::from_marks(&self.lf, follow.path(), follow.marks(), row, None)?;
+        let streaming = self.polars_streaming;
+        Some(Arc::new(move || {
+            let df = crate::statistics::collect_lazy(row_count_lf(&rest), streaming)?;
+            let after = match df.get(0).and_then(|row| row.first().cloned()) {
+                Some(AnyValue::UInt64(n)) => n as usize,
+                _ => 0,
+            };
+            Ok(before + after)
+        }))
     }
 
     /// What a read through a delimited spec found, when the dataset was read through
@@ -8327,8 +8386,10 @@ impl DataTableState {
             && self.sort_columns.is_empty()
             && self.sort_ascending
             && self.scan_is_the_root();
+        let known = self.known_before_follow(&path, restarted);
         self.each_frame(|lf| crate::follow::bound(lf, &path, rows));
         self.invalidate_num_rows();
+        self.follow_known = known.map(|known| (self.len_generation, known));
         if self.is_pristine() {
             // The watcher counted them as the scan reads them: nothing to count again.
             self.set_num_rows(rows);
@@ -8343,6 +8404,36 @@ impl DataTableState {
             self.drop_buffer();
         }
         rows_stand
+    }
+
+    /// Where the view's rows are known, before the frames read more of the followed file
+    /// at `path`: what was known for the count on screen, and the count itself when it
+    /// is exact. Only for a view whose rows are each kept or not by itself (filters and
+    /// a sort over the file's rows), so the rows that arrive are counted alone.
+    fn known_before_follow(&mut self, path: &Path, restarted: bool) -> Option<Vec<(usize, usize)>> {
+        if restarted || self.is_pristine() || !self.scan_is_the_root() {
+            return None;
+        }
+        let mut known = self
+            .follow_known
+            .take()
+            .filter(|(generation, _)| *generation == self.len_generation)
+            .map(|(_, known)| known);
+        if self.num_rows_valid
+            && let Some(row) = crate::follow::bound_of(&self.lf, path)
+        {
+            let known = known.get_or_insert_with(Vec::new);
+            // One point per stretch of marks is enough to read on from.
+            if let [.., before, last] = known.as_slice()
+                && last.1 - before.1 < crate::follow::MARK_ROWS as usize
+            {
+                known.pop();
+            }
+            if known.last().is_none_or(|&(_, at)| at < row) {
+                known.push((self.num_rows, row));
+            }
+        }
+        known
     }
 
     /// The followed file was deleted: every frame reads it through `file`, a handle
@@ -18940,5 +19031,82 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A followed file's page near its end, and a filtered view's count after rows
+    /// arrive, are read from the marks the watcher made, not from the file's start.
+    #[test]
+    fn a_followed_view_reads_and_counts_from_its_marks() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grow.csv");
+        let mut text = String::from("t,n\n");
+        for i in 0..20_000 {
+            text.push_str(&format!("{i},{}\n", i % 7));
+        }
+        std::fs::write(&path, &text).unwrap();
+        let scan = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .with_ignore_errors(true)
+            .finish()
+            .unwrap();
+        let options = crate::OpenOptions::default();
+        let (lf, tail) =
+            crate::follow::bound_to_complete(scan, &path, crate::FileFormat::Csv, &options)
+                .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut state = DataTableState::new(lf, None, None, None, None, false).unwrap();
+        let rows = tail.rows();
+        state.start_following(crate::follow::Follow::start(
+            tail,
+            std::time::Duration::from_secs(3_600),
+            tx,
+            None,
+        ));
+        state.follow_to(rows, false);
+        let from_marks = |lf: &LazyFrame| format!("{:?}", lf.logical_plan).contains("FOLLOWED");
+        let page = state.buffer_lf(19_990, 10).unwrap();
+        assert!(from_marks(&page));
+        let t = |df: DataFrame| df.column("t").unwrap().i64().unwrap().to_vec();
+        assert_eq!(t(page.collect().unwrap()).first(), Some(&Some(19_990)));
+
+        state.defer_collect = true;
+        state.filter(vec![FilterStatement {
+            column: "n".to_string(),
+            operator: crate::filter_modal::FilterOperator::Eq,
+            value: "3".to_string(),
+            logical_op: crate::filter_modal::LogicalOperator::And,
+        }]);
+        let matches = |n: usize| (0..n).filter(|i| i % 7 == 3).count();
+        // The first count of the filter reads the whole file.
+        assert!(state.source_counter().is_none());
+        state.set_num_rows(matches(20_000));
+
+        let mut out = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        for i in 20_000..20_050 {
+            out.write_all(format!("{i},{}\n", i % 7).as_bytes())
+                .unwrap();
+        }
+        let follow = state.follow_mut().unwrap();
+        follow.check_now();
+        let crate::AppEvent::Followed(news) =
+            rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap()
+        else {
+            panic!("the watcher said something else");
+        };
+        follow.take(&news.change);
+        let (rows, restarted) = follow.catch_up();
+        assert_eq!(rows, 20_050);
+        state.follow_to(rows, restarted);
+        assert!(!state.is_num_rows_valid());
+        let counter = state.source_counter().expect("counts the new rows alone");
+        assert_eq!(counter().unwrap(), matches(20_050));
+        state.set_num_rows(matches(20_050));
+        let last = state.buffer_lf(matches(20_050) - 3, 3).unwrap();
+        assert!(from_marks(&last));
+        let expected: Vec<_> = (0..20_050i64).filter(|i| i % 7 == 3).map(Some).collect();
+        assert_eq!(t(last.collect().unwrap()), expected[expected.len() - 3..]);
     }
 }

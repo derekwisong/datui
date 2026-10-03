@@ -37,6 +37,17 @@ const CHUNK: usize = 1 << 20;
 /// A record longer than this is kept only in part: enough to classify it.
 const LONGEST_RECORD: usize = 16 << 20;
 
+/// A row's start is marked once this many rows, or this many bytes, have passed since
+/// the last mark: a window is read from the mark before it, so it costs at most this
+/// much beyond its own rows at any file size.
+pub(crate) const MARK_ROWS: u64 = 8192;
+const MARK_BYTES: u64 = 1 << 20;
+
+/// The most bytes a read from a mark takes in. A view that needs more (a filtered
+/// window far behind the last count, a count after a long pause) is read by Polars
+/// from the start of the file as before.
+const MOST_FROM_A_MARK: u64 = 64 << 20;
+
 /// Why `format` cannot be followed, or `None` when it can. Only text read line by
 /// line can: a file whose footer is written last (Parquet, Arrow IPC, Excel) cannot be
 /// read before it is finished, and a compressed one cannot be read from the middle.
@@ -239,6 +250,14 @@ enum Layout {
     Lines,
 }
 
+/// Rows a [`Tail`] marked that its follow's [`Marks`] does not have yet, as (row, byte
+/// where its record starts), and the last mark made.
+#[derive(Clone, Debug, Default)]
+struct NewMarks {
+    new: Vec<(u64, u64)>,
+    last: Option<(u64, u64)>,
+}
+
 /// The complete records of a growing delimited or NDJSON file: where they end, and
 /// how many rows they hold. Extended with the bytes that arrive; a partial last record
 /// is not counted until its newline lands.
@@ -257,6 +276,10 @@ pub struct Tail {
     misfits: u64,
     /// Fields in the header, which every row should have.
     fields: Option<usize>,
+    /// Rows marked since the marks were last handed to the follow's [`Marks`].
+    marks: NewMarks,
+    /// How far apart marks are: rows, bytes. Small in tests.
+    mark_every: (u64, u64),
 }
 
 impl Tail {
@@ -297,6 +320,8 @@ impl Tail {
             rows: 0,
             misfits: 0,
             fields: None,
+            marks: NewMarks::default(),
+            mark_every: (MARK_ROWS, MARK_BYTES),
         }
     }
 
@@ -327,6 +352,25 @@ impl Tail {
         self.rows = 0;
         self.misfits = 0;
         self.fields = None;
+        self.marks = NewMarks::default();
+    }
+
+    /// Mark where row `row`, whose record starts at byte `start`, is: the first row, and
+    /// then once enough has passed since the last mark. The first is marked so that no
+    /// page is read through a Polars slice with an offset, which counts an NDJSON
+    /// file's blank lines as rows (#672). A blank record is never marked: read first
+    /// from a mark, it could be taken for no row at all.
+    fn mark(marks: &mut NewMarks, every: (u64, u64), row: u64, start: u64, blank: bool) {
+        let (rows, bytes) = every;
+        if blank
+            || marks.last.is_some_and(|(last_row, last_start)| {
+                row - last_row < rows && start - last_start < bytes
+            })
+        {
+            return;
+        }
+        marks.last = Some((row, start));
+        marks.new.push((row, start));
     }
 
     /// Count the records `file` completes between what was counted and `len`, checking
@@ -383,9 +427,11 @@ impl Tail {
         Ok(())
     }
 
-    /// One complete record, without its newline.
+    /// One complete record, without its newline. It starts where the records counted
+    /// before it end.
     fn end_record(&mut self, record: &[u8], oversized: bool, check: bool) {
         let record = record.strip_suffix(b"\r").unwrap_or(record);
+        let start = self.complete;
         let index = self.records;
         self.records += 1;
         match &self.layout {
@@ -406,6 +452,13 @@ impl Tail {
                     self.fields = Some(split_fields(record, *separator).len());
                     return;
                 }
+                Self::mark(
+                    &mut self.marks,
+                    self.mark_every,
+                    self.rows,
+                    start,
+                    record.is_empty(),
+                );
                 self.rows += 1;
                 if check && (oversized || !self.cells_fit(record, *separator, nulls)) {
                     self.misfits += 1;
@@ -415,6 +468,7 @@ impl Tail {
                 if record.iter().all(u8::is_ascii_whitespace) {
                     return;
                 }
+                Self::mark(&mut self.marks, self.mark_every, self.rows, start, false);
                 self.rows += 1;
                 if check && (oversized || !self.object_fits(record)) {
                     self.misfits += 1;
@@ -484,7 +538,6 @@ fn unquote(cell: &str) -> &str {
         .unwrap_or(trimmed)
 }
 
-/// Whether `plan` is a scan of `path` and nothing else.
 /// Whether two spellings of a path name one file. Polars keeps its own spelling of a
 /// scan's path, which on Windows need not match ours character for character.
 fn same_file(a: &str, b: &str) -> bool {
@@ -497,6 +550,7 @@ fn same_file(a: &str, b: &str) -> bool {
     )
 }
 
+/// Whether `plan` is a scan of `path` and nothing else.
 fn scans(plan: &polars::lazy::dsl::DslPlan, path: &str) -> bool {
     use polars::lazy::dsl::DslPlan;
     match plan {
@@ -585,6 +639,305 @@ fn read_through_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, file: &F
     crate::widgets::datatable::for_each_input(plan, &mut |input| {
         read_through_plan(input, path, file)
     });
+}
+
+/// Where rows of a followed file start, every so many rows ([`MARK_ROWS`],
+/// [`MARK_BYTES`]), and where its complete records end: a window deep in the file is
+/// read from the mark before it rather than from the file's start. The watcher makes
+/// the marks in the pass that counts the new records, so they cost no read of their own.
+#[derive(Default)]
+pub struct Marks {
+    inner: Mutex<MarksInner>,
+}
+
+#[derive(Default)]
+struct MarksInner {
+    /// (row, byte where its record starts), rows ascending.
+    at: Vec<(u64, u64)>,
+    complete: u64,
+}
+
+/// The bytes holding a run of rows: from the start of the record of `row`, the mark at or
+/// before the run, to `end`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Span {
+    row: u64,
+    start: u64,
+    end: u64,
+}
+
+impl Marks {
+    fn lock(&self) -> std::sync::MutexGuard<'_, MarksInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Take the marks `tail` made since the last call, and where its records end.
+    fn take_from(&self, tail: &mut Tail) {
+        let mut inner = self.lock();
+        inner.at.append(&mut tail.marks.new);
+        inner.complete = tail.complete;
+    }
+
+    /// The file is read again from its start: the marks so far are of another file.
+    fn clear(&self) {
+        let mut inner = self.lock();
+        inner.at.clear();
+        inner.complete = 0;
+    }
+
+    /// The bytes holding rows `[from, to)`: from the last mark at or before `from` to
+    /// the first at or after `to`, or to the end of the complete records. `None` before
+    /// the first mark (a blank first row) and when the bytes are more than
+    /// [`MOST_FROM_A_MARK`].
+    fn span(&self, from: u64, to: u64) -> Option<Span> {
+        let inner = self.lock();
+        let before = inner.at.partition_point(|&(row, _)| row <= from);
+        let (row, start) = *inner.at.get(before.checked_sub(1)?)?;
+        let after = inner.at.partition_point(|&(row, _)| row < to);
+        let end = inner.at.get(after).map_or(inner.complete, |&(_, at)| at);
+        (end >= start && end - start <= MOST_FROM_A_MARK).then_some(Span { row, start, end })
+    }
+}
+
+/// How a run of a followed file's bytes, starting at a record, becomes rows: as the
+/// file's scan reads them, with no header and nothing skipped.
+#[derive(Clone)]
+enum Parse {
+    Csv(Box<CsvReadOptions>),
+    Lines { ignore_errors: bool },
+}
+
+/// The scan under `plan`, seen through the wrapper a schema request leaves.
+fn scan_node(plan: &polars::lazy::dsl::DslPlan) -> &polars::lazy::dsl::DslPlan {
+    match plan {
+        polars::lazy::dsl::DslPlan::IR { dsl, .. } => scan_node(dsl),
+        plan => plan,
+    }
+}
+
+impl Parse {
+    /// How `scan` reads its rows, when a run of them can be read the same way: a CSV
+    /// or NDJSON scan of every column, with no row index or path column.
+    fn of(scan: &polars::lazy::dsl::DslPlan, schema: &SchemaRef) -> Option<Parse> {
+        use polars::lazy::dsl::{DslPlan, FileScanDsl};
+        let DslPlan::Scan {
+            scan_type,
+            unified_scan_args,
+            ..
+        } = scan_node(scan)
+        else {
+            return None;
+        };
+        if unified_scan_args.row_index.is_some() || unified_scan_args.include_file_paths.is_some() {
+            return None;
+        }
+        match &**scan_type {
+            FileScanDsl::Csv { options } => {
+                if options.columns.is_some()
+                    || options.projection.is_some()
+                    || options.row_index.is_some()
+                {
+                    return None;
+                }
+                let mut options = (**options).clone();
+                options.path = None;
+                options.has_header = false;
+                options.skip_rows = 0;
+                options.skip_lines = 0;
+                options.skip_rows_after_header = 0;
+                options.n_rows = None;
+                // The names and types the scan settled on, by position.
+                options.schema = Some(schema.clone());
+                options.schema_overwrite = None;
+                options.dtype_overwrite = None;
+                options.column_names_overwrite = None;
+                options.raise_if_empty = false;
+                Some(Parse::Csv(Box::new(options)))
+            }
+            FileScanDsl::NDJson { options } => Some(Parse::Lines {
+                ignore_errors: options.ignore_errors,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Rows `[skip, skip + take)` of the records in `span` of a followed file, read when
+/// the frame is collected.
+struct Piece {
+    path: PathBuf,
+    span: Span,
+    skip: usize,
+    take: usize,
+    parse: Parse,
+    schema: SchemaRef,
+}
+
+/// The name a read from a mark carries in a plan.
+const PIECE_NAME: &str = "FOLLOWED";
+
+impl polars::prelude::AnonymousScan for Piece {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn schema(&self, _infer_schema_length: Option<usize>) -> PolarsResult<SchemaRef> {
+        Ok(self.schema.clone())
+    }
+
+    fn scan(&self, args: polars::prelude::AnonymousScanArgs) -> PolarsResult<DataFrame> {
+        let take = args.n_rows.map_or(self.take, |n| n.min(self.take));
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(self.span.start))?;
+        let mut bytes = Vec::with_capacity((self.span.end - self.span.start) as usize);
+        file.take(self.span.end - self.span.start)
+            .read_to_end(&mut bytes)?;
+        let df = match &self.parse {
+            Parse::Csv(options) => {
+                let mut options = (**options).clone();
+                options.n_rows = Some(self.skip + take);
+                options
+                    .into_reader_with_file_handle(std::io::Cursor::new(bytes))
+                    .finish()?
+            }
+            Parse::Lines { ignore_errors } => {
+                polars::io::ndjson::core::parse_ndjson(&bytes, None, &self.schema, *ignore_errors)?
+            }
+        };
+        Ok(df.slice(self.skip as i64, take))
+    }
+}
+
+/// `lf` with the bounded scan of the followed file at `path` reading only its rows
+/// `[from, to)` (`to` at most the bound, the bound when `None`), from the mark before
+/// them: whatever the view does above the scan is done to those rows alone. `None` when
+/// the marks do not reach them or the plan has no bounded scan of the file.
+pub(crate) fn from_marks(
+    lf: &LazyFrame,
+    path: &Path,
+    marks: &Marks,
+    from: usize,
+    to: Option<usize>,
+) -> Option<LazyFrame> {
+    let path_text = path.to_string_lossy();
+    let mut plan = lf.logical_plan.clone();
+    let mut replaced = false;
+    let mut failed = false;
+    let piece = |scan: &polars::lazy::dsl::DslPlan, bound: usize| {
+        let to = to.map_or(bound, |to| to.min(bound));
+        let from = from.min(to);
+        let span = marks.span(from as u64, to as u64)?;
+        let schema = LazyFrame::from(scan.clone()).collect_schema().ok()?;
+        let parse = Parse::of(scan, &schema)?;
+        let piece = Piece {
+            path: path.to_path_buf(),
+            span,
+            skip: from - span.row as usize,
+            take: to - from,
+            parse,
+            schema: schema.clone(),
+        };
+        LazyFrame::anonymous_scan(
+            Arc::new(piece),
+            ScanArgsAnonymous {
+                schema: Some(schema),
+                name: PIECE_NAME,
+                ..Default::default()
+            },
+        )
+        .ok()
+        .map(|lf| lf.logical_plan)
+    };
+    replace_bound(
+        &mut plan,
+        &path_text,
+        &mut |scan, bound| match piece(scan, bound) {
+            Some(plan) => {
+                replaced = true;
+                Some(plan)
+            }
+            None => {
+                failed = true;
+                None
+            }
+        },
+    );
+    (replaced && !failed).then(|| {
+        let mut out = lf.clone();
+        out.logical_plan = plan;
+        out
+    })
+}
+
+/// Put `with(scan, bound)` where `plan` reads the file at `path` through its bound.
+fn replace_bound(
+    plan: &mut polars::lazy::dsl::DslPlan,
+    path: &str,
+    with: &mut dyn FnMut(&polars::lazy::dsl::DslPlan, usize) -> Option<polars::lazy::dsl::DslPlan>,
+) {
+    use polars::lazy::dsl::DslPlan;
+    match plan {
+        DslPlan::IR { dsl, .. } => {
+            let mut inner = Arc::unwrap_or_clone(dsl.clone());
+            replace_bound(&mut inner, path, with);
+            *plan = inner;
+            return;
+        }
+        DslPlan::Slice {
+            input,
+            offset: 0,
+            len,
+        } if scans(input, path) => {
+            if let Some(piece) = with(input, *len as usize) {
+                *plan = piece;
+            }
+            return;
+        }
+        _ => {}
+    }
+    crate::widgets::datatable::for_each_input(plan, &mut |input| replace_bound(input, path, with));
+}
+
+/// How many rows the frame `lf` reads of the followed file at `path`: its bound.
+pub(crate) fn bound_of(lf: &LazyFrame, path: &Path) -> Option<usize> {
+    use polars::lazy::dsl::DslPlan;
+    let path = path.to_string_lossy();
+    (&lf.logical_plan).into_iter().find_map(|node| match node {
+        DslPlan::Slice {
+            input,
+            offset: 0,
+            len,
+        } if scans(input, &path) => Some(*len as usize),
+        _ => None,
+    })
+}
+
+/// The windows of a followed file's view, each read from the mark before it. A view
+/// of the rows as they are reads its rows straight; one that only filters them reads
+/// on from `known`, a point where the rows of the view before it are known (view row,
+/// file row), and slices.
+pub(crate) struct Window {
+    pub(crate) lf: LazyFrame,
+    pub(crate) path: PathBuf,
+    pub(crate) marks: Arc<Marks>,
+    pub(crate) known: Option<Vec<(usize, usize)>>,
+}
+
+impl crate::pushdown::Windowed for Window {
+    fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
+        let read = match &self.known {
+            None => from_marks(&self.lf, &self.path, &self.marks, start, Some(start + len)),
+            Some(known) => {
+                let at = known.partition_point(|&(view, _)| view <= start);
+                known.get(at.wrapping_sub(1)).and_then(|&(view, row)| {
+                    from_marks(&self.lf, &self.path, &self.marks, row, None)
+                        .map(|lf| lf.slice((start - view) as i64, len as IdxSize))
+                })
+            }
+        };
+        // Short of marks, Polars reads from the start of the file.
+        Ok(read.unwrap_or_else(|| self.lf.clone().slice(start as i64, len as IdxSize)))
+    }
 }
 
 /// What the watcher found.
@@ -703,6 +1056,8 @@ pub struct Follow {
     pub(crate) stale_view: bool,
     /// The handle a deleted file is read through from now on.
     held: Option<Arc<File>>,
+    /// Where its rows start, every so many.
+    marks: Arc<Marks>,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -712,7 +1067,7 @@ impl Follow {
     /// checking every `interval` and telling `events`. `spool` is standard input being
     /// copied to it.
     pub fn start(
-        tail: Tail,
+        mut tail: Tail,
         interval: Duration,
         events: Sender<AppEvent>,
         spool: Option<Arc<SpoolHandle>>,
@@ -721,7 +1076,10 @@ impl Follow {
         let path = tail.path.clone();
         let shared = Arc::new(Shared::default());
         let shown = tail.rows();
+        let marks = Arc::new(Marks::default());
+        marks.take_from(&mut tail);
         let watcher = Watcher {
+            marks: marks.clone(),
             id,
             path: path.clone(),
             tail,
@@ -749,7 +1107,13 @@ impl Follow {
             end_pending: false,
             stale_view: false,
             held: None,
+            marks,
         }
+    }
+
+    /// Where the file's rows start, every so many.
+    pub(crate) fn marks(&self) -> &Arc<Marks> {
+        &self.marks
     }
 
     pub fn id(&self) -> u64 {
@@ -891,6 +1255,7 @@ struct Watcher {
     events: Sender<AppEvent>,
     spool: Option<Arc<Spool>>,
     interval: Duration,
+    marks: Arc<Marks>,
 }
 
 /// Which file a path names, so a replaced file is told from a grown one.
@@ -945,10 +1310,12 @@ impl Watcher {
                 }
                 known = now;
                 self.tail.restart();
+                self.marks.clear();
                 if let Err(e) = self.tail.read_on(&mut file, len, false) {
                     self.send(Change::Failed(format!("Could not read the file: {e}")));
                     return;
                 }
+                self.marks.take_from(&mut self.tail);
                 sent = (self.tail.rows(), self.tail.misfits());
                 self.send(Change::Restarted {
                     rows: sent.0,
@@ -960,6 +1327,8 @@ impl Watcher {
                 self.send(Change::Failed(format!("Could not read the file: {e}")));
                 return;
             }
+            // Before the rows are reported, so the view's reads of them find marks.
+            self.marks.take_from(&mut self.tail);
             let now_counted = (self.tail.rows(), self.tail.misfits());
             if now_counted != sent {
                 sent = now_counted;
@@ -1465,6 +1834,152 @@ mod tests {
         assert_eq!(df.height(), 3, "{df}");
         bound(&mut root, &path, 4);
         assert_eq!(root.collect().unwrap().height(), 4, "the partial row waits");
+    }
+
+    /// `text` written to a file and scanned as `scan` does, bounded to its complete
+    /// rows, with a mark every `every` rows.
+    fn marked(
+        text: &[u8],
+        format: FileFormat,
+        options: &OpenOptions,
+        every: u64,
+        scan: impl Fn(&Path) -> LazyFrame,
+    ) -> (tempfile::TempDir, PathBuf, LazyFrame, Arc<Marks>, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("marked");
+        std::fs::write(&path, text).unwrap();
+        let mut lf = scan(&path);
+        let schema = lf.collect_schema().unwrap();
+        let mut tail = Tail::new(format, options, &schema);
+        tail.mark_every = (every, u64::MAX);
+        tail.read_on(&mut File::open(&path).unwrap(), text.len() as u64, false)
+            .unwrap();
+        let marks = Arc::new(Marks::default());
+        marks.take_from(&mut tail);
+        bound(&mut lf, &path, tail.rows());
+        (dir, path, lf, marks, tail.rows())
+    }
+
+    fn csv_scan(path: &Path, options: &OpenOptions) -> LazyFrame {
+        let mut reader = LazyCsvReader::new(PlRefPath::try_from_path(path).unwrap())
+            .with_ignore_errors(true)
+            .with_truncate_ragged_lines(true)
+            .with_has_header(options.has_header != Some(false))
+            .with_comment_prefix(options.comment_char.as_deref().map(PlSmallStr::from_str));
+        if let Some(skip) = options.skip_lines {
+            reader = reader.with_skip_lines(skip);
+        }
+        reader.finish().unwrap()
+    }
+
+    /// Every window read from the marks holds the rows a read from the start of the
+    /// file gives: quoted newlines, blank lines, comments, skipped lines, carriage
+    /// returns and NDJSON, at every offset.
+    #[test]
+    fn a_window_from_a_mark_reads_what_a_read_from_the_start_does() {
+        let mut csv = b"skipped\nt,s,n\n".to_vec();
+        let mut crlf = b"t,s,n\r\n".to_vec();
+        let mut lines = Vec::new();
+        for i in 0..120 {
+            let row = match i % 9 {
+                0 => format!("{i},\"two\nlines\",{}\n", i * 2),
+                3 => "\n".to_string(),
+                5 => "# a comment\n".to_string(),
+                7 => format!("{i},x,oops\n"),
+                _ => format!("{i},s{i},{}\n", i * 2),
+            };
+            csv.extend(row.as_bytes());
+            crlf.extend(format!("{i},s{i},{}\r\n", i * 2).as_bytes());
+            lines.extend(format!("{{\"t\":{i},\"s\":\"s{i}\"}}\n").as_bytes());
+            if i % 4 == 1 {
+                lines.extend(b"\n  \n");
+            }
+        }
+        csv.extend(b"999,partial");
+        let commented = OpenOptions {
+            comment_char: Some("#".to_string()),
+            ..OpenOptions::default().with_skip_lines(1)
+        };
+        let cases: Vec<(&[u8], FileFormat, OpenOptions)> = vec![
+            (&csv, FileFormat::Csv, commented),
+            (&crlf, FileFormat::Csv, OpenOptions::default()),
+            (&lines, FileFormat::Jsonl, OpenOptions::default()),
+        ];
+        for (text, format, options) in cases {
+            let scan = |path: &Path| match format {
+                FileFormat::Jsonl => scan_lines(path, &options, &mut Vec::new()).unwrap(),
+                _ => csv_scan(path, &options),
+            };
+            let (_dir, path, lf, marks, rows) = marked(text, format, &options, 7, scan);
+            let window = Window {
+                lf: lf.clone(),
+                path: path.clone(),
+                marks: marks.clone(),
+                known: None,
+            };
+            let whole = lf.clone().collect().unwrap();
+            assert_eq!(whole.height(), rows);
+            for start in (0..rows + 3).step_by(5) {
+                for len in [1, 6, 40] {
+                    let read = crate::pushdown::Windowed::window(&window, start, len)
+                        .unwrap()
+                        .collect()
+                        .unwrap();
+                    let expected = whole.slice(start as i64, len);
+                    assert!(
+                        read.equals_missing(&expected),
+                        "{format:?} rows {start}+{len}:\n{read:?}\n{expected:?}"
+                    );
+                }
+                if start < rows {
+                    assert!(
+                        from_marks(&lf, &path, &marks, start, Some(start + 1)).is_some(),
+                        "{format:?} row {start} is read from a mark"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A filtered view reads on from a point where its rows are known, and counts the
+    /// rows after it alone.
+    #[test]
+    fn a_filtered_view_reads_and_counts_on_from_what_is_known() {
+        let mut text = b"t,n\n".to_vec();
+        for i in 0..300 {
+            text.extend(format!("{i},{}\n", i % 5).as_bytes());
+        }
+        let options = OpenOptions::default();
+        let (_dir, path, lf, marks, rows) = marked(&text, FileFormat::Csv, &options, 16, |p| {
+            csv_scan(p, &options)
+        });
+        let view = lf.filter(col("n").eq(lit(3)));
+        let whole = view.clone().collect().unwrap();
+        // The view's rows among the first 200 of the file.
+        let known = (whole.column("t").unwrap().i64().unwrap().to_vec())
+            .into_iter()
+            .filter(|t| t.unwrap() < 200)
+            .count();
+        let rest = from_marks(&view, &path, &marks, 200, None).unwrap();
+        let after = rest.collect().unwrap().height();
+        assert_eq!(known + after, whole.height());
+        assert_eq!(rows, 300);
+        let window = Window {
+            lf: view.clone(),
+            path,
+            marks,
+            known: Some(vec![(0, 0), (known, 200)]),
+        };
+        for start in [0, 10, known - 1, known, known + 5, whole.height() - 3] {
+            let read = crate::pushdown::Windowed::window(&window, start, 4)
+                .unwrap()
+                .collect()
+                .unwrap();
+            assert!(
+                read.equals_missing(&whole.slice(start as i64, 4)),
+                "{start}"
+            );
+        }
     }
 
     /// A deleted file is read through the handle held on it.

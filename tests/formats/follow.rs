@@ -143,6 +143,47 @@ fn a_query_runs_over_the_new_rows() {
     assert_eq!(rows(&app), 3, "only the errors, new ones among them");
 }
 
+/// A sidebar filter over a long followed file counts the rows that arrive on top of
+/// what it counted, and its last page holds the last matches.
+#[test]
+fn a_filter_counts_and_reads_the_new_rows() {
+    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("long.csv");
+    let lines = |range: std::ops::Range<i64>| -> String {
+        range.map(|i| format!("{i},{}\n", i % 7)).collect()
+    };
+    std::fs::write(&path, format!("t,n\n{}", lines(0..20_000))).unwrap();
+    let (mut app, rx) = app();
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
+    screen(&mut app);
+    app.event(&AppEvent::Filter(vec![FilterStatement {
+        column: "n".into(),
+        operator: FilterOperator::Eq,
+        value: "3".into(),
+        logical_op: LogicalOperator::And,
+    }]));
+    let matches = |n: i64| (0..n).filter(|i| i % 7 == 3).count();
+    until(&mut app, &rx, |app| {
+        let state = app.data_table_state.as_ref().unwrap();
+        state.is_num_rows_valid() && state.num_rows() == matches(20_000)
+    });
+    for end in [20_050, 30_000] {
+        let before = shown(&app) as i64;
+        append(&path, &lines(before..end));
+        until(&mut app, &rx, |app| {
+            let state = app.data_table_state.as_ref().unwrap();
+            shown(app) == end as usize && app.follow_settled() && state.is_num_rows_valid()
+        });
+        assert_eq!(rows(&app), matches(end));
+        app.event(&key(KeyCode::End));
+        drain_events(&mut app, &rx);
+        let page = visible(&app).column("t").unwrap().i64().unwrap().to_vec();
+        let expected: Vec<_> = (0..end).filter(|i| i % 7 == 3).map(Some).collect();
+        assert_eq!(page[..], expected[expected.len() - page.len()..]);
+    }
+}
+
 /// A line without its newline is not a row yet; once it has one, it is.
 #[test]
 fn a_partial_line_waits_for_its_newline() {
@@ -275,6 +316,23 @@ fn blank_lines_in_ndjson_cost_no_rows() {
     append(&path, "\n{\"id\": 4}\n\n{\"id\": 5}\n");
     until(&mut app, &rx, |app| rows(app) == 5);
     assert_eq!(ids(&app), [1, 2, 3, 4, 5]);
+
+    // A page past the first holds the records it should: Polars' in-memory engine,
+    // sliced with an offset, counts the blank lines before it as rows.
+    let more: String = (6..=8_000)
+        .map(|i| format!("{{\"id\": {i}}}\n \n"))
+        .collect();
+    append(&path, &more);
+    until(&mut app, &rx, |app| {
+        shown(app) == 8_000 && app.follow_settled()
+    });
+    app.event(&key(KeyCode::End));
+    drain_events(&mut app, &rx);
+    let page = visible(&app).column("id").unwrap().i64().unwrap().to_vec();
+    assert_eq!(page.last().copied().flatten(), Some(8_000), "{page:?}");
+    let first = page[0].unwrap();
+    let expected: Vec<_> = (first..=8_000).map(Some).collect();
+    assert_eq!(page, expected);
 }
 
 /// A file whose footer is written last cannot be read as it grows: refused, saying so.

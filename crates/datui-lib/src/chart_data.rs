@@ -320,7 +320,7 @@ pub fn table_number_format(
 }
 
 /// An x value as the date and time it stands for, when `kind` is a date or datetime.
-fn x_datetime(v: f64, kind: XAxisTemporalKind) -> Option<NaiveDateTime> {
+pub(crate) fn x_datetime(v: f64, kind: XAxisTemporalKind) -> Option<NaiveDateTime> {
     const UNIX_EPOCH_CE_DAYS: i32 = 719_163;
     match kind {
         XAxisTemporalKind::Date => NaiveDate::from_num_days_from_ce_opt(
@@ -341,7 +341,7 @@ fn x_datetime(v: f64, kind: XAxisTemporalKind) -> Option<NaiveDateTime> {
 }
 
 /// An x value as a time of day, when `kind` is a time.
-fn x_time(v: f64) -> Option<NaiveTime> {
+pub(crate) fn x_time(v: f64) -> Option<NaiveTime> {
     let nsecs = v.trunc() as u64;
     NaiveTime::from_num_seconds_from_midnight_opt(
         (nsecs / 1_000_000_000) as u32,

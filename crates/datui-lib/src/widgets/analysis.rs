@@ -348,11 +348,11 @@ impl<'a> AnalysisWidget<'a> {
             // Both plots' y labels take one width, so the plots start in the same
             // column: the widest Q-Q value, or the widest count the histogram could
             // reach, the sample's size.
-            let qq_axis = AxisSpec::numbers([unified_x_range.0, unified_x_range.1], &values, "");
-            let qq_width = qq_axis
-                .ticks
+            let (lo, hi) = unified_x_range;
+            let qq_format = AxisFormat::ends_and_middle([lo, hi], &values);
+            let qq_width = [lo, (lo + hi) / 2.0, hi]
                 .iter()
-                .filter_map(|&v| (qq_axis.label)(v, 0))
+                .filter_map(|&v| qq_format.label(v, 0))
                 .map(|l| l.chars().count())
                 .max()
                 .unwrap_or(1);
@@ -1841,7 +1841,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     } else {
         AxisSpec::numbers([hist_min, hist_max], values, "")
     };
-    let axes = distribution_axes(theme, x_axis, count_axis.padded(label_width));
+    let axes = distribution_axes(theme, x_axis, count_axis.padded(label_width), g.plot.line);
     let block = distribution_block(format!("Histogram vs {dist_type}"));
     let chart_area = block.inner(area);
 
@@ -2122,6 +2122,7 @@ fn render_qq_plot(config: DistributionPlotConfig, buf: &mut Buffer) {
             "Theoretical Values",
         ),
         AxisSpec::numbers([data_min, data_max], values, "Data Values").padded(label_width),
+        marker,
     );
     let block = distribution_block(format!("Q-Q Plot vs {dist_type}"));
     let chart_area = block.inner(area);
@@ -2140,14 +2141,16 @@ fn distribution_block<'a>(title: String) -> Block<'a> {
         .padding(ratatui::widgets::Padding::left(1))
 }
 
-fn distribution_axes<'a>(theme: &Theme, x: AxisSpec<'a>, y: AxisSpec<'a>) -> PlotAxes<'a> {
+fn distribution_axes<'a>(
+    theme: &Theme,
+    x: AxisSpec<'a>,
+    y: AxisSpec<'a>,
+    marker: ratatui::symbols::Marker,
+) -> PlotAxes<'a> {
     let secondary = Style::default().fg(theme.get("text_secondary"));
     PlotAxes {
-        x,
-        y,
-        line: secondary,
-        labels: secondary,
         titles: Style::default(),
+        ..PlotAxes::new(x, y, secondary, marker)
     }
 }
 
@@ -2373,7 +2376,7 @@ mod tests {
             (0..20)
                 .filter_map(|y| {
                     let row: String = (0..60).map(|x| buf[(x, y)].symbol()).collect();
-                    let label = row.split_once('│')?.0.trim().to_string();
+                    let label = row.split_once(['│', '┤'])?.0.trim().to_string();
                     (!label.is_empty()).then_some(label)
                 })
                 .collect()
@@ -2465,9 +2468,9 @@ mod tests {
                     .find(|x| buf[(*x, axis_row)].symbol() == g.plot.axis.bottom_left)
                     .unwrap();
                 let (left, right) = (corner + 1, width - 1);
-                assert_eq!(
-                    buf[(right, axis_row)].symbol(),
-                    g.plot.axis.horizontal,
+                assert!(
+                    [g.plot.axis.horizontal, g.plot.tick_x]
+                        .contains(&buf[(right, axis_row)].symbol()),
                     "{what}"
                 );
                 let is_bar = |x: u16| {

@@ -19,4 +19,5 @@ pub mod sample_form;
 pub mod template_modal;
 pub mod text_input;
 pub mod textarea;
+pub mod ticks;
 pub mod ui;

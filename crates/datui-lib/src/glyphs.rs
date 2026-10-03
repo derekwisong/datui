@@ -182,6 +182,12 @@ pub struct PlotMarks {
     pub column_eighths: &'static [&'static str; 8],
     /// The axes and the legend frame.
     pub axis: line::Set<'static>,
+    /// A tick on the x axis line and on the y axis line, pointing at its label.
+    pub tick_x: &'static str,
+    pub tick_y: &'static str,
+    /// The grid: a dotted line across the plot at a y tick, and down it at an x tick.
+    pub grid_across: &'static str,
+    pub grid_down: &'static str,
 }
 
 impl PlotMarks {
@@ -388,6 +394,10 @@ const UNICODE: Glyphs = Glyphs {
         bar: Marker::HalfBlock,
         column_eighths: &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
         axis: line::NORMAL,
+        tick_x: "┬",
+        tick_y: "┤",
+        grid_across: "·",
+        grid_down: "┊",
     },
 };
 
@@ -481,6 +491,10 @@ const ASCII: Glyphs = Glyphs {
             horizontal_up: "+",
             cross: "+",
         },
+        tick_x: "+",
+        tick_y: "+",
+        grid_across: ".",
+        grid_down: ":",
     },
 };
 

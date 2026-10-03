@@ -22,6 +22,36 @@ pub fn work_pending(app: &App) -> bool {
     app.is_busy() || app.row_count_pending() || footers_pending(app)
 }
 
+/// What the home screen still owes, for a wait that timed out: every worker flag a
+/// settle could be waiting on, so the failure names the answer that never came.
+#[allow(dead_code)]
+pub fn home_pending(app: &App) -> String {
+    let home = &app.home;
+    let search = &home.search;
+    format!(
+        "browsing {:?}, filter {:?}, listing {}, sections waiting {}, awaiting {:?}, \
+         search {{ running {}, done {}, scoring {}, root {:?}, epoch {}, indexed {}, limited {:?} }}, \
+         returning {:?}, measuring {}, classifying {}, peeking {}, busy {}",
+        home.browsing,
+        home.filter,
+        home.listing_in_flight,
+        home.sections_waiting(),
+        home.awaiting_listing(),
+        search.running,
+        search.done,
+        search.scoring,
+        search.root,
+        search.epoch,
+        search.indexed,
+        search.limited,
+        home.returning,
+        home.measure_in_flight,
+        home.classify_in_flight,
+        home.peeking.len(),
+        app.is_busy(),
+    )
+}
+
 fn footers_pending(app: &App) -> bool {
     app.data_table_state
         .as_ref()

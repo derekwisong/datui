@@ -9574,6 +9574,7 @@ impl App {
         } else {
             crate::schema_union::footers_to_read(files.len())
         };
+        let from_cache = remembered.is_some();
         let footers = match remembered {
             Some(cached) => cached,
             None => Self::cloud_footers(
@@ -9585,10 +9586,11 @@ impl App {
                 report.meter.clone(),
             )?,
         };
+        // A shape just found needs no storing again: the lookup has dated it.
         Self::remember_dataset_shape(
             report.remembered.as_ref(),
             full,
-            &fingerprint,
+            (!from_cache).then_some(fingerprint.as_str()),
             &read,
             &files,
             &footers,
@@ -9715,7 +9717,7 @@ impl App {
                 Self::remember_dataset_shape(
                     remembered.as_ref(),
                     &full,
-                    &fingerprint,
+                    Some(&fingerprint),
                     &read,
                     &files,
                     &footers,
@@ -9818,7 +9820,7 @@ impl App {
             Self::remember_dataset_shape(
                 cache.as_ref(),
                 &full,
-                &fingerprint,
+                Some(&fingerprint),
                 &read,
                 &files,
                 footers,
@@ -9867,10 +9869,12 @@ impl App {
     /// now until something else in the prefix changes, which is not a trade a cache is
     /// allowed to make. Read them again next time; the one that was really corrupt
     /// costs a read and says the same thing.
+    ///
+    /// No `fingerprint` keeps the facts only, as a reopen from the shape does.
     fn remember_dataset_shape(
         cache: Option<&crate::cache::CacheManager>,
         full: &str,
-        fingerprint: &str,
+        fingerprint: Option<&str>,
         read: &[usize],
         files: &[cloud_hive::DatasetFile],
         footers: &[Option<cloud_hive::FileFooter>],
@@ -9892,6 +9896,9 @@ impl App {
                 cache.record_dataset_facts(&[(path, facts)]);
             }
         }
+        let Some(fingerprint) = fingerprint else {
+            return;
+        };
         if read.len() != files.len() || !footers.iter().all(Option::is_some) {
             return;
         }

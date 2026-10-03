@@ -1501,6 +1501,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
         unreachable: Default::default(),
         listing_so_far: Default::default(),
         cut_short: Default::default(),
+        narrowed: None,
         probe_errors: Default::default(),
         network_check: |_| false,
         cloud: Vec::new(),
@@ -1737,6 +1738,7 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
         unreachable: Default::default(),
         listing_so_far: Default::default(),
         cut_short: Default::default(),
+        narrowed: None,
         probe_errors: Default::default(),
         network_check: |_| true,
         cloud: Vec::new(),
@@ -1831,6 +1833,7 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
         unreachable: Default::default(),
         listing_so_far: Default::default(),
         cut_short: Default::default(),
+        narrowed: None,
         probe_errors: Default::default(),
         network_check: |_| true,
         cloud: Vec::new(),
@@ -1902,6 +1905,7 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
             unreachable: Default::default(),
             listing_so_far: Default::default(),
             cut_short: Default::default(),
+            narrowed: None,
             probe_errors: Default::default(),
             network_check: |_| false,
             cloud: Vec::new(),
@@ -1961,6 +1965,7 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
         unreachable: Default::default(),
         listing_so_far: Default::default(),
         cut_short: Default::default(),
+        narrowed: None,
         probe_errors: Default::default(),
         network_check: |_| false,
         cloud: Vec::new(),
@@ -2062,6 +2067,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
         unreachable: Default::default(),
         listing_so_far: Default::default(),
         cut_short: Default::default(),
+        narrowed: None,
         probe_errors: Default::default(),
         network_check: pretend_remote,
         cloud: Vec::new(),
@@ -2139,6 +2145,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
         unreachable: Default::default(),
         listing_so_far: Default::default(),
         cut_short: Default::default(),
+        narrowed: None,
         probe_errors: Default::default(),
         network_check: |_| false,
         cloud: Vec::new(),
@@ -4002,6 +4009,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
         unreachable: Default::default(),
         listing_so_far: Default::default(),
         cut_short: Default::default(),
+        narrowed: None,
         probe_errors: Default::default(),
         network_check: |_| false,
         cloud: vec![CloudSource {
@@ -4646,6 +4654,7 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
             unreachable: Default::default(),
             listing_so_far: Default::default(),
             cut_short: Default::default(),
+            narrowed: None,
             probe_errors: Default::default(),
             network_check: |_| false,
             cloud: Vec::new(),
@@ -6172,6 +6181,215 @@ fn test_esc_back_through_a_cloud_source_puts_the_cursor_on_each_row_entered() {
     assert_eq!(on_screen(&app), offset);
 }
 
+/// One level of a bucket far past the cap, against the stand-in for S3: listed a page
+/// at a time, stopped at the cap, stopped when left, and searched by prefix (#711).
+#[cfg(feature = "cloud")]
+mod cloud_level_paging {
+    use super::coming_back::{home_app, press, settle};
+    use super::fake_s3::FakeS3;
+    use crossterm::event::KeyCode;
+    use datui::{App, AppEvent};
+    use std::path::PathBuf;
+    use std::sync::mpsc::Receiver;
+    use std::time::{Duration, Instant};
+
+    /// More partitions than the cap: 5,100 is five full pages and a sixth.
+    const PARTITIONS: usize = 5_100;
+
+    fn station(i: usize) -> String {
+        format!("STATION=P{i:04}")
+    }
+
+    fn lake() -> FakeS3 {
+        let objects = (0..PARTITIONS)
+            .map(|i| {
+                (
+                    format!("by_station/{}/data.csv", station(i)),
+                    b"a\n1\n".to_vec(),
+                )
+            })
+            .collect();
+        FakeS3::serve("lake", objects)
+    }
+
+    fn app_on(s3: &FakeS3) -> (App, Receiver<AppEvent>) {
+        let mut config = datui::config::AppConfig::default();
+        config.home.search.enabled = false;
+        config.cloud.connections = vec![datui::config::CloudConnectionConfig {
+            name: "lab".to_string(),
+            kind: Some("s3".to_string()),
+            endpoint_url: Some(s3.endpoint.clone()),
+            region: Some("us-east-1".to_string()),
+            addressing: Some("path".to_string()),
+            access_key_id_env: Some("CARGO_PKG_NAME".to_string()),
+            secret_access_key_env: Some("CARGO_PKG_NAME".to_string()),
+            ..Default::default()
+        }];
+        home_app(config)
+    }
+
+    const LEVEL: &str = "s3://lab@lake/by_station";
+
+    /// Browse to `LEVEL` the way typing it at `~` does.
+    fn browse(app: &mut App) {
+        press(app, KeyCode::Char('~'));
+        for c in LEVEL.chars() {
+            press(app, KeyCode::Char(c));
+        }
+        assert!(press(app, KeyCode::Enter).is_none());
+        assert_eq!(app.home.browsing, Some(PathBuf::from(LEVEL)));
+    }
+
+    /// Handle events until `done` holds.
+    fn until(app: &mut App, rx: &Receiver<AppEvent>, what: &str, done: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(app) {
+            assert!(Instant::now() < deadline, "never: {what}");
+            if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
+                let mut next = Some(event);
+                while let Some(event) = next {
+                    next = app.event(&event);
+                }
+            }
+        }
+    }
+
+    fn subtitle(app: &App) -> Option<String> {
+        app.home
+            .sections
+            .iter()
+            .find_map(|section| section.subtitle.clone())
+    }
+
+    #[test]
+    fn a_level_lists_a_page_at_a_time_and_stops_at_the_cap() {
+        let s3 = lake();
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let watch = datui::cloud_browse::Watch {
+            progress: Some(std::sync::Arc::new({
+                let progress = progress.clone();
+                move |rows: &[datui::discover::Entry]| progress.lock().unwrap().push(rows.len())
+            })),
+            ..Default::default()
+        };
+        let level = crate::common::test_runtime()
+            .block_on(datui::cloud_browse::list_objects_watched(
+                "s3://lake/by_station",
+                &s3.cloud_config(),
+                &watch,
+            ))
+            .expect("listed");
+        // Five pages of a thousand, each shown as it came; the sixth says there is more.
+        assert_eq!(
+            *progress.lock().unwrap(),
+            vec![1000, 2000, 3000, 4000, 5000]
+        );
+        assert_eq!(s3.wire.level_pages("by_station/"), 6);
+        assert_eq!(level.rows.len(), datui::cloud_browse::MAX_LEVEL_ROWS);
+        assert!(level.truncated && !level.cancelled);
+        assert_eq!(level.rows[0].name, station(0));
+        assert_eq!(level.rows[4999].name, station(4999));
+
+        // A level under the cap is all of it, and not marked.
+        let level = crate::common::test_runtime()
+            .block_on(datui::cloud_browse::list_objects_watched(
+                "s3://lake/by_station",
+                &s3.cloud_config(),
+                &datui::cloud_browse::Watch {
+                    names_from: Some("STATION=P50".to_string()),
+                    ..Default::default()
+                },
+            ))
+            .expect("listed");
+        assert_eq!(level.rows.len(), 100);
+        assert!(!level.truncated);
+    }
+
+    #[test]
+    fn the_home_screen_shows_rows_as_they_come_and_marks_the_cap() {
+        let s3 = lake();
+        s3.slow_lists(100);
+        let (mut app, rx) = app_on(&s3);
+        let level = PathBuf::from(LEVEL);
+        browse(&mut app);
+        // The first page is on screen while the rest is listed, and says so.
+        until(&mut app, &rx, "the first page", |app| {
+            app.home.listing_so_far.contains_key(&level)
+        });
+        assert!(!app.home.probed.contains_key(&level));
+        settle(&mut app, &rx, |app| subtitle(app).is_some());
+        assert!(
+            subtitle(&app).is_some_and(|s| s.ends_with(" so far")),
+            "{:?}",
+            subtitle(&app)
+        );
+        until(&mut app, &rx, "the whole listing", |app| {
+            app.home.probed.contains_key(&level)
+        });
+        settle(&mut app, &rx, |_| true);
+        assert_eq!(
+            app.home.probed[&level].len(),
+            datui::cloud_browse::MAX_LEVEL_ROWS
+        );
+        assert!(app.home.cut_short.contains(&level));
+        assert_eq!(subtitle(&app).as_deref(), Some("first 5,000"));
+        assert_eq!(s3.wire.level_pages("by_station/"), 6);
+
+        // A filter finds a name past the cap: the server is asked for the names it
+        // starts.
+        for c in "p509".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        let wanted = PathBuf::from(format!("{LEVEL}/{}/", station(5095)));
+        until(&mut app, &rx, "a name past the cap", |app| {
+            app.home.narrowed.is_some()
+        });
+        settle(&mut app, &rx, |app| {
+            super::coming_back::entries(app).contains(&wanted)
+        });
+        assert_eq!(
+            subtitle(&app).as_deref(),
+            Some("first 5,000 + 10 STATION=P509*")
+        );
+        // Emptied, the filter lets go of them.
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        assert!(app.home.narrowed.is_none());
+    }
+
+    #[test]
+    fn backspace_mid_listing_stops_it_and_coming_back_lists_again() {
+        let s3 = lake();
+        s3.slow_lists(300);
+        let (mut app, rx) = app_on(&s3);
+        let level = PathBuf::from(LEVEL);
+        browse(&mut app);
+        until(&mut app, &rx, "the first page", |app| {
+            app.home.listing_so_far.contains_key(&level)
+        });
+        press(&mut app, KeyCode::Backspace);
+        assert_ne!(app.home.browsing.as_ref(), Some(&level));
+        // Stopped, not finished: nothing kept, and not written off either.
+        until(&mut app, &rx, "the listing to stop", |app| {
+            !app.home.listing_so_far.contains_key(&level)
+        });
+        assert!(!app.home.probed.contains_key(&level));
+        assert!(!app.home.unreachable.contains(&level));
+        assert!(!app.home.cut_short.contains(&level));
+        let pages = s3.wire.level_pages("by_station/");
+        assert!(pages < 6, "stopped after {pages} pages");
+
+        // Back in, it is listed afresh.
+        s3.slow_lists(0);
+        browse(&mut app);
+        until(&mut app, &rx, "the listing again", |app| {
+            app.home.probed.contains_key(&level)
+        });
+        assert!(app.home.cut_short.contains(&level));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Viewport
 // ---------------------------------------------------------------------------
@@ -7488,6 +7706,7 @@ mod catalog {
             unreachable: Default::default(),
             listing_so_far: Default::default(),
             cut_short: Default::default(),
+            narrowed: None,
             probe_errors: Default::default(),
             network_check: |_| true,
             cloud: Vec::new(),

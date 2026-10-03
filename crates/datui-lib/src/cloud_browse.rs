@@ -591,6 +591,32 @@ pub fn store_for_bucket(
     }
 }
 
+/// [`store_for_bucket`], as the store that lists a page at a time.
+pub fn pager_for_bucket(
+    kind: ProviderKind,
+    bucket: &str,
+    settings: &S3Settings,
+    unsigned: bool,
+    google_token: Option<&str>,
+    google_credentials: Option<&Path>,
+) -> Result<std::sync::Arc<dyn object_store::list::PaginatedListStore>, String> {
+    match kind {
+        ProviderKind::Gcs => Ok(std::sync::Arc::new(gcs_store(
+            bucket,
+            unsigned,
+            google_token,
+            google_credentials,
+        )?)),
+        ProviderKind::S3 => {
+            let store = s3_builder(bucket, settings)
+                .build()
+                .map_err(|e| format!("S3 is not configured: {e}"))?;
+            Ok(std::sync::Arc::new(store))
+        }
+        ProviderKind::Azure => Err("an Azure container needs its account".to_string()),
+    }
+}
+
 /// A Google Cloud Storage store for one bucket, signed as the resolver decided.
 fn gcs_store(
     bucket: &str,
@@ -661,21 +687,14 @@ async fn peek_page(
         } else {
             let (kind, bucket, key) = split_bucket_url(&resolved.url)
                 .ok_or_else(|| format!("not an object-store URL: {}", resolved.url))?;
-            let unsigned = resolved.signing == Signing::Unsigned;
-            let store: std::sync::Arc<dyn PaginatedListStore> = match kind {
-                ProviderKind::Gcs => std::sync::Arc::new(gcs_store(
-                    &bucket,
-                    unsigned,
-                    resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
-                    resolved.google_credentials.as_deref(),
-                )?),
-                ProviderKind::S3 => std::sync::Arc::new(
-                    s3_builder(&bucket, &resolved.s3)
-                        .build()
-                        .map_err(|e| format!("S3 is not configured: {e}"))?,
-                ),
-                ProviderKind::Azure => return Err("an Azure URL names its account".to_string()),
-            };
+            let store = pager_for_bucket(
+                kind,
+                &bucket,
+                &resolved.s3,
+                resolved.signing == Signing::Unsigned,
+                resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
+                resolved.google_credentials.as_deref(),
+            )?;
             (store, key)
         };
     let prefix = format!("{}/", prefix.trim_matches('/'));
@@ -1087,7 +1106,42 @@ pub fn split_bucket_url(url: &str) -> Option<(ProviderKind, String, String)> {
     ))
 }
 
-/// One level of a bucket or prefix, as home-screen rows.
+/// The most rows one level of a bucket lists, as for a local directory: past it the
+/// listing stops and says so. A prefix of 141,000 partitions is otherwise 141 requests
+/// and every one of them held in memory before the first row is drawn.
+pub const MAX_LEVEL_ROWS: usize = crate::discover::MAX_ENTRIES_PER_DIR;
+
+/// What one level of a place listed.
+#[derive(Debug, Clone, Default)]
+pub struct Level {
+    pub rows: Vec<crate::discover::Entry>,
+    /// The level held more than [`MAX_LEVEL_ROWS`]; `rows` are the first of them.
+    pub truncated: bool,
+    /// Stopped between pages because nobody wants it any more; `rows` are what came.
+    pub cancelled: bool,
+}
+
+/// What a listing hands the rows it has so far.
+pub type Progress = std::sync::Arc<dyn Fn(&[crate::discover::Entry]) + Send + Sync>;
+
+/// How a listing is watched while it runs.
+#[derive(Clone, Default)]
+pub struct Watch {
+    /// Handed the rows so far after every page but the last.
+    pub progress: Option<Progress>,
+    /// Set, the listing stops before its next page.
+    pub cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Only names starting with this: a filter asked of the server.
+    pub names_from: Option<String>,
+}
+
+impl Watch {
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// One level of a bucket or prefix, as home-screen rows, up to [`MAX_LEVEL_ROWS`].
 ///
 /// Uses a delimited listing, so a bucket holding a million objects under a hundred
 /// prefixes costs one request and returns a hundred rows. A recursive listing of the
@@ -1097,6 +1151,18 @@ pub async fn list_objects(
     url: &str,
     config: &CloudConfig,
 ) -> Result<Vec<crate::discover::Entry>, String> {
+    list_objects_watched(url, config, &Watch::default())
+        .await
+        .map(|level| level.rows)
+}
+
+/// [`list_objects`], a page at a time: `watch` sees the rows as they come and can stop
+/// the listing between pages.
+pub async fn list_objects_watched(
+    url: &str,
+    config: &CloudConfig,
+    watch: &Watch,
+) -> Result<Level, String> {
     // Resolving can run a credential command, which blocks; keep it off the runtime's
     // own threads.
     let resolved = {
@@ -1107,7 +1173,7 @@ pub async fn list_objects(
     };
     let signing = resolved.signing;
     let place = resolved.place.clone();
-    let listed = list_level(url, &resolved).await;
+    let listed = list_level(url, &resolved, watch).await;
     // A sign-in with no data role on an Azure account: its keys, as the Portal does.
     let (listed, resolved) = match listed {
         Err(refusal)
@@ -1134,7 +1200,7 @@ pub async fn list_objects(
                 .map_err(|e| format!("{e}"))?
             };
             match keyed {
-                Ok(keyed) => (list_level(url, &keyed).await, keyed),
+                Ok(keyed) => (list_level(url, &keyed, watch).await, keyed),
                 Err(why) => (Err(why), resolved),
             }
         }
@@ -1151,17 +1217,17 @@ pub async fn list_objects(
         Err(refused) if signing == Signing::Try && is_refusal(&refused) => {
             // Perhaps public, and refused only because the request was signed by a
             // login from somewhere else.
-            let rows = list_level(url, &resolved.unsigned())
+            let level = list_level(url, &resolved.unsigned(), watch)
                 .await
                 .map_err(|_| refused)?;
             crate::cloud_sources::remember_access(&place, true);
-            Ok(rows)
+            Ok(level)
         }
-        Ok(rows) => {
+        Ok(level) => {
             if signing == Signing::Try {
                 crate::cloud_sources::remember_access(&place, false);
             }
-            Ok(rows)
+            Ok(level)
         }
         // Unsigned because the login failed, and refused: the login is what to fix.
         Err(refused) if is_refusal(&refused) && resolved.login_error.is_some() => {
@@ -1169,6 +1235,57 @@ pub async fn list_objects(
         }
         Err(e) => Err(e),
     }
+}
+
+/// The server-side prefix a home filter can ask a cut-short level for, or `None` when
+/// it cannot ask for one.
+///
+/// A name filter is fuzzy and the server's prefix is literal, so this asks for the names
+/// the filter most plausibly starts: the part `names` share up to their last separator
+/// (`STATION=`, `year=`), then the filter, in the case the names are written in. A
+/// filter already spelling that shared part is taken as typed.
+pub fn narrowing_prefix(filter: &str, names: &[&str]) -> Option<String> {
+    let filter = filter.trim();
+    if filter.is_empty() || filter.contains('/') {
+        return None;
+    }
+    let first = names.first()?;
+    let mut common = first.len();
+    for name in &names[1..] {
+        common = common.min(
+            first
+                .bytes()
+                .zip(name.bytes())
+                .take_while(|(a, b)| a == b)
+                .count(),
+        );
+    }
+    while !first.is_char_boundary(common) {
+        common -= 1;
+    }
+    // Back to the last separator: names sharing `STATION=A` share `STATION=`, and the
+    // `A` is only where the first page happened to end.
+    let shared = first[..common]
+        .rfind(|c: char| !c.is_alphanumeric())
+        .map_or("", |at| &first[..=at]);
+    let typed = match filter.get(..shared.len()) {
+        Some(head) if !shared.is_empty() && head.eq_ignore_ascii_case(shared) => {
+            &filter[shared.len()..]
+        }
+        _ => filter,
+    };
+    let rest = names.iter().flat_map(|n| n[shared.len()..].chars());
+    let (mut upper, mut lower) = (false, false);
+    for c in rest {
+        upper |= c.is_uppercase();
+        lower |= c.is_lowercase();
+    }
+    let typed = match (upper, lower) {
+        (true, false) => typed.to_uppercase(),
+        (false, true) => typed.to_lowercase(),
+        _ => typed.to_string(),
+    };
+    Some(format!("{shared}{typed}"))
 }
 
 /// Whether an error is the service refusing the request, rather than failing to answer.
@@ -1233,13 +1350,14 @@ fn is_listed_object(location: &str, size: u64, prefix: &str, prefixes: &[String]
 async fn list_level(
     url: &str,
     resolved: &crate::cloud_sources::Resolved,
-) -> Result<Vec<crate::discover::Entry>, String> {
+    watch: &Watch,
+) -> Result<Level, String> {
     if resolved.kind == ProviderKind::Azure {
-        return list_azure_objects(resolved).await;
+        return list_azure_objects(resolved, watch).await;
     }
     let (kind, bucket, prefix) =
         split_bucket_url(&resolved.url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
-    let store = store_for_bucket(
+    let pager = pager_for_bucket(
         kind,
         &bucket,
         &resolved.s3,
@@ -1248,88 +1366,163 @@ async fn list_level(
         resolved.google_credentials.as_deref(),
     )?;
 
-    let os_prefix = if prefix.is_empty() {
-        None
-    } else {
-        Some(object_path(&prefix))
-    };
-    let result = store
-        .list_with_delimiter(os_prefix.as_ref())
-        .await
-        .map_err(|e| format!("{e}"))?;
-
     // Rows keep the source the listing was asked for, so opening one reaches the same
     // server.
     let base = match crate::source::split_source_id(url).0 {
         Some(id) => format!("{}://{id}@{bucket}", kind.scheme()),
         None => format!("{}://{bucket}", kind.scheme()),
     };
-    let mut rows = Vec::new();
+    list_pages(pager.as_ref(), &prefix, watch, |result| {
+        let prefixes: Vec<String> = result
+            .common_prefixes
+            .iter()
+            .map(|p| p.as_ref().to_string())
+            .collect();
+        let directories = result
+            .common_prefixes
+            .iter()
+            .map(|common| {
+                let name = common
+                    .as_ref()
+                    .rsplit('/')
+                    .find(|part| !part.is_empty())
+                    .unwrap_or(common.as_ref())
+                    .to_string();
+                let mut row = crate::discover::Entry::directory(Path::new(&format!(
+                    "{base}/{}",
+                    common.as_ref()
+                )));
+                row.name = name;
+                row
+            })
+            .collect();
+        let objects = result
+            .objects
+            .into_iter()
+            .filter(|object| {
+                is_listed_object(object.location.as_ref(), object.size, &prefix, &prefixes)
+            })
+            .map(|object| {
+                let location = object.location.as_ref().to_string();
+                let name = location.rsplit('/').next().unwrap_or(&location).to_string();
+                let path = PathBuf::from(format!("{base}/{location}"));
+                // No extension is left openable: a part file with none may well be
+                // Parquet.
+                let kind = if crate::discover::unreadable_by_name(&path) {
+                    crate::discover::EntryKind::Other
+                } else {
+                    crate::discover::EntryKind::File
+                };
+                object_row(path, kind, name, &object)
+            })
+            .collect();
+        (directories, objects)
+    })
+    .await
+}
 
-    // Prefixes first. They are the directories of an object store, and putting them
-    // above the objects matches what every local listing does.
-    let prefixes: Vec<String> = result
-        .common_prefixes
-        .iter()
-        .map(|p| p.as_ref().to_string())
-        .collect();
-    for common in result.common_prefixes {
-        let name = common
-            .as_ref()
-            .rsplit('/')
-            .find(|part| !part.is_empty())
-            .unwrap_or(common.as_ref())
-            .to_string();
-        rows.push(crate::discover::Entry {
-            path: PathBuf::from(format!("{base}/{}", common.as_ref())),
-            kind: crate::discover::EntryKind::Directory,
-            name,
-            size: None,
-            modified: None,
-            rows: None,
-            cols: None,
-            cols_sampled: false,
-            columns: Vec::new(),
-            cost: Default::default(),
-            holds: Default::default(),
-            opens_whole_directory: false,
-            format_spec: None,
-            table: None,
-        });
+/// A listed object as a home-screen row.
+fn object_row(
+    path: PathBuf,
+    kind: crate::discover::EntryKind,
+    name: String,
+    object: &object_store::ObjectMeta,
+) -> crate::discover::Entry {
+    crate::discover::Entry {
+        path,
+        kind,
+        name,
+        size: Some(object.size),
+        modified: Some(object.last_modified.into()),
+        rows: None,
+        cols: None,
+        cols_sampled: false,
+        columns: Vec::new(),
+        cost: Default::default(),
+        holds: Default::default(),
+        opens_whole_directory: false,
+        format_spec: None,
+        table: None,
     }
+}
 
-    for object in result.objects {
-        let location = object.location.as_ref().to_string();
-        if !is_listed_object(&location, object.size, &prefix, &prefixes) {
-            continue;
+/// One level under `prefix`, a page at a time, as `rows_of` makes each page into
+/// directories and objects; stopped at [`MAX_LEVEL_ROWS`], or when `watch` is
+/// cancelled.
+///
+/// Pages rather than `list_with_delimiter`, which asks for every page before it
+/// answers: 141 of them, one after another, for a prefix of 141,000 partitions.
+async fn list_pages(
+    pager: &dyn object_store::list::PaginatedListStore,
+    prefix: &str,
+    watch: &Watch,
+    mut rows_of: impl FnMut(
+        object_store::ListResult,
+    ) -> (Vec<crate::discover::Entry>, Vec<crate::discover::Entry>),
+) -> Result<Level, String> {
+    let mut key_prefix = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}/")
+    };
+    if let Some(names) = &watch.names_from {
+        key_prefix.push_str(names);
+    }
+    let (mut directories, mut objects) = (Vec::new(), Vec::new());
+    let mut token = None;
+    // Directories above objects, as every local listing has them.
+    let rows = |directories: &[crate::discover::Entry], objects: &[crate::discover::Entry]| {
+        let mut rows = directories.to_vec();
+        rows.extend_from_slice(objects);
+        rows
+    };
+    loop {
+        if watch.cancelled() {
+            return Ok(Level {
+                rows: rows(&directories, &objects),
+                truncated: false,
+                cancelled: true,
+            });
         }
-        let name = location.rsplit('/').next().unwrap_or(&location).to_string();
-        let path = PathBuf::from(format!("{base}/{location}"));
-        // No extension is left openable: a part file with none may well be Parquet.
-        let kind = if crate::discover::unreadable_by_name(&path) {
-            crate::discover::EntryKind::Other
-        } else {
-            crate::discover::EntryKind::File
-        };
-        rows.push(crate::discover::Entry {
-            path,
-            kind,
-            name,
-            size: Some(object.size),
-            modified: Some(object.last_modified.into()),
-            rows: None,
-            cols: None,
-            cols_sampled: false,
-            columns: Vec::new(),
-            cost: Default::default(),
-            holds: Default::default(),
-            opens_whole_directory: false,
-            format_spec: None,
-            table: None,
-        });
+        let page = pager
+            .list_paginated(
+                (!key_prefix.is_empty()).then_some(key_prefix.as_str()),
+                object_store::list::PaginatedListOptions {
+                    delimiter: Some("/".into()),
+                    page_token: token.take(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| format!("{e}"))?;
+        let (more_directories, more_objects) = rows_of(page.result);
+        directories.extend(more_directories);
+        objects.extend(more_objects);
+        let mut listed = rows(&directories, &objects);
+        if listed.len() > MAX_LEVEL_ROWS {
+            listed.truncate(MAX_LEVEL_ROWS);
+            return Ok(Level {
+                rows: listed,
+                truncated: true,
+                cancelled: false,
+            });
+        }
+        match page.page_token {
+            Some(next) => {
+                if let Some(progress) = &watch.progress {
+                    progress(&listed);
+                }
+                token = Some(next);
+            }
+            None => {
+                return Ok(Level {
+                    rows: listed,
+                    truncated: false,
+                    cancelled: false,
+                });
+            }
+        }
     }
-
-    Ok(rows)
 }
 
 /// One level of an Azure container or directory. Accounts with hierarchical namespace
@@ -1337,66 +1530,59 @@ async fn list_level(
 /// is kept.
 async fn list_azure_objects(
     resolved: &crate::cloud_sources::Resolved,
-) -> Result<Vec<crate::discover::Entry>, String> {
+    watch: &Watch,
+) -> Result<Level, String> {
     let (account, container, prefix) = crate::source::azure_parts(&resolved.url)
         .ok_or_else(|| format!("not an Azure URL: {}", resolved.url))?;
-    let store = crate::azure::store(&account, &container, &resolved.azure)?;
+    let pager = crate::azure::paginated_store(&account, &container, &resolved.azure)?;
     let prefix = prefix.trim_matches('/').to_string();
-    let os_prefix = (!prefix.is_empty()).then(|| object_path(&prefix));
-    let result = store
-        .list_with_delimiter(os_prefix.as_ref())
-        .await
-        .map_err(|e| format!("{e}"))?;
-
-    let prefixes: Vec<String> = result
-        .common_prefixes
-        .iter()
-        .map(|p| p.as_ref().to_string())
-        .collect();
-    let mut rows = Vec::new();
-    for common in &prefixes {
-        let name = common
-            .rsplit('/')
-            .find(|part| !part.is_empty())
-            .unwrap_or(common)
-            .to_string();
-        let mut row = crate::discover::Entry::directory(Path::new(&crate::source::azure_url(
-            &account,
-            &container,
-            &format!("{common}/"),
-        )));
-        row.name = name;
-        rows.push(row);
-    }
-    for object in result.objects {
-        let location = object.location.as_ref().to_string();
-        let name = location.rsplit('/').next().unwrap_or(&location).to_string();
-        if name.is_empty()
-            || is_marker(&name)
-            || crate::azure::is_folder_marker(&location, object.size, &prefixes)
-            || is_empty_marker(&name, object.size)
-            || (object.size == 0 && location.trim_end_matches('/') == prefix)
-        {
-            continue;
-        }
-        rows.push(crate::discover::Entry {
-            path: PathBuf::from(crate::source::azure_url(&account, &container, &location)),
-            kind: crate::discover::EntryKind::File,
-            name,
-            size: Some(object.size),
-            modified: Some(object.last_modified.into()),
-            rows: None,
-            cols: None,
-            cols_sampled: false,
-            columns: Vec::new(),
-            cost: Default::default(),
-            holds: Default::default(),
-            opens_whole_directory: false,
-            format_spec: None,
-            table: None,
-        });
-    }
-    Ok(rows)
+    list_pages(pager.as_ref(), &prefix, watch, |result| {
+        let prefixes: Vec<String> = result
+            .common_prefixes
+            .iter()
+            .map(|p| p.as_ref().to_string())
+            .collect();
+        let directories = prefixes
+            .iter()
+            .map(|common| {
+                let name = common
+                    .rsplit('/')
+                    .find(|part| !part.is_empty())
+                    .unwrap_or(common)
+                    .to_string();
+                let mut row = crate::discover::Entry::directory(Path::new(
+                    &crate::source::azure_url(&account, &container, &format!("{common}/")),
+                ));
+                row.name = name;
+                row
+            })
+            .collect();
+        let objects = result
+            .objects
+            .into_iter()
+            .filter_map(|object| {
+                let location = object.location.as_ref().to_string();
+                let name = location.rsplit('/').next().unwrap_or(&location).to_string();
+                if name.is_empty()
+                    || is_marker(&name)
+                    || crate::azure::is_folder_marker(&location, object.size, &prefixes)
+                    || is_empty_marker(&name, object.size)
+                    || (object.size == 0 && location.trim_end_matches('/') == prefix)
+                {
+                    return None;
+                }
+                let path = PathBuf::from(crate::source::azure_url(&account, &container, &location));
+                Some(object_row(
+                    path,
+                    crate::discover::EntryKind::File,
+                    name,
+                    &object,
+                ))
+            })
+            .collect();
+        (directories, objects)
+    })
+    .await
 }
 
 /// A source's first level, as the home screen lists it: buckets for S3 and Google
@@ -1948,6 +2134,33 @@ pub(crate) fn urlencode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The filter is asked for after the part the names share, in their case.
+    #[test]
+    fn a_filter_narrows_by_the_prefix_the_names_share() {
+        let stations = [
+            "STATION=ACW00011604",
+            "STATION=AE000041196",
+            "STATION=AFM00040938",
+        ];
+        assert_eq!(
+            narrowing_prefix("usw", &stations).as_deref(),
+            Some("STATION=USW")
+        );
+        // Typed with the shared part, in any case.
+        assert_eq!(
+            narrowing_prefix("station=usw", &stations).as_deref(),
+            Some("STATION=USW")
+        );
+        let years = ["year=2019", "year=2020", "year=2021"];
+        assert_eq!(narrowing_prefix("202", &years).as_deref(), Some("year=202"));
+        // Mixed case is taken as typed; no separator shares nothing.
+        let files = ["Sales.csv", "returns.csv"];
+        assert_eq!(narrowing_prefix("Sal", &files).as_deref(), Some("Sal"));
+        assert_eq!(narrowing_prefix("", &files), None);
+        assert_eq!(narrowing_prefix("a/b", &files), None);
+        assert_eq!(narrowing_prefix("x", &[]), None);
+    }
 
     fn resolved(url: &str, kind: ProviderKind) -> crate::cloud_sources::Resolved {
         crate::cloud_sources::Resolved {

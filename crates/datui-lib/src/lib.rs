@@ -406,6 +406,18 @@ pub enum AppEvent {
         /// if they were.
         failed: Vec<PathBuf>,
     },
+    /// A cloud listing stopped because its place was left. Nothing is known about the
+    /// place, so it is listed again when it is entered again.
+    HomeProbeCancelled {
+        root: PathBuf,
+    },
+    /// The names under `prefix` in a cloud directory cut short, asked for by a filter;
+    /// `None` when the listing failed or was stopped.
+    HomeNarrowed {
+        dir: PathBuf,
+        prefix: String,
+        listed: Option<(Vec<crate::discover::Entry>, bool)>,
+    },
     /// A cloud listing was refused, with the service's reason.
     HomeProbeFailed {
         root: PathBuf,
@@ -896,6 +908,12 @@ pub struct App {
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
     home_probes_inflight: Vec<PathBuf>,
+    /// The stop flag of each cloud listing out, by place: leaving the place sets it, and
+    /// the listing ends before its next page.
+    home_listing_cancels: HashMap<PathBuf, Arc<std::sync::atomic::AtomicBool>>,
+    /// The listing out for the names a filter asked of a cut-short cloud directory:
+    /// where, the name prefix, and its stop flag.
+    home_narrowing: Option<(PathBuf, String, Arc<std::sync::atomic::AtomicBool>)>,
     /// True once cloud discovery has been started. Enumeration costs a request per
     /// provider, so it happens once and its result is kept for the session.
     #[cfg(feature = "cloud")]
@@ -5366,6 +5384,8 @@ impl App {
                 ..Default::default()
             },
             home_probes_inflight: Vec::new(),
+            home_listing_cancels: HashMap::new(),
+            home_narrowing: None,
             #[cfg(feature = "cloud")]
             cloud_discovery_started: false,
             home_search_inflight: false,
@@ -5807,8 +5827,13 @@ impl App {
     /// thread never returns — so the task is abandoned rather than joined, exactly as
     /// an abandoned dataset load is.
     fn spawn_home_probes(&mut self) {
+        self.stop_listings_left_behind();
         for root in self.home.pending_probes() {
             if self.home_probes_inflight.contains(&root) {
+                // Left and come back to before its next page: it goes on.
+                if let Some(cancelled) = self.home_listing_cancels.get(&root) {
+                    cancelled.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
                 continue;
             }
             // Each probe of an unreachable share costs a thread that will never come
@@ -5835,6 +5860,12 @@ impl App {
             let cloud = self.app_config.cloud.clone();
             #[cfg(feature = "cloud")]
             let runtime = self.runtime.clone();
+            #[cfg(feature = "cloud")]
+            let cancelled = {
+                let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.home_listing_cancels.insert(root.clone(), flag.clone());
+                flag
+            };
             // A detached OS thread, not the runtime's blocking pool. A thread wedged
             // on an unreachable `hard` mount never returns, and the pool is shared with
             // the work that actually loads data — a few dead shares must not eat into
@@ -5888,8 +5919,23 @@ impl App {
                         || source::azure_parts(&root.to_string_lossy()).is_some()
                     {
                         let url = root.to_string_lossy().into_owned();
+                        // Each page's rows are drawn as they come, and leaving the place
+                        // stops the listing before its next page.
+                        let watch = crate::cloud_browse::Watch {
+                            progress: Some(std::sync::Arc::new({
+                                let (tx, root) = (tx.clone(), root.clone());
+                                move |so_far: &[crate::discover::Entry]| {
+                                    let _ = tx.send(AppEvent::HomeProbeProgress {
+                                        root: root.clone(),
+                                        rows: so_far.to_vec(),
+                                    });
+                                }
+                            })),
+                            cancelled,
+                            names_from: None,
+                        };
                         let listed = wait_on_runtime(&runtime, async move {
-                            crate::cloud_browse::list_objects(&url, &cloud).await
+                            crate::cloud_browse::list_objects_watched(&url, &cloud, &watch).await
                         });
                         // A refused listing says why, rather than reading as a place that
                         // stopped answering.
@@ -5902,11 +5948,18 @@ impl App {
                                 );
                                 let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
                             }
+                            Some(Ok(level)) if level.cancelled => {
+                                let _ = tx.send(AppEvent::HomeProbeCancelled { root });
+                            }
                             other => {
+                                let (rows, cut_short) = match other {
+                                    Some(Ok(level)) => (Some(level.rows), level.truncated),
+                                    _ => (None, false),
+                                };
                                 let _ = tx.send(AppEvent::HomeProbeReady {
                                     root,
-                                    rows: other.and_then(Result::ok),
-                                    cut_short: false,
+                                    rows,
+                                    cut_short,
                                 });
                             }
                         }
@@ -5959,6 +6012,110 @@ impl App {
                 })
             });
         }
+    }
+
+    /// Stop the cloud listings of places no longer on screen: the one browsed, or the
+    /// roots of the home listing. One left and come back to is listed again.
+    fn stop_listings_left_behind(&mut self) {
+        let home = &self.home;
+        for (root, cancelled) in &self.home_listing_cancels {
+            let wanted = match &home.browsing {
+                Some(dir) => dir == root,
+                None => home
+                    .sections
+                    .iter()
+                    .any(|s| s.remote_root.as_ref() == Some(root)),
+            };
+            if !wanted {
+                cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        if let Some((dir, _, cancelled)) = &self.home_narrowing
+            && home.browsing.as_ref() != Some(dir)
+        {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.home_narrowing = None;
+        }
+        if self
+            .home
+            .narrowed
+            .as_ref()
+            .is_some_and(|n| self.home.browsing.as_ref() != Some(&n.dir))
+        {
+            self.home.narrowed = None;
+        }
+    }
+
+    /// In a cloud directory cut short at the cap, ask the server for the names the
+    /// filter starts, so a name past the first few thousand can still be found. Nothing
+    /// asked when the filter is empty or what is held already answers it.
+    #[cfg(feature = "cloud")]
+    fn narrow_cloud_listing(&mut self) {
+        let dir = self.home.browsing.clone();
+        let prefix = dir.as_ref().and_then(|dir| {
+            if !self.home.cut_short.contains(dir) {
+                return None;
+            }
+            let rows = self.home.probed.get(dir)?;
+            let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+            crate::cloud_browse::narrowing_prefix(&self.home.filter, &names)
+        });
+        let (Some(dir), Some(prefix)) = (dir, prefix) else {
+            if let Some((_, _, cancelled)) = self.home_narrowing.take() {
+                cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if self.home.narrowed.take().is_some() {
+                self.home_refresh();
+            }
+            return;
+        };
+        // Everything under a shorter prefix is everything under this one too.
+        if self.home.narrowed.as_ref().is_some_and(|n| {
+            n.dir == dir && (n.prefix == prefix || (!n.truncated && prefix.starts_with(&n.prefix)))
+        }) {
+            return;
+        }
+        if let Some((d, p, _)) = &self.home_narrowing
+            && *d == dir
+            && *p == prefix
+        {
+            return;
+        }
+        if let Some((_, _, cancelled)) = self.home_narrowing.take() {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.home_narrowing = Some((dir.clone(), prefix.clone(), cancelled.clone()));
+        let tx = self.events.clone();
+        let owed = self.owed_answer(AppEvent::HomeNarrowed {
+            dir: dir.clone(),
+            prefix: prefix.clone(),
+            listed: None,
+        });
+        let cloud = self.app_config.cloud.clone();
+        let runtime = self.runtime.clone();
+        std::thread::spawn(move || {
+            owed.run(|| {
+                let url = dir.to_string_lossy().into_owned();
+                let watch = crate::cloud_browse::Watch {
+                    progress: None,
+                    cancelled,
+                    names_from: Some(prefix.clone()),
+                };
+                let listed = wait_on_runtime(&runtime, async move {
+                    crate::cloud_browse::list_objects_watched(&url, &cloud, &watch).await
+                });
+                let listed = match listed {
+                    Some(Ok(level)) if !level.cancelled => Some((level.rows, level.truncated)),
+                    _ => None,
+                };
+                let _ = tx.send(AppEvent::HomeNarrowed {
+                    dir,
+                    prefix,
+                    listed,
+                });
+            })
+        });
     }
 
     /// Find the cloud sources this machine and the config describe, and list their
@@ -6278,6 +6435,8 @@ impl App {
         // bucket, a jump, and rows arriving while the source is already open.
         #[cfg(feature = "cloud")]
         self.list_browsed_cloud_source();
+        // Somewhere else now, a listing of where the user was is pages for nobody.
+        self.stop_listings_left_behind();
         self.home_generation = self.home_generation.wrapping_add(1);
         let generation = self.home_generation;
 
@@ -6294,6 +6453,7 @@ impl App {
             unreachable: self.home.unreachable.clone(),
             listing_so_far: self.home.listing_so_far.clone(),
             cut_short: self.home.cut_short.clone(),
+            narrowed: self.home.narrowed.clone(),
             probe_errors: self.home.probe_errors.clone(),
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
@@ -7794,6 +7954,8 @@ impl App {
                 self.home.filter.clear();
                 self.home.sync_search_section();
                 self.home.select_first_entry();
+                #[cfg(feature = "cloud")]
+                self.narrow_cloud_listing();
             }
             KeyCode::Char('r') if ctrl => self.home_reload(),
             // A browser's bookmark key: keep this place on the home screen, or stop.
@@ -7848,6 +8010,8 @@ impl App {
                     self.home.filter.pop();
                     self.home.sync_search_section();
                     self.home.select_first_entry();
+                    #[cfg(feature = "cloud")]
+                    self.narrow_cloud_listing();
                 }
             }
             // Forget the highlighted entry. Only meaningful in Recent — elsewhere the
@@ -7895,6 +8059,8 @@ impl App {
                 self.spawn_home_search();
                 self.home.sync_search_section();
                 self.home.select_first_entry();
+                #[cfg(feature = "cloud")]
+                self.narrow_cloud_listing();
             }
             _ => {}
         }
@@ -13096,8 +13262,45 @@ impl App {
                 self.home_refresh();
                 None
             }
+            AppEvent::HomeNarrowed {
+                dir,
+                prefix,
+                listed,
+            } => {
+                if self
+                    .home_narrowing
+                    .as_ref()
+                    .is_some_and(|(d, p, _)| d == dir && p == prefix)
+                {
+                    self.home_narrowing = None;
+                }
+                // Only while it is still where the user is and what the filter asks.
+                let wanted =
+                    self.home.browsing.as_ref() == Some(dir) && !self.home.filter.is_empty();
+                if let (Some((rows, truncated)), true) = (listed, wanted) {
+                    self.home.narrowed = Some(home::Narrowed {
+                        dir: dir.clone(),
+                        prefix: prefix.clone(),
+                        rows: rows.clone(),
+                        truncated: *truncated,
+                    });
+                    self.home_refresh();
+                }
+                None
+            }
+            AppEvent::HomeProbeCancelled { root } => {
+                self.home_probes_inflight.retain(|p| p != root);
+                self.home_listing_cancels.remove(root);
+                self.home.listing_so_far.remove(root);
+                // Come back to after it had stopped: listed afresh.
+                if self.home.browsing.as_ref() == Some(root) {
+                    self.home_refresh();
+                }
+                None
+            }
             AppEvent::HomeProbeFailed { root, message } => {
                 self.home_probes_inflight.retain(|p| p != root);
+                self.home_listing_cancels.remove(root);
                 self.home.probe_failed(root.clone());
                 self.home.probe_errors.insert(root.clone(), message.clone());
                 self.home_refresh();
@@ -13124,6 +13327,7 @@ impl App {
                 // list only grows, and after MAX_CONCURRENT_PROBES roots no further
                 // root is ever probed for the rest of the session.
                 self.home_probes_inflight.retain(|p| p != root);
+                self.home_listing_cancels.remove(root);
                 let landed = rows.is_some();
                 match rows {
                     Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
@@ -13131,6 +13335,11 @@ impl App {
                 }
                 if *cut_short {
                     self.home.cut_short.insert(root.clone());
+                }
+                // A filter typed while it was listing asks the server too.
+                #[cfg(feature = "cloud")]
+                if *cut_short && !self.home.filter.is_empty() {
+                    self.narrow_cloud_listing();
                 }
                 // An account read with its keys because the sign-in has no data role
                 // says so beside the account.

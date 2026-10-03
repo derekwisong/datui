@@ -3302,23 +3302,25 @@ impl HomeState {
         } else {
             format!("{files} files")
         };
-        let mut subtitle = display_path(&root);
-        // How many matched, when more matched than are listed.
-        if let Some(m) = self
+        let subtitle = display_path(&root);
+        // How many matched, when more matched than are listed. Last, since the rule
+        // cuts a long note from the start and the place is what it can best spare.
+        let counted = self
             .search
             .matches
             .as_ref()
             .filter(|m| m.query == self.filter && m.ids.len() > m.top.len())
-        {
-            subtitle = format!(
-                "{subtitle} {dot} {} of {} matches",
-                crate::numfmt::group_chrome(m.top.len()),
-                crate::numfmt::group_chrome(m.ids.len())
-            );
-        }
+            .map(|m| {
+                format!(
+                    " {dot} {} of {} matches",
+                    crate::numfmt::group_chrome(m.top.len()),
+                    crate::numfmt::group_chrome(m.ids.len())
+                )
+            })
+            .unwrap_or_default();
         if self.search.running {
             format!(
-                "{subtitle} {dot} searching {}",
+                "{subtitle} {dot} searching {}{counted}",
                 crate::numfmt::group_chrome(self.search.scanned)
             )
         } else if !self.search.scored_for(&self.filter) {
@@ -3331,8 +3333,10 @@ impl HomeState {
         } else {
             let searched = crate::numfmt::group_chrome(self.search.scanned);
             match &self.search.limited {
-                Some(limit) => format!("{subtitle} {dot} {limit} {dot} {searched} searched"),
-                None => format!("{subtitle} {dot} {searched} searched"),
+                Some(limit) => {
+                    format!("{subtitle} {dot} {limit} {dot} {searched} searched{counted}")
+                }
+                None => format!("{subtitle} {dot} {searched} searched{counted}"),
             }
         }
     }

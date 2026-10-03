@@ -835,7 +835,13 @@ fn section_header<'a>(
     // The note is trimmed before the title is, and never takes more than half the
     // line. A note is context; the title is what the section *is*, and a search
     // heading carrying a long path would otherwise crowd the title out entirely.
-    let note = truncate_start(&note, width / 2);
+    // `Found`'s title is one short word, and its note is the answer to the search.
+    let note_room = if section.title == crate::home::HomeState::SEARCH_SECTION {
+        width.saturating_sub(section.title.chars().count() + 16)
+    } else {
+        width / 2
+    };
+    let note = truncate_start(&note, note_room);
     // A title that names a place keeps its case; only the word-like headings —
     // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
     // `s3://datui-sales` into `S3://DATUI-SALES`, which is not the bucket's name and in

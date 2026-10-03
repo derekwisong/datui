@@ -1091,3 +1091,56 @@ fn errors_name_the_file() {
     assert_shape(&message, &dir.path().join("empty.db"));
     assert!(message.contains("holds no tables"), "{message}");
 }
+
+/// The SQLite tab: the database's pages and versions, and each table of its own with
+/// its kind and columns, and its rows where `ANALYZE` stored them. Nothing is counted.
+#[test]
+fn the_tab_says_what_the_schema_and_statistics_say() {
+    use crate::model_files::MetaValue;
+    let dir = tempfile::tempdir().unwrap();
+    let text = |tab: &crate::text_formats::Detail, name: &str| match &tab
+        .list
+        .iter()
+        .find(|(k, _)| k == name)
+        .unwrap()
+        .1
+    {
+        MetaValue::Text(t) => t.clone(),
+        other => panic!("{other:?}"),
+    };
+    let plain = database(
+        dir.path(),
+        "plain.db",
+        "PRAGMA user_version = 7;
+         CREATE TABLE a (x INTEGER, y TEXT);
+         INSERT INTO a VALUES (1, 'p'), (2, 'q');
+         CREATE VIEW v AS SELECT x FROM a;",
+    );
+    let tab = detail(&plain, &tables(&plain).unwrap()).unwrap();
+    assert_eq!(tab.tab, "SQLite");
+    assert!(tab.lines[0].starts_with("Page size: "), "{:?}", tab.lines);
+    assert!(tab.lines[1].contains("user version: 7"), "{:?}", tab.lines);
+    assert!(tab.lines[1].contains("UTF-8"), "{:?}", tab.lines);
+    let middot = crate::glyphs::get().middot;
+    assert_eq!(tab.lines[2], format!("1 table {middot} 1 view"));
+    assert_eq!(tab.lines[3], "Rows: not stored; ANALYZE stores them");
+    assert_eq!(text(&tab, "a"), "table, 2 columns");
+    assert_eq!(text(&tab, "v"), "view, 1 column");
+
+    let analyzed = database(
+        dir.path(),
+        "analyzed.db",
+        "CREATE TABLE a (x INTEGER, y TEXT);
+         CREATE INDEX a_x ON a(x);
+         INSERT INTO a VALUES (1, 'p'), (2, 'q'), (3, 'r');
+         CREATE TABLE b (z);
+         ANALYZE;",
+    );
+    let tab = detail(&analyzed, &tables(&analyzed).unwrap()).unwrap();
+    assert_eq!(tab.lines[3], "Rows: as ANALYZE last stored them");
+    assert_eq!(text(&tab, "a"), "table, 2 columns, 3 rows");
+    assert!(
+        !tab.list.iter().any(|(k, _)| k.starts_with("sqlite_")),
+        "SQLite's own tables are not listed"
+    );
+}

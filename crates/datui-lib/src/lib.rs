@@ -85,6 +85,7 @@ pub mod elf;
 pub mod error_display;
 pub mod event_pump;
 pub mod exact;
+pub mod excel;
 pub mod export;
 mod export_keys;
 pub mod export_modal;
@@ -134,6 +135,7 @@ pub mod numfmt;
 pub mod numpy;
 mod open_options;
 pub mod output_file;
+pub mod parquet_footer;
 pub mod past_calendar;
 mod pivot_melt_keys;
 pub mod pivot_melt_modal;
@@ -553,8 +555,11 @@ type HomeWorkerDies = Box<dyn FnMut(&AppEvent) -> bool + Send>;
 
 /// Stands in for [`FileFacts::read`]; see `App::file_facts_reader`.
 #[cfg(test)]
-type FileFactsReader =
-    Arc<dyn Fn(&Path, bool) -> std::result::Result<FileFacts, String> + Send + Sync>;
+type FileFactsReader = Arc<
+    dyn Fn(&Path, Option<crate::readers::Facts>) -> std::result::Result<FileFacts, String>
+        + Send
+        + Sync,
+>;
 
 /// What [`App::handle`] did with an event: `Ok` carries the follow-up event to send,
 /// if any; `Err` returns a key that arrived while the app was busy. Nothing was done
@@ -14568,10 +14573,59 @@ impl App {
 
     /// Which of the Info panel's optional tabs the current dataset offers.
     fn info_tabs_on_offer(&self) -> crate::widgets::info::TabsOffered {
+        let facts_tab = self.info_facts_tab();
         self.data_table_state
             .as_ref()
-            .map(crate::widgets::info::TabsOffered::of)
+            .map(|state| crate::widgets::info::TabsOffered::of(state, facts_tab))
             .unwrap_or_default()
+    }
+
+    /// The format of the dataset on screen, as the open read it.
+    pub(crate) fn opened_format(&self) -> Option<FileFormat> {
+        self.opened
+            .as_ref()
+            .and_then(|(_, options)| options.format)
+            .or_else(|| self.path.as_deref().and_then(FileFormat::from_path))
+    }
+
+    /// The format's tab of the Info panel that the file facts fill: for one local file,
+    /// not a hive directory, whose reader has a facts read. See
+    /// [`crate::widgets::info::InfoContext::facts_tab`].
+    pub(crate) fn info_facts_tab(&self) -> Option<&'static str> {
+        self.info_facts()
+            .and_then(|(format, _)| format.summary_tab())
+    }
+
+    /// The format whose facts read the Info panel's worker makes for the dataset on
+    /// screen, and that read, once the panel has asked for the file's facts.
+    pub(crate) fn info_facts(&self) -> Option<(FileFormat, crate::readers::Facts)> {
+        match self.file_facts()? {
+            // A directory, which has no footer of its own.
+            FileFacts::Read {
+                size: None,
+                detail: None,
+                ..
+            } => None,
+            _ => self.facts_of_open(),
+        }
+    }
+
+    /// The facts read for the dataset on screen, if its file has one: one file, stored
+    /// as its format says (a stream or a compressed copy has no footer).
+    fn facts_of_open(&self) -> Option<(FileFormat, crate::readers::Facts)> {
+        let hive = self
+            .opened
+            .as_ref()
+            .is_some_and(|(_, options)| options.hive);
+        let format = self.opened_format()?;
+        let facts = crate::readers::of(format).facts?;
+        let state = self.data_table_state.as_ref()?;
+        let plain = state
+            .read_mode()
+            .is_none_or(|mode| Some(mode) == format.read_mode(crate::Stored::Plain));
+        // Several files, whose footers the Notes and Schema tabs already sum up.
+        let one_file = state.dataset_schema().is_none();
+        (!hive && plain && one_file).then_some((format, facts))
     }
 
     /// Start applying `template`. Its steps are planned here, which reads nothing; a
@@ -15402,7 +15456,7 @@ impl App {
         }) else {
             return;
         };
-        let parquet = self.original_file_format == Some(ExportFormat::Parquet);
+        let facts = self.facts_of_open().map(|(_, facts)| facts);
         #[cfg(test)]
         let read: FileFactsReader = self
             .file_facts_reader
@@ -15411,7 +15465,7 @@ impl App {
         #[cfg(not(test))]
         let read = FileFacts::read;
         self.spawn_job(Job::FileFacts { dataset }, None, move |_| {
-            Ok(Answer::FileFacts(read(&path, parquet)?))
+            Ok(Answer::FileFacts(read(&path, facts)?))
         });
     }
 

@@ -222,7 +222,11 @@ fn scan_orc(input: ScanIn<'_>) -> Result<Scan> {
 }
 
 fn scan_excel(input: ScanIn<'_>) -> Result<Scan> {
-    let state = DataTableState::from_excel(input.path(), input.options)?;
+    let (state, detail) = DataTableState::from_excel_with_detail(input.path(), input.options)?;
+    input.report.opened = Some(std::sync::Arc::new(crate::members::Opened {
+        detail: Some(std::sync::Arc::new(detail)),
+        ..Default::default()
+    }));
     frame(state, input)
 }
 
@@ -235,6 +239,10 @@ pub(crate) const PARQUET: Reader = Reader {
         arguments: Some(py::parquet_arguments),
     }),
     scan: scan_parquet,
+    facts: Some(super::Facts {
+        read: crate::parquet_footer::facts,
+        footer: true,
+    }),
     // `PAR1` at both ends of a file, because at the front alone it is a truncated
     // write: the footer is what a reader needs.
     signatures: &[Signature {
@@ -320,6 +328,10 @@ pub(crate) const ARROW: Reader = Reader {
         arguments: Some(py::arrow_arguments),
     }),
     scan: scan_arrow,
+    facts: Some(super::Facts {
+        read: super::facts::arrow,
+        footer: false,
+    }),
     signatures: &[
         Signature {
             says: |head, _| head.starts_with(b"ARROW1"),
@@ -355,6 +367,10 @@ pub(crate) const AVRO: Reader = Reader {
         arguments: None,
     }),
     scan: scan_avro,
+    facts: Some(super::Facts {
+        read: super::facts::avro,
+        footer: false,
+    }),
     signatures: &[Signature {
         says: |head, _| head.starts_with(b"Obj\x01"),
         kind: Kind::Magic,
@@ -371,6 +387,10 @@ pub(crate) const AVRO: Reader = Reader {
 /// is believed only of a file a listing looks inside.
 pub(crate) const ORC: Reader = Reader {
     scan: scan_orc,
+    facts: Some(super::Facts {
+        read: super::facts::orc,
+        footer: false,
+    }),
     signatures: &[Signature {
         says: |head, _| head.starts_with(b"ORC"),
         kind: Kind::Magic,

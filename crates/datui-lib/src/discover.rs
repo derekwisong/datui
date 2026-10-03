@@ -1719,7 +1719,7 @@ fn enrich_dataset(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     let mut uncompressed = 0u64;
     let mut row_groups = 0usize;
     for file in &files {
-        let Some(meta) = crate::widgets::info::read_parquet_metadata(file) else {
+        let Some(meta) = crate::parquet_footer::read_parquet_metadata(file) else {
             return; // A file we cannot read makes the total a guess; report nothing.
         };
         rows += meta.num_rows;
@@ -1824,7 +1824,7 @@ fn direct_children(files: &[PathBuf], dir: &Path) -> Vec<PathBuf> {
 /// table can easily start with several files of the same table, so its head answers
 /// nothing. The last file earns its place twice over — in a directory written over time
 /// it is the newest, which is where a column added last year is.
-fn sample_footers(files: &[PathBuf]) -> Vec<crate::widgets::info::ParquetMetadataCache> {
+fn sample_footers(files: &[PathBuf]) -> Vec<crate::parquet_footer::Footer> {
     if files.is_empty() {
         return Vec::new();
     }
@@ -1833,7 +1833,7 @@ fn sample_footers(files: &[PathBuf]) -> Vec<crate::widgets::info::ParquetMetadat
     picks
         .iter()
         .filter_map(|i| files.get(*i))
-        .filter_map(|file| crate::widgets::info::read_parquet_metadata(file))
+        .filter_map(|file| crate::parquet_footer::read_parquet_metadata(file))
         .collect()
 }
 
@@ -1938,7 +1938,7 @@ fn downgrade_to_directory(entry: &mut Entry, cols: Option<usize>) {
 ///
 /// The schema knows. `fields()` is the root's own children, which is what a struct counts
 /// as here, what `schema_preview` lists in the details pane, and what the table shows.
-fn top_level_names(meta: &crate::widgets::info::ParquetMetadataCache) -> Vec<String> {
+fn top_level_names(meta: &crate::parquet_footer::Footer) -> Vec<String> {
     meta.schema_descr
         .fields()
         .iter()
@@ -2055,7 +2055,7 @@ pub fn enrich_parquet(entry: &mut Entry) {
     if !is_regular_file(&entry.path) {
         return;
     }
-    if let Some(meta) = crate::widgets::info::read_parquet_metadata(&entry.path) {
+    if let Some(meta) = crate::parquet_footer::read_parquet_metadata(&entry.path) {
         entry.rows = Some(meta.num_rows);
         entry.columns = column_names(&meta);
         // The columns a reader sees, as a directory's row reports them: `schema_descr`
@@ -2237,7 +2237,7 @@ fn enrich_arrow(entry: &mut Entry) {
 ///
 /// Every one of these was being parsed and thrown away. They are the difference
 /// between knowing how big a file is and knowing what reading it will do.
-pub fn physical_facts(meta: &crate::widgets::info::ParquetMetadataCache, cost: &mut Cost) {
+pub fn physical_facts(meta: &crate::parquet_footer::Footer, cost: &mut Cost) {
     if meta.row_groups.is_empty() {
         return;
     }
@@ -2465,7 +2465,7 @@ fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
 }
 
 /// Column names from a Parquet footer.
-pub fn column_names(meta: &crate::widgets::info::ParquetMetadataCache) -> Vec<String> {
+pub fn column_names(meta: &crate::parquet_footer::Footer) -> Vec<String> {
     meta.schema_descr
         .columns()
         .iter()

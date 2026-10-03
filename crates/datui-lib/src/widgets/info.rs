@@ -7,11 +7,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use polars::prelude::*;
-use polars_parquet::parquet::metadata::FileMetadata;
-use polars_parquet::parquet::read::read_metadata;
 
-/// Type alias for cached Parquet metadata (used by App).
-pub type ParquetMetadataCache = Arc<FileMetadata>;
+use crate::parquet_footer::Footer;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
@@ -357,13 +354,14 @@ pub struct TabsOffered {
 }
 
 impl TabsOffered {
-    /// What `state` offers.
-    pub fn of(state: &DataTableState) -> Self {
+    /// What `state` offers; `facts_tab` is the format's tab the file facts fill, when
+    /// they will (see [`InfoContext::facts_tab`]).
+    pub fn of(state: &DataTableState, facts_tab: Option<&'static str>) -> Self {
         Self {
             metadata: state
                 .delimited_read()
                 .is_some_and(|read| read.metadata.is_some()),
-            format: state.format_detail().is_some(),
+            format: state.format_detail().is_some() || facts_tab.is_some(),
             partitions: state
                 .partition_columns()
                 .map(|v| !v.is_empty())
@@ -613,7 +611,8 @@ impl InfoModal {
 }
 
 /// What the open file says about itself beyond its rows: its size on disk and, for a
-/// Parquet file, its footer.
+/// format whose reader has a facts read ([`crate::readers::Reader::facts`]), its tab
+/// of this panel and the footer it was made from.
 ///
 /// Read on a worker, once per dataset, and drawn from here. A stat or a footer read on a
 /// mount that has stopped answering hangs the thread that makes it, so neither is made
@@ -626,8 +625,11 @@ pub enum FileFacts {
     Read {
         /// `None` for a directory, whose own size is not the data's.
         size: Option<u64>,
-        /// The footer of a Parquet file; `None` for any other format.
-        parquet: Option<ParquetMetadataCache>,
+        /// A footer that gives the Schema tab's Compression column; `None` for a
+        /// format without one.
+        footer: Option<Footer>,
+        /// The format's tab, made from what the read found.
+        detail: Option<Arc<crate::text_formats::Detail>>,
     },
     /// The read failed, and why. Kept for the dataset rather than asked again: a file
     /// that could not be read a moment ago is not worth a read per frame.
@@ -635,11 +637,15 @@ pub enum FileFacts {
 }
 
 impl FileFacts {
-    /// Stat `path` and, when `parquet`, read its footer. Blocking: call it on a worker.
+    /// Stat `path` and, with `facts`, its format's facts read. Blocking: call it on a
+    /// worker.
     ///
     /// The reason for a failure is short enough for the panel's one line; the whole
     /// error goes to the log.
-    pub fn read(path: &Path, parquet: bool) -> std::result::Result<Self, String> {
+    pub(crate) fn read(
+        path: &Path,
+        facts: Option<crate::readers::Facts>,
+    ) -> std::result::Result<Self, String> {
         let io = |e: std::io::Error| {
             log::warn!(target: "datui", "file size of {}: {e}", path.display());
             match e.kind() {
@@ -659,22 +665,21 @@ impl FileFacts {
         if meta.is_dir() {
             return Ok(Self::Read {
                 size: None,
-                parquet: None,
+                footer: None,
+                detail: None,
             });
         }
-        let parquet = if parquet {
-            let mut file = std::fs::File::open(path).map_err(io)?;
-            let footer = read_metadata(&mut file).map_err(|e| {
-                log::warn!(target: "datui", "Parquet footer of {}: {e}", path.display());
-                "unreadable Parquet footer".to_string()
-            })?;
-            Some(Arc::new(footer))
-        } else {
-            None
+        let read = match facts {
+            Some(facts) => (facts.read)(path).map_err(|e| {
+                log::warn!(target: "datui", "footer of {}: {e}", path.display());
+                "unreadable footer".to_string()
+            })?,
+            None => crate::readers::FormatFacts::default(),
         };
         Ok(Self::Read {
             size: Some(meta.len()),
-            parquet,
+            footer: read.footer,
+            detail: read.detail,
         })
     }
 }
@@ -702,28 +707,41 @@ fn clip(text: &str, room: usize) -> String {
 /// has the dataset.
 pub struct InfoContext<'a> {
     pub format: Option<ExportFormat>,
+    /// The file declares its columns' types, as its format's descriptor says.
+    pub declared_types: bool,
     /// `None` when there is no one file on this machine to ask: a remote source, a
     /// glob, or a dataset opened from several paths.
     pub facts: Option<&'a FileFacts>,
-    /// The facts are one Parquet file's, so its footer's rows and Compression column
-    /// keep their room while it is read: nothing moves when it lands.
-    pub parquet_file: bool,
+    /// The format's tab that the facts fill, for one local file whose reader has a
+    /// facts read: offered, named and given its room before they land, so nothing moves
+    /// when they do.
+    pub facts_tab: Option<&'static str>,
+    /// The facts read a footer that gives the Compression column, whose room is kept
+    /// while it is read.
+    pub footer_expected: bool,
 }
 
 impl<'a> InfoContext<'a> {
     pub fn schema_source(&self) -> &'static str {
-        match self.format {
-            Some(ExportFormat::Parquet) | Some(ExportFormat::Ipc) | Some(ExportFormat::Avro) => {
-                "Known"
-            }
-            _ => "Inferred",
+        if self.declared_types {
+            "Known"
+        } else {
+            "Inferred"
         }
     }
 
-    /// The Parquet footer, once it has been read.
-    pub fn parquet_metadata(&self) -> Option<&'a ParquetMetadataCache> {
+    /// The footer the facts read, once it has landed.
+    pub fn footer(&self) -> Option<&'a Footer> {
         match self.facts? {
-            FileFacts::Read { parquet, .. } => parquet.as_ref(),
+            FileFacts::Read { footer, .. } => footer.as_ref(),
+            FileFacts::Reading | FileFacts::Failed(_) => None,
+        }
+    }
+
+    /// The format's tab the facts made, once it has landed.
+    fn facts_detail(&self) -> Option<&'a crate::text_formats::Detail> {
+        match self.facts? {
+            FileFacts::Read { detail, .. } => detail.as_deref(),
             FileFacts::Reading | FileFacts::Failed(_) => None,
         }
     }
@@ -732,58 +750,6 @@ impl<'a> InfoContext<'a> {
     fn reading(&self) -> bool {
         matches!(self.facts, Some(FileFacts::Reading))
     }
-}
-
-/// Per-column compression info (Parquet): codec name and ratio.
-fn parquet_column_compression(
-    meta: &FileMetadata,
-    polars_schema: &Schema,
-) -> HashMap<String, (String, f64)> {
-    let mut by_name: HashMap<String, (u64, u64)> = HashMap::new();
-    let mut codec_by_name: HashMap<String, String> = HashMap::new();
-    for rg in &meta.row_groups {
-        for cc in rg.parquet_columns() {
-            let name = cc
-                .descriptor()
-                .path_in_schema
-                .first()
-                .map(|s| s.as_ref())
-                .unwrap_or("");
-            let comp = cc.compressed_size() as u64;
-            let uncomp = cc.uncompressed_size() as u64;
-            let codec = format!("{:?}", cc.compression()).to_lowercase();
-            let e = by_name.entry(name.to_string()).or_insert((0, 0));
-            e.0 = e.0.saturating_add(comp);
-            e.1 = e.1.saturating_add(uncomp);
-            codec_by_name.insert(name.to_string(), codec);
-        }
-    }
-    let mut out = HashMap::new();
-    for (name, (comp, uncomp)) in by_name {
-        if !polars_schema.contains(&name) {
-            continue;
-        }
-        let codec = codec_by_name
-            .get(&name)
-            .cloned()
-            .unwrap_or_else(|| crate::glyphs::get().dash.to_string());
-        if comp > 0 && uncomp > 0 {
-            let ratio = uncomp as f64 / comp as f64;
-            out.insert(name, (codec, ratio));
-        }
-    }
-    out
-}
-
-/// Overall Parquet compression: (compressed, uncompressed) from row groups.
-fn parquet_overall_sizes(meta: &FileMetadata) -> (u64, u64) {
-    let mut comp: u64 = 0;
-    let mut uncomp: u64 = 0;
-    for rg in &meta.row_groups {
-        comp = comp.saturating_add(rg.compressed_size() as u64);
-        uncomp = uncomp.saturating_add(rg.total_byte_size() as u64);
-    }
-    (comp, uncomp)
 }
 
 pub struct DataTableInfo<'a> {
@@ -907,13 +873,13 @@ impl<'a> DataTableInfo<'a> {
             (readable, present_by_name)
         });
         let has_files = presence.is_some();
-        let compression = self
-            .ctx
-            .parquet_metadata()
-            .map(|m| parquet_column_compression(m.as_ref(), self.state.schema().as_ref()));
-        // Kept for a Parquet file whose footer is still out, so the columns do not
-        // re-proportion when it lands.
-        let has_comp = self.ctx.parquet_file || compression.as_ref().is_some_and(|c| !c.is_empty());
+        let compression = self.ctx.footer().map(|m| {
+            crate::parquet_footer::column_compression(m.as_ref(), self.state.schema().as_ref())
+        });
+        // Kept for a file whose footer is still out, so the columns do not re-proportion
+        // when it lands.
+        let has_comp =
+            self.ctx.footer_expected || compression.as_ref().is_some_and(|c| !c.is_empty());
         // A delimited spec's unit row: each column's unit, beside its type.
         let has_units = !self.state.units().is_empty();
         let mut header_cells = vec!["Column", "Type"];
@@ -1071,7 +1037,7 @@ impl<'a> DataTableInfo<'a> {
     }
 
     fn render_resources_tab(&self, area: Rect, buf: &mut Buffer) {
-        // One past the longest label, "Parquet version:", so no value touches its label.
+        // One past the longest label, "Buffer (Rows):", with room to spare.
         const LABEL_WIDTH: u16 = 17;
         let label_constraint = Constraint::Length(LABEL_WIDTH);
         let value_constraint = Constraint::Min(1);
@@ -1234,61 +1200,6 @@ impl<'a> DataTableInfo<'a> {
         }
         y += 1;
 
-        // Always four rows, laid out before the footer lands, so Measurements below
-        // stays put; a value the footer does not have is a dash.
-        let meta = self.ctx.parquet_metadata();
-        if meta.is_some() || self.ctx.parquet_file {
-            let dash = crate::glyphs::get().dash;
-            let value = |known: Option<String>| match known {
-                Some(v) => v,
-                None if self.ctx.reading() => String::new(),
-                None => dash.to_string(),
-            };
-            let comp = meta.and_then(|meta| {
-                let (comp, uncomp) = parquet_overall_sizes(meta.as_ref());
-                (comp > 0 && uncomp > 0).then(|| {
-                    format!(
-                        "{:.1}{} (uncomp. {})",
-                        uncomp as f64 / comp as f64,
-                        crate::glyphs::get().times,
-                        format_bytes(uncomp)
-                    )
-                })
-            });
-            let rows = [
-                ("Parquet comp.:", value(comp)),
-                (
-                    "Row groups:",
-                    value(meta.map(|m| m.row_groups.len().to_string())),
-                ),
-                (
-                    "Parquet version:",
-                    value(meta.map(|m| m.version.to_string())),
-                ),
-                (
-                    "Created by:",
-                    value(meta.and_then(|m| m.created_by.clone())),
-                ),
-            ];
-            for (label, value) in rows {
-                if y >= area.y + h {
-                    break;
-                }
-                label_value_row(
-                    label,
-                    &value,
-                    Rect {
-                        y,
-                        width: w,
-                        height: 1,
-                        ..area
-                    },
-                    buf,
-                    LABEL_WIDTH,
-                );
-                y += 1;
-            }
-        }
         self.render_measurements(area, buf, &mut y, LABEL_WIDTH);
     }
 
@@ -1393,7 +1304,26 @@ impl<'a> DataTableInfo<'a> {
     /// A file's lines, its warnings, then its list: signals, tags, metadata, tracks.
     fn render_format_tab(&mut self, area: Rect, buf: &mut Buffer) {
         let state = self.state;
-        let Some(detail) = state.format_detail() else {
+        let Some(detail) = state.format_detail().or_else(|| self.ctx.facts_detail()) else {
+            // The facts that fill it are still out, or could not be read.
+            let (said, style) = match self.ctx.facts {
+                Some(FileFacts::Failed(why)) => {
+                    (why.clone(), Style::default().fg(self.theme.error))
+                }
+                _ => (
+                    "reading...".to_string(),
+                    Style::default().fg(self.theme.dimmed),
+                ),
+            };
+            Paragraph::new(clip(&said, area.width as usize))
+                .style(style)
+                .render(
+                    Rect {
+                        height: area.height.min(1),
+                        ..area
+                    },
+                    buf,
+                );
             return;
         };
         let warn = Style::default().fg(self.theme.warning);
@@ -1810,7 +1740,7 @@ fn columns_by_type(schema: &Schema) -> String {
 impl<'a> Widget for &mut DataTableInfo<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let ctx = self.theme;
-        let offered = TabsOffered::of(self.state);
+        let offered = TabsOffered::of(self.state, self.ctx.facts_tab);
         let tab = self.modal.active_tab;
         let on_tab_bar = self.modal.focus == InfoFocus::TabBar;
 
@@ -1873,9 +1803,11 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             } else {
                 Style::default().fg(ctx.text_secondary)
             };
-            // The Format tab is named by the file's detail: VCD, Model, Audio.
+            // The Format tab is named by the file's detail (VCD, Model, Audio), or by
+            // the format's descriptor while the facts that fill it are read.
             let title = match (t, self.state.format_detail()) {
                 (InfoTab::Format, Some(detail)) => detail.tab,
+                (InfoTab::Format, None) => self.ctx.facts_tab.unwrap_or(t.title()),
                 _ => t.title(),
             };
             spans.push(Span::styled(title, style));
@@ -1911,13 +1843,6 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
     }
 }
 
-/// Read Parquet metadata from path. Returns `None` on error. Blocking.
-pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
-    let mut f = std::fs::File::open(path).ok()?;
-    let meta = read_metadata(&mut f).ok()?;
-    Some(Arc::new(meta))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1932,9 +1857,9 @@ mod tests {
         }
     }
 
-    /// What a file says about itself: a size and, for Parquet, a footer; a directory
-    /// has no size of its own to give; a file that is gone, or whose footer is not
-    /// one, is a reason rather than a blank.
+    /// What a file says about itself: a size and, for a format with a facts read, its
+    /// footer and tab; a directory has no size of its own to give; a file that is gone,
+    /// or whose footer is not one, is a reason rather than a blank.
     #[test]
     fn file_facts_read_what_each_source_has() {
         let dir = tempfile::tempdir().unwrap();
@@ -1946,39 +1871,44 @@ mod tests {
             .finish(&mut df)
             .unwrap();
         let parquet_len = std::fs::metadata(&parquet).unwrap().len();
+        let facts = crate::readers::of(crate::FileFormat::Parquet).facts;
 
         assert!(matches!(
-            FileFacts::read(&csv, false),
+            FileFacts::read(&csv, None),
             Ok(FileFacts::Read {
                 size: Some(4),
-                parquet: None
+                footer: None,
+                detail: None,
             })
         ));
-        match FileFacts::read(&parquet, true) {
+        match FileFacts::read(&parquet, facts) {
             Ok(FileFacts::Read {
                 size: Some(size),
-                parquet: Some(footer),
+                footer: Some(footer),
+                detail: Some(detail),
             }) => {
                 assert_eq!(size, parquet_len);
                 assert_eq!(footer.num_rows, 3);
+                assert_eq!(detail.tab, "Parquet");
             }
-            other => panic!("a Parquet file's size and footer: {other:?}"),
+            other => panic!("a Parquet file's size, footer and tab: {other:?}"),
         }
         assert!(matches!(
-            FileFacts::read(dir.path(), true),
+            FileFacts::read(dir.path(), facts),
             Ok(FileFacts::Read {
                 size: None,
-                parquet: None
+                footer: None,
+                detail: None,
             })
         ));
         // Reasons short enough for the panel's one line.
         assert_eq!(
-            FileFacts::read(&dir.path().join("gone.parquet"), true).unwrap_err(),
+            FileFacts::read(&dir.path().join("gone.parquet"), facts).unwrap_err(),
             "file not found"
         );
         assert_eq!(
-            FileFacts::read(&csv, true).expect_err("a CSV has no footer"),
-            "unreadable Parquet footer"
+            FileFacts::read(&csv, facts).expect_err("a CSV has no footer"),
+            "unreadable footer"
         );
     }
 
@@ -2016,7 +1946,9 @@ mod tests {
                 InfoContext {
                     format: None,
                     facts: None,
-                    parquet_file: false,
+                    facts_tab: None,
+                    footer_expected: false,
+                    declared_types: false,
                 },
                 &mut modal,
                 &theme,
@@ -2084,7 +2016,9 @@ mod tests {
             InfoContext {
                 format: None,
                 facts: None,
-                parquet_file: false,
+                facts_tab: None,
+                footer_expected: false,
+                declared_types: false,
             },
             &mut modal,
             &theme,
@@ -2167,7 +2101,9 @@ mod tests {
                 InfoContext {
                     format: None,
                     facts: None,
-                    parquet_file: false,
+                    facts_tab: None,
+                    footer_expected: false,
+                    declared_types: false,
                 },
                 &mut modal,
                 &theme,
@@ -2236,7 +2172,9 @@ mod tests {
                 InfoContext {
                     format: None,
                     facts: None,
-                    parquet_file: false,
+                    facts_tab: None,
+                    footer_expected: false,
+                    declared_types: false,
                 },
                 &mut modal,
                 &theme,
@@ -2406,7 +2344,9 @@ mod tests {
                 InfoContext {
                     format: None,
                     facts: None,
-                    parquet_file: false,
+                    facts_tab: None,
+                    footer_expected: false,
+                    declared_types: false,
                 },
                 &mut modal,
                 &theme,
@@ -2478,7 +2418,9 @@ mod tests {
             InfoContext {
                 format: None,
                 facts: None,
-                parquet_file: false,
+                facts_tab: None,
+                footer_expected: false,
+                declared_types: false,
             },
             &mut modal,
             &theme,
@@ -2535,7 +2477,9 @@ mod tests {
                 InfoContext {
                     format: None,
                     facts: None,
-                    parquet_file: false,
+                    facts_tab: None,
+                    footer_expected: false,
+                    declared_types: false,
                 },
                 &mut modal,
                 &theme,

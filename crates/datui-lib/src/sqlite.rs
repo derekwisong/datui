@@ -180,6 +180,10 @@ mod unsupported {
         Err(refused())
     }
 
+    pub fn detail(_path: &Path, _tables: &[Table]) -> Option<crate::text_formats::Detail> {
+        None
+    }
+
     pub fn schema_preview(_path: &Path, _table: &Table) -> Option<crate::discover::SchemaPreview> {
         None
     }
@@ -396,6 +400,95 @@ mod read {
             table.columns = columns_of(&conn, &table.name);
         }
         Ok(tables)
+    }
+
+    /// The SQLite tab of the Info panel for the database at `path`, whose `tables` the
+    /// open listed: the database's page size and versions, and each table of its own
+    /// with its kind, columns and the rows `ANALYZE` stored for it. Nothing here reads a
+    /// table: a count of every table's rows would be a pass over the whole database.
+    pub fn detail(path: &Path, tables: &[Table]) -> Option<crate::text_formats::Detail> {
+        use crate::model_files::MetaValue;
+        use crate::text_formats::count;
+        let conn = open(path).ok()?;
+        let pragma = |name: &str| -> Option<i64> {
+            conn.query_row(&format!("PRAGMA main.{name}"), [], |row| row.get(0))
+                .ok()
+        };
+        let text = |name: &str| -> Option<String> {
+            conn.query_row(&format!("PRAGMA main.{name}"), [], |row| row.get(0))
+                .ok()
+        };
+        let middot = crate::glyphs::get().middot;
+        let page_size = pragma("page_size").unwrap_or(0);
+        let pages = pragma("page_count").unwrap_or(0);
+        let mut lines = vec![format!(
+            "Page size: {} {middot} {}",
+            group_chrome(usize::try_from(page_size).unwrap_or(0)),
+            count(u64::try_from(pages).unwrap_or(0), "page", "pages"),
+        )];
+        let mut versions = format!("Schema version: {}", pragma("schema_version").unwrap_or(0));
+        if let Some(user) = pragma("user_version").filter(|v| *v != 0) {
+            versions.push_str(&format!(" {middot} user version: {user}"));
+        }
+        if let Some(encoding) = text("encoding") {
+            versions.push_str(&format!(" {middot} {encoding}"));
+        }
+        lines.push(versions);
+        // `ANALYZE` stores a table's rows as the first number of its statistics; an
+        // index's are the table's too.
+        let mut analyzed: std::collections::HashMap<String, u64> = Default::default();
+        let has_stats = tables.iter().any(|t| t.name == "sqlite_stat1");
+        if has_stats
+            && let Ok(mut stmt) = conn.prepare("SELECT tbl, stat FROM main.sqlite_stat1")
+            && let Ok(rows) = stmt.query_map([], |row| {
+                Ok((
+                    text_of(row.get_ref(0)?).unwrap_or_default(),
+                    text_of(row.get_ref(1)?).unwrap_or_default(),
+                ))
+            })
+        {
+            for (table, stat) in rows.flatten() {
+                if let Some(n) = stat.split(' ').next().and_then(|n| n.parse::<u64>().ok()) {
+                    let rows = analyzed.entry(table).or_default();
+                    *rows = (*rows).max(n);
+                }
+            }
+        }
+        let own: Vec<&Table> = tables.iter().filter(|t| !t.internal).collect();
+        let views = own.iter().filter(|t| t.kind == "view").count();
+        let mut held = count((own.len() - views) as u64, "table", "tables");
+        if views > 0 {
+            held.push_str(&format!(
+                " {middot} {}",
+                count(views as u64, "view", "views")
+            ));
+        }
+        lines.push(held);
+        lines.push(if analyzed.is_empty() {
+            "Rows: not stored; ANALYZE stores them".to_string()
+        } else {
+            "Rows: as ANALYZE last stored them".to_string()
+        });
+        let list = crate::text_formats::capped_list(
+            own.iter().map(|t| {
+                let mut said = vec![t.kind.clone()];
+                if !t.columns.is_empty() {
+                    said.push(count(t.columns.len() as u64, "column", "columns"));
+                }
+                if let Some(rows) = analyzed.get(&t.name) {
+                    said.push(count(*rows, "row", "rows"));
+                }
+                (t.name.clone(), MetaValue::Text(said.join(", ")))
+            }),
+            own.len(),
+        );
+        Some(crate::text_formats::Detail {
+            tab: crate::text_formats::tab(crate::FileFormat::Sqlite),
+            lines,
+            list_title: "Tables",
+            list,
+            ..Default::default()
+        })
     }
 
     /// A table's columns and declared types; empty where SQLite cannot say (a view of
@@ -1886,8 +1979,13 @@ fn scan(input: crate::readers::ScanIn<'_>) -> color_eyre::Result<crate::scan::Sc
     match pick(tables.clone(), input.options.table.as_deref(), file)? {
         Pick::One(table) => {
             let opened = open_table(file, file, &table, &tables)?;
+            let detail = detail(file, &tables).map(std::sync::Arc::new);
             // The only table, when none was named: what reading it again names.
             input.report.table = Some(table.name.clone());
+            input.report.opened = Some(std::sync::Arc::new(crate::members::Opened {
+                detail,
+                ..Default::default()
+            }));
             input.report.sqlite = Some(std::sync::Arc::new(crate::SqliteOpen {
                 pushdown: opened.pushdown,
                 hold: std::sync::Mutex::new(Some(opened.hold)),

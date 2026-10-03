@@ -1,6 +1,5 @@
 //! Datatable main view: table content, input strip, sidebars (sort/filter, template, pivot/melt), export modal.
 
-use crate::export_modal::ExportFormat;
 use crate::render::context::RenderContext;
 use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
 use crate::render::main_view::MainViewContent;
@@ -75,6 +74,11 @@ pub fn render(
     let evidence_label = app.quality_evidence_label.clone();
     // Asked before the table is borrowed: the job records are the app's.
     let facts_reading = app.file_facts_reading();
+    let facts_tab = app.info_facts_tab();
+    let footer_expected = app.info_facts().is_some_and(|(_, facts)| facts.footer);
+    let declared_types = app
+        .opened_format()
+        .is_some_and(|f| f.descriptor().declares_types);
     let find_cell = app.find_hit();
     let hex = app.hex_target().is_some();
     match &mut app.data_table_state {
@@ -156,14 +160,12 @@ pub fn render(
             if app.info_modal.active {
                 let facts =
                     crate::App::facts_shown(&app.file_facts, app.dataset_generation, facts_reading);
-                // A hive dataset is a directory, whatever its format: no footer is coming.
-                let hive = app.opened.as_ref().is_some_and(|(_, options)| options.hive);
                 let info_ctx = InfoContext {
                     format: app.original_file_format,
+                    declared_types,
                     facts,
-                    parquet_file: facts.is_some()
-                        && !hive
-                        && app.original_file_format == Some(ExportFormat::Parquet),
+                    facts_tab,
+                    footer_expected,
                 };
                 let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
                 info_widget.hex = hex;

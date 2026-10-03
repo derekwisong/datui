@@ -18143,7 +18143,7 @@ fn test_info_panel_arrows_switch_tabs_from_the_body() {
     assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
 }
 
-/// The Info panel's file size and Parquet footer are read on a worker after `i`, and
+/// The Info panel's file size and Parquet tab are read on a worker after `i`, and
 /// drawn once they land; a file gone since it was opened says so instead (#457).
 #[test]
 fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
@@ -18179,12 +18179,18 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     app.render(area, &mut buf);
     let text = rendered_text(&buf);
     assert!(
+        text.contains("50 rows in 1 row group") && text.contains("Format version:"),
+        "the Parquet tab says what its footer says; got:\n{text}"
+    );
+    if let Some(next) = app.event(&key(KeyCode::Right)) {
+        let _ = tx.send(next);
+    }
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(
         text.contains(&datui::widgets::info::format_bytes(size)),
         "the Resources tab shows the file's size; got:\n{text}"
-    );
-    assert!(
-        text.contains("Row groups:") && text.contains("Parquet version:"),
-        "and what its footer says; got:\n{text}"
     );
 
     // The same file, gone before the panel asks: the next open's read fails, once.
@@ -18193,7 +18199,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
     let _ = painted(&mut app, &rx, &tx, area);
     std::fs::remove_file(&path).unwrap();
-    for k in [KeyCode::Char('i'), KeyCode::Right] {
+    for k in [KeyCode::Char('i'), KeyCode::Right, KeyCode::Right] {
         if let Some(next) = app.event(&key(k)) {
             let _ = tx.send(next);
         }

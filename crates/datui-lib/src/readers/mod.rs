@@ -11,6 +11,11 @@
 //! the formats Polars reads in [`polars`]. [`of`] maps every format to its reader,
 //! exhaustively, so a format without one does not compile.
 //!
+//! The descriptor says whether a format has a tab of its own on the Info panel and
+//! whether a file of it holds tables; the reader fills the tab, from what its scan
+//! read or, for a format Polars opens, from what [`Reader::facts`] reads of the file's
+//! footer when the panel first opens, and lists the tables.
+//!
 //! Adding a format is its variant and descriptor in datui-cli, its parser and reader
 //! in a module of its own, and a line in [`of`].
 //!
@@ -51,10 +56,32 @@ use crate::text_formats::Detail;
 use crate::unfinished::Writer;
 use crate::{FileFormat, OpenOptions, ReadReport};
 
+pub(crate) mod facts;
 pub(crate) mod polars;
 
 /// Lists the tables of a file of a format.
 pub(crate) type ListTables = fn(&Path) -> Result<Vec<Table>>;
+
+/// What the Info panel's worker reads of one local file of a format besides its size,
+/// where the open left it to Polars: a Parquet footer.
+pub(crate) type FactsFn = fn(&Path) -> Result<FormatFacts>;
+
+/// A format's facts read. See [`Reader::facts`].
+#[derive(Clone, Copy)]
+pub(crate) struct Facts {
+    pub read: FactsFn,
+    /// Whether it reads a footer that gives the Schema tab's Compression column, which
+    /// keeps its room while the read is out.
+    pub footer: bool,
+}
+
+/// What a [`FactsFn`] read: the format's tab of the Info panel, and the footer the
+/// Schema tab's Compression column is drawn from.
+#[derive(Debug, Clone, Default)]
+pub struct FormatFacts {
+    pub detail: Option<Arc<Detail>>,
+    pub footer: Option<crate::parquet_footer::Footer>,
+}
 
 /// What a scan is given: the files to open as `format`, one unless the format reads
 /// many as one table, and where to report what it found besides the frame.
@@ -132,6 +159,10 @@ pub(crate) struct Reader {
     /// schema, an archive's directory. Only for a format whose descriptor says it holds
     /// tables that are listed.
     pub tables: Option<ListTables>,
+    /// What the Info panel reads of one local file of it when it first opens, for a
+    /// format whose scan leaves what the file says besides its rows to Polars. Its
+    /// tab is offered from the open on, and filled when the read lands.
+    pub facts: Option<Facts>,
     /// How the home screen's preview reads a file of it before it is opened, where its
     /// first rows are cheap.
     pub preview: Option<Preview>,
@@ -165,6 +196,7 @@ pub(crate) const BASE: Reader = Reader {
     signatures: &[],
     refines: &[],
     tables: None,
+    facts: None,
     preview: None,
     python: None,
     export: None,
@@ -670,6 +702,10 @@ mod tests {
             // A format read into files of its own has a conversion to do it.
             if format.reads_into() {
                 assert!(reader.convert.is_some(), "{}", format.name());
+            }
+            // A tab the facts fill is one the descriptor names.
+            if reader.facts.is_some() {
+                assert!(format.summary_tab().is_some(), "{}", format.name());
             }
             #[cfg(feature = "cloud")]
             if reader.bucket_scan.is_some() {

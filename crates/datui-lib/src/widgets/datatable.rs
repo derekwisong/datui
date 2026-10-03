@@ -2647,8 +2647,17 @@ impl DataTableState {
     }
 
     /// Load a single Excel file (xls, xlsx, xlsm, xlsb) using calamine (eager read, then lazy).
-    /// Sheet is selected by 0-based index or name via `options.table` (`--table`).
+    /// Sheet is selected by name, or by 0-based index when no sheet is so named, via
+    /// `options.table` (`--table`).
     pub fn from_excel(path: &Path, options: &OpenOptions) -> Result<Self> {
+        Self::from_excel_with_detail(path, options).map(|(state, _)| state)
+    }
+
+    /// [`Self::from_excel`], with the workbook's Excel tab for the Info panel.
+    pub(crate) fn from_excel_with_detail(
+        path: &Path,
+        options: &OpenOptions,
+    ) -> Result<(Self, crate::text_formats::Detail)> {
         let mut workbook =
             open_workbook_auto(path).map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?;
         let sheet_names = workbook.sheet_names().to_vec();
@@ -2664,39 +2673,36 @@ impl DataTableState {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let range = if let Some(sheet_sel) = options.table.as_deref() {
-            if let Ok(idx) = sheet_sel.parse::<usize>() {
-                workbook
-                    .worksheet_range_at(idx)
-                    .ok_or_else(|| {
-                        color_eyre::eyre::eyre!(
-                            "Excel: no sheet at index {}; this file has: {}",
-                            idx,
-                            sheets_on_offer()
-                        )
-                    })?
-                    .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?
-            } else if !sheet_names.iter().any(|name| name == sheet_sel) {
-                return Err(color_eyre::eyre::eyre!(
-                    "Excel: no sheet named '{}'; this file has: {}",
-                    sheet_sel,
-                    sheets_on_offer()
-                ));
-            } else {
-                workbook
-                    .worksheet_range(sheet_sel)
-                    .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?
-            }
-        } else {
-            workbook
-                .worksheet_range_at(0)
-                .ok_or_else(|| color_eyre::eyre::eyre!("Excel: no first sheet"))?
-                .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?
+        // A sheet's name before an index: the home screen names a sheet called `2023`.
+        let opened = match options.table.as_deref() {
+            None => sheet_names[0].clone(),
+            Some(name) if sheet_names.iter().any(|n| n == name) => name.to_string(),
+            Some(sheet_sel) => match sheet_sel.parse::<usize>() {
+                Ok(idx) => sheet_names.get(idx).cloned().ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "Excel: no sheet at index {}; this file has: {}",
+                        idx,
+                        sheets_on_offer()
+                    )
+                })?,
+                Err(_) => {
+                    return Err(color_eyre::eyre::eyre!(
+                        "Excel: no sheet named '{}'; this file has: {}",
+                        sheet_sel,
+                        sheets_on_offer()
+                    ));
+                }
+            },
         };
+        let range = workbook
+            .worksheet_range(&opened)
+            .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?;
+        let detail = crate::excel::detail(&mut workbook, &opened, &range);
+        drop(workbook);
         let rows: Vec<Vec<Data>> = range.rows().map(|r| r.to_vec()).collect();
         if rows.is_empty() {
             let empty_df = DataFrame::empty();
-            return Self::read_with(empty_df.lazy(), options);
+            return Ok((Self::read_with(empty_df.lazy(), options)?, detail));
         }
         let headers: Vec<String> = rows[0]
             .iter()
@@ -2717,7 +2723,7 @@ impl DataTableState {
             series_vec.push(series.into());
         }
         let df = DataFrame::new_infer_height(series_vec)?;
-        Self::read_with(df.lazy(), options)
+        Ok((Self::read_with(df.lazy(), options)?, detail))
     }
 
     /// Infers column type: prefers Int64 for whole-number floats; infers Date/Datetime for

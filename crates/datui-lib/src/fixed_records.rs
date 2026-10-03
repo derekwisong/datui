@@ -664,6 +664,11 @@ impl FixedRecords {
             .iter()
             .map(|c| Field::new(c.name.clone(), c.dtype()))
             .collect();
+        // The frame decodes a column by its place in the schema.
+        polars_ensure!(
+            schema.len() == columns.len(),
+            Duplicate: "two columns have the same name"
+        );
         Ok(Self {
             sources,
             columns,
@@ -1078,6 +1083,17 @@ mod tests {
             page.column("price").unwrap().get(0).unwrap().to_string(),
             "9.99"
         );
+    }
+
+    /// The frame finds a column by its place, so two of one name are refused.
+    #[test]
+    fn two_columns_of_one_name_are_refused() {
+        let bytes = Arc::new(Bytes::Owned(vec![0; 8]));
+        let a = column("a", 0, 2, Physical::Unsigned(1));
+        let Err(err) = FixedRecords::new(vec![bytes], vec![a.clone(), a], usize::MAX) else {
+            panic!("two columns named a were taken");
+        };
+        assert!(err.to_string().contains("same name"), "{err}");
     }
 
     /// The decoder refuses an index past the bytes rather than read past them.

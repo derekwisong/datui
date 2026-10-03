@@ -2080,6 +2080,16 @@ pub struct Opened {
     pub header: HeaderValues,
 }
 
+/// A note for the records of `rows` past the most a table holds, which are not shown.
+fn past_limit(notes: &mut Vec<String>, rows: u64, records: &FixedRecords) {
+    let past = rows.saturating_sub(records.rows() as u64);
+    if past > 0 {
+        notes.push(format!(
+            "the last {past} records are past the most a table holds and are not shown"
+        ));
+    }
+}
+
 /// Up to this many trailing bytes are shown in the warning about them.
 const TRAILING_SHOWN: usize = 32;
 
@@ -2254,6 +2264,7 @@ impl Spec {
             self.record_columns(&header, header.size as usize, Some(record as usize))?;
         let records =
             FixedRecords::new(vec![bytes], columns, rows as usize).map_err(|e| e.to_string())?;
+        past_limit(&mut notes, rows, &records);
         Ok(Opened {
             records: Arc::new(records),
             notes,
@@ -2344,6 +2355,7 @@ impl Spec {
         }
         let records =
             FixedRecords::new(sources, columns, rows as usize).map_err(|e| e.to_string())?;
+        past_limit(&mut notes, rows, &records);
         Ok(Opened {
             records: Arc::new(records),
             notes,
@@ -3111,6 +3123,25 @@ fields = [
 
     fn open(spec: &Spec, bytes: Vec<u8>) -> Opened {
         spec.open_rows(Arc::new(Bytes::Owned(bytes)), "f").unwrap()
+    }
+
+    /// Records past the most a table holds are not shown, and a note says so.
+    #[test]
+    fn records_past_the_table_limit_are_noted() {
+        let records = FixedRecords::new(
+            vec![Arc::new(Bytes::Owned(vec![0; 4]))],
+            vec![ColumnLayout::new("a", 0, 1, Physical::Unsigned(1), 1)],
+            usize::MAX,
+        )
+        .unwrap();
+        let mut notes = Vec::new();
+        past_limit(&mut notes, 4, &records);
+        assert!(notes.is_empty());
+        past_limit(&mut notes, 9, &records);
+        assert_eq!(
+            notes,
+            ["the last 5 records are past the most a table holds and are not shown"]
+        );
     }
 
     fn collect(opened: &Opened) -> DataFrame {

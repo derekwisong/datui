@@ -268,6 +268,8 @@ Scrolling to the last row of a gigabyte file reads only the rows shown. A sort,
 filter, query, chart or analysis reads every row of the columns it uses, a batch
 at a time on the streaming engine (`[performance] polars_streaming`, on by
 default).
+A table holds at most 4,294,967,295 rows; records past that are not shown, and
+the dataset's notes say so.
 
 A file that grows while it is open keeps the rows it had; open it again to read
 the rest. A file cut short by another program is refused at the next read

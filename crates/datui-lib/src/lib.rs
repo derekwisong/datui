@@ -9094,6 +9094,10 @@ pub enum AppEvent {
     /// The worker building a home listing panicked, so no listing is coming. The panic
     /// is flashed like any other raw worker's.
     HomeListingFailed,
+    /// The directory the `~` prompt is typing, read off-thread.
+    HomePathListed {
+        listing: Box<crate::home::PathListing>,
+    },
     /// A completed path, worked out off-thread.
     HomePathCompleted {
         generation: u64,
@@ -15429,6 +15433,45 @@ impl App {
         }
     }
 
+    /// List the directory the `~` prompt is typing, when it is not the one listed. A
+    /// URL is listed from what the screen already knows; a local directory is read on
+    /// a worker.
+    fn list_the_typed_directory(&mut self) {
+        if !self.home.path_input_active {
+            return;
+        }
+        let dir = home::typed_dir(&self.home.path_input).to_string();
+        if self
+            .home
+            .path_listing
+            .as_ref()
+            .is_some_and(|l| l.dir == dir)
+        {
+            return;
+        }
+        if home::typed_dir_is_url(&dir) {
+            self.home.path_listing = Some(home::names_under(&dir, self.home.known_urls()));
+            return;
+        }
+        // Read off the UI thread: a typed path is where a dead mount gets named.
+        let tx = self.events.clone();
+        let owed = self.owed_answer(AppEvent::HomePathListed {
+            listing: Box::new(home::PathListing {
+                dir: dir.clone(),
+                names: Vec::new(),
+                failed: true,
+            }),
+        });
+        std::thread::spawn(move || {
+            owed.run(|| {
+                let listing = home::list_typed_dir(&dir);
+                let _ = tx.send(AppEvent::HomePathListed {
+                    listing: Box::new(listing),
+                });
+            })
+        });
+    }
+
     /// Complete the path being typed, on a worker.
     fn request_path_completion(&mut self) {
         let typed = self.home.path_input.clone();
@@ -17451,9 +17494,28 @@ impl App {
                 KeyCode::Esc => {
                     self.home.path_input_active = false;
                     self.home.path_input.clear();
+                    self.home.path_listing = None;
+                    self.home.path_pick = None;
                     self.home.status = None;
                 }
+                // The list under the prompt is the directory being typed: ↑↓ pick a
+                // name in it, which Enter and Tab then take.
+                KeyCode::Up | KeyCode::Down => {
+                    let n = self.home.path_candidates().len();
+                    self.home.path_pick = match (event.code, self.home.path_pick) {
+                        _ if n == 0 => None,
+                        (KeyCode::Down, None) => Some(0),
+                        (KeyCode::Down, Some(i)) => Some((i + 1).min(n - 1)),
+                        (KeyCode::Up, Some(0)) | (KeyCode::Up, None) => None,
+                        (KeyCode::Up, Some(i)) => Some(i - 1),
+                        (_, pick) => pick,
+                    };
+                }
                 KeyCode::Enter => {
+                    if let Some(picked) = self.home.picked_path() {
+                        self.home.path_input = picked;
+                        self.home.path_pick = None;
+                    }
                     let raw = self.home.path_input.trim().to_string();
                     if raw.is_empty() {
                         self.home.path_input_active = false;
@@ -17509,15 +17571,36 @@ impl App {
                     self.home.status = None;
                 }
                 KeyCode::Char('u') if ctrl => self.home.path_input.clear(),
-                // Completion reads a directory, which can block, so it is worked out
-                // on a worker and applied when it comes back.
-                KeyCode::Tab => self.request_path_completion(),
+                // The picked name, or what the names listed agree on. Before the
+                // listing is in, completion reads the directory on a worker.
+                KeyCode::Tab => {
+                    let completed = self
+                        .home
+                        .picked_path()
+                        .or_else(|| self.home.path_completion());
+                    let listed = self
+                        .home
+                        .path_listing
+                        .as_ref()
+                        .is_some_and(|l| l.dir == home::typed_dir(&self.home.path_input));
+                    match completed {
+                        Some(completed) => self.home.path_input = completed,
+                        None if !listed => self.request_path_completion(),
+                        None => {}
+                    }
+                }
                 KeyCode::Char(c) if !ctrl => {
                     self.home.path_input.push(c);
                     self.home.status = None;
                 }
                 _ => {}
             }
+            // Whatever changed what is typed takes the pick away, and a new directory
+            // is listed.
+            if !matches!(event.code, KeyCode::Up | KeyCode::Down) {
+                self.home.path_pick = None;
+            }
+            self.list_the_typed_directory();
             return None;
         }
 
@@ -17652,6 +17735,9 @@ impl App {
             KeyCode::Char('~') if self.home.filter.is_empty() => {
                 self.home.path_input_active = true;
                 self.home.status = None;
+                self.home.path_listing = None;
+                self.home.path_pick = None;
+                self.list_the_typed_directory();
             }
             // The one printable that is a key, and only before typing starts: a
             // filter beginning with a literal `?` matches nothing anyway, and this
@@ -25453,6 +25539,16 @@ impl App {
                 }
                 None
             }
+            AppEvent::HomePathListed { listing } => {
+                // Kept only for the directory still being typed: a listing for one the
+                // user has typed past would offer names from somewhere else.
+                if self.home.path_input_active
+                    && home::typed_dir(&self.home.path_input) == listing.dir
+                {
+                    self.home.path_listing = Some((**listing).clone());
+                }
+                None
+            }
             AppEvent::HomePathCompleted {
                 generation,
                 typed,
@@ -27364,6 +27460,7 @@ impl App {
                         // A typo typed at `~` is worth another go without retyping it.
                         self.home.path_input = path.display().to_string();
                         self.home.path_input_active = true;
+                        self.list_the_typed_directory();
                     }
                     return None;
                 };

@@ -10350,7 +10350,12 @@ fn a_load_chosen_at_home_fails_at_home() {
     app.home.status = None;
     while rx.try_recv().is_ok() {}
     type_at_prompt(&mut app, &model);
-    assert!(rx.try_recv().is_err(), "nothing was opened");
+    // The prompt lists the directory being typed meanwhile; nothing is opened.
+    assert!(
+        !rx.try_iter()
+            .any(|event| matches!(event, AppEvent::Open(..))),
+        "nothing was opened"
+    );
     // A typed path has no row to dim, so the line says it.
     assert_eq!(app.home.status.as_deref(), Some(datui::discover::NO_READER));
 }

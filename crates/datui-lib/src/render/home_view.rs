@@ -172,7 +172,7 @@ fn render_rows_strip(
     screen_height: u16,
 ) {
     let free = (area.height as usize).saturating_sub(used);
-    if free < STRIP_MIN_HEIGHT {
+    if free < STRIP_MIN_HEIGHT || app.home.path_input_active {
         return;
     }
     let Some(entry) = app.home.selected_entry() else {
@@ -493,6 +493,9 @@ fn render_rule(area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
 /// Draw the list; returns how many of its lines it used, or all of them when it
 /// drew a message rather than rows.
 fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) -> usize {
+    if app.home.path_input_active {
+        return render_path_list(area, buf, app, ctx);
+    }
     // Where this frame starts and how many rows it has room for. Settled before
     // anything borrows the listing, because both the scroll below and the decision
     // about what is worth looking into are made from it.
@@ -793,6 +796,112 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     body.extend(guidance);
     let used = body.len();
     Paragraph::new(body).render(area, buf);
+    used
+}
+
+/// While `~` is typed, the list is the directory being typed: its names that the last
+/// segment matches, best first, with the one ↑↓ picked on the rail (#547 M6).
+fn render_path_list(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &mut crate::App,
+    ctx: &RenderContext,
+) -> usize {
+    let g = glyphs::get();
+    let height = area.height as usize;
+    let width = area.width as usize;
+    // No row of the home list is under the pointer meanwhile.
+    app.pointer.home_list_drawn(area, vec![None; height]);
+    let home = &app.home;
+    let dir = crate::home::typed_dir(&home.path_input);
+    let segment = &home.path_input[dir.len()..];
+    let listing = home.path_listing.as_ref().filter(|l| l.dir == dir);
+    let candidates = home.path_candidates();
+    let shown_dir = if dir.is_empty() { "./" } else { dir };
+    let count = format!("{}", candidates.len());
+    let rule_w = width.saturating_sub(shown_dir.chars().count() + count.chars().count() + 6);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(g.expanded, Style::default().fg(ctx.accent)),
+        Span::styled(
+            truncate_start(shown_dir, width.saturating_sub(count.len() + 8)),
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  {count}  "), Style::default().fg(ctx.dimmed)),
+        Span::styled(
+            g.rule_h.repeat(rule_w),
+            Style::default().fg(ctx.column_separator),
+        ),
+    ])];
+    let note = match listing {
+        None => Some(format!("Listing {shown_dir}...")),
+        Some(l) if l.failed => Some(format!("Nothing to list at {shown_dir}")),
+        Some(_) if candidates.is_empty() && !segment.is_empty() => {
+            Some(format!("No name here starts like {segment}"))
+        }
+        Some(_) if candidates.is_empty() => Some("Nothing here".to_string()),
+        Some(_) => None,
+    };
+    if let Some(note) = note {
+        lines.push(Line::from(Span::styled(
+            format!("  {note}"),
+            Style::default().fg(ctx.dimmed),
+        )));
+    }
+    // The picked row stays on screen: the list scrolls under it.
+    let room = height.saturating_sub(lines.len());
+    let pick = home.path_pick;
+    let first = match pick {
+        Some(p) if p >= room.saturating_sub(1) => p + 2 - room.max(1),
+        _ => 0,
+    };
+    let hidden_after = candidates.len().saturating_sub(first + room);
+    let take = if hidden_after > 0 {
+        room.saturating_sub(1)
+    } else {
+        room
+    };
+    for (i, name) in candidates.iter().enumerate().skip(first).take(take) {
+        let selected = pick == Some(i);
+        let base = if selected {
+            ctx.highlight_style()
+        } else {
+            Style::default()
+        };
+        let marker = if selected {
+            g.selector
+        } else {
+            g.selector_blank
+        };
+        let mut text = name.name.clone();
+        if name.dir {
+            text.push('/');
+        }
+        let positions = crate::home::fuzzy_positions(segment, &name.name);
+        let name_style = if selected {
+            base.fg(ctx.text_primary).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ctx.text_primary)
+        };
+        let hit_style = base
+            .fg(ctx.keybind_hints)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        let mut spans = vec![Span::styled(
+            marker,
+            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(highlight_spans(&text, &positions, name_style, hit_style));
+        let used = glyphs::display_width(marker) + glyphs::display_width(&text);
+        spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), base));
+        lines.push(Line::from(spans));
+    }
+    if hidden_after > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  {} {hidden_after} more", g.ellipsis),
+            Style::default().fg(ctx.dimmed),
+        )));
+    }
+    let used = lines.len();
+    Paragraph::new(lines).render(area, buf);
     used
 }
 
@@ -2215,6 +2324,11 @@ fn render_preview(
     screen_height: u16,
 ) {
     let width = area.width as usize;
+    // The list is the typed directory's meanwhile; a row's details would be about
+    // something not on screen.
+    if app.home.path_input_active {
+        return;
+    }
     if let Some(crate::home::Row::Place {
         path, source, held, ..
     }) = app.home.selected_row()

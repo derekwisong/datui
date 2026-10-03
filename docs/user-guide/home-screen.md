@@ -12,9 +12,19 @@ schema when available.
    or double-click it. The wheel moves the selection; see [Mouse](../reference/keyboard-shortcuts.md#mouse).
 3. To browse inside a directory instead of combining its files, press <kbd>→</kbd>.
 
-To enter a path, clear the filter and press <kbd>~</kbd>. Type the path, use
-<kbd>Tab</kbd> to complete it, then press <kbd>Enter</kbd>. A file opens; a
-directory is browsed, as <kbd>→</kbd> does.
+To enter a path, clear the filter and press <kbd>~</kbd>. While you type, the
+list shows the directory being typed, narrowed by the name after the last `/`.
+
+| Key | At the `~` prompt |
+|---|---|
+| <kbd>Tab</kbd> | Complete the one name left, with a `/` for a directory, or what the names share |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Pick a name from the list |
+| <kbd>Enter</kbd> | Open the file, or browse the directory as <kbd>→</kbd> does |
+
+`s3://`, `gs://` and `az://` complete bucket and prefix names from what datui
+already knows: listed sources and prefixes, recents, the dataset index and the
+public catalog. Nothing is asked of the store, so `s3://noaa` + <kbd>Tab</kbd>
+gives `s3://noaa-ghcn-pds/`.
 
 <kbd>Ctrl</kbd>+<kbd>D</kbd> remembers a directory as its own section.
 <kbd>Ctrl</kbd>+<kbd>O</kbd> returns home from an open table.
@@ -397,7 +407,7 @@ These commands do not delete data files.
 | <kbd>→</kbd> | Browse inside a directory, including a Hive dataset; unfold a section |
 | <kbd>←</kbd> | Fold a section |
 | type | Filter names and known column names |
-| <kbd>~</kbd> with an empty filter | Enter a path or URL; <kbd>Tab</kbd> completes paths. <kbd>Enter</kbd> opens a file and browses a directory |
+| <kbd>~</kbd> with an empty filter | Enter a path or URL; the list shows the directory being typed. <kbd>Tab</kbd> completes, <kbd>↑</kbd> <kbd>↓</kbd> pick a name. <kbd>Enter</kbd> opens a file and browses a directory |
 | <kbd>Tab</kbd> | Cycle sort: natural, size, modified, rows |
 | <kbd>Backspace</kbd> | Delete a character; with an empty filter, go up a directory. From the top of a collection's remote dataset, back to the list |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |

@@ -7617,3 +7617,179 @@ mod frecency {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The `~` prompt drives the list (#547 M6)
+// ---------------------------------------------------------------------------
+
+mod path_prompt {
+    use super::coming_back::{home_app, press};
+    use crossterm::event::KeyCode;
+    use datui::{App, AppEvent};
+    use std::sync::mpsc::Receiver;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    /// Handle events until the typed directory is listed under the prompt.
+    fn listed(app: &mut App, rx: &Receiver<AppEvent>) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let dir = datui::home::typed_dir(&app.home.path_input).to_string();
+            if app.home.path_listing.as_ref().is_some_and(|l| l.dir == dir) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{dir} was never listed");
+            if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
+                let mut next = Some(event);
+                while let Some(event) = next {
+                    next = app.event(&event);
+                }
+            }
+        }
+    }
+
+    fn screen(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn project() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        super::touch(tmp.path(), "summary.csv");
+        super::touch(tmp.path(), "src/main.py");
+        super::touch(tmp.path(), "data/a.csv");
+        tmp
+    }
+
+    /// While `~` is typed the list is the directory being typed, filtered by the last
+    /// segment; an ambiguous Tab completes nothing and leaves the candidates showing,
+    /// ↑↓ picks one, and Enter takes it.
+    #[test]
+    fn the_list_is_the_typed_directory_and_arrows_pick() {
+        let tmp = project();
+        let (mut app, rx) = home_app(datui::config::AppConfig::default());
+        press(&mut app, KeyCode::Char('~'));
+        let typed = format!("{}/s", tmp.path().display());
+        type_text(&mut app, &typed);
+        listed(&mut app, &rx);
+        let names: Vec<String> = app
+            .home
+            .path_candidates()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(names, ["src", "summary.csv"]);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.home.path_input, typed, "ambiguous: nothing added");
+        for (w, h) in [(80, 24), (200, 50)] {
+            let lines = screen(&mut app, w, h);
+            assert!(lines.iter().any(|l| l.contains("src/")), "{lines:#?}");
+            assert!(
+                lines.iter().any(|l| l.contains("summary.csv")),
+                "{lines:#?}"
+            );
+            let bar = &lines[h as usize - 1];
+            assert!(
+                bar.contains("Tab  Complete") && bar.contains("Pick"),
+                "{bar}"
+            );
+        }
+
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.home.path_pick, Some(1));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.home.picked_path(),
+            Some(format!("{}/src/", tmp.path().display()))
+        );
+        // Enter goes into the picked directory, as it does for one typed.
+        assert!(press(&mut app, KeyCode::Enter).is_none());
+        assert!(!app.home.path_input_active);
+        assert_eq!(
+            app.home.browsing.as_deref(),
+            Some(tmp.path().join("src").as_path())
+        );
+    }
+
+    /// One candidate left: Tab completes it whole, a directory with its separator, so
+    /// the next Tab is inside it.
+    #[test]
+    fn tab_completes_the_one_candidate() {
+        let tmp = project();
+        let (mut app, rx) = home_app(datui::config::AppConfig::default());
+        press(&mut app, KeyCode::Char('~'));
+        type_text(&mut app, &format!("{}/su", tmp.path().display()));
+        listed(&mut app, &rx);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.home.path_input,
+            format!("{}/summary.csv", tmp.path().display())
+        );
+        press(&mut app, KeyCode::Char('x'));
+        for _ in 0.."summary.csvx".len() {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_text(&mut app, "da");
+        listed(&mut app, &rx);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.home.path_input,
+            format!("{}/data/", tmp.path().display())
+        );
+        listed(&mut app, &rx);
+        assert_eq!(
+            app.home
+                .path_candidates()
+                .iter()
+                .map(|n| n.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a.csv"]
+        );
+    }
+
+    /// A bucket completes from what datui already knows of it, the public catalog
+    /// included, with nothing asked of the store: `s3://noaa` + Tab is the bucket.
+    #[test]
+    fn a_bucket_completes_from_what_is_known() {
+        let mut config = datui::config::AppConfig::default();
+        config.data.hide_sources = Vec::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        config.data.use_desktop_recents = false;
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        let cache = TempDir::new().unwrap();
+        app.use_cache(datui::CacheManager::with_dir(cache.path().to_path_buf()));
+        app.enter_home();
+        press(&mut app, KeyCode::Char('~'));
+        type_text(&mut app, "s3://noaa");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.home.path_input, "s3://noaa-ghcn-pds/");
+        let names: Vec<String> = app
+            .home
+            .path_candidates()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+        assert_eq!(names, ["parquet"]);
+    }
+}

@@ -869,9 +869,11 @@ pub fn home_control_keys(
     }
 
     if path_input_active {
+        // What Enter does is the typed path's, not the row's under the prompt.
+        keys = vec![("Enter", "Open")];
         keys.push(("Esc", "Cancel"));
         keys.push(("Tab", "Complete"));
-        keys.push((g.updown, "Move"));
+        keys.push((g.updown, "Pick"));
     } else {
         keys.push(("type", "Filter"));
         // `~` opens the path prompt only on an empty filter; with one typed it

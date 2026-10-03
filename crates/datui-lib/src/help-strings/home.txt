@@ -33,10 +33,14 @@ Finding:
                     below the directory you are inside and the listed bucket
                     names; matches appear under "Found"
   ~:                While the filter is empty: type a path or URL by hand.
-                    The prompt is a plain editor: characters, Backspace,
-                    Ctrl+U clears, Tab completes, Enter opens a file or
-                    goes inside a directory, Esc closes. With a filter
-                    typed, ~ types into it
+                    The list shows the directory being typed, narrowed by
+                    the name after the last /. The prompt is a plain
+                    editor: characters, Backspace, Ctrl+U clears, Tab
+                    completes the one name left or what the names share,
+                    ↑ / ↓ pick a name, Enter opens a file or goes inside a
+                    directory, Esc closes. s3://, gs:// and az://
+                    complete from buckets and prefixes already known.
+                    With a filter typed, ~ types into it
   Ctrl+U:           Clear the filter or path input
   Ctrl+R:           List again what is on screen
   Ctrl+A:           Show or hide files datui cannot read; inside a SQLite

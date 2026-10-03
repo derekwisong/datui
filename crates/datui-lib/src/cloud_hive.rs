@@ -894,12 +894,24 @@ pub async fn footers_of_files_reporting(
         });
     }
     let mut out = vec![None; read.len()];
+    // One schema shared by every footer that has it. A prefix of 842,000 files usually
+    // has a handful, and the count holds every footer until it has them all.
+    let mut schemas: Vec<Arc<Schema>> = Vec::new();
     while let Some(joined) = reads.join_next().await {
         // Counted as it lands, whether or not it read: a footer that will not parse is
         // one the open is no longer waiting on.
         pass.advance();
         if let Ok((slot, footer)) = joined {
-            out[slot] = footer;
+            out[slot] = footer.map(|mut footer: FileFooter| {
+                match schemas.iter().find(|s| **s == footer.schema) {
+                    Some(same) => footer.schema = same.clone(),
+                    // Bounded, so a prefix whose every file differs is not searched
+                    // end to end for each one.
+                    None if schemas.len() < 64 => schemas.push(footer.schema.clone()),
+                    None => {}
+                }
+                footer
+            });
         }
     }
     drop(pass);
@@ -909,43 +921,125 @@ pub async fn footers_of_files_reporting(
     out
 }
 
-/// The rows in each row group of every file, in file order. Files whose footer cannot
-/// be read count as zero rows, as they always have.
+/// The footers of `files` at `read`, in that order, as the pass that settles the row
+/// count. A footer that cannot be read is `None`, and counts as no rows.
 ///
-/// Metered like any other footer pass, because that is what it is: a dataset whose open
-/// could not settle the count re-reads every footer to take it, and those reads cost
-/// exactly what the open's did. Left unmetered, a staged cloud open — which is every
-/// prefix past a wave of objects — would report about half the requests it made.
-pub async fn row_groups_of_files(
+/// Metered like any other footer pass, because that is what it is. Left unmetered, a
+/// staged cloud open — which is every prefix past a wave of objects — would report
+/// about half the requests it made.
+pub async fn footers_for_count(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
+    read: &[usize],
     meter: &Arc<crate::measurements::Meter>,
-) -> Result<Vec<Vec<usize>>> {
+) -> Vec<Option<FileFooter>> {
     // Counted as the pass that settles the row count, which is recorded once: this runs
     // again every time the count is invalidated, and a dataset explored for a few
     // minutes would otherwise report an open that kept getting more expensive.
     let counting = Arc::new(crate::measurements::Meter::default());
     let began = std::time::Instant::now();
-    let groups = footers_of_files(
-        store,
-        files,
-        &(0..files.len()).collect::<Vec<_>>(),
-        &counting,
-    )
-    .await;
+    let footers = footers_of_files(store, files, read, &counting).await;
     // Against a meter of its own first, so that a pass the one-shot declines adds
     // nothing to the dataset's figures.
     let wire = counting.footers().and_then(|c| c.over_the_wire);
     // Not recorded when nothing parsed, the same as the local count: a pass that
     // settled nothing must not take the one measurement this gets, or the pass that
     // eventually succeeds is declined and never reported.
-    if groups.iter().any(Option::is_some) {
-        meter.counted_rows(began.elapsed(), Some(files.len()), wire);
+    if footers.iter().any(Option::is_some) {
+        meter.counted_rows(began.elapsed(), Some(read.len()), wire);
     }
-    Ok(groups
-        .into_iter()
-        .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
-        .collect())
+    footers
+}
+
+/// A remote dataset's row count, taken from its footers, each read once.
+///
+/// It starts from the footers the open already read — the two ends, or a sample of
+/// twenty thousand — and reads only the rest. Once every file's footer is in, the
+/// whole set is handed back once, for the cache, so a reopen reads none.
+pub struct FooterCount {
+    files: Arc<Vec<DatasetFile>>,
+    /// The files the count answers for, as indices into `files`, in order: those whose
+    /// footer the open could read.
+    counted: Vec<usize>,
+    /// Every file's footer, where read. Emptied once the count is whole.
+    footers: tokio::sync::Mutex<Vec<Option<FileFooter>>>,
+}
+
+/// What a count found.
+pub struct Counted {
+    /// The rows in each row group of each counted file, in order.
+    pub row_groups: Vec<Vec<usize>>,
+    /// Every file's footer, the first time all of them are in.
+    pub whole: Option<Vec<Option<FileFooter>>>,
+}
+
+impl FooterCount {
+    /// A count of `counted`, starting from the footers `known` already holds, given as
+    /// each one's index into `files`.
+    pub fn new(
+        files: Arc<Vec<DatasetFile>>,
+        counted: Vec<usize>,
+        known: impl IntoIterator<Item = (usize, Option<FileFooter>)>,
+    ) -> Self {
+        let mut footers = vec![None; files.len()];
+        for (index, footer) in known {
+            if let Some(slot) = footers.get_mut(index) {
+                *slot = footer;
+            }
+        }
+        Self {
+            files,
+            counted,
+            footers: tokio::sync::Mutex::new(footers),
+        }
+    }
+
+    /// Count, reading the footers not yet in. One that would not read before is tried
+    /// again: a read can fail for a moment's throttling as well as a broken file.
+    pub async fn count(
+        &self,
+        store: &Arc<dyn ObjectStore>,
+        meter: &Arc<crate::measurements::Meter>,
+    ) -> Counted {
+        let mut footers = self.footers.lock().await;
+        if footers.is_empty() {
+            // Already whole once; asked again, read again.
+            *footers = vec![None; self.files.len()];
+        }
+        let missing: Vec<usize> = self
+            .counted
+            .iter()
+            .copied()
+            .filter(|&index| footers[index].is_none())
+            .collect();
+        if !missing.is_empty() {
+            let read = footers_for_count(store, &self.files, &missing, meter).await;
+            for (index, footer) in missing.into_iter().zip(read) {
+                footers[index] = footer;
+            }
+        }
+        let row_groups: Vec<Vec<usize>> = self
+            .counted
+            .iter()
+            .map(|&index| {
+                footers[index]
+                    .as_ref()
+                    .map(|f| f.row_group_rows.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let whole = if footers.iter().all(Option::is_some) {
+            Some(std::mem::take(&mut *footers))
+        } else {
+            if self.counted.iter().all(|&index| footers[index].is_some()) {
+                // Counted, but a file the open could not read stays unread, so there
+                // is nothing whole to keep and nothing more to hold on to.
+                footers.clear();
+            }
+            None
+        };
+        Counted { row_groups, whole }
+    }
 }
 
 /// Read a range, counting the request against `meter` and the bytes it returned.
@@ -1610,7 +1704,7 @@ mod tests {
         // As the open leaves it: a count belongs to an open this meter measured.
         meter.listed(std::time::Duration::from_millis(1), Some(1), false);
         rt.block_on(async {
-            row_groups_of_files(&store, &files, &meter).await.unwrap();
+            footers_for_count(&store, &files, &[0], &meter).await;
         });
         assert_eq!(
             meter.footers(),
@@ -1633,10 +1727,13 @@ mod tests {
             stamp: 0,
             etag: None,
         }];
-        let groups =
-            rt.block_on(async { row_groups_of_files(&store, &files, &meter).await.unwrap() });
+        let footers = rt.block_on(async { footers_for_count(&store, &files, &[0], &meter).await });
         assert_eq!(
-            groups.iter().flatten().sum::<usize>(),
+            footers
+                .iter()
+                .flatten()
+                .flat_map(|f| f.row_group_rows.iter())
+                .sum::<usize>(),
             3,
             "and it counts the three rows"
         );
@@ -2644,13 +2741,17 @@ mod tests {
                 ]
             );
 
-            let groups = row_groups_of_files(
+            let footers = footers_for_count(
                 &store,
                 &files,
+                &[0, 1],
                 &Arc::new(crate::measurements::Meter::default()),
             )
-            .await
-            .unwrap();
+            .await;
+            let groups: Vec<Vec<usize>> = footers
+                .into_iter()
+                .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
+                .collect();
             assert_eq!(groups, [vec![2], vec![5]]);
 
             let (dataset, partitions) = schema_of(&store, &files).await;
@@ -2906,6 +3007,107 @@ mod tests {
             all.is_err(),
             "left in, it takes the readable files down with it"
         );
+    }
+
+    /// The count reads only the footers the open did not, and once it has them all the
+    /// dataset is remembered, so a reopen reads no footers.
+    #[test]
+    fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let files = rt.block_on(async {
+            for day in 1..=5i64 {
+                let mut frame = df!("id" => (0..day).collect::<Vec<i64>>()).unwrap();
+                let mut bytes = Vec::new();
+                ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+                store
+                    .put(
+                        &OsPath::from(format!("data/date=2024-01-0{day}/a.parquet")),
+                        PutPayload::from(bytes),
+                    )
+                    .await
+                    .unwrap();
+            }
+            list_dataset_files(&store, "data/", None).await.unwrap().0
+        });
+        let files = Arc::new(files);
+        let full = "memory://data/";
+        let fingerprint = crate::cache::DatasetShape::fingerprint_of(
+            files
+                .iter()
+                .map(|f| (f.key.as_str(), f.size, f.stamp, f.etag.as_deref())),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
+        let meter = Arc::new(crate::measurements::Meter::default());
+        meter.listed(std::time::Duration::from_millis(1), Some(5), false);
+
+        // As a sampled open leaves it: two footers read. The first is planted with a
+        // count it does not have, so a count that read it again would say so.
+        let sampled = rt.block_on(footers_of_files(
+            &store,
+            &files,
+            &[0, 4],
+            &Arc::new(crate::measurements::Meter::default()),
+        ));
+        let mut planted = sampled[0].clone().unwrap();
+        planted.row_group_rows = vec![999];
+        let count = crate::App::cloud_file_counter(
+            rt.handle(),
+            store.clone(),
+            meter.clone(),
+            FooterCount::new(
+                files.clone(),
+                (0..5).collect(),
+                [(0, Some(planted)), (4, sampled[1].clone())],
+            ),
+            crate::App::shape_keeper(Some(cache.clone()), full, &fingerprint, files.clone()),
+        );
+        let groups = count().unwrap();
+        assert_eq!(groups, [vec![999], vec![2], vec![3], vec![4], vec![5]]);
+        assert_eq!(
+            meter.footers().and_then(|c| c.files),
+            Some(3),
+            "the count read the three footers the open had not"
+        );
+        assert_eq!(
+            meter
+                .footers()
+                .and_then(|c| c.over_the_wire)
+                .map(|w| w.requests),
+            Some(3),
+            "one request each, and none for the two it was given"
+        );
+        let shape = cache
+            .dataset_shape(full, &fingerprint)
+            .expect("every footer is in, so the dataset is remembered");
+        assert_eq!(shape.files.len(), 5);
+
+        // A reopen finds it, and reads no footers.
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let reopen = Arc::new(crate::measurements::Meter::default());
+        let (state, facts) = crate::App::schema_state_from_cloud_hive_with(
+            full.to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &crate::measurements::OpenReport {
+                progress: progress.clone(),
+                meter: reopen.clone(),
+                remembered: Some(cache),
+            },
+        )
+        .expect("the reopen opens");
+        assert_eq!(progress.last_pass().begun, 0, "no footer pass");
+        assert!(reopen.footers().is_none(), "and no footer read");
+        assert!(facts.footers_pending.is_none(), "nor one behind the open");
+        let state = state.with_open(facts);
+        assert_eq!(state.num_rows_if_valid(), Some(999 + 2 + 3 + 4 + 5));
     }
 
     /// The dataset a corrupt object leaves behind still counts itself.

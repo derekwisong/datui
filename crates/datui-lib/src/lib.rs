@@ -9579,13 +9579,10 @@ impl App {
         // a wrong count, it is no count at all: the lengths disagree, the answer is
         // dropped without a word, and the dataset spends the rest of the session
         // re-counting itself and never reaching an end to jump to.
-        let counted: Vec<cloud_hive::DatasetFile> = files
-            .iter()
-            .enumerate()
+        let counted: Vec<usize> = (0..files.len())
             // Searched rather than scanned, for the same reason `readable_paths` does:
             // a prefix can be hundreds of thousands of objects.
-            .filter(|(index, _)| dataset.unreadable.binary_search(index).is_err())
-            .map(|(_, file)| file.clone())
+            .filter(|index| dataset.unreadable.binary_search(index).is_err())
             .collect();
         // Belt and braces, both of them: a prefix with nothing readable has no schema
         // and was handed back above, and the two lists are filtered from the same
@@ -9595,20 +9592,15 @@ impl App {
         if readable.is_empty() || readable.len() != counted.len() {
             return None;
         }
-        let count: crate::widgets::datatable::FileCounter = {
-            let (runtime, counted, store) = (runtime.clone(), Arc::new(counted), store.clone());
-            // The same meter again: this counts by re-reading every footer, so its
-            // requests are footer requests and belong in the same tally.
-            let meter = report.meter.clone();
-            Arc::new(move || {
-                let (store, counted, meter) = (store.clone(), counted.clone(), meter.clone());
-                wait_on_runtime(&runtime, async move {
-                    cloud_hive::row_groups_of_files(&store, &counted, &meter).await
-                })
-                .ok_or_else(|| "cancelled".to_string())?
-                .map_err(|e| e.to_string())
-            })
-        };
+        // The same meter again: the count's reads are footer requests and belong in the
+        // same tally. It starts from the footers read here, and reads only the rest.
+        let count = Self::cloud_file_counter(
+            runtime,
+            store.clone(),
+            report.meter.clone(),
+            cloud_hive::FooterCount::new(files.clone(), counted, read.iter().copied().zip(footers)),
+            Self::shape_keeper(report.remembered.clone(), full, &fingerprint, files.clone()),
+        );
         let lf = scan(&readable, &[]).ok()?;
         let state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
@@ -9704,30 +9696,27 @@ impl App {
                 let lf = (whole.scan)(&readable, &[]).ok()?;
                 // Over the same files, so the count it answers with fits the list the
                 // dataset is about to hold.
-                let counted: Vec<cloud_hive::DatasetFile> = files
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| whole.dataset.unreadable.binary_search(index).is_err())
-                    .map(|(_, file)| file.clone())
+                let counted: Vec<usize> = (0..files.len())
+                    .filter(|index| whole.dataset.unreadable.binary_search(index).is_err())
                     .collect();
                 if counted.len() != readable.len() {
                     return None;
                 }
-                let count: crate::widgets::datatable::FileCounter = {
-                    let (runtime, counted, store) =
-                        (runtime.clone(), Arc::new(counted), store.clone());
-                    // As above: counting re-reads every footer, and those reads count.
-                    let meter = meter.clone();
-                    Arc::new(move || {
-                        let (store, counted, meter) =
-                            (store.clone(), counted.clone(), meter.clone());
-                        wait_on_runtime(&runtime, async move {
-                            cloud_hive::row_groups_of_files(&store, &counted, &meter).await
-                        })
-                        .ok_or_else(|| "cancelled".to_string())?
-                        .map_err(|e| e.to_string())
-                    })
-                };
+                // Past `MAX_FOOTER_READS` this pass read a sample, and the dataset has
+                // no row groups until the count reads the rest. It reads only the rest,
+                // and once it has every footer the dataset is remembered whole, so a
+                // reopen reads none.
+                let count = Self::cloud_file_counter(
+                    &runtime,
+                    store.clone(),
+                    meter.clone(),
+                    cloud_hive::FooterCount::new(
+                        files.clone(),
+                        counted,
+                        read.into_iter().zip(footers),
+                    ),
+                    Self::shape_keeper(remembered.clone(), &full, &fingerprint, files.clone()),
+                );
                 Some(crate::widgets::datatable::FootersFound {
                     // What the listing passed over travels with the pass, or the note
                     // about it is on screen from the open and gone the moment the
@@ -9748,6 +9737,51 @@ impl App {
             }));
         }
         Some((state, facts))
+    }
+
+    /// The counter for a cloud dataset's rows, which reads the footers `count` does not
+    /// already hold and hands every footer to `remember` once it has them all.
+    #[cfg(feature = "cloud")]
+    fn cloud_file_counter(
+        runtime: &tokio::runtime::Handle,
+        store: Arc<dyn object_store::ObjectStore>,
+        meter: Arc<crate::measurements::Meter>,
+        count: cloud_hive::FooterCount,
+        remember: impl Fn(&[Option<cloud_hive::FileFooter>]) + Send + Sync + 'static,
+    ) -> crate::widgets::datatable::FileCounter {
+        let (runtime, count) = (runtime.clone(), Arc::new(count));
+        Arc::new(move || {
+            let (store, count, meter) = (store.clone(), count.clone(), meter.clone());
+            let counted =
+                wait_on_runtime(&runtime, async move { count.count(&store, &meter).await })
+                    .ok_or_else(|| "cancelled".to_string())?;
+            if let Some(whole) = counted.whole.as_deref() {
+                remember(whole);
+            }
+            Ok(counted.row_groups)
+        })
+    }
+
+    /// What keeps a cloud dataset's shape once a pass has read every footer of it.
+    #[cfg(feature = "cloud")]
+    fn shape_keeper(
+        cache: Option<crate::cache::CacheManager>,
+        full: &str,
+        fingerprint: &str,
+        files: Arc<Vec<cloud_hive::DatasetFile>>,
+    ) -> impl Fn(&[Option<cloud_hive::FileFooter>]) + Send + Sync + 'static {
+        let (full, fingerprint) = (full.to_string(), fingerprint.to_string());
+        move |footers| {
+            let read: Vec<usize> = (0..files.len()).collect();
+            Self::remember_dataset_shape(
+                cache.as_ref(),
+                &full,
+                &fingerprint,
+                &read,
+                &files,
+                footers,
+            );
+        }
     }
 
     /// The footers at `read`, fetched on the runtime. `None` if the open was abandoned.

@@ -10,6 +10,7 @@ datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins
 datui --format csv https://example.com/export  # force the format when the name gives no hint
 cat data.csv | datui                           # data piped in
 datui - < events.parquet                       # `-` reads standard input
+datui -f app.log.ndjson                        # follow a file as it grows
 ```
 
 ## Standard input
@@ -52,6 +53,53 @@ comes from the first bytes.
 
 The CSV options below apply. The dataset is named `stdin`. It is not added to
 recent datasets, and [views](views.md) match it by its columns only.
+
+## Following a growing file
+
+`--follow` (`-f`) shows rows as they are appended to a local CSV, TSV, PSV or
+NDJSON file, as `tail -f` does: a logger's output, a test rig's results, an
+app's event log. With `-`, it shows standard input as it arrives rather than
+waiting for it to end.
+
+```bash
+datui -f readings.csv
+cat /dev/ttyUSB0 | datui -f -
+while sleep 0.1; do echo "$(date +%s.%N),$RANDOM"; done | datui -f --no-header -
+```
+
+| Key | Action |
+|---|---|
+| <kbd>t</kbd> | Pause and resume. On a file opened without `-f`, follow it: it is read again, as <kbd>H</kbd> reads it, so the query, filters and sort are cleared |
+| <kbd>Esc</kbd> | Stop following; the rows read stay |
+
+The control bar says `following` and how long ago rows last arrived, or
+`paused` and how many have arrived since.
+
+- A follow starts on the last row. On the last row, the cursor stays on the
+  last row as rows arrive; anywhere else it stays where you put it, and the
+  bar counts the rows that came in below.
+- Only complete lines are read. A partial last line waits for its newline.
+- The query, filters, sort, hidden columns and column cursor apply to the new
+  rows. [Value counts](value-counts.md), [analysis](analysis-features.md) and
+  [charts](charting.md) keep the rows they were opened on; the bar says how many
+  have arrived since, and <kbd>t</kbd> there reads them.
+- The column types come from the first rows, as for any file. A later row
+  that does not fit (a field too many, a word in a number column) is counted on
+  the bar in the warning color and its values are read as null; it never stops
+  the follow.
+- A file that shrinks or is replaced (truncation, rotation) is read again from
+  its start, and the bar says so. A deleted file stops the follow; its rows
+  stay readable.
+- The file is checked every 250 ms; a burst of appends is one refresh. Set
+  `follow_interval_ms` under [`[file_loading]`](../reference/settings.md#file-loading)
+  to change it.
+- Standard input keeps being written to its temporary file after the first
+  rows show, until it ends or <kbd>Esc</kbd>, <kbd>Ctrl</kbd>+<kbd>O</kbd> or
+  quitting stops it. The bar says when it ends.
+
+Parquet, Arrow IPC, Excel and other formats written with a footer cannot be
+read before they are finished, nor can a compressed file be read from the
+middle: `--follow` refuses them, and remote data, with a message.
 
 ## Directories
 

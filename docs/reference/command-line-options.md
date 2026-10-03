@@ -11,6 +11,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | Option | Description |
 |--------|-------------|
 | `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table. `-` reads data piped to standard input, as does no PATH when something is piped in. With no PATH and nothing piped in, datui opens its home screen so you can pick a dataset |
+| `-f, --follow` | Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops |
 | `--skip-lines <N>` | Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows |
 | `--skip-rows <N>` | Skip this many CSV rows at the start of the file; the header is read after them. Quote-aware: a row with embedded newlines counts once. Compare --skip-lines |
 | `--skip-tail-rows <N>` | Skip this many rows at the end of the file, such as a vendor footer or trailing garbage. Needs the row count first, which reads the whole file; on a directory in a bucket, every file |
@@ -80,6 +81,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui abfss://release@overturemapswestus2.dfs.core.windows.net/` | Browse Overture Maps releases in public Azure storage |
 | `datui jan.csv feb.csv mar.csv` | Files of the same shape, as one table |
 | `curl -s https://example.com/data.csv.gz \| datui` | Data piped in; the format is read from its first bytes |
+| `serial-logger \| datui -f -` | Rows as they arrive; t pauses, Esc stops following |
 | `datui --hive "/data/events/**/*.parquet"` | A glob, read as one partitioned table |
 | `datui --format csv --no-header raw.txt` | Headerless text, whatever the extension |
 | `datui --format acme.l2feed capture.bin` | A binary file, read through the format spec of that name |

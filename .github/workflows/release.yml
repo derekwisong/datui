@@ -280,6 +280,17 @@ jobs:
           rm -rf "$SCRIPT_DIR"
           python3 scripts/docs/rebuild_index.py
 
+      # Keep /dev/ (main) in the site this deploy replaces.
+      - name: Build main as dev
+        run: |
+          git fetch --no-tags origin main
+          git worktree add --detach "$RUNNER_TEMP/main" FETCH_HEAD
+          rm -rf book/dev
+          (cd "$RUNNER_TEMP/main" && DATUI_REPO_ROOT="$GITHUB_WORKSPACE" \
+            python3 "$GITHUB_WORKSPACE/scripts/docs/build_single_version_docs.py" dev --worktree)
+          git worktree remove --force "$RUNNER_TEMP/main"
+          python3 scripts/docs/rebuild_index.py
+
       - name: Copy latest release to latest
         env:
           REF_NAME: ${{ github.ref_name }}

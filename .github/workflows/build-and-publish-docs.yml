@@ -1,5 +1,6 @@
-# Build and publish documentation for all versions + latest.
-# Run manually when you want to rebuild docs without re-running the full release pipeline.
+# Build and publish documentation for all versions, latest, and main as /dev/.
+# Runs on every push to main that touches the docs, so the next release's manual is
+# reviewable at /dev/ before the tag; run it by hand to rebuild without a release.
 # Uses the same cache key as release.yml so cached book/ from releases can be reused.
 
 name: Build and publish docs
@@ -11,6 +12,19 @@ permissions:
 
 on:
   workflow_dispatch: {}
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'book.toml'
+      - 'demos/**'
+      - 'scripts/docs/**'
+      - '.github/workflows/build-and-publish-docs.yml'
+
+# One deploy at a time; a newer push waits rather than racing the older one's deploy.
+concurrency:
+  group: pages-docs
+  cancel-in-progress: false
 
 env:
   MDBOOK_VERSION: "0.5.2"
@@ -99,6 +113,17 @@ jobs:
           CURRENT_COMMIT=$(git rev-parse HEAD)
           [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
           rm -rf "$SCRIPT_DIR"
+          python3 scripts/docs/rebuild_index.py
+
+      # main as /dev/, built from its own worktree whatever this run checked out.
+      - name: Build main as dev
+        run: |
+          git fetch --no-tags origin main
+          git worktree add --detach "$RUNNER_TEMP/main" FETCH_HEAD
+          rm -rf book/dev
+          (cd "$RUNNER_TEMP/main" && DATUI_REPO_ROOT="$GITHUB_WORKSPACE" \
+            python3 "$GITHUB_WORKSPACE/scripts/docs/build_single_version_docs.py" dev --worktree)
+          git worktree remove --force "$RUNNER_TEMP/main"
           python3 scripts/docs/rebuild_index.py
 
       - name: Copy latest release to latest

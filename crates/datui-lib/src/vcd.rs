@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use color_eyre::Result;
-use color_eyre::eyre::eyre;
 use polars::prelude::*;
 
 use crate::OpenOptions;
@@ -345,7 +344,7 @@ impl VcdReader {
             self.token(&String::from_utf8_lossy(&token));
         }
         if !self.seen {
-            return Err("This is not a VCD file: it has no $var, $timescale or #time.".into());
+            return Err("Not a VCD file: it has no $var, $timescale or #time.".into());
         }
         self.start_body();
         self.batch().map_err(|e| e.to_string())
@@ -852,7 +851,7 @@ pub(crate) fn convert(
     })?;
     let last = reader
         .finish()
-        .map_err(|e| eyre!("{}: {e}", display.display()))?;
+        .map_err(|e| crate::error_display::FileError::new(display, e))?;
     segments.write(&last)?;
     let (lf, files) = segments.finish()?;
     let detail = detail(&reader);
@@ -870,6 +869,15 @@ pub(crate) fn convert(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file that is not one names itself, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        crate::readers::bad_input::each_names_its_file(
+            crate::FileFormat::Vcd,
+            &[("words.vcd", b"hello there\n", "Not a VCD file")],
+        );
+    }
 
     const SAMPLE: &str = "$date Mon Oct  2 2026 $end
 $version Icarus Verilog $end

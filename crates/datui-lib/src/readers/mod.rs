@@ -448,6 +448,8 @@ pub(crate) mod bad_input {
             report: &mut report,
             formats: &formats,
         });
+        // The files a conversion wrote, kept until the rows are read.
+        let mut written = Vec::new();
         let lf = match scan {
             Err(e) => return Some(said(e)),
             Ok(Scan::Frame(lf)) => *lf,
@@ -465,15 +467,17 @@ pub(crate) mod bad_input {
                     read: &read,
                 }) {
                     Err(e) => return Some(said(e)),
-                    Ok((converted, _)) => converted.lf,
+                    Ok((converted, _)) => {
+                        written = converted.files;
+                        converted.lf
+                    }
                 }
             }
             Ok(_) => return None,
         };
-        lf.limit(100)
-            .collect()
-            .err()
-            .map(|e| said(color_eyre::Report::new(e)))
+        let rows = lf.limit(100).collect();
+        drop(written);
+        rows.err().map(|e| said(color_eyre::Report::new(e)))
     }
 
     /// `message` is a reader error's shape: the file named in quotes first, its

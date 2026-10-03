@@ -195,7 +195,8 @@ fn columns_of(
         match primitive(&f.kind) {
             Some((physical, width)) => {
                 let bytes = width.checked_mul(count).ok_or("a field is too large")?;
-                if !f.name.starts_with("_padding") {
+                // Padding, and an array of no elements, take no column.
+                if !f.name.starts_with("_padding") && bytes > 0 {
                     let mut column = match physical {
                         // A char array is text.
                         Physical::Text => ColumnLayout::new(&full, at, 0, physical, bytes),
@@ -500,7 +501,14 @@ pub fn index(data: &[u8]) -> std::result::Result<Index, String> {
             continue;
         }
         let mut columns = Vec::new();
-        let needs = match columns_of(&name, &formats, "", 0, &mut columns, 0) {
+        let needs = match columns_of(&name, &formats, "", 0, &mut columns, 0).and_then(|needs| {
+            // A table has one column of a name; a format that repeats one is refused.
+            let mut seen = std::collections::HashSet::new();
+            match columns.iter().find(|c| !seen.insert(c.name.clone())) {
+                Some(c) => Err(format!("it has two fields named {}", c.name)),
+                None => Ok(needs),
+            }
+        }) {
             Ok(needs) => needs,
             Err(why) => {
                 index.unread.push((name, why));

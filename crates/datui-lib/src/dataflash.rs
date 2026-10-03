@@ -315,12 +315,19 @@ pub fn columns(index: &Index, t: &MessageType) -> (Vec<ColumnLayout>, Vec<(Strin
         let Some((physical, width, count, scale)) = format_char(c) else {
             break;
         };
-        let name = t
+        let mut name = t
             .labels
             .get(i)
             .filter(|l| !l.is_empty())
             .cloned()
             .unwrap_or_else(|| format!("field{i}"));
+        // A label a log repeats keeps both columns, the later by its place.
+        if columns
+            .iter()
+            .any(|c: &ColumnLayout| c.name == name.as_str())
+        {
+            name = format!("{name}_{i}");
+        }
         let mut column = match physical {
             Physical::Text => ColumnLayout::new(&name, at, 0, physical, width),
             _ => {

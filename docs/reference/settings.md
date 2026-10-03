@@ -136,6 +136,7 @@ copy. See [Data Quality](data-quality.md#local-copy-of-a-remote-source).
 ```toml
 [chart]
 row_limit = 10000   # Chart sample size; a larger table is sampled across all of it. Adjustable in the chart view
+grid = false        # Start charts with a grid at the labeled ticks; g toggles it
 ```
 
 ## Data
@@ -241,6 +242,7 @@ darkened. Set any slot to change it.
 | `success`, `warning`, `error`, `dimmed` | Status colors; nulls and axes use `dimmed` | `#9ece6a`, `#e0af68`, `#f7768e`, `#565f89` |
 | `primary_chart_series_color`, `secondary_chart_series_color` | Histogram bars, bar charts and Q-Q points; theoretical overlays | `#7dcfff`, `#565f89` |
 | `chart_series_color_1` to `chart_series_color_7` | Series in the chart view | `#7dcfff`, `#bb9af7`, `#9ece6a`, `#e0af68`, `#7aa2f7`, `#f7768e`, `#ff9e64` |
+| `chart_grid` | The chart grid, a shade under `dimmed` | `#3d4785` |
 | `distribution_normal`, `distribution_skewed`, `distribution_other`, `outlier_marker` | Analysis view | `#9ece6a`, `#e0af68`, `#c0caf5`, `#f7768e` |
 | `cursor_focused`, `cursor_dimmed` | The text cursor, focused and not | `default` |
 | `cursor_text` | Text under the cursor block; `default` picks black or white by the cursor color's luminance | `default` |

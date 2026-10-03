@@ -119,6 +119,15 @@ work right now; nothing a first session needs may live only in `?`.
 **Section rule** — the home screen's `TITLE ── count` line. The way to
 divide space inside a Surface without borders.
 
+**Plot axes** — `widgets/axes.rs`, shared by the chart view and the
+Distribution plots. Ticks at round values (1-2-5 steps, calendar boundaries
+on a time axis), about one label per 15 columns and one per 4 rows; labels
+never touch, and a crowded axis takes a coarser step before a shorter form.
+Tick marks and the grid are `PlotMarks` slots with ASCII twins. The grid is
+off until asked for, sits under the series in `chart_grid` (a shade under
+`dimmed`), and never takes a cell a series drew in; a legend names two or
+more series from the emptiest corner.
+
 ## Shapes
 
 Four shapes, chosen by what the user needs to keep seeing:

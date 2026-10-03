@@ -31,22 +31,38 @@ longer has is dropped from the chart. Opening another dataset starts over.
 
 | Tab | Plots | Columns | Options |
 |---|---|---|---|
-| **XY** | Line, scatter or bar | One numeric or temporal X, up to seven numeric Y | Y from zero, log scale, legend |
-| **Histogram** | Counts per bin | One numeric column | Bins, range |
-| **Box Plot** | Quartiles and outliers | One numeric column | Range |
-| **KDE** | A smoothed density curve | One numeric column | Bandwidth, range |
+| **XY** | Line, scatter or bar | One numeric or temporal X, up to seven numeric Y | Y from zero, log scale, legend, grid |
+| **Histogram** | Counts per bin | One numeric column | Bins, range, grid |
+| **Box Plot** | Quartiles and outliers | One numeric column | Range, grid |
+| **KDE** | A smoothed density curve | One numeric column | Bandwidth, range, grid |
 | **Heatmap** | Density of two variables | Numeric X and Y | Bins |
 | **Bar** | One horizontal bar per category | A text, categorical, boolean or integer category, and **Count** or a numeric value | Order |
 
 XY's **Bar** style draws vertical bars at a numeric X; the **Bar** tab is for
 categories.
 
-Axis numbers take the table's digit grouping and decimal separator
-([number format](../reference/settings.md#number-formatting)), with one
-notation and precision per axis, chosen from its range. Counts and integer
-columns tick in whole numbers. An axis too narrow for its labels shortens them,
-to `12.3k` or `12,3k`. Exports and the Distribution plots label their axes the
-same way.
+## Axes, grid and legend
+
+Ticks fall on round values, steps of 1, 2 or 5 times a power of ten (or 25,
+250 and so on), as many as the plot has room for: about one label per 15
+columns and one per 4 rows. The y axis runs from the round value below the
+data to the one above it. Smaller unlabeled ticks mark the steps between
+labels where there is room.
+
+| Axis | Ticks and labels |
+|---|---|
+| Numbers | One notation and precision per axis, in the table's digit grouping and decimal separator ([number format](../reference/settings.md#number-formatting)). Counts and integer columns tick in whole numbers |
+| Dates and times | Calendar boundaries: years, months, days, hours, minutes. A label names the unit that turns there: `2026` at a new year, `Apr` at a new month, `Mar 5` at a new day among hours, otherwise `12` or `06:00`. The first label also names the year |
+| Too narrow | Fewer ticks, then shorter labels (`12.3k`, `12,3k`); a time axis falls back to its ends |
+
+| Feature | What it does |
+|---|---|
+| **Grid** | Dotted lines at the labeled ticks, under the series, in `chart_grid`. <kbd>g</kbd> or the **Grid** row toggles it; `grid` in the [`[chart]` section](../reference/settings.md#charts) sets where a new chart starts (off) |
+| **Legend** | Names the series when there are two or more, in the corner the series leave emptiest. The **Legend** row hides it |
+| Marks | Lines in braille. A scatter marks each point with a dot, or in braille past one point per four cells. Histogram bars fill their bins |
+
+Without UTF-8 the grid is `.` and `:` and the tick marks `+`. Exports and the
+Distribution plots write their numbers the same way.
 
 ## Count rows per category
 
@@ -146,6 +162,7 @@ which the envelope would download whole twice.
 | <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the option rows |
 | <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style, range or bar order |
 | <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style, range or bar order, or adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size) |
+| <kbd>g</kbd> | Grid on or off (XY, Histogram, Box Plot, KDE) |
 | <kbd>e</kbd> | Export the chart |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Back to the table |
@@ -167,4 +184,4 @@ bar chart exports up to its first 100 bars; the category axis counts the rest.
 
 Series take `chart_series_color_1` through `chart_series_color_7` from the
 [theme](../reference/settings.md#colors); bars and histograms take
-`primary_chart_series_color`.
+`primary_chart_series_color`, and the grid `chart_grid`.

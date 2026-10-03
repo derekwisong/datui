@@ -2513,14 +2513,28 @@ impl App {
             .is_some_and(|(paths, _)| matches!(paths.as_slice(), [path] if stdin::is_stdin(path)))
     }
 
-    /// What views are matched against: the dataset's path, or for what was piped in
-    /// `-`, which no path criterion fits, so it matches by its columns alone.
-    fn view_path(&self) -> Option<&Path> {
-        if self.reads_stdin() {
-            Some(Path::new(stdin::PATH))
+    /// What views are matched against: the dataset's path and the table of its file it
+    /// is. What was piped in is `-`, which no path criterion fits, so it matches by its
+    /// columns alone.
+    fn view_dataset(&self) -> Option<template::Dataset<'_>> {
+        self.data_table_state.as_ref()?;
+        let path = if self.reads_stdin() {
+            Path::new(stdin::PATH)
         } else {
-            self.path.as_deref()
-        }
+            self.path.as_deref()?
+        };
+        Some(template::Dataset {
+            path,
+            table: self.view_table(),
+        })
+    }
+
+    /// The table of a file of tables the dataset on screen is: the one named by
+    /// `--table`, or by a path inside the file (`shop.db/orders`), which opens as the
+    /// file with `--table`.
+    fn view_table(&self) -> Option<&str> {
+        let (_, options) = self.opened.as_ref()?;
+        options.table.as_deref().or(options.spec_variant.as_deref())
     }
 
     /// Whether any leased background work, current or abandoned, has yet to report
@@ -4670,11 +4684,11 @@ impl App {
                 }
             },
             None if self.app_config.templates.auto_apply => self
-                .view_path()
+                .view_dataset()
                 .zip(self.data_table_state.as_ref())
-                .and_then(|(path, state)| {
+                .and_then(|(dataset, state)| {
                     self.template_manager
-                        .get_most_relevant(path, state.source_schema())
+                        .get_most_relevant(dataset, state.source_schema())
                 })
                 .map_or((None, None), |(template, reason)| {
                     (Some(template), Some(reason))
@@ -11213,7 +11227,7 @@ impl App {
 
     /// Open the views list for the dataset on screen, scored against it.
     fn open_template_list(&mut self) {
-        if self.data_table_state.is_none() || self.path.is_none() {
+        if self.view_dataset().is_none() {
             return;
         }
         self.template_modal.table_state.select(Some(0));
@@ -11225,15 +11239,15 @@ impl App {
     /// Rebuild the list's rows from the store, scored and annotated against
     /// the open dataset; the selection stays near where it was.
     fn refresh_view_list(&mut self) {
-        let (Some(state), Some(path)) = (&self.data_table_state, self.view_path()) else {
+        let (Some(state), Some(dataset)) = (&self.data_table_state, self.view_dataset()) else {
             return;
         };
         let rows: Vec<ViewRow> = self
             .template_manager
-            .find_relevant_templates(path, state.source_schema())
+            .find_relevant_templates(dataset, state.source_schema())
             .into_iter()
             .map(|(template, score)| {
-                let reason = template::match_reason(&template, path, state.source_schema());
+                let reason = template::match_reason(&template, dataset, state.source_schema());
                 ViewRow {
                     template,
                     score,
@@ -11319,6 +11333,8 @@ impl App {
             }
         }
 
+        self.template_modal.table = self.view_table().map(str::to_string);
+
         // Schema match starts on: "apply this to a similar table" is the
         // reason views exist, and the columns are the only criterion that
         // says similar.
@@ -11377,6 +11393,7 @@ impl App {
                 None
             },
             schema_types: None,
+            table: self.template_modal.table.clone(),
         };
         let description = {
             let value = self.template_modal.description_input.value();
@@ -11446,7 +11463,7 @@ impl App {
     /// The selected view's score breakdown, for the list's `i` popup.
     fn view_score_details(&self) -> Option<(String, String)> {
         let state = self.data_table_state.as_ref()?;
-        let path = self.view_path()?;
+        let path = self.view_dataset()?;
         let idx = self.template_modal.table_state.selected()?;
         let row = self.template_modal.rows.get(idx)?;
         let template = &row.template;
@@ -12348,11 +12365,11 @@ impl App {
                 // does, the answer is not silence and not the best-scored stranger: the
                 // list opens, so the user sees what exists and picks — or saves one.
                 if let Some(ref state) = self.data_table_state
-                    && let Some(path) = self.view_path()
+                    && let Some(dataset) = self.view_dataset()
                 {
                     match self
                         .template_manager
-                        .get_most_relevant(path, state.source_schema())
+                        .get_most_relevant(dataset, state.source_schema())
                     {
                         Some((template, why)) => {
                             if let Err(e) = self.apply_matched_view(&template, why) {

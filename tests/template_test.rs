@@ -35,6 +35,7 @@ fn test_template_creation() -> Result<()> {
         filename_pattern: None,
         schema_columns: Some(vec!["col1".to_string(), "col2".to_string()]),
         schema_types: None,
+        table: None,
     };
 
     let settings = TemplateSettings {
@@ -97,6 +98,7 @@ fn test_template_serialization() -> Result<()> {
         filename_pattern: None,
         schema_columns: None,
         schema_types: None,
+        table: None,
     };
 
     let settings = TemplateSettings {
@@ -178,6 +180,7 @@ fn test_suggest_name_derives_from_state() -> Result<()> {
         filename_pattern: None,
         schema_columns: None,
         schema_types: None,
+        table: None,
     };
     manager.create_template("sales_2024".to_string(), None, criteria, settings)?;
     assert_eq!(manager.suggest_name(Some(&path), None), "sales_2024 2");
@@ -204,6 +207,7 @@ fn test_template_relevance_exact_path() -> Result<()> {
         filename_pattern: None,
         schema_columns: None,
         schema_types: None,
+        table: None,
     };
 
     let settings = TemplateSettings {
@@ -256,6 +260,7 @@ fn test_template_serialization_with_sql_and_fuzzy() -> Result<()> {
         filename_pattern: None,
         schema_columns: None,
         schema_types: None,
+        table: None,
     };
 
     let settings = TemplateSettings {

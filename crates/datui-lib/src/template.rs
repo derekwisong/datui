@@ -93,6 +93,11 @@ pub struct MatchCriteria {
     pub schema_columns: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_types: Option<Vec<String>>,
+    /// The table of a file of tables the view was saved on (`orders` of `shop.db`,
+    /// whether opened as `shop.db/orders` or with `--table orders`). Its path criteria
+    /// fit only that table: a URL or standard input names the file alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
 }
 
 impl MatchCriteria {
@@ -402,16 +407,17 @@ impl TemplateManager {
         Ok(())
     }
 
-    pub fn find_relevant_templates(
+    pub fn find_relevant_templates<'a>(
         &self,
-        file_path: &Path,
+        dataset: impl Into<Dataset<'a>>,
         schema: &Schema,
     ) -> Vec<(Template, f64)> {
+        let dataset = dataset.into();
         let mut results: Vec<(Template, f64)> = self
             .templates
             .iter()
             .map(|template| {
-                let score = calculate_relevance(template, file_path, schema);
+                let score = calculate_relevance(template, dataset, schema);
                 (template.clone(), score)
             })
             .collect();
@@ -426,15 +432,16 @@ impl TemplateManager {
     /// best-scored one. Scores mix in usage and recency, so with no gate the
     /// most-used template "matches" every dataset ever opened; `T` applying it
     /// silently is how templates lose the user's trust.
-    pub fn get_most_relevant(
+    pub fn get_most_relevant<'a>(
         &self,
-        file_path: &Path,
+        dataset: impl Into<Dataset<'a>>,
         schema: &Schema,
     ) -> Option<(Template, MatchReason)> {
-        self.find_relevant_templates(file_path, schema)
+        let dataset = dataset.into();
+        self.find_relevant_templates(dataset, schema)
             .into_iter()
             .find_map(|(template, _)| {
-                let reason = match_reason(&template, file_path, schema)?;
+                let reason = match_reason(&template, dataset, schema)?;
                 Some((template, reason))
             })
     }
@@ -575,6 +582,40 @@ impl MatchReason {
     }
 }
 
+/// What a view is matched against: where the dataset was read from, and which table
+/// of it. Standard input's `-` is a path no path criterion fits, so data piped in or a
+/// frame handed over is matched by its columns alone.
+#[derive(Debug, Clone, Copy)]
+pub struct Dataset<'a> {
+    pub path: &'a Path,
+    pub table: Option<&'a str>,
+}
+
+impl<'a> From<&'a Path> for Dataset<'a> {
+    fn from(path: &'a Path) -> Self {
+        Self { path, table: None }
+    }
+}
+
+impl<'a> From<&'a PathBuf> for Dataset<'a> {
+    fn from(path: &'a PathBuf) -> Self {
+        Self::from(path.as_path())
+    }
+}
+
+impl<'a> Dataset<'a> {
+    /// The path the view's path criteria are compared with, or None when none can fit:
+    /// the dataset has no path, or it is another table than the one the view was saved
+    /// on. A view saved before tables were recorded fits any.
+    fn place_for(self, criteria: &MatchCriteria) -> Option<&'a Path> {
+        let table_fits = criteria
+            .table
+            .as_deref()
+            .is_none_or(|saved| self.table == Some(saved));
+        (table_fits && has_a_path(self.path)).then_some(self.path)
+    }
+}
+
 /// A dataset's location as a view records it: a URL as written, a local path made
 /// absolute and resolved. The save form offers this and matching compares with it,
 /// so the two are spelled alike.
@@ -595,7 +636,22 @@ pub fn exact_location(path: &Path) -> PathBuf {
     if crate::home::is_network_path(&absolute) {
         return absolute;
     }
-    crate::canonical::canonicalize(&absolute).unwrap_or(absolute)
+    crate::canonical::canonicalize(&absolute)
+        .ok()
+        .or_else(|| canonical_prefix(&absolute))
+        .unwrap_or(absolute)
+}
+
+/// A path nothing on disk has, such as a table inside its file (`shop.db/orders`),
+/// with the part that is there resolved: opened through a link or from the home
+/// screen, it is spelled alike.
+fn canonical_prefix(path: &Path) -> Option<PathBuf> {
+    let (there, canonical) = path
+        .ancestors()
+        .skip(1)
+        .take_while(|p| !p.as_os_str().is_empty())
+        .find_map(|p| Some((p, crate::canonical::canonicalize(p).ok()?)))?;
+    Some(canonical.join(path.strip_prefix(there).ok()?))
 }
 
 /// A local dataset's path relative to the working directory, when it is under it.
@@ -616,12 +672,11 @@ pub fn relative_location(path: &Path) -> Option<String> {
 /// Whether the view's exact path names the dataset at `file_path`. A URL compares as
 /// text less any trailing slash, which is how a directory's URL may or may not end,
 /// and with its scheme in either case, as datui opens it.
-pub fn exact_path_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
-    let Some(stored) = criteria
-        .exact_path
-        .as_deref()
-        .filter(|_| has_a_path(file_path))
-    else {
+pub fn exact_path_matches<'a>(criteria: &MatchCriteria, dataset: impl Into<Dataset<'a>>) -> bool {
+    let (Some(stored), Some(file_path)) = (
+        criteria.exact_path.as_deref(),
+        dataset.into().place_for(criteria),
+    ) else {
         return false;
     };
     if crate::source::is_remote_url(stored) || crate::source::is_remote_url(file_path) {
@@ -646,53 +701,74 @@ fn url_key(path: &Path) -> String {
 }
 
 /// Whether the view's relative path names the dataset at `file_path`.
-pub fn relative_path_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
-    has_a_path(file_path)
-        && criteria.relative_path.as_deref().is_some_and(|stored| {
-            relative_location(file_path).is_some_and(|rel| Path::new(&rel) == Path::new(stored))
-        })
+pub fn relative_path_matches<'a>(
+    criteria: &MatchCriteria,
+    dataset: impl Into<Dataset<'a>>,
+) -> bool {
+    let Some(file_path) = dataset.into().place_for(criteria) else {
+        return false;
+    };
+    criteria.relative_path.as_deref().is_some_and(|stored| {
+        relative_location(file_path).is_some_and(|rel| Path::new(&rel) == Path::new(stored))
+    })
 }
 
 /// Whether the view's path pattern fits `file_path`, as opened or as the save form
 /// spells it: a file opened by a relative path or through a link is still under the
 /// resolved directory its pattern was suggested from.
-pub fn path_pattern_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
-    has_a_path(file_path)
-        && criteria.path_pattern.as_deref().is_some_and(|pattern| {
-            let fits = |p: &Path| {
-                p.to_str()
-                    .is_some_and(|text| matches_pattern(text, pattern))
-            };
-            fits(file_path) || fits(&exact_location(file_path))
-        })
+pub fn path_pattern_matches<'a>(criteria: &MatchCriteria, dataset: impl Into<Dataset<'a>>) -> bool {
+    let Some(file_path) = dataset.into().place_for(criteria) else {
+        return false;
+    };
+    criteria.path_pattern.as_deref().is_some_and(|pattern| {
+        let fits = |p: &Path| {
+            p.to_str()
+                .is_some_and(|text| matches_pattern(text, pattern))
+        };
+        fits(file_path) || fits(&exact_location(file_path))
+    })
 }
 
 /// Whether the view's filename pattern fits the name of `file_path`.
-pub fn filename_pattern_matches(criteria: &MatchCriteria, file_path: &Path) -> bool {
-    has_a_path(file_path)
-        && criteria.filename_pattern.as_deref().is_some_and(|pattern| {
-            file_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| matches_pattern(name, pattern))
-        })
+pub fn filename_pattern_matches<'a>(
+    criteria: &MatchCriteria,
+    dataset: impl Into<Dataset<'a>>,
+) -> bool {
+    let Some(file_path) = dataset.into().place_for(criteria) else {
+        return false;
+    };
+    criteria.filename_pattern.as_deref().is_some_and(|pattern| {
+        file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches_pattern(name, pattern))
+    })
 }
 
 /// Whether the template's own criteria match this file: a path or pattern hit,
 /// or every schema column the template asks for present. Distinct from the
 /// relevance score, which also carries usage and recency and so is never zero
 /// for a template that has been used — a ranking, not a claim of fit.
-pub fn criteria_match(template: &Template, file_path: &Path, schema: &Schema) -> bool {
-    match_reason(template, file_path, schema).is_some()
+pub fn criteria_match<'a>(
+    template: &Template,
+    dataset: impl Into<Dataset<'a>>,
+    schema: &Schema,
+) -> bool {
+    match_reason(template, dataset, schema).is_some()
 }
 
 /// The strongest criterion of the template's that fits this file, or None when
 /// none does. This is the same test `criteria_match` gates on, kept in one
 /// place so the list's "why it matches" annotation can never disagree with
 /// what `V` and auto-apply do.
-pub fn match_reason(template: &Template, file_path: &Path, schema: &Schema) -> Option<MatchReason> {
+pub fn match_reason<'a>(
+    template: &Template,
+    dataset: impl Into<Dataset<'a>>,
+    schema: &Schema,
+) -> Option<MatchReason> {
+    let dataset = dataset.into();
     let criteria = &template.match_criteria;
-    if exact_path_matches(criteria, file_path) || relative_path_matches(criteria, file_path) {
+    if exact_path_matches(criteria, dataset) || relative_path_matches(criteria, dataset) {
         return Some(MatchReason::SameFile);
     }
     if let Some(required) = &criteria.schema_columns
@@ -703,17 +779,17 @@ pub fn match_reason(template: &Template, file_path: &Path, schema: &Schema) -> O
             return Some(MatchReason::SameColumns);
         }
     }
-    if path_pattern_matches(criteria, file_path) || filename_pattern_matches(criteria, file_path) {
+    if path_pattern_matches(criteria, dataset) || filename_pattern_matches(criteria, dataset) {
         return Some(MatchReason::Glob);
     }
     None
 }
 
-fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -> f64 {
+fn calculate_relevance(template: &Template, dataset: Dataset<'_>, schema: &Schema) -> f64 {
     let mut score = 0.0;
 
-    let exact_path_match = exact_path_matches(&template.match_criteria, file_path);
-    let relative_path_match = relative_path_matches(&template.match_criteria, file_path);
+    let exact_path_match = exact_path_matches(&template.match_criteria, dataset);
+    let relative_path_match = relative_path_matches(&template.match_criteria, dataset);
 
     // Check for exact schema match
     let exact_schema_match = if let Some(required_cols) = &template.match_criteria.schema_columns {
@@ -754,7 +830,7 @@ fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -
     // For non-exact matches, sum components
     // Path pattern match
     if let Some(pattern) = &template.match_criteria.path_pattern
-        && path_pattern_matches(&template.match_criteria, file_path)
+        && path_pattern_matches(&template.match_criteria, dataset)
     {
         score += 50.0;
         score += pattern_specificity_bonus(pattern);
@@ -762,7 +838,7 @@ fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -
 
     // Filename pattern match
     if let Some(pattern) = &template.match_criteria.filename_pattern
-        && filename_pattern_matches(&template.match_criteria, file_path)
+        && filename_pattern_matches(&template.match_criteria, dataset)
     {
         score += 30.0;
         score += pattern_specificity_bonus(pattern);
@@ -938,7 +1014,69 @@ mod tests {
             filename_pattern: None,
             schema_columns: None,
             schema_types: None,
+            table: None,
         }
+    }
+
+    /// A view's path criteria fit only the table it was saved on; one saved before
+    /// tables were recorded fits any, as it always did.
+    #[test]
+    fn path_criteria_fit_only_the_saved_table() {
+        let url = Path::new("https://example.com/shop.db");
+        let schema = Schema::default();
+        let on = |table| Dataset {
+            path: url,
+            table: Some(table),
+        };
+        let view = a_template(
+            "orders",
+            MatchCriteria {
+                exact_path: Some(url.to_path_buf()),
+                filename_pattern: Some("shop.db".to_string()),
+                table: Some("orders".to_string()),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&view, on("orders"), &schema),
+            Some(MatchReason::SameFile)
+        );
+        assert_eq!(match_reason(&view, on("customers"), &schema), None);
+        assert_eq!(match_reason(&view, url, &schema), None, "no table named");
+        assert!(!filename_pattern_matches(
+            &view.match_criteria,
+            on("customers")
+        ));
+
+        let older = a_template(
+            "older",
+            MatchCriteria {
+                exact_path: Some(url.to_path_buf()),
+                ..no_criteria()
+            },
+        );
+        assert_eq!(
+            match_reason(&older, on("customers"), &schema),
+            Some(MatchReason::SameFile)
+        );
+    }
+
+    /// A table inside its file is spelled with the file's resolved path, so the place
+    /// a link or a relative path names matches the one the home screen lists.
+    #[cfg(unix)]
+    #[test]
+    fn a_table_inside_a_file_is_located_through_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("shop.db"), b"").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let resolved = crate::canonical::canonicalize(&real).unwrap();
+        assert_eq!(
+            exact_location(&link.join("shop.db").join("orders")),
+            resolved.join("shop.db").join("orders")
+        );
     }
 
     /// Usage and recency raise the score but are not a match: a well-used
@@ -957,7 +1095,7 @@ mod tests {
             },
         );
         assert!(!criteria_match(&unrelated, path, &schema));
-        assert!(calculate_relevance(&unrelated, path, &schema) > 0.0);
+        assert!(calculate_relevance(&unrelated, path.into(), &schema) > 0.0);
 
         let fits = a_template(
             "fits by schema",
@@ -987,7 +1125,7 @@ mod tests {
             },
         );
         assert_eq!(match_reason(&by_path, stdin, &schema), None);
-        assert!(calculate_relevance(&by_path, stdin, &schema) < 50.0);
+        assert!(calculate_relevance(&by_path, stdin.into(), &schema) < 50.0);
         let by_schema = a_template(
             "by schema",
             MatchCriteria {
@@ -1041,7 +1179,7 @@ mod tests {
     }
 
     /// The list's annotation names the strongest criterion that fits: the
-    /// same file beats the same columns beats a glob.
+    /// same file beats the same columns beats a pattern.
     #[test]
     fn match_reason_names_the_strongest_criterion() {
         use polars::prelude::DataType;
@@ -1134,7 +1272,7 @@ mod tests {
         assert_eq!(match_reason(&view, key_case, &schema), None);
         let other_year = Path::new("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2023/ELEMENT=TMAX/");
         assert_eq!(match_reason(&view, other_year, &schema), None);
-        assert!(calculate_relevance(&view, url, &schema) >= 1000.0);
+        assert!(calculate_relevance(&view, url.into(), &schema) >= 1000.0);
     }
 
     /// A local file opened by a relative path is the same file as its absolute,
@@ -1185,7 +1323,7 @@ mod tests {
             match_reason(&by_pattern, opened, &schema),
             Some(MatchReason::Glob)
         );
-        assert!(calculate_relevance(&by_pattern, opened, &schema) >= 50.0);
+        assert!(calculate_relevance(&by_pattern, opened.into(), &schema) >= 50.0);
     }
 
     /// Views saved before URLs were told apart from local paths carry the working

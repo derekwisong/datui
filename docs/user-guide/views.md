@@ -82,6 +82,12 @@ should match the view:
 | Filename pattern | its name matches a glob |
 | Schema | it has all the view's columns; extra columns are fine |
 
+A view saved on one table of a SQLite database or NumPy archive records the
+table, shown as **Table** under Matching. Its path rules then fit only that
+table: `shop.db/orders` and `shop.db --table orders` are the same file, and
+`shop.db/customers` is not. Schema matching still carries the view to any
+table with its columns.
+
 Schema matching is enabled by default. It records the columns as loaded,
 before the query, so a view whose query renames columns still matches the next
 file. Matching views rank above unrelated ones; exact schemas rank above

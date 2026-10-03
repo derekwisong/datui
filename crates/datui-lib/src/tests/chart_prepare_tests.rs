@@ -1,3 +1,4 @@
+use crate::chart_jobs::ChartCacheXY;
 use crate::*;
 use std::sync::mpsc;
 

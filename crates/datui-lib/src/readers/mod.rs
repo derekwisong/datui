@@ -3,7 +3,8 @@
 //! A format's descriptor ([`crate::FileFormat::descriptor`], in datui-cli) says what is
 //! true of it without a file to read. Its [`Reader`] holds the code: the bytes that say
 //! it, the scan that opens it, the conversion of a format read into files of its own,
-//! the tables a file of it lists and the format a view of it exports to by default.
+//! the tables a file of it lists, Copy as Python's Polars call and the format a view of
+//! it exports to by default.
 //! What a file says besides its rows is the scan's to report, as the Info panel tab of
 //! [`crate::members::Opened::detail`]. Each format's reader
 //! lives beside its parser (`crate::sqlite::READER`), and those of the formats Polars
@@ -81,6 +82,8 @@ pub(crate) struct Reader {
     /// schema, an archive's directory. Only for a format whose descriptor says it holds
     /// tables that are listed.
     pub tables: Option<ListTables>,
+    /// How Copy as Python reads it with Polars, where Polars does.
+    pub python: Option<crate::python_script::Python>,
     /// What a view of it is exported as unless the user picks: the format itself where
     /// datui writes it.
     pub export: Option<ExportFormat>,
@@ -97,6 +100,7 @@ pub(crate) const BASE: Reader = Reader {
     convert: None,
     signatures: &[],
     tables: None,
+    python: None,
     export: None,
 };
 

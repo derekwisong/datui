@@ -6,6 +6,7 @@ use color_eyre::Result;
 use super::{BASE, EVERYWHERE, Kind, Reader, ScanIn, Signature, Trusted, Unnamed};
 use crate::OpenOptions;
 use crate::export_modal::ExportFormat;
+use crate::python_script::{self as py, Python};
 use crate::scan::Scan;
 use crate::widgets::datatable::DataTableState;
 
@@ -140,6 +141,12 @@ fn scan_excel(input: ScanIn<'_>) -> Result<Scan> {
 }
 
 pub(crate) const PARQUET: Reader = Reader {
+    python: Some(Python {
+        call: "pl.scan_parquet",
+        eager: false,
+        glob_flag: true,
+        arguments: Some(py::parquet_arguments),
+    }),
     scan: scan_parquet,
     // `PAR1` at both ends of a file, because at the front alone it is a truncated
     // write: the footer is what a reader needs.
@@ -159,6 +166,12 @@ pub(crate) const PARQUET: Reader = Reader {
 
 /// CSV, TSV and PSV export as CSV: the export's own delimiter option says the rest.
 pub(crate) const CSV: Reader = Reader {
+    python: Some(Python {
+        call: "pl.scan_csv",
+        eager: false,
+        glob_flag: true,
+        arguments: Some(py::csv_arguments),
+    }),
     scan: scan_csv,
     export: Some(ExportFormat::Csv),
     ..BASE
@@ -172,18 +185,37 @@ pub(crate) const TSV: Reader = Reader {
 pub(crate) const PSV: Reader = TSV;
 
 pub(crate) const JSON: Reader = Reader {
+    python: Some(Python {
+        call: "pl.read_json",
+        eager: true,
+        glob_flag: false,
+        arguments: None,
+    }),
     scan: scan_json,
     export: Some(ExportFormat::Json),
     ..BASE
 };
 
 pub(crate) const JSONL: Reader = Reader {
+    // `scan_ndjson` has no `glob` flag: a name with a glob character is escaped.
+    python: Some(Python {
+        call: "pl.scan_ndjson",
+        eager: false,
+        glob_flag: false,
+        arguments: None,
+    }),
     scan: scan_json_lines,
     export: Some(ExportFormat::Ndjson),
     ..BASE
 };
 
 pub(crate) const ARROW: Reader = Reader {
+    python: Some(Python {
+        call: "pl.scan_ipc",
+        eager: false,
+        glob_flag: true,
+        arguments: Some(py::arrow_arguments),
+    }),
     scan: scan_arrow,
     signatures: &[
         Signature {
@@ -213,6 +245,12 @@ pub(crate) const ARROW: Reader = Reader {
 };
 
 pub(crate) const AVRO: Reader = Reader {
+    python: Some(Python {
+        call: "pl.read_avro",
+        eager: true,
+        glob_flag: false,
+        arguments: None,
+    }),
     scan: scan_avro,
     signatures: &[Signature {
         says: |head, _| head.starts_with(b"Obj\x01"),
@@ -245,6 +283,12 @@ pub(crate) const ORC: Reader = Reader {
 
 /// Datui writes no workbook.
 pub(crate) const EXCEL: Reader = Reader {
+    python: Some(Python {
+        call: "pl.read_excel",
+        eager: true,
+        glob_flag: false,
+        arguments: Some(py::excel_arguments),
+    }),
     scan: scan_excel,
     ..BASE
 };

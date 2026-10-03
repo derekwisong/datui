@@ -27,8 +27,12 @@ use crate::download::TempDownload;
 use crate::unfinished::Writer;
 use crate::{AppEvent, CompressionFormat, FileFormat, OpenOptions};
 
-/// How often the watcher checks the file, unless `[file_loading] follow_interval_ms`
-/// says otherwise. A burst of appends inside one interval is one refresh.
+#[cfg(target_os = "linux")]
+mod notify;
+
+/// How often the watcher checks the file, or where it hears of changes (Linux) the least
+/// time between two reads, unless `[file_loading] follow_interval_ms` says otherwise. A
+/// burst of appends inside one interval is one refresh.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Bytes read from the file per step while counting records.
@@ -970,6 +974,9 @@ struct Shared {
     stop: AtomicBool,
     poke: Mutex<bool>,
     woken: Condvar,
+    /// Wakes a watcher waiting on inotify rather than on `woken`.
+    #[cfg(target_os = "linux")]
+    bell: notify::Bell,
 }
 
 impl Shared {
@@ -990,6 +997,44 @@ impl Shared {
     fn wake(&self) {
         *self.poke.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.woken.notify_all();
+        #[cfg(target_os = "linux")]
+        self.bell.ring();
+    }
+
+    /// Wait until the file changes, as `notify` hears, or until poked or stopped. A
+    /// change is looked at no sooner than `interval` after the last look, `last`, so a
+    /// burst of appends is one look. Whether to go on.
+    #[cfg(target_os = "linux")]
+    fn wait_for_change(
+        &self,
+        notify: &notify::Notify,
+        interval: Duration,
+        last: &mut Option<Instant>,
+    ) -> bool {
+        loop {
+            if self.stop.load(Ordering::Relaxed) {
+                return false;
+            }
+            if std::mem::take(&mut *self.poke.lock().unwrap_or_else(|e| e.into_inner())) {
+                break;
+            }
+            if notify.wait(&self.bell, None) == notify::Woke::Changed {
+                let left = last
+                    .map(|at| at + interval)
+                    .and_then(|due| due.checked_duration_since(Instant::now()));
+                // Returns early when poked.
+                if let Some(left) = left
+                    && !self.wait(left)
+                {
+                    return false;
+                }
+                break;
+            }
+        }
+        // What changed before this look is read by it.
+        notify.drain();
+        *last = Some(Instant::now());
+        !self.stop.load(Ordering::Relaxed)
     }
 }
 
@@ -1076,6 +1121,9 @@ impl Follow {
         let path = tail.path.clone();
         let shared = Arc::new(Shared::default());
         let shown = tail.rows();
+        if let Some(handle) = &spool {
+            handle.spool.wake_on_end(shared.clone());
+        }
         let marks = Arc::new(Marks::default());
         marks.take_from(&mut tail);
         let watcher = Watcher {
@@ -1321,7 +1369,23 @@ impl Watcher {
         };
         let mut known = identity_of(&file);
         let mut sent = (self.tail.rows(), 0usize);
-        while self.shared.wait(self.interval) {
+        #[cfg(target_os = "linux")]
+        let notify = notify::Notify::new(&self.path);
+        #[cfg(target_os = "linux")]
+        let mut last = None;
+        loop {
+            #[cfg(target_os = "linux")]
+            let go_on = match &notify {
+                Some(notify) => self
+                    .shared
+                    .wait_for_change(notify, self.interval, &mut last),
+                None => self.shared.wait(self.interval),
+            };
+            #[cfg(not(target_os = "linux"))]
+            let go_on = self.shared.wait(self.interval);
+            if !go_on {
+                return;
+            }
             // Read before the file, so nothing the spool wrote before it ended is missed.
             let spool_ended = self.spool.as_ref().and_then(|spool| spool.ended());
             let meta = match std::fs::metadata(&self.path) {
@@ -1348,6 +1412,10 @@ impl Watcher {
                     }
                 }
                 known = identity_of(&file);
+                #[cfg(target_os = "linux")]
+                if let Some(notify) = &notify {
+                    notify.rewatch(&self.path);
+                }
                 self.tail.restart();
                 self.marks.clear();
                 if let Err(e) = self.tail.read_on(&mut file, len, false) {
@@ -1432,6 +1500,9 @@ struct SpoolState {
     finished: Option<Instant>,
     /// Bytes copied by when, a few seconds of them, for the rate.
     samples: std::collections::VecDeque<(Instant, u64)>,
+    /// The watcher following the file, woken when the copy ends: a watcher waiting
+    /// for the file to change would not hear an end that writes nothing.
+    watcher: Option<Arc<Shared>>,
 }
 
 /// How far back the rate looks.
@@ -1572,8 +1643,23 @@ impl Spool {
             state.ended = Some(reason);
             state.finished = Some(Instant::now());
         }
+        let watcher = state.watcher.take();
         drop(state);
         self.changed.notify_all();
+        if let Some(watcher) = watcher {
+            watcher.wake();
+        }
+    }
+
+    /// Wake the watcher `shared` once the copy ends, or now if it has.
+    fn wake_on_end(&self, shared: Arc<Shared>) {
+        let mut state = self.lock();
+        if state.ended.is_some() {
+            drop(state);
+            shared.wake();
+        } else {
+            state.watcher = Some(shared);
+        }
     }
 }
 
@@ -1817,6 +1903,43 @@ mod tests {
         );
         assert_eq!(lines.rows(), 2);
         assert_eq!(lines.complete(), 17);
+    }
+
+    /// On Linux the watcher hears an append through inotify: with an interval of an
+    /// hour, no size check would see it, and nothing pokes it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_append_is_heard_of_without_a_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.csv");
+        std::fs::write(&path, "t\n1\n").unwrap();
+        let scan = LazyCsvReader::new(PlRefPath::try_from_path(&path).unwrap())
+            .finish()
+            .unwrap();
+        let (_, tail) =
+            bound_to_complete(scan, &path, FileFormat::Csv, &OpenOptions::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let follow = Follow::start(tail, Duration::from_secs(3_600), tx, None);
+        let guard = Duration::from_secs(30);
+        // The watcher may not be waiting yet: append until it reports, each append a
+        // change it hears once it is.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let mut rows = 1;
+        let deadline = Instant::now() + guard;
+        let news = loop {
+            assert!(Instant::now() < deadline, "the watcher never heard");
+            file.write_all(format!("{}\n", rows + 1).as_bytes())
+                .unwrap();
+            rows += 1;
+            if let Ok(AppEvent::Followed(news)) = rx.recv_timeout(Duration::from_millis(50)) {
+                break news;
+            }
+        };
+        assert!(matches!(news.change, Change::Grew { rows: 2.., .. }));
+        drop(follow);
     }
 
     /// The bytes that arrive later are read from where the count stopped, a partial

@@ -19085,19 +19085,24 @@ mod tests {
             .append(true)
             .open(&path)
             .unwrap();
-        for i in 20_000..20_050 {
-            out.write_all(format!("{i},{}\n", i % 7).as_bytes())
-                .unwrap();
-        }
+        let more: String = (20_000..20_050)
+            .map(|i| format!("{i},{}\n", i % 7))
+            .collect();
+        out.write_all(more.as_bytes()).unwrap();
         let follow = state.follow_mut().unwrap();
         follow.check_now();
-        let crate::AppEvent::Followed(news) =
-            rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap()
-        else {
-            panic!("the watcher said something else");
+        // A watcher that hears changes may report before the check it was asked for.
+        let (rows, restarted) = loop {
+            let crate::AppEvent::Followed(news) =
+                rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap()
+            else {
+                panic!("the watcher said something else");
+            };
+            follow.take(&news.change);
+            if follow.waiting() == 50 {
+                break follow.catch_up();
+            }
         };
-        follow.take(&news.change);
-        let (rows, restarted) = follow.catch_up();
         assert_eq!(rows, 20_050);
         state.follow_to(rows, restarted);
         assert!(!state.is_num_rows_valid());

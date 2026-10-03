@@ -93,7 +93,9 @@ The control bar says `following` and how long ago rows last arrived, or
 - A file that shrinks or is replaced (truncation, rotation) is read again from
   its start, and the bar says so. A deleted file stops the follow; its rows
   stay readable.
-- The file is checked every 250 ms; a burst of appends is one refresh. Set
+- On Linux, datui hears of an append as it lands and reads new rows at most
+  every 250 ms; elsewhere, and on a network file system, it checks the file's
+  size every 250 ms. A burst of appends is one refresh. Set
   `follow_interval_ms` under [`[file_loading]`](../reference/settings.md#file-loading)
   to change it.
 - Standard input keeps being written to its temporary file after the first

@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
+
+use crate::error_display::{FileError, in_file};
 use polars::prelude::*;
 
 use crate::dbc::{Dbc, Message, Mux, Signal};
@@ -668,12 +670,19 @@ impl Layers {
             match crate::dbc::load(path) {
                 Ok(Some(d)) => dbcs.push(Arc::new(d)),
                 Ok(None) => {
-                    return Err(eyre!(
-                        "{} is not a DBC file: a .dbc file, or TOML with kind = \"dbc\".",
-                        path.display()
-                    ));
+                    return Err(FileError::new(
+                        path,
+                        "not a DBC file. --dbc takes a .dbc file, or TOML with kind = \"dbc\".",
+                    )
+                    .into());
                 }
-                Err(e) => return Err(eyre!("{e}")),
+                Err(e) => {
+                    let at = match e.line {
+                        0 => String::new(),
+                        line => format!("line {line}, column {}: ", e.column),
+                    };
+                    return Err(FileError::new(path, format!("{at}{}", e.message)).into());
+                }
             }
         }
         Ok(Self { dbcs })
@@ -780,9 +789,9 @@ impl Listing {
 
 /// The index of the candump log at `path`, made by one pass or kept from one.
 pub fn indexed(path: &Path) -> Result<(Arc<Bytes>, Arc<Index>)> {
-    let bytes = Arc::new(Bytes::map(path).map_err(|e| eyre!("{}: {e}", path.display()))?);
+    let bytes = Arc::new(Bytes::map(path).map_err(|e| in_file(path, e.into()))?);
     let index = crate::indexed::cached(path, || index(bytes.as_slice()))
-        .map_err(|e| eyre!("{} is not read: {e}", path.display()))?;
+        .map_err(|e| FileError::new(path, e))?;
     Ok((bytes, index))
 }
 
@@ -888,6 +897,20 @@ pub fn open(path: &Path, wanted: Option<&str>, layers: Layers) -> Result<Open> {
         .unwrap_or_else(|never| match never {})
     };
     let tables = listing.tables();
+    // Without a DBC file only the frames are read: a message or the signals asked for
+    // by name wants one.
+    if let Some(wanted) = wanted
+        && listing.layers.dbcs.is_empty()
+        && !tables.iter().any(|t| t.name.eq_ignore_ascii_case(wanted))
+    {
+        return Err(FileError::new(
+            path,
+            format!(
+                "no table \"{wanted}\": with no DBC file only its {FRAMES} are read. --dbc names one that decodes its messages."
+            ),
+        )
+        .into());
+    }
     let picked =
         match crate::members::pick(tables.clone(), wanted, path, crate::FileFormat::Candump, "")? {
             crate::sqlite::Pick::One(table) => table.name,
@@ -931,7 +954,7 @@ pub fn open(path: &Path, wanted: Option<&str>, layers: Layers) -> Result<Open> {
         let (message, rows) = listing
             .messages
             .get(&picked)
-            .ok_or_else(|| eyre!("No message {picked:?}"))?;
+            .ok_or_else(|| FileError::new(path, format!("no message \"{picked}\"")))?;
         let decoded = Arc::new(
             Decoded::new(bytes, &index, rows.clone(), message.clone(), true)
                 .map_err(|e| eyre!("{e}"))?,
@@ -996,7 +1019,9 @@ fn long_table(
         ));
     }
     if parts.is_empty() {
-        return Err(eyre!("No signals to decode."));
+        return Err(eyre!(
+            "no signals to decode: no frame of the log is a message of the DBC files"
+        ));
     }
     let all = concat(parts, UnionArgs::default())?;
     Ok(all.sort(
@@ -1029,6 +1054,51 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A log of no frames names itself; a table that wants a DBC file says the flag
+    /// that gives one, and a DBC file that is not one names the DBC file.
+    #[test]
+    fn errors_name_the_file() {
+        use crate::readers::bad_input::{assert_shape, each_names_its_file, opening};
+        each_names_its_file(
+            crate::FileFormat::Candump,
+            &[("text.log", b"hello there\n", "No line is a CAN frame")],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let log = b"(1436509052.249713) can0 123#DEADBEEF\n";
+        let dbc = dir.path().join("plain.toml");
+        std::fs::write(&dbc, "a = 1\n").unwrap();
+        for (options, named, says) in [
+            (
+                crate::OpenOptions {
+                    table: Some("Engine".into()),
+                    ..Default::default()
+                },
+                dir.path().join("a.log"),
+                "--dbc names one",
+            ),
+            (
+                crate::OpenOptions {
+                    dbc: Some(dbc.clone()),
+                    ..Default::default()
+                },
+                dbc.clone(),
+                "--dbc takes",
+            ),
+        ] {
+            let message = opening(
+                dir.path(),
+                "a.log",
+                log,
+                crate::FileFormat::Candump,
+                &options,
+            )
+            .expect("refused");
+            eprintln!("{message}");
+            assert_shape(&message, &named);
+            assert!(message.contains(says), "{message}");
+        }
+    }
 
     pub(crate) const LOG: &str = "(1700000000.000100) can0 123#401F7602\n\
 (1700000000.000200) can1 18FEF1FE#1234FFF000000000\n\

@@ -134,12 +134,7 @@ pub(crate) enum Job {
     Pivot,
     /// A view's pivot, read before the view's rows: the view it is for, and why it
     /// was applied when it was for a match.
-    ViewPivot(
-        Box<(
-            crate::template::Template,
-            Option<crate::template::MatchReason>,
-        )>,
-    ),
+    ViewPivot(Box<(crate::view::SavedView, Option<crate::view::MatchReason>)>),
     /// The group row Enter drills into, when the buffer did not hold it.
     DrillRow,
     /// The inspector's fields of one row that the buffer does not hold: row `row` of

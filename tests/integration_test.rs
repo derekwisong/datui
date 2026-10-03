@@ -11461,7 +11461,7 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
 /// it will reproduce: the getters return the grouped view's filters and sort, while the
 /// view getters describe the frame on screen.
 #[test]
-fn test_template_getters_describe_the_grouped_view_while_drilled() {
+fn test_view_getters_describe_the_grouped_view_while_drilled() {
     use datui::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_template_getters.csv");
 
@@ -16933,11 +16933,8 @@ fn a_compressed_csv_over_http_is_its_url() {
         .sort_by(vec!["column_1".to_string()], vec![true]);
     app.event(&key(KeyCode::Char('v')));
     app.event(&key(KeyCode::Char('s')));
-    assert_eq!(
-        app.template_modal.name_input.value(),
-        "http_gz_location.csv"
-    );
-    assert_eq!(app.template_modal.exact_path_input.value(), url);
+    assert_eq!(app.view_modal.name_input.value(), "http_gz_location.csv");
+    assert_eq!(app.view_modal.exact_path_input.value(), url);
 }
 
 /// An Arrow IPC stream over HTTP is downloaded, then converted, and the dataset is
@@ -17107,14 +17104,14 @@ fn home_f1_opens_help_mid_filter() {
 #[test]
 fn v_with_no_matching_view_opens_the_list() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("t_fallback.csv");
-    assert!(!app.template_modal.active);
+    assert!(!app.view_modal.active);
 
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('V'),
         KeyModifiers::SHIFT,
     )));
     assert!(
-        app.template_modal.active,
+        app.view_modal.active,
         "V without a match shows what exists rather than staying silent"
     );
 
@@ -17122,25 +17119,25 @@ fn v_with_no_matching_view_opens_the_list() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert!(!app.template_modal.active);
+    assert!(!app.view_modal.active);
 }
 
 /// The template modal keys and renders off its own `active`, not the input mode,
 /// so Ctrl+O must take it down: left up, it came back over the next dataset as a
 /// zombie that swallowed keys.
 #[test]
-fn template_modal_does_not_survive_going_home() {
+fn view_modal_does_not_survive_going_home() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("t_zombie.csv");
 
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('v'),
         KeyModifiers::NONE,
     )));
-    assert!(app.template_modal.active);
+    assert!(app.view_modal.active);
 
     app.enter_home();
     assert!(
-        !app.template_modal.active,
+        !app.view_modal.active,
         "going home closes the template modal"
     );
 }
@@ -17379,10 +17376,10 @@ fn a_freeze_survives_a_narrow_window() {
     assert!(narrow.contains(g.rule_broken), "{narrow}");
     // A view saved now keeps the freeze asked for, not what this window fits.
     let view = app
-        .create_template_from_current_state(
+        .create_view_from_current_state(
             "narrow".to_string(),
             None,
-            datui::template::MatchCriteria {
+            datui::view::MatchCriteria {
                 exact_path: None,
                 relative_path: None,
                 path_pattern: None,
@@ -19105,10 +19102,10 @@ fn test_form_field_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('s'));
     assert_eq!(
-        app.template_modal.form_focus,
-        datui::widgets::template_modal::FormFocus::Name
+        app.view_modal.form_focus,
+        datui::widgets::view_modal::FormFocus::Name
     );
-    let suggested = app.template_modal.name_input.value().to_string();
+    let suggested = app.view_modal.name_input.value().to_string();
     // The suggested name is selected; End keeps it so typing extends it.
     press(&mut app, KeyCode::End);
     for c in " by a".chars() {
@@ -19119,20 +19116,20 @@ fn test_form_field_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
     }
 
     press_ctrl(&mut app, 'u');
-    assert_eq!(app.template_modal.name_input.value(), " by a");
-    assert_eq!(app.template_modal.name_input.cursor(), 0);
+    assert_eq!(app.view_modal.name_input.value(), " by a");
+    assert_eq!(app.view_modal.name_input.cursor(), 0);
 
     press_ctrl(&mut app, 'z');
     assert_eq!(
-        app.template_modal.name_input.value(),
+        app.view_modal.name_input.value(),
         format!("{suggested} by a")
     );
 
     // Esc discards the form, so the test saves nothing.
     press(&mut app, KeyCode::Esc);
     assert_eq!(
-        app.template_modal.mode,
-        datui::widgets::template_modal::TemplateModalMode::List
+        app.view_modal.mode,
+        datui::widgets::view_modal::ViewModalMode::List
     );
 }
 
@@ -19226,7 +19223,7 @@ fn long_csv(scale: i64) -> String {
 fn view_and_steps_on_the_next_file(
     name: &str,
     steps: &[AppEvent],
-) -> (datui::Template, DataFrame, DataFrame) {
+) -> (datui::SavedView, DataFrame, DataFrame) {
     let next_path = common::fixture_dir().join(format!("{name}_next.csv"));
     let run = |app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>| {
         for step in steps {
@@ -19251,11 +19248,11 @@ fn view_and_steps_on_the_next_file(
         OpenOptions::default(),
     );
     run(&mut app, &rx, &tx);
-    let template = app
-        .create_template_from_current_state(
+    let view = app
+        .create_view_from_current_state(
             name.to_string(),
             None,
-            datui::template::MatchCriteria {
+            datui::view::MatchCriteria {
                 exact_path: Some(next_path.clone()),
                 relative_path: None,
                 path_pattern: None,
@@ -19272,7 +19269,7 @@ fn view_and_steps_on_the_next_file(
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
-    (template, shown(&app), expected)
+    (view, shown(&app), expected)
 }
 
 /// A view saved after a query, a filter and then a pivot replays all three: the pivot
@@ -19296,16 +19293,12 @@ fn test_a_view_replays_the_query_before_the_pivot() {
             sort_columns: None,
         }),
     ];
-    let (template, applied, expected) = view_and_steps_on_the_next_file("view_query_pivot", &steps);
+    let (view, applied, expected) = view_and_steps_on_the_next_file("view_query_pivot", &steps);
 
-    let source = template
-        .settings
-        .reshape_source
-        .as_ref()
-        .expect("the source");
+    let source = view.settings.reshape_source.as_ref().expect("the source");
     assert!(source.sql_query.is_some());
     assert_eq!(source.filters.len(), 1);
-    assert_eq!(template.settings.sql_query, None);
+    assert_eq!(view.settings.sql_query, None);
     assert_eq!(expected.height(), 4, "ids 4..7");
     assert!(
         applied.equals_missing(&expected),
@@ -19329,9 +19322,9 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
         }),
         AppEvent::SqlSearch("SELECT id, k2 FROM df WHERE k1 > 12".to_string()),
     ];
-    let (template, applied, expected) = view_and_steps_on_the_next_file("view_pivot_sql", &steps);
+    let (view, applied, expected) = view_and_steps_on_the_next_file("view_pivot_sql", &steps);
 
-    assert!(template.settings.reshape_source.is_none());
+    assert!(view.settings.reshape_source.is_none());
     assert_eq!(expected.height(), 5, "ids 5..9");
     assert!(
         applied.equals_missing(&expected),
@@ -19353,9 +19346,9 @@ fn test_a_view_replays_the_query_before_the_melt() {
             value_name: "value".to_string(),
         }),
     ];
-    let (template, applied, expected) = view_and_steps_on_the_next_file("view_query_melt", &steps);
+    let (view, applied, expected) = view_and_steps_on_the_next_file("view_query_melt", &steps);
 
-    assert!(template.settings.reshape_source.is_some());
+    assert!(view.settings.reshape_source.is_some());
     assert_eq!(expected.height(), 12, "six rows, two columns each");
     assert!(
         applied.equals_missing(&expected),
@@ -19399,11 +19392,11 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
         let state = app.data_table_state.as_ref().unwrap();
         assert!(state.error().is_none(), "{:?}", state.error());
     }
-    let template = app
-        .create_template_from_current_state(
+    let view = app
+        .create_view_from_current_state(
             "view_pivot_melt".to_string(),
             None,
-            datui::template::MatchCriteria {
+            datui::view::MatchCriteria {
                 exact_path: Some(next_path.clone()),
                 relative_path: None,
                 path_pattern: None,
@@ -19414,8 +19407,8 @@ fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
             },
         )
         .unwrap();
-    assert!(template.settings.melt.is_some());
-    assert!(template.settings.reshape_source.is_none());
+    assert!(view.settings.melt.is_some());
+    assert!(view.settings.reshape_source.is_none());
 
     pump_open_until_loaded(&mut app, &rx, vec![next_path], OpenOptions::default());
     pump_until_idle(&mut app, &rx, &tx);

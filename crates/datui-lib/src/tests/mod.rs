@@ -4007,7 +4007,7 @@ mod quality_sample_tests;
 
 mod chart_prepare_tests;
 
-mod template_rollback_tests;
+mod view_rollback_tests;
 
 #[cfg(feature = "sql")]
 mod view_matching_tests;

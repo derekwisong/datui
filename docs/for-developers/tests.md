@@ -172,7 +172,7 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | `tests/quality_bench_test.rs` | Data Quality's cost: time, requests, bytes, peak memory and spill. Ignored; `scripts/dev/quality_bench.py BEFORE_REF` runs it here and at an earlier commit |
 | `tests/statistics_test.rs`, `tests/distribution_detection_test.rs` | Analysis |
 | `tests/pivot_melt_backend_test.rs` | Reshaping |
-| `tests/template_test.rs` | Templates and their scoring |
+| `tests/view_store_test.rs` | Saved views on disk and their scoring |
 | `tests/home_test.rs`, `tests/search_test.rs`, `tests/locality_test.rs` | Home screen, recursive search, filesystem detection |
 | `tests/config_test.rs`, `tests/config_integration_test.rs`, `tests/theme_application_test.rs` | Configuration and themes |
 | `tests/startup_test.rs` | The binary in a pseudo-terminal (Linux): a silent terminal, stalled settings, keys typed before the app exists, startup errors |

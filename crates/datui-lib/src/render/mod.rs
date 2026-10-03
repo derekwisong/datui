@@ -12,5 +12,5 @@ pub mod main_view;
 pub mod main_view_render;
 pub mod overlays;
 pub mod sort_filter_sidebar;
-pub mod template_sidebar;
 pub mod value_counts_view;
+pub mod view_sidebar;

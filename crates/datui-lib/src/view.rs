@@ -61,7 +61,7 @@ mod time_serde {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Template {
+pub struct SavedView {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
@@ -75,7 +75,7 @@ pub struct Template {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_matched_file: Option<PathBuf>,
     pub match_criteria: MatchCriteria,
-    pub settings: TemplateSettings,
+    pub settings: ViewSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,7 +129,7 @@ fn unmangled_url(path: &Path) -> Option<PathBuf> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TemplateSettings {
+pub struct ViewSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,7 +162,7 @@ pub struct TemplateSettings {
     pub reshape_source: Option<ReshapeSource>,
 }
 
-impl TemplateSettings {
+impl ViewSettings {
     /// The per-column directions this template's sort runs. A template saved before
     /// per-column directions existed has none; `sort_ascending` then covers all.
     pub fn sort_directions(&self) -> Vec<bool> {
@@ -175,16 +175,16 @@ impl TemplateSettings {
 }
 
 #[derive(Debug, Clone)]
-pub struct BrokenTemplate {
+pub struct BrokenView {
     pub filename: String,
     pub error: String,
 }
 
-pub struct TemplateManager {
+pub struct ViewManager {
     config: ConfigManager,
-    templates: Vec<Template>,
-    pub(crate) templates_dir: PathBuf,
-    pub broken_templates: Vec<BrokenTemplate>,
+    views: Vec<SavedView>,
+    pub(crate) views_dir: PathBuf,
+    pub broken_views: Vec<BrokenView>,
 }
 
 /// The saved views, read on a worker from the moment `run` starts.
@@ -195,19 +195,19 @@ pub struct TemplateManager {
 /// auto-apply meet it there) or the views list opens, so the first use waits for the
 /// read if it is still going — a view the user asked for is never skipped by rows
 /// shown without it. Derefs to the [`TemplateManager`].
-pub struct Templates {
-    ready: std::cell::OnceCell<TemplateManager>,
-    pending: std::cell::RefCell<Option<std::sync::mpsc::Receiver<TemplateManager>>>,
+pub struct Views {
+    ready: std::cell::OnceCell<ViewManager>,
+    pending: std::cell::RefCell<Option<std::sync::mpsc::Receiver<ViewManager>>>,
 }
 
-impl Templates {
+impl Views {
     /// Start reading the views on a worker.
     pub fn read_in_background() -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let pending = std::thread::Builder::new()
             .name("datui-views".into())
             .spawn(move || {
-                let _ = tx.send(TemplateManager::load_or_empty());
+                let _ = tx.send(ViewManager::load_or_empty());
             })
             .map(|_| rx)
             .ok();
@@ -220,7 +220,7 @@ impl Templates {
     /// Views that arrive on `rx` whenever the test sends them: a reader as slow as the
     /// test likes.
     #[cfg(test)]
-    pub(crate) fn waiting_on(rx: std::sync::mpsc::Receiver<TemplateManager>) -> Self {
+    pub(crate) fn waiting_on(rx: std::sync::mpsc::Receiver<ViewManager>) -> Self {
         Self {
             ready: std::cell::OnceCell::new(),
             pending: std::cell::RefCell::new(Some(rx)),
@@ -233,20 +233,20 @@ impl Templates {
         self.ready.get().is_some()
     }
 
-    fn manager(&self) -> &TemplateManager {
+    fn manager(&self) -> &ViewManager {
         self.ready.get_or_init(|| {
             self.pending
                 .borrow_mut()
                 .take()
                 .and_then(|rx| rx.recv().ok())
                 // No worker, or it died: read them here rather than go without.
-                .unwrap_or_else(TemplateManager::load_or_empty)
+                .unwrap_or_else(ViewManager::load_or_empty)
         })
     }
 }
 
-impl From<TemplateManager> for Templates {
-    fn from(manager: TemplateManager) -> Self {
+impl From<ViewManager> for Views {
+    fn from(manager: ViewManager) -> Self {
         Self {
             ready: std::cell::OnceCell::from(manager),
             pending: std::cell::RefCell::new(None),
@@ -254,22 +254,22 @@ impl From<TemplateManager> for Templates {
     }
 }
 
-impl std::ops::Deref for Templates {
-    type Target = TemplateManager;
+impl std::ops::Deref for Views {
+    type Target = ViewManager;
 
-    fn deref(&self) -> &TemplateManager {
+    fn deref(&self) -> &ViewManager {
         self.manager()
     }
 }
 
-impl std::ops::DerefMut for Templates {
-    fn deref_mut(&mut self) -> &mut TemplateManager {
+impl std::ops::DerefMut for Views {
+    fn deref_mut(&mut self) -> &mut ViewManager {
         self.manager();
         self.ready.get_mut().expect("read just now")
     }
 }
 
-impl TemplateManager {
+impl ViewManager {
     /// The views in the config directory, or none: a directory that cannot be read
     /// falls back to a temporary one, as the app always has, so startup never fails
     /// on it.
@@ -290,18 +290,18 @@ impl TemplateManager {
     pub fn new(config: &ConfigManager) -> Result<Self> {
         // Don't create directories on startup - be sensitive to constrained environments
         // Directories will be created lazily when actually needed (e.g., saving templates)
-        let templates_dir = config.config_dir().join("templates");
+        let views_dir = config.config_dir().join("templates");
 
         let mut manager = Self {
             config: config.clone(),
-            templates: Vec::new(),
-            templates_dir,
-            broken_templates: Vec::new(),
+            views: Vec::new(),
+            views_dir,
+            broken_views: Vec::new(),
         };
 
         // Only try to load templates if the directory exists
         // Don't create it if it doesn't exist
-        manager.load_templates()?;
+        manager.load_views()?;
         Ok(manager)
     }
 
@@ -310,22 +310,22 @@ impl TemplateManager {
     pub fn empty(config: &ConfigManager) -> Self {
         Self {
             config: config.clone(),
-            templates: Vec::new(),
-            templates_dir: config.config_dir().join("templates"),
-            broken_templates: Vec::new(),
+            views: Vec::new(),
+            views_dir: config.config_dir().join("templates"),
+            broken_views: Vec::new(),
         }
     }
 
-    pub fn load_templates(&mut self) -> Result<()> {
-        self.templates.clear();
-        self.broken_templates.clear();
+    pub fn load_views(&mut self) -> Result<()> {
+        self.views.clear();
+        self.broken_views.clear();
 
         // Load all template files
-        if !self.templates_dir.exists() {
+        if !self.views_dir.exists() {
             return Ok(());
         }
 
-        let entries = fs::read_dir(&self.templates_dir)?;
+        let entries = fs::read_dir(&self.views_dir)?;
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
@@ -334,10 +334,10 @@ impl TemplateManager {
                 && path.extension().and_then(|s| s.to_str()) == Some("json")
                 && let Ok(content) = fs::read_to_string(&path)
             {
-                match serde_json::from_str::<Template>(&content) {
-                    Ok(mut template) => {
-                        template.match_criteria.unmangle_urls();
-                        self.templates.push(template);
+                match serde_json::from_str::<SavedView>(&content) {
+                    Ok(mut view) => {
+                        view.match_criteria.unmangle_urls();
+                        self.views.push(view);
                     }
                     Err(e) => {
                         let filename = path
@@ -345,7 +345,7 @@ impl TemplateManager {
                             .and_then(|s| s.to_str())
                             .unwrap_or("unknown")
                             .to_string();
-                        self.broken_templates.push(BrokenTemplate {
+                        self.broken_views.push(BrokenView {
                             filename,
                             error: e.to_string(),
                         });
@@ -357,17 +357,17 @@ impl TemplateManager {
         Ok(())
     }
 
-    fn template_path(&self, id: &str) -> PathBuf {
-        self.templates_dir.join(format!("template_{id}.json"))
+    fn view_path(&self, id: &str) -> PathBuf {
+        self.views_dir.join(format!("template_{id}.json"))
     }
 
     /// Run `work` holding the views' lock, which every write and delete takes, so
     /// another instance cannot land between reading a view and writing it back.
     fn locked<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
         self.config.ensure_config_dir()?;
-        fs::create_dir_all(&self.templates_dir)?;
+        fs::create_dir_all(&self.views_dir)?;
         let lock = crate::cache::lock_file(
-            &self.templates_dir.join("views.lock"),
+            &self.views_dir.join("views.lock"),
             std::time::Duration::from_secs(2),
         )?
         .ok_or_else(|| color_eyre::eyre::eyre!("another datui is saving views; try again"))?;
@@ -378,31 +378,31 @@ impl TemplateManager {
 
     /// The view as stored now, `None` when it is gone (deleted, perhaps by another
     /// instance). A file that does not parse is an error: it is not ours to replace.
-    fn read_stored(&self, id: &str) -> Result<Option<Template>> {
-        let text = match fs::read_to_string(self.template_path(id)) {
+    fn read_stored(&self, id: &str) -> Result<Option<SavedView>> {
+        let text = match fs::read_to_string(self.view_path(id)) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        let mut template: Template = serde_json::from_str(&text)?;
-        template.match_criteria.unmangle_urls();
-        Ok(Some(template))
+        let mut view: SavedView = serde_json::from_str(&text)?;
+        view.match_criteria.unmangle_urls();
+        Ok(Some(view))
     }
 
-    fn write_stored(&self, template: &Template) -> Result<()> {
-        let json = serde_json::to_string_pretty(template)?;
-        crate::cache::atomic_write(&self.template_path(&template.id), json.as_bytes())?;
+    fn write_stored(&self, view: &SavedView) -> Result<()> {
+        let json = serde_json::to_string_pretty(view)?;
+        crate::cache::atomic_write(&self.view_path(&view.id), json.as_bytes())?;
         Ok(())
     }
 
     /// Write `template` as it is, under the lock and by rename: a crash or a reader
     /// mid-write never meets a half-written view.
-    pub fn save_template(&self, template: &Template) -> Result<()> {
-        self.locked(|| self.write_stored(template))
+    pub fn save_view(&self, view: &SavedView) -> Result<()> {
+        self.locked(|| self.write_stored(view))
     }
 
-    pub fn delete_template(&mut self, id: &str) -> Result<()> {
-        let file_path = self.template_path(id);
+    pub fn delete_view(&mut self, id: &str) -> Result<()> {
+        let file_path = self.view_path(id);
         if file_path.exists() {
             self.locked(|| match fs::remove_file(&file_path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
@@ -410,7 +410,7 @@ impl TemplateManager {
             })?;
         }
 
-        self.templates.retain(|t| t.id != id);
+        self.views.retain(|t| t.id != id);
         Ok(())
     }
 
@@ -433,28 +433,28 @@ impl TemplateManager {
     }
 
     /// Replace this instance's copy of a view with the stored one, or drop it.
-    fn adopt(&mut self, id: &str, stored: Option<Template>) {
+    fn adopt(&mut self, id: &str, stored: Option<SavedView>) {
         match stored {
-            Some(stored) => match self.templates.iter_mut().find(|t| t.id == id) {
+            Some(stored) => match self.views.iter_mut().find(|t| t.id == id) {
                 Some(existing) => *existing = stored,
-                None => self.templates.push(stored),
+                None => self.views.push(stored),
             },
-            None => self.templates.retain(|t| t.id != id),
+            None => self.views.retain(|t| t.id != id),
         }
     }
 
-    pub fn find_relevant_templates<'a>(
+    pub fn find_relevant_views<'a>(
         &self,
         dataset: impl Into<Dataset<'a>>,
         schema: &Schema,
-    ) -> Vec<(Template, f64)> {
+    ) -> Vec<(SavedView, f64)> {
         let dataset = dataset.into();
-        let mut results: Vec<(Template, f64)> = self
-            .templates
+        let mut results: Vec<(SavedView, f64)> = self
+            .views
             .iter()
-            .map(|template| {
-                let score = calculate_relevance(template, dataset, schema);
-                (template.clone(), score)
+            .map(|view| {
+                let score = calculate_relevance(view, dataset, schema);
+                (view.clone(), score)
             })
             .collect();
 
@@ -472,13 +472,13 @@ impl TemplateManager {
         &self,
         dataset: impl Into<Dataset<'a>>,
         schema: &Schema,
-    ) -> Option<(Template, MatchReason)> {
+    ) -> Option<(SavedView, MatchReason)> {
         let dataset = dataset.into();
-        self.find_relevant_templates(dataset, schema)
+        self.find_relevant_views(dataset, schema)
             .into_iter()
-            .find_map(|(template, _)| {
-                let reason = match_reason(&template, dataset, schema)?;
-                Some((template, reason))
+            .find_map(|(view, _)| {
+                let reason = match_reason(&view, dataset, schema)?;
+                Some((view, reason))
             })
     }
 
@@ -495,38 +495,38 @@ impl TemplateManager {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "view".to_string());
 
-        if !self.template_exists(&base) {
+        if !self.view_exists(&base) {
             return base;
         }
         (2..)
             .map(|n| format!("{base} {n}"))
-            .find(|name| !self.template_exists(name))
+            .find(|name| !self.view_exists(name))
             .expect("some numbered name is free")
     }
 
-    pub fn template_exists(&self, name: &str) -> bool {
-        self.templates.iter().any(|t| t.name == name)
+    pub fn view_exists(&self, name: &str) -> bool {
+        self.views.iter().any(|t| t.name == name)
     }
 
-    pub fn get_template_by_name(&self, name: &str) -> Option<&Template> {
-        self.templates.iter().find(|t| t.name == name)
+    pub fn get_view_by_name(&self, name: &str) -> Option<&SavedView> {
+        self.views.iter().find(|t| t.name == name)
     }
 
-    pub fn get_template_by_id(&self, id: &str) -> Option<&Template> {
-        self.templates.iter().find(|t| t.id == id)
+    pub fn get_view_by_id(&self, id: &str) -> Option<&SavedView> {
+        self.views.iter().find(|t| t.id == id)
     }
 
-    pub fn all_templates(&self) -> &[Template] {
-        &self.templates
+    pub fn all_views(&self) -> &[SavedView] {
+        &self.views
     }
 
-    pub fn create_template(
+    pub fn create_view(
         &mut self,
         name: String,
         description: Option<String>,
         match_criteria: MatchCriteria,
-        settings: TemplateSettings,
-    ) -> Result<Template> {
+        settings: ViewSettings,
+    ) -> Result<SavedView> {
         // Generate unique ID based on name and timestamp
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
@@ -537,7 +537,7 @@ impl TemplateManager {
             .hash(&mut hasher);
         let id = format!("{:016x}", hasher.finish());
 
-        let template = Template {
+        let view = SavedView {
             id,
             name,
             description,
@@ -550,20 +550,20 @@ impl TemplateManager {
         };
 
         // Save the template
-        self.save_template(&template)?;
+        self.save_view(&view)?;
 
         // Reload templates to include the new one
-        self.load_templates()?;
+        self.load_views()?;
 
-        Ok(template)
+        Ok(view)
     }
 
     /// Save an edit of a view. Only what the edit changed from this instance's copy
     /// is written, over the view as stored now, so another instance's edit to other
     /// fields and its usage counts survive. A view deleted elsewhere is not brought
     /// back: that is an error, and the view leaves this instance too.
-    pub fn update_template(&mut self, edited: &Template) -> Result<()> {
-        let base = self.get_template_by_id(&edited.id).cloned();
+    pub fn update_view(&mut self, edited: &SavedView) -> Result<()> {
+        let base = self.get_view_by_id(&edited.id).cloned();
         let stored = self.locked(|| {
             let Some(mut stored) = self.read_stored(&edited.id)? else {
                 return Ok(None);
@@ -583,11 +583,11 @@ impl TemplateManager {
         Ok(())
     }
 
-    pub fn remove_all_templates(&mut self) -> Result<()> {
+    pub fn remove_all_views(&mut self) -> Result<()> {
         // Delete all template files
-        if self.templates_dir.exists() {
+        if self.views_dir.exists() {
             self.locked(|| {
-                for entry in fs::read_dir(&self.templates_dir)? {
+                for entry in fs::read_dir(&self.views_dir)? {
                     let entry = entry?;
                     let path = entry.path();
                     if path.is_file()
@@ -605,7 +605,7 @@ impl TemplateManager {
         }
 
         // Clear in-memory list
-        self.templates.clear();
+        self.views.clear();
 
         Ok(())
     }
@@ -613,7 +613,7 @@ impl TemplateManager {
 
 /// Apply to `stored` the fields `edited` changed from `base`, the copy the edit began
 /// from. Without a base every edited field is taken. Usage is never an edit.
-fn merge_edit(stored: &mut Template, base: Option<&Template>, edited: &Template) {
+fn merge_edit(stored: &mut SavedView, base: Option<&SavedView>, edited: &SavedView) {
     fn changed<T: Serialize>(base: Option<&T>, edited: &T) -> bool {
         base.is_none_or(|base| serde_json::to_value(base).ok() != serde_json::to_value(edited).ok())
     }
@@ -819,11 +819,11 @@ pub fn filename_pattern_matches<'a>(
 /// relevance score, which also carries usage and recency and so is never zero
 /// for a template that has been used — a ranking, not a claim of fit.
 pub fn criteria_match<'a>(
-    template: &Template,
+    view: &SavedView,
     dataset: impl Into<Dataset<'a>>,
     schema: &Schema,
 ) -> bool {
-    match_reason(template, dataset, schema).is_some()
+    match_reason(view, dataset, schema).is_some()
 }
 
 /// The strongest criterion of the template's that fits this file, or None when
@@ -831,12 +831,12 @@ pub fn criteria_match<'a>(
 /// place so the list's "why it matches" annotation can never disagree with
 /// what `V` and auto-apply do.
 pub fn match_reason<'a>(
-    template: &Template,
+    view: &SavedView,
     dataset: impl Into<Dataset<'a>>,
     schema: &Schema,
 ) -> Option<MatchReason> {
     let dataset = dataset.into();
-    let criteria = &template.match_criteria;
+    let criteria = &view.match_criteria;
     if exact_path_matches(criteria, dataset) || relative_path_matches(criteria, dataset) {
         return Some(MatchReason::SameFile);
     }
@@ -854,14 +854,14 @@ pub fn match_reason<'a>(
     None
 }
 
-fn calculate_relevance(template: &Template, dataset: Dataset<'_>, schema: &Schema) -> f64 {
+fn calculate_relevance(view: &SavedView, dataset: Dataset<'_>, schema: &Schema) -> f64 {
     let mut score = 0.0;
 
-    let exact_path_match = exact_path_matches(&template.match_criteria, dataset);
-    let relative_path_match = relative_path_matches(&template.match_criteria, dataset);
+    let exact_path_match = exact_path_matches(&view.match_criteria, dataset);
+    let relative_path_match = relative_path_matches(&view.match_criteria, dataset);
 
     // Check for exact schema match
-    let exact_schema_match = if let Some(required_cols) = &template.match_criteria.schema_columns {
+    let exact_schema_match = if let Some(required_cols) = &view.match_criteria.schema_columns {
         let file_cols: HashSet<&str> = schema.iter_names().map(|s| s.as_str()).collect();
         let required_cols_set: HashSet<&str> = required_cols.iter().map(|s| s.as_str()).collect();
 
@@ -898,23 +898,23 @@ fn calculate_relevance(template: &Template, dataset: Dataset<'_>, schema: &Schem
 
     // For non-exact matches, sum components
     // Path pattern match
-    if let Some(pattern) = &template.match_criteria.path_pattern
-        && path_pattern_matches(&template.match_criteria, dataset)
+    if let Some(pattern) = &view.match_criteria.path_pattern
+        && path_pattern_matches(&view.match_criteria, dataset)
     {
         score += 50.0;
         score += pattern_specificity_bonus(pattern);
     }
 
     // Filename pattern match
-    if let Some(pattern) = &template.match_criteria.filename_pattern
-        && filename_pattern_matches(&template.match_criteria, dataset)
+    if let Some(pattern) = &view.match_criteria.filename_pattern
+        && filename_pattern_matches(&view.match_criteria, dataset)
     {
         score += 30.0;
         score += pattern_specificity_bonus(pattern);
     }
 
     // Partial schema matching (only if not exact match)
-    if let Some(required_cols) = &template.match_criteria.schema_columns {
+    if let Some(required_cols) = &view.match_criteria.schema_columns {
         let file_cols: HashSet<&str> = schema.iter_names().map(|s| s.as_str()).collect();
         let matching_count = required_cols
             .iter()
@@ -927,8 +927,8 @@ fn calculate_relevance(template: &Template, dataset: Dataset<'_>, schema: &Schem
     }
 
     // Usage statistics
-    score += (template.usage_count.min(10) as f64) * 1.0;
-    if let Some(last_used) = template.last_used
+    score += (view.usage_count.min(10) as f64) * 1.0;
+    if let Some(last_used) = view.last_used
         && let Ok(duration) = SystemTime::now().duration_since(last_used)
     {
         let days_since = duration.as_secs() / 86400;
@@ -1017,7 +1017,7 @@ mod tests {
             "column_order": ["a", "b"],
             "locked_columns_count": 0
         }"#;
-        let settings: TemplateSettings = serde_json::from_str(json).unwrap();
+        let settings: ViewSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.query, Some("select a".to_string()));
         assert_eq!(settings.sql_query, None);
         assert_eq!(settings.fuzzy_query, None);
@@ -1028,7 +1028,7 @@ mod tests {
     /// a view without one reads the same to an older datui.
     #[test]
     fn test_reshape_source_is_written_only_when_present() {
-        let mut settings = a_template("t", no_criteria()).settings;
+        let mut settings = a_view("t", no_criteria()).settings;
         let json = serde_json::to_string(&settings).unwrap();
         assert!(!json.contains("reshape_source"), "{json}");
 
@@ -1041,15 +1041,15 @@ mod tests {
             json.contains(r#""reshape_source":{"sql_query":"SELECT * FROM df"}"#),
             "{json}"
         );
-        let back: TemplateSettings = serde_json::from_str(&json).unwrap();
+        let back: ViewSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(
             back.reshape_source.and_then(|s| s.sql_query).as_deref(),
             Some("SELECT * FROM df")
         );
     }
 
-    fn a_template(name: &str, criteria: MatchCriteria) -> Template {
-        Template {
+    fn a_view(name: &str, criteria: MatchCriteria) -> SavedView {
+        SavedView {
             id: name.to_string(),
             name: name.to_string(),
             description: None,
@@ -1058,7 +1058,7 @@ mod tests {
             usage_count: 10,
             last_matched_file: None,
             match_criteria: criteria,
-            settings: TemplateSettings {
+            settings: ViewSettings {
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -1097,7 +1097,7 @@ mod tests {
             path: url,
             table: Some(table),
         };
-        let view = a_template(
+        let view = a_view(
             "orders",
             MatchCriteria {
                 exact_path: Some(url.to_path_buf()),
@@ -1117,7 +1117,7 @@ mod tests {
             on("customers")
         ));
 
-        let older = a_template(
+        let older = a_view(
             "older",
             MatchCriteria {
                 exact_path: Some(url.to_path_buf()),
@@ -1156,7 +1156,7 @@ mod tests {
         let schema = Schema::from_iter([("a".into(), DataType::Int64)]);
         let path = Path::new("/data/other.parquet");
 
-        let unrelated = a_template(
+        let unrelated = a_view(
             "well used, fits nothing",
             MatchCriteria {
                 filename_pattern: Some("sales_*.csv".to_string()),
@@ -1166,7 +1166,7 @@ mod tests {
         assert!(!criteria_match(&unrelated, path, &schema));
         assert!(calculate_relevance(&unrelated, path.into(), &schema) > 0.0);
 
-        let fits = a_template(
+        let fits = a_view(
             "fits by schema",
             MatchCriteria {
                 schema_columns: Some(vec!["a".to_string()]),
@@ -1183,7 +1183,7 @@ mod tests {
         use polars::prelude::DataType;
         let schema = Schema::from_iter([("a".into(), DataType::Int64)]);
         let stdin = Path::new(crate::stdin::PATH);
-        let by_path = a_template(
+        let by_path = a_view(
             "every path",
             MatchCriteria {
                 exact_path: Some(PathBuf::from("-")),
@@ -1195,7 +1195,7 @@ mod tests {
         );
         assert_eq!(match_reason(&by_path, stdin, &schema), None);
         assert!(calculate_relevance(&by_path, stdin.into(), &schema) < 50.0);
-        let by_schema = a_template(
+        let by_schema = a_view(
             "by schema",
             MatchCriteria {
                 schema_columns: Some(vec!["a".to_string()]),
@@ -1217,21 +1217,17 @@ mod tests {
             ("a".into(), DataType::Int64),
             ("b".into(), DataType::String),
         ]);
-        let template = a_template(
+        let view = a_view(
             "wants a and b",
             MatchCriteria {
                 schema_columns: Some(vec!["a".into(), "b".into()]),
                 ..no_criteria()
             },
         );
-        assert!(criteria_match(&template, Path::new("/x.parquet"), &schema));
+        assert!(criteria_match(&view, Path::new("/x.parquet"), &schema));
 
         let narrower = Schema::from_iter([("a".into(), DataType::Int64)]);
-        assert!(!criteria_match(
-            &template,
-            Path::new("/x.parquet"),
-            &narrower
-        ));
+        assert!(!criteria_match(&view, Path::new("/x.parquet"), &narrower));
     }
 
     #[test]
@@ -1255,7 +1251,7 @@ mod tests {
         let schema = Schema::from_iter([("a".into(), DataType::Int64)]);
         let path = Path::new("/data/sales_2024.csv");
 
-        let by_path = a_template(
+        let by_path = a_view(
             "by path",
             MatchCriteria {
                 exact_path: Some(path.to_path_buf()),
@@ -1269,7 +1265,7 @@ mod tests {
             Some(MatchReason::SameFile)
         );
 
-        let by_schema = a_template(
+        let by_schema = a_view(
             "by schema",
             MatchCriteria {
                 schema_columns: Some(vec!["a".into()]),
@@ -1282,7 +1278,7 @@ mod tests {
             Some(MatchReason::SameColumns)
         );
 
-        let by_pattern = a_template(
+        let by_pattern = a_view(
             "by pattern",
             MatchCriteria {
                 filename_pattern: Some("sales_*.csv".into()),
@@ -1294,7 +1290,7 @@ mod tests {
             Some(MatchReason::Glob)
         );
 
-        let fits_nothing = a_template(
+        let fits_nothing = a_view(
             "fits nothing",
             MatchCriteria {
                 filename_pattern: Some("other_*.csv".into()),
@@ -1315,7 +1311,7 @@ mod tests {
         assert_eq!(exact_location(url), url);
         assert_eq!(relative_location(url), None);
 
-        let view = a_template(
+        let view = a_view(
             "tmax",
             MatchCriteria {
                 exact_path: Some(exact_location(url)),
@@ -1354,7 +1350,7 @@ mod tests {
         assert_eq!(exact_location(opened), absolute);
         assert_eq!(relative_location(opened).as_deref(), Some("Cargo.toml"));
 
-        let by_exact = a_template(
+        let by_exact = a_view(
             "exact",
             MatchCriteria {
                 exact_path: Some(absolute.clone()),
@@ -1365,7 +1361,7 @@ mod tests {
             match_reason(&by_exact, opened, &schema),
             Some(MatchReason::SameFile)
         );
-        let by_relative = a_template(
+        let by_relative = a_view(
             "relative",
             MatchCriteria {
                 relative_path: Some("Cargo.toml".into()),
@@ -1377,7 +1373,7 @@ mod tests {
             Some(MatchReason::SameFile)
         );
         // The save form suggests a pattern from the resolved directory.
-        let by_pattern = a_template(
+        let by_pattern = a_view(
             "pattern",
             MatchCriteria {
                 path_pattern: Some(format!(
@@ -1402,8 +1398,8 @@ mod tests {
     fn a_view_saved_with_a_mangled_url_loads_with_the_url() {
         let dir = tempfile::tempdir().unwrap();
         let config = ConfigManager::with_dir(dir.path().to_path_buf());
-        let templates = dir.path().join("templates");
-        fs::create_dir_all(&templates).unwrap();
+        let views = dir.path().join("templates");
+        fs::create_dir_all(&views).unwrap();
         let json = r#"{
             "id": "old",
             "name": "old",
@@ -1425,11 +1421,11 @@ mod tests {
                 "locked_columns_count": 0
             }
         }"#;
-        fs::write(templates.join("template_old.json"), json).unwrap();
+        fs::write(views.join("template_old.json"), json).unwrap();
 
-        let manager = TemplateManager::new(&config).unwrap();
-        assert!(manager.broken_templates.is_empty());
-        let view = manager.get_template_by_id("old").unwrap();
+        let manager = ViewManager::new(&config).unwrap();
+        assert!(manager.broken_views.is_empty());
+        let view = manager.get_view_by_id("old").unwrap();
         let url = "s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/";
         assert_eq!(
             view.match_criteria.exact_path.as_deref(),

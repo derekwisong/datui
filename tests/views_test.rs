@@ -5,8 +5,8 @@
 //! "no view matches" read.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::template::MatchReason;
-use datui::widgets::template_modal::{FormFocus, TemplateModalMode};
+use datui::view::MatchReason;
+use datui::widgets::view_modal::{FormFocus, ViewModalMode};
 use datui::{App, AppEvent, OpenOptions};
 use polars::prelude::*;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
@@ -46,9 +46,9 @@ fn the_views_surface_saves_applies_and_deletes() {
 
     // v opens the list.
     press(&mut app, KeyCode::Char('v'));
-    assert!(app.template_modal.active);
-    assert_eq!(app.template_modal.mode, TemplateModalMode::List);
-    assert!(app.template_modal.rows.is_empty());
+    assert!(app.view_modal.active);
+    assert_eq!(app.view_modal.mode, ViewModalMode::List);
+    assert!(app.view_modal.rows.is_empty());
 
     // An untouched table has nothing to save: s refuses instead of opening
     // the form and minting a view that carries nothing. The refusal is said
@@ -56,15 +56,15 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Char('s'));
     assert!(!app.modal_showing(), "a refusal is not a modal");
     assert!(
-        app.template_modal
+        app.view_modal
             .status
             .as_deref()
             .unwrap_or("")
             .starts_with("Nothing to save"),
         "the refusal is on the list's status line"
     );
-    assert_eq!(app.template_modal.mode, TemplateModalMode::List);
-    assert!(app.template_modal.active, "the list survives the refusal");
+    assert_eq!(app.view_modal.mode, ViewModalMode::List);
+    assert!(app.view_modal.active, "the list survives the refusal");
 
     // Give the state something to carry.
     app.data_table_state
@@ -74,35 +74,35 @@ fn the_views_surface_saves_applies_and_deletes() {
 
     // The form opens name-first, prefilled from the state, criteria folded.
     press(&mut app, KeyCode::Char('s'));
-    assert_eq!(app.template_modal.mode, TemplateModalMode::Create);
-    assert_eq!(app.template_modal.form_focus, FormFocus::Name);
+    assert_eq!(app.view_modal.mode, ViewModalMode::Create);
+    assert_eq!(app.view_modal.form_focus, FormFocus::Name);
     assert_eq!(
-        app.template_modal.name_input.value(),
+        app.view_modal.name_input.value(),
         "views_surface",
         "the suggested name is the file stem, not template0001"
     );
     assert!(
-        app.template_modal.schema_match_enabled,
+        app.view_modal.schema_match_enabled,
         "schema match starts on"
     );
     assert!(
-        !app.template_modal.matching_expanded,
+        !app.view_modal.matching_expanded,
         "the criteria start folded away"
     );
 
     // Esc discards: back to the list with nothing saved.
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.template_modal.mode, TemplateModalMode::List);
-    assert!(app.template_modal.rows.is_empty(), "Esc saved nothing");
+    assert_eq!(app.view_modal.mode, ViewModalMode::List);
+    assert!(app.view_modal.rows.is_empty(), "Esc saved nothing");
 
     // Enter saves from the name row; no Save button to Tab onto. The new
     // view lands in the list saying why it matches.
     press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.template_modal.mode, TemplateModalMode::List);
-    assert_eq!(app.template_modal.rows.len(), 1);
-    let row = &app.template_modal.rows[0];
-    assert_eq!(row.template.name, "views_surface");
+    assert_eq!(app.view_modal.mode, ViewModalMode::List);
+    assert_eq!(app.view_modal.rows.len(), 1);
+    let row = &app.view_modal.rows[0];
+    assert_eq!(row.view.name, "views_surface");
     assert_eq!(
         row.reason,
         Some(MatchReason::SameFile),
@@ -112,7 +112,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     // The next save suggests a numbered name, so Enter twice never dies on
     // "name already exists".
     press(&mut app, KeyCode::Char('s'));
-    assert_eq!(app.template_modal.name_input.value(), "views_surface 2");
+    assert_eq!(app.view_modal.name_input.value(), "views_surface 2");
     press(&mut app, KeyCode::Esc);
 
     // Editing a view that is not applied keeps what it carries: the table's
@@ -122,11 +122,11 @@ fn the_views_surface_saves_applies_and_deletes() {
         .unwrap()
         .sort_by(vec!["vs_group".to_string()], vec![false]);
     press(&mut app, KeyCode::Char('e'));
-    assert_eq!(app.template_modal.mode, TemplateModalMode::Edit);
+    assert_eq!(app.view_modal.mode, ViewModalMode::Edit);
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.template_modal.mode, TemplateModalMode::List);
+    assert_eq!(app.view_modal.mode, ViewModalMode::List);
     assert_eq!(
-        app.template_modal.rows[0].template.settings.sort_columns,
+        app.view_modal.rows[0].view.settings.sort_columns,
         vec!["vs_id".to_string()],
         "editing an unapplied view leaves its settings alone"
     );
@@ -134,7 +134,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     // Enter applies the selected view and closes the list; its rows are read in
     // the background.
     press(&mut app, KeyCode::Enter);
-    assert!(!app.template_modal.active, "apply closes the list");
+    assert!(!app.view_modal.active, "apply closes the list");
     drain_events(&mut app, &rx);
 
     // Applied, the view follows the table: adjust the sort and re-save
@@ -147,34 +147,28 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Char('e'));
     press(&mut app, KeyCode::Enter);
     assert_eq!(
-        app.template_modal.rows[0].template.settings.sort_columns,
+        app.view_modal.rows[0].view.settings.sort_columns,
         vec!["vs_group".to_string()],
         "editing the applied view updates its settings from the table"
     );
     press(&mut app, KeyCode::Esc);
-    assert!(!app.template_modal.active);
+    assert!(!app.view_modal.active);
     press(&mut app, KeyCode::Char('v'));
 
     // Esc cancels the delete confirmation and only it; Enter confirms.
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('d'));
-    assert!(app.template_modal.delete_confirm);
+    assert!(app.view_modal.delete_confirm);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.template_modal.delete_confirm);
-    assert_eq!(app.template_modal.rows.len(), 1, "cancel deletes nothing");
-    assert!(
-        app.template_modal.active,
-        "Esc closed only the confirmation"
-    );
+    assert!(!app.view_modal.delete_confirm);
+    assert_eq!(app.view_modal.rows.len(), 1, "cancel deletes nothing");
+    assert!(app.view_modal.active, "Esc closed only the confirmation");
 
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Enter);
-    assert!(
-        app.template_modal.rows.is_empty(),
-        "Enter confirms the delete"
-    );
+    assert!(app.view_modal.rows.is_empty(), "Enter confirms the delete");
     press(&mut app, KeyCode::Esc);
-    assert!(!app.template_modal.active);
+    assert!(!app.view_modal.active);
 
     // Ctrl+J saves from the description, the same as Ctrl+Enter: some
     // terminals send one as the other, so it must never delete the line being
@@ -182,7 +176,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Tab);
-    assert_eq!(app.template_modal.form_focus, FormFocus::Description);
+    assert_eq!(app.view_modal.form_focus, FormFocus::Description);
     for c in "first".chars() {
         press(&mut app, KeyCode::Char(c));
     }
@@ -204,28 +198,28 @@ fn the_views_surface_saves_applies_and_deletes() {
         KeyCode::Char('j'),
         KeyModifiers::CONTROL,
     )));
-    assert_eq!(app.template_modal.mode, TemplateModalMode::List, "saved");
-    assert_eq!(app.template_modal.rows.len(), 1);
+    assert_eq!(app.view_modal.mode, ViewModalMode::List, "saved");
+    assert_eq!(app.view_modal.rows.len(), 1);
     assert_eq!(
-        app.template_modal.rows[0].template.description.as_deref(),
+        app.view_modal.rows[0].view.description.as_deref(),
         Some("first\nsecond"),
         "the description is saved whole"
     );
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Enter);
-    assert!(app.template_modal.rows.is_empty());
+    assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
-    assert!(!app.template_modal.active);
+    assert!(!app.view_modal.active);
 
     // A view's schema criterion belongs to the view: editing it while a
     // different table is open must not swap in that table's columns.
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.template_modal.rows.len(), 1);
+    assert_eq!(app.view_modal.rows.len(), 1);
     assert_eq!(
-        app.template_modal.rows[0]
-            .template
+        app.view_modal.rows[0]
+            .view
             .match_criteria
             .schema_columns
             .as_deref(),
@@ -242,13 +236,13 @@ fn the_views_surface_saves_applies_and_deletes() {
     let other_path = other_path.canonicalize().unwrap();
     pump_open_until_loaded(&mut app, &rx, vec![other_path], OpenOptions::default());
     press(&mut app, KeyCode::Char('v'));
-    assert_eq!(app.template_modal.rows.len(), 1);
+    assert_eq!(app.view_modal.rows.len(), 1);
     press(&mut app, KeyCode::Char('e'));
-    assert_eq!(app.template_modal.mode, TemplateModalMode::Edit);
+    assert_eq!(app.view_modal.mode, ViewModalMode::Edit);
     press(&mut app, KeyCode::Enter);
     assert_eq!(
-        app.template_modal.rows[0]
-            .template
+        app.view_modal.rows[0]
+            .view
             .match_criteria
             .schema_columns
             .as_deref(),
@@ -259,7 +253,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     // Leave no view behind.
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Enter);
-    assert!(app.template_modal.rows.is_empty());
+    assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
 
     // A view saved on a logger export read with its dialect carries the names as
@@ -301,8 +295,8 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Enter);
     assert_eq!(
-        app.template_modal.rows[0]
-            .template
+        app.view_modal.rows[0]
+            .view
             .match_criteria
             .schema_columns
             .as_deref(),
@@ -317,9 +311,9 @@ fn the_views_surface_saves_applies_and_deletes() {
 
     pump_open_until_loaded(&mut app, &rx, vec![second], dialect);
     press(&mut app, KeyCode::Char('v'));
-    assert_eq!(app.template_modal.rows.len(), 1);
+    assert_eq!(app.view_modal.rows.len(), 1);
     assert_eq!(
-        app.template_modal.rows[0].reason,
+        app.view_modal.rows[0].reason,
         Some(MatchReason::SameColumns)
     );
     press(&mut app, KeyCode::Enter);
@@ -344,6 +338,6 @@ fn the_views_surface_saves_applies_and_deletes() {
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Enter);
-    assert!(app.template_modal.rows.is_empty());
+    assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
 }

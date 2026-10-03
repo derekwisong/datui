@@ -319,7 +319,7 @@ fn the_view_description_holds_several_lines() {
     h.press(KeyCode::Enter);
     h.type_str("second");
 
-    let description = &h.app.template_modal.description_input;
+    let description = &h.app.view_modal.description_input;
     assert_eq!(description.value(), "first\nsecond");
     assert_eq!(description.line_count(), 2);
     assert_eq!(description.cursor_line(), 1);
@@ -345,14 +345,14 @@ fn the_view_description_pages_through_its_lines() {
             h.press(KeyCode::Enter);
         }
     }
-    assert_eq!(h.app.template_modal.description_input.cursor_line(), 7);
+    assert_eq!(h.app.view_modal.description_input.cursor_line(), 7);
 
     h.press(KeyCode::PageUp);
-    assert_eq!(h.app.template_modal.description_input.cursor_line(), 2);
+    assert_eq!(h.app.view_modal.description_input.cursor_line(), 2);
     h.press(KeyCode::PageUp);
-    assert_eq!(h.app.template_modal.description_input.cursor_line(), 0);
+    assert_eq!(h.app.view_modal.description_input.cursor_line(), 0);
     h.press(KeyCode::PageDown);
-    assert_eq!(h.app.template_modal.description_input.cursor_line(), 5);
+    assert_eq!(h.app.view_modal.description_input.cursor_line(), 5);
 }
 
 #[test]
@@ -368,21 +368,21 @@ fn the_view_name_field_takes_text() {
     h.press(KeyCode::Char('v'));
     h.press(KeyCode::Char('s'));
     // Creating from a loaded file suggests a name; typing replaces it.
-    let suggested = h.app.template_modal.name_input.value().to_string();
+    let suggested = h.app.view_modal.name_input.value().to_string();
     assert!(!suggested.is_empty(), "a name should be suggested");
     h.type_str("by age");
 
-    assert_eq!(h.app.template_modal.name_input.value(), "by age");
-    assert_eq!(drawn(&h.app.template_modal.name_input, 20), "by age");
+    assert_eq!(h.app.view_modal.name_input.value(), "by age");
+    assert_eq!(drawn(&h.app.view_modal.name_input, 20), "by age");
 
     // Opened again, → keeps the suggestion and typing extends it.
     h.press(KeyCode::Esc);
     h.press(KeyCode::Char('s'));
-    assert_eq!(h.app.template_modal.name_input.value(), suggested);
+    assert_eq!(h.app.view_modal.name_input.value(), suggested);
     h.press(KeyCode::Right);
     h.type_str(" v2");
     assert_eq!(
-        h.app.template_modal.name_input.value(),
+        h.app.view_modal.name_input.value(),
         format!("{suggested} v2")
     );
 }

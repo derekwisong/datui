@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use datui::config::ConfigManager;
 use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-use datui::template::{MatchCriteria, TemplateManager, TemplateSettings};
+use datui::view::{MatchCriteria, ViewManager, ViewSettings};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -23,11 +23,11 @@ fn create_test_temp_dir() -> Result<PathBuf> {
 }
 
 #[test]
-fn test_template_creation() -> Result<()> {
+fn test_view_creation() -> Result<()> {
     let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
-    let mut manager = TemplateManager::new(&config)?;
+    let mut manager = ViewManager::new(&config)?;
     let match_criteria = MatchCriteria {
         exact_path: Some(PathBuf::from("/test/path.csv")),
         relative_path: None,
@@ -38,7 +38,7 @@ fn test_template_creation() -> Result<()> {
         table: None,
     };
 
-    let settings = TemplateSettings {
+    let settings = ViewSettings {
         query: Some("select a, b".to_string()),
         sql_query: None,
         fuzzy_query: None,
@@ -58,25 +58,20 @@ fn test_template_creation() -> Result<()> {
         reshape_source: None,
     };
 
-    let template = manager.create_template(
+    let view = manager.create_view(
         "test_template".to_string(),
         Some("Test description".to_string()),
         match_criteria,
         settings,
     )?;
 
-    assert_eq!(template.name, "test_template");
-    assert_eq!(template.description, Some("Test description".to_string()));
-    assert_eq!(template.usage_count, 0);
-    assert!(
-        template
-            .created
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .is_ok()
-    );
+    assert_eq!(view.name, "test_template");
+    assert_eq!(view.description, Some("Test description".to_string()));
+    assert_eq!(view.usage_count, 0);
+    assert!(view.created.duration_since(SystemTime::UNIX_EPOCH).is_ok());
 
-    manager.load_templates()?;
-    assert!(manager.template_exists("test_template"));
+    manager.load_views()?;
+    assert!(manager.view_exists("test_template"));
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -85,11 +80,11 @@ fn test_template_creation() -> Result<()> {
 }
 
 #[test]
-fn test_template_serialization() -> Result<()> {
+fn test_view_serialization() -> Result<()> {
     let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
-    let mut manager = TemplateManager::new(&config)?;
+    let mut manager = ViewManager::new(&config)?;
 
     let match_criteria = MatchCriteria {
         exact_path: Some(PathBuf::from("/test/file.csv")),
@@ -101,7 +96,7 @@ fn test_template_serialization() -> Result<()> {
         table: None,
     };
 
-    let settings = TemplateSettings {
+    let settings = ViewSettings {
         query: Some("select a".to_string()),
         sql_query: None,
         fuzzy_query: None,
@@ -116,17 +111,17 @@ fn test_template_serialization() -> Result<()> {
         reshape_source: None,
     };
 
-    let template = manager.create_template(
+    let view = manager.create_view(
         "serialization_test".to_string(),
         None,
         match_criteria,
         settings,
     )?;
 
-    manager.save_template(&template)?;
-    manager.load_templates()?;
+    manager.save_view(&view)?;
+    manager.load_views()?;
 
-    let loaded = manager.get_template_by_name("serialization_test");
+    let loaded = manager.get_view_by_name("serialization_test");
     assert!(loaded.is_some());
     let loaded = loaded.unwrap();
     assert_eq!(loaded.name, "serialization_test");
@@ -145,7 +140,7 @@ fn test_suggest_name_derives_from_state() -> Result<()> {
     let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
-    let mut manager = TemplateManager::new(&config)?;
+    let mut manager = ViewManager::new(&config)?;
     let path = PathBuf::from("/data/sales_2024.csv");
 
     assert_eq!(manager.suggest_name(Some(&path), None), "sales_2024");
@@ -159,7 +154,7 @@ fn test_suggest_name_derives_from_state() -> Result<()> {
     assert_eq!(manager.suggest_name(None, None), "view");
 
     // A taken name gets a number.
-    let settings = TemplateSettings {
+    let settings = ViewSettings {
         query: None,
         sql_query: None,
         fuzzy_query: None,
@@ -182,7 +177,7 @@ fn test_suggest_name_derives_from_state() -> Result<()> {
         schema_types: None,
         table: None,
     };
-    manager.create_template("sales_2024".to_string(), None, criteria, settings)?;
+    manager.create_view("sales_2024".to_string(), None, criteria, settings)?;
     assert_eq!(manager.suggest_name(Some(&path), None), "sales_2024 2");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -191,13 +186,13 @@ fn test_suggest_name_derives_from_state() -> Result<()> {
 }
 
 #[test]
-fn test_template_relevance_exact_path() -> Result<()> {
+fn test_view_relevance_exact_path() -> Result<()> {
     use polars::prelude::Schema;
 
     let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
-    let manager = TemplateManager::new(&config)?;
+    let manager = ViewManager::new(&config)?;
 
     let test_path = PathBuf::from("/test/exact.csv");
     let match_criteria = MatchCriteria {
@@ -210,7 +205,7 @@ fn test_template_relevance_exact_path() -> Result<()> {
         table: None,
     };
 
-    let settings = TemplateSettings {
+    let settings = ViewSettings {
         query: None,
         sql_query: None,
         fuzzy_query: None,
@@ -226,7 +221,7 @@ fn test_template_relevance_exact_path() -> Result<()> {
     };
 
     let mut manager = manager;
-    let _template = manager.create_template(
+    let _view = manager.create_view(
         "exact_path_test".to_string(),
         None,
         match_criteria,
@@ -236,7 +231,7 @@ fn test_template_relevance_exact_path() -> Result<()> {
     use polars::prelude::Field;
     let schema = Schema::from_iter([] as [Field; 0]);
 
-    let relevant = manager.find_relevant_templates(&test_path, &schema);
+    let relevant = manager.find_relevant_views(&test_path, &schema);
     assert!(!relevant.is_empty());
     assert!(relevant[0].1 >= 1000.0);
 
@@ -248,11 +243,11 @@ fn test_template_relevance_exact_path() -> Result<()> {
 
 /// Template with sql_query and fuzzy_query round-trips correctly.
 #[test]
-fn test_template_serialization_with_sql_and_fuzzy() -> Result<()> {
+fn test_view_serialization_with_sql_and_fuzzy() -> Result<()> {
     let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
-    let mut manager = TemplateManager::new(&config)?;
+    let mut manager = ViewManager::new(&config)?;
     let match_criteria = MatchCriteria {
         exact_path: Some(PathBuf::from("/test/file.csv")),
         relative_path: None,
@@ -263,7 +258,7 @@ fn test_template_serialization_with_sql_and_fuzzy() -> Result<()> {
         table: None,
     };
 
-    let settings = TemplateSettings {
+    let settings = ViewSettings {
         query: None,
         sql_query: Some("SELECT * FROM df WHERE x > 0".to_string()),
         fuzzy_query: Some("foo bar".to_string()),
@@ -278,13 +273,12 @@ fn test_template_serialization_with_sql_and_fuzzy() -> Result<()> {
         reshape_source: None,
     };
 
-    let template =
-        manager.create_template("sql_fuzzy_test".to_string(), None, match_criteria, settings)?;
+    let view = manager.create_view("sql_fuzzy_test".to_string(), None, match_criteria, settings)?;
 
-    manager.save_template(&template)?;
-    manager.load_templates()?;
+    manager.save_view(&view)?;
+    manager.load_views()?;
 
-    let loaded = manager.get_template_by_name("sql_fuzzy_test").unwrap();
+    let loaded = manager.get_view_by_name("sql_fuzzy_test").unwrap();
     assert_eq!(
         loaded.settings.sql_query,
         Some("SELECT * FROM df WHERE x > 0".to_string())
@@ -311,8 +305,8 @@ fn no_criteria() -> MatchCriteria {
     }
 }
 
-fn plain_settings() -> TemplateSettings {
-    TemplateSettings {
+fn plain_settings() -> ViewSettings {
+    ViewSettings {
         query: None,
         sql_query: None,
         fuzzy_query: None,
@@ -329,24 +323,21 @@ fn plain_settings() -> TemplateSettings {
 }
 
 /// Two instances that have both read one view, and the view's id.
-fn two_instances(dir: &std::path::Path) -> (TemplateManager, TemplateManager, String) {
+fn two_instances(dir: &std::path::Path) -> (ViewManager, ViewManager, String) {
     let config = ConfigManager::with_dir(dir.to_path_buf());
-    let mut a = TemplateManager::new(&config).unwrap();
+    let mut a = ViewManager::new(&config).unwrap();
     let id = a
-        .create_template("shared".into(), None, no_criteria(), plain_settings())
+        .create_view("shared".into(), None, no_criteria(), plain_settings())
         .unwrap()
         .id;
-    let b = TemplateManager::new(&config).unwrap();
+    let b = ViewManager::new(&config).unwrap();
     (a, b, id)
 }
 
-fn stored(dir: &std::path::Path) -> Vec<datui::template::Template> {
-    let fresh = TemplateManager::new(&ConfigManager::with_dir(dir.to_path_buf())).unwrap();
-    assert!(
-        fresh.broken_templates.is_empty(),
-        "a broken view was listed"
-    );
-    fresh.all_templates().to_vec()
+fn stored(dir: &std::path::Path) -> Vec<datui::view::SavedView> {
+    let fresh = ViewManager::new(&ConfigManager::with_dir(dir.to_path_buf())).unwrap();
+    assert!(fresh.broken_views.is_empty(), "a broken view was listed");
+    fresh.all_views().to_vec()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -360,13 +351,13 @@ enum Op {
     DeleteB,
 }
 
-fn run(op: Op, a: &mut TemplateManager, b: &mut TemplateManager, id: &str) {
+fn run(op: Op, a: &mut ViewManager, b: &mut ViewManager, id: &str) {
     let file = std::path::Path::new("/data/x.csv");
-    let edit = |m: &mut TemplateManager, change: &dyn Fn(&mut datui::template::Template)| {
-        if let Some(mut t) = m.get_template_by_id(id).cloned() {
+    let edit = |m: &mut ViewManager, change: &dyn Fn(&mut datui::view::SavedView)| {
+        if let Some(mut t) = m.get_view_by_id(id).cloned() {
             change(&mut t);
             // Fails only when the view was deleted, which the caller checks.
-            let _ = m.update_template(&t);
+            let _ = m.update_view(&t);
         }
     };
     match op {
@@ -374,7 +365,7 @@ fn run(op: Op, a: &mut TemplateManager, b: &mut TemplateManager, id: &str) {
         Op::EditB => edit(b, &|t| t.description = Some("described".into())),
         Op::ApplyA => a.record_use(id, file).unwrap(),
         Op::ApplyB => b.record_use(id, file).unwrap(),
-        Op::DeleteB => b.delete_template(id).unwrap(),
+        Op::DeleteB => b.delete_view(id).unwrap(),
     }
 }
 
@@ -436,11 +427,11 @@ fn a_view_deleted_in_one_instance_stays_deleted() {
 fn editing_a_view_deleted_elsewhere_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let (mut a, mut b, id) = two_instances(dir.path());
-    b.delete_template(&id).unwrap();
-    let mut edited = a.get_template_by_id(&id).cloned().unwrap();
+    b.delete_view(&id).unwrap();
+    let mut edited = a.get_view_by_id(&id).cloned().unwrap();
     edited.name = "renamed".into();
-    assert!(a.update_template(&edited).is_err());
-    assert!(a.get_template_by_id(&id).is_none());
+    assert!(a.update_view(&edited).is_err());
+    assert!(a.get_view_by_id(&id).is_none());
     assert!(stored(dir.path()).is_empty());
 }
 
@@ -457,10 +448,10 @@ fn a_reader_never_sees_a_broken_view() {
             let id = id.clone();
             std::thread::spawn(move || {
                 for i in 0..100 {
-                    let mut t = m.get_template_by_id(&id).cloned().unwrap();
+                    let mut t = m.get_view_by_id(&id).cloned().unwrap();
                     // A long value, so a torn write would be seen.
                     t.description = Some(format!("{n}-{i}-{}", "x".repeat(4096)));
-                    m.update_template(&t).unwrap();
+                    m.update_view(&t).unwrap();
                     m.record_use(&id, std::path::Path::new("/data/x.csv"))
                         .unwrap();
                 }
@@ -492,13 +483,13 @@ fn a_reader_never_sees_a_broken_view() {
 fn a_write_killed_before_its_rename_breaks_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (_a, _b, id) = two_instances(dir.path());
-    let templates = dir.path().join("templates");
+    let views = dir.path().join("templates");
     std::fs::write(
-        templates.join(format!("template_{id}.json.999.0.tmp")),
+        views.join(format!("template_{id}.json.999.0.tmp")),
         "{\"id\": \"half",
     )
     .unwrap();
-    let views = stored(dir.path());
-    assert_eq!(views.len(), 1);
-    assert_eq!(views[0].name, "shared");
+    let listed = stored(dir.path());
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "shared");
 }

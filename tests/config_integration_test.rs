@@ -186,7 +186,7 @@ fn test_open_flags_reach_the_options() {
         opts.dicts,
         [std::path::PathBuf::from("a.xml"), "b.dbc".into()]
     );
-    assert_eq!(opts.template.as_deref(), Some("daily"));
+    assert_eq!(opts.view.as_deref(), Some("daily"));
     assert_eq!(opts.record_size, Some(32));
     assert_eq!(opts.skip_tail_rows, Some(2));
 }

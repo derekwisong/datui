@@ -13062,6 +13062,7 @@ fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
             network_check: app.home.network_check,
             cloud: Vec::new(),
             known: Default::default(),
+            formats: Default::default(),
         }));
 
     let heading = |app: &App, dir: &Path| {
@@ -15705,10 +15706,16 @@ fn test_a_missing_named_path_is_found_on_a_worker() {
     assert_eq!(found, Some(missing));
     // A URL or a glob is the open's to judge.
     assert_eq!(
-        App::missing_named_path(&[PathBuf::from("https://example.com/x.csv")]),
+        App::missing_named_path(
+            &[PathBuf::from("https://example.com/x.csv")],
+            &Default::default()
+        ),
         None
     );
-    assert_eq!(App::missing_named_path(&[tmp.path().join("*.csv")]), None);
+    assert_eq!(
+        App::missing_named_path(&[tmp.path().join("*.csv")], &Default::default()),
+        None
+    );
 }
 
 /// Going home while a directory is being looked at is not undone when the look lands.

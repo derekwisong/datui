@@ -186,6 +186,12 @@ a type no variant names shows as `?X` when its size is known
 `datui --variant add capture.bin` opens one variant as its own table: only its
 records and its columns.
 
+On the home screen, a file a spec's glob names that holds several variants
+counts them ("2 variants" in its details). Enter opens every record; → lists
+the variants inside it, one row each at `capture.bin/add`, and Enter on one
+opens it alone. That path opens the variant on the command line too, and is
+what recents record.
+
 ## Footer
 
 ```toml

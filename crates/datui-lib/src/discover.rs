@@ -322,6 +322,15 @@ impl Holds {
 }
 
 impl Entry {
+    /// Whether Enter on this row lists the tables inside it: a file of several that is
+    /// no table itself. A file a spec reads as several variants is one table too (each
+    /// row a variant, with a `type` column), which Enter opens; → lists its variants.
+    pub fn enter_lists_tables(&self) -> bool {
+        self.kind == EntryKind::File
+            && self.cost.tables.is_some_and(|n| n > 1)
+            && self.format_spec.is_none()
+    }
+
     /// Whether the home screen leaves this row out until Ctrl+A: a file datui cannot
     /// open, or a database's own table.
     pub fn hidden_by_default(&self) -> bool {
@@ -415,8 +424,9 @@ pub struct Entry {
 /// What a row inside a file of tables says about its table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableOf {
-    /// The format of the file it is in.
-    pub format: crate::FileFormat,
+    /// The format of the file it is in; `None` for a format spec's variant, whose spec
+    /// [`Entry::format_spec`] names.
+    pub format: Option<crate::FileFormat>,
     /// What the file calls it: SQLite's `table`, `view`, `virtual` or `shadow`, or a
     /// NumPy archive's `array`.
     pub kind: String,
@@ -493,7 +503,8 @@ pub fn how_read(entry: &Entry) -> Option<HowRead> {
             entry
                 .table
                 .as_ref()
-                .map_or(crate::FileFormat::Sqlite, |t| t.format),
+                .and_then(|t| t.format)
+                .unwrap_or(crate::FileFormat::Sqlite),
         ),
         None => crate::cli::FormatChoice::Builtin(data_format(&entry.path)?),
     };
@@ -2178,6 +2189,52 @@ pub fn database_rows(file: &Path) -> Vec<Entry> {
         .collect()
 }
 
+/// The rows of a file a format spec reads as several variants, one a variant, each at
+/// its path inside the file (`day.itch/add`): opened, it is the file read with
+/// `--variant`. Empty for any other file.
+pub fn variant_rows(file: &Path, formats: &crate::formats::Registry) -> Vec<Entry> {
+    let Some((spec, tables)) = crate::members::variants(file, formats) else {
+        return Vec::new();
+    };
+    let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok();
+    tables
+        .into_iter()
+        .map(|table| variant_entry(file, &spec, table, modified))
+        .collect()
+}
+
+/// The row of a variant named by its path inside its file (`day.itch/add`), as a
+/// recent is listed: `None` when the path names no variant of such a file.
+pub fn variant_row(path: &Path, formats: &crate::formats::Registry) -> Option<Entry> {
+    let (file, name) = crate::members::split_variant(path, formats)?;
+    let (spec, tables) = crate::members::variants(&file, formats)?;
+    let table = tables.into_iter().find(|t| t.name == name)?;
+    let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+    let mut entry = variant_entry(&file, &spec, table, modified);
+    entry.path = path.to_path_buf();
+    Some(entry)
+}
+
+fn variant_entry(
+    file: &Path,
+    spec: &str,
+    table: crate::sqlite::Table,
+    modified: Option<std::time::SystemTime>,
+) -> Entry {
+    let mut entry = Entry::new(crate::members::place(file, &table.name), EntryKind::File);
+    entry.name = table.name;
+    entry.modified = modified;
+    entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
+    entry.cols = (!entry.columns.is_empty()).then_some(entry.columns.len());
+    entry.format_spec = Some(spec.to_string());
+    entry.table = Some(TableOf {
+        format: None,
+        kind: table.kind,
+        internal: false,
+    });
+    entry
+}
+
 /// The row of a table inside a file of tables named by its path (`app.db/users`), as a
 /// recent is listed: `None` when the path names no table of such a file.
 pub fn table_row(path: &Path) -> Option<Entry> {
@@ -2205,7 +2262,7 @@ fn table_entry(
     entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
     entry.cols = (!entry.columns.is_empty()).then_some(entry.columns.len());
     entry.table = Some(TableOf {
-        format,
+        format: Some(format),
         kind: table.kind,
         internal: table.internal,
     });
@@ -2409,9 +2466,9 @@ pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 /// none of these, `Some(None)` when it is and has nothing to show.
 fn table_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
     let (file, format, name) = match &entry.table {
-        Some(table) => match crate::members::split(&entry.path) {
-            Some((file, _)) => (file, table.format, Some(entry.name.as_str())),
-            None => return Some(None),
+        Some(table) => match (crate::members::split(&entry.path), table.format) {
+            (Some((file, _)), Some(format)) => (file, format, Some(entry.name.as_str())),
+            _ => return Some(None),
         },
         None if is_regular_file(&entry.path) => {
             let format = crate::members::holder(&entry.path).or_else(|| {
@@ -2584,7 +2641,7 @@ mod classification_tests {
         at("s3://b/shop.sqlite", Lazy, true);
         let mut table = Entry::for_test(Path::new("/d/shop.db/orders"), "orders");
         table.table = Some(TableOf {
-            format: crate::FileFormat::Sqlite,
+            format: Some(crate::FileFormat::Sqlite),
             kind: "table".into(),
             internal: false,
         });

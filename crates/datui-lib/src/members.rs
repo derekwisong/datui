@@ -74,6 +74,57 @@ pub fn place(file: &Path, name: &str) -> PathBuf {
 /// [`place`]: `shop.db/orders` is the table `orders` of `shop.db`, and `shop.db/a/b` the
 /// table `a/b`. `None` for a path that is there, or that is inside no such file.
 pub fn split(path: &Path) -> Option<(PathBuf, String)> {
+    split_inside(path, |file| holder(file).is_some())
+}
+
+/// The file and the variant a path inside a file of a format spec's variants names:
+/// `day.itch/add` is the variant `add` of `day.itch`, as the spec writes it. `None` for
+/// a path that is there, inside no such file, or naming no variant of it.
+pub fn split_variant(path: &Path, formats: &crate::formats::Registry) -> Option<(PathBuf, String)> {
+    if formats.is_empty() {
+        return None;
+    }
+    let (file, name) = split_inside(path, |file| formats.variants_of(file).is_some())?;
+    let (_, tables) = variants(&file, formats)?;
+    let found = tables.iter().find(|t| t.name == name).or_else(|| {
+        let mut alike = tables.iter().filter(|t| t.name.eq_ignore_ascii_case(&name));
+        match (alike.next(), alike.next()) {
+            (Some(one), None) => Some(one),
+            _ => None,
+        }
+    })?;
+    Some((file, found.name.clone()))
+}
+
+/// The variants of the records of `file`, as the format spec whose glob names it reads
+/// them, each a table: the spec's name, and its variants with their columns. `None`
+/// unless the spec reads several. Its name is all that is read.
+pub fn variants(file: &Path, formats: &crate::formats::Registry) -> Option<(String, Vec<Table>)> {
+    let spec = formats.variants_of(file)?;
+    let named = |fields: &[crate::formats::Field]| {
+        fields
+            .iter()
+            .filter_map(|f| f.name.clone())
+            .map(|name| (name, String::new()))
+            .collect::<Vec<_>>()
+    };
+    let common = named(&spec.records.fields);
+    let tables = spec
+        .records
+        .variants
+        .iter()
+        .map(|v| Table {
+            name: v.name.clone(),
+            kind: "variant".to_string(),
+            internal: false,
+            columns: common.iter().cloned().chain(named(&v.fields)).collect(),
+        })
+        .collect();
+    Some((spec.name.clone(), tables))
+}
+
+/// [`split`], for files `holds` says are files of tables.
+fn split_inside(path: &Path, holds: impl Fn(&Path) -> bool) -> Option<(PathBuf, String)> {
     // A path ending in `..` is a table so named: Windows resolves it before it looks,
     // and `app.db/..` is the directory the database is in.
     if path.file_name().is_some() && path.exists() {
@@ -86,7 +137,9 @@ pub fn split(path: &Path) -> Option<(PathBuf, String)> {
         // Windows resolves `..` before it looks, so `app.db/a/..` would be the
         // database itself and the table `b` rather than `a/../b`.
         .find(|p| p.file_name().is_some() && p.is_file())?;
-    holder(file)?;
+    if !holds(file) {
+        return None;
+    }
     // What follows the file's name, less the one separator after it, as written: a
     // parent is a prefix of the path's own text.
     let rest = path.to_str()?.strip_prefix(file.to_str()?)?;
@@ -238,6 +291,46 @@ mod tests {
         let text = dir.path().join("notes.txt");
         std::fs::write(&text, "hello").unwrap();
         assert_eq!(split(&text.join("users")), None);
+    }
+
+    #[test]
+    fn a_place_inside_a_file_of_variants_names_one() {
+        let spec = crate::formats::Spec::parse(
+            r#"name = "acme.v"
+match = { glob = ["*.v"] }
+[records]
+framing = "length_prefixed"
+size = "len"
+type = "kind"
+fields = [{ name = "len", type = "u1" }, { name = "kind", type = "u1" }]
+[[variants]]
+name = "Add"
+when = 1
+fields = [{ name = "a", type = "u1" }]
+[[variants]]
+name = "exec"
+when = 2
+fields = [{ name = "b", type = "u1" }]"#,
+            None,
+        )
+        .unwrap();
+        let formats = crate::formats::Registry::of(vec![spec]);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("day.v");
+        std::fs::write(&file, [3u8, 1, 7]).unwrap();
+        assert_eq!(
+            split_variant(&place(&file, "add"), &formats),
+            Some((file.clone(), "Add".to_string())),
+            "as the spec writes it"
+        );
+        assert_eq!(split_variant(&place(&file, "nope"), &formats), None);
+        assert_eq!(split_variant(&file, &formats), None);
+        let other = dir.path().join("day.w");
+        std::fs::write(&other, [0u8]).unwrap();
+        assert_eq!(split_variant(&place(&other, "exec"), &formats), None);
+        let (spec, tables) = variants(&file, &formats).unwrap();
+        assert_eq!(spec, "acme.v");
+        assert_eq!(tables[1].columns.len(), 3);
     }
 
     #[test]

@@ -2032,7 +2032,12 @@ fn kind_words(
         return String::new();
     }
     if let Some(table) = &entry.table {
-        return format!("sqlite {}", table.kind);
+        let of = match (&entry.format_spec, table.format) {
+            (Some(spec), _) => spec.clone(),
+            (None, Some(format)) => format.name().to_string(),
+            (None, None) => String::new(),
+        };
+        return format!("{of} {}", table.kind).trim_start().to_string();
     }
     match entry.kind {
         EntryKind::File => match crate::FileFormat::from_path(&entry.path) {
@@ -2163,7 +2168,11 @@ fn preview_head_keyed(
         None => {}
     }
     if let Some(n) = entry.cost.tables {
-        let what = if n == 1 { "table" } else { "tables" };
+        let what = match (entry.format_spec.is_some(), n == 1) {
+            (true, _) => "variants",
+            (false, true) => "table",
+            (false, false) => "tables",
+        };
         facts.push(("contains", format!("{n} {what}"), plain));
     }
     // A door that is not one table reads part of the directory: which part, and what it
@@ -2470,6 +2479,10 @@ fn render_preview(
                 && entry.rows.is_none()
                 && discover::is_parquet_path(&entry.path)
                 && app.home.enriched.contains_key(&entry.path);
+            let variants_note = format!(
+                "Enter opens every record; {} lists its variants.",
+                glyphs::get().arrow_right
+            );
             let note = match entry.kind {
                 // The door itself. It is the row the other notes point at, so it says
                 // what it does rather than where to find it.
@@ -2490,9 +2503,8 @@ fn render_preview(
                 EntryKind::Unknown if app.home.missing.contains(&entry.path) => "",
                 EntryKind::Unknown => "Not read yet.",
                 EntryKind::Other => "No reader or spec takes it; Enter shows its bytes.",
-                EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => {
-                    "Enter lists its tables."
-                }
+                EntryKind::File if entry.enter_lists_tables() => "Enter lists its tables.",
+                EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => &variants_note,
                 // The log says which files are live, and datui does not read it.
                 k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
                 k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
@@ -2511,7 +2523,10 @@ fn render_preview(
                 } else {
                     ctx.dimmed
                 };
-                lines.push(Line::from(Span::styled(note, Style::default().fg(color))));
+                lines.push(Line::from(Span::styled(
+                    note.to_string(),
+                    Style::default().fg(color),
+                )));
             }
         }
     }

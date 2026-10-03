@@ -1508,6 +1508,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
         network_check: |_| false,
         cloud: Vec::new(),
         known: Default::default(),
+        formats: Default::default(),
     };
 
     // Built on another thread entirely, then handed over.
@@ -1743,6 +1744,7 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
         network_check: |_| true,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
+        formats: Default::default(),
     });
     let mut home = HomeState {
         network_check: |_| true,
@@ -1836,6 +1838,7 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
         network_check: |_| true,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
+        formats: Default::default(),
     });
     let mut home = HomeState {
         network_check: |_| true,
@@ -1906,6 +1909,7 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
             network_check: |_| false,
             cloud: Vec::new(),
             known: cache.load_dataset_facts(),
+            formats: Default::default(),
         });
         let mut home = HomeState::default();
         home.apply_listing(listing);
@@ -1964,6 +1968,7 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
         network_check: |_| false,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
+        formats: Default::default(),
     });
     let mut home = HomeState::default();
     home.apply_listing(listing);
@@ -2064,6 +2069,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
         network_check: pretend_remote,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
+        formats: Default::default(),
     });
 
     let mut home = HomeState {
@@ -2140,6 +2146,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
         network_check: |_| false,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
+        formats: Default::default(),
     });
 
     let mut home = HomeState::default();
@@ -4007,6 +4014,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
             ..Default::default()
         }],
         known: Default::default(),
+        formats: Default::default(),
     });
 
     let titles: Vec<&str> = listing.sections.iter().map(|s| s.title.as_str()).collect();
@@ -4644,6 +4652,7 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
             network_check: |_| false,
             cloud: Vec::new(),
             known: known.into_iter().collect(),
+            formats: Default::default(),
         };
         build_listing(&request)
             .sections
@@ -7473,6 +7482,7 @@ mod catalog {
             network_check: |_| true,
             cloud: Vec::new(),
             known: Default::default(),
+            formats: Default::default(),
         });
         let recent = listing
             .sections

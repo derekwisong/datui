@@ -582,6 +582,15 @@ pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
             named = true;
         }
     }
+    // A file read as several variants is a place too: → lists them.
+    for row in rows
+        .iter_mut()
+        .filter(|r| r.kind == EntryKind::File && r.format_spec.is_some() && r.table.is_none())
+    {
+        if let Some(spec) = formats.variants_of(&row.path) {
+            row.cost.tables = Some(spec.records.variants.len());
+        }
+    }
     // Delimited text a delimited spec's glob names keeps its place and gains the name.
     for row in rows.iter_mut().filter(|r| {
         r.kind == EntryKind::File
@@ -1534,6 +1543,9 @@ pub struct ListingRequest {
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
     pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    /// The format specs on the search path: a file one reads as several variants is a
+    /// place whose rows are its variants.
+    pub formats: std::sync::Arc<crate::formats::Registry>,
 }
 
 /// What a listing pass produced.
@@ -1672,6 +1684,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         cloud,
         collections,
         known,
+        formats,
     } = request;
     let network_check = *network_check;
     // One read of the mount table for the whole listing. It is a kernel-generated
@@ -1737,7 +1750,13 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 .unwrap_or_default();
             (rows, cut_short.contains(&dir))
         } else if database {
-            (discover::database_rows(&dir), false)
+            let tables = discover::database_rows(&dir);
+            let rows = if tables.is_empty() {
+                discover::variant_rows(&dir, formats)
+            } else {
+                tables
+            };
+            (rows, false)
         } else {
             let scan = discover::scan_dir_bounded(&dir);
             (scan.entries, scan.truncated)
@@ -1829,7 +1848,12 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         .iter()
         // `exists()` stats the path, so a remote entry is taken on trust and
         // dropped later only if its probe says it is gone.
-        .filter(|p| network_check(p) || p.exists() || crate::members::split(p).is_some())
+        .filter(|p| {
+            network_check(p)
+                || p.exists()
+                || crate::members::split(p).is_some()
+                || crate::members::split_variant(p, formats).is_some()
+        })
         // No display cap. The store already bounds this, the header states the
         // count, and the section folds — an invisible limit would just hide recents
         // with nothing to say it had.
@@ -1839,6 +1863,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // its directory and `dir` under Recent.
             if let Some(known) = probed_entry(probed, p) {
                 return known;
+            }
+            if let Some(variant) = discover::variant_row(p, formats) {
+                return variant;
             }
             let mut entry = entry_for_path(p, network_check(p));
             // A dataset opened from a collection comes back under the collection's name
@@ -2580,6 +2607,7 @@ impl HomeState {
             // The synchronous path is for tests and library callers; it consults no
             // cache, so what it produces is exactly what is on disk right now.
             known: Default::default(),
+            formats: self.formats.clone(),
         };
         let listing = build_listing(&request);
         self.apply_listing(listing);

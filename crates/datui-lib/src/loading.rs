@@ -173,7 +173,11 @@ impl OpenRequest {
     /// A table inside a file of tables, as the home screen lists one (`app.db/users`,
     /// `run.npz/weights`), is the file opened with `--table`, and is recorded as the
     /// table.
-    pub(crate) fn named(mut paths: Vec<PathBuf>, mut options: OpenOptions) -> Self {
+    pub(crate) fn named(
+        mut paths: Vec<PathBuf>,
+        mut options: OpenOptions,
+        formats: &crate::formats::Registry,
+    ) -> Self {
         let first = paths[0].clone();
         let piped = stdin::is_stdin(&first);
         let local = !piped && matches!(source::input_source(&first), source::InputSource::Local(_));
@@ -191,6 +195,21 @@ impl OpenRequest {
             && crate::members::holder(&first).is_some()
         {
             table = Some(crate::members::place(&first, name));
+        } else if local
+            && paths.len() == 1
+            && options.spec_variant.is_none()
+            && let Some((file, variant)) = crate::members::split_variant(&first, formats)
+        {
+            // A variant of a file a spec reads as several, as the home screen lists it.
+            table = Some(first.clone());
+            options.spec_variant = Some(variant);
+            paths = vec![file];
+        } else if local
+            && let Some(variant) = options.spec_variant.as_deref()
+            && first.is_file()
+            && formats.variants_of(&first).is_some()
+        {
+            table = Some(crate::members::place(&first, variant));
         }
         let first = &paths[0];
         let size = if local {
@@ -2348,6 +2367,7 @@ mod tests {
         let Step::Spool { .. } = loader.open(OpenRequest::named(
             vec![PathBuf::from("-")],
             OpenOptions::default(),
+            &Default::default(),
         )) else {
             panic!("standard input is read first");
         };
@@ -2393,7 +2413,11 @@ mod tests {
         let mut header = crate::sqlite::MAGIC.to_vec();
         header.resize(512, 0);
         std::fs::write(&db, header).unwrap();
-        let request = OpenRequest::named(vec![db.join("orders")], OpenOptions::default());
+        let request = OpenRequest::named(
+            vec![db.join("orders")],
+            OpenOptions::default(),
+            &Default::default(),
+        );
         assert_eq!(request.paths, std::slice::from_ref(&db));
         assert_eq!(request.options.table.as_deref(), Some("orders"));
         assert_eq!(request.recent, Some(db.join("orders")));
@@ -2405,6 +2429,7 @@ mod tests {
                 table: Some("users".to_string()),
                 ..Default::default()
             },
+            &Default::default(),
         );
         assert_eq!(named.paths, std::slice::from_ref(&db));
         assert_eq!(
@@ -2413,7 +2438,11 @@ mod tests {
             "--table is recorded too"
         );
 
-        let plain = OpenRequest::named(vec![db.clone()], OpenOptions::default());
+        let plain = OpenRequest::named(
+            vec![db.clone()],
+            OpenOptions::default(),
+            &Default::default(),
+        );
         assert_eq!(plain.recent, Some(db));
         assert_eq!(plain.shown, None);
     }
@@ -2935,7 +2964,11 @@ mod tests {
     fn stdin_is_spooled_then_read_as_stdin() {
         let dir = tempfile::tempdir().unwrap();
         let mut loader = Loader::default();
-        let request = OpenRequest::named(vec![PathBuf::from("-")], OpenOptions::default());
+        let request = OpenRequest::named(
+            vec![PathBuf::from("-")],
+            OpenOptions::default(),
+            &Default::default(),
+        );
         assert_eq!(request.recent, None, "not recorded in recents");
         let Step::Spool { writer, read, .. } = loader.open(request) else {
             panic!("standard input is read first");
@@ -2988,9 +3021,11 @@ mod tests {
         loader.first_rows_settled();
         drop(writer);
 
-        let Step::Scan { paths, display, .. } =
-            loader.open(OpenRequest::named(vec![PathBuf::from("-")], options))
-        else {
+        let Step::Scan { paths, display, .. } = loader.open(OpenRequest::named(
+            vec![PathBuf::from("-")],
+            options,
+            &Default::default(),
+        )) else {
             panic!("the copy on hand is read again");
         };
         assert_eq!(paths, vec![at]);
@@ -3001,6 +3036,7 @@ mod tests {
         let step = loader.open(OpenRequest::named(
             vec![PathBuf::from("-"), PathBuf::from("a.csv")],
             OpenOptions::default(),
+            &Default::default(),
         ));
         assert!(matches!(step, Step::Crash(_)));
     }
@@ -3018,6 +3054,7 @@ mod tests {
         let Step::Spool { .. } = loader.open(OpenRequest::named(
             vec![PathBuf::from("-")],
             OpenOptions::default(),
+            &Default::default(),
         )) else {
             panic!("standard input is read first");
         };
@@ -3082,9 +3119,11 @@ mod tests {
         loader.first_rows_settled();
         drop(loaded);
         assert!(converted.exists(), "kept to read again");
-        let Step::Scan { paths, .. } =
-            loader.open(OpenRequest::named(vec![PathBuf::from("-")], options))
-        else {
+        let Step::Scan { paths, .. } = loader.open(OpenRequest::named(
+            vec![PathBuf::from("-")],
+            options,
+            &Default::default(),
+        )) else {
             panic!("the copy on hand is read again");
         };
         assert_eq!(paths, [converted]);
@@ -3099,6 +3138,7 @@ mod tests {
         let Step::Spool { writer, .. } = loader.open(OpenRequest::named(
             vec![PathBuf::from("-")],
             OpenOptions::default(),
+            &Default::default(),
         )) else {
             panic!("spool");
         };
@@ -3108,6 +3148,7 @@ mod tests {
         let Step::Spool { .. } = loader.open(OpenRequest::named(
             vec![PathBuf::from("-")],
             OpenOptions::default(),
+            &Default::default(),
         )) else {
             panic!("spool");
         };

@@ -9461,9 +9461,7 @@ impl App {
         match entry.kind {
             discover::EntryKind::Unknown => WhatEnter::LooksFirst,
             // A database of several tables lists them.
-            discover::EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => {
-                WhatEnter::GoesInside
-            }
+            discover::EntryKind::File if entry.enter_lists_tables() => WhatEnter::GoesInside,
             discover::EntryKind::File => WhatEnter::OpensFile,
             discover::EntryKind::Other
                 if matches!(
@@ -16205,6 +16203,7 @@ impl App {
             cloud: self.home.cloud.clone(),
             collections: self.home.collections.clone(),
             known: Default::default(),
+            formats: self.formats.clone(),
         };
         let read_folds = std::mem::take(&mut self.home.folds_owed);
         let desktop = self.app_config.data.use_desktop_recents;
@@ -17101,7 +17100,7 @@ impl App {
         }
         // A database of several tables lists them rather than opening; one not yet
         // measured is opened, and the open lands on its tables the same way.
-        if entry.kind == discover::EntryKind::File && entry.cost.tables.is_some_and(|n| n > 1) {
+        if entry.enter_lists_tables() {
             self.home_browse_into(entry.path);
             return None;
         }
@@ -17196,6 +17195,7 @@ impl App {
             && !a_spec_may_read
             && crate::members::split(&path).is_none()
             && crate::members::holder(&path).is_none()
+            && crate::members::split_variant(&path, &self.formats).is_none()
         {
             self.home.status = Some(discover::NO_READER.to_string());
             return None;
@@ -17309,7 +17309,10 @@ impl App {
 
     /// The first named local path that is not there. A URL or a glob is left to the
     /// open, which says what it found, and standard input is no path.
-    pub fn missing_named_path(paths: &[PathBuf]) -> Option<PathBuf> {
+    pub fn missing_named_path(
+        paths: &[PathBuf],
+        formats: &crate::formats::Registry,
+    ) -> Option<PathBuf> {
         paths
             .iter()
             .find(|path| {
@@ -17318,6 +17321,7 @@ impl App {
                     && !source::expands_as_glob(path)
                     && !path.exists()
                     && crate::members::split(path).is_none()
+                    && crate::members::split_variant(path, formats).is_none()
             })
             .cloned()
     }
@@ -17582,7 +17586,10 @@ impl App {
                     }
                     // Before the prompt closes: a typo is worth fixing where it was
                     // typed, rather than retyping the whole path.
-                    if !path.exists() && crate::members::split(&path).is_none() {
+                    if !path.exists()
+                        && crate::members::split(&path).is_none()
+                        && crate::members::split_variant(&path, &self.formats).is_none()
+                    {
                         self.home.status = Some(format!("No such path: {}", path.display()));
                         return None;
                     }
@@ -25483,7 +25490,8 @@ impl App {
                 }
                 // Asks the filesystem for the size the loading screen shows, and whether
                 // the path is there to be a recent.
-                let request = loading::OpenRequest::named(paths.clone(), options.clone());
+                let request =
+                    loading::OpenRequest::named(paths.clone(), options.clone(), &self.formats);
                 self.begin_new_dataset();
                 let step = self.loading.open(request);
                 self.run_load_step(step)
@@ -26330,7 +26338,7 @@ impl App {
                 self.make_way_for_an_open();
                 let load = self.loading.look_at_paths();
                 self.spawn_job(Job::OpenNamed(load), Some("Scanning input..."), move |_| {
-                    if let Some(missing) = Self::missing_named_path(&paths) {
+                    if let Some(missing) = Self::missing_named_path(&paths, &formats) {
                         return Ok(Answer::NamedPathMissing(missing));
                     }
                     let (paths, options, directory) =
@@ -31005,7 +31013,10 @@ fn run_impl(
             if config.is_none() {
                 startup::load_config(&input)?;
             }
-            if let Some(missing) = App::missing_named_path(startup::named_paths(&input)) {
+            // Without a screen nothing is opened, so the specs are not loaded to look.
+            if let Some(missing) =
+                App::missing_named_path(startup::named_paths(&input), &Default::default())
+            {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("File not found: {}", missing.display()),

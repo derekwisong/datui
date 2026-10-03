@@ -3954,4 +3954,65 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             "{listing}"
         );
     }
+
+    /// FIX dictionaries share the search path: a `kind = "fix"` TOML file and a
+    /// QuickFIX XML file are listed apart from the specs, an XML file that is not one is
+    /// passed over, and `formats check` reads a log with one.
+    #[test]
+    fn fix_dictionaries_on_the_search_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("l2.toml"), L2).unwrap();
+        std::fs::write(
+            dir.path().join("broker.toml"),
+            "name = \"acme.fix.broker-x\"\nkind = \"fix\"\nmatch = { sender = \"BROKERX\" }\ntags = { 9001 = \"AlgoName\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("FIX44-custom.xml"),
+            "<fix major='4' minor='4'><fields><field number='5001' name='Desk' type='STRING'/></fields></fix>",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("other.xml"), "<gpx/>").unwrap();
+        std::fs::write(
+            dir.path().join("broken.toml"),
+            "name = \"acme.fix.bad\"\nkind = \"fix\"\ntags = { nine = \"X\" }\n",
+        )
+        .unwrap();
+        let path = vec![dir.path().to_path_buf()];
+        let registry = Registry::load(&path);
+        assert_eq!(registry.specs.len(), 1);
+        let names: Vec<&str> = registry.fix.iter().map(|f| f.dict.name.as_str()).collect();
+        assert_eq!(names, ["FIX44-custom", "acme.fix.broker-x"]);
+        assert_eq!(registry.errors.len(), 1, "{:?}", registry.errors);
+        assert!(registry.errors[0].to_string().contains("tags.nine"));
+        let listing = registry.listing(&path);
+        assert!(listing.contains("FIX dictionaries:"), "{listing}");
+        assert!(
+            listing.contains("acme.fix.broker-x  (sender BROKERX)"),
+            "{listing}"
+        );
+        assert!(
+            listing.contains("FIX44-custom  (begin string FIX.4.4)"),
+            "{listing}"
+        );
+
+        let log = dir.path().join("session.log");
+        std::fs::write(
+            &log,
+            "8=FIX.4.4|9=20|35=0|49=BROKERX|9001=x|10=000|\n8=FIX.4.4|9=5|35=0|49=OTHER|10=000|\n",
+        )
+        .unwrap();
+        let text = check("acme.fix.broker-x", Some(&log), &registry).unwrap();
+        assert!(text.starts_with("acme.fix.broker-x: ok"), "{text}");
+        assert!(text.contains("matches sender BROKERX"), "{text}");
+        assert!(text.contains("2 messages, 1 of them matched"), "{text}");
+        assert!(text.contains("names in the log: 9001 AlgoName"), "{text}");
+        let e = check(
+            &dir.path().join("broken.toml").to_string_lossy(),
+            None,
+            &registry,
+        )
+        .unwrap_err();
+        assert!(e.contains("tags.nine"), "{e}");
+    }
 }

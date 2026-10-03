@@ -2040,18 +2040,27 @@ pub struct ChartConfig {
     /// Rows a chart reads: every row up to n, and a sample of n spread across the table past
     /// it. None = every row. Default 10000.
     pub row_limit: Option<usize>,
+    /// Whether a chart starts with its grid at the major ticks. Default false.
+    pub grid: bool,
 }
 
 // Field comments for ChartConfig
-const CHART_COMMENTS: &[(&str, &str)] = &[(
-    "row_limit",
-    "Rows a chart reads (display and export). A larger table is sampled across all of it, and the chart says so.\nCan also be changed in the chart view (Sample size). Example: row_limit = 10000",
-)];
+const CHART_COMMENTS: &[(&str, &str)] = &[
+    (
+        "row_limit",
+        "Rows a chart reads (display and export). A larger table is sampled across all of it, and the chart says so.\nCan also be changed in the chart view (Sample size). Example: row_limit = 10000",
+    ),
+    (
+        "grid",
+        "Start charts with a grid at the major ticks. g toggles it in the chart view",
+    ),
+];
 
 impl Default for ChartConfig {
     fn default() -> Self {
         Self {
             row_limit: Some(DEFAULT_CHART_ROW_LIMIT),
+            grid: false,
         }
     }
 }
@@ -2428,6 +2437,9 @@ pub struct ColorConfig {
     pub chart_series_color_5: String,
     pub chart_series_color_6: String,
     pub chart_series_color_7: String,
+    /// Chart view: the grid, a shade dimmer than `dimmed`. Absent from older configs.
+    #[serde(default = "default_chart_grid")]
+    pub chart_grid: String,
     /// The one colour that means "this is the thing": focused titles, key chips, the
     /// selection rail. Absent from older configs, so it falls back to the palette.
     #[serde(default = "default_accent")]
@@ -2485,6 +2497,9 @@ fn default_gradient_start() -> String {
 }
 fn default_gradient_end() -> String {
     ColorConfig::default().gradient_end
+}
+fn default_chart_grid() -> String {
+    ColorConfig::default().chart_grid
 }
 fn default_find_match() -> String {
     ColorConfig::default().find_match
@@ -2590,6 +2605,7 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("chart_series_color_5", "Chart view: fifth series color"),
     ("chart_series_color_6", "Chart view: sixth series color"),
     ("chart_series_color_7", "Chart view: seventh series color"),
+    ("chart_grid", "Chart view: the grid, dimmer than dimmed"),
     (
         "accent",
         "The accent: key chips in the control bar, focused section titles, the selection rail",
@@ -2924,6 +2940,9 @@ impl ColorConfig {
             chart_series_color_5: "#7aa2f7".to_string(),
             chart_series_color_6: "#f7768e".to_string(),
             chart_series_color_7: "#ff9e64".to_string(),
+            // Dimmer than `dimmed`, and still blue rather than black on a 16-color
+            // terminal, where black is the background.
+            chart_grid: "#3d4785".to_string(),
             accent: "#7dcfff".to_string(),
             accent_bright: "#a4daff".to_string(),
             gradient_start: "#7aa2f7".to_string(),
@@ -2996,6 +3015,7 @@ impl ColorConfig {
             chart_series_color_5: "#007197".to_string(),
             chart_series_color_6: "#f52a65".to_string(),
             chart_series_color_7: "#b15c00".to_string(),
+            chart_grid: "#c4c8da".to_string(),
             accent: "#2e7de9".to_string(),
             accent_bright: "#1a6cd0".to_string(),
             gradient_start: "#2e7de9".to_string(),
@@ -3716,6 +3736,7 @@ impl ColorConfig {
         validate_color!(&self.chart_series_color_5, "chart_series_color_5");
         validate_color!(&self.chart_series_color_6, "chart_series_color_6");
         validate_color!(&self.chart_series_color_7, "chart_series_color_7");
+        validate_color!(&self.chart_grid, "chart_grid");
         validate_color!(&self.accent, "accent");
         validate_color!(&self.accent_bright, "accent_bright");
         validate_color!(&self.gradient_start, "gradient_start");
@@ -4133,6 +4154,10 @@ impl Theme {
         colors.insert(
             "chart_series_color_7".to_string(),
             parser.parse(&config.colors.chart_series_color_7)?,
+        );
+        colors.insert(
+            "chart_grid".to_string(),
+            parser.parse(&config.colors.chart_grid)?,
         );
         colors.insert("accent".to_string(), parser.parse(&config.colors.accent)?);
         colors.insert(

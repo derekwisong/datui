@@ -408,6 +408,48 @@ fn test_chart_type_switches_from_anywhere() {
     assert_eq!(app.input_mode, InputMode::Chart);
 }
 
+/// `g` toggles the grid from anywhere on a chart with axes, as the Grid row's
+/// Space does; the heatmap and the bar chart have no grid, and `g` leaves it be.
+/// An open Picker takes `g` as a letter to narrow by.
+#[test]
+fn test_chart_g_toggles_the_grid() {
+    use datui::chart_modal::{ChartFocus, ChartKind};
+    let (mut app, _rx, _tx) = open_chart_view("chart_grid_key_test.csv");
+    let press = |app: &mut App, code: KeyCode| {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+    assert!(!app.chart_modal.grid, "off by default");
+    press(&mut app, KeyCode::Char('g'));
+    assert!(app.chart_modal.grid);
+    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Char('g'));
+    assert!(!app.chart_modal.grid, "one setting across the kinds");
+
+    // The Grid row toggles it too.
+    app.chart_modal.focus = ChartFocus::Grid;
+    press(&mut app, KeyCode::Char(' '));
+    assert!(app.chart_modal.grid);
+
+    press(&mut app, KeyCode::Char('5'));
+    assert_eq!(app.chart_modal.chart_kind, ChartKind::Heatmap);
+    press(&mut app, KeyCode::Char('g'));
+    assert!(app.chart_modal.grid, "the heatmap has no grid to toggle");
+
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Tab); // Style -> X axis
+    press(&mut app, KeyCode::Char(' ')); // open the Picker
+    press(&mut app, KeyCode::Char('g'));
+    assert!(app.chart_modal.grid);
+    assert_eq!(app.chart_modal.picker.as_ref().unwrap().filter, "g");
+
+    // Reopened on the same dataset, the chart keeps its grid.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    press(&mut app, KeyCode::Char('c'));
+    assert!(app.chart_modal.grid);
+}
+
 /// Columns are picked through the shared Picker: Space opens it on a column
 /// row, Enter chooses, and the choice is remembered on the row.
 #[test]

@@ -7432,10 +7432,16 @@ mod catalog {
         config.data.directories = vec![tmp.path().to_string_lossy().into_owned()];
         let (mut app, rx, _cache) = app_with_catalog(config);
         let data = tmp.path().join("data");
+        let events = tmp.path().join("events");
+        // Both labels arrive from their own measures; wait for each.
         let labelled = |app: &App| {
-            app.home.visible().iter().any(|row| {
+            let rows = app.home.visible();
+            rows.iter().any(|row| {
                 matches!(row, Row::Entry { entry, .. }
                     if entry.path == data && entry.holds.directories == 3)
+            }) && rows.iter().any(|row| {
+                matches!(row, Row::Entry { entry, .. }
+                    if entry.path == events && entry.kind == datui::discover::EntryKind::Hive)
             })
         };
         settle(&mut app, &rx, labelled);

@@ -10,14 +10,16 @@ use ratatui::{
 };
 
 use crate::chart_data::{
-    AxisFormat, AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData,
-    XAxisTemporalKind, segments, x_axis_label_at,
+    AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
+    segments,
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::render::context::RenderContext;
-use crate::widgets::axes::{AxisSpec, PlotAxes, cut, fit_x_labels};
+use crate::widgets::axes::{
+    AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels, resolution,
+};
 use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
 use unicode_width::UnicodeWidthStr;
 
@@ -86,6 +88,7 @@ fn row_label(focus: ChartFocus) -> &'static str {
         ChartFocus::YStartsAtZero => "Y from zero:",
         ChartFocus::LogScale => "Log scale:",
         ChartFocus::ShowLegend => "Legend:",
+        ChartFocus::Grid => "Grid:",
         ChartFocus::Column => "Column:",
         ChartFocus::Bins => "Bins:",
         ChartFocus::Bandwidth => "Bandwidth:",
@@ -166,6 +169,7 @@ fn render_sidebar(
             ChartFocus::YStartsAtZero => FormValue::Toggle(modal.y_starts_at_zero),
             ChartFocus::LogScale => FormValue::Toggle(modal.log_scale),
             ChartFocus::ShowLegend => FormValue::Toggle(modal.show_legend),
+            ChartFocus::Grid => FormValue::Toggle(modal.grid),
             ChartFocus::Column => {
                 let column = match modal.chart_kind {
                     ChartKind::Histogram => modal.hist_column.as_deref(),
@@ -359,10 +363,10 @@ fn render_plot(
                 x,
                 y: AxisNumbers::count(&ctx.number_format),
             };
-            render_histogram_chart(area, buf, theme, data, numbers, text_secondary, g)
+            render_histogram_chart(area, buf, modal, theme, data, numbers, g)
         }
         ChartRenderData::BoxPlot { data, y } => {
-            render_box_plot_chart(area, buf, theme, data, y, text_secondary, g)
+            render_box_plot_chart(area, buf, modal, theme, data, y, g)
         }
         ChartRenderData::Kde { data, x } => {
             let numbers = PlotNumbers {
@@ -590,6 +594,8 @@ fn render_xy_chart(
             theme,
             x_axis([x_min, x_max], x_axis_kind, &numbers.x, x_name),
             AxisSpec::y_numbers([PLACEHOLDER_MIN, PLACEHOLDER_MAX], &numbers.y, &y_names),
+            g.plot.line,
+            modal.grid,
         );
         let empty_dataset = Dataset::default()
             .name("")
@@ -599,8 +605,7 @@ fn render_xy_chart(
                 ChartType::Scatter => GraphType::Scatter,
                 ChartType::Bar => GraphType::Bar,
             });
-        let chart = Chart::new(vec![empty_dataset]).legend_position(legend(show_legend));
-        axes.render(chart, area, buf, g);
+        axes.render(Chart::new(vec![empty_dataset]), area, buf, g);
         return;
     }
 
@@ -612,12 +617,6 @@ fn render_xy_chart(
                 ChartType::Scatter => GraphType::Scatter,
                 ChartType::Bar => GraphType::Bar,
             };
-            let marker = match chart_type {
-                ChartType::Line => g.plot.line,
-                ChartType::Scatter => g.plot.point,
-                ChartType::Bar => g.plot.bar,
-            };
-
             let series_colors = [
                 "chart_series_color_1",
                 "chart_series_color_2",
@@ -670,6 +669,18 @@ fn render_xy_chart(
                 all_y_min = all_y_min.min(y_min);
                 all_y_max = all_y_max.max(y_max);
             }
+
+            // A scatter of few points marks each with a dot a cell wide; past one
+            // point per four cells, the line's finer marks keep them apart.
+            let points: usize = names_and_points.iter().map(|s| s.points.len()).sum();
+            let cells = usize::from(area.width) * usize::from(area.height);
+            let finer = resolution(g.plot.line) > resolution(g.plot.point);
+            let marker = match chart_type {
+                ChartType::Line => g.plot.line,
+                ChartType::Scatter if finer && points * 4 > cells => g.plot.line,
+                ChartType::Scatter => g.plot.point,
+                ChartType::Bar => g.plot.bar,
+            };
 
             // A series is drawn as its runs between gaps, so a line never bridges a
             // missing value; only the first run is named, which keeps one legend entry.
@@ -753,7 +764,7 @@ fn render_xy_chart(
             } else {
                 AxisSpec::y_numbers(y_bounds, &numbers.y, &y_axis_title)
             };
-            let axes = plot_axes(
+            let mut axes = plot_axes(
                 theme,
                 x_axis(
                     [x_min_bounds, x_max_bounds],
@@ -762,9 +773,11 @@ fn render_xy_chart(
                     &x_axis_title,
                 ),
                 y,
+                marker,
+                modal.grid,
             );
-            let chart = Chart::new(datasets).legend_position(legend(show_legend));
-            axes.render(chart, area, buf, g);
+            axes.legend = legend(show_legend, names_and_points.len(), name_width);
+            axes.render(Chart::new(datasets), area, buf, g);
         }
     } else {
         Paragraph::new("Select X and Y columns in the sidebar.")
@@ -774,37 +787,40 @@ fn render_xy_chart(
     }
 }
 
-/// Axes drawn in the theme's primary text color.
-fn plot_axes<'a>(theme: &Theme, x: AxisSpec<'a>, y: AxisSpec<'a>) -> PlotAxes<'a> {
+/// Axes drawn in the theme's primary text color, ticked for series drawn with
+/// `marker`, with the grid in `chart_grid` when `grid` is on.
+fn plot_axes<'a>(
+    theme: &Theme,
+    x: AxisSpec<'a>,
+    y: AxisSpec<'a>,
+    marker: ratatui::symbols::Marker,
+    grid: bool,
+) -> PlotAxes<'a> {
     let style = Style::default().fg(theme.get("text_primary"));
     PlotAxes {
-        x,
-        y,
-        line: style,
-        labels: style,
-        titles: style,
+        grid: grid.then(|| Style::default().fg(theme.get("chart_grid"))),
+        ..PlotAxes::new(x, y, style, marker)
     }
 }
 
-/// An XY chart's x axis: numbers as [`AxisSpec::numbers`] ticks them, or dates and
-/// times at its ends and middle.
+/// An XY chart's x axis: numbers on nice steps, or dates and times on calendar
+/// boundaries.
 fn x_axis<'a>(
     bounds: [f64; 2],
     kind: XAxisTemporalKind,
     numbers: &AxisNumbers,
     title: &'a str,
 ) -> AxisSpec<'a> {
-    if kind == XAxisTemporalKind::Numeric {
-        return AxisSpec::numbers(bounds, numbers, title);
-    }
-    let format = AxisFormat::ends_and_middle(bounds, numbers);
-    let ends = (bounds[0], bounds[1]);
-    let label = move |v, level| x_axis_label_at(v, kind, ends, level, &format);
-    AxisSpec::ends_and_middle(bounds, Box::new(label), title)
+    AxisSpec::calendar(bounds, kind, numbers, title)
 }
 
-fn legend(show: bool) -> Option<ratatui::widgets::LegendPosition> {
-    show.then_some(ratatui::widgets::LegendPosition::TopRight)
+/// The legend, when it is on and there is more than one series to tell apart: the
+/// y title names a lone one.
+fn legend(show: bool, series: usize, name_width: usize) -> Option<Legend> {
+    (show && series > 1).then_some(Legend {
+        width: name_width as u16,
+        rows: series as u16,
+    })
 }
 
 /// The widest of the legend's names, in cells.
@@ -823,12 +839,13 @@ fn legend_name(name: &str, width: usize) -> String {
 fn render_histogram_chart(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
+    modal: &ChartModal,
     theme: &Theme,
     data: Option<&HistogramData>,
     numbers: PlotNumbers,
-    text_secondary: ratatui::style::Color,
     g: &Glyphs,
 ) {
+    let text_secondary = theme.get("text_secondary");
     let Some(data) = data else {
         Paragraph::new("Select a column for histogram")
             .style(Style::default().fg(text_secondary))
@@ -843,9 +860,6 @@ fn render_histogram_chart(
             .render(area, buf);
         return;
     }
-
-    let points: Vec<(f64, f64)> = data.bins.iter().map(|b| (b.center, b.count)).collect();
-    let series = [points];
 
     let x_min_bounds = data.x_min;
     let x_max_bounds = if data.x_max > data.x_min {
@@ -868,17 +882,44 @@ fn render_histogram_chart(
             data.column.as_str(),
         ),
         AxisSpec::y_numbers([y_min_bounds, y_max_bounds], &numbers.y, "Count"),
+        g.plot.bar,
+        modal.grid,
     );
 
+    let columns = axes.frame(area).graph.width;
+    let points = bin_columns(data, [x_min_bounds, x_max_bounds], columns);
     let style = Style::default().fg(theme.get("primary_chart_series_color"));
     let dataset = Dataset::default()
         .name("")
         .marker(g.plot.bar)
         .graph_type(GraphType::Bar)
         .style(style)
-        .data(&series[0]);
+        .data(&points);
 
     axes.render(Chart::new(vec![dataset]), area, buf, g);
+}
+
+/// A histogram's bars as a column of the plot each, `columns` wide over `bounds`: a
+/// bin fills the columns its values land on, less one between it and the next when
+/// it is three or more wide, so the bars read as bins and not as needles.
+fn bin_columns(data: &HistogramData, [lo, hi]: [f64; 2], columns: u16) -> Vec<(f64, f64)> {
+    let n = data.bins.len();
+    if n == 0 || columns < 2 || hi <= lo {
+        return data.bins.iter().map(|b| (b.center, b.count)).collect();
+    }
+    let last = f64::from(columns - 1);
+    // The value at a column's center, as the canvas maps values to columns.
+    let at = |c: u16| lo + f64::from(c) / last * (hi - lo);
+    let bin_of = |v: f64| (((v - lo) / (hi - lo) * n as f64).floor() as usize).min(n - 1);
+    let bin_cols: Vec<u16> = (0..columns).map(|c| bin_of(at(c)) as u16).collect();
+    (0..columns)
+        .filter_map(|c| {
+            let bin = bin_cols[c as usize];
+            let wide = bin_cols.iter().filter(|b| **b == bin).count();
+            let last_of_bin = bin_cols.get(c as usize + 1).is_some_and(|b| *b != bin);
+            (!(last_of_bin && wide >= 3)).then(|| (at(c), data.bins[bin as usize].count))
+        })
+        .collect()
 }
 
 fn render_kde_chart(
@@ -936,24 +977,27 @@ fn render_kde_chart(
         })
         .collect();
 
-    let axes = plot_axes(
+    let mut axes = plot_axes(
         theme,
         AxisSpec::numbers([data.x_min, data.x_max], &numbers.x, "Value"),
-        AxisSpec::numbers([0.0, data.y_max], &numbers.y, "Density"),
+        AxisSpec::y_numbers([0.0, data.y_max], &numbers.y, "Density"),
+        g.plot.line,
+        modal.grid,
     );
-    let chart = Chart::new(datasets).legend_position(legend(modal.show_legend));
-    axes.render(chart, area, buf, g);
+    axes.legend = legend(modal.show_legend, data.series.len(), name_width);
+    axes.render(Chart::new(datasets), area, buf, g);
 }
 
 fn render_box_plot_chart(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
+    modal: &ChartModal,
     theme: &Theme,
     data: Option<&BoxPlotData>,
     y_numbers: AxisNumbers,
-    text_secondary: ratatui::style::Color,
     g: &Glyphs,
 ) {
+    let text_secondary = theme.get("text_secondary");
     let Some(data) = data else {
         Paragraph::new("Select a column for box plot")
             .style(Style::default().fg(text_secondary))
@@ -1032,14 +1076,14 @@ fn render_box_plot_chart(
         let stat = data.stats.get(i as usize)?;
         (level == 0).then(|| stat.name.clone())
     };
-    let x = AxisSpec {
-        bounds: [x_min_bounds, x_max_bounds],
-        ticks: (0..data.stats.len()).map(|i| i as f64).collect(),
-        label: Box::new(name),
-        title: "Columns",
-    };
+    let x = AxisSpec::fixed(
+        [x_min_bounds, x_max_bounds],
+        (0..data.stats.len()).map(|i| i as f64).collect(),
+        Box::new(name),
+        "Columns",
+    );
     let y = AxisSpec::y_numbers([data.y_min, data.y_max], &y_numbers, "Value");
-    plot_axes(theme, x, y).render(Chart::new(datasets), area, buf, g);
+    plot_axes(theme, x, y, g.plot.point, modal.grid).render(Chart::new(datasets), area, buf, g);
 }
 
 fn render_heatmap_chart(
@@ -1079,28 +1123,18 @@ fn render_heatmap_chart(
         .style(Style::default().fg(theme.get("text_primary")))
         .render(layout[0], buf);
 
-    const Y_LABEL_MAX: usize = 12;
-    // Top, middle and bottom, shortened when the fullest form is too wide.
-    let y_values = [data.y_max, (data.y_min + data.y_max) / 2.0, data.y_min];
-    let y_format = AxisFormat::new(&y_values, &numbers.y);
-    let at = |level| {
-        y_values.map(|v| {
-            // A whole-number axis has no label between two whole numbers: its
-            // middle of 0 to 1 would read `0` or `1`.
-            if numbers.y.whole && v.fract() != 0.0 {
-                return String::new();
-            }
-            y_format
-                .label(v, level)
-                .or_else(|| y_format.label(v, 0))
-                .unwrap_or_default()
-        })
+    const Y_LABEL_MAX: u16 = 12;
+    // Nice values up the side, one per few rows, each on the row its value falls in.
+    let y_axis = AxisSpec::numbers([data.y_min, data.y_max], &numbers.y, "");
+    let rows = layout[1];
+    let y_track = Track {
+        start: rows.y,
+        cells: rows.height,
+        sub: 1,
     };
-    let y_labels = Some(at(0))
-        .filter(|labels| labels.iter().all(|l| l.width() <= Y_LABEL_MAX))
-        .unwrap_or_else(|| at(1));
-    let y_label_width = y_labels.iter().map(|s| s.width()).max().unwrap_or(1);
-    let y_label_width = y_label_width.clamp(4, Y_LABEL_MAX) as u16;
+    let y_labels = fit_y_labels(&y_axis, y_track, Y_LABEL_MAX).labels;
+    let y_label_width = y_labels.iter().map(|(_, l)| l.width()).max().unwrap_or(1);
+    let y_label_width = (y_label_width as u16).clamp(4, Y_LABEL_MAX);
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(y_label_width + 1), Constraint::Min(1)])
@@ -1112,12 +1146,15 @@ fn render_heatmap_chart(
     }
 
     let label_style = Style::default().fg(theme.get("text_primary"));
-    if label_area.height >= 3 {
-        buf.set_string(label_area.x, label_area.y, &y_labels[0], label_style);
-        let mid_y = label_area.y + label_area.height / 2;
-        buf.set_string(label_area.x, mid_y, &y_labels[1], label_style);
-        let bottom_y = label_area.y + label_area.height.saturating_sub(1);
-        buf.set_string(label_area.x, bottom_y, &y_labels[2], label_style);
+    for (row, label) in &y_labels {
+        let pad = usize::from(y_label_width).saturating_sub(label.width()) as u16;
+        buf.set_stringn(
+            label_area.x + pad,
+            *row,
+            label,
+            usize::from(y_label_width),
+            label_style,
+        );
     }
 
     let intensity_chars: Vec<char> = " .:-=+*#%@".chars().collect();
@@ -1148,7 +1185,12 @@ fn render_heatmap_chart(
     let x_label_area = layout[2];
     let x_axis = AxisSpec::numbers([data.x_min, data.x_max], &numbers.x, "");
     let span = (x_label_area.left(), x_label_area.right());
-    for (x, label) in fit_x_labels(&x_axis, span, (plot_area.x, plot_area.width)) {
+    let x_track = Track {
+        start: plot_area.x,
+        cells: plot_area.width,
+        sub: 1,
+    };
+    for (x, label) in fit_x_labels(&x_axis, span, x_track).labels {
         buf.set_string(x, x_label_area.y, label, label_style);
     }
     if x_label_area.height > 1 {
@@ -1183,6 +1225,7 @@ mod tests {
                 category: &["carrier".to_string()],
             },
             Some(10_000),
+            false,
             1,
         );
         modal
@@ -1250,7 +1293,8 @@ mod tests {
         assert!(rows[5].contains("Y from zero:"));
         assert!(rows[6].contains("Log scale:"));
         assert!(rows[7].contains("Legend:"));
-        assert!(rows[8].contains("Sample size:") && rows[8].contains("10,000"));
+        assert!(rows[8].contains("Grid:"));
+        assert!(rows[9].contains("Sample size:") && rows[9].contains("10,000"));
     }
 
     /// Only the active chart kind's options render.
@@ -1738,7 +1782,7 @@ mod tests {
 
     /// Every label on an axis in one format, in the table's number style: KDE
     /// densities around 0.01 keep one precision all the way up, and under the
-    /// european format a narrow axis's short form reads `12,3k`.
+    /// european format a narrow axis's short form reads `12,5k`.
     #[test]
     fn an_axis_writes_every_label_in_one_format() {
         use crate::chart_data::KdeSeries;
@@ -1746,7 +1790,7 @@ mod tests {
         let g = crate::glyphs::unicode();
         let y_labels = |text: &str| -> Vec<String> {
             text.lines()
-                .filter_map(|r| r.split_once('│')?.0.split_whitespace().next())
+                .filter_map(|r| r.split_once(['│', '┤'])?.0.split_whitespace().next())
                 .map(String::from)
                 .collect()
         };
@@ -1774,7 +1818,7 @@ mod tests {
             x: AxisNumbers::default(),
         };
         let text = plot_text_in(&modal, data, g, Rect::new(0, 0, 40, 12));
-        assert_eq!(y_labels(&text), ["0.0126", "0.0063", "0.0000"], "{text}");
+        assert_eq!(y_labels(&text), ["0.02", "0.01", "0.00"], "{text}");
 
         let european = NumberFormat::preset("european").unwrap();
         let mut ctx = RenderContext::for_test();
@@ -1797,10 +1841,10 @@ mod tests {
             },
         };
         let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 40, 12));
-        assert_eq!(y_labels(&text), ["12.600", "12.300", "12.000"], "{text}");
+        assert_eq!(y_labels(&text), ["13.000", "12.500", "12.000"], "{text}");
         // Too narrow for those: the short form, each in the same unit and places.
         let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 16, 12));
-        assert_eq!(y_labels(&text), ["12,6k", "12,3k", "12,0k"], "{text}");
+        assert_eq!(y_labels(&text), ["13,0k", "12,5k", "12,0k"], "{text}");
     }
 
     /// A heatmap's y labels in one format; an integer column's middle label is left
@@ -1860,7 +1904,7 @@ mod tests {
             g,
             area,
         );
-        assert_eq!(y_labels(&text), ["0.0126", "0.0063", "0.0000"], "{text}");
+        assert_eq!(y_labels(&text), ["0.010", "0.005", "0.000"], "{text}");
     }
 
     /// A count, or an integer column, ticks in whole numbers as the table prints
@@ -1881,7 +1925,7 @@ mod tests {
         // What sits left of the y axis.
         let y_labels = |text: &str| -> Vec<String> {
             text.lines()
-                .filter_map(|r| r.split_once('│')?.0.split_whitespace().next())
+                .filter_map(|r| r.split_once(['│', '┤'])?.0.split_whitespace().next())
                 .map(String::from)
                 .collect()
         };
@@ -1914,10 +1958,11 @@ mod tests {
             x: whole.clone(),
         };
         let text = plot_text_with(&ctx, &open_modal(), data, g, area);
-        assert_eq!(y_labels(&text), ["4,322", "2,161", "0"], "{text}");
-        assert_eq!(axis_row(&text), "0 4 7", "{text}");
+        // Up to the nice value past the tallest bar, in thousands-grouped whole steps.
+        assert_eq!(y_labels(&text), ["5,000", "2,500", "0"], "{text}");
+        assert_eq!(axis_row(&text), "0 5", "{text}");
 
-        // The same for an XY chart of integer columns; a float column keeps its places.
+        // The same for an XY chart of integer columns.
         let series = vec![vec![(0.0, 3.0), (5.0, 10.0)]];
         let mut modal = open_modal();
         modal.x_column = Some("volume".to_string());
@@ -1935,11 +1980,12 @@ mod tests {
             y: whole,
         };
         let text = plot_text_with(&ctx, &modal, xy(numbers), g, area);
-        // 3 to 10 widens to 3 to 11, so the middle tick is whole.
-        assert_eq!(y_labels(&text), ["11", "7", "3"], "{text}");
-        assert_eq!(axis_row(&text), "0 3 5", "{text}");
+        // 3 to 10 widens out to whole steps either side.
+        assert_eq!(y_labels(&text), ["10", "5", "0"], "{text}");
+        assert_eq!(axis_row(&text), "0 2 4", "{text}");
+        // A float column ticks at the same nice values, written as exactly as they are.
         let text = plot_text_with(&ctx, &modal, xy(PlotNumbers::default()), g, area);
-        assert_eq!(axis_row(&text), "0.0 2.5 5.0", "{text}");
+        assert_eq!(axis_row(&text), "0 2 4", "{text}");
     }
 
     /// Under the ASCII set every plot draws ASCII only, and still draws: its marks,
@@ -2085,8 +2131,13 @@ mod tests {
             );
             let rows: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
             let corner = g.plot.axis.top_left.chars().next().unwrap();
-            // The frame's first row is under the y title's.
-            let left = rows[1].iter().position(|c| *c == corner).expect(&text);
+            // The frame's first row is under the y title's: its corner is the one a
+            // rule runs right from, not the axis's tick mark.
+            let rule = g.plot.axis.horizontal.chars().next().unwrap();
+            let left = rows[1]
+                .windows(2)
+                .position(|w| w[0] == corner && w[1] == rule)
+                .expect(&text);
             let interior = |y: usize| {
                 rows[y][left + 1..rows[y].len() - 1]
                     .iter()
@@ -2095,6 +2146,192 @@ mod tests {
             assert_eq!(interior(2), "price ", "{text}");
             assert_eq!(interior(3), "volume", "{text}");
         }
+    }
+
+    /// Ten years of daily dates against a value, as the XY view gets them.
+    fn decade() -> Vec<Vec<(f64, f64)>> {
+        // 2015-01-01 on, in days since the epoch.
+        vec![
+            (0..3653)
+                .map(|i| (16436.0 + f64::from(i), 1000.0 + f64::from(i % 400) * 6.0))
+                .collect(),
+        ]
+    }
+
+    fn xy_dates(series: &Vec<Vec<(f64, f64)>>) -> ChartRenderData<'_> {
+        ChartRenderData::XY {
+            series: Some(series),
+            breaks: None,
+            x_axis_kind: XAxisTemporalKind::Date,
+            x_bounds: None,
+            numbers: PlotNumbers::default(),
+        }
+    }
+
+    /// On a 300-column terminal a line chart labels its x axis 15 to 20 times, on
+    /// calendar boundaries, and its y axis about once per four rows, at round values.
+    #[test]
+    fn a_wide_chart_carries_ticks_scaled_to_the_space() {
+        let mut modal = open_modal();
+        modal.x_column = Some("date".to_string());
+        modal.y_columns = vec!["price".to_string()];
+        let series = decade();
+        let rows = render_view(
+            &mut modal,
+            ChartView {
+                data: xy_dates(&series),
+                notes: Vec::new(),
+                error: None,
+            },
+            300,
+            60,
+        );
+        // The canvas, right of the sidebar.
+        let rows: Vec<String> = rows
+            .iter()
+            .map(|r| r.chars().skip(SIDEBAR_WIDTH as usize).collect())
+            .collect();
+        let axis = rows.iter().rposition(|r| r.contains('└')).unwrap();
+        let x_labels: Vec<&str> = rows[axis + 1].split_whitespace().collect();
+        assert!(
+            (15..=20).contains(&x_labels.len()),
+            "{} x labels: {x_labels:?}",
+            x_labels.len()
+        );
+        assert!(
+            x_labels
+                .iter()
+                .all(|l| l.len() == 4 || ["Apr", "Jul", "Oct"].contains(l)),
+            "{x_labels:?}"
+        );
+        let y_labels: Vec<f64> = rows[..axis]
+            .iter()
+            .filter_map(|r| r.split_once('┤')?.0.split_whitespace().last()?.parse().ok())
+            .collect();
+        let plot_rows = axis - 2; // the tab line and the y title
+        let per_label = plot_rows as f64 / y_labels.len() as f64;
+        assert!(
+            (3.0..=5.0).contains(&per_label),
+            "{per_label}: {y_labels:?}"
+        );
+        let step = y_labels[0] - y_labels[1];
+        let mantissa = step / 10f64.powf(step.log10().floor());
+        assert!([1.0, 2.0, 2.5, 5.0].contains(&mantissa), "{y_labels:?}");
+        assert!(
+            y_labels.windows(2).all(|w| w[0] - w[1] == step)
+                && y_labels.iter().all(|v| v % step == 0.0),
+            "{y_labels:?}"
+        );
+    }
+
+    /// The grid shows in the view only while it is on, in the `chart_grid` color.
+    #[test]
+    fn the_grid_follows_the_toggle() {
+        let g = crate::glyphs::unicode();
+        let mut modal = open_modal();
+        modal.x_column = Some("date".to_string());
+        modal.y_columns = vec!["price".to_string()];
+        let series = decade();
+        let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default())
+            .expect("default theme colors must resolve");
+        let draw = |modal: &ChartModal| {
+            let area = Rect::new(0, 0, 100, 30);
+            let mut buf = Buffer::empty(area);
+            let ctx = RenderContext::for_test();
+            render_plot(area, &mut buf, modal, &theme, &ctx, xy_dates(&series), g);
+            buf
+        };
+        let grid_cells = |buf: &Buffer| {
+            buf.content()
+                .iter()
+                .filter(|c| c.symbol() == g.plot.grid_down || c.symbol() == g.plot.grid_across)
+                .collect::<Vec<_>>()
+                .len()
+        };
+        assert_eq!(grid_cells(&draw(&modal)), 0);
+        modal.toggle_grid();
+        let on = draw(&modal);
+        assert!(grid_cells(&on) > 100);
+        let grid = theme.get("chart_grid");
+        assert!(
+            on.content()
+                .iter()
+                .filter(|c| c.symbol() == g.plot.grid_across)
+                .all(|c| c.fg == grid)
+        );
+    }
+
+    /// A scatter of a few points marks each with a whole-cell dot; a dense one
+    /// switches to braille, which keeps neighbors apart.
+    #[test]
+    fn a_scatter_picks_its_marker_by_density() {
+        let g = crate::glyphs::unicode();
+        let mut modal = open_modal();
+        modal.x_column = Some("price".to_string());
+        modal.y_columns = vec!["volume".to_string()];
+        modal.chart_type = ChartType::Scatter;
+        let draw = |n: usize| {
+            let series = vec![
+                (0..n)
+                    .map(|i| (i as f64, ((i * 7919) % 1000) as f64))
+                    .collect::<Vec<_>>(),
+            ];
+            let data = ChartRenderData::XY {
+                series: Some(&series),
+                breaks: None,
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+            };
+            plot_text_in(&modal, data, g, Rect::new(0, 0, 60, 20))
+        };
+        let braille = |text: &str| text.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
+        let sparse = draw(20);
+        assert!(
+            sparse.contains(ratatui::symbols::DOT) && !braille(&sparse),
+            "{sparse}"
+        );
+        let dense = draw(2000);
+        assert!(
+            braille(&dense) && !dense.contains(ratatui::symbols::DOT),
+            "{dense}"
+        );
+    }
+
+    /// A histogram's bins fill their columns, with a column of air between bins wide
+    /// enough to spare one.
+    #[test]
+    fn histogram_bins_fill_their_columns() {
+        use crate::chart_data::HistogramBin;
+        let histogram = HistogramData {
+            column: "price".to_string(),
+            bins: (0..4)
+                .map(|i| HistogramBin {
+                    center: f64::from(i) * 25.0 + 12.5,
+                    count: 10.0,
+                })
+                .collect(),
+            x_min: 0.0,
+            x_max: 100.0,
+            max_count: 10.0,
+            rows: Default::default(),
+            clipped: None,
+        };
+        let points = bin_columns(&histogram, [0.0, 100.0], 41);
+        // Four bins of about ten columns, less a gap after each but the last.
+        assert_eq!(points.len(), 41 - 3, "{points:?}");
+        let text = plot_text_in(
+            &open_modal(),
+            ChartRenderData::Histogram {
+                data: Some(&histogram),
+                x: AxisNumbers::default(),
+            },
+            crate::glyphs::unicode(),
+            Rect::new(0, 0, 60, 20),
+        );
+        let row = text.lines().find(|r| r.contains('█')).expect(&text);
+        let bars: Vec<&str> = row.split(' ').filter(|r| r.contains('█')).collect();
+        assert_eq!(bars.len(), 4, "{text}");
     }
 
     #[test]

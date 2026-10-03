@@ -2081,6 +2081,7 @@ mod tests {
                 ..Default::default()
             },
             None,
+            false,
             0,
         );
         p2.app.chart_modal.focus = ChartFocus::XColumn;

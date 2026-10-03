@@ -204,6 +204,10 @@ impl App {
             KeyCode::Char(']') if event.is_press() => {
                 self.chart_modal.next_chart_kind();
             }
+            // The grid at the major ticks, on the kinds that have axes.
+            KeyCode::Char('g') if event.is_press() && self.chart_modal.has_grid() => {
+                self.chart_modal.toggle_grid();
+            }
             KeyCode::Char('e') if event.is_press() => {
                 // Open chart export modal when there is something visible to export
                 if self.data_table_state.is_some() && self.chart_modal.can_export() {
@@ -239,6 +243,7 @@ impl App {
                     ChartFocus::YStartsAtZero => self.chart_modal.toggle_y_starts_at_zero(),
                     ChartFocus::LogScale => self.chart_modal.toggle_log_scale(),
                     ChartFocus::ShowLegend => self.chart_modal.toggle_show_legend(),
+                    ChartFocus::Grid => self.chart_modal.toggle_grid(),
                     ChartFocus::Style => self.chart_modal.next_chart_type(),
                     ChartFocus::Range => self.chart_modal.cycle_value_range(1),
                     ChartFocus::Order => self.chart_modal.cycle_bar_order(1),

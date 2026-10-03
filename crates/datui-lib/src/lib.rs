@@ -12429,6 +12429,7 @@ impl App {
                             category: &category_columns,
                         },
                         self.app_config.chart.row_limit,
+                        self.app_config.chart.grid,
                         self.dataset_generation,
                     );
                     self.chart_cache.clear();

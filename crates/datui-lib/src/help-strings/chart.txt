@@ -19,6 +19,8 @@ Chart view: XY, Histogram, Box Plot, KDE, Heatmap, Bar.
                     view; a numeric value takes one row per category
                     (group first with a query). Order by value or
                     label; bars that do not fit are counted
+  g:                Grid on or off at the labeled ticks: XY, Histogram,
+                    Box Plot and KDE. [chart] grid sets where it starts
   e:                Export the chart to PNG or EPS. Needs the chart's
                     required columns picked first
   t:                While following a file, draw again with the rows

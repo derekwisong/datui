@@ -111,7 +111,9 @@ Following (--follow, -f, or t):
   have arrived since; t there reads them. A truncated or replaced file is
   read again from its start; a deleted one stops the follow and its rows
   stay. Rows that do not fit the types the first rows gave are counted
-  on the bar in the warning color and read as null.
+  on the bar in the warning color and read as null. Recording standard
+  input (--tee FILE), the bar says rec, then saved; quitting or Ctrl+O
+  while it still arrives asks whether to stop or keep recording.
 
 Wide tables:
   ] starts the next page at the first column not shown whole, so a column

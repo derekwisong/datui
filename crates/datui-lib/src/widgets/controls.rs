@@ -80,11 +80,15 @@ pub struct FollowMark {
     /// What `t` does on this screen, offered first among its keys.
     pub key: Option<&'static str>,
     /// The chip: `following · 3s ago`, `paused`.
-    pub chip: String,
+    pub chip: Option<String>,
     /// Plain beside it: rows that came in below the cursor, or that wait to be shown.
     pub note: Option<String>,
     /// In the warning color: rows that did not fit the schema.
     pub warning: Option<String>,
+    /// A recording's chip (`--tee`): `rec 12 MB · 1.2 MB/s`, then `saved ...`.
+    pub rec: Option<String>,
+    /// The recording stopped in an error: `rec` is said in the warning color.
+    pub rec_stopped: bool,
 }
 
 impl Controls {
@@ -375,7 +379,17 @@ impl Widget for &Controls {
             .formats_tied
             .map(|others| format!(" {} formats match ", others + 1));
         let find = self.find.as_ref().map(|mark| format!("{mark} "));
-        let follow_chip = self.follow.as_ref().map(|f| format!(" {} ", f.chip));
+        let follow_chip = self
+            .follow
+            .as_ref()
+            .and_then(|f| f.chip.as_ref())
+            .map(|chip| format!(" {chip} "));
+        let rec_chip = self
+            .follow
+            .as_ref()
+            .and_then(|f| f.rec.as_ref())
+            .map(|rec| format!(" {rec} "));
+        let rec_stopped = self.follow.as_ref().is_some_and(|f| f.rec_stopped);
         let follow_note = self.follow.as_ref().and_then(|f| f.note.clone());
         let follow_warning = self.follow.as_ref().and_then(|f| f.warning.clone());
         let width_of = |text: &Option<String>| {
@@ -383,8 +397,10 @@ impl Widget for &Controls {
                 .map(|text| crate::glyphs::display_width(text) as u16 + 1)
                 .unwrap_or(0)
         };
-        let follow_width =
-            width_of(&follow_chip) + width_of(&follow_note) + width_of(&follow_warning);
+        let follow_width = width_of(&follow_chip)
+            + width_of(&follow_note)
+            + width_of(&follow_warning)
+            + width_of(&rec_chip);
         let chip_width = follow_width
             + not_the_table
                 .as_ref()
@@ -438,6 +454,15 @@ impl Widget for &Controls {
             }
             if let Some(text) = &follow_chip {
                 spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &rec_chip {
+                let style = if rec_stopped {
+                    label_style.fg(self.warning_color)
+                } else {
+                    chip_style
+                };
+                spans.push(ratatui::text::Span::styled(text.clone(), style));
                 spans.push(ratatui::text::Span::raw(" "));
             }
             if let Some(text) = &not_the_table {
@@ -817,9 +842,10 @@ mod tests {
     fn a_follow_says_so_beside_the_count() {
         let mark = FollowMark {
             key: Some("Pause"),
-            chip: "following · 3s ago".to_string(),
+            chip: Some("following · 3s ago".to_string()),
             note: Some("4 new below".to_string()),
             warning: Some("1 row does not fit".to_string()),
+            ..Default::default()
         };
         for width in [80u16, 160] {
             let bar = render_to_string(

@@ -817,6 +817,11 @@ impl Follow {
                 self.end();
                 Some("The file was deleted: following stopped, the rows read stay".to_string())
             }
+            // A recording's end is said by the recording's own mark.
+            Change::Ended(_) if self.spool().is_some_and(|s| s.tee().is_some()) => {
+                self.end();
+                None
+            }
             Change::Ended(None) => {
                 self.end();
                 Some("Standard input ended".to_string())
@@ -852,12 +857,13 @@ impl Follow {
         }
     }
 
-    /// Stop watching. What the frame reads stays.
+    /// Stop watching. What the frame reads stays. Standard input stops being read,
+    /// unless it is being recorded (`--tee`): that is stopped only when asked.
     pub fn end(&mut self) {
         self.standing = Standing::Ended;
         self.shared.stop.store(true, Ordering::Relaxed);
         self.shared.wake();
-        if let Some(spool) = &self.spool {
+        if let Some(spool) = self.spool.as_ref().filter(|s| s.spool.tee().is_none()) {
             spool.spool.stop();
         }
     }
@@ -977,12 +983,27 @@ impl Watcher {
 }
 
 /// Standard input being copied to a file while the file is read: the copy goes on
-/// after the first rows show, until the stream ends or the follow stops.
+/// after the first rows show, until the stream ends or the copy is stopped. The file is
+/// a temporary one, or the one `--tee` names, which the user keeps.
 pub struct Spool {
     stop: AtomicBool,
     bytes: AtomicU64,
     state: Mutex<SpoolState>,
     changed: Condvar,
+    /// The file being written. Taken when the copy finishes, so a read still waiting on
+    /// the producer writes nothing after it.
+    sink: Mutex<Option<File>>,
+    /// The file `--tee` named, when it is the one written.
+    tee: Option<Tee>,
+    started: Instant,
+}
+
+/// The file `--tee` named.
+#[derive(Clone, Debug)]
+pub struct Tee {
+    pub path: PathBuf,
+    /// `--tee-raw`: the bytes exactly as they came, a WAV header's sizes included.
+    pub raw: bool,
 }
 
 #[derive(Default)]
@@ -993,37 +1014,158 @@ struct SpoolState {
     drained: bool,
     /// The stream ended: `Some(reason)` when in an error.
     ended: Option<Option<String>>,
+    /// When the copy finished, and what finishing the file said.
+    finished: Option<Instant>,
+    /// Bytes copied by when, a few seconds of them, for the rate.
+    samples: std::collections::VecDeque<(Instant, u64)>,
 }
 
+/// How far back the rate looks.
+const RATE_WINDOW: Duration = Duration::from_secs(2);
+
 impl Spool {
+    fn new(sink: File, tee: Option<Tee>) -> Spool {
+        Spool {
+            stop: AtomicBool::new(false),
+            bytes: AtomicU64::new(0),
+            state: Mutex::new(SpoolState::default()),
+            changed: Condvar::new(),
+            sink: Mutex::new(Some(sink)),
+            tee,
+            started: Instant::now(),
+        }
+    }
+
     /// Bytes copied so far.
     pub fn bytes(&self) -> u64 {
         self.bytes.load(Ordering::Relaxed)
     }
 
-    /// Stop copying at the next chunk. A read that is waiting on the producer ends
-    /// when the producer sends or closes.
+    /// Bytes a second over the last few seconds.
+    pub fn rate(&self) -> f64 {
+        let state = self.lock();
+        match (state.samples.front(), state.samples.back()) {
+            (Some((t0, b0)), Some((t1, b1))) if t1 > t0 => {
+                (b1 - b0) as f64 / t1.duration_since(*t0).as_secs_f64()
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// How long the copy ran, or has run.
+    pub fn duration(&self) -> Duration {
+        let finished = self.lock().finished;
+        finished
+            .unwrap_or_else(Instant::now)
+            .duration_since(self.started)
+    }
+
+    /// The file `--tee` named, when the copy goes there.
+    pub fn tee(&self) -> Option<&Tee> {
+        self.tee.as_ref()
+    }
+
+    /// Stop copying and finish the file: a read waiting on the producer writes
+    /// nothing more when it returns.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        self.changed.notify_all();
+        self.finish(None);
     }
 
     pub fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
 
-    /// Whether the stream ended, and the reason when in an error.
+    /// Whether the copy ended, and the reason when in an error.
     pub fn ended(&self) -> Option<Option<String>> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .ended
-            .clone()
+        self.lock().ended.clone()
+    }
+
+    /// Whether bytes may still arrive: the producer is still sending.
+    pub fn live(&self) -> bool {
+        self.lock().ended.is_none()
+    }
+
+    /// Wait until the copy has ended.
+    pub fn wait(&self) {
+        let mut state = self.lock();
+        while state.ended.is_none() {
+            state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, SpoolState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Write `bytes` as they came. False once the copy is finished.
+    fn write(&self, bytes: &[u8]) -> Result<bool, String> {
+        let mut sink = self.sink.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(file) = sink.as_mut() else {
+            return Ok(false);
+        };
+        file.write_all(bytes).map_err(|e| {
+            format!(
+                "Could not write {}: {e}",
+                self.tee
+                    .as_ref()
+                    .map_or("what came in".to_string(), |t| t.path.display().to_string())
+            )
+        })?;
+        drop(sink);
+        let total =
+            self.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed) + bytes.len() as u64;
+        let now = Instant::now();
+        let mut state = self.lock();
+        if state.lines < WANTED_LINES {
+            state.lines += bytes.iter().filter(|&&b| b == b'\n').count();
+        }
+        state.samples.push_back((now, total));
+        while state
+            .samples
+            .front()
+            .is_some_and(|(at, _)| now.duration_since(*at) > RATE_WINDOW)
+            && state.samples.len() > 2
+        {
+            state.samples.pop_front();
+        }
+        drop(state);
+        self.changed.notify_all();
+        Ok(true)
+    }
+
+    /// End the copy, `reason` when it ended in an error, and finish the file: a WAV
+    /// header's sizes filled in for `--tee` (unless `--tee-raw`), and the file synced so
+    /// that saved means safe to copy. Once; later calls change nothing.
+    fn finish(&self, reason: Option<String>) {
+        let file = self.sink.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let mut reason = reason;
+        if let (Some(mut file), Some(tee)) = (file, self.tee.as_ref()) {
+            let finished = (if tee.raw {
+                Ok(())
+            } else {
+                crate::tee::fix_wav_sizes(&mut file).map(|_| ())
+            })
+            .and_then(|()| file.sync_all());
+            if let Err(e) = finished
+                && reason.is_none()
+            {
+                reason = Some(format!("Could not finish {}: {e}", tee.path.display()));
+            }
+        }
+        let mut state = self.lock();
+        if state.ended.is_none() {
+            state.ended = Some(reason);
+            state.finished = Some(Instant::now());
+        }
+        drop(state);
+        self.changed.notify_all();
     }
 }
 
 /// The open's hold on a [`Spool`]: the copy stops when the last holder lets go, so a
-/// follow put down before its dataset arrived does not go on copying.
+/// follow put down before its dataset arrived does not go on copying, and quitting
+/// finishes the file.
 pub struct SpoolHandle {
     spool: Arc<Spool>,
 }
@@ -1040,14 +1182,16 @@ impl Drop for SpoolHandle {
     }
 }
 
-/// Copy what `reader` sends to `file` on a thread of its own, until it ends or `spool`
-/// stops. Each chunk is written whole as it arrives; nothing is held back.
-fn copy_on(mut reader: impl Read + Send + 'static, mut file: File, spool: Arc<Spool>) {
+/// Copy what `reader` sends into `spool` on a thread of its own, until it ends or the
+/// spool stops. Each chunk is written whole as it arrives into one buffer, reused:
+/// nothing is held back, and however long the stream runs the copy holds a megabyte.
+/// A producer faster than the disk waits on the pipe, not on datui's memory.
+fn copy_on(mut reader: impl Read + Send + 'static, spool: Arc<Spool>) {
     let _ = std::thread::Builder::new()
         .name("datui-spool".to_string())
         .spawn(move || {
             let mut buf = vec![0u8; CHUNK];
-            let ended = loop {
+            let reason = loop {
                 if spool.stopped() {
                     break None;
                 }
@@ -1057,24 +1201,14 @@ fn copy_on(mut reader: impl Read + Send + 'static, mut file: File, spool: Arc<Sp
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) => break Some(format!("Standard input failed: {e}")),
                 };
-                if spool.stopped() {
-                    break None;
+                match spool.write(&buf[..n]) {
+                    Ok(true) => {}
+                    Ok(false) => break None,
+                    Err(reason) => break Some(reason),
                 }
-                if let Err(e) = file.write_all(&buf[..n]) {
-                    break Some(format!("Could not write what came in: {e}"));
-                }
-                spool.bytes.fetch_add(n as u64, Ordering::Relaxed);
-                let mut state = spool.state.lock().unwrap_or_else(|e| e.into_inner());
-                if state.lines < WANTED_LINES {
-                    state.lines += buf[..n].iter().filter(|&&b| b == b'\n').count();
-                }
-                state.drained = n < buf.len();
-                drop(state);
-                spool.changed.notify_all();
+                spool.lock().drained = n < buf.len();
             };
-            let _ = file.flush();
-            spool.state.lock().unwrap_or_else(|e| e.into_inner()).ended = Some(ended);
-            spool.changed.notify_all();
+            spool.finish(reason);
         });
 }
 
@@ -1082,45 +1216,61 @@ fn copy_on(mut reader: impl Read + Send + 'static, mut file: File, spool: Arc<Sp
 /// slower than the copy: then two, a header and a row, are enough to show.
 const WANTED_LINES: usize = 1000;
 
-/// Copy standard input, from `open`, to a temporary file in `--temp-dir` claimed
-/// through `writer`, until enough has arrived to show; the copy goes on behind the
-/// answer. Says what the file holds, as [`crate::stdin::spool`] does, with the copy
-/// carried in the options for the follow to hold.
+/// What standard input was copied to.
+pub enum Spooled {
+    /// A temporary file, removed when its holders let go.
+    Temp(TempDownload),
+    /// The file `--tee` named, the user's.
+    Kept(PathBuf),
+}
+
+/// Copy standard input, from `open`, to the file `--tee` names or else a temporary
+/// file in `--temp-dir` claimed through `writer`: until enough has arrived to show when
+/// following, until it ends when not. A followed copy goes on behind the answer. Says
+/// what the file holds, as [`crate::stdin::spool`] does, with the copy carried in the
+/// options for the dataset to hold.
 pub(crate) fn spool<R: Read + Send + 'static>(
     open: impl FnOnce() -> crate::download::Opened<R>,
     options: OpenOptions,
     writer: &Writer,
     read: &AtomicU64,
-) -> Result<(TempDownload, OpenOptions), String> {
+) -> Result<(Spooled, OpenOptions), String> {
     let (reader, _) = open().map_err(|e| format!("Could not read standard input: {e}"))?;
-    let Some((named, claim)) = writer
-        .create(|| TempDownload::create(options.temp_dir.as_deref(), None))
-        .map_err(|e| crate::error_display::user_message_from_report(&e, None))?
-    else {
-        return Err("Reading standard input was stopped.".to_string());
-    };
-    let file = named
-        .as_file()
-        .try_clone()
-        .map_err(|e| format!("Could not write what came in: {e}"))?;
-    let download = TempDownload::held(named, Some(claim));
-    let spool = Arc::new(Spool {
-        stop: AtomicBool::new(false),
-        bytes: AtomicU64::new(0),
-        state: Mutex::new(SpoolState::default()),
-        changed: Condvar::new(),
+    let tee = options.tee.clone().map(|path| Tee {
+        path,
+        raw: options.tee_raw,
     });
+    let (spooled, file) = match &tee {
+        Some(tee) => {
+            let file = crate::tee::create(&tee.path, options.force)?;
+            (Spooled::Kept(tee.path.clone()), file)
+        }
+        None => {
+            let Some((named, claim)) = writer
+                .create(|| TempDownload::create(options.temp_dir.as_deref(), None))
+                .map_err(|e| crate::error_display::user_message_from_report(&e, None))?
+            else {
+                return Err("Reading standard input was stopped.".to_string());
+            };
+            let file = named
+                .as_file()
+                .try_clone()
+                .map_err(|e| format!("Could not write what came in: {e}"))?;
+            (Spooled::Temp(TempDownload::held(named, Some(claim))), file)
+        }
+    };
+    let spool = Arc::new(Spool::new(file, tee));
     let handle = Arc::new(SpoolHandle {
         spool: spool.clone(),
     });
-    copy_on(reader, file, spool.clone());
+    copy_on(reader, spool.clone());
     // A header and a row, at least, before anything is read.
     let wanted = if options.has_header == Some(false) {
         1
     } else {
         2
     };
-    let mut state = spool.state.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = spool.lock();
     loop {
         read.store(spool.bytes(), Ordering::Relaxed);
         if writer.stopped() {
@@ -1128,7 +1278,8 @@ pub(crate) fn spool<R: Read + Send + 'static>(
             spool.stop();
             return Err("Reading standard input was stopped.".to_string());
         }
-        let enough = state.lines >= WANTED_LINES || (state.drained && state.lines >= wanted);
+        let enough = options.follow
+            && (state.lines >= WANTED_LINES || (state.drained && state.lines >= wanted));
         if enough || state.ended.is_some() {
             break;
         }
@@ -1143,8 +1294,12 @@ pub(crate) fn spool<R: Read + Send + 'static>(
     }
     drop(state);
     read.store(spool.bytes(), Ordering::Relaxed);
+    let path = match &spooled {
+        Spooled::Temp(download) => download.path().to_path_buf(),
+        Spooled::Kept(path) => path.clone(),
+    };
     let mut head = Vec::new();
-    File::open(download.path())
+    File::open(&path)
         .and_then(|f| f.take(4096).read_to_end(&mut head))
         .map_err(|e| format!("Could not read standard input back: {e}"))?;
     if head.is_empty() {
@@ -1156,13 +1311,19 @@ pub(crate) fn spool<R: Read + Send + 'static>(
         compression: options.compression.or(compression),
         ..options
     };
-    if let Some(refusal) = refusal(options.format, &options) {
+    // A recording goes on whatever it holds; only the view is not followed then.
+    if options.follow
+        && options.tee.is_none()
+        && let Some(refusal) = refusal(options.format, &options)
+    {
         return Err(refusal);
     }
     Ok((
-        download,
+        spooled,
         OpenOptions {
             spool: Some(handle),
+            // The file is read from here on, as any file is.
+            tee: None,
             ..options
         },
     ))

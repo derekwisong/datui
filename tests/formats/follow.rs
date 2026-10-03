@@ -312,3 +312,280 @@ fn value_counts_keep_their_snapshot_until_t() {
         app.follow_settled() && visible(app).height() == 4
     });
 }
+
+// `--tee FILE` (#604): standard input recorded to a file while it is viewed.
+
+fn recording(file: &Path, follow: bool) -> OpenOptions {
+    OpenOptions {
+        follow,
+        tee: Some(file.to_path_buf()),
+        ..Default::default()
+    }
+}
+
+fn spool(app: &App) -> std::sync::Arc<datui::follow::Spool> {
+    app.recording().expect("recording").clone()
+}
+
+/// A 16-bit stereo WAV header as a producer writing to a pipe writes it, its sizes
+/// 0xFFFFFFFF, then `frames` frames.
+fn streamed_wav(frames: u32) -> Vec<u8> {
+    let mut out = b"RIFF".to_vec();
+    out.extend(u32::MAX.to_le_bytes());
+    out.extend(b"WAVEfmt ");
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(2u16.to_le_bytes());
+    out.extend(48_000u32.to_le_bytes());
+    out.extend((48_000u32 * 4).to_le_bytes());
+    out.extend(4u16.to_le_bytes());
+    out.extend(16u16.to_le_bytes());
+    out.extend(b"data");
+    out.extend(u32::MAX.to_le_bytes());
+    for i in 0..frames {
+        out.extend((i as i16).to_le_bytes());
+        out.extend((i as i16).wrapping_neg().to_le_bytes());
+    }
+    out
+}
+
+/// What came in is what FILE holds, byte for byte, CSV followed and binary read once it
+/// ended; the bar says saved.
+#[test]
+fn a_recording_is_the_bytes_as_they_came() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("run1.csv");
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"t,n\r\n1,10\r\n").unwrap();
+    let (mut app, rx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        recording(&file, true),
+    );
+    screen(&mut app);
+    assert!(screen(&mut app).contains("rec "), "the bar says it records");
+    producer.write_all(b"2,20\r\n3,3").unwrap();
+    until(&mut app, &rx, |app| shown(app) == 2 && app.follow_settled());
+    producer.write_all(b"0\r\n").unwrap();
+    drop(producer);
+    let spool = spool(&app);
+    spool.wait();
+    until(&mut app, &rx, |app| {
+        app.follow()
+            .is_some_and(|f| *f.standing() == Standing::Ended)
+    });
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        b"t,n\r\n1,10\r\n2,20\r\n3,30\r\n"
+    );
+    assert_eq!(rows(&app), 3, "the last row is read before the end is");
+    let bar = screen(&mut app);
+    assert!(bar.contains("saved") && bar.contains("run1.csv"), "{bar}");
+
+    // Binary, read once it has ended.
+    let file = dir.path().join("t.parquet");
+    let mut bytes = Vec::new();
+    let mut df = df!("a" => [1i64, 2, 3]).unwrap();
+    ParquetWriter::new(&mut bytes).finish(&mut df).unwrap();
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    let (mut app, rx) = self::app();
+    app.read_stdin_from(reader);
+    let sent = bytes.clone();
+    let writer = std::thread::spawn(move || producer.write_all(&sent).unwrap());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        recording(&file, false),
+    );
+    writer.join().unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    assert_eq!(rows(&app), 3);
+}
+
+/// The copy is a thread of its own: megabytes go through while the app handles
+/// nothing at all, so a slow draw never holds the producer up.
+#[test]
+fn a_slow_reader_does_not_stall_the_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("fast.csv");
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"i,s\n0,start\n").unwrap();
+    let (mut app, rx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        recording(&file, true),
+    );
+    let line = b"123456,abcdefghijklmnopqrstuvwxyz0123456789\n";
+    let lines = 200_000;
+    // Written in full before anything is handed to the app again.
+    let writer = std::thread::spawn(move || {
+        for _ in 0..lines {
+            producer.write_all(line).unwrap();
+        }
+    });
+    writer.join().unwrap();
+    let spool = spool(&app);
+    let deadline = Instant::now() + common::HANG_GUARD;
+    let total = 12 + (line.len() * lines) as u64;
+    while spool.bytes() < total {
+        assert!(
+            Instant::now() < deadline,
+            "the copy stalled at {}",
+            spool.bytes()
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), total);
+    drop(rx);
+}
+
+/// Quitting while the producer sends asks: stop, and FILE ends there; keep, and it
+/// goes on until the stream ends; Esc, and nothing happens.
+#[test]
+fn quitting_while_recording_asks_whether_to_keep_recording() {
+    for keep in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("session.csv");
+        let (reader, mut producer) = std::io::pipe().unwrap();
+        producer.write_all(b"a\n1\n").unwrap();
+        let (mut app, rx) = app();
+        app.read_stdin_from(reader);
+        pump_open_until_loaded(
+            &mut app,
+            &rx,
+            vec![PathBuf::from("-")],
+            recording(&file, true),
+        );
+        screen(&mut app);
+
+        assert!(
+            app.event(&key(KeyCode::Char('Q'))).is_none(),
+            "asked, not quit"
+        );
+        assert!(app.confirmation_modal.active);
+        app.event(&key(KeyCode::Esc));
+        assert!(!app.confirmation_modal.active);
+        assert!(spool(&app).live(), "Esc stays, recording");
+
+        assert!(app.event(&key(KeyCode::Char('Q'))).is_none());
+        if keep {
+            app.event(&key(KeyCode::Right));
+        }
+        let out = app.event(&key(KeyCode::Enter));
+        assert!(matches!(out, Some(AppEvent::Exit)), "either way it quits");
+        let after = app.recording_after_exit();
+        if keep {
+            let (path, handle) = after.expect("kept recording");
+            assert_eq!(path, file);
+            drop(app);
+            producer.write_all(b"2\n3\n").unwrap();
+            drop(producer);
+            handle.spool().wait();
+            assert_eq!(std::fs::read(&file).unwrap(), b"a\n1\n2\n3\n");
+        } else {
+            assert!(after.is_none());
+            assert!(!spool(&app).live(), "stopped");
+            // What the producer sends after the stop is not recorded.
+            let _ = producer.write_all(b"2\n");
+            drop(producer);
+            assert_eq!(std::fs::read(&file).unwrap(), b"a\n1\n");
+        }
+    }
+}
+
+/// A WAV stream's header sizes, unknown to a producer writing to a pipe, are filled in
+/// when the stream ends; `--tee-raw` leaves them.
+#[test]
+fn a_wav_header_is_fixed_at_the_end_of_the_stream() {
+    for raw in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("take1.wav");
+        let bytes = streamed_wav(1_000);
+        let (reader, mut producer) = std::io::pipe().unwrap();
+        let (mut app, rx) = app();
+        app.read_stdin_from(reader);
+        let sent = bytes.clone();
+        let writer = std::thread::spawn(move || producer.write_all(&sent).unwrap());
+        let options = OpenOptions {
+            tee_raw: raw,
+            ..recording(&file, false)
+        };
+        pump_open_until_loaded(&mut app, &rx, vec![PathBuf::from("-")], options);
+        writer.join().unwrap();
+        let written = std::fs::read(&file).unwrap();
+        assert_eq!(written.len(), bytes.len());
+        let riff = u32::from_le_bytes(written[4..8].try_into().unwrap());
+        let data = u32::from_le_bytes(written[40..44].try_into().unwrap());
+        if raw {
+            assert_eq!(written, bytes, "the bytes as they came");
+        } else {
+            assert_eq!(riff as usize, bytes.len() - 8);
+            assert_eq!(data, 4_000);
+            assert_eq!(&written[44..], &bytes[44..], "only the sizes change");
+        }
+        assert_eq!(rows(&app), 1_000);
+    }
+}
+
+/// FILE is never replaced without `--force`.
+#[test]
+fn an_existing_file_is_not_replaced_without_force() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("keep.csv");
+    std::fs::write(&file, "precious\n").unwrap();
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"a\n1\n").unwrap();
+    drop(producer);
+    let (mut app, rx) = app();
+    app.read_stdin_from(reader);
+    let message = pump_open_until_error(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        recording(&file, true),
+    );
+    assert!(
+        message.as_deref().is_some_and(|m| m.contains("--force")),
+        "{message:?}"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), b"precious\n");
+
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"a\n1\n").unwrap();
+    drop(producer);
+    let (mut app, rx) = self::app();
+    app.read_stdin_from(reader);
+    let options = OpenOptions {
+        force: true,
+        ..recording(&file, false)
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![PathBuf::from("-")], options);
+    assert_eq!(std::fs::read(&file).unwrap(), b"a\n1\n");
+}
+
+/// A write that fails (a full disk) stops the copy cleanly and says why, naming FILE.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_disk_stops_the_recording_and_says_why() {
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"a\n1\n").unwrap();
+    drop(producer);
+    let (mut app, rx) = app();
+    app.read_stdin_from(reader);
+    let options = OpenOptions {
+        force: true,
+        ..recording(Path::new("/dev/full"), false)
+    };
+    let message = pump_open_until_error(&mut app, &rx, vec![PathBuf::from("-")], options);
+    assert!(
+        message.as_deref().is_some_and(|m| m.contains("/dev/full")),
+        "{message:?}"
+    );
+}

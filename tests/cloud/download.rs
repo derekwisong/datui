@@ -577,8 +577,9 @@ fn a_prefix_of_hugging_face_splits_opens_one() {
     assert_eq!(state.other_tables(), ["train", "validation"]);
 }
 
-/// A DatasetDict saved to a bucket, opened as Arrow, reads one split's prefix, as on
-/// disk. Its listing alone says JSON: the splits are prefixes below it.
+/// A DatasetDict saved to a bucket reads one split's prefix, as on disk, with or
+/// without `--format arrow`: its listing alone is one JSON file beside the splits'
+/// prefixes, and that file marks it.
 #[test]
 fn a_dataset_dict_in_a_bucket_opens_one_split() {
     crate::common::ensure_sample_data();
@@ -599,24 +600,26 @@ fn a_dataset_dict_in_a_bucket_opens_one_split() {
         );
     }
     let s3 = FakeS3::serve("lake", objects);
-    let (mut app, rx) = app(&s3);
-    let dir = tempfile::tempdir().unwrap();
-    let options = OpenOptions {
-        temp_dir: Some(dir.path().to_path_buf()),
-        table: Some("test".to_string()),
-        format: Some(datui::FileFormat::Arrow),
-        ..OpenOptions::default()
-    };
-    chain(
-        &mut app,
-        AppEvent::OpenNamed(vec![PathBuf::from("s3://lake/dd/")], options),
-    );
-    let asked = settle_confirming(&mut app, &rx);
-    assert!(asked.is_some(), "the stream is put to the user");
-    assert_eq!(app.error_message(), None);
-    let state = app.data_table_state.as_ref().expect("the test split opens");
-    assert_eq!(state.num_rows(), 300);
-    assert_eq!(state.other_tables(), ["train"]);
+    for format in [Some(datui::FileFormat::Arrow), None] {
+        let (mut app, rx) = app(&s3);
+        let dir = tempfile::tempdir().unwrap();
+        let options = OpenOptions {
+            temp_dir: Some(dir.path().to_path_buf()),
+            table: Some("test".to_string()),
+            format,
+            ..OpenOptions::default()
+        };
+        chain(
+            &mut app,
+            AppEvent::OpenNamed(vec![PathBuf::from("s3://lake/dd/")], options),
+        );
+        let asked = settle_confirming(&mut app, &rx);
+        assert!(asked.is_some(), "{format:?}: the stream is put to the user");
+        assert_eq!(app.error_message(), None, "{format:?}");
+        let state = app.data_table_state.as_ref().expect("the test split opens");
+        assert_eq!(state.num_rows(), 300, "{format:?}");
+        assert_eq!(state.other_tables(), ["train"], "{format:?}");
+    }
 }
 
 /// IPC files in a bucket, a prefix of them, one object or a glob, are scanned where

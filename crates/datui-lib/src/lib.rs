@@ -15896,6 +15896,10 @@ impl App {
     fn cloud_prefix_format(
         holds: &discover::Holds,
     ) -> Option<(FileFormat, Vec<(FileFormat, usize)>)> {
+        // A saved DatasetDict: its splits are Arrow, read one at a time.
+        if holds.dataset_dict {
+            return Some((FileFormat::Arrow, Vec::new()));
+        }
         // A model's weights beside its config and tokenizer JSON: the prefix is the
         // model, as a directory on disk is, and the JSON is not data passed over.
         if let Some((name, _)) = holds.model_weights() {

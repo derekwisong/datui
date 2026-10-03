@@ -925,16 +925,23 @@ pub fn look_at_listing(
         }
     }
     // A Hugging Face dataset's own JSON files are its writer's, as they are on disk.
-    let arrow = crate::FileFormat::Arrow.name();
-    let hugging_face: Vec<String> = if counts.iter().any(|(f, _)| *f == arrow) {
-        files
+    // So is a saved DatasetDict's `dataset_dict.json`, beside the prefixes of its
+    // splits: the listing alone would call it a prefix of one JSON file.
+    let arrow = counts
+        .iter()
+        .any(|(f, _)| *f == crate::FileFormat::Arrow.name());
+    let dataset_dict = !counted.is_empty()
+        && files
             .iter()
-            .map(|key| last(key))
-            .filter(|name| crate::discover::is_hugging_face_metadata(name))
-            .collect()
-    } else {
-        Vec::new()
-    };
+            .any(|key| last(key) == crate::hf_splits::DATASET_DICT);
+    let hugging_face: Vec<String> = files
+        .iter()
+        .map(|key| last(key))
+        .filter(|name| {
+            (arrow && crate::discover::is_hugging_face_metadata(name))
+                || (dataset_dict && name == crate::hf_splits::DATASET_DICT)
+        })
+        .collect();
     let json = crate::FileFormat::Json.name();
     for (format, n) in &mut counts {
         if *format == json {
@@ -1000,6 +1007,7 @@ pub fn look_at_listing(
         skipped,
         skipped_names,
         truncated: false,
+        dataset_dict,
     };
     // A lake table first: its data files genuinely agree on a schema, so every rule
     // below says "one table" and is right about the schema and wrong about the rows.
@@ -2038,6 +2046,32 @@ mod tests {
         assert_eq!(holds.skipped_names, ["dataset_info.json", "state.json"]);
         let holds = look_at_listing("j/", &directories(&[]), &objects(&[("j/state.json", 5)])).1;
         assert_eq!(holds.formats, vec![("json".to_string(), 1)], "no Arrow");
+    }
+
+    /// A saved DatasetDict is `dataset_dict.json` beside a prefix per split: its JSON is
+    /// its writer's, and the prefix is read as Arrow. Without a prefix beside it, the
+    /// same name is a JSON file like any other.
+    #[test]
+    fn a_saved_dataset_dict_prefix_is_arrow() {
+        let (kind, holds) = look_at_listing(
+            "dd/",
+            &directories(&["dd/test/", "dd/train/"]),
+            &objects(&[("dd/dataset_dict.json", 30)]),
+        );
+        assert_eq!(kind, crate::discover::EntryKind::Directory);
+        assert!(holds.dataset_dict);
+        assert!(holds.formats.is_empty(), "{:?}", holds.formats);
+        assert_eq!(holds.skipped_names, ["dataset_dict.json"]);
+        assert_eq!(holds.directories, 2);
+
+        let holds = look_at_listing(
+            "j/",
+            &directories(&[]),
+            &objects(&[("j/dataset_dict.json", 30)]),
+        )
+        .1;
+        assert!(!holds.dataset_dict);
+        assert_eq!(holds.formats, vec![("json".to_string(), 1)]);
     }
 
     #[test]

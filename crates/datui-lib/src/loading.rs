@@ -294,6 +294,9 @@ pub(crate) enum Phase {
     },
     /// A CSV read with its string columns parsed.
     ScanningStrings,
+    /// A CSV whose footer rows are dropped (`--skip-tail-rows`): the scan counts every
+    /// row of the file first, which is the wait.
+    CountingFooter,
     /// The scan; `downloaded` when it reads a download rather than what was named.
     Scanning {
         downloaded: bool,
@@ -331,6 +334,7 @@ impl Phase {
                 (what.label(), 10 + share as u16)
             }
             Phase::ScanningStrings => ("Scanning string columns", 55),
+            Phase::CountingFooter => (COUNTING_FOOTER, 10),
             Phase::Scanning { downloaded: false } => ("Scanning input", 10),
             Phase::Scanning { downloaded: true } => ("Scanning", 30),
             Phase::ReadingSchema => ("Caching schema", 40),
@@ -1189,6 +1193,16 @@ impl Loader {
             return Step::Probe(pending);
         }
         let load = self.load.as_mut().expect("an open has a load");
+        if counts_footer(&paths, &options) {
+            load.phase = Phase::CountingFooter;
+            let display = load.path.clone().filter(|shown| *shown != paths[0]);
+            return Step::Scan {
+                paths,
+                options,
+                display,
+                status: COUNTING_FOOTER_STATUS,
+            };
+        }
         if paths.len() == 1 && delimited.is_some() && options.parse_strings.is_some() {
             load.phase = Phase::ScanningStrings;
             return Step::Scan {
@@ -1260,12 +1274,19 @@ impl Loader {
                 download: Some(download),
             };
         }
-        load.phase = Phase::Scanning { downloaded: true };
+        let paths = vec![file];
+        let status = if counts_footer(&paths, &options) {
+            load.phase = Phase::CountingFooter;
+            COUNTING_FOOTER_STATUS
+        } else {
+            load.phase = Phase::Scanning { downloaded: true };
+            "Scanning..."
+        };
         Step::Scan {
-            paths: vec![file],
+            paths,
             options,
             display: Some(url),
-            status: "Scanning...",
+            status,
         }
     }
 
@@ -1283,7 +1304,10 @@ impl Loader {
         match (answer, &load.phase) {
             (
                 LoadAnswer::Scanned { lf, path, options },
-                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::ReadingRecords,
+                Phase::Scanning { .. }
+                | Phase::ScanningStrings
+                | Phase::CountingFooter
+                | Phase::ReadingRecords,
             ) => {
                 load.phase = Phase::ReadingSchema;
                 Step::ReadSchema {
@@ -1302,7 +1326,7 @@ impl Loader {
                     path,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
             ) if load.converted.is_empty() => {
                 let read = Arc::<AtomicU64>::default();
                 load.phase = Phase::Converting {
@@ -1384,7 +1408,7 @@ impl Loader {
                     path,
                     options,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
             ) => {
                 load.phase = Phase::Decompressing;
                 Step::Decompress {
@@ -1452,7 +1476,7 @@ impl Loader {
                     asked,
                     record_size,
                 },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
             ) => {
                 let from_home = load.from_home;
                 // A download is a temporary file the load owns; it has no bytes to show
@@ -1476,7 +1500,7 @@ impl Loader {
             }
             (
                 LoadAnswer::Tables { file, tables, path },
-                Phase::Scanning { .. } | Phase::ScanningStrings,
+                Phase::Scanning { .. } | Phase::ScanningStrings | Phase::CountingFooter,
             ) => {
                 let from_home = load.from_home;
                 let database = path.unwrap_or(file);
@@ -1620,12 +1644,19 @@ impl Loader {
                 load.path = Some(file.clone());
                 load.paths = Some(vec![file.clone()]);
                 load.recent = Some(file.clone());
-                load.phase = Phase::Scanning { downloaded: false };
+                let paths = vec![file];
+                let status = if counts_footer(&paths, &options) {
+                    load.phase = Phase::CountingFooter;
+                    COUNTING_FOOTER_STATUS
+                } else {
+                    load.phase = Phase::Scanning { downloaded: false };
+                    "Scanning input..."
+                };
                 Step::Scan {
-                    paths: vec![file],
+                    paths,
                     options,
                     display: None,
-                    status: "Scanning input...",
+                    status,
                 }
             }
             (LoadAnswer::Spooled { download, options }, Phase::Spooling { read }) => {
@@ -1786,6 +1817,18 @@ pub(crate) fn in_memory(paths: &[PathBuf], options: &OpenOptions) -> Option<InMe
         }
     }
     found
+}
+
+/// What the loading screen says while a CSV is counted to drop its footer rows.
+const COUNTING_FOOTER: &str = "Counting rows to skip the footer";
+/// The control bar's line for the same wait.
+const COUNTING_FOOTER_STATUS: &str = "Counting rows to skip the footer...";
+
+/// Whether the scan of `paths` counts every row first: delimited text whose footer
+/// rows are dropped (`--skip-tail-rows`).
+fn counts_footer(paths: &[PathBuf], options: &OpenOptions) -> bool {
+    options.skip_tail_rows.is_some_and(|n| n > 0)
+        && paths.iter().all(|p| delimited_format(p, options).is_some())
 }
 
 pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
@@ -2419,6 +2462,42 @@ mod tests {
         let mut loader = Loader::default();
         let _ = open(&mut loader, &json, 0);
         assert!(loader.retire().is_some_and(|retired| retired.asking));
+    }
+
+    /// A CSV whose footer rows are dropped counts the file in its scan, and says so;
+    /// a file of another format, or with no footer to drop, scans as ever.
+    #[test]
+    fn a_footer_to_drop_says_the_file_is_counted() {
+        let footer = |n| OpenOptions {
+            skip_tail_rows: Some(n),
+            parse_strings: Some(crate::ParseStringsTarget::All),
+            ..OpenOptions::default()
+        };
+        let mut loader = Loader::default();
+        let step = loader.open(OpenRequest {
+            options: footer(2),
+            ..request("vendor.csv")
+        });
+        assert!(
+            matches!(step, Step::Scan { status, .. } if status == COUNTING_FOOTER_STATUS),
+            "{:?}",
+            loader.current().map(|l| l.phase().label())
+        );
+        assert_eq!(
+            loader.current().unwrap().phase().label(),
+            (COUNTING_FOOTER, 10)
+        );
+        for (path, n) in [("vendor.csv", 0), ("vendor.parquet", 2)] {
+            let mut loader = Loader::default();
+            let step = loader.open(OpenRequest {
+                options: footer(n),
+                ..request(path)
+            });
+            assert!(
+                matches!(step, Step::Scan { status, .. } if status != COUNTING_FOOTER_STATUS),
+                "{path}"
+            );
+        }
     }
 
     /// Several URLs at once cannot be read, and say so.

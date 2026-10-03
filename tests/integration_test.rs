@@ -23051,6 +23051,35 @@ fn test_copy_as_python_reads_streams_beside_ipc_files() {
     assert_eq!(rows, view_csv(&app), "{script}");
 }
 
+/// Dropping footer rows counts the whole file before the first row: the loading
+/// screen and the control bar say so while it does.
+#[test]
+fn test_a_footer_count_says_so_on_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vendor.csv");
+    std::fs::write(&path, "a,b\n1,2\n3,4\nTOTAL,6\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let options = OpenOptions {
+        skip_tail_rows: Some(1),
+        ..OpenOptions::default()
+    };
+    let mut next = app.event(&AppEvent::Open(vec![path], options));
+    let area = Rect::new(0, 0, 100, 24);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains("Counting rows to skip the footer"),
+        "{screen}"
+    );
+    while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
+        next = app.event(&event);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 2);
+}
+
 /// A file read whole into memory past `[file_loading] memory_warning_mb` is put to
 /// the user before the read: Enter reads it, Esc goes home without reading, and 0
 /// never asks.

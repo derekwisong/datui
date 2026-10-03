@@ -57,8 +57,8 @@ recent datasets, and [views](views.md) match it by its columns only.
 ## Following a growing file
 
 `--follow` (`-f`) shows rows as they are appended to a local CSV, TSV, PSV or
-NDJSON file, as `tail -f` does: a logger's output, a test rig's results, an
-app's event log. With `-`, it shows standard input as it arrives rather than
+NDJSON file, or record batches to an Arrow IPC stream, as `tail -f` does: a
+logger's output, a test rig's results, an app's event log. With `-`, it shows standard input as it arrives rather than
 waiting for it to end.
 
 ```bash
@@ -102,9 +102,11 @@ The control bar says `following` and how long ago rows last arrived, or
   rows show, until it ends or <kbd>Esc</kbd>, <kbd>Ctrl</kbd>+<kbd>O</kbd> or
   quitting stops it. The bar says when it ends.
 
-Parquet, Arrow IPC, Excel and other formats written with a footer cannot be
-read before they are finished, nor can a compressed file be read from the
-middle: `--follow` refuses them, and remote data, with a message.
+An Arrow IPC stream shows a record batch once its message is whole; one with
+dictionary-encoded columns cannot be followed. Parquet, Arrow IPC files, Excel
+and other formats written with a footer cannot be read before they are
+finished, nor can a compressed file be read from the middle: `--follow`
+refuses them, and remote data, with a message.
 
 ### Recording standard input
 

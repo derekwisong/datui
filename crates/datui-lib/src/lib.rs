@@ -4597,7 +4597,7 @@ impl App {
                 }
                 // A recording of something that cannot be read as it grows.
                 None => self.flash_note(
-                    "Only text is followed: this shows what had arrived, and recording goes on"
+                    "Only text and Arrow streams are followed: this shows what had arrived, and recording goes on"
                         .to_string(),
                 ),
             }
@@ -8220,8 +8220,19 @@ impl App {
                 .descriptor()
                 .lines
                 == Some(crate::cli::Lines::Json);
+        // An Arrow IPC stream followed is read by a scan of its own, not converted.
+        let followed_stream = options.follow
+            && crate::follow::followed_stream(
+                &paths[0],
+                Some(crate::follow::format_of(&paths[0], options.format)),
+                &options,
+            );
         let scan = if followed_lines {
             crate::follow::scan_lines(&paths[0], &options, &mut report.read_python).map(Scan::from)
+        } else if followed_stream {
+            crate::follow::stream::scan(&paths[0])
+                .map(Scan::from)
+                .map_err(|e| color_eyre::eyre::eyre!(e))
         } else {
             Self::build_lazyframe_from_paths_with(cloud, paths, &options, &mut report, formats)
         }
@@ -8237,7 +8248,10 @@ impl App {
         let (scan, tail) = match scan {
             Scan::Frame(lf) if options.follow => {
                 let format = crate::follow::format_of(&paths[0], format);
-                match crate::follow::refusal(Some(format), &options) {
+                let refused = (!followed_stream)
+                    .then(|| crate::follow::refusal(Some(format), &options))
+                    .flatten();
+                match refused {
                     Some(_) if recording => (Scan::Frame(lf), None),
                     Some(refusal) => return Err(refusal),
                     None => {

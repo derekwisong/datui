@@ -361,6 +361,74 @@ fn blank_lines_in_ndjson_cost_no_rows() {
     assert_eq!(page, expected);
 }
 
+/// An Arrow IPC stream grows a record batch at a time, from a file or standard input;
+/// a batch shows once its message is whole. An Arrow IPC file is refused.
+#[test]
+fn an_arrow_stream_is_followed_by_its_batches() {
+    let frame = |from: i64, n: i64| {
+        df!(
+            "id" => (from..from + n).collect::<Vec<_>>(),
+            "name" => (from..from + n).map(|i| format!("n{i}")).collect::<Vec<_>>(),
+        )
+        .unwrap()
+    };
+    let (schema, batches) = datui::follow::stream_messages(&frame(0, 40), 5);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("live.arrows");
+    std::fs::write(&path, [schema.clone(), batches[0].clone()].concat()).unwrap();
+    let (mut app, rx) = app();
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
+    screen(&mut app);
+    assert_eq!(rows(&app), 5);
+    let cut = batches[1].len() / 2;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(&batches[1][..cut]).unwrap();
+    until(&mut app, &rx, |app| app.follow_settled());
+    assert_eq!(rows(&app), 5, "half a batch waits");
+    file.write_all(&batches[1][cut..]).unwrap();
+    file.write_all(&batches[2..].concat()).unwrap();
+    until(&mut app, &rx, |app| {
+        shown(app) == 40 && app.follow_settled()
+    });
+    assert!(on_last_row(&app));
+    let ids = visible(&app).column("id").unwrap().i64().unwrap().to_vec();
+    assert_eq!(ids.last().copied().flatten(), Some(39), "{ids:?}");
+
+    // Piped in.
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer
+        .write_all(&[schema.clone(), batches[0].clone()].concat())
+        .unwrap();
+    let (mut app, rx) = self::app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(&mut app, &rx, vec![PathBuf::from("-")], following());
+    screen(&mut app);
+    assert!(app.data_table_state.is_some(), "{:?}", app.error_message());
+    producer.write_all(&batches[1..].concat()).unwrap();
+    until(&mut app, &rx, |app| {
+        shown(app) == 40 && app.follow_settled()
+    });
+    drop(producer);
+
+    // An IPC file has its footer written last.
+    let file = dir.path().join("done.arrow");
+    let mut df = frame(0, 3);
+    IpcWriter::new(File::create(&file).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (mut app, rx) = self::app();
+    let message = pump_open_until_error(&mut app, &rx, vec![file], following());
+    assert!(
+        message
+            .as_deref()
+            .is_some_and(|m| m.contains("stream can be followed")),
+        "{message:?}"
+    );
+}
+
 /// A file whose footer is written last cannot be read as it grows: refused, saying so.
 #[test]
 fn a_parquet_file_is_not_followed() {

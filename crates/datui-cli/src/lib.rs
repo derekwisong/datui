@@ -116,7 +116,7 @@ pub struct Args {
     #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
-    /// Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops
+    /// Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file or Arrow IPC stream, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops
     #[arg(short = 'f', long = "follow", action, help_heading = "Reading")]
     pub follow: bool,
 

@@ -179,8 +179,9 @@ impl FileFormat {
     /// file's tensor list is small by nature: one row per tensor, from the header. A
     /// MIDI file is decoded whole, and is refused over 64 MiB. A SQLite table is read
     /// in place, a page at a time, with sort and filters run in SQLite.
-    /// Arrow streams and GPS logs cannot be scanned where they are, so they are read
-    /// once into an IPC file that is; compressed text is decompressed once to a file.
+    /// Arrow streams, GPS logs, VCD dumps, FIX logs and SDF files cannot be scanned
+    /// where they are, so they are read once into an IPC file that is; compressed text
+    /// is decompressed once to a file.
     pub fn read_mode(self, stored: Stored) -> Option<ReadMode> {
         let plain = match self {
             Self::Parquet
@@ -190,7 +191,7 @@ impl FileFormat {
             | Self::Arrow
             | Self::Audio
             | Self::Sqlite => ReadMode::Lazy,
-            Self::Nmea | Self::Gpx => ReadMode::Converted,
+            Self::Nmea | Self::Gpx | Self::Vcd | Self::Fix | Self::Sdf => ReadMode::Converted,
             Self::Json
             | Self::Jsonl
             | Self::Avro
@@ -203,8 +204,14 @@ impl FileFormat {
         match stored {
             Stored::Plain => Some(plain),
             Stored::Stream => (self == Self::Arrow).then_some(ReadMode::Converted),
-            // A GPS log is decompressed as it is read, into the file it is read into.
-            Stored::Compressed { .. } if matches!(self, Self::Nmea | Self::Gpx) => {
+            // A GPS log, VCD dump, FIX log or SDF file is decompressed as it is read,
+            // into the file it is read into.
+            Stored::Compressed { .. }
+                if matches!(
+                    self,
+                    Self::Nmea | Self::Gpx | Self::Vcd | Self::Fix | Self::Sdf
+                ) =>
+            {
                 Some(ReadMode::Converted)
             }
             Stored::Compressed { in_memory } => self.separator().map(|_| match in_memory {
@@ -1381,6 +1388,12 @@ mod format_tests {
             let choices: Vec<FormatChoice> = if extensions.contains("format spec") {
                 spec_row = true;
                 vec![FormatChoice::Spec("any.spec".into())]
+            } else if let Some((_, name)) = extensions.split_once("--format ") {
+                // A format found by content, with no extension: FIX.
+                let name = name.trim_matches('`');
+                vec![FormatChoice::Builtin(
+                    FileFormat::from_name(name).unwrap_or_else(|| panic!("{name} is a format")),
+                )]
             } else {
                 extensions
                     .split(", ")

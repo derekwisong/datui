@@ -102,6 +102,9 @@ The format is taken from the extension, or from `--format` when there is none.
 | [GPX](#gps-logs) | `.gpx` | converted once | converted once | downloaded | downloaded | no |
 | [WAV, BWF, RF64, AIFF](#audio-files) | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy | no | downloaded | downloaded | no |
 | [MIDI](#midi-files) | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | in memory | no | downloaded | downloaded | no |
+| [VCD](#vcd-value-change-dumps) | `.vcd` | converted once | converted once | downloaded | downloaded | no |
+| [FIX logs](#fix-logs) | any, by content (`8=FIX`), or `--format fix` | converted once | converted once | downloaded | downloaded | no |
+| [SDF](#sdf-compound-files) | `.sdf`, `.sd` | converted once | converted once | downloaded | downloaded | no |
 | [SQLite](#sqlite-databases) | `.db`, `.sqlite`, `.sqlite3`, `.db3` | lazy | no | downloaded | downloaded | no |
 | [Binary records](binary-formats.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
 
@@ -477,6 +480,8 @@ The database is only read:
 A compressed database (`shop.db.gz`) is not read; decompress it first.
 ### VCD value change dumps
 
+Read: [converted once](#how-each-format-is-read).
+
 ```bash
 datui waves.vcd
 datui waves.vcd.gz
@@ -531,6 +536,8 @@ Values `value` and Aggregate `last` gives the same table with nulls between
 changes.
 
 ### FIX logs
+
+Read: [converted once](#how-each-format-is-read).
 
 ```bash
 datui session.log                       # known by its content
@@ -608,6 +615,8 @@ product includes software developed by quickfixengine.org
 (http://www.quickfixengine.org/).
 
 ### SDF compound files
+
+Read: [converted once](#how-each-format-is-read).
 
 ```bash
 datui compounds.sdf

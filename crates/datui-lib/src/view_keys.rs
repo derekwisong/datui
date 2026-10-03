@@ -1,11 +1,11 @@
-//! The template modal's keys.
+//! The view modal's keys.
 
 use crate::widgets::view_modal::{FormFocus, ViewModalMode};
 use crate::{App, AppEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
-    /// Keys while the template modal is open.
+    /// Keys while the view modal is open.
     pub(crate) fn view_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let form = self.view_modal.mode != ViewModalMode::List;
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);

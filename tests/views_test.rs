@@ -79,7 +79,7 @@ fn the_views_surface_saves_applies_and_deletes() {
     assert_eq!(
         app.view_modal.name_input.value(),
         "views_surface",
-        "the suggested name is the file stem, not template0001"
+        "the suggested name is the file stem, not a numbered default"
     );
     assert!(
         app.view_modal.schema_match_enabled,

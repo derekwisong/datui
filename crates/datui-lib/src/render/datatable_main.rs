@@ -1,4 +1,4 @@
-//! Datatable main view: table content, input strip, sidebars (sort/filter, template, pivot/melt), export modal.
+//! Datatable main view: table content, input strip, sidebars (sort/filter, views, pivot/melt), export modal.
 
 use crate::render::context::RenderContext;
 use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};

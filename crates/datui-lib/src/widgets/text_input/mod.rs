@@ -5,7 +5,7 @@
 //! multi-line input inserts newlines instead and recalls with `Ctrl-P` /
 //! `Ctrl-N`; a statement submits on Enter, breaks lines on Alt+Enter and
 //! wraps. Everything else, including the editing keys, is shared, so the
-//! query bar, the modal filter boxes and the template description all behave
+//! query bar, the modal filter boxes and the view description all behave
 //! the same way.
 //!
 //! Editing itself belongs to [`crate::widgets::textarea::TextArea`], which this

@@ -831,7 +831,7 @@ struct AnalysisComputationState {
 }
 
 /// At most one query type can be active. Returns (query, sql_query, fuzzy_query) with only the
-/// active one set (SQL takes precedence over fuzzy over DSL query). Used when saving template settings.
+/// active one set (SQL takes precedence over fuzzy over DSL query). Used when saving view settings.
 fn active_query_settings(
     dsl_query: &str,
     sql_query: &str,
@@ -1088,7 +1088,7 @@ pub struct App {
     pointer: pointer::Pointing,
     cache: CacheManager,
     view_manager: Views,
-    active_view_id: Option<String>, // ID of currently applied template
+    active_view_id: Option<String>, // ID of currently applied view
     /// An export under way, which the control bar reports.
     export_progress: Option<ExportProgress>,
     theme: Theme, // Color theme for UI rendering
@@ -3878,7 +3878,7 @@ impl App {
     }
 
     /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
-    /// (template, analysis) drawn over it.
+    /// (view, analysis) drawn over it.
     pub fn in_normal_table_view(&self) -> bool {
         self.input_mode == InputMode::Normal
             && !self.show_help
@@ -4700,9 +4700,9 @@ impl App {
         self.pivot_melt_modal = PivotMeltModal::new();
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
 
-        // The dataset is installed and its schema known, so this is where a template
+        // The dataset is installed and its schema known, so this is where a view
         // meets it. `--view` names one and applies to this first open alone;
-        // `[views] auto_apply` dresses every open that has a matching template.
+        // `[views] auto_apply` dresses every open that has a matching view.
         // A fresh dataset starts with no view applied: the previous file's view
         // must not wear the check mark here, nor count as applied when edited.
         self.active_view_id = None;
@@ -5355,7 +5355,7 @@ impl App {
         Self::new_with_views(events, runtime, theme, app_config, views)
     }
 
-    /// An app whose saved views may still be on their way ([`Templates`]).
+    /// An app whose saved views may still be on their way ([`Views`]).
     pub fn new_with_views(
         events: Sender<AppEvent>,
         runtime: tokio::runtime::Handle,
@@ -6655,7 +6655,7 @@ impl App {
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
-        // The template modal keys and renders off its own `active`, not the input
+        // The view modal keys and renders off its own `active`, not the input
         // mode, so left open here it would come back as a zombie over the next
         // dataset opened.
         self.view_modal.close();
@@ -11855,7 +11855,7 @@ impl App {
         Some((format!("Score: {}", view.name), details))
     }
 
-    /// Set the appropriate help overlay visible (main, template, or analysis). No-op if already visible.
+    /// Set the appropriate help overlay visible (main, view, or analysis). No-op if already visible.
     fn open_help_overlay(&mut self) {
         let already = self.show_help
             || (self.view_modal.active && self.view_modal.show_help)
@@ -12143,7 +12143,7 @@ impl App {
 
         // Main table: the column cursor keys (before help/mode blocks so they always work
         // in Normal). No is_press()/is_release() check: some terminals do not report key
-        // kind correctly. Exclude template/analysis modals so they can handle Left/Right
+        // kind correctly. Exclude view/analysis modals so they can handle Left/Right
         // themselves.
         let in_main_table = !(self.input_mode != InputMode::Normal
             || self.show_help
@@ -14143,7 +14143,7 @@ impl App {
                     state.deferred(|s| s.reset());
                 }
                 self.spawn_async_collect(Self::LOADING_BUFFER);
-                // Clear active template when resetting
+                // Clear active view when resetting
                 self.active_view_id = None;
                 None
             }
@@ -14912,7 +14912,7 @@ impl App {
         (!hive && plain && one_file).then_some((format, facts))
     }
 
-    /// Start applying `template`. Its steps are planned here, which reads nothing; a
+    /// Start applying `view`. Its steps are planned here, which reads nothing; a
     /// step that cannot be planned fails here and changes nothing. The reads — a pivot,
     /// then the view's first rows — run in the background, and the view is installed
     /// when they are in. One that fails there puts the view before it back (#400).
@@ -14920,7 +14920,7 @@ impl App {
         self.apply_view_with(view, None)
     }
 
-    /// [`Self::apply_template`], for a view applied because its criteria fit as `why`
+    /// [`Self::apply_view`], for a view applied because its criteria fit as `why`
     /// says: once its rows are in, a flash names it and the reason.
     fn apply_matched_view(&mut self, view: &SavedView, why: view::MatchReason) -> Result<()> {
         self.apply_view_with(view, Some(why))

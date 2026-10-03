@@ -536,7 +536,7 @@ fn test_space_chooses_in_a_pick_one_picker() {
     assert_eq!(app.pivot_melt_modal.pivot_column, Some("date".to_string()));
 }
 
-/// Save a template after pivot, reload file, apply via T, and verify pivoted result.
+/// Save a view after pivot, reload file, apply via V, and verify pivoted result.
 #[test]
 fn test_view_save_and_apply_pivot() {
     ensure_sample_data();
@@ -569,11 +569,11 @@ fn test_view_save_and_apply_pivot() {
     };
     let view = app
         .create_view_from_current_state(
-            "pivot_melt_test_pivot_template".to_string(),
+            "pivot_melt_test_pivot_view".to_string(),
             None,
             match_criteria,
         )
-        .expect("create template");
+        .expect("create view");
 
     load_file(&mut app, &rx, path.clone());
     let raw_names: Vec<String> = app

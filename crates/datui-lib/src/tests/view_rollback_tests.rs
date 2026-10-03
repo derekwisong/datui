@@ -70,7 +70,7 @@ fn control_bar(app: &mut App) -> String {
         .collect()
 }
 
-/// Open `long.csv` with `template` applied on open and handle events until the
+/// Open `long.csv` with `view` applied on open and handle events until the
 /// open is done; `intercept` may take an event instead. Returns how many times the
 /// dataset's own rows were asked for.
 fn open_with_view(
@@ -236,7 +236,7 @@ fn a_view_returns_before_its_rows_are_read() {
     assert_eq!(app.active_view_id.as_deref(), Some(view.id.as_str()));
 }
 
-/// A template that pivots and then fails must roll the pivot back too: otherwise the
+/// A view that pivots and then fails must roll the pivot back too: otherwise the
 /// view shows the original columns while SQL still runs against the pivot.
 #[test]
 fn a_failed_view_rolls_back_the_reshape() {
@@ -603,7 +603,7 @@ fn a_query_whose_rows_worker_dies_rolls_back() {
     );
 }
 
-/// Rolling a failed template back restores the frame, and the frame's rows still
+/// Rolling a failed view back restores the frame, and the frame's rows still
 /// stand for rows of a file — so what the state believes about them has to be
 /// rolled back with it, or the cells go back to reading as plain nulls.
 #[test]
@@ -857,13 +857,13 @@ fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
     assert_eq!(left_out(state), 1, "the note stays: {:#?}", state.notes());
 }
 
-/// A rollback that stops half way leaves a state that is neither the template's nor
+/// A rollback that stops half way leaves a state that is neither the view's nor
 /// the user's, and the note then describes the half that lost.
 ///
-/// The user has no sort at all; the template brings one, on a column the files
+/// The user has no sort at all; the view brings one, on a column the files
 /// disagree on, and then fails on a column order that does not fit. Every step of
 /// the rollback used to be guarded on the one before, and the first of them
-/// collected against the template's column order and errored — so the template's
+/// collected against the view's column order and errored — so the view's
 /// sort stayed in the sidebar, the notes were built from it, and the row counter
 /// reported a frame three rows shorter than the one on screen.
 #[test]
@@ -929,7 +929,7 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(
         state.view_sort_columns().is_empty(),
-        "the template's sort does not survive its own failure"
+        "the view's sort does not survive its own failure"
     );
     assert_eq!(
         state.get_column_order(),
@@ -958,12 +958,12 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
     assert!(state.error().is_none(), "with no error left over");
 }
 
-/// A template whose SQL drops a column that the same template's sort names. The
+/// A view whose SQL drops a column that the same view's sort names. The
 /// sorted frame cannot be built at all, so the row count errors — and reporting
 /// that as zero rows used to blank the table and return before `load_buffer`, the
-/// only other place a failure is recorded. `apply_template` decides whether to roll
+/// only other place a failure is recorded. `apply_view` decides whether to roll
 /// back by looking for an error, found none, and returned `Ok`: the user was left
-/// with a blank table wearing the template's sort, told nothing.
+/// with a blank table wearing the view's sort, told nothing.
 #[test]
 fn a_view_whose_sort_names_a_column_its_query_removed_fails_loudly() {
     crate::tests::ensure_sample_data();
@@ -995,7 +995,7 @@ fn a_view_whose_sort_names_a_column_its_query_removed_fails_loudly() {
 
     assert!(
         app.apply_view(&view).is_err(),
-        "the template fails, rather than quietly leaving a blank table"
+        "the view fails, rather than quietly leaving a blank table"
     );
 
     let state = app.data_table_state.as_ref().unwrap();
@@ -1215,7 +1215,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
         sort_columns: None,
     };
     enum Fails {
-        /// While planning: `apply_template` says so and nothing is read.
+        /// While planning: `apply_view` says so and nothing is read.
         Planning,
         /// In the background, once the pivot is in or the rows are read.
         Reading,

@@ -1,6 +1,5 @@
 //! State for the Views sidebar: the list of saved views scored against the
-//! open file, and the save/edit form. (The code says "template" where the UI
-//! says "view": the store format and config section keep the old name.)
+//! open file, and the save/edit form.
 
 use crate::view::{BrokenView, MatchReason, SavedView};
 use crate::widgets::text_input::TextInput;

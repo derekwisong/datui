@@ -140,7 +140,7 @@ pub struct ViewSettings {
     pub fuzzy_query: Option<String>,
     pub filters: Vec<FilterStatement>,
     pub sort_columns: Vec<String>,
-    /// Per entry of `sort_columns`, whether it runs descending. Empty in templates
+    /// Per entry of `sort_columns`, whether it runs descending. Empty in views
     /// saved before per-column directions existed; `sort_ascending` then covers all.
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -163,7 +163,7 @@ pub struct ViewSettings {
 }
 
 impl ViewSettings {
-    /// The per-column directions this template's sort runs. A template saved before
+    /// The per-column directions this view's sort runs. A view saved before
     /// per-column directions existed has none; `sort_ascending` then covers all.
     pub fn sort_directions(&self) -> Vec<bool> {
         if self.sort_descending.len() == self.sort_columns.len() {
@@ -194,7 +194,7 @@ pub struct ViewManager {
 /// first frame. Nothing needs them until a dataset's schema is known (`--view` and
 /// auto-apply meet it there) or the views list opens, so the first use waits for the
 /// read if it is still going — a view the user asked for is never skipped by rows
-/// shown without it. Derefs to the [`TemplateManager`].
+/// shown without it. Derefs to the [`ViewManager`].
 pub struct Views {
     ready: std::cell::OnceCell<ViewManager>,
     pending: std::cell::RefCell<Option<std::sync::mpsc::Receiver<ViewManager>>>,
@@ -285,11 +285,11 @@ impl ViewManager {
         })
     }
 
-    /// Creates a template manager that loads templates from disk. Use `empty()` when
+    /// Creates a view manager that loads views from disk. Use `empty()` when
     /// config dirs are unavailable to avoid panicking on startup.
     pub fn new(config: &ConfigManager) -> Result<Self> {
         // Don't create directories on startup - be sensitive to constrained environments
-        // Directories will be created lazily when actually needed (e.g., saving templates)
+        // Directories will be created lazily when actually needed (e.g., saving views)
         let views_dir = config.config_dir().join("templates");
 
         let mut manager = Self {
@@ -299,13 +299,13 @@ impl ViewManager {
             broken_views: Vec::new(),
         };
 
-        // Only try to load templates if the directory exists
+        // Only try to load views if the directory exists
         // Don't create it if it doesn't exist
         manager.load_views()?;
         Ok(manager)
     }
 
-    /// Creates an empty in-memory template manager (no disk load). Use when
+    /// Creates an empty in-memory view manager (no disk load). Use when
     /// `new()` fails so the app can start without panicking; save may fail later.
     pub fn empty(config: &ConfigManager) -> Self {
         Self {
@@ -320,7 +320,7 @@ impl ViewManager {
         self.views.clear();
         self.broken_views.clear();
 
-        // Load all template files
+        // Load all view files
         if !self.views_dir.exists() {
             return Ok(());
         }
@@ -395,7 +395,7 @@ impl ViewManager {
         Ok(())
     }
 
-    /// Write `template` as it is, under the lock and by rename: a crash or a reader
+    /// Write `view` as it is, under the lock and by rename: a crash or a reader
     /// mid-write never meets a half-written view.
     pub fn save_view(&self, view: &SavedView) -> Result<()> {
         self.locked(|| self.write_stored(view))
@@ -464,10 +464,10 @@ impl ViewManager {
         results
     }
 
-    /// The best template whose own criteria match this file — not merely the
+    /// The best view whose own criteria match this file — not merely the
     /// best-scored one. Scores mix in usage and recency, so with no gate the
-    /// most-used template "matches" every dataset ever opened; `T` applying it
-    /// silently is how templates lose the user's trust.
+    /// most-used view "matches" every dataset ever opened; `V` applying it
+    /// silently is how views lose the user's trust.
     pub fn get_most_relevant<'a>(
         &self,
         dataset: impl Into<Dataset<'a>>,
@@ -549,10 +549,10 @@ impl ViewManager {
             settings,
         };
 
-        // Save the template
+        // Save the view
         self.save_view(&view)?;
 
-        // Reload templates to include the new one
+        // Reload views to include the new one
         self.load_views()?;
 
         Ok(view)
@@ -584,7 +584,7 @@ impl ViewManager {
     }
 
     pub fn remove_all_views(&mut self) -> Result<()> {
-        // Delete all template files
+        // Delete all view files
         if self.views_dir.exists() {
             self.locked(|| {
                 for entry in fs::read_dir(&self.views_dir)? {
@@ -814,10 +814,10 @@ pub fn filename_pattern_matches<'a>(
     })
 }
 
-/// Whether the template's own criteria match this file: a path or pattern hit,
-/// or every schema column the template asks for present. Distinct from the
+/// Whether the view's own criteria match this file: a path or pattern hit,
+/// or every schema column the view asks for present. Distinct from the
 /// relevance score, which also carries usage and recency and so is never zero
-/// for a template that has been used — a ranking, not a claim of fit.
+/// for a view that has been used — a ranking, not a claim of fit.
 pub fn criteria_match<'a>(
     view: &SavedView,
     dataset: impl Into<Dataset<'a>>,
@@ -826,7 +826,7 @@ pub fn criteria_match<'a>(
     match_reason(view, dataset, schema).is_some()
 }
 
-/// The strongest criterion of the template's that fits this file, or None when
+/// The strongest criterion of the view's that fits this file, or None when
 /// none does. This is the same test `criteria_match` gates on, kept in one
 /// place so the list's "why it matches" annotation can never disagree with
 /// what `V` and auto-apply do.
@@ -938,9 +938,9 @@ fn calculate_relevance(view: &SavedView, dataset: Dataset<'_>, schema: &Schema) 
             score += 2.0;
         }
     }
-    // No penalty for age since creation: a template is not worse for being old,
+    // No penalty for age since creation: a view is not worse for being old,
     // and last-used recency above already separates the live from the stale.
-    // Charged anyway, a year-old template that fit showed a negative "score".
+    // Charged anyway, a year-old view that fit showed a negative "score".
 
     score
 }
@@ -1006,7 +1006,7 @@ fn matches_pattern(text: &str, pattern: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Old template JSON without sql_query or fuzzy_query deserializes; those fields default to None.
+    /// Old view JSON without sql_query or fuzzy_query deserializes; those fields default to None.
     #[test]
     fn test_settings_deserialize_without_sql_fuzzy() {
         let json = r#"{
@@ -1149,7 +1149,7 @@ mod tests {
     }
 
     /// Usage and recency raise the score but are not a match: a well-used
-    /// template whose criteria fit nothing must never be what `T` applies.
+    /// view whose criteria fit nothing must never be what `V` applies.
     #[test]
     fn usage_alone_is_not_a_match() {
         use polars::prelude::DataType;
@@ -1208,7 +1208,7 @@ mod tests {
         );
     }
 
-    /// A template's schema criterion asks for its columns to be present; a file
+    /// A view's schema criterion asks for its columns to be present; a file
     /// with extra columns still fits ("similar table"), a file missing one does not.
     #[test]
     fn schema_criterion_is_a_subset_test() {

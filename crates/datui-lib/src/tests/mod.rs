@@ -3970,7 +3970,7 @@ fn a_staged_open_joins_what_its_footers_found() {
     );
 }
 
-/// Only one query type is returned; SQL overrides fuzzy over DSL. Used when saving templates.
+/// Only one query type is returned; SQL overrides fuzzy over DSL. Used when saving views.
 #[test]
 fn test_active_query_settings_only_one_set() {
     use super::active_query_settings;

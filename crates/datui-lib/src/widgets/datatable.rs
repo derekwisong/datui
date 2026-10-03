@@ -378,9 +378,9 @@ pub struct DataTableState {
     drawn_start: usize,
     row_numbers: bool,
     row_start_index: usize,
-    /// Last applied pivot spec, if current lf is result of a pivot. Used for templates.
+    /// Last applied pivot spec, if current lf is result of a pivot. Used for views.
     last_pivot_spec: Option<PivotSpec>,
-    /// Last applied melt spec, if current lf is result of a melt. Used for templates.
+    /// Last applied melt spec, if current lf is result of a melt. Used for views.
     last_melt_spec: Option<MeltSpec>,
     /// The query, filters and sort the pivot or melt in effect ran over, for a view to
     /// replay before it. `None` while none is in effect, or when it ran over the data as
@@ -6506,7 +6506,7 @@ impl DataTableState {
     /// What datui noticed about the dataset itself, as its footers were read.
     ///
     /// Separate from [`Self::notes`] because this is the half that belongs to the
-    /// data: a snapshot taken to roll a template back has to put back these and not
+    /// data: a snapshot taken to roll a view back has to put back these and not
     /// the view's, which describe a filter and sort that the rollback is undoing.
     pub fn dataset_notes(&self) -> &[crate::notes::Note] {
         &self.notes
@@ -8136,9 +8136,9 @@ impl DataTableState {
         }
     }
 
-    // Getter methods for template creation
-    /// Filters for a template: while drilled into a group these are the grouped view's,
-    /// which is what a template reproduces (it cannot express a drill-down).
+    // Getter methods for view creation
+    /// Filters for a view: while drilled into a group these are the grouped view's,
+    /// which is what a view reproduces (it cannot express a drill-down).
     pub fn get_filters(&self) -> &[FilterStatement] {
         match &self.grouped {
             Some(view) => &view.filters,
@@ -9659,7 +9659,7 @@ impl DataTableState {
     pub fn sort_by(&mut self, columns: Vec<String>, descending: Vec<bool>) {
         debug_assert_eq!(columns.len(), descending.len());
         // The one-direction flag lives on as the primary column's, for the places
-        // that still speak it: templates written for older readers, and `r`'s
+        // that still speak it: views written for older readers, and `r`'s
         // natural-order fallback (which an empty sort leaves alone).
         if let Some(first) = descending.first() {
             self.sort_ascending = !first;

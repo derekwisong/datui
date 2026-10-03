@@ -59,19 +59,19 @@ fn test_view_creation() -> Result<()> {
     };
 
     let view = manager.create_view(
-        "test_template".to_string(),
+        "test_view".to_string(),
         Some("Test description".to_string()),
         match_criteria,
         settings,
     )?;
 
-    assert_eq!(view.name, "test_template");
+    assert_eq!(view.name, "test_view");
     assert_eq!(view.description, Some("Test description".to_string()));
     assert_eq!(view.usage_count, 0);
     assert!(view.created.duration_since(SystemTime::UNIX_EPOCH).is_ok());
 
     manager.load_views()?;
-    assert!(manager.view_exists("test_template"));
+    assert!(manager.view_exists("test_view"));
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -134,7 +134,7 @@ fn test_view_serialization() -> Result<()> {
 }
 
 /// The suggested name comes from the state — the file stem, or the query's
-/// first words — and numbers itself past a collision, never template0001.
+/// first words — and numbers itself past a collision, never a numbered default.
 #[test]
 fn test_suggest_name_derives_from_state() -> Result<()> {
     let temp_dir = create_test_temp_dir()?;
@@ -241,7 +241,7 @@ fn test_view_relevance_exact_path() -> Result<()> {
     Ok(())
 }
 
-/// Template with sql_query and fuzzy_query round-trips correctly.
+/// View with sql_query and fuzzy_query round-trips correctly.
 #[test]
 fn test_view_serialization_with_sql_and_fuzzy() -> Result<()> {
     let temp_dir = create_test_temp_dir()?;

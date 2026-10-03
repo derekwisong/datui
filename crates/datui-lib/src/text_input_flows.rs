@@ -5,7 +5,7 @@
 //! These drive the real `App` instead, one key event at a time, so that each
 //! prior use of the old wrapped-textarea widget has a test that says what the
 //! user sees: the query bar and its tabs, go-to-line, the export path, the
-//! chart axis filters, the sort and pivot filters, and the multi-line template
+//! chart axis filters, the sort and pivot filters, and the multi-line view
 //! description.
 
 use std::io::Write;

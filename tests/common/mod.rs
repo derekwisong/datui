@@ -166,15 +166,15 @@ fn scratch_dir_until_exit(prefix: &str) -> PathBuf {
 /// The variable is process-wide, so this is done once and as early as possible.
 ///
 /// The directories are named at random, not by process id: ids are reused, and a run
-/// that landed on a finished run's id inherited its recents and templates. They are
+/// that landed on a finished run's id inherited its recents and views. They are
 /// removed when the process exits.
 #[allow(dead_code)]
 pub fn isolate_cache() {
     static ISOLATE: Once = Once::new();
     ISOLATE.call_once(|| {
         let dir = scratch_dir_until_exit("datui-test-cache-");
-        // The config directory holds templates, so a test App saving one without this
-        // override writes it into the developer's own template list.
+        // The config directory holds views, so a test App saving one without this
+        // override writes it into the developer's own view list.
         let config_dir = scratch_dir_until_exit("datui-test-config-");
         // SAFETY: test-only. Tests run on parallel threads, so this can race another test
         // reading the environment; accepted in tests and never done outside them.

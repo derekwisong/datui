@@ -11457,13 +11457,13 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
     assert!(c.sort_descending, "the applied direction arrives staged");
 }
 
-/// A template saved while drilled into a group describes the grouped view, which is what
+/// A view saved while drilled into a group describes the grouped view, which is what
 /// it will reproduce: the getters return the grouped view's filters and sort, while the
 /// view getters describe the frame on screen.
 #[test]
 fn test_view_getters_describe_the_grouped_view_while_drilled() {
     use datui::filter_modal::FilterOperator;
-    let (mut app, rx, tx) = open_query_filter_fixture("drill_template_getters.csv");
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_view_getters.csv");
 
     app.event(&AppEvent::Search("select by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
@@ -17122,7 +17122,7 @@ fn v_with_no_matching_view_opens_the_list() {
     assert!(!app.view_modal.active);
 }
 
-/// The template modal keys and renders off its own `active`, not the input mode,
+/// The view modal keys and renders off its own `active`, not the input mode,
 /// so Ctrl+O must take it down: left up, it came back over the next dataset as a
 /// zombie that swallowed keys.
 #[test]
@@ -17136,10 +17136,7 @@ fn view_modal_does_not_survive_going_home() {
     assert!(app.view_modal.active);
 
     app.enter_home();
-    assert!(
-        !app.view_modal.active,
-        "going home closes the template modal"
-    );
+    assert!(!app.view_modal.active, "going home closes the views list");
 }
 
 /// A helper for the modal tests: one key press with no modifiers.

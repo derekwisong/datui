@@ -387,7 +387,7 @@ fn a_fix_dictionary_names_a_counterpartys_tags() {
     let (app, _rx) = open_with(
         path.clone(),
         OpenOptions {
-            fix_dict: Some(dict),
+            dicts: vec![dict],
             ..options_in(&dir)
         },
     );
@@ -405,7 +405,7 @@ fn a_fix_dictionary_names_a_counterpartys_tags() {
         &rx,
         vec![path],
         OpenOptions {
-            fix_dict: Some(wrong),
+            dicts: vec![wrong],
             ..options_in(&dir)
         },
     )

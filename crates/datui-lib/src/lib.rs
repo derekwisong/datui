@@ -67,6 +67,7 @@ pub mod cloud_env;
 mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
+pub mod commands;
 pub mod config;
 pub mod config_command;
 mod copy_keys;
@@ -972,7 +973,7 @@ pub struct App {
     /// the context: opened from home it returns there, launched straight onto
     /// a file it quits — the user's mental stack, not a mode.
     opened_from_home: bool,
-    /// `--template NAME`, waiting for the dataset from the command line to land.
+    /// `--view NAME`, waiting for the dataset from the command line to land.
     /// Taken on the first install, so datasets opened later are not re-dressed.
     startup_template: Option<String>,
     pub analysis_modal: AnalysisModal,
@@ -2536,7 +2537,7 @@ impl App {
     /// file with `--table`.
     fn view_table(&self) -> Option<&str> {
         let (_, options) = self.opened.as_ref()?;
-        options.table.as_deref().or(options.spec_variant.as_deref())
+        options.table.as_deref()
     }
 
     /// Whether any leased background work, current or abandoned, has yet to report
@@ -4672,7 +4673,7 @@ impl App {
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
 
         // The dataset is installed and its schema known, so this is where a template
-        // meets it. `--template` names one and applies to this first open alone;
+        // meets it. `--view` names one and applies to this first open alone;
         // `[templates] auto_apply` dresses every open that has a matching template.
         // A fresh dataset starts with no view applied: the previous file's view
         // must not wear the check mark here, nor count as applied when edited.
@@ -10671,7 +10672,7 @@ impl App {
         if format == FileFormat::Parquet {
             return Default::default();
         }
-        // Null values are the one setting the sample cannot mirror: `--null-value`
+        // Null values are the one setting the sample cannot mirror: `--null`
         // takes `COL=VAL` forms the reader resolves against the file it is opening, and
         // a sample that guessed would report a widening the table never did. They are
         // unset unless the user names them, so this stands down where it must and runs
@@ -11012,7 +11013,7 @@ impl App {
             let asked = crate::formats::Asked {
                 spec_file: options.spec_file.clone(),
                 spec_name: options.spec_name.clone(),
-                variant: options.spec_variant.clone(),
+                variant: options.table.clone(),
                 spec: options.spec_fetched.clone(),
                 builtin: options.format.is_some(),
                 compression: options.compression,
@@ -16379,7 +16380,7 @@ impl App {
                     spec_name: Some(name),
                     spec_file: None,
                     spec_fetched: None,
-                    spec_variant: None,
+                    table: None,
                     format_read: None,
                     sqlite: None,
                     format: None,
@@ -18539,7 +18540,9 @@ fn run_impl(
         app.pass_stdout_to(out);
     }
     app.startup_template = opts.template.clone();
-    if opts.debug {
+    // A developer's overlay: an environment variable, not a flag.
+    let debug_env = std::env::var_os("DATUI_DEBUG").is_some_and(|v| !v.is_empty() && v != "0");
+    if opts.debug || debug_env {
         app.enable_debug();
     }
 

@@ -91,7 +91,7 @@ pub fn refusal(format: Option<FileFormat>, options: &OpenOptions) -> Option<Stri
     }
     if options.header_rows().is_some() || options.skip_tail_rows.is_some() {
         return Some(
-            "A file read with --header-rows or --skip-tail-rows cannot be followed.".to_string(),
+            "A file read with --header-rows or --footer-rows cannot be followed.".to_string(),
         );
     }
     if options.spec_name.is_some() || options.spec_file.is_some() || options.delimited.is_some() {

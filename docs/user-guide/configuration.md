@@ -283,7 +283,7 @@ macOS, `%LOCALAPPDATA%\datui` on Windows). It holds Polars warnings, the errors
 datui showed, internal errors with their backtraces, cache and history
 failures, and anything else written to stderr while the UI was up, with
 credentials masked. It is capped at 1 MB, with the
-previous file kept as `datui.log.1`; `datui --clear-cache` deletes both.
+previous file kept as `datui.log.1`; `datui cache clear` deletes both.
 
 | Set | How |
 |---|---|

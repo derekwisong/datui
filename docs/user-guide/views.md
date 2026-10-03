@@ -40,7 +40,7 @@ view, the bottom bar names it and says why it matched:
 Or from the command line:
 
 ```bash
-datui --template "Central Park highs" s3://noaa-ghcn-pds/parquet/by_year/YEAR=2022/ELEMENT=TMAX/
+datui --view "Central Park highs" s3://noaa-ghcn-pds/parquet/by_year/YEAR=2022/ELEMENT=TMAX/
 ```
 
 A view's pivot and first rows are read in the background, with a spinner in
@@ -116,6 +116,11 @@ overwrites what it carries.
 auto_apply = true   # apply the best match when a file opens
 ```
 
-The config and CLI retain the older name **templates**. Views are JSON files in the `templates/` directory beside your
+Views are JSON files in the `templates/` directory beside your
 [config file](configuration.md).
-`datui --remove-templates` deletes them all.
+
+```bash
+datui views list         # name and the files each matches
+datui views rm NAME      # remove one
+datui views clear        # remove them all
+```

@@ -36,18 +36,19 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `file_loading.parse_dates` | bool | unset | `--parse-dates` | Read CSV and JSON strings that look like dates or ISO 8601 timestamps as Date or Datetime (default true). |
-| `file_loading.decompress_in_memory` | bool | unset | `--decompress-in-memory` | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file (default false). |
+| `file_loading.parse_dates` | bool | unset |  | Read CSV and JSON strings that look like dates or ISO 8601 timestamps as Date or Datetime (default true). |
+| `file_loading.decompress_in_memory` | bool | unset |  | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file (default false). |
 | `file_loading.temp_dir` | path | unset | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |
-| `file_loading.single_spine_schema` | bool | unset | `--single-spine-schema` | A partitioned Parquet dataset's schema is every column any of its files has, from their footers; false lets Polars take one file's (default true). |
-| `file_loading.null_values` | list | unset |  | CSV values read as null: VAL in every column, COL=VAL in one. |
-| `file_loading.parse_strings` | bool | unset |  | Trim CSV string columns and read them as dates, times, durations or numbers where they all parse (default true). |
+| `file_loading.single_spine_schema` | bool | unset |  | A partitioned Parquet dataset's schema is every column any of its files has, from their footers; false lets Polars take one file's (default true). |
+| `file_loading.null_values` | list | unset | `--null` | Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list. |
+| `file_loading.parse_strings` | bool | unset | `--infer-types` | Trim string columns and read them as dates, times, durations or numbers where they all parse (default true). --infer-types=off turns it off, --infer-types=a,b limits it to those columns. |
 | `file_loading.parse_strings_sample_rows` | integer | unset |  | Rows sampled to infer string column types (default 1000). |
-| `file_loading.infer_schema_length` | integer | unset | `--infer-schema-length` | Rows read to infer a CSV's column types (default 1000). |
+| `file_loading.infer_schema_length` | integer | unset | `--infer-rows` | Rows read to infer a CSV's column types (default 1000). |
 | `file_loading.ignore_errors` | bool | unset | `--ignore-errors` | Skip CSV rows that do not parse instead of failing (default false). |
-| `file_loading.comment_char` | string | unset | `--comment-char` | CSV lines starting with this are comments, before the header and among the data. |
+| `file_loading.comment_char` | string | unset | `--comment` | CSV lines starting with this are comments, before the header and among the data. |
 | `file_loading.header_join` | string | unset |  | Joins a column's names when --header-rows names several lines (default " "). |
 | `file_loading.skip_initial_space` | bool | unset | `--skip-initial-space` | Ignore the spaces after a CSV delimiter, so padded numbers are numbers (default false). |
+| `file_loading.audio_float` | bool | unset |  | Show integer audio samples as float in [-1, 1] (default false: the integers as stored). |
 | `file_loading.follow_interval_ms` | integer | unset |  | --follow: milliseconds between checks for new rows, or on Linux the least time between two reads, 10 to 60000 (default 250). |
 | `file_loading.memory_warning_mb` | integer | unset |  | Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks (default 1024). |
 
@@ -58,19 +59,19 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `display.unicode` | auto \| always \| never | `"auto"` |  | Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8. |
-| `display.pages_lookahead` | integer | `3` | `--pages-lookahead` | Pages of rows buffered ahead of the screen. |
-| `display.pages_lookback` | integer | `3` | `--pages-lookback` | Pages of rows buffered behind the screen. |
+| `display.pages_lookahead` | integer | `3` |  | Pages of rows buffered ahead of the screen. |
+| `display.pages_lookback` | integer | `3` |  | Pages of rows buffered behind the screen. |
 | `display.max_buffered_rows` | integer | `100000` |  | Most rows the table buffers; 0 for no limit. |
 | `display.max_buffered_mb` | integer | `512` |  | Most MiB of rows the table buffers between reads; 0 for no limit. |
 | `display.row_numbers` | bool | `false` | `--row-numbers` | Show row numbers on the left (# toggles). |
-| `display.row_start_index` | integer | `1` | `--row-start-index` | The first row's number. |
+| `display.row_start_index` | integer | `1` |  | The first row's number. |
 | `display.table_cell_padding` | "comfortable" \| "compact" \| integer | `"comfortable"` |  | Space between columns: comfortable (2 cells), compact (1) or a number of cells. |
-| `display.column_colors` | bool | `true` | `--column-colors` | Color cells by column type. |
+| `display.column_colors` | bool | `true` |  | Color cells by column type. |
 | `display.dtype_row` | bool | `true` |  | A second header row naming each column's type (D toggles). |
 | `display.notes_accent` | bool | `true` |  | Accent the i key when datui has noticed something about the data. |
 | `display.mouse` | bool | `true` | `--mouse` | Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal. |
 | `display.sidebar_width` | integer | unset |  | Width of every sidebar, in cells. Unset: each sidebar's own. |
-| `display.align_numeric_right` | bool | `true` | `--align-numeric-right` | Right-align numeric columns and their headers. |
+| `display.align_numeric_right` | bool | `true` |  | Right-align numeric columns and their headers. |
 | `display.number_format` | preset \| table | `"none"` | `--number-format` | Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles). |
 
 ## Performance
@@ -80,7 +81,7 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `performance.analysis_sample_rows` | integer | `100000` | `--sample-rows` | Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. |
-| `performance.polars_streaming` | bool | `true` | `--polars-streaming` | Use the Polars streaming engine where it applies. |
+| `performance.polars_streaming` | bool | `true` |  | Use the Polars streaming engine where it applies. |
 | `performance.quality_local_copy_mb` | integer | `2048` |  | Most MiB a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. |
 
 ## Charts
@@ -127,16 +128,16 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `cloud.s3_endpoint_url` | string | unset | `--s3-endpoint-url` | Endpoint for S3-compatible storage such as MinIO. |
-| `cloud.s3_access_key_id` | string | unset | `--s3-access-key-id` | S3 access key. |
-| `cloud.s3_secret_access_key` | string | unset | `--s3-secret-access-key` | S3 secret key. Prefer AWS_SECRET_ACCESS_KEY. |
-| `cloud.s3_region` | string | unset | `--s3-region` | S3 region. |
+| `cloud.s3_endpoint_url` | string | unset |  | Endpoint for S3-compatible storage such as MinIO. |
+| `cloud.s3_access_key_id` | string | unset |  | S3 access key. |
+| `cloud.s3_secret_access_key` | string | unset |  | S3 secret key. Prefer AWS_SECRET_ACCESS_KEY. |
+| `cloud.s3_region` | string | unset |  | S3 region. |
 | `cloud.connections` | tables | unset |  | Cloud stores to list on the home screen; see Cloud sources. |
 | `cloud.hide` | list | unset |  | Cloud source IDs not shown on the home screen. Adds up across imports. |
 | `cloud.azure_account_keys` | bool | unset |  | Read an Azure account with its access keys when a sign-in has no data role (default true). |
 | `cloud.env_files` | list | unset |  | Files to read cloud variables from, relative to the working directory. Adds up across imports. |
 | `cloud.instance_identity` | bool | unset |  | Use the identity of the cloud VM datui runs on (default false). |
-| `cloud.discover` | bool \| "all" \| "none" \| list | unset | `--cloud-discover` | Logins found on this machine that become home-screen sources: all, none, or kinds from s3, gcs, azure. |
+| `cloud.discover` | bool \| "all" \| "none" \| list | unset |  | Logins found on this machine that become home-screen sources: all, none, or kinds from s3, gcs, azure. |
 | `cloud.list_on_start` | bool | unset |  | List every source's buckets when the home screen opens, not when one is entered (default false). |
 
 ## Query
@@ -172,7 +173,7 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `debug.enabled` | bool | `false` | `--debug` | Show the debug overlay. |
+| `debug.enabled` | bool | `false` |  | Show the debug overlay. |
 | `debug.show_performance` | bool | `true` |  | Unused. |
 | `debug.show_query` | bool | `true` |  | Unused. |
 | `debug.show_transformations` | bool | `true` |  | Unused. |

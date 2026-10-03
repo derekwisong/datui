@@ -79,15 +79,15 @@ s3_region = "us-east-1"
 # or per shell
 export AWS_ENDPOINT_URL=http://localhost:9000
 # or per run
-datui --s3-endpoint-url http://localhost:9000 s3://bucket/file.parquet
+AWS_ENDPOINT_URL=http://localhost:9000 datui s3://bucket/file.parquet
 ```
 
-The command-line flags are `--s3-endpoint-url`, `--s3-access-key-id`,
-`--s3-secret-access-key` and `--s3-region`. In the environment the endpoint is
+There are no flags for these: a key on the command line shows in `ps` and the
+shell history. In the environment the endpoint is
 taken from the first of `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and
 `AWS_ENDPOINT` that is set, the keys from `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY`, and the region from `AWS_REGION` or
-`AWS_DEFAULT_REGION`. A variable or flag that is set but empty counts as unset.
+`AWS_DEFAULT_REGION`. A variable that is set but empty counts as unset.
 
 ## Several stores at once
 

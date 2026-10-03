@@ -201,15 +201,15 @@ impl OpenRequest {
             table = Some(crate::members::place(&first, name));
         } else if local
             && paths.len() == 1
-            && options.spec_variant.is_none()
+            && options.table.is_none()
             && let Some((file, variant)) = crate::members::split_variant(&first, formats)
         {
             // A variant of a file a spec reads as several, as the home screen lists it.
             table = Some(first.clone());
-            options.spec_variant = Some(variant);
+            options.table = Some(variant);
             paths = vec![file];
         } else if local
-            && let Some(variant) = options.spec_variant.as_deref()
+            && let Some(variant) = options.table.as_deref()
             && first.is_file()
             && formats.variants_of(&first).is_some()
         {
@@ -247,7 +247,7 @@ pub(crate) enum Phase {
     },
     /// Whether the paths named on the command line are there, and which is a directory.
     LookingAtPaths,
-    /// The spec a `--spec` URL names, fetched before anything is read with it.
+    /// The spec a `--format` URL names, fetched before anything is read with it.
     ReadingSpec,
     /// What a directory named on the command line holds, before it is opened.
     LookingAtDirectory,
@@ -294,7 +294,7 @@ pub(crate) enum Phase {
     },
     /// A CSV read with its string columns parsed.
     ScanningStrings,
-    /// A CSV whose footer rows are dropped (`--skip-tail-rows`): the scan counts every
+    /// A CSV whose footer rows are dropped (`--footer-rows`): the scan counts every
     /// row of the file first, which is the wait.
     CountingFooter,
     /// The scan; `downloaded` when it reads a download rather than what was named.
@@ -593,7 +593,7 @@ pub(crate) struct Hex {
     pub(crate) from_home: bool,
     /// Asked for (`--hex`) rather than fallen back to.
     pub(crate) asked: bool,
-    /// `--record-size`: the bytes a row holds.
+    /// `--hex-width`: the bytes a row holds.
     pub(crate) record_size: Option<usize>,
 }
 
@@ -702,7 +702,7 @@ pub(crate) enum LoadAnswer {
         path: Option<PathBuf>,
         options: OpenOptions,
     },
-    /// The spec a `--spec` URL names, and the open's options to carry it in.
+    /// The spec a `--format` URL names, and the open's options to carry it in.
     SpecFetched {
         spec: Arc<crate::formats::Spec>,
         options: OpenOptions,
@@ -1875,7 +1875,7 @@ const COUNTING_FOOTER: &str = "Counting rows to skip the footer";
 const COUNTING_FOOTER_STATUS: &str = "Counting rows to skip the footer...";
 
 /// Whether the scan of `paths` counts every row first: delimited text whose footer
-/// rows are dropped (`--skip-tail-rows`).
+/// rows are dropped (`--footer-rows`).
 fn counts_footer(paths: &[PathBuf], options: &OpenOptions) -> bool {
     options.skip_tail_rows.is_some_and(|n| n > 0)
         && paths.iter().all(|p| delimited_format(p, options).is_some())
@@ -2666,7 +2666,7 @@ mod tests {
         ));
     }
 
-    /// `--spec` naming a URL: the spec is fetched first, in a phase of its own, then the
+    /// `--format` naming a URL: the spec is fetched first, in a phase of its own, then the
     /// open goes on as it would have, carrying the spec; a second answer does nothing.
     #[test]
     fn a_remote_spec_is_fetched_before_the_open_goes_on() {

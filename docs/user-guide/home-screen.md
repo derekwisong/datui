@@ -390,8 +390,8 @@ measured metadata: counts, column names, size and modification time. Clear them 
 
 | Command | Removes |
 |---|---|
-| `datui --clear-recents` | Recent paths only |
-| `datui --clear-cache` | Cached metadata, recents, remembered directories and query history |
+| `datui cache clear --recents` | Recent paths only |
+| `datui cache clear` | Cached metadata, recents, remembered directories and query history |
 
 These commands do not delete data files.
 

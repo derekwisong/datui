@@ -96,8 +96,8 @@ wins, and nothing is exported, so no program datui starts sees them. No `.env` f
 
 See [The Home Screen](../user-guide/home-screen.md) for
 [`discover`](../user-guide/cloud-browser.md#which-sources-appear) and
-[`list_on_start`](../user-guide/home-screen.md#loading). `--cloud-discover` overrides `discover`
-for one run.
+[`list_on_start`](../user-guide/home-screen.md#loading). `-c cloud.discover=none` overrides
+`discover` for one run.
 
 `instance_identity = true` lets datui ask the cloud VM it runs on for credentials:
 an EC2 instance role, a GCE service account, an Azure VM's managed identity. This is off by default because metadata requests can time out outside those VMs. Cloud Run and Cloud Functions, and
@@ -129,14 +129,13 @@ Listing a bucket does not guarantee permission to read every object inside it.
 
 To show only some kinds of login found on the machine, or none:
 
-| `[cloud] discover` | `--cloud-discover` | Shows |
+| `[cloud] discover` | `-c cloud.discover=` | Shows |
 |---|---|---|
 | unset, `true` or `"all"` | `all` | Every login found |
 | `false` or `"none"` | `none` | None |
-| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` whether its keys come from `[cloud] s3_*`, `--s3-*` or `AWS_*` |
+| `["gcs"]`, `"s3,azure"` | `gcs`, `s3,azure` | Those kinds. `s3` covers AWS profiles, `mc`, s3cmd, and `s3-default` whether its keys come from `[cloud] s3_*` or `AWS_*` |
 
-`[[cloud.connections]]` entries appear whatever it says. The flag
-overrides the config for one run.
+`[[cloud.connections]]` entries appear whatever it says.
 
 A source in the config with the same name as one of these replaces it. The same
 server with the same key found in several places is one row; its note lists

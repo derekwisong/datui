@@ -8,7 +8,7 @@
 //!
 //! DBC files are found on the format search path, as FIX dictionaries are: a `.dbc`
 //! file applies to every interface, and a TOML file of `kind = "dbc"` names a DBC file
-//! (`file`) and the interface it applies to (`[match] interface = "can1"`). `--dbc FILE`
+//! (`file`) and the interface it applies to (`[match] interface = "can1"`). `--dict FILE`
 //! is read over them. A later file's message of an id takes the place of an earlier's.
 
 use std::collections::HashMap;

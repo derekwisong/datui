@@ -192,7 +192,7 @@ pub struct TemplateManager {
 ///
 /// Reading them enumerates and parses a directory, which is a stall on a slow mount
 /// and tens of milliseconds for a few thousand views; neither belongs in front of the
-/// first frame. Nothing needs them until a dataset's schema is known (`--template` and
+/// first frame. Nothing needs them until a dataset's schema is known (`--view` and
 /// auto-apply meet it there) or the views list opens, so the first use waits for the
 /// read if it is still going — a view the user asked for is never skipped by rows
 /// shown without it. Derefs to the [`TemplateManager`].

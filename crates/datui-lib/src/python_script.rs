@@ -866,7 +866,7 @@ pub(crate) fn csv_arguments(call: &mut Call<'_>) -> Option<Source> {
     // Polars takes a comment prefix of up to five characters.
     let comment = options.comment_char.as_deref().filter(|c| !c.is_empty());
     let dialect: Vec<&str> = [
-        (comment.is_some_and(|c| c.len() > 5), "--comment-char"),
+        (comment.is_some_and(|c| c.len() > 5), "--comment"),
         (options.header_rows().is_some(), "--header-rows"),
         (options.skip_initial_space, "--skip-initial-space"),
     ]
@@ -980,7 +980,7 @@ pub(crate) fn arrow_arguments(call: &mut Call<'_>) -> Option<Source> {
 
 /// Excel: the sheet, counted as Polars counts it.
 pub(crate) fn excel_arguments(call: &mut Call<'_>) -> Option<Source> {
-    if let Some(sheet) = &call.record.options.excel_sheet {
+    if let Some(sheet) = &call.record.options.table {
         match sheet.parse::<usize>() {
             // datui counts sheets from 0, Polars from 1.
             Ok(i) => call.args.push(format!("sheet_id={}", i + 1)),
@@ -1708,7 +1708,7 @@ mod tests {
         let csv = [PathBuf::from("log.csv")];
         let mut comment = OpenOptions::new();
         comment.comment_char = Some("######".into());
-        assert!(placeholder(&csv, &comment, None).contains("--comment-char"));
+        assert!(placeholder(&csv, &comment, None).contains("--comment"));
         let mut rows = OpenOptions::new();
         rows.header_rows = vec![3, 2];
         assert!(placeholder(&csv, &rows, None).contains("--header-rows"));
@@ -1841,7 +1841,7 @@ mod tests {
         assert!(call_of(source(&record)).1.is_empty());
     }
 
-    /// `--comment-char` is Polars' `comment_prefix`.
+    /// `--comment` is Polars' `comment_prefix`.
     #[test]
     fn a_comment_character_is_the_comment_prefix() {
         let schema = Schema::default();

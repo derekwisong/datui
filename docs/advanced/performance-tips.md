@@ -51,7 +51,7 @@ aggregate the period first to chart every step of it.
   directories scan in place; HTTP and other download routes fetch the file
   first. See [remote data](../user-guide/remote-data.md).
 
-Leave `--polars-streaming` enabled unless you are diagnosing a problem. It lets
+Leave `[performance] polars_streaming` on unless you are diagnosing a problem. It lets
 supported operations process data in batches; it is not a memory bound on
 all queries.
 

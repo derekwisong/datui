@@ -1,4 +1,4 @@
-//! Opening binary files through format specs: `--spec`, `--format NAME`, a glob, magic,
+//! Opening binary files through format specs: `--format FILE`, `--format NAME`, a glob, magic,
 //! a compressed file, a tie and its picker, and the files specs must leave alone.
 
 use super::*;
@@ -71,7 +71,7 @@ fn a_spec_file_opens_a_binary_file_and_scrolls_to_its_last_row() {
     let dir = common::fixture_dir();
     let spec_path = dir.join("spec_file_l2.toml");
     std::fs::write(&spec_path, L2).unwrap();
-    // A name no glob matches: `--spec` reads it whatever it is called.
+    // A name no glob matches: `--format FILE` reads it whatever it is called.
     let data = dir.join("spec_file_feed.dat");
     std::fs::write(&data, l2_bytes(5_000)).unwrap();
     let (mut app, rx, tx) = app_with(Vec::new());
@@ -91,7 +91,7 @@ fn a_spec_file_opens_a_binary_file_and_scrolls_to_its_last_row() {
     assert!(
         notes(&app)
             .iter()
-            .any(|n| n == "read as acme.l2feed, chosen by --spec"),
+            .any(|n| n == "read as acme.l2feed, chosen by --format FILE"),
         "{:?}",
         notes(&app)
     );
@@ -128,7 +128,7 @@ fn a_spec_over_a_mebibyte_is_refused() {
     assert!(message.contains("at most 1 MiB"), "{message}");
 }
 
-/// `--spec` naming a URL: the spec is fetched from S3 or an HTTP server (the
+/// `--format` naming a URL: the spec is fetched from S3 or an HTTP server (the
 /// in-process stand-in, `common/fake_s3.rs`) once, as the open starts, and the local
 /// file is read with it as with a spec on disk. One over 1 MiB is not read past it.
 #[cfg(all(feature = "cloud", feature = "http"))]
@@ -179,7 +179,7 @@ mod remote_spec {
         assert!(
             notes(app)
                 .iter()
-                .any(|n| n == "read as acme.l2feed, chosen by --spec"),
+                .any(|n| n == "read as acme.l2feed, chosen by --format FILE"),
             "{:?}",
             notes(app)
         );
@@ -759,7 +759,7 @@ fn one_variant_opens_alone_with_only_its_columns() {
     std::fs::write(&data, itch_bytes(300, &[])).unwrap();
     let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);
     let options = OpenOptions {
-        spec_variant: Some("exec".into()),
+        table: Some("exec".into()),
         ..OpenOptions::default()
     };
     pump_open_until_loaded(&mut app, &rx, vec![data], options);
@@ -895,10 +895,10 @@ fn a_files_variants_are_listed_inside_it_and_open_alone() {
         "{shown}"
     );
 
-    // `--variant` on the file is the same table, recorded at the same path.
+    // `--table` on the file is the same table, recorded at the same path.
     let (mut app, rx, _tx) = app_with(vec![spec(ITCH)]);
     let options = OpenOptions {
-        spec_variant: Some("add".into()),
+        table: Some("add".into()),
         ..OpenOptions::default()
     };
     pump_open_until_loaded(&mut app, &rx, vec![data.clone()], options);

@@ -504,7 +504,7 @@ fn an_arrow_stream_piped_in_opens() {
 fn a_dialect_reaches_data_piped_in() {
     let log = b"#device_info, model=\"X\"\n#yyyy-mm-dd, degrees\n  Lcl Date,     Latitude\n          ,             \n2024-03-01,    40.100000\n#reset\n2024-03-02,    40.200000\n".to_vec();
     let args: &[&Path] = &[
-        Path::new("--comment-char"),
+        Path::new("--comment"),
         Path::new("#"),
         Path::new("--header-rows"),
         Path::new("3,2"),

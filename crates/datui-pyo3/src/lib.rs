@@ -153,14 +153,8 @@ impl DatuiOptionsPy {
         parse_dates=true,
         decompress_in_memory=false,
         temp_dir=None,
-        excel_sheet=None,
         table=None,
-        s3_endpoint_url=None,
-        s3_access_key_id=None,
-        s3_secret_access_key=None,
-        s3_region=None,
         polars_streaming=true,
-        workaround_pivot_date_index=true,
         null_values=None,
         comment_char=None,
         header_rows=None,
@@ -190,14 +184,8 @@ impl DatuiOptionsPy {
         parse_dates: bool,
         decompress_in_memory: bool,
         temp_dir: Option<Bound<'_, pyo3::types::PyAny>>,
-        excel_sheet: Option<Bound<'_, pyo3::types::PyAny>>,
         table: Option<Bound<'_, pyo3::types::PyAny>>,
-        s3_endpoint_url: Option<Bound<'_, pyo3::types::PyAny>>,
-        s3_access_key_id: Option<Bound<'_, pyo3::types::PyAny>>,
-        s3_secret_access_key: Option<Bound<'_, pyo3::types::PyAny>>,
-        s3_region: Option<Bound<'_, pyo3::types::PyAny>>,
         polars_streaming: bool,
-        workaround_pivot_date_index: bool,
         null_values: Option<Bound<'_, pyo3::types::PyAny>>,
         comment_char: Option<String>,
         header_rows: Option<Vec<usize>>,
@@ -215,7 +203,6 @@ impl DatuiOptionsPy {
         opts.parse_dates = parse_dates;
         opts.decompress_in_memory = decompress_in_memory;
         opts.polars_streaming = polars_streaming;
-        opts.workaround_pivot_date_index = workaround_pivot_date_index;
 
         if let Some(ref a) = delimiter {
             opts.delimiter = delimiter_from_py(a)?;
@@ -279,34 +266,9 @@ impl DatuiOptionsPy {
         if let Some(ref a) = temp_dir {
             opts.temp_dir = opt_path_from_py(Some(a))?;
         }
-        if let Some(ref a) = excel_sheet {
-            if !a.is_none() {
-                opts.excel_sheet = Some(a.extract::<String>()?);
-            }
-        }
         if let Some(ref a) = table {
             if !a.is_none() {
                 opts.table = Some(a.extract::<String>()?);
-            }
-        }
-        if let Some(ref a) = s3_endpoint_url {
-            if !a.is_none() {
-                opts.s3_endpoint_url_override = Some(a.extract::<String>()?);
-            }
-        }
-        if let Some(ref a) = s3_access_key_id {
-            if !a.is_none() {
-                opts.s3_access_key_id_override = Some(a.extract::<String>()?);
-            }
-        }
-        if let Some(ref a) = s3_secret_access_key {
-            if !a.is_none() {
-                opts.s3_secret_access_key_override = Some(a.extract::<String>()?);
-            }
-        }
-        if let Some(ref a) = s3_region {
-            if !a.is_none() {
-                opts.s3_region_override = Some(a.extract::<String>()?);
             }
         }
         if let Some(ref a) = null_values {
@@ -396,26 +358,10 @@ impl DatuiOptionsPy {
         if let Some(ref v) = o.temp_dir {
             d.set_item("temp_dir", v.to_string_lossy().as_ref())?;
         }
-        if let Some(ref v) = o.excel_sheet {
-            d.set_item("excel_sheet", v.as_str())?;
-        }
         if let Some(ref v) = o.table {
             d.set_item("table", v.as_str())?;
         }
-        if let Some(ref v) = o.s3_endpoint_url_override {
-            d.set_item("s3_endpoint_url", v.as_str())?;
-        }
-        if let Some(ref v) = o.s3_access_key_id_override {
-            d.set_item("s3_access_key_id", v.as_str())?;
-        }
-        if let Some(ref v) = o.s3_secret_access_key_override {
-            d.set_item("s3_secret_access_key", v.as_str())?;
-        }
-        if let Some(ref v) = o.s3_region_override {
-            d.set_item("s3_region", v.as_str())?;
-        }
         d.set_item("polars_streaming", o.polars_streaming)?;
-        d.set_item("workaround_pivot_date_index", o.workaround_pivot_date_index)?;
         if let Some(ref v) = o.null_values {
             d.set_item("null_values", v.as_slice())?;
         }

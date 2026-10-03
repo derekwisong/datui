@@ -41,7 +41,7 @@ screen.
 | [Check data quality](../user-guide/data-quality.md) | Food; taxis with seed `1` | The findings table; 16,000 rows missing together |
 | [Copy](../user-guide/copying.md) | The Markdown copy, under tmux with `set-clipboard on` and `[clipboard] backend = "osc52"` | `tmux show-buffer` prints the table in the page |
 | [Export](../user-guide/exporting-data.md) | `goals.csv` | 381 lines, the three shown first |
-| [Views](../user-guide/views.md) | Save on 2024, apply on 2023; `--template` on 2022 | 366, 365 and 365 rows |
+| [Views](../user-guide/views.md) | Save on 2024, apply on 2023; `--view` on 2022 | 366, 365 and 365 rows |
 | [Remote data](../user-guide/remote-data.md) | NOAA 2024, its element counts, Bitcoin 2024 | 37,108,477 rows; `PRCP` first; 12 months |
 | [Python](../user-guide/python-module.md) | The capture example, with the wheel built as in [Python bindings](python-bindings.md) | The three-row summary |
 | `datui --help`, `man -l target/release/datui.1` | Each example command | Each opens what its line says |

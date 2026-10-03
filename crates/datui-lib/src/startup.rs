@@ -35,6 +35,12 @@ pub struct Settings {
 /// Read the settings: the configuration (unless one was given), the command line over
 /// it, `[cloud] env_files`, the log.
 pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Settings> {
+    // `--log-level` beats `DATUI_LOG`.
+    let log_level = match &input {
+        RunInput::Cli(args) => args.log_level.clone(),
+        _ => None,
+    }
+    .or_else(|| std::env::var("DATUI_LOG").ok());
     let config = match config {
         Some(config) => config,
         None => load_config(&input)?,
@@ -92,7 +98,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
     let cache_dir = crate::cache::CacheManager::new(APP_NAME).ok();
     notes.extend(logging::init(&logging::LogSettings::resolve(
         config.debug.log_file.as_deref(),
-        std::env::var("DATUI_LOG").ok().as_deref(),
+        log_level.as_deref(),
         cache_dir.as_ref().map(|c| c.cache_dir()),
     )));
     for secret in [
@@ -149,14 +155,20 @@ pub(crate) fn load_config(input: &RunInput) -> Result<AppConfig> {
 }
 
 /// `input` with a leading `~` expanded in the paths its command line names: the
-/// datasets, `--spec` and `--temp-dir`. `--log-file` expands with `[debug] log_file`.
+/// datasets, `--format FILE`, `--dict` and `--temp-dir`. `--log-file` expands with
+/// `[debug] log_file`.
 pub(crate) fn expand_home(input: RunInput) -> RunInput {
     match input {
         RunInput::Cli(mut args) => {
+            let spec = match args.format.as_mut() {
+                Some(crate::cli::FormatChoice::File(path)) => Some(path),
+                _ => None,
+            };
             for path in args
                 .paths
                 .iter_mut()
-                .chain(args.spec.as_mut())
+                .chain(spec)
+                .chain(args.dict.iter_mut())
                 .chain(args.temp_dir.as_mut())
             {
                 *path = crate::config::expand_home(path);
@@ -167,25 +179,20 @@ pub(crate) fn expand_home(input: RunInput) -> RunInput {
     }
 }
 
-/// The command line's display flags, over the configuration.
+/// The command line's flags that set config keys, over the configuration (which
+/// `-c` is already in). The open's own flags go to `OpenOptions`.
 fn apply_args(config: &mut AppConfig, args: &Args) {
-    if let Some(cc) = args.column_colors {
-        config.display.column_colors = cc;
-    }
     if let Some(nf) = args.number_format.as_deref() {
         config.display.number_format = config.display.number_format.with_grouping_override(nf);
     }
-    if let Some(ar) = args.align_numeric_right {
-        config.display.align_numeric_right = ar;
+    if let Some(row_numbers) = args.row_numbers {
+        config.display.row_numbers = row_numbers;
     }
     if let Some(mouse) = args.mouse {
         config.display.mouse = mouse;
     }
     if let Some(rows) = args.sample_rows {
         config.performance.analysis_sample_rows = rows;
-    }
-    if let Some(ps) = args.polars_streaming {
-        config.performance.polars_streaming = ps;
     }
     if let Some(path) = &args.log_file {
         config.debug.log_file = Some(path.to_string_lossy().into_owned());
@@ -321,8 +328,10 @@ mod tests {
             "b.csv",
             "--temp-dir",
             "~/scratch",
-            "--spec",
+            "--format",
             "~/l2feed.toml",
+            "--dict",
+            "~/car.dbc",
         ])
         .unwrap();
         let RunInput::Cli(args) = expand_home(RunInput::Cli(Box::new(args))) else {
@@ -330,6 +339,10 @@ mod tests {
         };
         assert_eq!(args.paths, [home.join("a.csv"), PathBuf::from("b.csv")]);
         assert_eq!(args.temp_dir, Some(home.join("scratch")));
-        assert_eq!(args.spec, Some(home.join("l2feed.toml")));
+        assert_eq!(
+            args.format,
+            Some(crate::cli::FormatChoice::File(home.join("l2feed.toml")))
+        );
+        assert_eq!(args.dict, [home.join("car.dbc")]);
     }
 }

@@ -656,23 +656,23 @@ impl crate::pushdown::Windowed for Decoded {
 
 // --- DBC layers ----------------------------------------------------------------------
 
-/// The DBC files a log is read with, in order: the search path's, then `--dbc`.
+/// The DBC files a log is read with, in order: the search path's, then each `--dict`.
 #[derive(Debug, Clone, Default)]
 pub struct Layers {
     pub dbcs: Vec<Arc<Dbc>>,
 }
 
 impl Layers {
-    /// The search path's DBC files and `--dbc`.
-    pub fn new(registry: &crate::formats::Registry, dbc: Option<&Path>) -> Result<Self> {
+    /// The search path's DBC files and each `--dict`.
+    pub fn new(registry: &crate::formats::Registry, dicts: &[PathBuf]) -> Result<Self> {
         let mut dbcs: Vec<Arc<Dbc>> = registry.dbc.iter().map(|f| f.dbc.clone()).collect();
-        if let Some(path) = dbc {
+        for path in dicts {
             match crate::dbc::load(path) {
                 Ok(Some(d)) => dbcs.push(Arc::new(d)),
                 Ok(None) => {
                     return Err(FileError::new(
                         path,
-                        "not a DBC file. --dbc takes a .dbc file, or TOML with kind = \"dbc\".",
+                        "not a DBC file. --dict takes a .dbc file, or TOML with kind = \"dbc\".",
                     )
                     .into());
                 }
@@ -816,7 +816,7 @@ fn detail(index: &Index, listing: &Listing) -> Detail {
         ),
     ];
     if listing.layers.dbcs.is_empty() {
-        lines.push("DBC: none; --dbc FILE or the format search path decodes signals".into());
+        lines.push("DBC: none; --dict FILE or the format search path decodes signals".into());
     } else {
         for dbc in &listing.layers.dbcs {
             lines.push(format!(
@@ -875,7 +875,7 @@ pub enum Open {
 pub fn open(path: &Path, wanted: Option<&str>, layers: Layers) -> Result<Open> {
     let (bytes, index) = indexed(path)?;
     // A message opened from the home screen's list is read with the DBC files the list
-    // was made with, `--dbc` among them.
+    // was made with, `--dict` among them.
     let layers = match crate::indexed::peek::<Listing>(path) {
         Some(last) if layers.files().is_empty() || last.layers.files() == layers.files() => {
             last.layers.clone()
@@ -906,7 +906,7 @@ pub fn open(path: &Path, wanted: Option<&str>, layers: Layers) -> Result<Open> {
         return Err(FileError::new(
             path,
             format!(
-                "no table \"{wanted}\": with no DBC file only its {FRAMES} are read. --dbc names one that decodes its messages."
+                "no table \"{wanted}\": with no DBC file only its {FRAMES} are read. --dict names one that decodes its messages."
             ),
         )
         .into());
@@ -1037,7 +1037,7 @@ fn long_table(
 /// kept, as a flight log's is.
 fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
     let file = input.path();
-    let layers = Layers::new(input.formats, input.options.dbc.as_deref())?;
+    let layers = Layers::new(input.formats, &input.options.dicts)?;
     Ok(match open(file, input.options.table.as_deref(), layers)? {
         Open::Table { lf, opened } => {
             input.report.opened = Some(Arc::new(*opened));
@@ -1075,15 +1075,15 @@ pub(crate) mod tests {
                     ..Default::default()
                 },
                 dir.path().join("a.log"),
-                "--dbc names one",
+                "--dict names one",
             ),
             (
                 crate::OpenOptions {
-                    dbc: Some(dbc.clone()),
+                    dicts: vec![dbc.clone()],
                     ..Default::default()
                 },
                 dbc.clone(),
-                "--dbc takes",
+                "--dict takes",
             ),
         ] {
             let message = opening(

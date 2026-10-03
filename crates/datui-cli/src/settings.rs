@@ -224,39 +224,40 @@ pub const SETTINGS: &[Setting] = &[
     s("formats_path", List, Value("[]"), "Directories of format specs, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports."),
     s("sources", Tables, Unset("[]"), "Named collections of datasets on the home screen; see Dataset collections."),
     // [file_loading]
-    s("file_loading.parse_dates", Bool, Unset("true"), "Read CSV and JSON strings that look like dates or ISO 8601 timestamps as Date or Datetime (default true).").flag("parse-dates"),
-    s("file_loading.decompress_in_memory", Bool, Unset("false"), "Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file (default false).").flag("decompress-in-memory"),
+    s("file_loading.parse_dates", Bool, Unset("true"), "Read CSV and JSON strings that look like dates or ISO 8601 timestamps as Date or Datetime (default true)."),
+    s("file_loading.decompress_in_memory", Bool, Unset("false"), "Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file (default false)."),
     s("file_loading.temp_dir", Path, Unset("\"/tmp\""), "Directory for decompression temp files. Unset: the system's.").flag("temp-dir"),
-    s("file_loading.single_spine_schema", Bool, Unset("true"), "A partitioned Parquet dataset's schema is every column any of its files has, from their footers; false lets Polars take one file's (default true).").flag("single-spine-schema"),
-    s("file_loading.null_values", List, Unset("[\"NA\", \"amount=\"]"), "CSV values read as null: VAL in every column, COL=VAL in one."),
-    s("file_loading.parse_strings", Bool, Unset("true"), "Trim CSV string columns and read them as dates, times, durations or numbers where they all parse (default true)."),
+    s("file_loading.single_spine_schema", Bool, Unset("true"), "A partitioned Parquet dataset's schema is every column any of its files has, from their footers; false lets Polars take one file's (default true)."),
+    s("file_loading.null_values", List, Unset("[\"NA\", \"amount=\"]"), "Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list.").flag("null"),
+    s("file_loading.parse_strings", Bool, Unset("true"), "Trim string columns and read them as dates, times, durations or numbers where they all parse (default true). --infer-types=off turns it off, --infer-types=a,b limits it to those columns.").flag("infer-types"),
     s("file_loading.parse_strings_sample_rows", Count, Unset("1000"), "Rows sampled to infer string column types (default 1000)."),
-    s("file_loading.infer_schema_length", Count, Unset("1000"), "Rows read to infer a CSV's column types (default 1000).").flag("infer-schema-length"),
+    s("file_loading.infer_schema_length", Count, Unset("1000"), "Rows read to infer a CSV's column types (default 1000).").flag("infer-rows"),
     s("file_loading.ignore_errors", Bool, Unset("false"), "Skip CSV rows that do not parse instead of failing (default false).").flag("ignore-errors"),
-    s("file_loading.comment_char", Text, Unset("\"#\""), "CSV lines starting with this are comments, before the header and among the data.").flag("comment-char"),
+    s("file_loading.comment_char", Text, Unset("\"#\""), "CSV lines starting with this are comments, before the header and among the data.").flag("comment"),
     s("file_loading.header_join", Text, Unset("\" \""), "Joins a column's names when --header-rows names several lines (default \" \")."),
     s("file_loading.skip_initial_space", Bool, Unset("false"), "Ignore the spaces after a CSV delimiter, so padded numbers are numbers (default false).").flag("skip-initial-space"),
+    s("file_loading.audio_float", Bool, Unset("false"), "Show integer audio samples as float in [-1, 1] (default false: the integers as stored)."),
     s("file_loading.follow_interval_ms", Count, Unset("250"), "--follow: milliseconds between checks for new rows, or on Linux the least time between two reads, 10 to 60000 (default 250)."),
     s("file_loading.memory_warning_mb", Count, Unset("1024"), "Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks (default 1024)."),
     // [display]
     s("display.unicode", Choice(&["auto", "always", "never"]), Value("\"auto\""), "Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8."),
-    s("display.pages_lookahead", Count, Value("3"), "Pages of rows buffered ahead of the screen.").flag("pages-lookahead"),
-    s("display.pages_lookback", Count, Value("3"), "Pages of rows buffered behind the screen.").flag("pages-lookback"),
+    s("display.pages_lookahead", Count, Value("3"), "Pages of rows buffered ahead of the screen."),
+    s("display.pages_lookback", Count, Value("3"), "Pages of rows buffered behind the screen."),
     s("display.max_buffered_rows", Count, Value("100000"), "Most rows the table buffers; 0 for no limit."),
     s("display.max_buffered_mb", Count, Value("512"), "Most MiB of rows the table buffers between reads; 0 for no limit."),
     s("display.row_numbers", Bool, Value("false"), "Show row numbers on the left (# toggles).").flag("row-numbers"),
-    s("display.row_start_index", Count, Value("1"), "The first row's number.").flag("row-start-index"),
+    s("display.row_start_index", Count, Value("1"), "The first row's number."),
     s("display.table_cell_padding", Toml("\"comfortable\" \\| \"compact\" \\| integer"), Value("\"comfortable\""), "Space between columns: comfortable (2 cells), compact (1) or a number of cells."),
-    s("display.column_colors", Bool, Value("true"), "Color cells by column type.").flag("column-colors"),
+    s("display.column_colors", Bool, Value("true"), "Color cells by column type."),
     s("display.dtype_row", Bool, Value("true"), "A second header row naming each column's type (D toggles)."),
     s("display.notes_accent", Bool, Value("true"), "Accent the i key when datui has noticed something about the data."),
     s("display.mouse", Bool, Value("true"), "Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal.").flag("mouse"),
     s("display.sidebar_width", Count, Unset("70"), "Width of every sidebar, in cells. Unset: each sidebar's own."),
-    s("display.align_numeric_right", Bool, Value("true"), "Right-align numeric columns and their headers.").flag("align-numeric-right"),
+    s("display.align_numeric_right", Bool, Value("true"), "Right-align numeric columns and their headers."),
     s("display.number_format", Toml("preset \\| table"), Value("\"none\""), "Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles).").flag("number-format"),
     // [performance]
     s("performance.analysis_sample_rows", Count, Value("100000"), "Rows an analysis samples from a larger table, spread across all of it; 0 reads every row.").flag("sample-rows"),
-    s("performance.polars_streaming", Bool, Value("true"), "Use the Polars streaming engine where it applies.").flag("polars-streaming"),
+    s("performance.polars_streaming", Bool, Value("true"), "Use the Polars streaming engine where it applies."),
     s("performance.quality_local_copy_mb", Count, Value("2048"), "Most MiB a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies."),
     // [chart]
     s("chart.row_limit", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across all of it."),
@@ -278,16 +279,16 @@ pub const SETTINGS: &[Setting] = &[
     s("data.search.skip_extra", List, Value("[]"), "Directory names never searched, besides skip."),
     s("data.search.extensions", List, Value("[]"), "Extensions searched for; empty means every format datui opens."),
     // [cloud]
-    s("cloud.s3_endpoint_url", Text, Unset("\"http://localhost:9000\""), "Endpoint for S3-compatible storage such as MinIO.").flag("s3-endpoint-url"),
-    s("cloud.s3_access_key_id", Text, Unset("\"\""), "S3 access key.").flag("s3-access-key-id"),
-    s("cloud.s3_secret_access_key", Text, Unset("\"\""), "S3 secret key. Prefer AWS_SECRET_ACCESS_KEY.").flag("s3-secret-access-key"),
-    s("cloud.s3_region", Text, Unset("\"us-east-1\""), "S3 region.").flag("s3-region"),
+    s("cloud.s3_endpoint_url", Text, Unset("\"http://localhost:9000\""), "Endpoint for S3-compatible storage such as MinIO."),
+    s("cloud.s3_access_key_id", Text, Unset("\"\""), "S3 access key."),
+    s("cloud.s3_secret_access_key", Text, Unset("\"\""), "S3 secret key. Prefer AWS_SECRET_ACCESS_KEY."),
+    s("cloud.s3_region", Text, Unset("\"us-east-1\""), "S3 region."),
     s("cloud.connections", Tables, Unset("[]"), "Cloud stores to list on the home screen; see Cloud sources."),
     s("cloud.hide", List, Unset("[]"), "Cloud source IDs not shown on the home screen. Adds up across imports."),
     s("cloud.azure_account_keys", Bool, Unset("true"), "Read an Azure account with its access keys when a sign-in has no data role (default true)."),
     s("cloud.env_files", List, Unset("[\".env\"]"), "Files to read cloud variables from, relative to the working directory. Adds up across imports."),
     s("cloud.instance_identity", Bool, Unset("false"), "Use the identity of the cloud VM datui runs on (default false)."),
-    s("cloud.discover", Toml("bool \\| \"all\" \\| \"none\" \\| list"), Unset("true"), "Logins found on this machine that become home-screen sources: all, none, or kinds from s3, gcs, azure.").flag("cloud-discover"),
+    s("cloud.discover", Toml("bool \\| \"all\" \\| \"none\" \\| list"), Unset("true"), "Logins found on this machine that become home-screen sources: all, none, or kinds from s3, gcs, azure."),
     s("cloud.list_on_start", Bool, Unset("false"), "List every source's buckets when the home screen opens, not when one is entered (default false)."),
     // [query]
     s("query.history_limit", Count, Value("1000"), "Queries remembered."),
@@ -299,7 +300,7 @@ pub const SETTINGS: &[Setting] = &[
     s("clipboard.backend", Choice(&["auto", "native", "osc52"]), Value("\"auto\""), "auto: the display server where one answers, osc52 elsewhere (SSH). osc52 is an escape sequence the terminal applies."),
     s("clipboard.osc52_limit_kb", Count, Value("100"), "Longest osc52 copy to attempt, in KB of base64."),
     // [debug]
-    s("debug.enabled", Bool, Value("false"), "Show the debug overlay.").flag("debug"),
+    s("debug.enabled", Bool, Value("false"), "Show the debug overlay."),
     s("debug.show_performance", Bool, Value("true"), "Unused."),
     s("debug.show_query", Bool, Value("true"), "Unused."),
     s("debug.show_transformations", Bool, Value("true"), "Unused."),
@@ -371,6 +372,13 @@ pub const SETTINGS: &[Setting] = &[
 /// The setting `key` names, if any.
 pub fn find(key: &str) -> Option<&'static Setting> {
     SETTINGS.iter().find(|s| s.matches(key))
+}
+
+/// A flag's help: its setting's doc and key. Panics on a flag no setting names, which
+/// `--help` and the tests reach.
+pub fn flag_help(flag: &str) -> String {
+    let setting = by_flag(flag).unwrap_or_else(|| panic!("--{flag} sets no registered key"));
+    format!("{} [config: {}]", setting.doc, setting.key)
 }
 
 /// The setting a flag sets, if one does.

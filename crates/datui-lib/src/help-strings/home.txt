@@ -110,4 +110,4 @@ What datui remembers, all under its cache directory and never the data
 itself: recent paths and how often each was opened, the shapes and column
 names it measured (so this screen can say 1,000 × 11 without reading
 anything), query history, section folds, remembered directories, bucket
-listings and hidden cloud sources. datui --clear-cache removes all of it.
+listings and hidden cloud sources. `datui cache clear` removes all of it.

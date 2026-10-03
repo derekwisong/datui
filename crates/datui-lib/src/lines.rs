@@ -539,7 +539,7 @@ pub fn guess(head: &[u8], whole: bool) -> Option<FileFormat> {
 }
 
 /// A guess of lines turned to CSV when the user gave a delimited dialect
-/// (`--delimiter`, `--comment-char`, `--header-rows`, `--skip-initial-space`): they
+/// (`--delimiter`, `--comment`, `--header-rows`, `--skip-initial-space`): they
 /// said the text is delimited, in a shape the guess does not try.
 pub fn as_asked(format: FileFormat, options: &crate::OpenOptions) -> FileFormat {
     let delimited = options.delimiter.is_some()

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::{AppConfig, CompressionFormat, FileFormat, cli};
 
-/// Which CSV string columns to trim and parse (date/datetime/time/duration/int/float). Default: all. None = disabled (e.g. --no-parse-strings).
+/// Which CSV string columns to trim and parse (date/datetime/time/duration/int/float). Default: all. None = disabled (e.g. --infer-types=off).
 #[derive(Clone, Debug)]
 pub enum ParseStringsTarget {
     /// Apply to all string columns.
@@ -30,7 +30,7 @@ impl TypedDialect {
     pub fn from_args(args: &cli::Args) -> Self {
         Self {
             delimiter: args.delimiter.is_some(),
-            comment_char: args.comment_char.is_some(),
+            comment_char: args.comment.is_some(),
             skip_initial_space: args.skip_initial_space.is_some(),
             header_rows: !args.header_rows.is_empty(),
             skip_lines: args.skip_lines.is_some(),
@@ -85,7 +85,7 @@ pub struct OpenOptions {
     pub files_disagree: crate::schema_union::Disagreement,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Reading schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
-    /// `--template NAME`: the template to apply to the dataset named on the command
+    /// `--view NAME`: the view to apply to the dataset named on the command
     /// line, once it is on screen. Applied to that open only; what later opens get
     /// is `[templates] auto_apply`'s business.
     pub template: Option<String>,
@@ -99,24 +99,12 @@ pub struct OpenOptions {
     pub decompress_in_memory: bool,
     /// Directory for decompression temp files. None = system default (e.g. TMPDIR).
     pub temp_dir: Option<std::path::PathBuf>,
-    /// Excel sheet: 0-based index or sheet name (CLI only).
-    pub excel_sheet: Option<String>,
-    /// `--table`: which table of a file that holds several, such as an NMEA log's
-    /// sentence types. `None` is the file's main table.
+    /// `--table`: which table of a file that holds several: an NMEA log's sentence
+    /// types, an Excel sheet (0-based index or name), a spec's variant. `None` is the
+    /// file's main table.
     pub table: Option<String>,
-    /// S3/compatible settings from the command line. They outrank the environment and
-    /// the config file; see `effective_cloud`.
-    pub s3_endpoint_url_override: Option<String>,
-    pub s3_access_key_id_override: Option<String>,
-    pub s3_secret_access_key_override: Option<String>,
-    pub s3_region_override: Option<String>,
-    /// `--cloud-discover`, outranking `[cloud] discover`.
-    pub cloud_discover_override: Option<crate::config::CloudDiscover>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     pub polars_streaming: bool,
-    /// No effect since Polars 0.55: the eager pivot that crashed on a Date/Datetime index is
-    /// gone. Kept so `--workaround-pivot-date-index` and the Python option still parse.
-    pub workaround_pivot_date_index: bool,
     /// Null value specs for CSV: global strings and/or "COL=VAL" for per-column. Empty = use Polars default.
     pub null_values: Option<Vec<String>>,
     /// Number of rows to use when inferring CSV schema. None = Polars default (100). Larger values reduce risk of inferring wrong type (e.g. int then N/A).
@@ -134,7 +122,7 @@ pub struct OpenOptions {
     pub skip_initial_space: bool,
     /// Which dialect options were typed on the command line, so a spec leaves them.
     pub typed_dialect: TypedDialect,
-    /// When true, show the debug overlay (session info, performance, query, etc.).
+    /// The debug overlay (session info, performance, query): `DATUI_DEBUG=1`.
     pub debug: bool,
     /// The split of a Hugging Face cache directory this read chose, the others and the
     /// `map()` files it left out. Found by the read, or by a bucket listing, and carried
@@ -144,26 +132,23 @@ pub struct OpenOptions {
     /// read in place and the streams' rows in the converted file the scan names. Set
     /// by the load, after a conversion or a bucket's listing, never by a request.
     pub arrow_parts: Option<Arc<Vec<crate::ipc_stream::Part>>>,
-    /// `--spec FILE`: read the path through this format spec, whatever else matches it.
-    /// A URL is fetched when the open starts, into `spec_fetched`.
+    /// `--format FILE`: read the path through this format spec, whatever else
+    /// matches it. A URL is fetched when the open starts, into `spec_fetched`.
     pub spec_file: Option<PathBuf>,
     /// The spec a remote `spec_file` names, fetched by the open (`Phase::ReadingSpec`).
     pub spec_fetched: Option<Arc<crate::formats::Spec>>,
-    /// `--fix-dict FILE`: a FIX dictionary over the built-in one and the search path's.
-    pub fix_dict: Option<PathBuf>,
-    /// `--dbc FILE`: a DBC file over the search path's, for a candump log.
-    pub dbc: Option<PathBuf>,
+    /// `--dict FILE`: FIX dictionaries and DBC files over the search path's, each
+    /// taken by the reader of its kind.
+    pub dicts: Vec<PathBuf>,
     /// The format spec named by `--format NAME`, or picked with `b`.
     pub spec_name: Option<String>,
-    /// `--variant NAME`: one variant of the spec's records, read alone.
-    pub spec_variant: Option<String>,
     /// What a read through a format spec found, carried from the scan to the dataset.
     pub format_read: Option<Arc<crate::formats::Read>>,
     /// What the open did to the rows its reader gave — CSV column names trimmed, text
     /// columns typed — as Python method calls for Copy as Python. Found by the scan,
     /// carried to the dataset as `left_out` is. Empty for every other open.
     pub read_python: Vec<String>,
-    /// `--normalize`: integer audio samples as float in [-1, 1].
+    /// `[file_loading] audio_float`: integer audio samples as float in [-1, 1].
     pub normalize: bool,
     /// A SQLite table opened in place, carried from the scan to the dataset.
     pub sqlite: Option<Arc<SqliteOpen>>,
@@ -182,7 +167,7 @@ pub struct OpenOptions {
     pub format_guessed: bool,
     /// `--hex`: show the file's bytes in the hex view, whatever it holds.
     pub hex: bool,
-    /// `--record-size N`: the bytes a row of the hex view holds.
+    /// `--hex-width N`: the bytes a row of the hex view holds.
     pub record_size: Option<usize>,
     /// `--follow`: show rows as they are appended to the file, or arrive on standard
     /// input, until stopped.
@@ -252,15 +237,8 @@ impl OpenOptions {
             parse_strings_sample_rows: 1000,
             decompress_in_memory: false,
             temp_dir: None,
-            excel_sheet: None,
             table: None,
-            s3_endpoint_url_override: None,
-            s3_access_key_id_override: None,
-            s3_secret_access_key_override: None,
-            s3_region_override: None,
-            cloud_discover_override: None,
             polars_streaming: true,
-            workaround_pivot_date_index: true,
             null_values: None,
             infer_schema_length: None,
             ignore_errors: false,
@@ -272,10 +250,8 @@ impl OpenOptions {
             debug: false,
             spec_file: None,
             spec_fetched: None,
-            fix_dict: None,
-            dbc: None,
+            dicts: Vec::new(),
             spec_name: None,
-            spec_variant: None,
             format_read: None,
             normalize: false,
             sqlite: None,
@@ -337,11 +313,6 @@ impl OpenOptions {
         self
     }
 
-    pub fn with_workaround_pivot_date_index(mut self, workaround_pivot_date_index: bool) -> Self {
-        self.workaround_pivot_date_index = workaround_pivot_date_index;
-        self
-    }
-
     /// The lines `--header-rows` named, unless the file is being read without a
     /// header (`--no-header`, or `H`), which reads them as data.
     pub fn header_rows(&self) -> Option<&[usize]> {
@@ -356,8 +327,8 @@ impl OpenOptions {
         self.parse_strings.is_none() && self.parse_dates
     }
 
-    /// The S3 settings every cloud path uses: the command line over the environment
-    /// over the `[cloud]` config. `run()` folds this into the config the `App` keeps,
+    /// The S3 settings every cloud path uses: the environment over the `[cloud]`
+    /// config. `run()` folds this into the config the `App` keeps,
     /// so opening, sizing, downloading, discovery and listing all see one answer and a
     /// bucket that is listed is reached the way it will be opened. The environment is
     /// read here, not when the options are built, so a caller that starts from
@@ -368,192 +339,118 @@ impl OpenOptions {
     ) -> crate::config::CloudConfig {
         let mut merged = cloud.clone();
         merged.overlay(crate::config::CloudConfig::from_env(&crate::cloud_env::var));
-        merged.overlay(crate::config::CloudConfig {
-            s3_endpoint_url: self.s3_endpoint_url_override.clone(),
-            s3_access_key_id: self.s3_access_key_id_override.clone(),
-            s3_secret_access_key: self.s3_secret_access_key_override.clone(),
-            s3_region: self.s3_region_override.clone(),
-            discover: self.cloud_discover_override.clone(),
-            ..Default::default()
-        });
         merged
     }
 }
 
 impl OpenOptions {
-    /// Create OpenOptions from CLI args and config, with CLI args taking precedence
+    /// The options the command line and the config give an open. The config has had
+    /// `-c` laid over it; a flag here beats both.
     pub fn from_args_and_config(args: &cli::Args, config: &AppConfig) -> Self {
         let mut opts = OpenOptions::new();
+        let loading = &config.file_loading;
 
         // A file's layout: command line only. Set in config, these applied to every
         // file opened and silently cut rows from the ones they did not describe (#289).
         opts.delimiter = args.delimiter;
         opts.skip_lines = args.skip_lines;
         opts.skip_rows = args.skip_rows;
-        opts.skip_tail_rows = args.skip_tail_rows;
-        opts.has_header = args.no_header.map(|no_header| !no_header);
+        opts.skip_tail_rows = args.footer_rows;
+        opts.has_header = args.no_header.then_some(false);
         opts.header_rows = args.header_rows.iter().map(|&n| n as usize).collect();
-        opts.template = args.template.clone();
-
-        // Compression: CLI only (auto-detect from extension when not specified)
+        opts.template = args.view.clone();
         opts.compression = args.compression;
 
-        // Format: CLI only (auto-detect from extension when not specified). A spec's
-        // name is looked up on the search path when the file is opened.
+        // A spec's name is looked up on the search path when the file is opened.
         opts.format = args.format.as_ref().and_then(cli::FormatChoice::builtin);
         opts.spec_name = args
             .format
             .as_ref()
             .and_then(|f| f.spec().map(str::to_string));
-        opts.spec_file = args.spec.clone();
-        opts.fix_dict = args.fix_dict.clone();
-        opts.dbc = args.dbc.clone();
-        opts.spec_variant = args.variant.clone();
-        opts.hex = args.hex;
-        opts.record_size = args.record_size.map(usize::from);
-
-        // Display options: CLI args override config
-        opts.pages_lookahead = args
-            .pages_lookahead
-            .or(Some(config.display.pages_lookahead));
-        opts.pages_lookback = args.pages_lookback.or(Some(config.display.pages_lookback));
-        opts.max_buffered_rows = Some(config.display.max_buffered_rows);
-        opts.max_buffered_mb = Some(config.display.max_buffered_mb);
-
-        // Row numbers: CLI flag overrides config
-        opts.row_numbers = args.row_numbers || config.display.row_numbers;
-
-        // Row start index: CLI arg overrides config
-        opts.row_start_index = args
-            .row_start_index
-            .unwrap_or(config.display.row_start_index);
-
-        // Hive partitioning: CLI only (no config option yet)
-        opts.hive = args.hive;
-
-        // Single-spine schema: CLI overrides config; default true
-        opts.single_spine_schema = args
-            .single_spine_schema
-            .or(config.file_loading.single_spine_schema)
-            .unwrap_or(true);
-
-        // CSV date inference: CLI overrides config; default true
-        opts.parse_dates = args
-            .parse_dates
-            .or(config.file_loading.parse_dates)
-            .unwrap_or(true);
-
-        // Parse strings (trim + type inference). Default: all CSV string columns. --no-parse-strings disables; --parse-strings=COL limits to columns.
-        if args.no_parse_strings {
-            opts.parse_strings = None;
-        } else if !args.parse_strings.is_empty() {
-            let has_all = args.parse_strings.iter().any(|s| s.is_empty());
-            opts.parse_strings = Some(if has_all {
-                ParseStringsTarget::All
-            } else {
-                let cols: Vec<String> = args
-                    .parse_strings
-                    .iter()
-                    .filter(|s| !s.is_empty())
-                    .cloned()
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                ParseStringsTarget::Columns(cols)
-            });
-        } else if config.file_loading.parse_strings == Some(false) {
-            opts.parse_strings = None;
-        } else {
-            opts.parse_strings = Some(ParseStringsTarget::All);
-        }
-        // CSV dialect: CLI overrides config.
-        opts.comment_char = args
-            .comment_char
-            .clone()
-            .or_else(|| config.file_loading.comment_char.clone());
-        if let Some(join) = &config.file_loading.header_join {
-            opts.header_join = join.clone();
-        }
-        opts.skip_initial_space = args
-            .skip_initial_space
-            .or(config.file_loading.skip_initial_space)
-            .unwrap_or(false);
-        opts.typed_dialect = TypedDialect::from_args(args);
-
-        opts.parse_strings_sample_rows = config
-            .file_loading
-            .parse_strings_sample_rows
-            .unwrap_or(1000);
-
-        // Decompress-in-memory: CLI overrides config; default false (decompress to temp, use scan)
-        opts.decompress_in_memory = args
-            .decompress_in_memory
-            .or(config.file_loading.decompress_in_memory)
-            .unwrap_or(false);
-
-        // Temp directory for decompression: CLI overrides config; default None (system temp)
-        opts.temp_dir = args.temp_dir.clone().or_else(|| {
-            config
-                .file_loading
-                .temp_dir
-                .as_deref()
-                .map(crate::config::expand_config_path)
-        });
-
-        // Excel sheet (CLI only)
-        opts.excel_sheet = args.excel_sheet.clone();
+        opts.spec_file = args
+            .format
+            .as_ref()
+            .and_then(|f| f.spec_file().map(std::path::Path::to_path_buf));
+        opts.dicts = args.dict.clone();
         opts.table = args.table.clone();
-        opts.normalize = args.normalize;
-
-        // S3/compatible flags. The environment is folded in by `effective_cloud`.
-        opts.s3_endpoint_url_override = args.s3_endpoint_url.clone();
-        opts.s3_access_key_id_override = args.s3_access_key_id.clone();
-        opts.s3_secret_access_key_override = args.s3_secret_access_key.clone();
-        opts.s3_region_override = args.s3_region.clone();
-        // Already checked by clap, which takes the same words.
-        opts.cloud_discover_override = args
-            .cloud_discover
-            .as_deref()
-            .and_then(|text| text.parse().ok());
-
-        opts.polars_streaming = config.performance.polars_streaming;
-
-        opts.workaround_pivot_date_index = args.workaround_pivot_date_index.unwrap_or(true);
-
-        // Debug: CLI flag overrides config
-        opts.debug = args.debug || config.debug.enabled;
-
-        // Null values: merge config list with CLI list (CLI appended); if either is non-empty, set
-        let config_nulls = config.file_loading.null_values.as_deref().unwrap_or(&[]);
-        let cli_nulls = &args.null_value;
-        if config_nulls.is_empty() && cli_nulls.is_empty() {
-            opts.null_values = None;
-        } else {
-            opts.null_values = Some(
-                config_nulls
-                    .iter()
-                    .chain(cli_nulls.iter())
-                    .cloned()
-                    .collect(),
-            );
-        }
-
-        // CSV schema inference: CLI overrides config; default 1000 (Polars default is 100)
-        opts.infer_schema_length = args
-            .infer_schema_length
-            .or(config.file_loading.infer_schema_length)
-            .or(Some(1000));
-
+        opts.hex = args.hex;
+        opts.record_size = args.hex_width.map(usize::from);
+        opts.hive = args.hive;
         opts.follow = args.follow;
         opts.tee = args.tee.clone();
         opts.tee_raw = args.tee_raw;
         opts.force = args.force;
 
-        // CSV ignore parse errors: CLI overrides config; default false
+        opts.pages_lookahead = Some(config.display.pages_lookahead);
+        opts.pages_lookback = Some(config.display.pages_lookback);
+        opts.max_buffered_rows = Some(config.display.max_buffered_rows);
+        opts.max_buffered_mb = Some(config.display.max_buffered_mb);
+        opts.row_numbers = args.row_numbers.unwrap_or(config.display.row_numbers);
+        opts.row_start_index = config.display.row_start_index;
+        opts.single_spine_schema = loading.single_spine_schema.unwrap_or(true);
+        opts.decompress_in_memory = loading.decompress_in_memory.unwrap_or(false);
+        opts.normalize = loading.audio_float.unwrap_or(false);
+        opts.polars_streaming = config.performance.polars_streaming;
+        opts.debug = config.debug.enabled;
+
+        // Typing string columns: the flag, else the config's two keys.
+        match &args.infer_types {
+            Some(cli::InferTypes::Off) => {
+                opts.parse_strings = None;
+                opts.parse_dates = false;
+            }
+            Some(cli::InferTypes::All) => {
+                opts.parse_strings = Some(ParseStringsTarget::All);
+                opts.parse_dates = true;
+            }
+            Some(cli::InferTypes::Columns(cols)) => {
+                opts.parse_strings = Some(ParseStringsTarget::Columns(cols.clone()));
+                opts.parse_dates = true;
+            }
+            None => {
+                opts.parse_strings =
+                    (loading.parse_strings != Some(false)).then_some(ParseStringsTarget::All);
+                opts.parse_dates = loading.parse_dates.unwrap_or(true);
+            }
+        }
+
+        // CSV dialect: a flag beats the config.
+        opts.comment_char = args
+            .comment
+            .clone()
+            .or_else(|| loading.comment_char.clone());
+        if let Some(join) = &loading.header_join {
+            opts.header_join = join.clone();
+        }
+        opts.skip_initial_space = args
+            .skip_initial_space
+            .or(loading.skip_initial_space)
+            .unwrap_or(false);
+        opts.typed_dialect = TypedDialect::from_args(args);
         opts.ignore_errors = args
             .ignore_errors
-            .or(config.file_loading.ignore_errors)
+            .or(loading.ignore_errors)
             .unwrap_or(false);
+        // `--null` replaces the config's list, as every flag replaces its key.
+        let nulls = if args.null.is_empty() {
+            loading.null_values.clone().unwrap_or_default()
+        } else {
+            args.null.clone()
+        };
+        opts.null_values = (!nulls.is_empty()).then_some(nulls);
+        // One row count for one guess; Polars' own default is 100.
+        let infer_rows = args.infer_rows.or(loading.infer_schema_length);
+        opts.infer_schema_length = infer_rows.or(Some(1000));
+        opts.parse_strings_sample_rows = infer_rows
+            .or(loading.parse_strings_sample_rows)
+            .unwrap_or(1000);
+
+        opts.temp_dir = args.temp_dir.clone().or_else(|| {
+            loading
+                .temp_dir
+                .as_deref()
+                .map(crate::config::expand_config_path)
+        });
 
         opts
     }

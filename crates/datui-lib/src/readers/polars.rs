@@ -48,7 +48,7 @@ fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> 
     let nv = DataTableState::build_null_values_with(options, None, || {
         DataTableState::csv_schema_for_null_values(reader(), options)
     })?;
-    // No `--parse-strings` here: its sample would be a second read of the bucket. Nor
+    // No `--infer-types` here: its sample would be a second read of the bucket. Nor
     // Polars' `try_parse_dates`, which fails the whole read on a value it cannot parse,
     // even one like those it inferred the type from. Timestamps stay text, and so do
     // padded numbers: `--skip-initial-space` only takes their padding off.

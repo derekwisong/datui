@@ -245,7 +245,7 @@ pub struct HexView {
     pub cursor: u64,
     /// The offset of the first row on screen.
     pub top: u64,
-    /// Bytes a row holds, when fixed (`--record-size`, `r`, `R`).
+    /// Bytes a row holds, when fixed (`--hex-width`, `r`, `R`).
     pub record_size: Option<usize>,
     pub decimal: bool,
     /// The other end of a marked range, the cursor being one end.

@@ -18,9 +18,11 @@ Examples:
   datui --format csv --no-header raw.txt
       Headerless text, whatever the extension
   datui --format acme.l2feed capture.bin
-      A binary file, read through the format spec of that name
+      A binary file, read through a format spec (or --format ./acme.toml)
   datui formats check acme.l2feed capture.bin
       Check a format spec and print the first rows it reads
+  datui -c display.row_numbers=true data.csv
+      Any config key, for this run
   datui config init
       Write ~/.config/datui/config.toml
 

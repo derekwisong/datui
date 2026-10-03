@@ -38,7 +38,7 @@ datui.view(["jan.parquet", "feb.parquet"])
 
 Options can be passed as keywords or as a `datui.DatuiOptions` instance.
 Common options include `delimiter`, `has_header`, `null_values`, `hive`,
-`excel_sheet` and `row_numbers`. Use `help(datui.DatuiOptions)` for the full
+`table` and `row_numbers`. Use `help(datui.DatuiOptions)` for the full
 Python option list. For a frame, only display options apply.
 
 ## Return the current view

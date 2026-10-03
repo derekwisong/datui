@@ -165,7 +165,7 @@ file and the table on screen (`flight.bin --table GPS`):
   [binary format spec](binary-formats.md)
 - A file compressed with bzip2 or xz
 - A CSV read with `--header-rows`, `--skip-initial-space`, or a
-  `--comment-char` longer than five characters
+  `--comment` longer than five characters
 
 A step the script cannot repeat, such as a drill into a group whose rows are
 lists, is a comment, and the steps after it are commented out.

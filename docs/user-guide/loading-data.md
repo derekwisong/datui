@@ -222,7 +222,8 @@ The format is taken from the extension, or from `--format` when there is none.
 | in memory | Read whole into memory before the table appears. Past `memory_warning_mb` in `[file_loading]` (1024 MB by default; 0 never asks), datui asks first: `big.json: JSON reads 2.10 GB into memory`. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB |
 
 - **Compressed** is a `.gz`, `.zst`, `.bz2` or `.xz` file; `no` means it does not
-  open. `--decompress-in-memory` reads compressed CSV, TSV, PSV and text in memory instead.
+  open. `-c file_loading.decompress_in_memory=true` reads compressed CSV, TSV, PSV
+  and text in memory instead.
 - **HTTP(S)** is one file at an `http://` or `https://` URL. `downloaded` copies
   it to the temp directory first, then reads it as **Read** says. A model file's
   header is fetched by range; a server that sends no ranges gets the download
@@ -342,8 +343,8 @@ than the temp directory's free space is refused before it is written.
 
 Read: [in memory](#how-each-format-is-read).
 
-Excel opens the first sheet unless `--sheet` names another, by index
-(`--sheet 0`) or name (`--sheet Sales`).
+Excel opens the first sheet unless `--table` names another, by index
+(`--table 0`) or name (`--table Sales`).
 
 ### Model files
 
@@ -446,11 +447,11 @@ first one are dated back from it when it comes within the first 65,536 rows;
 when it comes later, those rows keep a null `time`. A log with neither sentence
 has no dates, and `time` is null throughout.
 
-`--table` is for any file that holds several tables: an NMEA log's sentence
-types, a [SQLite database](#sqlite-databases)'s tables, or a Hugging Face cache
-directory's splits ([Arrow IPC streams](#arrow-ipc-streams)). Any other file opened with
-it is refused.
-Excel workbooks take `--sheet`.
+`--table` (`-t`) is for any file that holds several tables: an NMEA log's
+sentence types, a [SQLite database](#sqlite-databases)'s tables, an Excel
+workbook's sheets, a format spec's variants, or a Hugging Face cache directory's
+splits ([Arrow IPC streams](#arrow-ipc-streams)). Any other file opened with it
+is refused.
 
 **GPX** opens as one row per `trkpt`, `rtept` and `wpt`:
 
@@ -494,7 +495,7 @@ Read: [lazy](#how-each-format-is-read).
 
 ```bash
 datui take.wav
-datui take.wav --normalize      # integer samples as float in [-1, 1]
+datui -c file_loading.audio_float=true take.wav   # integer samples as float in [-1, 1]
 ```
 
 An uncompressed audio file opens as a table with one row per sample frame:
@@ -511,7 +512,7 @@ first. The row count comes from the file's size.
 - Channels are `ch1`, `ch2`, ... An extensible file's channel mask names them
   instead: `L`, `R`, `C`, `LFE`, `BL`, `BR`, `SL`, `SR`, and so on.
 - Integer samples stay integer: 24-bit is `i32`, and 8-bit WAV, stored
-  unsigned, is shown signed. `--normalize` shows them as `f32` in [-1, 1];
+  unsigned, is shown signed. `[file_loading] audio_float` shows them as `f32` in [-1, 1];
   float samples are never rescaled.
 - A data size of 0 or a placeholder, as a recorder writes until it stops, is
   read as everything to the end of the file. A size past the end of the file
@@ -786,8 +787,8 @@ frame is read from its line where it is shown.
 
 ```bash
 datui candump-2024-01-31_081500.log                # the frames
-datui candump.log --dbc vehicle.dbc                # a table per message
-datui candump.log --dbc vehicle.dbc --table EEC1   # one message
+datui candump.log --dict vehicle.dbc                # a table per message
+datui candump.log --dict vehicle.dbc --table EEC1   # one message
 ```
 
 A `candump` log opens by its content, whatever it is called:
@@ -833,7 +834,7 @@ file = "powertrain.dbc"     # beside this file, or a full path
 interface = "can1"
 ```
 
-They are read in that order, then `--dbc FILE`; where two name a message of the
+They are read in that order, then `--dict FILE`; where two name a message of the
 same id, the later one is read. Press <kbd>i</kbd> for the CAN tab: frames,
 interfaces, the DBC files read and the frames none of them names, and each
 message's id, frames, signals and comment.
@@ -902,7 +903,7 @@ Read: [converted once](#how-each-format-is-read).
 ```bash
 datui session.log                       # known by its content
 datui --format fix capture.bin
-datui --fix-dict broker.toml session.log
+datui --dict broker.toml session.log
 ```
 
 A log of FIX `tag=value` messages, delimited by SOH, `|` or `^A`, opens as one row
@@ -942,7 +943,7 @@ The built-in dictionary is FIX 4.2, 4.4 and 5.0 SP2 together, the newest
 version's names winning. Venues and brokers add their own tags (5000-9999 and
 10000 up), so dictionaries can be added: on the
 [format search path](binary-formats.md#where-specs-live), or with
-`--fix-dict FILE`.
+`--dict FILE`.
 
 | Form | |
 |---|---|
@@ -963,7 +964,7 @@ tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 
 | `tags` | Tag number to a name, or to `name`, `type` (`int`, `float`, `price`, `qty`, `string`, `char`, `timestamp`, `date`, `bool`, `length`, `data`), `enum` (code to name) and, for a length tag, `data` (the tag it sizes) |
 
 The built-in dictionary comes first, then each matching dictionary on the search
-path in order, then `--fix-dict`; a later one renames a tag or adds to its enums.
+path in order, then `--dict`; a later one renames a tag or adds to its enums.
 One log can hold two counterparties that name tag 9001 differently: each
 message is read with its own, the column falls back to the tag number, and the
 FIX tab shows both names. `datui formats` lists FIX dictionaries beside the
@@ -1009,23 +1010,22 @@ temporary Arrow IPC file. The atom and bond blocks are passed over, never held.
 Read: [lazy, or converted once when compressed](#how-each-format-is-read).
 
 They apply to `.tsv` and `.psv` files too. A directory of CSVs in a bucket takes
-all of them except `--parse-strings`, `--parse-dates` and `--header-rows`, and
+all of them except `--infer-types` and `--header-rows`, and
 `--skip-initial-space` only removes the padding there: values stay text.
 
 | Option | Config key | What it does |
 |---|---|---|
-| `--delimiter 9` | | Column separator as an ASCII code (`59` for `;`, `124` for `\|`). Default `,` for `.csv`, tab for `.tsv`, `\|` for `.psv` |
+| `--delimiter ';'` | | Column separator: one character, `tab`, `\t` or a code such as `0x1f`. Default `,` for `.csv`, tab for `.tsv`, `\|` for `.psv` |
 | `--no-header` | | The first row is data, not names. <kbd>H</kbd> does the same, or undoes it, on the file on screen |
 | `--skip-lines N`, `--skip-rows N` | | Ignore a preamble |
-| `--skip-tail-rows N` | | Ignore a footer. Counts every row first, and the loading screen says `Counting rows to skip the footer` meanwhile: on a directory in a bucket, that downloads every file before the table opens |
-| `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`, the name as shown). Repeatable |
-| `--comment-char '#'` | `comment_char` | Skip lines that start with it, before the header and among the data. The header is the first line that is not a comment |
+| `--footer-rows N` | | Ignore a footer. Counts every row first, and the loading screen says `Counting rows to skip the footer` meanwhile: on a directory in a bucket, that downloads every file before the table opens |
+| `--null NA`, `--null amount=` | `null_values` | Values to read as null, for every column or one (`COL=VAL`, the name as shown). Repeatable; replaces the config's list |
+| `--comment '#'` | `comment_char` | Skip lines that start with it, before the header and among the data. The header is the first line that is not a comment |
 | `--header-rows 3`, `--header-rows 3,2` | `header_join` | The line or lines holding the header, counted from 1 at the top of the file. Several are joined per column, in the order given, with `header_join` (default a space) |
 | `--skip-initial-space` | `skip_initial_space` | Ignore the spaces after a delimiter: padded numbers are numbers and a cell of spaces is null |
-| `--infer-schema-length 10000` | `infer_schema_length` | Rows used to infer column types (default 1000). Raise it when a column turns from integer to text late in the file |
+| `--infer-rows 10000` | `infer_schema_length` | Rows used to infer column types (default 1000). Raise it when a column turns from integer to text late in the file |
 | `--ignore-errors` | `ignore_errors` | Skip rows that fail to parse instead of failing the load |
-| `--parse-dates=false` | `parse_dates` | Stop parsing date-looking strings as Date and Datetime |
-| `--parse-strings=COL`, `--no-parse-strings` | | Trim and type-infer string columns; limit it to named columns, or turn it off |
+| `--infer-types=COL`, `--infer-types=off` | `parse_strings`, `parse_dates` | Trim and type-infer string columns, dates included; limit it to named columns, or turn it off |
 
 Column names are always trimmed: `"     Latitude"` reads as `Latitude`. A blank
 name reads as `column_N`, and a repeated one gets `_duplicated_0`.
@@ -1043,8 +1043,8 @@ Loggers often write comments and a units line above a padded header:
 
 | Command | Columns |
 |---|---|
-| `datui --comment-char '#' log.csv` | `Lcl Date`, `Latitude`, …; `#` lines anywhere are skipped |
-| `datui --comment-char '#' --header-rows 3,2 log.csv` | `Lcl Date yyyy-mm-dd`, `Latitude degrees`, … |
+| `datui --comment '#' log.csv` | `Lcl Date`, `Latitude`, …; `#` lines anywhere are skipped |
+| `datui --comment '#' --header-rows 3,2 log.csv` | `Lcl Date yyyy-mm-dd`, `Latitude degrees`, … |
 | `datui --header-rows 3 log.csv` | `Lcl Date`, `Latitude`, …; lines 1 and 2 are passed over |
 
 `--header-rows` counts lines before anything is skipped, and a named line that
@@ -1059,15 +1059,14 @@ flags. A flag typed on the command line still wins over the spec.
 
 Padded numbers become numbers with or without `--skip-initial-space`, as long
 as string parsing is on (the default). With the flag, cells of spaces are null
-in text columns too, and `--null-value` matches the value without its padding.
-Typing follows `--parse-strings`: with `--no-parse-strings` the padding goes but
-the columns stay text, and `--parse-strings=COL` types only the columns named.
+in text columns too, and `--null` matches the value without its padding.
+Typing follows `--infer-types`: with `--infer-types=off` the padding goes but
+the columns stay text, and `--infer-types=COL` types only the columns named.
 
 ### Dates and timestamps
 
 String columns in CSV and JSON become dates when every value in the first 1000
-rows (`parse_strings_sample_rows`) parses the same way. `--parse-dates=false`
-turns this off.
+rows (`--infer-rows`) parses the same way. `--infer-types=off` turns this off.
 
 | Value | Type |
 |---|---|
@@ -1079,7 +1078,7 @@ A column whose values disagree, such as an offset on some and none on others,
 stays text. A value past those rows that does not parse is null. JSON strings
 become dates or times, never numbers.
 
-With `--no-parse-strings`, Polars decides from the rows it reads for the schema,
+With `--infer-types=off`, Polars decides from the rows it reads for the schema,
 and a value it cannot parse fails the read. A directory of CSV or NDJSON files
 in a bucket keeps them as text.
 
@@ -1089,8 +1088,8 @@ Files ending in `.gz`, `.zst`, `.bz2` or `.xz` are decompressed before loading.
 Use `--compression gzip|zstd|bzip2|xz` when the extension is missing or wrong.
 
 Compressed CSV, TSV or PSV is decompressed to a temporary file so it can still
-be scanned lazily. `--temp-dir` chooses where; `--decompress-in-memory` skips
-the file and reads the whole thing into memory instead.
+be scanned lazily. `--temp-dir` chooses where; `-c file_loading.decompress_in_memory=true`
+skips the file and reads the whole thing into memory instead.
 
 ### Temporary files
 
@@ -1192,8 +1191,8 @@ The Notes tab also flags storage layouts that may explain a slow open:
 | More than 10,000 files, median size below 1 MiB | Many metadata reads before data can be displayed |
 | Different partition keys, such as `date` and `dt` | Partition columns vary across the dataset; key order alone is fine |
 
-`--single-spine-schema=false` skips datui's footer union and uses Polars'
-single-file schema inference. That route also omits the partition-key check.
+`-c file_loading.single_spine_schema=false` skips datui's footer union and uses
+Polars' single-file schema inference. That route also omits the partition-key check.
 
 ### Opening it again
 
@@ -1203,7 +1202,7 @@ changes to names, sizes, timestamps or etags. An unchanged listing opens with
 no footer reads; a changed one triggers fresh metadata reads. The cache keeps
 128 MiB of this metadata and drops the least recently opened dataset first.
 
-`--clear-cache` clears this metadata along with other cached state, including
+`datui cache clear` clears this metadata along with other cached state, including
 query history. See [cache contents](home-screen.md#what-datui-remembers).
 
 ## Binary columns

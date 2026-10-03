@@ -3,8 +3,8 @@
 ```bash
 datui day.l2                           # a spec on the search path matches it
 datui --format acme.l2feed capture.bin # read it as that spec
-datui --spec l2feed.toml capture.bin   # read it with this spec file
-datui --spec s3://team/l2feed.toml day.bin  # or a spec at a URL
+datui --format ./l2feed.toml capture.bin  # read it with this spec file
+datui --format s3://team/l2feed.toml day.bin  # or a spec at a URL
 datui formats                          # list the specs datui finds
 datui formats check acme.l2feed day.l2 # check a spec and print a file's first rows
 ```
@@ -184,7 +184,7 @@ variants share is one column, so it must be the same field in both. A record of
 a type no variant names shows as `?X` when its size is known
 (`length_prefixed`); otherwise the read stops there, with a note.
 
-`datui --variant add capture.bin` opens one variant as its own table: only its
+`datui --table add capture.bin` opens one variant as its own table: only its
 records and its columns.
 
 On the home screen, a file a spec's glob names that holds several variants
@@ -293,7 +293,7 @@ a repository of specs can run it in CI.
 
 | First that applies | |
 |---|---|
-| `--spec FILE` | That spec, whatever the file is called. `FILE` may be an `http(s)://`, `s3://`, `gs://` or `az://` URL, fetched once as the open starts |
+| `--format FILE`: a path (it has a `/` or ends `.toml`), or an `http(s)://`, `s3://`, `gs://` or `az://` URL fetched once as the open starts | That spec, whatever the file is called |
 | `--format NAME` | The spec of that name |
 | A name datui already reads (`.csv`, `.parquet`) | Read as it is, as before, unless a [delimited spec](#delimited-text) matches a `.csv`, `.tsv` or `.psv` |
 | A `glob` matches | That spec |
@@ -371,7 +371,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
 
 Lines count from 1 at the top of the file. Each option the spec sets replaces
 the config's; a flag typed on the command line (`--delimiter`,
-`--comment-char`, `--skip-initial-space`, `--header-rows`, `--skip-lines`)
+`--comment`, `--skip-initial-space`, `--header-rows`, `--skip-lines`)
 wins over the spec. The options the spec does not set keep theirs.
 `datui --delimiter 44 formats check SPEC FILE` reads the file as an open with
 those flags would, and names the flags that override the spec. The header lines
@@ -423,7 +423,7 @@ without its derived columns.
 | A header count larger than the file | The whole records open, with a note |
 | A record whose length or type cannot be read | The records before it open; a note says where the rest was left out |
 | `checksum` in `[records]` | A `checksum_ok` column, true or false for each record, rather than an error |
-| `--spec` or `--format NAME` on an `s3://`, `gs://` or Azure path | Refused: specs read local files, so download it first |
+| `--format` with a spec on an `s3://`, `gs://` or Azure path | Refused: specs read local files, so download it first |
 
 ```toml
 checksum = { algo = "crc16-ccitt", field = "crc", from = "len", to = "crc" }

@@ -47,7 +47,7 @@ fn open_with(
 
 fn with_dbc(table: Option<&str>) -> OpenOptions {
     OpenOptions {
-        dbc: Some(can().join("dbc/car.dbc")),
+        dicts: vec![can().join("dbc/car.dbc")],
         table: table.map(str::to_string),
         ..OpenOptions::default()
     }

@@ -47,7 +47,7 @@ fn simulate_initial_tui_collects(app: &mut App, terminal_height: usize) {
 const SIMULATE_TUI_INITIAL_COLLECTS: bool = true;
 
 /// Polars 0.52's eager pivot panicked when the index column was Date (from_physical UInt32);
-/// the lazy pivot in 0.55 does not, and `workaround_pivot_date_index` is now a no-op.
+/// the lazy pivot in 0.55 does not.
 
 #[test]
 fn test_pivot_via_events() {
@@ -88,19 +88,14 @@ fn test_pivot_via_events() {
 }
 
 /// Same render path as UI: visible slice (display_slice_df) then cell formatting (get/str_value).
-/// With workaround off, pivot can panic inside Polars (restore_logical_type); test still exercises the path.
+/// Polars before 0.55 panicked here (restore_logical_type); the test keeps the path exercised.
 #[test]
 fn test_pivot_date_index_render_simulation() {
     ensure_sample_data();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file_with(
-        &mut app,
-        &rx,
-        path,
-        OpenOptions::default().with_workaround_pivot_date_index(false),
-    );
+    load_file_with(&mut app, &rx, path, OpenOptions::default());
     let state = app.data_table_state.as_mut().unwrap();
     state.visible_rows = 40;
     state.collect();

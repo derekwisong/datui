@@ -12793,7 +12793,7 @@ fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
 /// A dataset Polars opened shows no measurements, even though its rows are counted
 /// afterwards.
 ///
-/// `--single-spine-schema=false` turns off the footer pass and hands the directory
+/// `file_loading.single_spine_schema = false` turns off the footer pass and hands the directory
 /// straight to Polars, so there is nothing for datui to report. But the row count is
 /// still taken from the footers afterwards, against the same dataset — and that pass
 /// writing into the meter would raise a section out of nothing, headed by what opening
@@ -16197,8 +16197,14 @@ fn test_a_directory_with_no_data_is_not_forced_open() {
 /// Options as the binary builds them from these arguments and this config text.
 fn options_as_the_binary_does(argv: &[&str], config: &str) -> OpenOptions {
     use clap::Parser;
+    use datui::config::{AppConfig, ConfigLayer};
     let args = datui_cli::Args::try_parse_from(argv).expect("parses");
-    let config: datui::config::AppConfig = toml::from_str(config).expect("config parses");
+    // The file, then `-c` over it, as the binary layers them.
+    let layers = [
+        ConfigLayer::parse(config).expect("config parses"),
+        ConfigLayer::from_overrides(&args.config).expect("-c parses"),
+    ];
+    let config = AppConfig::from_layers(layers).expect("config reads");
     OpenOptions::from_args_and_config(&args, &config)
 }
 
@@ -16248,7 +16254,7 @@ fn test_delimiter_flag_splits_the_columns() {
     assert_eq!(names(&df), ["id|name|city"], "without the flag: one column");
 
     let with_flag = |extra: &[&str]| {
-        let mut argv = vec!["datui", "x", "--delimiter", "124"];
+        let mut argv = vec!["datui", "x", "--delimiter", "|"];
         argv.extend_from_slice(extra);
         options_as_the_binary_does(&argv, "")
     };
@@ -16265,7 +16271,7 @@ fn test_delimiter_flag_splits_the_columns() {
         (
             "gzip, in memory",
             vec![gz.clone()],
-            with_flag(&["--decompress-in-memory"]),
+            with_flag(&["-c", "file_loading.decompress_in_memory=true"]),
             InMemory,
         ),
     ] {
@@ -16304,7 +16310,7 @@ fn test_every_delimited_format_opens_with_every_compression() {
             for in_memory in [false, true] {
                 let mut flagged = vec!["datui"];
                 if in_memory {
-                    flagged.push("--decompress-in-memory");
+                    flagged.extend(["-c", "file_loading.decompress_in_memory=true"]);
                 }
                 for (what, path, extra) in [
                     ("by name", &named, vec![named_arg]),
@@ -16433,7 +16439,7 @@ fn test_delimiter_flag_overrides_the_format_and_reaches_export() {
 
     let (mut app, df) = open_and_collect(
         vec![tsv],
-        options_as_the_binary_does(&["datui", "x", "--delimiter", "59"], ""),
+        options_as_the_binary_does(&["datui", "x", "--delimiter", ";"], ""),
     );
     assert_eq!(names(&df), ["a", "b\tc"]);
     assert_eq!(export_default(&mut app), ";");
@@ -16477,10 +16483,8 @@ fn test_tsv_and_psv_take_every_csv_option() {
         let path = tmp.path().join(name);
         let body = format!("id{sep} name\n1{sep}NA\n2{sep}bob\n3{sep}FOOTER\n");
         std::fs::write(&path, body).unwrap();
-        let opts = options_as_the_binary_does(
-            &["datui", "x", "--null-value", "NA", "--skip-tail-rows", "1"],
-            "",
-        );
+        let opts =
+            options_as_the_binary_does(&["datui", "x", "--null", "NA", "--footer-rows", "1"], "");
         let (_, df) = open_and_collect(vec![path], opts);
         assert_eq!(names(&df), ["id", "name"], "{name}");
         assert_eq!(df.height(), 2, "{name}");
@@ -22375,10 +22379,10 @@ fn names_of(df: &DataFrame) -> Vec<String> {
         .collect()
 }
 
-/// A padded logger export: `--comment-char` finds the header past two comment lines,
+/// A padded logger export: `--comment` finds the header past two comment lines,
 /// the names lose their padding, and padded numbers are numbers with the blank cells
 /// null, with or without `--skip-initial-space`. That flag leaves the typing to
-/// `--parse-strings`: off, the values lose their padding and stay text; limited to a
+/// `--infer-types`: off, the values lose their padding and stay text; limited to a
 /// column, only that column is typed.
 #[test]
 fn a_padded_log_reads_with_comment_char() {
@@ -22392,8 +22396,8 @@ fn a_padded_log_reads_with_comment_char() {
         "E1 CHT1",
     ];
     for flags in [
-        &["--comment-char", "#"][..],
-        &["--comment-char", "#", "--skip-initial-space"],
+        &["--comment", "#"][..],
+        &["--comment", "#", "--skip-initial-space"],
     ] {
         let df = open_dialect(vec![log.clone()], options_from_flags(flags));
         assert_eq!(names_of(&df), names, "{flags:?}");
@@ -22416,10 +22420,10 @@ fn a_padded_log_reads_with_comment_char() {
     let df = open_dialect(
         vec![log.clone()],
         options_from_flags(&[
-            "--comment-char",
+            "--comment",
             "#",
             "--skip-initial-space",
-            "--no-parse-strings",
+            "--infer-types=off",
         ]),
     );
     let latitude = df.column("Latitude").unwrap();
@@ -22431,10 +22435,10 @@ fn a_padded_log_reads_with_comment_char() {
     let df = open_dialect(
         vec![log.clone()],
         options_from_flags(&[
-            "--comment-char",
+            "--comment",
             "#",
             "--skip-initial-space",
-            "--parse-strings=Latitude",
+            "--infer-types=Latitude",
         ]),
     );
     assert_eq!(df.column("Latitude").unwrap().dtype(), &DataType::Float64);
@@ -22444,13 +22448,10 @@ fn a_padded_log_reads_with_comment_char() {
 
     // A cell of spaces in a text column is empty text as read, and null once the
     // padding is skipped.
-    let plain = open_dialect(
-        vec![log.clone()],
-        options_from_flags(&["--comment-char", "#"]),
-    );
+    let plain = open_dialect(vec![log.clone()], options_from_flags(&["--comment", "#"]));
     let skipped = open_dialect(
         vec![log],
-        options_from_flags(&["--comment-char", "#", "--skip-initial-space"]),
+        options_from_flags(&["--comment", "#", "--skip-initial-space"]),
     );
     assert_eq!(plain.column("UTCOfst").unwrap().null_count(), 0);
     let utc = skipped.column("UTCOfst").unwrap();
@@ -22465,7 +22466,7 @@ fn header_names_are_always_trimmed() {
     let log = dialect_fixture("dialect_padded_log.csv");
     let df = open_dialect(
         vec![log],
-        options_from_flags(&["--skip-lines", "2", "--no-parse-strings"]),
+        options_from_flags(&["--skip-lines", "2", "--infer-types=off"]),
     );
     assert_eq!(names_of(&df)[3], "Latitude");
     // Without parsing or skipping, the value keeps its padding: nothing asked for less.
@@ -22476,7 +22477,7 @@ fn header_names_are_always_trimmed() {
 }
 
 /// `--header-rows` takes the header from the lines it names and joins several with
-/// `header_join`, with or without `--comment-char`; the data starts after the last.
+/// `header_join`, with or without `--comment`; the data starts after the last.
 #[test]
 fn header_rows_name_and_join_the_columns() {
     let two = dialect_fixture("dialect_two_header_rows.csv");
@@ -22511,7 +22512,7 @@ fn header_rows_name_and_join_the_columns() {
     // A per-column null value names the column as it is shown.
     let df = open_dialect(
         vec![two],
-        options_from_flags(&["--header-rows", "1,2", "--null-value", "station=B"]),
+        options_from_flags(&["--header-rows", "1,2", "--null", "station=B"]),
     );
     assert_eq!(df.column("station").unwrap().null_count(), 1);
 
@@ -22519,7 +22520,7 @@ fn header_rows_name_and_join_the_columns() {
     let log = dialect_fixture("dialect_padded_log.csv");
     let df = open_dialect(
         vec![log.clone()],
-        options_from_flags(&["--comment-char", "#", "--header-rows", "3,2"]),
+        options_from_flags(&["--comment", "#", "--header-rows", "3,2"]),
     );
     assert_eq!(
         names_of(&df),
@@ -22534,7 +22535,7 @@ fn header_rows_name_and_join_the_columns() {
     );
     assert_eq!(df.height(), 21);
 
-    // Without --comment-char the lines above the header are passed over all the same.
+    // Without --comment the lines above the header are passed over all the same.
     let df = open_dialect(vec![log], options_from_flags(&["--header-rows", "3"]));
     assert_eq!(names_of(&df)[3], "Latitude");
     assert_eq!(df.height(), 21);
@@ -22545,16 +22546,13 @@ fn header_rows_name_and_join_the_columns() {
 #[test]
 fn comment_lines_among_the_data_are_skipped() {
     let mid = dialect_fixture("dialect_mid_comments.csv");
-    let df = open_dialect(
-        vec![mid.clone()],
-        options_from_flags(&["--comment-char", "#"]),
-    );
+    let df = open_dialect(vec![mid.clone()], options_from_flags(&["--comment", "#"]));
     assert_eq!(names_of(&df), ["id", "value"]);
     assert_eq!(df.height(), 3);
     assert_eq!(df.column("value").unwrap().dtype(), &DataType::Int64);
     let df = open_dialect(
         vec![mid],
-        options_from_flags(&["--comment-char", "#", "--header-rows", "2"]),
+        options_from_flags(&["--comment", "#", "--header-rows", "2"]),
     );
     assert_eq!(names_of(&df), ["id", "value"]);
     assert_eq!(df.height(), 3);
@@ -22565,7 +22563,7 @@ fn comment_lines_among_the_data_are_skipped() {
 fn the_dialect_reads_a_compressed_log_the_same() {
     let gz = dialect_fixture("dialect_padded_log.csv.gz");
     let flags = [
-        "--comment-char",
+        "--comment",
         "#",
         "--header-rows",
         "3,2",
@@ -22607,9 +22605,9 @@ fn a_directory_of_padded_logs_is_one_table() {
     )
     .unwrap();
     for flags in [
-        &["--comment-char", "#"][..],
+        &["--comment", "#"][..],
         &[
-            "--comment-char",
+            "--comment",
             "#",
             "--header-rows",
             "3,2",
@@ -22679,11 +22677,11 @@ fn header_rows_on_a_file_with_no_rows_yet() {
     std::fs::write(&gz, encoder.finish().unwrap()).unwrap();
     // A per-column null value has no rows to read the columns from.
     let flags = [
-        "--comment-char",
+        "--comment",
         "#",
         "--header-rows",
         "3,2",
-        "--null-value",
+        "--null",
         "Latitude degrees=-",
     ];
     let names = ["Lcl Date yyyy-mm-dd", "Latitude degrees"];
@@ -23044,7 +23042,7 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
     }
 }
 
-/// A CSV datui reads with `--parse-strings` and stray spaces in its header: the
+/// A CSV datui reads with `--infer-types` and stray spaces in its header: the
 /// script trims the names and types the text columns as datui did.
 #[test]
 fn test_copy_as_python_reads_a_csv_as_datui_does() {
@@ -23083,7 +23081,7 @@ fn test_copy_as_python_reads_a_csv_as_datui_does() {
 }
 
 /// A logger's CSV with comment lines before its header and among its rows, read
-/// with `--comment-char`: the script reads it with `comment_prefix` and computes
+/// with `--comment`: the script reads it with `comment_prefix` and computes
 /// datui's rows.
 #[test]
 fn test_copy_as_python_skips_comment_lines_as_datui_does() {

@@ -2075,7 +2075,7 @@ fn test_a_single_recent_can_be_forgotten() {
 
 #[test]
 fn test_clearing_recents_leaves_other_caches_alone() {
-    // `--clear-cache` is too blunt for "forget where I have been": it would also
+    // `datui cache clear` is too blunt for "forget where I have been": it would also
     // discard query history and every measurement, costing speed for no reason.
     use datui::CacheManager;
 
@@ -2991,44 +2991,35 @@ fn cloud_discover_and_list_on_start_merge_only_when_set() {
     assert_eq!(changed.cloud.list_on_start, Some(false));
 }
 
+/// `[cloud] discover` is config only; `-c` sets it for one run, over the file.
 #[test]
-fn cloud_discover_flag_outranks_the_config() {
+fn cloud_discover_is_set_for_a_run_with_dash_c() {
     use clap::Parser;
-    use datui::config::CloudDiscover;
-    let mut config = AppConfig::default();
-    config.cloud.discover = Some(CloudDiscover::All);
-
-    let args = datui_cli::Args::try_parse_from(["datui", "--cloud-discover", "GCS,azure"])
-        .expect("parses");
-    let opts = datui::OpenOptions::from_args_and_config(&args, &config);
+    use datui::config::{CloudDiscover, ConfigLayer};
+    let file = ConfigLayer::parse("[cloud]\ndiscover = \"all\"\n").unwrap();
+    let discover = |flags: &[&str]| {
+        let args =
+            datui_cli::Args::try_parse_from(std::iter::once("datui").chain(flags.iter().copied()))
+                .expect("parses");
+        let layers = [
+            file.clone(),
+            ConfigLayer::from_overrides(&args.config).unwrap(),
+        ];
+        AppConfig::from_layers(layers).unwrap().cloud.discover
+    };
     assert_eq!(
-        opts.effective_cloud(&config.cloud).discover,
+        discover(&["-c", "cloud.discover=[\"gcs\", \"azure\"]"]),
         Some(CloudDiscover::Kinds(vec![
             "gcs".to_string(),
             "azure".to_string()
         ]))
     );
-
-    let args =
-        datui_cli::Args::try_parse_from(["datui", "--cloud-discover", "none"]).expect("parses");
-    let opts = datui::OpenOptions::from_args_and_config(&args, &config);
     assert_eq!(
-        opts.effective_cloud(&config.cloud).discover,
+        discover(&["-c", "cloud.discover=none"]),
         Some(CloudDiscover::None)
     );
-
-    // No flag: the config's own answer stands.
-    let args = datui_cli::Args::try_parse_from(["datui"]).expect("parses");
-    let opts = datui::OpenOptions::from_args_and_config(&args, &config);
-    assert_eq!(
-        opts.effective_cloud(&config.cloud).discover,
-        Some(CloudDiscover::All)
-    );
-
-    let err = datui_cli::Args::try_parse_from(["datui", "--cloud-discover", "s3,aws"])
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("\"aws\" is not all, none, or a kind"), "{err}");
+    assert_eq!(discover(&[]), Some(CloudDiscover::All));
+    assert!(datui_cli::Args::try_parse_from(["datui", "--cloud-discover", "all"]).is_err());
 }
 
 #[test]

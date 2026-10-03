@@ -55,7 +55,7 @@ fn screen(app: &mut App) -> String {
     rendered_text(&buffer)
 }
 
-/// Opened as `datui FILE` opens it: text columns typed (`--parse-strings`).
+/// Opened as `datui FILE` opens it: text columns typed (`--infer-types`).
 fn open(app: &mut App, rx: &mpsc::Receiver<AppEvent>, path: PathBuf, options: OpenOptions) {
     let options = OpenOptions {
         parse_strings: Some(datui::ParseStringsTarget::All),

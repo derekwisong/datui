@@ -1086,7 +1086,7 @@ pub struct FileLoadingConfig {
     pub single_spine_schema: Option<bool>,
     /// CSV null values: list of strings. Plain string = treat as null in all columns; "COL=VAL" = treat VAL as null only in column COL (first "=" separates). Example: ["NA", "amount="].
     pub null_values: Option<Vec<String>>,
-    /// When false, disable parse-strings for CSV. When true or unset, trim and parse all CSV string columns (default). Use CLI --parse-strings=COL for specific columns, --no-parse-strings to disable.
+    /// When false, disable parse-strings for CSV. When true or unset, trim and parse all CSV string columns (default). Use CLI --infer-types=COL for specific columns, --infer-types=off to disable.
     pub parse_strings: Option<bool>,
     /// Number of rows to sample for parse_strings type inference (single file or multiple/partitioned). Default 1000.
     pub parse_strings_sample_rows: Option<usize>,
@@ -1104,6 +1104,8 @@ pub struct FileLoadingConfig {
     pub follow_interval_ms: Option<u64>,
     /// Ask before reading more than this many MB of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory). 0 never asks. Default 1024.
     pub memory_warning_mb: Option<u64>,
+    /// Integer audio samples as float in [-1, 1]. Default false: the integers as stored.
+    pub audio_float: Option<bool>,
 }
 
 /// `[file_loading] memory_warning_mb` when it is not set.
@@ -1137,7 +1139,7 @@ const REMOVED_FILE_LOADING_KEYS: [(&str, &str); 5] = [
     ("has_header", "--no-header"),
     ("skip_lines", "--skip-lines"),
     ("skip_rows", "--skip-rows"),
-    ("skip_tail_rows", "--skip-tail-rows"),
+    ("skip_tail_rows", "--footer-rows"),
 ];
 
 /// The removed layout keys a config file still sets, so loading can say they are

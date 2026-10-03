@@ -587,7 +587,7 @@ pub enum Expected {
 }
 
 /// The most a spec file may hold, local or remote: far more than any spec needs, and
-/// a bound on what `--spec` reads before it knows what it read.
+/// a bound on what `--format FILE` reads before it knows what it read.
 pub const MAX_SPEC_BYTES: u64 = 1 << 20;
 /// [`MAX_SPEC_BYTES`], as the user is told it.
 pub const MAX_SPEC_SAID: &str = "1 MiB";
@@ -620,7 +620,7 @@ pub struct Spec {
     pub capture: Option<Capture>,
     pub files: Option<Files>,
     pub sections: Vec<Section>,
-    /// The variant read alone (`--variant`), when one is.
+    /// The variant read alone (`--table`), when one is.
     pub variant: Option<String>,
 }
 
@@ -4471,7 +4471,7 @@ pub struct FixFound {
 /// How a spec was chosen for a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chosen {
-    /// `--spec FILE`.
+    /// `--format FILE`.
     SpecFile,
     /// `--format NAME`, or picked in the view.
     Named,
@@ -4482,7 +4482,7 @@ pub enum Chosen {
 impl Chosen {
     pub fn words(self) -> &'static str {
         match self {
-            Self::SpecFile => "--spec",
+            Self::SpecFile => "--format FILE",
             Self::Named => "its name",
             Self::Glob => "its glob",
             Self::Magic => "its magic",
@@ -4872,13 +4872,14 @@ impl std::fmt::Debug for Read {
 /// What a request for a format says, besides the path.
 #[derive(Debug, Clone, Default)]
 pub struct Asked {
-    /// `--spec FILE`.
+    /// `--format FILE`.
     pub spec_file: Option<PathBuf>,
     /// `--format NAME`, or the spec picked in the view.
     pub spec_name: Option<String>,
     /// The spec `spec_file` names, read already: fetched, when it is remote.
     pub spec: Option<Arc<Spec>>,
-    /// `--variant NAME`: one variant of the spec's records, read alone.
+    /// `--table NAME`: one variant of the spec's records, read alone; any other
+    /// reader takes the name as its own table.
     pub variant: Option<String>,
     /// A built-in format from `--format`, which no spec overrides.
     pub builtin: bool,
@@ -4906,7 +4907,7 @@ pub enum Route {
     Delimited(Choice),
 }
 
-/// Whether, and with which spec, `path` is read. In order: `--spec FILE`, then
+/// Whether, and with which spec, `path` is read. In order: `--format FILE`, then
 /// `--format NAME`, then a glob, then magic. A file whose name or bytes say it is a
 /// format datui reads already keeps opening that way.
 pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, String> {
@@ -4963,7 +4964,7 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
         Some(choice) => choice,
         None => {
             if asked.builtin || registry.is_empty() {
-                return no_spec(asked);
+                return Ok(Route::Elsewhere);
             }
             let is_dir = path.is_dir();
             // What the name already says is read as it says, compressed or not: a
@@ -5004,7 +5005,7 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
                 head_of(path, compression, reach)
             });
             let Some(matched) = matched else {
-                return no_spec(asked);
+                return Ok(Route::Elsewhere);
             };
             let mut specs = matched.specs.into_iter();
             let spec = specs.next().expect("a match has a spec");
@@ -5030,16 +5031,6 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
         return Ok(Route::Decompress(choice));
     }
     read(path, &named, choice).map(|r| Route::Read(Box::new(r)))
-}
-
-/// The route of a path no spec reads, unless `--variant` asked for one.
-fn no_spec(asked: &Asked) -> Result<Route, String> {
-    match &asked.variant {
-        Some(variant) => Err(format!(
-            "--variant {variant} picks a variant of a format spec's records, and no spec reads this file"
-        )),
-        None => Ok(Route::Elsewhere),
-    }
 }
 
 /// Read `path` with the spec `choice` holds, naming it `named` in what it says.

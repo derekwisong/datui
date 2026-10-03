@@ -205,7 +205,7 @@ impl Tally {
 /// together. Both are shared with the threads doing the reading, and both belong to the
 /// open that created them — see [`Meter`] for why a new open builds new ones rather
 /// than clearing these.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OpenReport {
     /// How far the footer pass has got, for the loading screen.
     pub progress: std::sync::Arc<crate::schema_union::FooterProgress>,

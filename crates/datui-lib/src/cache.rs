@@ -534,6 +534,11 @@ pub struct CachedFooter {
     /// from it, and a note that appears on a first open and not on a reopen is a worse
     /// bug than a slow open.
     pub row_group_bytes: Vec<usize>,
+    /// Uncompressed bytes of each of its schema's columns, in the schema's order. A
+    /// local footer carries them and a binary column's width is known nowhere else;
+    /// a cloud footer does not, and leaves this empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_bytes: Vec<usize>,
 }
 
 impl DatasetShape {
@@ -566,6 +571,37 @@ impl DatasetShape {
             bytes = bytes.saturating_add(size);
         }
         format!("{count}-{bytes}-{:016x}", hasher.finish())
+    }
+
+    /// Where `schema` sits in `schemas`, added on the end if it is not there yet.
+    pub fn intern_schema(
+        schemas: &mut Vec<Vec<(String, polars::prelude::DataType)>>,
+        schema: &polars::prelude::Schema,
+    ) -> usize {
+        let columns: Vec<(String, polars::prelude::DataType)> = schema
+            .iter()
+            .map(|(name, dtype)| (name.to_string(), dtype.clone()))
+            .collect();
+        schemas
+            .iter()
+            .position(|s| *s == columns)
+            .unwrap_or_else(|| {
+                schemas.push(columns);
+                schemas.len() - 1
+            })
+    }
+
+    /// The schema at `at` in `schemas`, or `None` when the table has no such entry.
+    pub fn schema_at(
+        schemas: &[Vec<(String, polars::prelude::DataType)>],
+        at: usize,
+    ) -> Option<polars::prelude::Schema> {
+        let columns = schemas.get(at)?;
+        let mut schema = polars::prelude::Schema::with_capacity(columns.len());
+        for (name, dtype) in columns {
+            schema.with_column(name.as_str().into(), dtype.clone());
+        }
+        Some(schema)
     }
 }
 
@@ -1086,11 +1122,13 @@ mod dataset_shape_tests {
                     schema: Some(0),
                     row_group_rows: vec![10],
                     row_group_bytes: vec![1_000],
+                    column_bytes: Vec::new(),
                 },
                 CachedFooter {
                     schema: Some(0),
                     row_group_rows: vec![20],
                     row_group_bytes: vec![2_000],
+                    column_bytes: Vec::new(),
                 },
             ],
             schemas: vec![vec![("id".into(), polars::prelude::DataType::Int64)]],

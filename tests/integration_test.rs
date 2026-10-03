@@ -5216,6 +5216,219 @@ fn test_hive_dir_is_known_from_the_open() {
     );
 }
 
+/// A Hive directory one file past a wave of footers: day `i` holds `i + 1` rows of
+/// `v`, and day 30 alone has a `late` column, which only a full footer pass finds.
+/// Returns the file paths in scan order and the total rows.
+fn write_past_one_wave(dir: &Path) -> (Vec<PathBuf>, usize) {
+    let days = datui::schema_union::FOOTERS_AT_ONCE + 6;
+    let mut files = Vec::new();
+    let mut total = 0;
+    for i in 0..days {
+        let rows = i + 1;
+        let v: Vec<i64> = (0..rows as i64).collect();
+        let df = if i == 30 {
+            df!("v" => &v, "late" => vec!["x"; rows]).unwrap()
+        } else {
+            df!("v" => &v).unwrap()
+        };
+        let sub = format!("day={i:03}");
+        write_parquet(dir, &sub, df);
+        files.push(dir.join(sub).join("data.parquet"));
+        total += rows;
+    }
+    (files, total)
+}
+
+/// How many times each local footer under `dir` was read, for as long as the guard
+/// lives.
+fn count_footer_reads(
+    dir: &Path,
+) -> (
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>>,
+    datui::schema_union::FooterHookGuard,
+) {
+    let reads = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let counted = reads.clone();
+    let guard = datui::schema_union::on_local_footer_read(dir, move |path| {
+        *counted
+            .lock()
+            .unwrap()
+            .entry(path.to_path_buf())
+            .or_insert(0) += 1;
+    });
+    (reads, guard)
+}
+
+/// A local Hive directory past one wave of footers opens from its two ends, reads the
+/// rest behind, and joins them: the column only a middle file has arrives, and the
+/// count comes from the same footers — every footer is read exactly once (#643).
+#[test]
+fn test_a_local_hive_past_one_wave_opens_from_its_ends_and_reads_each_footer_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (files, total) = write_past_one_wave(dir.path());
+    let (first, last) = (files[0].clone(), files[files.len() - 1].clone());
+    let (reads, _counting) = count_footer_reads(dir.path());
+    // The middle footers wait until the test has seen the dataset open without them:
+    // a slow filesystem, held still.
+    let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let held = gate.clone();
+    let _holding = datui::schema_union::on_local_footer_read(dir.path(), move |path| {
+        if path == first || path == last {
+            return;
+        }
+        let (open, cv) = &*held;
+        let mut open = open.lock().unwrap();
+        while !*open {
+            open = cv.wait(open).unwrap();
+        }
+    });
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let opts = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    let mut next = Some(AppEvent::Open(vec![dir.path().to_path_buf()], opts));
+    loop {
+        if let Some(event) = next.take() {
+            next = app.event(&event);
+            continue;
+        }
+        let opened = app
+            .data_table_state
+            .as_ref()
+            .is_some_and(|s| s.footers_pending().is_some());
+        if opened && !app.is_busy() {
+            break;
+        }
+        next = next_event(&app, &rx);
+        assert!(
+            next.is_some() || opened,
+            "the open stopped before its dataset"
+        );
+    }
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        !state.schema().contains("late"),
+        "the dataset opened from its ends, before the middle footers were read"
+    );
+    assert_eq!(
+        state.num_rows_if_valid(),
+        None,
+        "and waits for the pass to bring its count"
+    );
+    {
+        let reads = reads.lock().unwrap();
+        assert_eq!(reads.get(&files[0]), Some(&1), "the first file opened it");
+        assert_eq!(reads.get(&files[files.len() - 1]), Some(&1), "and the last");
+    }
+
+    {
+        let (open, cv) = &*gate;
+        *open.lock().unwrap() = true;
+        cv.notify_all();
+    }
+    drain_events(&mut app, &rx);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.footers_pending().is_none(), "the rest joined");
+    assert!(
+        state.schema().contains("late"),
+        "bringing the column only a middle file has"
+    );
+    assert_eq!(
+        state.num_rows_if_valid(),
+        Some(total),
+        "and the count, from the footers the pass read"
+    );
+    let reads = reads.lock().unwrap();
+    assert_eq!(reads.len(), files.len(), "every footer was read");
+    assert!(
+        reads.values().all(|&n| n == 1),
+        "each once: the ends are not read again, and the count is no second pass"
+    );
+}
+
+/// A local Hive directory whose listing has not changed opens from the footers its
+/// last full pass read, and reads none (#643). A file rewritten is a new listing.
+#[test]
+fn test_a_local_hive_reopened_unchanged_reads_no_footers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (files, total) = write_past_one_wave(dir.path());
+    let (reads, _counting) = count_footer_reads(dir.path());
+    let (mut app, rx, _tx) = open_local_dataset_with_channel(dir.path());
+    assert_eq!(
+        reads.lock().unwrap().len(),
+        files.len(),
+        "the first open read every footer"
+    );
+    reads.lock().unwrap().clear();
+
+    let opts = || OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        reads.lock().unwrap().is_empty(),
+        "a reopen of the same listing reads no footer"
+    );
+    assert!(state.footers_pending().is_none(), "and opens whole");
+    assert!(state.schema().contains("late"), "with every file's columns");
+    assert_eq!(state.num_rows_if_valid(), Some(total), "and its count");
+
+    // One more row in the newest file: a different size, so a different listing.
+    write_parquet(
+        dir.path(),
+        &format!("day={:03}", files.len() - 1),
+        df!("v" => (0..files.len() as i64 + 1).collect::<Vec<_>>()).unwrap(),
+    );
+    pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts());
+    assert!(
+        !reads.lock().unwrap().is_empty(),
+        "a changed listing reads its footers again"
+    );
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().num_rows_if_valid(),
+        Some(total + 1),
+        "and counts the row that was added"
+    );
+}
+
+/// A file mid-write in a local Hive directory past one wave — the newest, where a
+/// writer is, and one in the middle — leaves the rest of the dataset to open and
+/// count (#643).
+#[test]
+fn test_a_local_hive_past_one_wave_opens_with_files_mid_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (files, total) = write_past_one_wave(dir.path());
+    let middle = &files[40];
+    let newest = dir.path().join("day=999");
+    std::fs::create_dir_all(&newest).unwrap();
+    // A writer's first bytes, and no footer yet.
+    std::fs::write(newest.join("data.parquet"), b"PAR1\x15\x04").unwrap();
+    std::fs::write(middle, b"PAR1").unwrap();
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let screen = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 30));
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the dataset opened past the files mid-write");
+    assert!(state.footers_pending().is_none(), "and the rest joined");
+    assert_eq!(
+        state.num_rows_if_valid(),
+        Some(total - 41),
+        "counting every file but the two that will not read"
+    );
+    assert!(
+        state.display_slice_df().is_some(),
+        "with rows on screen: {screen}"
+    );
+}
+
 /// Open a local directory of Parquet files and return the loaded app, or `None` if the
 /// open never finished.
 fn open_local_dataset(dir: &std::path::Path) -> App {
@@ -6438,10 +6651,9 @@ fn test_reading_a_column_as_text_from_the_panel_reads_in_the_background() {
 
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.schema().get("n"), Some(&DataType::String));
-    assert!(
-        !state.is_num_rows_valid(),
-        "the new frame is not counted on this thread"
-    );
+    // Nothing is counted on this thread: the count is the footers' from the open, and
+    // reading a column as text changes no rows.
+    assert_eq!(state.num_rows_if_valid(), Some(4));
     assert!(app.is_busy(), "its rows are being read");
     drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();
@@ -12181,14 +12393,11 @@ fn test_opening_a_directory_measures_it_and_the_info_panel_says_so() {
         text.contains("3 files"),
         "the listing found three files; got:\n{text}"
     );
-    // Six, not three. The open reads a footer from each file, and then the count pass
-    // re-walks the directory and reads every footer again to settle the row count — which
-    // happens on an ordinary three-file open, not only in some corner. Both are footer
-    // reads and both cost what they cost, so the row says six.
+    // Three: the open reads a footer from each file, and those footers settle the row
+    // count too, so no count pass reads them again (#643).
     assert!(
-        text.contains("6 footers read"),
-        "and the footer row counts the open's pass and the count's, which is six reads \
-         over three files; got:\n{text}"
+        text.contains("3 footers read"),
+        "and the footer row counts the open's one pass over three files; got:\n{text}"
     );
     assert!(
         !text.contains("requests"),

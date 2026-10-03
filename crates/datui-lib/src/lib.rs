@@ -7393,14 +7393,10 @@ pub mod tests {
                 hive: true,
                 ..OpenOptions::default()
             };
-            let state = App::schema_state_from_local_hive(
-                Some(dir.path()),
-                &options,
-                &Default::default(),
-                &Default::default(),
-            )
-            .map(|(state, facts)| state.with_open(facts))
-            .expect("the local footer route");
+            let state =
+                App::schema_state_from_local_hive(Some(dir.path()), &options, &Default::default())
+                    .map(|(state, facts)| state.with_open(facts))
+                    .expect("the local footer route");
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
             app.install_for_tests(state, None, &options, None);
@@ -17641,6 +17637,131 @@ pub(crate) fn hoist_partition_columns(
     lf.select(exprs)
 }
 
+/// A local Hive directory as its listing found it: what every set of its footers is
+/// read against.
+struct LocalHive {
+    dir: PathBuf,
+    partition_columns: Vec<String>,
+    /// The first file's partition values, which type the partition columns.
+    values: Vec<(String, String)>,
+    skipped: crate::schema_union::SkippedFiles,
+}
+
+/// A local dataset as some set of its footers describes it, and the scan that reads it.
+struct LocalDataset {
+    dataset: crate::schema_union::DatasetSchema,
+    lf: LazyFrame,
+    /// Each file's rows, or empty when they are not all known.
+    file_rows: Vec<usize>,
+    /// Every file, in scan order.
+    paths: Vec<String>,
+    /// Each readable file's rows, one group a file, or empty unless every footer was
+    /// read: the count, without a pass of its own.
+    row_groups: Vec<Vec<usize>>,
+}
+
+impl LocalHive {
+    /// What the footers at `read` say about the dataset of `files`. Shared by the open,
+    /// which may have read only the two ends, and the pass that reads the rest: the two
+    /// differ only in how much they know. `None` when nothing could be read.
+    fn dataset(
+        &self,
+        files: &[PathBuf],
+        read: &[usize],
+        footers: &[Option<crate::schema_union::FileSchema>],
+    ) -> Option<LocalDataset> {
+        let mut dataset = crate::schema_union::union_sampled(files.len(), read, footers);
+        if dataset.schema.is_empty() {
+            return None;
+        }
+        dataset.schema = Arc::new(crate::schema_union::with_partition_columns(
+            &dataset.schema,
+            &self.partition_columns,
+            &self.values,
+        ));
+        let paths: Vec<String> = files
+            .iter()
+            .map(|f| f.to_string_lossy().into_owned())
+            .collect();
+        let every_footer = read.len() == files.len();
+        // Numbering rows needs every file's row count; a sampled dataset has not read
+        // them all, so it forgoes the distinction rather than guessing at it.
+        let file_rows: Vec<usize> = if every_footer {
+            footers
+                .iter()
+                .map(|f| f.as_ref().map(|f| f.rows))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        // Over the readable files only, as the scan is: a file mid-write is in neither.
+        let row_groups: Vec<Vec<usize>> = if every_footer {
+            footers.iter().flatten().map(|f| vec![f.rows]).collect()
+        } else {
+            Vec::new()
+        };
+        let drift = crate::schema_union::ScanDrift::new(&paths, &dataset, &file_rows);
+        let schema = dataset.schema.clone();
+        // Over the files that will open. `drift` is keyed by path, so a scan of fewer
+        // of them still knows what each one holds.
+        let readable = crate::schema_union::readable_paths(&paths, &dataset.unreadable);
+        // Belt and braces: a dataset with nothing readable has an empty schema and has
+        // already been handed back above.
+        if readable.is_empty() {
+            return None;
+        }
+        let lf =
+            crate::schema_union::lenient_scan(&readable, schema.clone(), None, drift.as_ref(), &[])
+                .ok()?;
+        let lf = hoist_partition_columns(lf, &schema, &self.partition_columns, drift.is_some());
+        let dataset = dataset
+            .with_partition_layouts(&self.dir.to_string_lossy(), &paths)
+            .with_skipped(self.skipped);
+        Some(LocalDataset {
+            dataset,
+            lf,
+            file_rows,
+            paths,
+            row_groups,
+        })
+    }
+}
+
+/// Keep a local dataset's footers against its listing's fingerprint, if every one was
+/// read and parsed — the same two conditions the cloud cache keeps, for the same
+/// reasons (see `App::remember_dataset_shape`). No fingerprint, no keeping: a dataset
+/// within one wave is not worth it, and one whose files moved under the listing has
+/// none.
+fn remember_local_shape(
+    cache: Option<&crate::cache::CacheManager>,
+    key: &str,
+    fingerprint: Option<&str>,
+    files: usize,
+    read: &[usize],
+    footers: &[Option<crate::schema_union::FileSchema>],
+) {
+    let (Some(cache), Some(fingerprint)) = (cache, fingerprint) else {
+        return;
+    };
+    if read.len() != files || !footers.iter().all(Option::is_some) {
+        return;
+    }
+    let (cached, schemas) = crate::schema_union::footers_to_cache(footers);
+    cache.save_dataset_shape(
+        key,
+        crate::cache::DatasetShape {
+            fingerprint: fingerprint.to_string(),
+            files: cached,
+            schemas,
+            taken_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default(),
+        },
+    );
+}
+
 /// What a pass behind a staged open reported, and which dataset it was reading for.
 /// `None` where the footers are: a pass that could not read them says so, so the
 /// dataset stops waiting.
@@ -17667,80 +17788,166 @@ impl App {
     /// their footers, instead of `collect_schema()` over the whole set or one file's
     /// columns standing in for all.
     ///
-    /// Reading a local footer is a seek and a small read, so this is cheap even for
-    /// thousands of files, and it is what makes a column a vendor added for a month
-    /// visible. `None` when the path is not that shape, or when nothing could be read —
-    /// either way the caller falls back to the general scan, which reports the error
-    /// properly if there is one.
+    /// As a cloud prefix opens: past one wave of footers the two ends open the dataset
+    /// and the rest are read behind it, joining when they land, and a directory whose
+    /// listing has not changed since its footers were last all read opens from what
+    /// they said then. On a network mount each footer is round trips, and a Hive tree
+    /// is thousands of footers. `None` when the path is not that shape, or when nothing
+    /// could be read — either way the caller falls back to the general scan, which
+    /// reports the error properly if there is one.
     fn schema_state_from_local_hive(
         path: Option<&Path>,
         options: &OpenOptions,
-        progress: &crate::schema_union::FooterProgress,
-        meter: &crate::measurements::Meter,
+        report: &crate::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
         if !options.single_spine_schema {
             return None;
         }
         let p = path.filter(|p| p.is_dir() && options.hive)?;
-        let (files, read, footers, skipped) =
-            DataTableState::footers_of_parquet_dir_reporting(p, progress, meter);
+        let (files, skipped) = DataTableState::list_parquet_dir(p, &report.meter);
         let first = files.first()?;
-        let partition_columns = DataTableState::discover_hive_partition_columns(p);
-        let values = DataTableState::hive_partition_values(p, first);
-        let mut dataset = crate::schema_union::union_sampled(files.len(), &read, &footers);
-        if dataset.schema.is_empty() {
-            return None;
-        }
-        dataset.schema = Arc::new(crate::schema_union::with_partition_columns(
-            &dataset.schema,
-            &partition_columns,
-            &values,
-        ));
-        let paths: Vec<String> = files
-            .iter()
-            .map(|f| f.to_string_lossy().into_owned())
-            .collect();
-        // Numbering rows needs every file's row count; a sampled dataset has not read
-        // them all, so it forgoes the distinction rather than guessing at it.
-        let file_rows: Vec<usize> = if read.len() == files.len() {
-            footers
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.rows))
-                .collect::<Option<Vec<_>>>()
-                .unwrap_or_default()
+        let hive = LocalHive {
+            dir: p.to_path_buf(),
+            partition_columns: DataTableState::discover_hive_partition_columns(p),
+            values: DataTableState::hive_partition_values(p, first),
+            skipped,
+        };
+        let files = Arc::new(files);
+        let key = p.to_string_lossy().into_owned();
+        // Up to a wave the footers cost one round of reads either way, so the dataset
+        // opens whole and nothing is worth remembering.
+        let wave = files.len() > crate::schema_union::FOOTERS_AT_ONCE;
+        let stat_began = std::time::Instant::now();
+        let stats = if wave {
+            DataTableState::stat_files(&files)
         } else {
             Vec::new()
         };
-        let drift = crate::schema_union::ScanDrift::new(&paths, &dataset, &file_rows);
-        let schema = dataset.schema.clone();
-        // Over the files that will open. `drift` is keyed by path, so a scan of fewer
-        // of them still knows what each one holds.
-        let readable = crate::schema_union::readable_paths(&paths, &dataset.unreadable);
-        // Belt and braces: a dataset with nothing readable has an empty schema and has
-        // already been handed back above.
-        if readable.is_empty() {
-            return None;
+        let stat_took = stat_began.elapsed();
+        // None when a file went between the listing and its stat: that listing
+        // describes nothing worth keeping.
+        let sizes: Option<Vec<u64>> = stats.iter().map(|s| s.map(|(size, _)| size)).collect();
+        let fingerprint = wave
+            .then(|| {
+                let stats: Vec<(u64, u64)> = stats.iter().copied().collect::<Option<_>>()?;
+                let paths: Vec<String> = files
+                    .iter()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .collect();
+                Some(crate::cache::DatasetShape::fingerprint_of(
+                    paths
+                        .iter()
+                        .zip(&stats)
+                        .map(|(path, (size, modified))| (path.as_str(), *size, *modified, None)),
+                ))
+            })
+            .flatten();
+        let remembered = fingerprint
+            .as_ref()
+            .zip(report.remembered.as_ref())
+            .and_then(|(fingerprint, cache)| cache.dataset_shape(&key, fingerprint))
+            .zip(sizes.as_ref())
+            .and_then(|(shape, sizes)| {
+                crate::schema_union::footers_from_cache(&shape.files, &shape.schemas, sizes)
+            });
+        let from_cache = remembered.is_some();
+        let staged = !from_cache && wave;
+        let read = if from_cache {
+            (0..files.len()).collect()
+        } else if staged {
+            crate::schema_union::ends_of(files.len())
+        } else {
+            crate::schema_union::footers_to_read(files.len())
+        };
+        let footers = match remembered {
+            Some(footers) => footers,
+            None => {
+                DataTableState::read_local_footers(&files, &read, &report.progress, &report.meter)
+            }
+        };
+        if !from_cache {
+            remember_local_shape(
+                report.remembered.as_ref(),
+                &key,
+                fingerprint.as_deref(),
+                files.len(),
+                &read,
+                &footers,
+            );
         }
-        let lf =
-            crate::schema_union::lenient_scan(&readable, schema.clone(), None, drift.as_ref(), &[])
-                .ok()?;
-        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, drift.is_some());
-        let state =
-            DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
-                .ok()?;
-        let facts = OpenFacts {
+        log::debug!(
+            target: "datui",
+            "local hive: {} files, stat in {stat_took:.1?}, {} footers {}",
+            files.len(),
+            read.len(),
+            if from_cache {
+                "from the shape cache"
+            } else if staged {
+                "read, the rest behind"
+            } else {
+                "read"
+            }
+        );
+        let opened = hive.dataset(&files, &read, &footers)?;
+        let state = DataTableState::from_schema_and_lazyframe(
+            opened.dataset.schema.clone(),
+            opened.lf,
+            options,
+            Some(hive.partition_columns.clone()),
+        )
+        .ok()?;
+        let mut facts = OpenFacts {
             // The footers just read say how wide each column is, as the cloud object's
             // do: a binary column's width is known nowhere else.
             column_bytes: crate::schema_union::column_bytes_per_row(&footers),
+            // The count is in the footers just read, so no pass reads them again for it.
+            row_groups: opened.row_groups,
             dataset: Some(DatasetAtOpen {
-                schema: dataset
-                    .with_partition_layouts(&p.to_string_lossy(), &paths)
-                    .with_skipped(skipped),
-                file_rows,
-                files: paths,
+                schema: opened.dataset,
+                file_rows: opened.file_rows,
+                files: opened.paths,
             }),
             ..Default::default()
         };
+        if staged {
+            // The meter the open writes into: what the footers cost is both passes.
+            let (meter, remembered) = (report.meter.clone(), report.remembered.clone());
+            let ends = read;
+            facts.footers_pending = Some(Arc::new(move |progress: &Arc<_>| {
+                let read = crate::schema_union::footers_to_read(files.len());
+                // The ends were read by the open; a footer is read once.
+                let rest: Vec<usize> = read.iter().copied().filter(|i| !ends.contains(i)).collect();
+                let mut fresh =
+                    DataTableState::read_local_footers(&files, &rest, progress, &meter).into_iter();
+                if progress.is_cancelled() {
+                    return None;
+                }
+                let footers: Vec<Option<_>> = read
+                    .iter()
+                    .map(|i| match ends.iter().position(|e| e == i) {
+                        Some(at) => footers[at].clone(),
+                        None => fresh.next().flatten(),
+                    })
+                    .collect();
+                remember_local_shape(
+                    remembered.as_ref(),
+                    &key,
+                    fingerprint.as_deref(),
+                    files.len(),
+                    &read,
+                    &footers,
+                );
+                let whole = hive.dataset(&files, &read, &footers)?;
+                Some(crate::widgets::datatable::FootersFound {
+                    dataset: whole.dataset,
+                    lf: whole.lf,
+                    file_rows: whole.file_rows,
+                    files: whole.paths,
+                    row_groups: whole.row_groups,
+                    remote: None,
+                })
+            }));
+        }
         Some((state, facts))
     }
 
@@ -18787,9 +18994,7 @@ impl App {
         };
 
         let local = attempt(report);
-        if let Some((state, facts)) =
-            Self::schema_state_from_local_hive(path, options, &local.progress, &local.meter)
-        {
+        if let Some((state, facts)) = Self::schema_state_from_local_hive(path, options, &local) {
             let facts = OpenFacts {
                 measurements: local.meter,
                 ..facts

@@ -166,3 +166,5 @@ unless the dataset is already known to be empty.
 
 Footer reads can exceed the number of files: schema and row-count passes may
 read the same footer more than once. Use the Listing count for dataset size.
+A dataset opened from [cached metadata](loading-data.md#opening-it-again)
+reads no footers and shows no Footers row.

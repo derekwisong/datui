@@ -337,7 +337,7 @@ fn texts() -> Vec<Text> {
         "python/pyproject.toml",
         "crates/datui-cli/README.md",
         "crates/datui-cli/long_about.txt",
-        "crates/datui-cli/examples.txt",
+        "crates/datui-cli/examples.toml",
         "crates/datui-lib/README.md",
         "scripts/docs/index.html.j2",
     ] {

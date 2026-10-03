@@ -6,8 +6,10 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::Path;
 
+pub mod docgen;
 mod formats;
 pub use formats::*;
+pub mod keys;
 pub mod settings;
 pub mod units;
 
@@ -68,36 +70,82 @@ pub const NUMBER_FORMAT_VALUES: &[&str] = &[
     "system",
 ];
 
-/// The examples shown after `--help`, in the manpage and in the CLI reference.
-pub const EXAMPLES: &str = include_str!("../examples.txt");
+/// The examples: `--help` shows them, and the manpage, the command-line reference and
+/// the README render them. One file, so they cannot differ; each runs as written, and
+/// `scripts/docs/doc_examples.py` runs them.
+pub const EXAMPLES_TOML: &str = include_str!("../examples.toml");
 
-/// One entry of [`EXAMPLES`]: a command and what it does.
+/// How the doc-example runner runs an [`Example`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExampleTest {
+    /// Locally, on every pull request.
+    Run,
+    /// In the nightly job: it reads public data.
+    Network,
+    /// Locally; a producer that never ends is stopped once the first rows show.
+    Interactive,
+}
+
+/// One entry of [`EXAMPLES_TOML`]: a command and what it does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Example {
     pub command: String,
     pub description: String,
+    pub test: ExampleTest,
+    /// What counts as working, when not the default: `rows`, `screen` or `exit`.
+    pub expect: Option<String>,
 }
 
-/// The entries of [`EXAMPLES`], so the manpage and the reference can lay them out
-/// their own way. A command is indented two spaces; its description, on the lines
-/// after it, six.
+/// The entries of [`EXAMPLES_TOML`], in order. Panics on a malformed entry, which
+/// `every_example_parses_as_written` and every `--help` reach first.
 pub fn examples() -> Vec<Example> {
-    let mut out: Vec<Example> = Vec::new();
-    for line in EXAMPLES.lines() {
-        if let Some(text) = line.strip_prefix("      ") {
-            if let Some(last) = out.last_mut() {
-                if !last.description.is_empty() {
-                    last.description.push(' ');
-                }
-                last.description.push_str(text.trim());
+    let file: toml::Table = EXAMPLES_TOML.parse().expect("examples.toml is TOML");
+    let entries = file
+        .get("example")
+        .and_then(toml::Value::as_array)
+        .expect("examples.toml has [[example]] entries");
+    entries
+        .iter()
+        .map(|entry| {
+            let table = entry.as_table().expect("an [[example]] is a table");
+            for key in table.keys() {
+                assert!(
+                    matches!(key.as_str(), "command" | "description" | "test" | "expect"),
+                    "examples.toml: unknown key {key}"
+                );
             }
-        } else if let Some(command) = line.strip_prefix("  ") {
-            out.push(Example {
-                command: command.trim().to_string(),
-                description: String::new(),
-            });
-        }
+            let text = |key: &str| {
+                table
+                    .get(key)
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string)
+            };
+            let test = match text("test").as_deref() {
+                Some("run") => ExampleTest::Run,
+                Some("network") => ExampleTest::Network,
+                Some("interactive") => ExampleTest::Interactive,
+                other => panic!("examples.toml: test = {other:?}"),
+            };
+            Example {
+                command: text("command").expect("an example's command"),
+                description: text("description").expect("an example's description"),
+                test,
+                expect: text("expect"),
+            }
+        })
+        .collect()
+}
+
+/// The examples as `--help` shows them, after the options.
+pub fn examples_help() -> String {
+    let mut out = String::from("Examples:\n");
+    for example in examples() {
+        out.push_str(&format!(
+            "  {}\n      {}\n",
+            example.command, example.description
+        ));
     }
+    out.push_str("\nDocs: https://derekwisong.github.io/datui/\n");
     out
 }
 
@@ -112,7 +160,7 @@ pub fn examples() -> Vec<Example> {
     version,
     about = "Terminal UI for tabular data",
     long_about = include_str!("../long_about.txt"),
-    after_help = EXAMPLES
+    after_help = examples_help()
 )]
 pub struct Args {
     /// Files, directories, globs or URLs to open; files of one shape are one table. - reads standard input, as does no PATH when data is piped in. No PATH opens the home screen
@@ -537,89 +585,100 @@ fn escape_table_cell(s: &str) -> String {
     s.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
-/// Render command-line options as markdown.
-///
-/// Used by the gen_docs binary; output is written to stdout and then
-/// to `docs/reference/command-line-options.md` by the docs build process.
+/// One option's line in the reference: `-f, --follow`, `--delimiter <C>`.
+fn option_label(arg: &clap::Arg) -> String {
+    let names = |arg: &clap::Arg| -> String {
+        arg.get_value_names()
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|n| format!("<{}>", n.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default()
+    };
+    if arg.is_positional() {
+        return if arg.is_required_set() {
+            names(arg)
+        } else {
+            format!("[{}]...", names(arg))
+        };
+    }
+    let mut parts = Vec::new();
+    if let Some(s) = arg.get_short() {
+        parts.push(format!("-{s}"));
+    }
+    if let Some(l) = arg.get_long() {
+        parts.push(format!("--{l}"));
+    }
+    let op = parts.join(", ");
+    let value = if arg.get_action().takes_values() {
+        names(arg)
+    } else {
+        String::new()
+    };
+    if value.is_empty() {
+        op
+    } else if arg.get_num_args().is_some_and(|n| n.min_values() == 0) {
+        // The value is optional and, where one is given, spelled with `=`.
+        format!("{op}[={value}]")
+    } else {
+        format!("{op} {value}")
+    }
+}
+
+/// `docs/reference/command-line-options.md`: the usage, every option grouped as
+/// `--help` groups it, the commands and the examples. Written by `gen_docs`; a test
+/// fails while the committed page differs.
 pub fn render_options_markdown() -> String {
     let mut cmd = Args::command();
     cmd.build();
 
-    let mut out = String::from("# Command Line Options\n\n");
+    let mut out = String::from(
+        "# Command-line options\n\n\
+         <!-- Generated from crates/datui-cli by `gen_docs`. Do not edit. -->\n\n\
+         `datui --help` prints these; `datui COMMAND --help` a command's own.\n\n```text\n",
+    );
+    out.push_str(&cmd.render_usage().to_string());
+    out.push_str("\n```\n");
 
-    out.push_str("## Usage\n\n```\n");
-    let usage = cmd.render_usage();
-    out.push_str(&usage.to_string());
-    out.push_str("\n```\n\n");
-
-    out.push_str("## Options\n\n");
-    out.push_str("| Option | Description |\n");
-    out.push_str("|--------|-------------|\n");
-
+    // Groups in the order `--help` shows them: the operands and ungrouped options first.
+    let mut groups: Vec<Option<String>> = vec![None];
     for arg in cmd.get_arguments() {
-        let id = arg.get_id().as_ref().to_string();
-        if id == "help" || id == "version" || arg.is_hide_set() {
+        let heading = arg.get_help_heading().map(str::to_string);
+        if !groups.contains(&heading) {
+            groups.push(heading);
+        }
+    }
+    for group in groups {
+        let args: Vec<&clap::Arg> = cmd
+            .get_arguments()
+            .filter(|a| a.get_help_heading().map(str::to_string) == group)
+            .filter(|a| !a.is_hide_set())
+            .filter(|a| !matches!(a.get_id().as_str(), "help" | "version"))
+            .collect();
+        if args.is_empty() {
             continue;
         }
-
-        let option_str = if arg.is_positional() {
-            let placeholder: String = arg
-                .get_value_names()
-                .map(|names| {
-                    names
-                        .iter()
-                        .map(|n: &clap::builder::Str| format!("<{}>", n.as_ref() as &str))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
+        out.push_str(&format!(
+            "\n## {}\n\n| Option | Description |\n|---|---|\n",
+            group.as_deref().unwrap_or("Arguments")
+        ));
+        for arg in args {
+            let help = arg
+                .get_help()
+                .map(|h| escape_table_cell(&h.to_string()))
                 .unwrap_or_default();
-            if arg.is_required_set() {
-                placeholder
-            } else {
-                format!("[{placeholder}]")
-            }
-        } else {
-            let mut parts = Vec::new();
-            if let Some(s) = arg.get_short() {
-                parts.push(format!("-{s}"));
-            }
-            if let Some(l) = arg.get_long() {
-                parts.push(format!("--{l}"));
-            }
-            let op = parts.join(", ");
-            let takes_val = arg.get_action().takes_values();
-            let placeholder: String = if takes_val {
-                arg.get_value_names()
-                    .map(|names| {
-                        names
-                            .iter()
-                            .map(|n: &clap::builder::Str| format!("<{}>", n.as_ref() as &str))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            if placeholder.is_empty() {
-                op
-            } else if arg.get_num_args().is_some_and(|n| n.min_values() == 0) {
-                // The value is optional and, where one is given, spelled with `=`.
-                format!("{op}[={placeholder}]")
-            } else {
-                format!("{op} {placeholder}")
-            }
-        };
-
-        let help = arg
-            .get_help()
-            .map(|h| escape_table_cell(&h.to_string()))
-            .unwrap_or_else(|| "-".to_string());
-
-        out.push_str(&format!("| `{option_str}` | {help} |\n"));
+            out.push_str(&format!(
+                "| `{}` | {help} |\n",
+                escape_table_cell(&option_label(arg))
+            ));
+        }
     }
+    out.push_str("\n`-h`, `--help` prints help; `-V`, `--version` the version.\n");
 
-    out.push_str("\n## Commands\n\n| Command | Does |\n|---------|------|\n");
+    out.push_str("\n## Commands\n\n| Command | Does |\n|---|---|\n");
     for sub in cmd.get_subcommands().filter(|c| c.get_name() != "help") {
         let about = |c: &clap::Command| {
             c.get_about()
@@ -644,17 +703,21 @@ pub fn render_options_markdown() -> String {
                     })
                 })
                 .collect();
-            out.push_str(&format!(
-                "| `datui {} {} {}` | {} |\n",
+            let command = format!(
+                "datui {} {} {}",
                 sub.get_name(),
                 action.get_name(),
-                operands.join(" "),
+                operands.join(" ")
+            );
+            out.push_str(&format!(
+                "| `{}` | {} |\n",
+                command.trim_end(),
                 about(action)
             ));
         }
     }
 
-    out.push_str("\n## Examples\n\n| Command | Does |\n|---------|------|\n");
+    out.push_str("\n## Examples\n\n| Command | Does |\n|---|---|\n");
     for example in examples() {
         out.push_str(&format!(
             "| `{}` | {} |\n",
@@ -670,26 +733,66 @@ pub fn render_options_markdown() -> String {
 mod tests {
     use super::*;
 
-    /// The manpage and the reference read `examples.txt` through `examples()`, so a
-    /// line indented the wrong way would drop or merge an entry there while `--help`
-    /// still looked right.
+    /// Every example parses as a command line, as written: its flags exist and take
+    /// what it gives them. The runner checks that each does what it says.
     #[test]
-    fn every_example_has_a_command_and_a_description() {
+    fn every_example_parses_as_written() {
         let examples = examples();
         assert!(examples.len() >= 4);
         for example in &examples {
-            // A pipe into datui is a command too.
+            assert!(!example.description.is_empty(), "{example:?}");
             assert!(
-                example.command.starts_with("datui") || example.command.contains("| datui"),
+                matches!(
+                    example.expect.as_deref(),
+                    None | Some("rows" | "screen" | "exit")
+                ),
                 "{example:?}"
             );
-            assert!(!example.description.is_empty(), "{example:?}");
+            // The datui command in it: a pipe into datui is a command too.
+            let command = example
+                .command
+                .rsplit_once("| ")
+                .map_or(example.command.as_str(), |(_, c)| c);
+            let words = shell_words(command);
+            assert_eq!(
+                words.first().map(String::as_str),
+                Some("datui"),
+                "{example:?}"
+            );
+            if let Err(e) = Args::try_parse_from(&words) {
+                panic!("{}: {e}", example.command);
+            }
         }
-        let listed = EXAMPLES
-            .lines()
-            .filter(|l| l.starts_with("  ") && !l.starts_with("   "))
-            .count();
-        assert_eq!(listed, examples.len());
+        assert!(examples_help().contains("| datui"), "the help shows a pipe");
+    }
+
+    /// Split a command line as a shell does, for the quoting the examples use.
+    fn shell_words(line: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut word = String::new();
+        let mut quote: Option<char> = None;
+        let mut any = false;
+        for c in line.chars() {
+            match (quote, c) {
+                (Some(q), c) if c == q => quote = None,
+                (Some(_), c) => word.push(c),
+                (None, '\'' | '"') => {
+                    quote = Some(c);
+                    any = true;
+                }
+                (None, c) if c.is_whitespace() => {
+                    if any || !word.is_empty() {
+                        words.push(std::mem::take(&mut word));
+                        any = false;
+                    }
+                }
+                (None, c) => word.push(c),
+            }
+        }
+        if any || !word.is_empty() {
+            words.push(word);
+        }
+        words
     }
 
     /// `-` is a path like any other to the parser: standard input, with the reading
@@ -702,7 +805,6 @@ mod tests {
         let args = Args::try_parse_from(["datui", "--delimiter", ";", "-"]).unwrap();
         assert_eq!(args.paths, vec![std::path::PathBuf::from("-")]);
         assert_eq!(args.delimiter, Some(b';'));
-        assert!(EXAMPLES.contains("| datui"), "the help shows a pipe");
     }
 
     /// `--format` takes a built-in format, a spec's namespaced name, or a spec's file:
@@ -1264,88 +1366,6 @@ mod format_tests {
         );
     }
 
-    /// The loading-data page's format table says what `read_mode` and the remote
-    /// methods say, for every format, and names every format. A row is matched to its
-    /// formats by the extensions it lists, so the extensions are checked too.
-    #[test]
-    fn the_docs_format_table_agrees_with_the_code() {
-        let page =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/formats/index.md");
-        let text = std::fs::read_to_string(&page).expect("the formats overview");
-        let header =
-            "| Format | Extensions | Read | Compressed | HTTP(S) | In a bucket | Bucket prefix |";
-        let start = text.find(header).expect("the format table");
-        let rows: Vec<Vec<String>> = text[start..]
-            .lines()
-            .skip(2)
-            .take_while(|l| l.starts_with('|'))
-            .map(|l| {
-                l.trim_matches('|')
-                    .split(" | ")
-                    .map(|c| c.trim().to_string())
-                    .collect()
-            })
-            .collect();
-        let said = |mode: Option<ReadMode>| mode.map_or("no", ReadMode::label);
-        let mut seen: Vec<FileFormat> = Vec::new();
-        let (mut stream_row, mut spec_row) = (false, false);
-        for row in &rows {
-            let [format, extensions, read, compressed, http, bucket, prefix] = &row[..] else {
-                panic!("seven cells: {row:?}");
-            };
-            let choices: Vec<FormatChoice> = if extensions.contains("format spec") {
-                spec_row = true;
-                vec![FormatChoice::Spec("any.spec".into())]
-            } else if let Some((_, name)) = extensions.split_once("--format ") {
-                // A format found by content, with no extension: FIX.
-                let name = name.trim_matches('`');
-                vec![FormatChoice::Builtin(
-                    FileFormat::from_name(name).unwrap_or_else(|| panic!("{name} is a format")),
-                )]
-            } else {
-                extensions
-                    .split(", ")
-                    .map(|e| {
-                        let name = e.trim_matches('`');
-                        let found = match name.strip_prefix('.') {
-                            Some(ext) => FileFormat::from_extension(ext),
-                            None => FileFormat::from_path(std::path::Path::new(name)),
-                        };
-                        FormatChoice::Builtin(found.unwrap_or_else(|| panic!("{name} is read")))
-                    })
-                    .collect()
-            };
-            let stored = if format.contains("stream") {
-                stream_row = true;
-                Stored::Stream
-            } else {
-                Stored::Plain
-            };
-            for choice in choices {
-                if let (FormatChoice::Builtin(f), Stored::Plain) = (&choice, stored) {
-                    seen.push(*f);
-                }
-                assert_eq!(read, said(choice.read_mode(stored)), "{format}: Read");
-                assert_eq!(
-                    compressed,
-                    said(choice.read_mode(Stored::Compressed { in_memory: false })),
-                    "{format}: Compressed"
-                );
-                assert_eq!(http, choice.http_file().label(), "{format}: HTTP(S)");
-                assert_eq!(
-                    bucket,
-                    choice.bucket_object(stored).label(),
-                    "{format}: In a bucket"
-                );
-                let as_prefix = choice.bucket_prefix(stored).map_or("no", RemoteRead::label);
-                assert_eq!(prefix, as_prefix, "{format}: Bucket prefix");
-            }
-        }
-        for f in FileFormat::ALL {
-            assert!(seen.contains(&f), "{} has a row", f.name());
-        }
-        assert!(stream_row && spec_row, "streams and specs have rows");
-    }
     /// The dataset-info page's table of tabs says what each descriptor says: the
     /// format's tab of the Info panel, and what the home screen lists inside a file of
     /// it. Every format has a row, matched by its title.

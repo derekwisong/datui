@@ -3,6 +3,10 @@
 Open, query, chart and export tabular data in your terminal. datui reads local
 files and cloud storage, and works with Polars frames in Python.
 
+<!-- generated: format-count -->
+datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
+<!-- end generated: format-count -->
+
 **Start here:** [Install datui](getting-started/installation.md), then follow the
 [quick start](getting-started/quick-start.md) with a small public dataset.
 

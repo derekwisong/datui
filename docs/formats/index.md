@@ -1,39 +1,46 @@
 # Formats
 
+<!-- generated: format-count -->
+datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
+<!-- end generated: format-count -->
+
 The format is taken from the extension, or from `--format` when there is none.
 
 ## How each format is read
 
-| Format | Extensions | Read | Compressed | HTTP(S) | In a bucket | Bucket prefix |
-|---|---|---|---|---|---|---|
-| Parquet | `.parquet` | lazy | no | downloaded | in place | in place |
-| CSV | `.csv` | lazy | converted once | downloaded | downloaded | in place |
-| [Text](delimited-text.md#text-and-logs) | `.log`, `.txt` | lazy | converted once | downloaded | downloaded | no |
-| TSV, PSV | `.tsv`, `.psv` | lazy | converted once | downloaded | downloaded | no |
-| Arrow IPC file, Feather v2 | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy | no | downloaded | in place | in place |
-| [Arrow IPC stream](columnar-and-json.md#arrow-ipc-streams) | `.arrow`, `.arrows`, `.ipc`, `.feather` | converted once | no | downloaded | downloaded | downloaded |
-| NDJSON | `.jsonl`, `.ndjson` | in memory | no | downloaded | downloaded | in place |
-| JSON | `.json` | in memory | no | downloaded | downloaded | no |
-| Avro | `.avro` | in memory | no | downloaded | downloaded | no |
-| Excel | `.xlsx`, `.xlsm`, `.xlsb`, `.xls` | in memory | no | downloaded | downloaded | no |
-| ORC | `.orc` | in memory | no | downloaded | downloaded | no |
-| [SafeTensors](model-files.md) | `.safetensors`, `model.safetensors.index.json` | in memory | no | in place | in place | in place |
-| [GGUF](model-files.md) | `.gguf` | in memory | no | in place | in place | in place |
-| [NMEA 0183](signals-and-logs.md#gps-logs) | `.nmea` | converted once | converted once | downloaded | downloaded | no |
-| [GPX](signals-and-logs.md#gps-logs) | `.gpx` | converted once | converted once | downloaded | downloaded | no |
-| [WAV, BWF, RF64, AIFF](signals-and-logs.md#audio-files) | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy | no | downloaded | downloaded | no |
-| [MIDI](signals-and-logs.md#midi-files) | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | in memory | no | downloaded | downloaded | no |
-| [VCD](signals-and-logs.md#vcd-value-change-dumps) | `.vcd` | converted once | converted once | downloaded | downloaded | no |
-| [FIX logs](signals-and-logs.md#fix-logs) | any, by content (`8=FIX`), or `--format fix` | converted once | converted once | downloaded | downloaded | no |
-| [SDF](signals-and-logs.md#sdf-compound-files) | `.sdf`, `.sd` | converted once | converted once | downloaded | downloaded | no |
-| [SQLite](databases-and-arrays.md#sqlite-databases) | `.db`, `.sqlite`, `.sqlite3`, `.db3` | lazy | no | downloaded | downloaded | no |
-| [NumPy](databases-and-arrays.md#numpy-arrays) | `.npy`, `.npz` | lazy | no | downloaded | downloaded | no |
-| [ELF](signals-and-logs.md#elf-symbol-tables) | `.elf`, `.axf` | in memory | no | downloaded | downloaded | no |
-| [ULog](signals-and-logs.md#flight-logs) | `.ulg` | lazy | no | downloaded | downloaded | no |
-| [DataFlash](signals-and-logs.md#flight-logs) | any, by content, or `--format dataflash` | lazy | no | downloaded | downloaded | no |
-| [candump](signals-and-logs.md#can-logs) | any, by content, or `--format candump` | lazy | no | downloaded | downloaded | no |
-| [systemd journal](signals-and-logs.md#systemd-journal) | any, by content, or `--format journal` | in memory | no | downloaded | downloaded | no |
-| [Binary records](format-specs.md) | any, through a format spec | lazy | converted once | downloaded | downloaded | no |
+<!-- generated: formats -->
+| Format | `--format` | Extensions | Read | Compressed | HTTP(S) | In a bucket | Bucket prefix |
+|---|---|---|---|---|---|---|---|
+| [Parquet](columnar-and-json.md#parquet) | `parquet` | `.parquet` | lazy | no | downloaded | in place | in place |
+| [CSV](delimited-text.md#csv-tsv-and-psv) | `csv` | `.csv` | lazy | converted once | downloaded | downloaded | in place |
+| [TSV](delimited-text.md#csv-tsv-and-psv) | `tsv` | `.tsv` | lazy | converted once | downloaded | downloaded | no |
+| [PSV](delimited-text.md#csv-tsv-and-psv) | `psv` | `.psv` | lazy | converted once | downloaded | downloaded | no |
+| [JSON](columnar-and-json.md#json-and-ndjson) | `json` | `.json` | in memory | no | downloaded | downloaded | no |
+| [NDJSON](columnar-and-json.md#json-and-ndjson) | `jsonl` | `.jsonl`, `.ndjson` | in memory | no | downloaded | downloaded | in place |
+| [Arrow IPC](columnar-and-json.md#arrow-ipc) | `arrow` | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy | no | downloaded | in place | in place |
+| [Avro](columnar-and-json.md#avro-and-orc) | `avro` | `.avro` | in memory | no | downloaded | downloaded | no |
+| [ORC](columnar-and-json.md#avro-and-orc) | `orc` | `.orc` | in memory | no | downloaded | downloaded | no |
+| [Excel](columnar-and-json.md#excel) | `excel` | `.xls`, `.xlsx`, `.xlsm`, `.xlsb` | in memory | no | downloaded | downloaded | no |
+| [SafeTensors](model-files.md) | `safetensors` | `.safetensors`, `.safetensors.index.json` | in memory | no | in place | in place | in place |
+| [GGUF](model-files.md) | `gguf` | `.gguf` | in memory | no | in place | in place | in place |
+| [NMEA](signals-and-logs.md#gps-logs) | `nmea` | `.nmea` | converted once | converted once | downloaded | downloaded | no |
+| [GPX](signals-and-logs.md#gps-logs) | `gpx` | `.gpx` | converted once | converted once | downloaded | downloaded | no |
+| [WAV, BWF, RF64, AIFF](signals-and-logs.md#audio) | `audio` | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy | no | downloaded | downloaded | no |
+| [MIDI](signals-and-logs.md#midi) | `midi` | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | in memory | no | downloaded | downloaded | no |
+| [SQLite](databases-and-arrays.md#sqlite) | `sqlite` | `.db`, `.db3`, `.sqlite`, `.sqlite3` | lazy | no | downloaded | downloaded | no |
+| [VCD](signals-and-logs.md#vcd) | `vcd` | `.vcd` | converted once | converted once | downloaded | downloaded | no |
+| [FIX](signals-and-logs.md#fix-logs) | `fix` | none: by content | converted once | converted once | downloaded | downloaded | no |
+| [SDF](signals-and-logs.md#sdf) | `sdf` | `.sdf`, `.sd` | converted once | converted once | downloaded | downloaded | no |
+| [NumPy](databases-and-arrays.md#numpy) | `numpy` | `.npy`, `.npz` | lazy | no | downloaded | downloaded | no |
+| [ELF](signals-and-logs.md#elf) | `elf` | `.elf`, `.axf` | in memory | no | downloaded | downloaded | no |
+| [ULog](signals-and-logs.md#flight-logs) | `ulog` | `.ulg` | lazy | no | downloaded | downloaded | no |
+| [DataFlash](signals-and-logs.md#flight-logs) | `dataflash` | none: by content | lazy | no | downloaded | downloaded | no |
+| [candump](signals-and-logs.md#can-logs) | `candump` | none: by content | lazy | no | downloaded | downloaded | no |
+| [Text](delimited-text.md#text-and-logs) | `text` | `.log`, `.txt` | lazy | converted once | downloaded | downloaded | no |
+| [systemd journal](signals-and-logs.md#systemd-journal) | `journal` | none: by content | in memory | no | downloaded | downloaded | no |
+| [Arrow IPC stream](columnar-and-json.md#arrow-ipc) | `arrow` | as Arrow IPC | converted once | no | downloaded | downloaded | downloaded |
+| [Format spec](format-specs.md) | its name | its `match` | lazy | converted once | downloaded | downloaded | no |
+<!-- end generated: formats -->
 
 | Read | What it means |
 |---|---|

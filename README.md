@@ -2,9 +2,12 @@
 
 **A terminal UI for tabular data.**
 
-datui opens Parquet, CSV, JSON, Excel, SQLite and other tabular files from local disk
-or cloud storage. You can browse and filter rows, run SQL, plot columns, and
-export the result. It also works with Polars DataFrames in Python.
+Browse, filter, query, chart and export tables from local disk or cloud storage,
+or from Polars DataFrames in Python.
+
+<!-- generated: format-count -->
+datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
+<!-- end generated: format-count -->
 
 [![Release](https://img.shields.io/github/v/release/derekwisong/datui?style=flat-square)](https://github.com/derekwisong/datui/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square)](https://github.com/derekwisong/datui/actions)

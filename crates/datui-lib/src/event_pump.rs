@@ -500,6 +500,7 @@ impl EventPump {
                 redraw = true;
             }
             redraw |= app.tick_flash();
+            redraw |= app.tick_follow_clock();
             redraw |= app.flash_background_panic();
             redraw |= app.flash_polars_warning();
 

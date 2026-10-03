@@ -203,6 +203,9 @@ mod tests {
             workaround_pivot_date_index: None,
             infer_schema_length: None,
             ignore_errors: None,
+            follow: false,
+            tee: None,
+            tee_raw: false,
         };
         let opts: OpenOptions = (&args).into();
         assert_eq!(opts.skip_lines, Some(1));

@@ -82,6 +82,7 @@ pub mod find;
 mod first_rows_trace;
 pub mod fix;
 pub mod fixed_records;
+pub mod follow;
 pub mod formats;
 pub mod framed_records;
 pub mod fuzzy;
@@ -149,6 +150,7 @@ pub mod sql_group;
 pub mod startup;
 pub mod statistics;
 pub mod stdin;
+pub mod tee;
 pub mod template;
 pub mod terminal_input;
 pub mod text_formats;
@@ -8608,6 +8610,20 @@ pub struct OpenOptions {
     pub hex: bool,
     /// `--record-size N`: the bytes a row of the hex view holds.
     pub record_size: Option<usize>,
+    /// `--follow`: show rows as they are appended to the file, or arrive on standard
+    /// input, until stopped.
+    pub follow: bool,
+    /// Where the followed file's complete records end, counted by the scan and carried
+    /// to the dataset as `left_out` is, for its watcher to read on from.
+    pub tail: Option<Arc<crate::follow::Tail>>,
+    /// Standard input still being copied to the file a follow reads.
+    pub spool: Option<Arc<crate::follow::SpoolHandle>>,
+    /// `--tee FILE`: standard input is recorded to FILE, which is what is read.
+    pub tee: Option<PathBuf>,
+    /// `--tee-raw`: FILE is the bytes exactly as they came, a WAV header included.
+    pub tee_raw: bool,
+    /// `--force`: FILE may replace a file that is there.
+    pub force: bool,
 }
 
 impl OpenOptions {
@@ -8673,6 +8689,12 @@ impl OpenOptions {
             read_mode: None,
             hex: false,
             record_size: None,
+            follow: false,
+            tail: None,
+            spool: None,
+            tee: None,
+            tee_raw: false,
+            force: false,
         }
     }
 }
@@ -8921,6 +8943,11 @@ impl OpenOptions {
             .or(config.file_loading.infer_schema_length)
             .or(Some(1000));
 
+        opts.follow = args.follow;
+        opts.tee = args.tee.clone();
+        opts.tee_raw = args.tee_raw;
+        opts.force = args.force;
+
         // CSV ignore parse errors: CLI overrides config; default false
         opts.ignore_errors = args
             .ignore_errors
@@ -9075,6 +9102,8 @@ pub enum AppEvent {
     /// Run the export, from plan to committed file, once the UI has drawn its
     /// progress.
     DoExport(ExportRequest),
+    /// A followed file's watcher found more rows, or that the file went.
+    Followed(crate::follow::News),
     Exit,
     Crash(String),
     Search(String),
@@ -9597,12 +9626,53 @@ impl Flash {
     }
 }
 
+/// What the bar says of a recording (`--tee`): `rec` with its size and rate while it
+/// goes on, `saved` with its size, length and file once it ended, or `stopped` and why,
+/// in the warning color, when it ended in an error. The second value is that last.
+fn recording_label(spool: &crate::follow::Spool) -> (String, bool) {
+    let dot = crate::glyphs::get().middot;
+    let size = crate::discover::format_size(spool.bytes());
+    match spool.ended() {
+        None => (
+            format!(
+                "rec {size} {dot} {}/s",
+                crate::discover::format_size(spool.rate() as u64)
+            ),
+            false,
+        ),
+        Some(None) => {
+            let secs = spool.duration().as_secs();
+            let length = if secs >= 3600 {
+                format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+            } else {
+                format!("{}:{:02}", secs / 60, secs % 60)
+            };
+            let name = spool
+                .tee()
+                .and_then(|tee| tee.path.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (format!("saved {size} {dot} {length} {dot} {name}"), false)
+        }
+        Some(Some(reason)) => (format!("stopped: {reason}"), true),
+    }
+}
+
+/// Where a key was taking the user when leaving was asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leaving {
+    Quit,
+    Home,
+}
+
 pub struct ConfirmationModal {
     pub active: bool,
     pub message: String,
     pub focus_yes: bool, // true = Yes focused, false = No focused
     /// What Enter-on-Yes does, named: "Overwrite", not a generic "Yes".
     pub yes_label: &'static str,
+    /// What Enter-on-No does: "No", unless declining does something of its own.
+    pub no_label: &'static str,
     /// How far a long message is scrolled; the render clamps it.
     pub scroll: usize,
 }
@@ -9614,6 +9684,7 @@ impl Default for ConfirmationModal {
             message: String::new(),
             focus_yes: true,
             yes_label: "Yes",
+            no_label: "No",
             scroll: 0,
         }
     }
@@ -9629,7 +9700,20 @@ impl ConfirmationModal {
         self.message = message;
         self.focus_yes = true; // Default to Yes
         self.yes_label = "Yes";
+        self.no_label = "No";
         self.scroll = 0;
+    }
+
+    /// A choice between two things to do, each named; Esc does neither.
+    pub fn show_choice(
+        &mut self,
+        message: String,
+        yes_label: &'static str,
+        no_label: &'static str,
+    ) {
+        self.show(message);
+        self.yes_label = yes_label;
+        self.no_label = no_label;
     }
 
     /// A confirmation whose Yes destroys something: it starts on No, so a
@@ -9639,6 +9723,7 @@ impl ConfirmationModal {
         self.message = message;
         self.focus_yes = false;
         self.yes_label = yes_label;
+        self.no_label = "No";
         self.scroll = 0;
     }
 
@@ -9647,6 +9732,7 @@ impl ConfirmationModal {
         self.message.clear();
         self.focus_yes = true;
         self.yes_label = "Yes";
+        self.no_label = "No";
         self.scroll = 0;
     }
 }
@@ -10643,6 +10729,16 @@ pub struct App {
     path: Option<PathBuf>,
     original_file_format: Option<ExportFormat>, // Track original file format for default export
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
+    /// What `-` reads in place of standard input: a test's pipe.
+    stdin_reader: Option<Box<dyn std::io::Read + Send>>,
+    /// The follow mark as last drawn, so its clock redraws only when it changes.
+    follow_drawn: Option<crate::widgets::controls::FollowMark>,
+    /// Leaving was asked about while recording: what the user was doing.
+    pending_leave: Option<Leaving>,
+    /// A recording kept going after the user went home or quit, until its stream ends.
+    recording_on: Option<Arc<crate::follow::SpoolHandle>>,
+    /// A recording's end has been said: once, in the bar or the error dialog.
+    recording_end_said: bool,
     events: Sender<AppEvent>,
     debug: DebugState,
     pub info_modal: InfoModal,
@@ -12974,6 +13070,238 @@ impl App {
         }
     }
 
+    /// Read `reader` where `-` reads standard input: what a test pipes in.
+    #[doc(hidden)]
+    pub fn read_stdin_from(&mut self, reader: impl std::io::Read + Send + 'static) {
+        self.stdin_reader = Some(Box::new(reader));
+    }
+
+    /// The follow of the dataset on screen, while it is followed.
+    pub fn follow(&self) -> Option<&crate::follow::Follow> {
+        self.data_table_state.as_ref()?.follow()
+    }
+
+    /// Whether the follow's rows are on hand: none read in the background is still out,
+    /// and the view has taken what was counted. A refresh holds no keys, so a test waits
+    /// on this rather than on `is_busy`.
+    #[doc(hidden)]
+    pub fn follow_settled(&self) -> bool {
+        self.rows_in_flight().is_none() && !self.follow().is_some_and(|f| f.behind())
+    }
+
+    /// Ask the follow's watcher to look now rather than at the end of its interval.
+    #[doc(hidden)]
+    pub fn check_follow_now(&self) {
+        if let Some(follow) = self.follow() {
+            follow.check_now();
+        }
+    }
+
+    /// A followed file's watcher reported: what it counted waits for the view to take
+    /// it, and what the user has to know is flashed.
+    fn followed(&mut self, news: &crate::follow::News) {
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        let Some(follow) = state.follow_mut().filter(|f| f.id() == news.id) else {
+            return;
+        };
+        let message = follow.take(&news.change);
+        if let Some(handle) = follow.take_held() {
+            state.read_followed_through(&handle);
+        }
+        if let Some(message) = message {
+            self.flash_note(message);
+        }
+        self.catch_up_follow();
+    }
+
+    /// Show the rows a follow counted, when the table is on screen with nothing
+    /// running: a query, a sidebar, a takeover or a read in progress keeps the view it
+    /// has until it is done. The cursor on the last row stays on the last row; anywhere
+    /// else it stays put, and the rows below it are counted for the bar.
+    fn catch_up_follow(&mut self) {
+        if !self.in_normal_table_view()
+            || self.is_busy()
+            || self.loading.awaiting_dataset()
+            || self.rows_in_flight().is_some()
+        {
+            return;
+        }
+        self.take_follow_rows(true);
+    }
+
+    /// Give the view's frames the rows the follow counted. With `read`, the rows on
+    /// screen are read too; without, the table reads them once it is back on screen.
+    /// Returns whether there were rows to take.
+    fn take_follow_rows(&mut self, read: bool) -> bool {
+        let Some(state) = self.data_table_state.as_mut() else {
+            return false;
+        };
+        let on_last_row = state.on_last_row();
+        let counted = state.is_num_rows_valid();
+        let drawn = state.visible_rows > 0 && counted;
+        let Some(follow) = state.follow_mut() else {
+            return false;
+        };
+        // The cursor goes to the last row once the rows that put it there are on hand:
+        // moved before, the frame drawn meanwhile has fewer rows than the cursor's
+        // place, and the table puts the cursor back on the last row it has.
+        let settle = read && drawn && std::mem::take(&mut follow.settle_at_end);
+        let to_end = settle || (read && counted && std::mem::take(&mut follow.end_pending));
+        let stale = read && std::mem::take(&mut follow.stale_view);
+        let at_bottom = to_end || on_last_row || follow.end_pending;
+        if at_bottom {
+            follow.new_below = 0;
+        }
+        if !follow.behind() {
+            if (to_end && state.scroll_to_end()) || stale {
+                self.spawn_collect(None);
+            }
+            return false;
+        }
+        let before = follow.shown();
+        let (rows, restarted) = follow.catch_up();
+        if at_bottom {
+            follow.end_pending = true;
+        } else if !restarted {
+            follow.new_below += rows.saturating_sub(before);
+        }
+        follow.stale_view = !read;
+        state.follow_to(rows, restarted);
+        if at_bottom && read {
+            if state.is_num_rows_valid() {
+                state.aim_at_end();
+            } else {
+                // A filtered view's end is known once its count lands.
+                self.end_after_count = Some(state.len_generation());
+            }
+        }
+        if read && !self.spawn_collect(None) {
+            // Nothing to read: the rows on hand already reach the end.
+            self.catch_up_follow();
+        }
+        true
+    }
+
+    /// `t` over a surface that keeps the rows it was opened on (Value Counts, Analysis,
+    /// a chart): whether the follow has rows for it to take.
+    fn follow_rows_waiting(&self) -> bool {
+        self.follow().is_some_and(|f| f.behind()) && !self.loading.awaiting_dataset()
+    }
+
+    /// Standard input being recorded to the file `--tee` named, for the dataset on
+    /// screen.
+    pub fn recording(&self) -> Option<&Arc<crate::follow::Spool>> {
+        self.data_table_state.as_ref()?;
+        self.opened
+            .as_ref()
+            .and_then(|(_, options)| options.spool.as_ref())
+            .map(|handle| handle.spool())
+            .filter(|spool| spool.tee().is_some())
+    }
+
+    /// Where `key` takes the user out of the dataset: quitting, or home.
+    fn leaves(&self, key: &KeyEvent) -> Option<Leaving> {
+        if !key.is_press() {
+            return None;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('q') if ctrl => Some(Leaving::Quit),
+            KeyCode::Char('c') if ctrl => Some(Leaving::Quit),
+            KeyCode::Char('o') if ctrl => Some(Leaving::Home),
+            KeyCode::Char('Q') if !ctrl && self.in_normal_table_view() => Some(Leaving::Quit),
+            KeyCode::Char('q') if !ctrl && self.in_normal_table_view() => {
+                Some(if self.opened_from_home {
+                    Leaving::Home
+                } else {
+                    Leaving::Quit
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Ask whether to stop the recording or keep it going while the user leaves.
+    fn ask_about_recording(&mut self, leaving: Leaving) {
+        let Some(tee) = self.recording().and_then(|spool| spool.tee()) else {
+            return;
+        };
+        let name = tee
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| tee.path.display().to_string());
+        self.pending_leave = Some(leaving);
+        self.confirmation_modal.show_choice(
+            format!(
+                "Standard input is still being recorded to {name}. Stop recording, or keep \
+                 recording until the stream ends?"
+            ),
+            "Stop recording",
+            "Keep recording",
+        );
+    }
+
+    /// Leave as asked: the recording stopped and its file finished, or kept going
+    /// until its stream ends, while datui goes home or quits.
+    fn leave_recording(&mut self, stop: bool) -> Option<AppEvent> {
+        let leaving = self.pending_leave.take()?;
+        let handle = self
+            .opened
+            .as_ref()
+            .and_then(|(_, options)| options.spool.clone());
+        if stop {
+            if let Some(handle) = &handle {
+                handle.spool().stop();
+            }
+        } else {
+            // Held past the dataset, so letting it go does not stop the copy.
+            self.recording_on = handle;
+        }
+        match leaving {
+            Leaving::Quit => Some(AppEvent::Exit),
+            Leaving::Home => {
+                self.enter_home();
+                None
+            }
+        }
+    }
+
+    /// The recording to wait for once the terminal is handed back: kept going when
+    /// the user quit, until its stream ends.
+    pub fn recording_after_exit(&mut self) -> Option<(PathBuf, Arc<crate::follow::SpoolHandle>)> {
+        let handle = self.recording_on.take()?;
+        let spool = handle.spool();
+        let path = spool.tee()?.path.clone();
+        spool.live().then_some((path, handle))
+    }
+
+    /// Say once that the recording ended: saved, or stopped by an error, which the
+    /// error dialog says too. Returns true when the frame must redraw.
+    fn notice_recording_end(&mut self) -> bool {
+        let Some(spool) = self.recording().cloned() else {
+            return false;
+        };
+        let Some(ended) = spool.ended() else {
+            self.recording_end_said = false;
+            return false;
+        };
+        if std::mem::replace(&mut self.recording_end_said, true) {
+            return false;
+        }
+        let path = spool
+            .tee()
+            .map(|tee| tee.path.display().to_string())
+            .unwrap_or_default();
+        match ended {
+            Some(reason) => self.error_modal.show(reason),
+            None => self.flash_note(format!("Saved {path}")),
+        }
+        true
+    }
+
     /// Show a completion flash on the control bar.
     fn flash_note(&mut self, message: String) {
         self.flash = Some(Flash::new(message));
@@ -12994,7 +13322,143 @@ impl App {
     /// When the screen next changes on its own, with no event to say so: the flash
     /// expiring. The run loop sleeps until then at most.
     pub fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.flash.as_ref().map(|f| f.expires)
+        let flash = self.flash.as_ref().map(|f| f.expires);
+        let clock = self
+            .follow()
+            .filter(|f| f.standing == crate::follow::Standing::Following)
+            .and_then(|f| f.last_append)
+            .map(crate::follow::next_tick);
+        // A recording's size and rate move every second until it ends, and its end is
+        // noticed on that tick.
+        let recording = self
+            .recording()
+            .filter(|spool| spool.live())
+            .map(|_| std::time::Instant::now() + std::time::Duration::from_secs(1));
+        flash.into_iter().chain(clock).chain(recording).min()
+    }
+
+    /// Whether the follow chip's clock reads differently now: the frame must redraw.
+    pub fn tick_follow_clock(&mut self) -> bool {
+        let ended = self.notice_recording_end();
+        let now = self.follow_mark();
+        if now == self.follow_drawn {
+            return ended;
+        }
+        self.follow_drawn = now;
+        true
+    }
+
+    /// What the control bar says about the follow of the dataset on screen.
+    fn follow_mark(&self) -> Option<crate::widgets::controls::FollowMark> {
+        use crate::follow::Standing;
+        // The hex view shows a file's bytes, not the table the follow moves.
+        if self.input_mode == InputMode::Hex {
+            return None;
+        }
+        let state = self.data_table_state.as_ref()?;
+        let rows = |n: usize, what: &str| format!("{} {what}", crate::numfmt::group_chrome(n));
+        let (rec, rec_stopped) = match self.recording().map(|spool| recording_label(spool)) {
+            Some((label, stopped)) => (Some(label), stopped),
+            None => (None, false),
+        };
+        let Some(follow) = state.follow().filter(|f| f.standing != Standing::Ended) else {
+            return rec.is_some().then(|| crate::widgets::controls::FollowMark {
+                rec,
+                rec_stopped,
+                ..Default::default()
+            });
+        };
+        let waiting = follow.waiting();
+        let (chip, note) = match follow.standing {
+            Standing::Following => {
+                let chip = match follow.last_append {
+                    Some(at) => format!(
+                        "following {} {}",
+                        crate::glyphs::get().middot,
+                        crate::follow::age(at.elapsed())
+                    ),
+                    None => "following".to_string(),
+                };
+                let note = if waiting > 0 && !self.in_normal_table_view() {
+                    // A takeover keeps the rows it was opened on.
+                    Some(rows(waiting, "new rows"))
+                } else if follow.new_below > 0 && !state.on_last_row() {
+                    Some(rows(follow.new_below, "new below"))
+                } else {
+                    None
+                };
+                (chip, note)
+            }
+            _ => (
+                "paused".to_string(),
+                (waiting > 0).then(|| rows(waiting, "new rows")),
+            ),
+        };
+        let misfits = follow.misfits();
+        // What `t` does on this screen: pause or resume at the table; over a surface
+        // that keeps the rows it was opened on, read the new ones.
+        let refreshes = self.input_mode == InputMode::ValueCounts
+            || (self.input_mode == InputMode::Chart
+                && self.chart_modal.picker.is_none()
+                && !self.chart_export_modal.active)
+            || (self.analysis_modal.active && self.analysis_modal.current_results().is_some());
+        let key = if self.in_normal_table_view() {
+            Some(match follow.standing {
+                Standing::Paused => "Resume",
+                _ => "Pause",
+            })
+        } else if refreshes && follow.behind() {
+            Some("Refresh")
+        } else {
+            None
+        };
+        Some(crate::widgets::controls::FollowMark {
+            key,
+            chip: Some(chip),
+            note,
+            warning: (misfits > 0).then(|| {
+                if misfits == 1 {
+                    "1 row does not fit".to_string()
+                } else {
+                    rows(misfits, "rows do not fit")
+                }
+            }),
+            rec,
+            rec_stopped,
+        })
+    }
+
+    /// `t` at the table: pause or resume the follow, or follow the file, reading it
+    /// again as `H` does.
+    fn toggle_follow(&mut self) -> Option<AppEvent> {
+        use crate::follow::Standing;
+        if let Some(follow) = self.data_table_state.as_mut().and_then(|s| s.follow_mut()) {
+            match follow.standing {
+                Standing::Following => follow.pause(),
+                Standing::Paused => {
+                    follow.resume();
+                    self.catch_up_follow();
+                }
+                Standing::Ended => {}
+            }
+            return None;
+        }
+        let (paths, options) = self.opened.clone()?;
+        if paths.iter().any(|path| crate::stdin::is_stdin(path)) {
+            self.flash_note("Standard input is followed from the start: datui -f -".to_string());
+            return None;
+        }
+        if let Some(refusal) = crate::follow::refuse_paths(&paths, &options) {
+            self.flash_note(refusal);
+            return None;
+        }
+        let options = OpenOptions {
+            follow: true,
+            ..options
+        };
+        self.set_loading_phase("Scanning input", 10);
+        self.name_what_is_loading(paths[0].clone());
+        Some(AppEvent::Open(paths, options))
     }
 
     /// Drop an expired flash. Returns true when the frame must redraw.
@@ -13860,6 +14324,8 @@ impl App {
             let options = OpenOptions {
                 format_read: None,
                 sqlite: None,
+                // Counted afresh by the next read.
+                tail: None,
                 ..options.clone()
             };
             (paths, options)
@@ -13880,6 +14346,28 @@ impl App {
         self.footer_progress.cancel();
         self.footer_progress = footers;
         self.data_table_state = Some(state);
+        // A followed file's watcher starts with its dataset and stops with it.
+        if options.follow
+            && let Some(state) = self.data_table_state.as_mut()
+        {
+            match options.tail.as_deref() {
+                Some(tail) => {
+                    state.start_following(crate::follow::Follow::start(
+                        tail.clone(),
+                        self.app_config.file_loading.follow_interval(),
+                        self.events.clone(),
+                        options.spool.clone(),
+                    ));
+                    // Counted already, as the scan reads them: no count of its own.
+                    state.follow_to(tail.rows(), false);
+                }
+                // A recording of something that cannot be read as it grows.
+                None => self.flash_note(
+                    "Only text is followed: this shows what had arrived, and recording goes on"
+                        .to_string(),
+                ),
+            }
+        }
         // A count still waiting for the last dataset's rows to paint is not owed now.
         self.retire_a_count_the_rows_answered();
         self.path = path.clone();
@@ -14585,6 +15073,11 @@ impl App {
             home_schema_cache: HashMap::new(),
             original_file_format: None,
             original_file_delimiter: None,
+            stdin_reader: None,
+            follow_drawn: None,
+            pending_leave: None,
+            recording_on: None,
+            recording_end_said: false,
             events,
             debug: DebugState::default(),
             info_modal: InfoModal::new(),
@@ -15345,6 +15838,7 @@ impl App {
     pub fn request_what_the_frame_needs(&mut self) {
         if self.input_mode == InputMode::Normal {
             self.load_ahead();
+            self.catch_up_follow();
         }
         self.inspector_needs();
         if self.input_mode != InputMode::Home {
@@ -15472,6 +15966,10 @@ impl App {
         self.stop_value_count();
         self.export_counts = None;
         self.abandon_load();
+        // Nobody is watching the file any more.
+        if let Some(state) = self.data_table_state.as_mut() {
+            state.stop_following();
+        }
         self.home.status = None;
         self.home.folds_owed = true;
         self.home_refresh();
@@ -17281,13 +17779,28 @@ impl App {
             } => {
                 // The read is a thread of its own, so a producer gone quiet does not hold
                 // up the stop: Ctrl+O and quitting remove the partial file at once.
+                let piped = self.stdin_reader.take();
                 self.spawn_job(job, Some("Reading stdin..."), move |_| {
-                    let (download, options) = crate::stdin::spool(
-                        || Ok((std::io::stdin(), None)),
-                        options,
-                        &writer,
-                        &read,
-                    )?;
+                    let open = move || -> crate::download::Opened<Box<dyn std::io::Read + Send>> {
+                        Ok((piped.unwrap_or_else(|| Box::new(std::io::stdin())), None))
+                    };
+                    // Followed, the copy goes on behind the first rows; recorded, it
+                    // goes to the file the user named.
+                    let (download, options) = if options.follow || options.tee.is_some() {
+                        match crate::follow::spool(open, options, &writer, &read)? {
+                            (crate::follow::Spooled::Temp(download), options) => {
+                                (download, options)
+                            }
+                            (crate::follow::Spooled::Kept(file), options) => {
+                                return Ok(Answer::Load(Box::new(LoadAnswer::Recorded {
+                                    file,
+                                    options,
+                                })));
+                            }
+                        }
+                    } else {
+                        crate::stdin::spool(open, options, &writer, &read)?
+                    };
                     Ok(Answer::Load(Box::new(LoadAnswer::Spooled {
                         download,
                         options,
@@ -17474,18 +17987,60 @@ impl App {
                         splits: options.splits.clone(),
                         delimited: None,
                     };
-                    let scan = Self::build_lazyframe_from_paths_with(
-                        &cloud,
-                        &paths,
-                        &options,
-                        &mut report,
-                        &formats,
-                    )
-                    // Named as the dataset is: a download by its URL, not its temp file.
-                    .map_err(|e| {
+                    // A followed file reads every row it can and counts the rest: a row
+                    // that does not fit the schema never stops the follow.
+                    let options = OpenOptions {
+                        ignore_errors: options.ignore_errors || options.follow,
+                        ..options
+                    };
+                    let named = |e: color_eyre::Report| {
                         crate::error_display::user_message_from_report(&e, path.as_deref())
-                    })?;
+                    };
+                    let followed_lines = options.follow
+                        && crate::follow::format_of(&paths[0], options.format) == FileFormat::Jsonl;
+                    let scan = if followed_lines {
+                        crate::follow::scan_lines(&paths[0], &options, &mut report.read_python)
+                            .map(Scan::from)
+                    } else {
+                        Self::build_lazyframe_from_paths_with(
+                            &cloud,
+                            &paths,
+                            &options,
+                            &mut report,
+                            &formats,
+                        )
+                    }
+                    // Named as the dataset is: a download by its URL, not its temp file.
+                    .map_err(named)?;
                     let format = scan.format(report.format.or(options.format));
+                    // Bounded to the complete records, and counted for the watcher. A
+                    // recording that cannot be followed is read as it stands, and goes on.
+                    let recording = options
+                        .spool
+                        .as_ref()
+                        .is_some_and(|handle| handle.spool().tee().is_some());
+                    let (scan, tail) = match scan {
+                        Scan::Frame(lf) if options.follow => {
+                            let format = crate::follow::format_of(&paths[0], format);
+                            match crate::follow::refusal(Some(format), &options) {
+                                Some(_) if recording => (Scan::Frame(lf), None),
+                                Some(refusal) => return Err(refusal),
+                                None => {
+                                    let (lf, tail) = crate::follow::bound_to_complete(
+                                        *lf, &paths[0], format, &options,
+                                    )
+                                    .map_err(named)?;
+                                    (Scan::Frame(Box::new(lf)), Some(Arc::new(tail)))
+                                }
+                            }
+                        }
+                        _ if options.follow && !recording => {
+                            return Err(crate::follow::refusal(format, &options).unwrap_or_else(
+                                || "This file cannot be followed as it grows.".to_string(),
+                            ));
+                        }
+                        scan => (scan, None),
+                    };
                     let read_mode = scan.read_mode(format, report.format_read.is_some(), &options);
                     let mut options = OpenOptions {
                         left_out: report.left_out,
@@ -17500,6 +18055,7 @@ impl App {
                         audio: report.audio,
                         midi: report.midi,
                         read_mode,
+                        tail,
                         ..options
                     };
                     // The spec's dialect stays with the dataset, so a read again (`H`,
@@ -20626,6 +21182,11 @@ impl App {
                     self.confirmation_modal.scroll =
                         self.confirmation_modal.scroll.saturating_add(1);
                 }
+                KeyCode::Enter if self.pending_leave.is_some() => {
+                    let stop = self.confirmation_modal.focus_yes;
+                    self.confirmation_modal.hide();
+                    return self.leave_recording(stop);
+                }
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
                         // The confirmations that are not about overwriting a file come
@@ -20723,6 +21284,8 @@ impl App {
                     self.pending_clear_recents = false;
                     self.pending_read_all = false;
                     self.pending_forget_place = None;
+                    // Staying: the recording goes on, and so does the view.
+                    self.pending_leave = None;
                     // Declining an overwrite returns to the filled form: the
                     // typed path, format and options survive the Esc.
                     if self.pending_chart_export.take().is_some() {
@@ -21926,6 +22489,12 @@ impl App {
                             .open(&self.theme, self.history_limit);
                     }
                 }
+                // The chart keeps the rows it was drawn from; `t` draws the new ones
+                // too.
+                KeyCode::Char('t') if event.is_press() && self.follow_rows_waiting() => {
+                    self.take_follow_rows(false);
+                    self.chart_cache.clear();
+                }
                 // q/Q do nothing in chart view (no exit)
                 KeyCode::Char('?') if event.is_press() => {
                     self.show_help = true;
@@ -22686,6 +23255,15 @@ impl App {
                         ..self.analysis_modal.sample.clone()
                     };
                     return self.apply_sample(sample);
+                }
+                // The results keep the rows they were read of; `t` reads the new ones
+                // too, with the same sample.
+                KeyCode::Char('t')
+                    if self.follow_rows_waiting()
+                        && self.analysis_modal.current_results().is_some() =>
+                {
+                    self.take_follow_rows(false);
+                    return self.apply_sample(self.analysis_modal.sample.clone());
                 }
                 // Refused while a cancelled run is still reading: Polars cannot stop it,
                 // and a second full read beside it is how memory runs out.
@@ -23526,10 +24104,18 @@ impl App {
                     self.spawn_async_collect(Self::LOADING_BUFFER);
                     return None;
                 }
+                // Out of a follow: the rows read so far stay.
+                if let Some(state) = self.data_table_state.as_mut()
+                    && state.follow().is_some()
+                {
+                    state.stop_following();
+                    self.flash_note("Stopped following".to_string());
+                }
                 // Escape no longer exits - use 'q' or Ctrl-C to exit
                 // (Info modal handles Esc in its own block)
                 None
             }
+            KeyCode::Char('t') if event.is_press() => self.toggle_follow(),
             code if RIGHT_KEYS.contains(&code) || LEFT_KEYS.contains(&code) => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.move_cursor(if RIGHT_KEYS.contains(&code) {
@@ -24142,7 +24728,17 @@ impl App {
         self.debug.num_events += 1;
 
         match event {
-            AppEvent::Key(key) => self.key(key),
+            AppEvent::Key(key) => {
+                // Leaving while standard input is still being recorded asks first.
+                if let Some(leaving) = self.leaves(key)
+                    && !self.confirmation_modal.active
+                    && self.recording().is_some_and(|spool| spool.live())
+                {
+                    self.ask_about_recording(leaving);
+                    return None;
+                }
+                self.key(key)
+            }
             AppEvent::Open(paths, options) => {
                 if paths.is_empty() {
                     return Some(AppEvent::Crash("No paths provided".to_string()));
@@ -25264,6 +25860,10 @@ impl App {
                     None
                 }
             }
+            AppEvent::Followed(news) => {
+                self.followed(news);
+                None
+            }
             AppEvent::DoExport(request) => {
                 let Some(state) = &self.data_table_state else {
                     self.export_progress = None;
@@ -26152,6 +26752,8 @@ impl App {
                     state.apply_async_collect(result);
                 }
                 self.retire_a_count_the_rows_answered();
+                // Rows a follow counted while these were read are shown next.
+                self.catch_up_follow();
                 // The query's first rows are in: it stands.
                 let ran = self.take_query_run();
                 // A load-ahead's end is nobody's wait ending: whatever else is under
@@ -27349,6 +27951,17 @@ impl App {
             KeyCode::Enter => self.drill_into_counted_value(),
             KeyCode::Char('y') => self.copy_value_counts(),
             KeyCode::Char('e') => self.export_value_counts(),
+            // The counts keep the rows they were read of; `t` counts the new ones too.
+            KeyCode::Char('t') if self.follow_rows_waiting() => {
+                self.stop_value_count();
+                self.take_follow_rows(false);
+                if let Some(state) = self.data_table_state.as_ref() {
+                    let names = self.value_counts.columns.clone();
+                    let at = self.value_counts.at;
+                    self.value_counts.open(names, at, state.len_generation());
+                }
+                self.count_values(false);
+            }
             _ => {}
         }
         None
@@ -29018,6 +29631,7 @@ impl Widget for &mut App {
                 .as_ref()
                 .and_then(|s| s.not_the_table()),
         );
+        controls = controls.with_follow(self.follow_mark());
         let format_read = self.data_table_state.as_ref().and_then(|s| s.format_read());
         controls = controls.with_format(
             format_read.is_some(),
@@ -29754,6 +30368,17 @@ fn run_impl(
     // Not `eprintln!`, which panics when a hangup has taken the terminal away.
     for note in notes {
         let _ = writeln!(std::io::stderr(), "datui: {note}");
+    }
+    // Quit with the recording kept going: it goes on until its stream ends, with the
+    // terminal handed back. A signal now ends the process as it always would.
+    if let Some((path, handle)) = pump.app.recording_after_exit() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "datui: recording standard input to {} until it ends (Ctrl+C stops it)",
+            path.display()
+        );
+        handle.spool().wait();
+        let _ = writeln!(std::io::stderr(), "datui: saved {}", path.display());
     }
     result
 }

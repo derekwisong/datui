@@ -69,6 +69,26 @@ pub struct Controls {
     /// How many specs matched the file as well as the one it was read with. Drawn as
     /// a chip beside the row count: the file was read one of several ways.
     pub formats_tied: Option<usize>,
+    /// The follow of the file on screen: a chip beside the count it moves.
+    pub follow: Option<FollowMark>,
+    pub warning_color: Color,
+}
+
+/// What the bar says about a followed file.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FollowMark {
+    /// What `t` does on this screen, offered first among its keys.
+    pub key: Option<&'static str>,
+    /// The chip: `following · 3s ago`, `paused`.
+    pub chip: Option<String>,
+    /// Plain beside it: rows that came in below the cursor, or that wait to be shown.
+    pub note: Option<String>,
+    /// In the warning color: rows that did not fit the schema.
+    pub warning: Option<String>,
+    /// A recording's chip (`--tee`): `rec 12 MB · 1.2 MB/s`, then `saved ...`.
+    pub rec: Option<String>,
+    /// The recording stopped in an error: `rec` is said in the warning color.
+    pub rec_stopped: bool,
 }
 
 impl Controls {
@@ -205,6 +225,11 @@ impl Controls {
         self
     }
 
+    pub fn with_follow(mut self, follow: Option<FollowMark>) -> Self {
+        self.follow = follow;
+        self
+    }
+
     /// Create Controls from RenderContext (Phase 2+).
     /// This is the preferred way to create Controls with proper theming.
     pub fn from_context(row_count: usize, ctx: &RenderContext) -> Self {
@@ -237,6 +262,8 @@ impl Controls {
             drawn: Default::default(),
             format_key: false,
             formats_tied: None,
+            follow: None,
+            warning_color: ctx.warning,
         }
     }
 }
@@ -352,7 +379,25 @@ impl Widget for &Controls {
             .formats_tied
             .map(|others| format!(" {} formats match ", others + 1));
         let find = self.find.as_ref().map(|mark| format!("{mark} "));
-        let chip_width = not_the_table
+        let follow_chip = self
+            .follow
+            .as_ref()
+            .and_then(|f| f.chip.as_ref())
+            .map(|chip| format!(" {chip} "));
+        let rec_chip = self
+            .follow
+            .as_ref()
+            .and_then(|f| f.rec.as_ref())
+            .map(|rec| format!(" {rec} "));
+        let rec_stopped = self.follow.as_ref().is_some_and(|f| f.rec_stopped);
+        let mut follow_note = self.follow.as_ref().and_then(|f| f.note.clone());
+        let mut follow_warning = self.follow.as_ref().and_then(|f| f.warning.clone());
+        let width_of = |text: &Option<String>| {
+            text.as_ref()
+                .map(|text| crate::glyphs::display_width(text) as u16 + 1)
+                .unwrap_or(0)
+        };
+        let other_chips = not_the_table
             .as_ref()
             .map(|text| text.chars().count() as u16)
             .unwrap_or(0)
@@ -368,6 +413,26 @@ impl Widget for &Controls {
                 .as_ref()
                 .map(|text| text.chars().count() as u16 + 1)
                 .unwrap_or(0);
+        // The follow's notes yield before the way out does: on a narrow bar the count
+        // of new rows goes first, then the rows that do not fit, so a quit chip keeps
+        // its room.
+        const WAY_OUT: u16 = 10;
+        let fixed = trailing.unwrap_or(0)
+            + other_chips
+            + width_of(&follow_chip)
+            + width_of(&rec_chip)
+            + WAY_OUT;
+        if fixed + width_of(&follow_note) + width_of(&follow_warning) > area.width {
+            follow_note = None;
+        }
+        if fixed + width_of(&follow_warning) > area.width {
+            follow_warning = None;
+        }
+        let chip_width = other_chips
+            + width_of(&follow_chip)
+            + width_of(&follow_note)
+            + width_of(&follow_warning)
+            + width_of(&rec_chip);
 
         // The chip: the bar's accent behind the bar's own colour, the same cut-out a
         // key chip is, because it is the one thing here the eye must not slide past.
@@ -389,6 +454,30 @@ impl Widget for &Controls {
             }
             if let Some(text) = &tied {
                 spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &follow_note {
+                spans.push(ratatui::text::Span::styled(text.clone(), label_style));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &follow_warning {
+                spans.push(ratatui::text::Span::styled(
+                    text.clone(),
+                    label_style.fg(self.warning_color),
+                ));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &follow_chip {
+                spans.push(ratatui::text::Span::styled(text.clone(), chip_style));
+                spans.push(ratatui::text::Span::raw(" "));
+            }
+            if let Some(text) = &rec_chip {
+                let style = if rec_stopped {
+                    label_style.fg(self.warning_color)
+                } else {
+                    chip_style
+                };
+                spans.push(ratatui::text::Span::styled(text.clone(), style));
                 spans.push(ratatui::text::Span::raw(" "));
             }
             if let Some(text) = &not_the_table {
@@ -417,7 +506,7 @@ impl Widget for &Controls {
             ("?", "Help"),
             ("q", "Quit"),
         ];
-        let controls: Vec<(&str, &str)> = if let Some(ref custom) = self.custom_controls {
+        let mut controls: Vec<(&str, &str)> = if let Some(ref custom) = self.custom_controls {
             custom.to_vec()
         } else {
             let mut defaults = DEFAULT_CONTROLS.to_vec();
@@ -448,6 +537,10 @@ impl Widget for &Controls {
             }
             defaults
         };
+        // The follow is what changes on screen; its key comes first.
+        if let Some(key) = self.follow.as_ref().and_then(|f| f.key) {
+            controls.insert(0, ("t", key));
+        }
 
         // Status message mode: [spinner 2ch] [message Fill] [escape chips] [chip]
         // [row count or caption]
@@ -755,6 +848,45 @@ mod tests {
         assert!(
             !bar.contains("Pivot"),
             "the feature chips do not crowd a busy bar: {bar:?}"
+        );
+    }
+
+    /// A follow's chip sits beside the count it moves, its note and warning before it,
+    /// and `t` leads the keys; on a narrow bar the notes yield before the way out does.
+    #[test]
+    fn a_follow_says_so_beside_the_count() {
+        let mark = FollowMark {
+            key: Some("Pause"),
+            chip: Some("following · 3s ago".to_string()),
+            note: Some("4 new below".to_string()),
+            warning: Some("1 row does not fit".to_string()),
+            ..Default::default()
+        };
+        let bar = |width| {
+            render_to_string(
+                &with_row_count(1_234).with_follow(Some(mark.clone())),
+                width,
+            )
+        };
+        for width in [60u16, 80, 160] {
+            let bar = bar(width);
+            let chip = bar.find("following · 3s ago").expect("the chip");
+            let count = bar.find("1,234 rows").expect("the count");
+            assert!(chip < count, "{bar:?}");
+            assert!(
+                bar.contains("Quit"),
+                "the way out stays at {width}: {bar:?}"
+            );
+        }
+        assert!(!bar(60).contains("new below"), "the note yields first");
+        let wide = bar(160);
+        assert!(
+            wide.contains("4 new below") && wide.contains("1 row does not fit"),
+            "{wide:?}"
+        );
+        assert!(
+            wide.find("Pause") < wide.find("Inspect"),
+            "t leads the keys: {wide:?}"
         );
     }
 

@@ -64,6 +64,9 @@ fn test_config_used_for_row_numbers() {
         workaround_pivot_date_index: None,
         infer_schema_length: None,
         ignore_errors: None,
+        follow: false,
+        tee: None,
+        tee_raw: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -135,6 +138,9 @@ fn test_cli_args_override_config() {
         workaround_pivot_date_index: None,
         infer_schema_length: None,
         ignore_errors: None,
+        follow: false,
+        tee: None,
+        tee_raw: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -206,6 +212,9 @@ fn test_config_display_settings() {
         workaround_pivot_date_index: None,
         infer_schema_length: None,
         ignore_errors: None,
+        follow: false,
+        tee: None,
+        tee_raw: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -277,6 +286,9 @@ fn test_config_file_loading_settings() {
         workaround_pivot_date_index: None,
         infer_schema_length: None,
         ignore_errors: None,
+        follow: false,
+        tee: None,
+        tee_raw: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -346,6 +358,9 @@ fn test_config_null_values_merge() {
         workaround_pivot_date_index: None,
         infer_schema_length: None,
         ignore_errors: None,
+        follow: false,
+        tee: None,
+        tee_raw: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -428,6 +443,9 @@ fn test_parse_strings_default_and_no_parse_strings() {
         workaround_pivot_date_index: None,
         infer_schema_length: None,
         ignore_errors: None,
+        follow: false,
+        tee: None,
+        tee_raw: false,
     };
     let opts = OpenOptions::from_args_and_config(&args, &config);
     assert!(matches!(opts.parse_strings, Some(ParseStringsTarget::All)));

@@ -20,6 +20,8 @@ mod common;
 mod fake_s3;
 #[path = "formats/delimited.rs"]
 mod formats_delimited;
+#[path = "formats/follow.rs"]
+mod formats_follow;
 #[path = "formats/open.rs"]
 mod formats_open;
 #[path = "formats/gps.rs"]

@@ -1357,6 +1357,7 @@ const UNSET_EXAMPLES: &[(&str, &str)] = &[
     ("file_loading.decompress_in_memory", "false"),
     ("file_loading.temp_dir", "\"/tmp\""),
     ("file_loading.single_spine_schema", "true"),
+    ("file_loading.follow_interval_ms", "250"),
     ("display.sidebar_width", "70"),
     ("theme.mode", "\"auto\""),
     ("debug.log_file", "\"~/datui.log\""),
@@ -1499,7 +1500,22 @@ pub struct FileLoadingConfig {
     pub header_join: Option<String>,
     /// CSV: ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null (Frictionless `skipInitialSpace`). Default false.
     pub skip_initial_space: Option<bool>,
+    /// `--follow`: how often, in milliseconds, a followed file is checked for new rows. A burst of appends within one interval is one refresh. Default 250.
+    pub follow_interval_ms: Option<u64>,
 }
+
+impl FileLoadingConfig {
+    /// How often a followed file is checked: `follow_interval_ms`, or 250 ms.
+    pub fn follow_interval(&self) -> std::time::Duration {
+        self.follow_interval_ms
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(crate::follow::DEFAULT_INTERVAL)
+    }
+}
+
+/// The bounds of `[file_loading] follow_interval_ms`: faster than ten checks a second
+/// redraws for nothing anyone can read, and slower than a minute is not following.
+const FOLLOW_INTERVAL_MS: std::ops::RangeInclusive<u64> = 10..=60_000;
 
 /// `[file_loading]` keys that described one file's layout rather than a preference,
 /// and so mangled every other file they were applied to, each with the flag that
@@ -1574,6 +1590,10 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "skip_initial_space",
         "CSV: when true, ignore the spaces after a delimiter; padded numbers are numbers and a cell of spaces is null (default false)",
+    ),
+    (
+        "follow_interval_ms",
+        "--follow: how often, in milliseconds, a followed file is checked for new rows; a burst of appends within one interval is one refresh (default 250, 10 to 60000)",
     ),
 ];
 
@@ -3537,6 +3557,16 @@ impl AppConfig {
         self.display
             .number_format
             .resolve(self.display.align_numeric_right)?;
+
+        if let Some(ms) = self.file_loading.follow_interval_ms
+            && !FOLLOW_INTERVAL_MS.contains(&ms)
+        {
+            return Err(eyre!(
+                "file_loading.follow_interval_ms must be between {} and {}, got {ms}",
+                FOLLOW_INTERVAL_MS.start(),
+                FOLLOW_INTERVAL_MS.end()
+            ));
+        }
 
         if let Some(c) = &self.file_loading.comment_char {
             crate::csv_dialect::check_comment_char(c)

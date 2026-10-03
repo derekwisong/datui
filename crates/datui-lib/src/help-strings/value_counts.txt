@@ -14,6 +14,8 @@ cursor's column.
   y:                Copy the counts as TSV: every value, its count,
                     percent and cumulative percent
   e:                Export the counts to a file
+  t:                While following a file, count again with the rows
+                    that arrived since; the bar says how many
   Esc:              Back to the table; while every row is being
                     counted, stop that and keep the sample
   ? / F1:           Show this help

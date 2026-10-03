@@ -42,6 +42,8 @@ typing. The bottom bar shows the main actions for the current screen.
 | <kbd>,</kbd> | Toggle [digit grouping](settings.md#number-formatting) (was <kbd>F</kbd>) |
 | <kbd>D</kbd> | Toggle the type row under the headers |
 | <kbd>H</kbd> | CSV, TSV, PSV: read the first row as data, or as column names again. Reads the file again, clearing query, filters and sort |
+| <kbd>t</kbd> | [Follow](../user-guide/loading-data.md#following-a-growing-file) a CSV, TSV, PSV or NDJSON file as it grows, reading it again as <kbd>H</kbd> does; while following, pause and resume |
+| <kbd>Esc</kbd> | Out of a drill-down; otherwise stop following, keeping the rows read |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
 | <kbd>q</kbd> | Back to the home screen when the dataset was opened from it; otherwise quit — the control bar says which |
@@ -90,6 +92,7 @@ key, beyond the paging chords above.
 | <kbd>a</kbd> | Count every row, when the counts are of a sample |
 | <kbd>y</kbd> | Copy the counts as TSV |
 | <kbd>e</kbd> | Export the counts |
+| <kbd>t</kbd> | While following, count again with the rows that arrived since |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
 | <kbd>Esc</kbd> | Back to the table; while every row is being counted, stop and keep the sample |
 
@@ -261,6 +264,7 @@ On the Filters tab:
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Cycle the plot style, range or bar order, or adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>=</kbd> works as <kbd>+</kbd>, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size) |
 | type, <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>Enter</kbd> or <kbd>Space</kbd> | In the picker: narrow, move, choose (on the Y series row <kbd>Space</kbd> toggles a series in or out; <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd> choose and move to the next or previous row) |
 | <kbd>e</kbd> | Export to PNG or EPS; needs the chart's required columns picked |
+| <kbd>t</kbd> | While following, draw again with the rows that arrived since |
 | <kbd>Esc</kbd> | Back to the table, or out of the open picker |
 
 In the chart export dialog:
@@ -284,6 +288,7 @@ In the chart export dialog:
 | <kbd>v</kbd> | On a tool's main view, show the sample's rows in the table viewer; <kbd>Esc</kbd> returns to the tool |
 | <kbd>r</kbd> | On a sampled result, draw another sample for every tool (from the main analysis view, not inside a detail) |
 | <kbd>a</kbd> | On a sampled result, read every row instead, after confirming; the sample's method becomes Every row |
+| <kbd>t</kbd> | While following, run again with the rows that arrived since, on the same sample |
 | <kbd>Esc</kbd> | Cancel a run in progress; otherwise back one level |
 
 In the Sample form:

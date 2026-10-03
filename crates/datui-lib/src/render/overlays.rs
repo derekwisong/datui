@@ -97,7 +97,7 @@ pub fn render_confirmation_modal(
     };
     let mut spans = choice(modal.yes_label, modal.focus_yes);
     spans.push(Span::raw("     "));
-    spans.extend(choice("No", !modal.focus_yes));
+    spans.extend(choice(modal.no_label, !modal.focus_yes));
     Paragraph::new(Line::from(spans)).render(rows[2], buf);
 }
 

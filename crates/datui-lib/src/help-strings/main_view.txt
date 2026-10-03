@@ -54,6 +54,9 @@ Display:
   H:                CSV, TSV, PSV: read the first row as data, under column_1,
                     column_2, …; again to read it as column names. Reads the
                     file again, so the query, filters and sort are cleared
+  t:                Follow the file as it grows (CSV, TSV, PSV, NDJSON).
+                    Reads it again, as H does; while following, t pauses
+                    and resumes, and Esc stops
   ? / F1:           Open this help (F1 works in text fields). Esc or ? to close.
 
   Only the keys above are table keys: a letter with Ctrl or Alt held does
@@ -96,6 +99,21 @@ While busy:
   behind it, and the cursor stays put.
   The mouse is never queued: the wheel across and the busy bar's chips act
   as their keys do; the wheel down and a click on the table are dropped.
+
+Following (--follow, -f, or t):
+  Rows appended to the file, or arriving on standard input (datui -f -),
+  show as they land; the bar says following and how long ago the last
+  rows came. A follow starts on the last row, and the cursor on the last
+  row stays on it; anywhere else it stays put, and the bar counts the
+  rows that came in below. A partial last line waits for its newline.
+  The query, filters and sort run over the new rows. Value Counts,
+  Analysis and charts keep the rows they were opened on and say how many
+  have arrived since; t there reads them. A truncated or replaced file is
+  read again from its start; a deleted one stops the follow and its rows
+  stay. Rows that do not fit the types the first rows gave are counted
+  on the bar in the warning color and read as null. Recording standard
+  input (--tee FILE), the bar says rec, then saved; quitting or Ctrl+O
+  while it still arrives asks whether to stop or keep recording.
 
 Wide tables:
   ] starts the next page at the first column not shown whole, so a column

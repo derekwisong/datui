@@ -50,6 +50,8 @@ Navigation:
   v:             View the sample's rows as a table; Esc comes back
   r:             Draw another sample (when the result is a sample)
   a:             Read every row instead, after confirming
+  t:             While following a file, read again with the rows that
+                 arrived since the results were read
 
 Detail View:
   Press Enter on a row for a Q-Q plot and histogram comparing the values

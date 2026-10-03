@@ -477,6 +477,18 @@ pub struct Args {
     #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
+    /// Follow a file as it grows, as tail -f does: rows appended to a local CSV, TSV, PSV or NDJSON file, or still arriving on standard input (-), show as they land. t pauses and resumes; Esc stops
+    #[arg(short = 'f', long = "follow", action, help_heading = "Reading")]
+    pub follow: bool,
+
+    /// Record standard input to FILE while viewing it: the bytes exactly as they arrive, in any format. Never replaces FILE without --force. A WAV file's sizes are filled in when the stream ends
+    #[arg(long = "tee", value_name = "FILE", help_heading = "Reading")]
+    pub tee: Option<std::path::PathBuf>,
+
+    /// With --tee: leave FILE exactly as the bytes came, a WAV header's sizes included
+    #[arg(long = "tee-raw", requires = "tee", action, help_heading = "Reading")]
+    pub tee_raw: bool,
+
     /// Skip this many raw lines at the start of the file, split on newlines alone. Not quote-aware: a newline inside a quoted field counts. Compare --skip-rows
     #[arg(long = "skip-lines", value_name = "N", help_heading = "Reading")]
     pub skip_lines: Option<usize>,
@@ -695,13 +707,8 @@ pub struct Args {
     #[arg(long = "generate-config", action, help_heading = "Maintenance")]
     pub generate_config: bool,
 
-    /// Overwrite an existing config file (with --generate-config)
-    #[arg(
-        long = "force",
-        requires = "generate_config",
-        action,
-        help_heading = "Maintenance"
-    )]
+    /// Overwrite an existing file: the config file with --generate-config, or FILE with --tee
+    #[arg(long = "force", action, help_heading = "Maintenance")]
     pub force: bool,
 
     /// S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000

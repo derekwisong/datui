@@ -660,6 +660,9 @@ pub(crate) enum LoadAnswer {
         download: TempDownload,
         options: OpenOptions,
     },
+    /// Standard input, recorded to the file `--tee` named, which is read from here on
+    /// as any file is.
+    Recorded { file: PathBuf, options: OpenOptions },
 }
 
 /// A load put down before it finished: which, and what of it the app has to put down.
@@ -956,6 +959,12 @@ impl Loader {
         if let Some(message) = stdin::refuse(&paths, true) {
             self.load = None;
             return Step::Crash(message.to_string());
+        }
+        if options.follow
+            && let Some(message) = crate::follow::refuse_paths(&paths, &options)
+        {
+            self.load = None;
+            return Step::Crash(message);
         }
         if stdin::is_stdin(&first) {
             // Read once: opened again (`H`), the copy on hand is read.
@@ -1364,6 +1373,21 @@ impl Loader {
                     }),
                 };
                 self.read_download(fetched, options)
+            }
+            (LoadAnswer::Recorded { file, options }, Phase::Spooling { read }) => {
+                load.size = read.load(Ordering::Relaxed);
+                // The user's file, not a copy: `H` reads it again, and it is a recent.
+                self.kept = None;
+                load.path = Some(file.clone());
+                load.paths = Some(vec![file.clone()]);
+                load.recent = Some(file.clone());
+                load.phase = Phase::Scanning { downloaded: false };
+                Step::Scan {
+                    paths: vec![file],
+                    options,
+                    display: None,
+                    status: "Scanning input...",
+                }
             }
             (LoadAnswer::Spooled { download, options }, Phase::Spooling { read }) => {
                 load.size = read.load(Ordering::Relaxed);

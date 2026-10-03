@@ -60,6 +60,7 @@ pub fn render(
                 Some(&c.series)
             },
             breaks: Some(&c.breaks),
+            values: Some(&c.series),
             x_axis_kind: c.x_axis_kind,
             x_bounds: None,
             numbers: xy_numbers(),
@@ -67,6 +68,7 @@ pub fn render(
         (ChartKind::XY, Some(ChartPrepared::XRange(c))) => ChartRenderData::XY {
             series: None,
             breaks: None,
+            values: None,
             x_axis_kind: c.x_axis_kind,
             x_bounds: Some((c.x_min, c.x_max)),
             numbers: xy_numbers(),
@@ -80,6 +82,7 @@ pub fn render(
             ChartRenderData::XY {
                 series: None,
                 breaks: None,
+                values: None,
                 x_axis_kind,
                 x_bounds: None,
                 numbers: xy_numbers(),

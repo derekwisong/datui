@@ -11,9 +11,11 @@ Navigation:
                     tables goes inside it
   Enter:            What the control bar says on this row: "Open all" reads a
                     whole directory as one table, "Inside" steps into it,
-                    "Open" loads a file, "Look" finds out first. On a section
-                    header, fold or unfold it; on the More row, show the rest;
-                    on the hidden-files row, show them
+                    "Open" loads a file, "Look" finds out first. A place a
+                    collection suggests, indented under its dataset, opens
+                    whole. On a section header, fold or unfold it; on the
+                    More row, show the rest; on the hidden-files row, show
+                    them
   Space:            While the filter is empty: fold or unfold the section
                     header under the cursor. With a filter typed, it types
   Backspace:        Delete a filter character; on an empty filter, up a

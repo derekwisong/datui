@@ -1566,6 +1566,7 @@ fn entry_line<'a>(
     // shows is what an open or a listing remembered — or, until then, that nothing is
     // known.
     let unmeasured = indent > 0
+        && place_kind.is_none()
         && entry.rows.is_none()
         && entry.cols.is_none()
         && entry.kind != EntryKind::Unknown
@@ -1905,6 +1906,55 @@ fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> 
             Style::default().fg(ctx.column_separator),
         ),
     ])
+}
+
+/// The most columns of a codebook the details pane lists a line each.
+const CODEBOOK_ROWS: usize = 12;
+
+/// A collection dataset's codebook in the details pane: each column and what it means,
+/// wrapped when the pane has `room` rows for all of it, else a line a column cut to the
+/// pane. The Info panel and the inspector say the rest.
+fn codebook_block(
+    book: &crate::codebook::Codebook,
+    width: usize,
+    room: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(""), pane_heading("CODEBOOK", width, ctx)];
+    let key_w = key_column(book.columns.keys().map(String::as_str)).min(22);
+    let style = Style::default().fg(ctx.text_secondary);
+    let wrapped: Vec<Line<'static>> = book
+        .columns
+        .iter()
+        .flat_map(|(name, column)| fact_lines(name, column.about(), key_w, width, style, ctx))
+        .collect();
+    if lines.len() + wrapped.len() <= room {
+        lines.extend(wrapped);
+        return lines;
+    }
+    let value_w = width.saturating_sub(key_w + 2);
+    let fits = room.saturating_sub(lines.len() + 1).clamp(1, CODEBOOK_ROWS);
+    for (name, column) in book.columns.iter().take(fits) {
+        let name = glyphs::fit_cells(name, key_w, glyphs::get().ellipsis);
+        lines.push(Line::from(vec![
+            Span::styled(format!("{name:<key_w$}  "), Style::default().fg(ctx.dimmed)),
+            Span::styled(
+                glyphs::fit_cells(&column.about(), value_w, glyphs::get().ellipsis).into_owned(),
+                style,
+            ),
+        ]));
+    }
+    if book.columns.len() > fits {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} {} more",
+                glyphs::get().ellipsis,
+                book.columns.len() - fits
+            ),
+            Style::default().fg(ctx.dimmed),
+        )));
+    }
+    lines
 }
 
 /// How many rows a line takes once the pane has wrapped it.
@@ -2440,6 +2490,15 @@ fn render_preview(
             };
             lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
         }
+    }
+    // What the columns of a collection's dataset mean, from its codebook.
+    if (app.home.collection_dataset(&entry.path).is_some()
+        || app.home.suggestion(&entry.path).is_some())
+        && let Some(book) = app.home.codebook_at(&entry.path)
+    {
+        let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
+        let room = (area.height as usize).saturating_sub(drawn);
+        lines.extend(codebook_block(&book, width, room, ctx));
     }
 
     // ---- Rows --------------------------------------------------------------------

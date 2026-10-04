@@ -759,6 +759,8 @@ pub struct DataTableInfo<'a> {
     pub theme: &'a RenderContext,
     /// The dataset is one local file, which `x` shows as hex.
     pub hex: bool,
+    /// What the columns mean, from the collection that lists the dataset.
+    pub codebook: Option<&'a crate::codebook::Codebook>,
 }
 
 /// The Resources tab's `Read:` value: how the open reads the data, and that a remote
@@ -803,12 +805,19 @@ impl<'a> DataTableInfo<'a> {
             modal,
             theme,
             hex: false,
+            codebook: None,
         }
+    }
+
+    /// The codebook, when it has a note for one of the columns on screen.
+    fn codebook_here(&self) -> Option<&'a crate::codebook::Codebook> {
+        self.codebook
+            .filter(|book| book.covers(self.state.schema().iter_names().map(|n| n.as_str())))
     }
 
     fn render_schema_tab(&mut self, area: Rect, buf: &mut Buffer) {
         let summary = self.render_schema_summary(area, buf);
-        let rest = Rect {
+        let mut rest = Rect {
             y: area.y + summary,
             height: area.height.saturating_sub(summary),
             ..area
@@ -816,7 +825,82 @@ impl<'a> DataTableInfo<'a> {
         if rest.height == 0 {
             return;
         }
-        self.render_schema_table(rest, buf);
+        // The selected column's note in full below the table: a blank row and three of
+        // text, kept whichever column is selected so nothing moves.
+        let note_rows = if self.codebook_here().is_some() && rest.height >= 10 {
+            4
+        } else {
+            0
+        };
+        rest.height -= note_rows;
+        let used = self.render_schema_table(rest, buf);
+        if note_rows > 0 {
+            // Right under the table's last row, where the eye already is.
+            self.render_column_note(
+                Rect {
+                    y: rest.y + used + 1,
+                    height: note_rows - 1,
+                    ..rest
+                },
+                buf,
+            );
+        }
+    }
+
+    /// What the codebook says of the selected column: its meaning and unit, then its
+    /// codes.
+    fn render_column_note(&self, area: Rect, buf: &mut Buffer) {
+        let Some(book) = self.codebook_here() else {
+            return;
+        };
+        let Some((name, _)) = self
+            .state
+            .schema()
+            .get_at_index(self.modal.schema_selected_index)
+        else {
+            return;
+        };
+        let width = area.width as usize;
+        let rows = area.height as usize;
+        let mut lines: Vec<String> = Vec::new();
+        match book.column(name.as_str()) {
+            Some(column) => {
+                let about = column.about();
+                if !about.is_empty() {
+                    lines.extend(wrap_to(&format!("{name}: {about}"), width));
+                }
+                if !column.values.is_empty() {
+                    let sep = format!(" {} ", crate::glyphs::get().middot);
+                    let codes: Vec<&str> = column
+                        .values
+                        .keys()
+                        .map(|k| if k.is_empty() { "blank" } else { k.as_str() })
+                        .collect();
+                    let left = rows.saturating_sub(lines.len()).max(1);
+                    let mut wrapped = wrap_to(&format!("Codes: {}", codes.join(&sep)), width);
+                    if wrapped.len() > left {
+                        // The last line that fits carries the rest, cut with the ellipsis.
+                        let rest = wrapped[left - 1..].join(" ");
+                        wrapped.truncate(left - 1);
+                        wrapped.push(clip(&rest, width));
+                    }
+                    lines.extend(wrapped);
+                }
+            }
+            None => lines.push(format!("{name}: not in the codebook")),
+        }
+        for (i, line) in lines.iter().take(rows).enumerate() {
+            Paragraph::new(clip(line, width))
+                .style(Style::default().fg(self.theme.text_secondary))
+                .render(
+                    Rect {
+                        y: area.y + i as u16,
+                        height: 1,
+                        ..area
+                    },
+                    buf,
+                );
+        }
     }
 
     fn render_schema_summary(&self, area: Rect, buf: &mut Buffer) -> u16 {
@@ -834,6 +918,14 @@ impl<'a> DataTableInfo<'a> {
             let sep = format!(" {} ", crate::glyphs::get().middot);
             lines.push(format!("Other tables (--table): {}", others.join(&sep)));
         }
+        if let Some(book) = self.codebook_here()
+            && !book.source.is_empty()
+        {
+            lines.push(clip(
+                &format!("Codebook: {}", book.source),
+                area.width as usize,
+            ));
+        }
         for (i, s) in lines.iter().enumerate() {
             Paragraph::new(s.as_str()).render(
                 Rect {
@@ -848,7 +940,8 @@ impl<'a> DataTableInfo<'a> {
         lines.len() as u16
     }
 
-    fn render_schema_table(&mut self, area: Rect, buf: &mut Buffer) {
+    /// Draw the schema table; returns the rows it drew, rule and header included.
+    fn render_schema_table(&mut self, area: Rect, buf: &mut Buffer) -> u16 {
         // A dataset of many files says which footers its columns came from; one file
         // says only whether its format declared them.
         let dataset = self.state.dataset_schema();
@@ -882,9 +975,13 @@ impl<'a> DataTableInfo<'a> {
             self.ctx.footer_expected || compression.as_ref().is_some_and(|c| !c.is_empty());
         // A delimited spec's unit row: each column's unit, beside its type.
         let has_units = !self.state.units().is_empty();
+        let book = self.codebook_here();
         let mut header_cells = vec!["Column", "Type"];
         if has_units {
             header_cells.push("Unit");
+        }
+        if book.is_some() {
+            header_cells.push("About");
         }
         if has_files {
             header_cells.push("Files");
@@ -921,7 +1018,7 @@ impl<'a> DataTableInfo<'a> {
 
         let offset = self.modal.schema_scroll_offset;
         let take = data_height.min(total_rows.saturating_sub(offset));
-        let mut rows = vec![];
+        let mut rows: Vec<Vec<String>> = vec![];
         for (idx, (name, dtype)) in self.state.schema().iter().enumerate() {
             if idx < offset {
                 continue;
@@ -933,6 +1030,9 @@ impl<'a> DataTableInfo<'a> {
             let mut cells = vec![name.to_string(), dtype.to_string()];
             if has_units {
                 cells.push(self.state.unit_of(name_str).unwrap_or_default().to_string());
+            }
+            if let Some(book) = book {
+                cells.push(book.column(name_str).map(|c| c.about()).unwrap_or_default());
             }
             if let Some((readable, present_by_name)) = &presence {
                 // A column the footers never named — one built by a query or added
@@ -959,10 +1059,18 @@ impl<'a> DataTableInfo<'a> {
                 };
                 cells.push(comp_str);
             }
-            rows.push(Row::new(cells));
+            rows.push(cells);
         }
 
-        let widths: Vec<Constraint> = if has_units {
+        let widths: Vec<Constraint> = if book.is_some() {
+            // The note takes what the name and type leave.
+            let mut weights = vec![3, 2];
+            weights.extend(has_units.then_some(2));
+            weights.push(7);
+            weights.extend(has_files.then_some(2));
+            weights.extend(has_comp.then_some(3));
+            weights.into_iter().map(Constraint::Fill).collect()
+        } else if has_units {
             // Name and type as wide as each other, the rest narrower.
             let mut weights = vec![3, 3, 2];
             weights.extend(has_files.then_some(2));
@@ -999,6 +1107,26 @@ impl<'a> DataTableInfo<'a> {
             (Style::default().fg(self.theme.accent), g.selector_blank)
         };
         let symbol = Span::styled(symbol, Style::default().fg(self.theme.accent));
+        // A note longer than its column ends in the ellipsis rather than mid-word: the
+        // whole of it is under the table.
+        if book.is_some() {
+            let about = 2 + usize::from(has_units);
+            let room = Rect {
+                width: inner
+                    .width
+                    .saturating_sub(crate::glyphs::cell_width(g.selector) as u16),
+                ..inner
+            };
+            let cols = Layout::horizontal(widths.clone()).spacing(1).split(room);
+            if let Some(col) = cols.get(about) {
+                for cells in &mut rows {
+                    if let Some(cell) = cells.get_mut(about) {
+                        *cell = clip(cell, col.width as usize);
+                    }
+                }
+            }
+        }
+        let rows: Vec<Row> = rows.into_iter().map(Row::new).collect();
         let table = Table::new(rows, widths)
             .header(header)
             .column_spacing(1)
@@ -1034,6 +1162,8 @@ impl<'a> DataTableInfo<'a> {
                     );
             }
         }
+        // The rule, the header, the rows and the count under them.
+        (2 + take + usize::from(!fits)).min(area.height as usize) as u16
     }
 
     fn render_resources_tab(&self, area: Rect, buf: &mut Buffer) {

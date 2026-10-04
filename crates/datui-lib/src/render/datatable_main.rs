@@ -169,6 +169,7 @@ pub fn render(
                 };
                 let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
                 info_widget.hex = hex;
+                info_widget.codebook = app.codebook.as_deref();
                 info_widget.render(sort_area, buf);
             }
         }
@@ -234,7 +235,14 @@ pub fn render(
     {
         // A takeover: the row's fields want the width a long value reads at, and
         // the table under it holds the cursor the inspector moves.
-        crate::widgets::inspector::render(main_area, buf, &mut app.inspector_modal, state, ctx);
+        crate::widgets::inspector::render(
+            main_area,
+            buf,
+            &mut app.inspector_modal,
+            state,
+            app.codebook.as_deref(),
+            ctx,
+        );
     }
 
     if app.input_mode == crate::InputMode::GoToColumn {

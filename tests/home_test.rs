@@ -4462,6 +4462,7 @@ fn test_collections_are_sections_of_named_datasets() {
         location: location.to_path_buf(),
         details: vec![("about".to_string(), format!("{name} data"))],
         size: None,
+        ..Default::default()
     };
     let mut home = HomeState {
         collections: vec![
@@ -7736,6 +7737,7 @@ mod catalog {
                     location: url.clone(),
                     details: Vec::new(),
                     size: Some(16_480),
+                    ..Default::default()
                 }],
             }],
             config_dirs: Vec::new(),

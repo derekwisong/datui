@@ -55,6 +55,8 @@ connection = "<CONNECTION>"
 | `connection` | Object-store `url` only: the [`[[cloud.connections]]`](cloud-sources.md#connections) entry whose login reads it |
 | `description`, `publisher`, `license`, `homepage` | Shown in the details pane |
 | `size` | HTTP(S) `url` only: about how many bytes the file is, shown on its row before anything is downloaded |
+| `codebook`, `columns` | What the columns mean; see [Codebooks](#codebooks) |
+| `suggested` | Places inside a directory to start from; see [Codebooks](#codebooks) |
 
 A dataset has exactly one of `path` and `url`. No two datasets in a collection
 share a name or a location.
@@ -104,3 +106,53 @@ collections with one name in one file are an error.
 Collections are apart from `[home] directories`, remembered directories and
 `RECENT`. A directory there is a place to look through, and whatever you open goes
 into `RECENT` whether or not a collection names it.
+
+## Codebooks
+
+A dataset can say what its columns mean and where to start reading it. The
+home screen's details pane lists the columns; once the data is open, the
+[Info panel](../user-guide/dataset-info.md) and the
+[inspector](../user-guide/inspecting-rows.md) explain each one:
+
+```toml
+[[sources]]
+name = "weather"
+label = "Weather"
+
+[[sources.datasets]]
+name = "GHCN daily"
+url = "s3://noaa-ghcn-pds/parquet/"
+auth = "anonymous"
+codebook = "https://www.ncei.noaa.gov/pub/data/ghcn/daily/readme.txt"
+
+[sources.datasets.columns.DATA_VALUE]
+description = "Data value for ELEMENT, in the unit its ELEMENT code gives"
+unit = "per ELEMENT"
+
+[sources.datasets.columns.Q_FLAG]
+description = "Quality flag; blank is normal"
+
+[sources.datasets.columns.Q_FLAG.values]
+"" = "did not fail any quality assurance check"
+S = "failed spatial consistency check"
+
+[[sources.datasets.suggested]]
+name = "Daily highs, 2024"
+path = "by_year/YEAR=2024/ELEMENT=TMAX/"
+```
+
+| Dataset field | Meaning |
+|---|---|
+| `codebook` | An `https://` link to the publisher's documentation of the columns, shown in the details pane and the Info panel |
+| `columns.NAME` | A column, by its name as the data spells it. Each needs at least one of the keys below |
+| `suggested` | A list of places, each a `name` for its row and a `path` relative to the dataset's `path` or object-store `url`. Not for an HTTP(S) file |
+
+| Column field | Meaning |
+|---|---|
+| `description` | What the column holds. Shown in Info's `About` column and under the inspector's value |
+| `unit` | Its unit or format, shown after the description: `tenths of mm`, `YYYYMMDD` |
+| `values` | Code to meaning. The inspector shows the meaning of the value under the cursor; `""` is what a blank or null value means. Codes match exactly, case included |
+
+A suggested place is listed under its dataset. <kbd>Enter</kbd> on it opens the
+place whole, as one table; <kbd>→</kbd> steps inside. The built-in catalog's
+codebooks quote each publisher's documentation, which its `codebook` links.

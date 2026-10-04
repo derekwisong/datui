@@ -4072,3 +4072,6 @@ mod inspector_layout_tests;
 /// The docs' queries parse, and run on the datasets they name (#683).
 #[cfg(feature = "sql")]
 mod doc_queries_tests;
+
+/// A catalog dataset's codebook in the Info panel and the inspector (#734).
+mod codebook_tests;

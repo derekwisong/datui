@@ -67,6 +67,7 @@ pub mod cloud_env;
 mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
+pub mod codebook;
 pub mod commands;
 pub mod config;
 pub mod config_command;
@@ -645,6 +646,10 @@ impl App {
             Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
             Some(home::Row::Entry { entry, .. }) => *entry,
         };
+        // A suggested starting place opens whole.
+        if entry.kind != discover::EntryKind::File && self.home.suggestion(&entry.path).is_some() {
+            return WhatEnter::OpensDirectory;
+        }
         match entry.kind {
             discover::EntryKind::Unknown => WhatEnter::LooksFirst,
             // A database of several tables lists them.
@@ -973,6 +978,8 @@ pub struct App {
     /// worker ([`Job::FileFacts`], whose record says it is reading), and kept for the
     /// dataset however the read ended, so neither drawing nor reopening reads again.
     file_facts: Option<(u64, FileFacts)>,
+    /// What the dataset's columns mean, when a collection that lists it says.
+    pub codebook: Option<std::sync::Arc<codebook::Codebook>>,
     // One input per query mode, each with its own history. The history ids
     // ("query", "sql", "fuzzy") name files already on disk; they stay as they
     // are so no history is lost or read as another mode's.
@@ -4651,6 +4658,9 @@ impl App {
         }
         self.forget_the_rows_read();
         self.file_facts = None;
+        self.codebook = path
+            .as_deref()
+            .and_then(|p| home::codebook_for(&home::collections(&self.app_config), p));
         // The footers it still has to read are counted on the open's counter, which is
         // the dataset's now; the last dataset's pass, if any is left, stops.
         self.footer_progress.cancel();
@@ -5419,6 +5429,7 @@ impl App {
             debug: DebugState::default(),
             info_modal: InfoModal::new(),
             file_facts: None,
+            codebook: None,
             query_input: TextInput::new()
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
@@ -7307,6 +7318,24 @@ impl App {
                 home::display_path(&entry.path)
             ));
             return None;
+        }
+        // A place a collection suggests is a starting point: Enter opens it as one
+        // table rather than stepping inside. → still goes in.
+        if entry.kind != discover::EntryKind::File && self.home.suggestion(&entry.path).is_some() {
+            #[cfg(feature = "cloud")]
+            let reader = if home::is_object_store_url(&entry.path)
+                && !matches!(
+                    entry.kind,
+                    discover::EntryKind::Hive | discover::EntryKind::MultiFile
+                ) {
+                Self::cloud_prefix_format(&entry.holds)
+            } else {
+                None
+            };
+            #[cfg(not(feature = "cloud"))]
+            let reader = None;
+            let directory = home::directory_dataset_url(&entry.path);
+            return Some(self.home_open_directory_as(directory, true, None, reader));
         }
         // The `(all files)` row opens the directory it names, whatever the directory is
         // labelled. That is the whole of what it is for: the label describes, and this

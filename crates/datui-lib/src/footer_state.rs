@@ -159,6 +159,17 @@ impl App {
     /// The home screen: where the list is, how many rows the filter matched, and the
     /// order the rows are in.
     fn home_status(&self, footer: &mut Footer) {
+        // The Documentation view: the catalog and the dataset it documents.
+        if let Some(entry) = self
+            .documentation
+            .entry
+            .as_ref()
+            .filter(|_| self.documentation.is_open())
+        {
+            footer.dataset = Some(entry.name.clone());
+            footer.stages.push("documentation".to_string());
+            return;
+        }
         footer.dataset = self
             .home
             .browsing

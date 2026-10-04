@@ -152,6 +152,10 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
         MainViewContent::Hex => screen_hints(hex_control_keys(app)),
         MainViewContent::Loading => vec![Hint::new("^O", "Home")],
         MainViewContent::Home => {
+            // The Documentation view names its keys in its own footer.
+            if app.documentation.is_open() {
+                return Vec::new();
+            }
             if app.home.path_input_active {
                 return vec![
                     Hint::new("Enter", "Open"),
@@ -159,15 +163,22 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                     Hint::new("Esc", "Cancel"),
                 ];
             }
+            // Fixed slots, so the keys beside them hold still as the selection moves.
+            let mut keys = Vec::new();
             let label = enter_label(app.what_enter_does());
-            if label.is_empty() {
-                return Vec::new();
+            if !label.is_empty() {
+                keys.push(Hint::new(
+                    "Enter",
+                    format!("{label:<width$}", width = ENTER_SLOT),
+                ));
             }
-            // A fixed slot, so the keys beside it hold still as the selection moves.
-            vec![Hint::new(
-                "Enter",
-                format!("{label:<width$}", width = ENTER_SLOT),
-            )]
+            if let Some(action) = app.home_catalog_action() {
+                keys.push(Hint::new("^D", format!("{action:<6}")));
+            }
+            if app.home_documented_row().is_some() {
+                keys.push(registry_hint(Context::Home, "Ctrl+E"));
+            }
+            keys
         }
     }
 }
@@ -211,7 +222,10 @@ pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static s
     }
     let types = match content {
         MainViewContent::Datatable => app.input_mode == crate::InputMode::Editing,
-        MainViewContent::Home => !app.home.filter.is_empty() || app.home.path_input_active,
+        // The Documentation view takes every key but F1.
+        MainViewContent::Home => {
+            !app.home.filter.is_empty() || app.home.path_input_active || app.documentation.is_open()
+        }
         MainViewContent::Hex => app.hex.as_ref().is_some_and(|v| v.prompt.is_some()),
         _ => false,
     };

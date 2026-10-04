@@ -522,7 +522,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as"),
                     k("Ctrl+D", "Catalog", "Add the row to catalog.toml; on its rows, forget it")
                         .more("Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide"),
-                    k("Ctrl+E", "Documentation", "What the catalog says of the row, full screen")
+                    k("Ctrl+E", "Docs", "What the catalog says of the row, full screen")
                         .more("Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. ↑ / ↓ move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
                     k("Delete", "Forget", "Forget a recent, a place, or a catalog.toml row")
                         .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source"),

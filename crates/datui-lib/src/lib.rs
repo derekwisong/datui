@@ -7102,6 +7102,23 @@ impl App {
     /// Ctrl+E: the Documentation view of the catalog row under the cursor, or of the
     /// catalog dataset the row is inside.
     fn home_open_documentation(&mut self) {
+        let Some((path, catalog, entry)) = self.home_documented_row() else {
+            self.home.status = Some("Ctrl+E shows a catalog row's documentation".into());
+            return;
+        };
+        let measured = self
+            .home
+            .selected_entry()
+            .filter(|e| e.path == path && entry.location() == path)
+            .and_then(|e| e.size);
+        self.documentation.open(entry, catalog, measured);
+    }
+
+    /// The catalog dataset the row under the cursor is, or is inside: what Ctrl+E
+    /// documents, with the row's path and the catalog's label.
+    pub(crate) fn home_documented_row(
+        &self,
+    ) -> Option<(PathBuf, String, std::sync::Arc<catalog::Dataset>)> {
         let path = match self.home.selected_row() {
             Some(home::Row::Entry { entry, .. }) | Some(home::Row::Door { entry, .. }) => {
                 Some(entry.path.clone())
@@ -7112,20 +7129,20 @@ impl App {
             }
             _ => None,
         };
-        let found = path
-            .as_deref()
-            .and_then(|p| home::catalog_entry_for(&self.home.catalogs, p));
-        let Some((catalog, entry)) = found else {
-            self.home.status = Some("Ctrl+E shows a catalog row's documentation".into());
-            return;
-        };
-        let measured = path.as_deref().and_then(|p| {
-            self.home
-                .selected_entry()
-                .filter(|e| e.path == p && entry.location() == p)
-                .and_then(|e| e.size)
-        });
-        self.documentation.open(entry, catalog, measured);
+        let path = path?;
+        let (catalog, entry) = home::catalog_entry_for(&self.home.catalogs, &path)?;
+        Some((path, catalog, entry))
+    }
+
+    /// What Ctrl+D does on the row under the cursor, as the footer names it: add it to
+    /// `catalog.toml`, or forget it from there; `None` on a row it cannot add.
+    pub(crate) fn home_catalog_action(&self) -> Option<&'static str> {
+        let (location, _) = self.home_row_for_catalog()?;
+        Some(if self.mine_entry_at(&location).is_some() {
+            "Forget"
+        } else {
+            "Add"
+        })
     }
 
     /// A key while the Documentation view is open over home.

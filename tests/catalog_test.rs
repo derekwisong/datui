@@ -110,6 +110,16 @@ fn select(app: &mut App, name: &str) {
     app.home.selected = index;
 }
 
+/// The footer: the last line drawn.
+fn footer(app: &mut App) -> String {
+    screen(app)
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .trim_end()
+        .to_string()
+}
+
 fn screen(app: &mut App) -> String {
     let area = ratatui::layout::Rect::new(0, 0, 140, 40);
     let mut buffer = ratatui::buffer::Buffer::empty(area);
@@ -553,10 +563,19 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
     assert!(shown.contains("Quality flag"), "{shown}");
     assert!(shown.contains("https://example.com/readme.txt"), "{shown}");
 
-    // Ctrl+E opens the whole page, a bookmark's too, and Esc comes back.
+    // Ctrl+E opens the whole page, a bookmark's too, and Esc comes back. The footer
+    // offers it on a catalog row.
     select(&mut app, "Daily highs, 2024");
+    let line = footer(&mut app);
+    assert!(line.contains("^E Docs"), "{line}");
     drive(&mut app, ctrl('e'));
     assert!(app.documentation.is_open());
+    let line = footer(&mut app);
+    assert!(
+        line.contains("documentation") && line.ends_with("F1 keys"),
+        "{line}"
+    );
+    assert!(!line.contains("^E"), "the page names its own keys: {line}");
     let page = screen(&mut app);
     assert!(page.contains("Documentation"), "{page}");
     assert!(page.contains("BOOKMARKS"), "{page}");
@@ -618,6 +637,11 @@ fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
     });
 
     select(&mut app, "Lake");
+    let line = footer(&mut app);
+    assert!(
+        line.contains("^D Add"),
+        "the footer names what Ctrl+D does: {line}"
+    );
     drive(&mut app, ctrl('d'));
     pump(&mut app, &rx, |app| {
         app.home.sections.iter().any(|s| s.title == "Mine")
@@ -650,6 +674,8 @@ fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
                 if *section == mine_section && entry.name == "Lake")
         })
         .unwrap();
+    let line = footer(&mut app);
+    assert!(line.contains("^D Forget"), "{line}");
     drive(&mut app, ctrl('d'));
     pump(&mut app, &rx, |app| {
         !app.home.sections.iter().any(|s| s.title == "Mine")

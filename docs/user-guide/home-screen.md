@@ -34,8 +34,10 @@ store, so `s3://noaa` <kbd>Tab</kbd> gives `s3://noaa-ghcn-pds/`.
 
 The footer names where the list is, how many rows the filter matches and the
 order, and at the right <kbd>Enter</kbd>, named for what it does on the selected
-row (`Open`, `Open all`, `Inside`, `Look`), then `? keys` (`F1 keys` once a filter
-is typed, since <kbd>?</kbd> then types). Letters type into the filter, so
+row (`Open`, `Open all`, `Inside`, `Look`), what <kbd>Ctrl</kbd>+<kbd>D</kbd> does
+there (`^D Add` to `catalog.toml`, or `^D Forget` on its own rows), `^E Docs` on a
+catalog row, then `? keys` (`F1 keys` once a filter is typed, since <kbd>?</kbd>
+then types). Letters type into the filter, so
 <kbd>q</kbd> types `q`; <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
 
 ## Sections
